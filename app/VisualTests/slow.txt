@@ -1,0 +1,55 @@
+ClipboardTests/testConsentCancellationRegistersAndLimits  # fix: clipboard-sheet round trips across many reads
+ClipboardTests/testDenySurvivesAnotherConnectionsAlwaysAllowAndReset  # fix: two owners and clipboard-sheet round trips
+ClipboardTests/testHiddenUnapprovedReadAndEightSecondDeadline  # fix: waits out the shortened 0.5 s clipboard deadline plus sheet round trips
+ClipboardTests/testModeFiveFiveTwoTwoCmdVEmitsPasteEventForOneRead  # fix: waits out the shortened paste-event expiry plus many sheet and drain round trips
+ClipboardTests/testRichReadAsksSeparatelyAndResetDeniesIt  # fix: many drain fences and clipboard-sheet round trips
+ClosingUXTests/testKillTargetsConfirmationCmdWAndNewWindowFocus  # inherent: eight window create/close confirmations with real sheets
+NotificationTests/testPrivateServerNotifications  # inherent: real tmux tty OSC 7501/133 writes and four notification-state waits
+NotificationTests/testRoutingAndPendingJumps  # inherent: four AppDelegates and three pending-jump rounds
+PaletteTests/testCloseSessionConfirmsAndKills  # inherent: private tmux control client and session-close confirmation
+RemoteTests/testCancelledOneShotRemainsInDrainUntilReaped  # inherent: real child process with a TERM trap, reaped through the drain
+RemoteTests/testKittyClipboardLocalhostRemoteWindow  # inherent: real ssh to localhost plus a clipboard query child
+RemoteTests/testLocalSSHPaneUploadsThroughItsRecordedArguments  # inherent: real ssh uploads and a fixed 1 s late-reply guard
+RemoteTests/testLocalhostUploadRidesTheMasterOnly  # inherent: real ssh master and fixed 0.3 s and 2 s transfer guards
+RemoteTests/testLocalhostWindowsAndRecovery  # inherent: real ssh outage and three failed reopen attempts
+RemoteTests/testOSC52LocalhostRemoteWindow  # inherent: real ssh to localhost plus a clipboard query child
+RemoteTests/testPrivateAgentPublication  # inherent: two real ssh-agents, keygen and a private tmux server
+RemoteTests/testStoppedChildIsReaped  # inherent: real SIGSTOP child that must be killed and reaped
+ReorderTests/testTabDragReflowsAndCommitsOnce  # fix: autoscroll animation waits plus a fixed 100 ms settle
+UploadTests/testImagePasteUploadsOnePrivatePNGAndPastesItsPath  # fix: PNG and TIFF encoding plus three paste waits
+UploadTests/testLocalDropPastesOriginalPathsThroughThePastePath  # fix: seven sheet round trips across fifteen drop cases
+UploadTests/testPromiseReplyAfterDeadlineCannotPasteOrLeaveFiles  # fix: shortened promise timeout plus a late reply after the expiry event
+UploadTests/testPromiseSweepsPreserveAnotherProcessLock  # fix: spawns a python lock helper and waits for it twice
+UploadTests/testTooLargePromiseIsRefusedAndRemoved  # fix: fresh Ghostty runtime and window for one refusal wait
+UploadTests/testTooManyPromisesAreRefusedBeforeCallingReceivers  # fix: fresh Ghostty runtime and window for one refusal wait
+VisualTests/testCaptionDisplayDelay  # inherent: waits out two fixed 0.2 s sidebar caption deadlines
+VisualTests/testCopySearchBarFocusAndExits  # fix: the 400 ms quiet window is the check; a search restart follows a 0.3 s connection deadline
+VisualTests/testEntryWaitsForAdmittedParse  # fix: waits out the 0.5 s copy-mode entry deadline after admission
+VisualTests/testFloatingSidebar  # inherent: a second WindowOwner and floating-sidebar RPC round trips
+VisualTests/testHistoryChunksAndResizeAnchors  # inherent: 100k-line history, deep find and chunk reload checks
+VisualTests/testHistoryPill  # inherent: 100k-line history and a 1000-line paint
+VisualTests/testHistoryPillDark  # inherent: 100k-line history and a 1000-line paint
+VisualTests/testImagesAnimationRestore  # inherent: two animation cycles, two restores and five rendered snapshots
+VisualTests/testImagesLazyHistory  # inherent: history prepend and five rendered image snapshots
+VisualTests/testImagesPlacementRestore  # inherent: reconnect and four rendered placement and id snapshots
+VisualTests/testImagesRemote  # inherent: owned localhost SSH master and three rendered image and media-policy snapshots
+VisualTests/testImagesRestorePaths  # inherent: image restore paths and rendered snapshots
+VisualTests/testImagesSharedMemoryRecovery  # inherent: shared-memory leak guards and four rendered recovery snapshots
+VisualTests/testLoadedTopNeverLoads  # inherent: 30k-line history and a 25000-line paint
+VisualTests/testLocalMismatchEscapeCloses  # inherent: localMismatchOwners starts a kido server and owner, then awaits the mismatch sheet
+VisualTests/testLocalMismatchNativeClose  # inherent: localMismatchOwners starts a kido server and owner, then awaits the mismatch sheet
+VisualTests/testLocalMismatchNativeRestart  # inherent: three kido server restarts, each with a new PID
+VisualTests/testLocalMismatchNativeRestartOtherWindow  # inherent: one kido server restart shared by two owners
+VisualTests/testOSC52ClipboardConsentAndPrivatePaneTransport  # fix: a real python clipboard query child plus consent-sheet round trips
+VisualTests/testPaneChromeSnapshots  # fix: two themes and about fourteen terminal snapshot compares
+VisualTests/testPendingInputRefusalsAndLateWork  # fix: many sheet, conversion and late-reply waits on a synthetic pane
+VisualTests/testPrivateServerRPCAndProtocolSheet  # inherent: four RPC requests and two mismatch owners
+VisualTests/testReorderAgainstPrivateServer  # fix: fixed 300 ms no-display guard plus reorder rounds
+VisualTests/testReorderHoldYieldsToEverythingElse  # inherent: a parked reorder request and four navigation rounds
+VisualTests/testSplitZoomFloat  # fix: three snapshot compares after three paint passes
+VisualTests/testSwitchWindowAndSessionOutputAndReconnect  # fix: two fake-feed scripts and seven event waits
+VisualTests/testWindowTabs  # fix: three new-window, one split and one rename round trip plus tab-layout waits
+RendererTests/testAnimatedShaderKeepsKittyDeadlines  # inherent: four image changes check the 0.4 s animation cadence
+RendererTests/testIdleFocusedPaneWithoutCursorBlinkDoesNotBlink  # inherent: a fixed 1.3 s window checks two blink intervals
+RendererTests/testThirtyTwoOffscreenSurfacesStayIdleAfterChurn  # inherent: builds 32 surfaces and samples idle CPU over fixed windows
+RendererTests/testOutputAndHiddenDiscardRecovery  # inherent: fixed drain and frame windows around hidden-output recovery
