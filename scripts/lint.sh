@@ -2,8 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 case "${1:-}" in
-  ''|--update-prompts) ;;
-  *) echo "usage: scripts/lint.sh [--update-prompts]" >&2; exit 1 ;;
+  ''|--update-prompts|--update-schemas) ;;
+  *) echo "usage: scripts/lint.sh [--update-prompts|--update-schemas]" >&2; exit 1 ;;
 esac
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
@@ -242,14 +242,32 @@ for path in candidates('kill-server', glob.glob('test_e2e/*.go') + glob.glob('sc
 raise SystemExit(1 if errors else 0)
 PY
 node_flags=()
+make --no-print-directory build-ko >&2
+build/ko/bin/ko api-schema > "$scratch/openapi.json"
+if [[ "${1:-}" == --update-schemas ]]; then
+  cp "$scratch/openapi.json" share/ko/openapi.json
+elif ! diff -u share/ko/openapi.json "$scratch/openapi.json"; then
+  echo 'share/ko/openapi.json:1: OpenAPI snapshot differs; regenerate: scripts/lint.sh --update-schemas'
+  failed=1
+fi
 printf 'const probe: number = 1;\n' > "$scratch/probe.ts"
 if command -v node >/dev/null 2>&1 && node "$scratch/probe.ts" >/dev/null 2>&1; then
   :
 elif command -v node >/dev/null 2>&1 && node --experimental-strip-types "$scratch/probe.ts" >/dev/null 2>&1; then
   node_flags=(--experimental-strip-types)
 else
-  echo 'lint: SKIP prompt snapshot (node cannot run TypeScript)'
+  echo 'lint: SKIP prompt and ko-api.d.ts snapshots (node cannot run TypeScript)'
   exit "$failed"
+fi
+if [ ! -d share/pi/node_modules ] || [ share/pi/package-lock.json -nt share/pi/node_modules ]; then
+  (cd share/pi && npm install --silent && touch node_modules)
+fi
+share/pi/node_modules/.bin/openapi-typescript "$scratch/openapi.json" --default-non-nullable false -o "$scratch/ko-api.d.ts" >/dev/null
+if [[ "${1:-}" == --update-schemas ]]; then
+  cp "$scratch/ko-api.d.ts" share/pi/ko-api.d.ts
+elif ! diff -u share/pi/ko-api.d.ts "$scratch/ko-api.d.ts"; then
+  echo 'share/pi/ko-api.d.ts:1: generated types differ; regenerate: scripts/lint.sh --update-schemas'
+  failed=1
 fi
 for extension in kido-pi ko-pi; do
   fixture=share/pi/testdata/prompts.txt

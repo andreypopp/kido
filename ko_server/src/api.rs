@@ -1,0 +1,851 @@
+use std::borrow::Cow;
+
+use ko_pane_wire::frame::{History, ScreenFormat, ScreenRows};
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use serde::de::IntoDeserializer;
+use serde::de::value::Error as ValueError;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::ids::{ClientId, PaneId, RunId, SessionId, VarName, WindowId};
+use crate::protocol::{
+    Candidate, ClientEvent, ClientRequest, DeleteVars, Detail, Empty, HistoryDef, Images, Info,
+    Input, InputResult, Listing, PutLayout, ReportOutcome, Selection, SendPrompt, Sent, Show,
+    Snapshot, StartRun, Started, StopRun, VarValue, Version, ViewEvent, ViewRequest, Waited,
+};
+use crate::route::{Invalid, Param, binary, routes, text};
+
+use crate::runs::Parent;
+use crate::vars::Vars;
+
+const MAX_OFFSET: u64 = (1 << 62) - 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WaitMs(u64);
+
+impl WaitMs {
+    pub const DEFAULT: WaitMs = WaitMs(30_000);
+    pub const MAX: WaitMs = WaitMs(3_600_000);
+
+    pub fn clamped(milliseconds: u64) -> WaitMs {
+        WaitMs(milliseconds.min(WaitMs::MAX.0))
+    }
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl JsonSchema for WaitMs {
+    fn schema_name() -> Cow<'static, str> {
+        "WaitMs".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "integer", "minimum": 0, "maximum": WaitMs::MAX.0, "description": "Milliseconds."})
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Offset(u64);
+
+impl Offset {
+    pub fn new(offset: u64) -> Option<Offset> {
+        (offset <= MAX_OFFSET).then_some(Offset(offset))
+    }
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl JsonSchema for Offset {
+    fn schema_name() -> Cow<'static, str> {
+        "Offset".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "integer", "minimum": 0, "maximum": MAX_OFFSET, "description": "A byte offset of the pane's stream."})
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowOnly;
+
+impl JsonSchema for WindowOnly {
+    fn schema_name() -> Cow<'static, str> {
+        "WindowOnly".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "string", "enum": ["true"]})
+    }
+}
+
+fn natural(value: &str, max: u64) -> Result<u64, Invalid> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(Invalid::message("invalid number"));
+    }
+    value
+        .parse()
+        .ok()
+        .filter(|&number| number <= max)
+        .ok_or_else(|| Invalid::message("invalid number"))
+}
+
+fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while let Some(&byte) = bytes.get(at) {
+        if byte == b'%' {
+            let hex = value.get(at + 1..at + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            at += 3;
+        } else {
+            out.push(byte);
+            at += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+fn named<'a, T>(
+    value: &'a str,
+    message: &str,
+    decode: impl FnOnce(serde::de::value::StrDeserializer<'a, ValueError>) -> Result<T, ValueError>,
+) -> Result<T, Invalid> {
+    decode(value.into_deserializer()).map_err(|_| Invalid::message(message))
+}
+
+fn name_of(
+    encode: impl FnOnce(serde_json::value::Serializer) -> serde_json::Result<Value>,
+) -> String {
+    match encode(serde_json::value::Serializer) {
+        Ok(Value::String(name)) => name,
+        _ => String::new(),
+    }
+}
+
+macro_rules! id_params {
+    ($($id:ty => $example:literal),* $(,)?) => {$(
+        impl Param for $id {
+            const EXAMPLE: &'static str = $example;
+
+            fn parse(value: &str) -> Result<$id, Invalid> {
+                value.parse().map_err(|_| Invalid::NoRoute)
+            }
+
+            fn render(&self) -> String {
+                self.to_string()
+            }
+
+            fn schema(generator: &mut SchemaGenerator) -> Schema {
+                generator.subschema_for::<$id>()
+            }
+        }
+    )*};
+}
+
+id_params! {
+    ClientId => "client_1",
+    SessionId => "session_1",
+    WindowId => "window_1",
+    RunId => "0123456789abcdef0123456789abcdef",
+}
+
+impl Param for PaneId {
+    const EXAMPLE: &'static str = "pane_1";
+
+    fn parse(value: &str) -> Result<PaneId, Invalid> {
+        value.parse().map_err(|_| Invalid::NoRoute)
+    }
+
+    fn render(&self) -> String {
+        self.to_string()
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<PaneId>()
+    }
+
+    fn pane(&self) -> Option<PaneId> {
+        Some(*self)
+    }
+}
+
+impl Param for VarName {
+    const EXAMPLE: &'static str = "pi.session";
+
+    fn parse(value: &str) -> Result<VarName, Invalid> {
+        percent_decode(value)
+            .and_then(|name| VarName::new(&name).ok())
+            .ok_or_else(|| Invalid::message("invalid variable name"))
+    }
+
+    fn render(&self) -> String {
+        percent_encode(self.as_str())
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<VarName>()
+    }
+}
+
+impl Param for Show {
+    const EXAMPLE: &'static str = "live";
+
+    fn parse(value: &str) -> Result<Show, Invalid> {
+        named(value, "invalid show", Show::deserialize)
+    }
+
+    fn render(&self) -> String {
+        name_of(|serializer| self.serialize(serializer))
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<Show>()
+    }
+}
+
+impl Param for Parent {
+    const EXAMPLE: &'static str = "pane_1";
+
+    fn parse(value: &str) -> Result<Parent, Invalid> {
+        value
+            .parse()
+            .map_err(|_| Invalid::message("invalid parent"))
+    }
+
+    fn render(&self) -> String {
+        self.to_string()
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<Parent>()
+    }
+}
+
+impl Param for WaitMs {
+    const EXAMPLE: &'static str = "250";
+
+    fn parse(value: &str) -> Result<WaitMs, Invalid> {
+        natural(value, WaitMs::MAX.0).map(WaitMs)
+    }
+
+    fn render(&self) -> String {
+        self.0.to_string()
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<WaitMs>()
+    }
+}
+
+impl Param for Offset {
+    const EXAMPLE: &'static str = "0";
+
+    fn parse(value: &str) -> Result<Offset, Invalid> {
+        natural(value, MAX_OFFSET).map(Offset)
+    }
+
+    fn render(&self) -> String {
+        self.0.to_string()
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<Offset>()
+    }
+}
+
+impl Param for WindowOnly {
+    const EXAMPLE: &'static str = "true";
+
+    fn parse(value: &str) -> Result<WindowOnly, Invalid> {
+        (value == "true")
+            .then_some(WindowOnly)
+            .ok_or_else(|| Invalid::message("invalid window"))
+    }
+
+    fn render(&self) -> String {
+        "true".to_owned()
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<WindowOnly>()
+    }
+}
+
+impl Param for ScreenFormat {
+    const EXAMPLE: &'static str = "ansi";
+
+    fn parse(value: &str) -> Result<ScreenFormat, Invalid> {
+        match value {
+            "plain" => Ok(ScreenFormat::Plain),
+            "ansi" => Ok(ScreenFormat::Ansi),
+            _ => Err(Invalid::message("invalid format")),
+        }
+    }
+
+    fn render(&self) -> String {
+        match self {
+            ScreenFormat::Plain => "plain",
+            ScreenFormat::Ansi => "ansi",
+        }
+        .to_owned()
+    }
+
+    fn schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "string", "enum": ["plain", "ansi"]})
+    }
+}
+
+impl Param for ScreenRows {
+    const EXAMPLE: &'static str = "40";
+
+    fn parse(value: &str) -> Result<ScreenRows, Invalid> {
+        match value {
+            "none" => Ok(ScreenRows::Visible),
+            "all" => Ok(ScreenRows::Full),
+            rows => u32::try_from(natural(rows, u64::from(u32::MAX))?)
+                .map(ScreenRows::Last)
+                .map_err(|_| Invalid::message("invalid number")),
+        }
+    }
+
+    fn render(&self) -> String {
+        match self {
+            ScreenRows::Visible => "none".to_owned(),
+            ScreenRows::Full => "all".to_owned(),
+            ScreenRows::Last(rows) => rows.to_string(),
+        }
+    }
+
+    fn schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "anyOf": [
+                {"type": "string", "enum": ["none", "all"]},
+                {"type": "integer", "minimum": 0, "maximum": u32::MAX}
+            ],
+            "description": "none for the visible rows, all for the whole history, or the number of last rows."
+        })
+    }
+}
+
+impl Param for History {
+    const EXAMPLE: &'static str = "all";
+
+    fn parse(value: &str) -> Result<History, Invalid> {
+        named(value, "invalid history", HistoryDef::deserialize)
+    }
+
+    fn render(&self) -> String {
+        name_of(|serializer| HistoryDef::serialize(self, serializer))
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<HistoryDef>()
+    }
+}
+
+impl Param for Images {
+    const EXAMPLE: &'static str = "none";
+
+    fn parse(value: &str) -> Result<Images, Invalid> {
+        named(value, "P1 supports images=none only", Images::deserialize)
+    }
+
+    fn render(&self) -> String {
+        name_of(|serializer| self.serialize(serializer))
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<Images>()
+    }
+}
+
+routes! {
+    /// The protocol and terminal revisions of this server.
+    Version { method: GET, path: /version, reply: Version }
+    /// Every pane, with its status and variables.
+    ListPanes { method: GET, path: /panes, reply: Vec<Listing> }
+    /// The layout of every session, with its revision.
+    GetLayout { method: GET, path: /layout, reply: Snapshot }
+    /// Replaces the layout. A stale revision gets 409 with the current layout.
+    PutLayout {
+        method: PUT,
+        path: /layout,
+        body: PutLayout,
+        reply: Snapshot,
+        errors: { 409: Snapshot },
+    }
+    /// The client-lifetime socket: layout, focus and status events.
+    Client { method: WS, path: /client, send: ClientRequest, recv: ClientEvent }
+    /// Selects a session, a window or a pane for a client.
+    SelectClient {
+        method: POST,
+        path: /clients/{id: ClientId}/select,
+        body: Selection,
+        reply: Empty,
+    }
+    /// Closes a pane.
+    DeletePane { method: DELETE, path: /panes/{id: PaneId}, reply: Empty }
+    /// Closes every pane of a window.
+    DeleteWindow { method: DELETE, path: /windows/{id: WindowId}, reply: Empty }
+    /// Closes every window of a session.
+    DeleteSession { method: DELETE, path: /sessions/{id: SessionId}, reply: Empty }
+    /// Drops the scrollback of a pane.
+    ClearHistory { method: POST, path: /panes/{id: PaneId}/clear_history, reply: Empty }
+    /// Sends a key, a mouse event, a paste or raw text to a pane.
+    Input {
+        method: POST,
+        path: /panes/{id: PaneId}/input,
+        body: Input,
+        reply: InputResult,
+    }
+    /// The text of a pane, from the server's terminal.
+    Screen {
+        method: GET,
+        path: /panes/{id: PaneId}/screen,
+        query: { format: ScreenFormat = Plain, history: ScreenRows = Visible },
+        reply: text,
+    }
+    /// The view of a pane: the terminal byte stream, and the input of the viewer.
+    View {
+        method: WS,
+        path: /panes/{id: PaneId}/view,
+        query: { history: History = None, images: Images = None, offset: Option<Offset> },
+        send: ViewRequest,
+        recv: ViewEvent | binary,
+    }
+    /// The variables of a pane.
+    Vars { method: GET, path: /panes/{id: PaneId}/vars, reply: Vars }
+    /// The value of one variable of a pane.
+    Var { method: GET, path: /panes/{id: PaneId}/vars/{name: VarName}, reply: Value }
+    /// Sets one variable of a pane.
+    SetVar {
+        method: PUT,
+        path: /panes/{id: PaneId}/vars/{name: VarName},
+        body: VarValue,
+        reply: Empty,
+    }
+    /// Removes one variable of a pane.
+    DeleteVar { method: DELETE, path: /panes/{id: PaneId}/vars/{name: VarName}, reply: Empty }
+    /// Removes variables of a pane, if its condition holds.
+    DeleteVars {
+        method: DELETE,
+        path: /panes/{id: PaneId}/vars,
+        body: DeleteVars,
+        reply: Empty,
+        errors: { 412 },
+    }
+    /// Starts a run in a new window.
+    StartRun { method: POST, path: /runs, body: StartRun, reply: Started }
+    /// The runs of the server.
+    ListRuns {
+        method: GET,
+        path: /runs,
+        query: { show: Show = Live, parent: Option<Parent> },
+        reply: Vec<Info>,
+    }
+    /// Collects the runs that are finished with.
+    Reap { method: POST, path: /runs/reap, reply: Empty }
+    /// One run, with its screen when it failed.
+    GetRun { method: GET, path: /runs/{id: RunId}, reply: Detail }
+    /// Waits for the outcome of a run, up to the timeout.
+    WaitRun {
+        method: GET,
+        path: /runs/{id: RunId}/wait,
+        query: { timeout_ms: WaitMs = DEFAULT },
+        reply: Waited,
+    }
+    /// Reports the outcome of a run.
+    RunOutcome {
+        method: POST,
+        path: /runs/{id: RunId}/outcome,
+        body: ReportOutcome,
+        reply: Empty,
+    }
+    /// Stops a run.
+    StopRun {
+        method: POST,
+        path: /runs/{id: RunId}/stop,
+        body: StopRun,
+        reply: Empty,
+    }
+    /// The agents that a prompt can reach from the calling pane.
+    PromptResolve {
+        method: GET,
+        path: /prompt/resolve,
+        query: { window: Option<WindowOnly> },
+        reply: Vec<Candidate>,
+    }
+    /// Sends a prompt to an agent.
+    SendPrompt { method: POST, path: /prompt, body: SendPrompt, reply: Sent }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::PasteResult;
+    use proptest::prelude::*;
+
+    const RUN: &str = "0123456789abcdef0123456789abcdef";
+
+    fn parsed(method: &str, target: &str) -> String {
+        match Route::of_request(method, target) {
+            Ok(route) => format!("{route:?}"),
+            Err(Invalid::NoRoute) => "no route".to_owned(),
+            Err(invalid) => invalid.to_string(),
+        }
+    }
+
+    #[test]
+    fn variable_routes_decode_and_encode_their_name() {
+        let id: PaneId = "pane_2".parse().unwrap();
+        let name = VarName::new("pi.session é/x?").unwrap();
+        let encoded = "/panes/pane_2/vars/pi.session%20%C3%A9%2Fx%3F";
+        for (method, route) in [
+            (
+                "GET",
+                Route::Var {
+                    id,
+                    name: name.clone(),
+                },
+            ),
+            (
+                "PUT",
+                Route::SetVar {
+                    id,
+                    name: name.clone(),
+                },
+            ),
+            (
+                "DELETE",
+                Route::DeleteVar {
+                    id,
+                    name: name.clone(),
+                },
+            ),
+        ] {
+            assert_eq!(Route::of_request(method, encoded), Ok(route.clone()));
+            assert_eq!(route.to_request(), (method, encoded.to_owned()));
+        }
+        assert_eq!(
+            Route::of_request("GET", "/panes/pane_2/vars"),
+            Ok(Route::Vars { id })
+        );
+        assert_eq!(
+            Route::of_request("POST", "/panes/pane_2/vars/a"),
+            Err(Invalid::NoRoute)
+        );
+        assert_eq!(
+            Route::of_request("POST", "/panes/pane_2/vars/%FF"),
+            Err(Invalid::message("invalid variable name"))
+        );
+        assert_eq!(
+            Route::of_request("PATCH", "/panes/pane_2/vars/%0A"),
+            Err(Invalid::message("invalid variable name"))
+        );
+        for bad in [
+            "/panes/pane_2/vars/",
+            "/panes/pane_2/vars/%FF",
+            "/panes/pane_2/vars/%0A",
+            "/panes/pane_2/vars/%",
+            &format!("/panes/pane_2/vars/{}", "n".repeat(257)),
+        ] {
+            assert_eq!(
+                Route::of_request("GET", bad),
+                Err(Invalid::message("invalid variable name")),
+                "{bad}"
+            );
+        }
+        let longest = format!("/panes/pane_2/vars/{}", "n".repeat(256));
+        assert!(matches!(
+            Route::of_request("GET", &longest),
+            Ok(Route::Var { .. })
+        ));
+    }
+
+    #[test]
+    fn a_route_renders_a_request_that_parses_back_to_it() {
+        let id = PaneId::new(7);
+        let run: RunId = RUN.parse().unwrap();
+        for route in [
+            Route::Version {},
+            Route::ListPanes {},
+            Route::GetLayout {},
+            Route::PutLayout {},
+            Route::SelectClient {
+                id: ClientId::new(4),
+            },
+            Route::ClearHistory { id },
+            Route::Client {},
+            Route::DeletePane { id },
+            Route::DeleteWindow {
+                id: WindowId::new(2),
+            },
+            Route::DeleteSession {
+                id: SessionId::new(3),
+            },
+            Route::DeleteVars { id },
+            Route::Input { id },
+            Route::Screen {
+                id,
+                format: ScreenFormat::Ansi,
+                history: ScreenRows::Last(40),
+            },
+            Route::Screen {
+                id,
+                format: ScreenFormat::Plain,
+                history: ScreenRows::Full,
+            },
+            Route::StartRun {},
+            Route::ListRuns {
+                show: Show::Live,
+                parent: None,
+            },
+            Route::ListRuns {
+                show: Show::All,
+                parent: Some(Parent::Pane(id)),
+            },
+            Route::ListRuns {
+                show: Show::Present,
+                parent: Some(Parent::Run(run.clone())),
+            },
+            Route::Reap {},
+            Route::GetRun { id: run.clone() },
+            Route::WaitRun {
+                id: run.clone(),
+                timeout_ms: WaitMs::clamped(250),
+            },
+            Route::RunOutcome { id: run.clone() },
+            Route::StopRun { id: run },
+            Route::PromptResolve { window: None },
+            Route::PromptResolve {
+                window: Some(WindowOnly),
+            },
+            Route::SendPrompt {},
+            Route::View {
+                id,
+                history: History::All,
+                images: Images::None,
+                offset: Offset::new(9),
+            },
+            Route::View {
+                id,
+                history: History::None,
+                images: Images::None,
+                offset: None,
+            },
+        ] {
+            let (method, target) = route.to_request();
+            assert_eq!(Route::of_request(method, &target), Ok(route));
+        }
+    }
+
+    #[test]
+    fn a_default_is_not_rendered_and_a_missing_parameter_takes_it() {
+        let wait = format!("/runs/{RUN}/wait");
+        assert_eq!(
+            Route::of_request("GET", &wait),
+            Ok(Route::WaitRun {
+                id: RUN.parse().unwrap(),
+                timeout_ms: WaitMs::DEFAULT,
+            })
+        );
+        assert_eq!(
+            Route::WaitRun {
+                id: RUN.parse().unwrap(),
+                timeout_ms: WaitMs::DEFAULT
+            }
+            .to_request(),
+            ("GET", wait)
+        );
+        assert_eq!(
+            Route::View {
+                id: PaneId::new(1),
+                history: History::None,
+                images: Images::None,
+                offset: Offset::new(0),
+            }
+            .to_request(),
+            ("GET", "/panes/pane_1/view?offset=0".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_bad_target_names_what_is_wrong() {
+        let wait = format!("/runs/{RUN}/wait");
+        let table: Vec<String> = [
+            ("GET", "/panes/pane_7/screen?history=4294967296"),
+            ("GET", "/panes/pane_7/view?offset=4611686018427387904"),
+            ("GET", "/panes/pane_7/view?images=all"),
+            ("GET", "/panes/pane_7/view?a=b=c"),
+            ("GET", "/panes/pane_7/view?"),
+            ("GET", "/panes/pane_x/view"),
+            ("PUT", "/panes"),
+            ("POST", "/clients/client_x/select"),
+            ("POST", "/panes/pane_1/clear_history/x"),
+            ("GET", "/panes?x=1"),
+            ("GET", "/runs?show=some"),
+            ("GET", "/prompt/resolve?window=1"),
+            ("GET", "/runs?parent=nope"),
+            ("GET", "/version?a=1?b=2"),
+            ("GET", &format!("{wait}?timeout_ms=3600001")),
+            ("GET", &wait),
+            ("GET", "/runs/abc"),
+            ("POST", "/runs/reap"),
+            ("PUT", "/runs"),
+        ]
+        .into_iter()
+        .map(|(method, target)| parsed(method, target))
+        .collect();
+        assert_eq!(
+            table,
+            [
+                "invalid number",
+                "invalid number",
+                "P1 supports images=none only",
+                "invalid query",
+                "invalid query",
+                "no route",
+                "no route",
+                "no route",
+                "no route",
+                "ListPanes",
+                "invalid show",
+                "invalid window",
+                "invalid parent",
+                "invalid target",
+                "invalid number",
+                &format!("WaitRun {{ id: RunId(\"{RUN}\"), timeout_ms: WaitMs(30000) }}"),
+                "no route",
+                "Reap",
+                "no route",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_body_is_decoded_for_the_route_that_takes_one_and_refused_for_the_others() {
+        let selection = Route::SelectClient {
+            id: ClientId::new(1),
+        };
+        assert_eq!(
+            selection.clone().with_body(Some(br#"{"pane":"pane_2"}"#)),
+            Ok(Request::SelectClient {
+                id: ClientId::new(1),
+                body: Selection {
+                    session: None,
+                    window: None,
+                    pane: Some(PaneId::new(2)),
+                },
+            })
+        );
+        assert_eq!(
+            selection.clone().with_body(Some(b"[null,null,null]")),
+            Err(Invalid::message("a record must be a JSON object"))
+        );
+        assert_eq!(
+            selection.clone().with_body(Some(br#"{"pane":"x"}"#)),
+            Err(Invalid::message("invalid id \"x\" at line 1 column 12"))
+        );
+        assert_eq!(
+            selection.with_body(None),
+            Err(Invalid::message("body exceeds 1 MiB"))
+        );
+        let set = Route::SetVar {
+            id: PaneId::new(1),
+            name: VarName::new("a").unwrap(),
+        };
+        assert_eq!(
+            set.clone().with_body(Some(b"[1,{\"b\":2}]")),
+            Ok(Request::SetVar {
+                id: PaneId::new(1),
+                name: VarName::new("a").unwrap(),
+                body: VarValue(serde_json::json!([1, {"b": 2}])),
+            })
+        );
+        assert_eq!(
+            set.with_body(None),
+            Err(Invalid::message("variable too large"))
+        );
+        assert_eq!(Route::Reap {}.with_body(Some(b"")), Ok(Request::Reap {}));
+        for body in [Some(&b"{}"[..]), Some(b"not json"), None] {
+            assert_eq!(
+                Route::Reap {}.with_body(body),
+                Err(Invalid::message("this route takes no body"))
+            );
+        }
+    }
+
+    #[test]
+    fn every_catalog_entry_parses_back_from_its_example_request() {
+        assert!(ROUTES.len() > 20);
+        for info in ROUTES {
+            let mut path = info.path.to_owned();
+            for param in info.path_params {
+                path = path.replace(&format!("{{{}}}", param.name), param.example);
+            }
+            let query: Vec<String> = info
+                .query
+                .iter()
+                .map(|param| format!("{}={}", param.name, param.example))
+                .collect();
+            let target = if query.is_empty() {
+                path
+            } else {
+                format!("{path}?{}", query.join("&"))
+            };
+            let route = Route::of_request(info.method.http(), &target)
+                .unwrap_or_else(|invalid| panic!("{target}: {invalid}"));
+            assert_eq!(route.name(), info.name, "{target}");
+            let (method, again) = route.to_request();
+            assert_eq!(Route::of_request(method, &again), Ok(route), "{again}");
+        }
+    }
+
+    #[test]
+    fn an_input_reply_decodes_as_a_paste_result_or_as_nothing() {
+        let decode = |body: &str| crate::protocol::decode::<InputResult>(body.as_bytes()).unwrap();
+        assert_eq!(decode("{}"), InputResult::Sent(Empty {}));
+        assert_eq!(
+            decode(r#"{"id":3,"pasted":true,"unsafe":false}"#),
+            InputResult::Pasted(PasteResult {
+                id: Some(3),
+                pasted: true,
+                unsafe_paste: false,
+            })
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn routes_return_a_route_nothing_or_invalid(
+            method in prop::sample::select(vec!["GET", "POST", "DELETE", "PUT", ""]),
+            path in prop::sample::select(vec!["/version", "/panes", "/client", "/panes/pane_1", "/panes/pane_1/view", "/panes/pane_1/screen", "/panes/pane_1/input", "/panes/pane_1/vars", "/panes/pane_1/vars/a%20b", "/panes/pane_1/vars/%FF", "/panes/1/view", "/", ""]),
+            query in prop::collection::vec((prop::sample::select(vec!["history", "images", "offset", "format", "x", ""]), prop::sample::select(vec!["", "a", "all", "none", "0", "-1", "99999999999999999999", "4294967296", "%00", "=", "&", "?", "/"])), 0..3),
+            with_query in any::<bool>(),
+        ) {
+            let query: Vec<String> = query.into_iter().map(|(key, value)| format!("{key}={value}")).collect();
+            let target = if with_query { format!("{path}?{}", query.join("&")) } else { path.to_owned() };
+            if let Ok(route) = Route::of_request(method, &target) {
+                let (method, target) = route.to_request();
+                prop_assert_eq!(Route::of_request(method, &target), Ok(route));
+            }
+        }
+    }
+}

@@ -5,6 +5,7 @@ use ko_pane_wire::frame::{Dead, History, Req, ScreenFormat, ScreenRows, Size};
 use ko_pane_wire::ring::Invalid;
 use ko_sys::event::{Events, Mode, Poll, Reads, Ready, Timer, Token};
 
+use crate::api::routes;
 use crate::client::{self, Change, Client, Current};
 use crate::config::Config;
 use crate::conn::{Conn, Phase};
@@ -794,7 +795,7 @@ impl State {
                         },
                     );
                 }
-                router::screen(self, poll, conn, started, &chunk, last);
+                router::screen::<routes::Screen>(self, poll, conn, started, &chunk, last);
             }
             Event::Pasted {
                 req,
@@ -808,7 +809,7 @@ impl State {
                 };
                 match self.owners.remove(&(id, req)) {
                     Some(Owner::HttpPaste(conn, paste)) => {
-                        router::pasted(self, poll, conn, &result(paste));
+                        router::pasted(self, poll, conn, result(paste));
                     }
                     Some(Owner::ViewPaste(conn, paste)) => {
                         if let Some((Role::View(_), wire)) =

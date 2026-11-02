@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 
 use ko_client::wire::{self, Link, Next, text};
 use ko_pane_wire::frame::{History, Limits};
+use ko_server::api::Route;
 use ko_server::ids::{ClientId, PaneId};
-use ko_server::protocol::{self, Images, Marker, Route, ViewEvent, ViewOptions, ViewRequest, json};
+use ko_server::protocol::{self, Images, Marker, ViewEvent, ViewOptions, ViewRequest, json};
 use ko_server::ws::{BadRecord, Record, parse_record};
 use ko_sys::clock::Mono;
 use ko_sys::event::{Poll, Ready, Token};
@@ -184,12 +185,17 @@ impl Mirror {
         limits: Limits,
         poll: &mut Poll,
     ) -> Result<Mirror, String> {
-        let options = ViewOptions {
-            history: History::All,
-            images: Images::None,
-        };
-        let link =
-            Link::connect(socket, Some(client), &Route::View(pane, options, None)).map_err(text)?;
+        let link = Link::connect(
+            socket,
+            Some(client),
+            &Route::View {
+                id: pane,
+                history: History::All,
+                images: Images::None,
+                offset: None,
+            },
+        )
+        .map_err(text)?;
         Mirror::with(link, limits, poll)
     }
 

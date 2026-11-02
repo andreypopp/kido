@@ -21,6 +21,7 @@ use ko_sys::pid::Pid;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::api::Route;
 use crate::config::DEFAULT_LIMITS;
 use crate::conn::Conn;
 use crate::delivery::{Delivery, mint_stamps};
@@ -30,7 +31,7 @@ use crate::ids::Instance;
 use crate::ids::PaneId;
 use crate::pane_proc::{Cause, Event, Io, Life, PaneProc, discard};
 use crate::protocol::{
-    self, ClientRequest, Command, CreatePane, Input, Route, ViewRequest, version_headers,
+    self, ClientRequest, Command, CreatePane, Input, ViewRequest, version_headers,
 };
 use crate::server::Verified;
 use crate::state::{State, Wake};
@@ -51,9 +52,9 @@ pub fn decode(data: &[u8]) {
     roundtrip::<Input>(data);
     let text = String::from_utf8_lossy(data);
     let (method, target) = text.split_once(' ').unwrap_or((&text, &text));
-    if let Ok(Some(route)) = Route::of_request(method, target) {
+    if let Ok(route) = Route::of_request(method, target) {
         let (method, target) = route.to_request();
-        assert_eq!(Route::of_request(method, &target), Ok(Some(route)));
+        assert_eq!(Route::of_request(method, &target), Ok(route));
     }
 }
 

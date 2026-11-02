@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt;
 use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Write};
@@ -8,6 +9,7 @@ use std::time::Duration;
 
 use ko_sys::clock::Mono;
 use ko_sys::pid::Exit;
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{PaneId, RunId};
@@ -21,6 +23,20 @@ const SCREEN_MAX: usize = 64 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct RunName(String);
+
+impl JsonSchema for RunName {
+    fn schema_name() -> Cow<'static, str> {
+        "RunName".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "maxLength": NAME_MAX,
+            "description": format!("At most {NAME_MAX} bytes, without control characters.")
+        })
+    }
+}
 
 impl RunName {
     pub fn new(text: &str) -> Result<RunName, String> {
@@ -64,6 +80,19 @@ pub enum Parent {
     Pane(PaneId),
 }
 
+impl JsonSchema for Parent {
+    fn schema_name() -> Cow<'static, str> {
+        "Parent".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "anyOf": [generator.subschema_for::<PaneId>(), generator.subschema_for::<RunId>()],
+            "description": "A pane id, or the id of a run."
+        })
+    }
+}
+
 impl FromStr for Parent {
     type Err = String;
 
@@ -100,7 +129,7 @@ impl From<Parent> for String {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RunResult {
     Completed,
@@ -118,7 +147,7 @@ impl fmt::Display for RunResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunOutcome {
     pub result: RunResult,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -127,7 +156,7 @@ pub struct RunOutcome {
     pub at: Option<Timestamp>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Meta {
     pub id: RunId,
     pub name: RunName,

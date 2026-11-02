@@ -3,11 +3,11 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use ko_pane_wire::frame::History;
+use ko_server::api::Route;
 use ko_server::http::{Response, call, read_response, read_upgrade};
 use ko_server::ids::PaneId;
 use ko_server::protocol::{
-    self, Command, CreatePane, Images, Input, Marker, Route, Row, Text, ViewEvent, ViewOptions,
-    json,
+    self, Command, CreatePane, Images, Input, Marker, Row, Text, ViewEvent, json,
 };
 use ko_server::ws::{Record, accepted, masked, parse_frame, parse_record, upgrade_request};
 use ko_sys::clock::Mono;
@@ -40,17 +40,17 @@ pub(crate) fn create_pane(socket: &Path, argv: &[String]) -> io::Result<PaneId> 
 }
 
 pub(crate) fn program_pids(socket: &Path) -> io::Result<Vec<i32>> {
-    let response = exchange(socket, &Route::ListPanes, "")?;
+    let response = exchange(socket, &Route::ListPanes {}, "")?;
     let rows: Vec<Row> = protocol::decode(&response.body).map_err(io::Error::other)?;
     Ok(rows.iter().map(|row| row.pid).collect())
 }
 
 pub(crate) fn screen_text(socket: &Path, pane: PaneId) -> io::Result<String> {
-    let route = Route::Screen(
-        pane,
-        ko_pane_wire::frame::ScreenFormat::Plain,
-        ko_pane_wire::frame::ScreenRows::Visible,
-    );
+    let route = Route::Screen {
+        id: pane,
+        format: ko_pane_wire::frame::ScreenFormat::Plain,
+        history: ko_pane_wire::frame::ScreenRows::Visible,
+    };
     let response = exchange(socket, &route, "")?;
     Ok(String::from_utf8_lossy(&response.body).into_owned())
 }
@@ -71,7 +71,11 @@ impl Typist {
         let body = json(&Input::Text {
             data: Text(text.to_vec()),
         });
-        send(&mut self.stream, &Route::Input(pane), body.as_bytes())?;
+        send(
+            &mut self.stream,
+            &Route::Input { id: pane },
+            body.as_bytes(),
+        )?;
         read_response(&mut self.stream).map(drop)
     }
 }
@@ -114,11 +118,15 @@ pub(crate) fn upgrade(socket: &Path, route: &Route) -> io::Result<Socket> {
 }
 
 pub(crate) fn open_view(socket: &Path, pane: PaneId, history: History) -> io::Result<Socket> {
-    let options = ViewOptions {
-        history,
-        images: Images::None,
-    };
-    upgrade(socket, &Route::View(pane, options, None))
+    upgrade(
+        socket,
+        &Route::View {
+            id: pane,
+            history,
+            images: Images::None,
+            offset: None,
+        },
+    )
 }
 
 impl Socket {

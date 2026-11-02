@@ -132,37 +132,46 @@ pub(crate) fn oversized(seen: usize) -> bool {
     seen > MAX_BODY
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Status {
-    SwitchingProtocols,
-    Ok,
-    BadRequest,
-    NotFound,
-    Conflict,
-    Gone,
-    PreconditionFailed,
-    LengthRequired,
-    UpgradeRequired,
-    HeadTooLarge,
-    Internal,
+macro_rules! statuses {
+    ($($name:ident = $code:literal $reason:literal),* $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub(crate) enum Status {
+            $($name = $code),*
+        }
+
+        impl Status {
+            pub(crate) const fn of(code: u16) -> Option<Status> {
+                match code {
+                    $($code => Some(Status::$name),)*
+                    _ => None,
+                }
+            }
+
+            pub(crate) fn code(self) -> u16 {
+                self as u16
+            }
+
+            pub(crate) fn reason(self) -> &'static str {
+                match self {
+                    $(Status::$name => $reason),*
+                }
+            }
+        }
+    };
 }
 
-impl Status {
-    fn line(self) -> &'static str {
-        match self {
-            Status::SwitchingProtocols => "101 Switching Protocols",
-            Status::Ok => "200 OK",
-            Status::BadRequest => "400 Bad Request",
-            Status::NotFound => "404 Not Found",
-            Status::Conflict => "409 Conflict",
-            Status::Gone => "410 Gone",
-            Status::PreconditionFailed => "412 Precondition Failed",
-            Status::LengthRequired => "411 Length Required",
-            Status::UpgradeRequired => "426 Upgrade Required",
-            Status::HeadTooLarge => "431 Request Header Fields Too Large",
-            Status::Internal => "500 Internal Server Error",
-        }
-    }
+statuses! {
+    SwitchingProtocols = 101 "Switching Protocols",
+    Ok = 200 "OK",
+    BadRequest = 400 "Bad Request",
+    NotFound = 404 "Not Found",
+    Conflict = 409 "Conflict",
+    Gone = 410 "Gone",
+    LengthRequired = 411 "Length Required",
+    PreconditionFailed = 412 "Precondition Failed",
+    UpgradeRequired = 426 "Upgrade Required",
+    HeadTooLarge = 431 "Request Header Fields Too Large",
+    Internal = 500 "Internal Server Error",
 }
 
 fn message<'a>(
@@ -186,7 +195,7 @@ fn message<'a>(
 
 pub(crate) fn response(status: Status, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
     message(
-        &format!("HTTP/1.1 {}", status.line()),
+        &format!("HTTP/1.1 {} {}", status.code(), status.reason()),
         headers.iter().copied(),
         body,
     )

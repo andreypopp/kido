@@ -3,6 +3,7 @@ use std::fmt::{self, Write};
 use std::io;
 use std::str::FromStr;
 
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +34,16 @@ macro_rules! id {
         impl $name {
             pub(crate) fn new(number: u64) -> $name {
                 $name(number)
+            }
+        }
+
+        impl JsonSchema for $name {
+            fn schema_name() -> Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(_: &mut SchemaGenerator) -> Schema {
+                json_schema!({"type": "string", "pattern": concat!("^", $prefix, "(0|[1-9][0-9]*)$")})
             }
         }
 
@@ -119,6 +130,16 @@ macro_rules! hex_id {
             }
         }
 
+        impl JsonSchema for $name {
+            fn schema_name() -> Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(_: &mut SchemaGenerator) -> Schema {
+                json_schema!({"type": "string", "pattern": "^[0-9a-f]{32}$"})
+            }
+        }
+
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(&self.0)
@@ -145,6 +166,20 @@ fn plain(text: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Name(String);
+
+impl JsonSchema for Name {
+    fn schema_name() -> Cow<'static, str> {
+        "Name".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "maxLength": MAX_NAME,
+            "description": format!("At most {MAX_NAME} bytes, without control characters.")
+        })
+    }
+}
 
 impl TryFrom<String> for Name {
     type Error = &'static str;
@@ -192,6 +227,21 @@ impl VarName {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl JsonSchema for VarName {
+    fn schema_name() -> Cow<'static, str> {
+        "VarName".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAX_NAME,
+            "description": format!("One to {MAX_NAME} bytes, without control characters.")
+        })
     }
 }
 

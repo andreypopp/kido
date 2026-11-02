@@ -9,12 +9,18 @@ socket, with WebSocket (RFC 6455) for the long-lived streams.
 - `ko_server/src/protocol.rs`: the HTTP and WebSocket JSON types and
   their codecs, request and response bodies, events, input events,
   markers, ids.
+- `ko_server/src/api.rs`: the routes, their methods, paths, query
+  parameters with their defaults, bodies, replies and extra statuses.
+- `share/ko/openapi.json`, generated from both by `ko api-schema`:
+  the authority for shapes outside the code. Each WebSocket route is
+  a `GET` operation with a `101` response and an `x-ko-websocket`
+  extension that names its send and receive messages.
 - `ko_pane_wire/src/frame.rs`: the frame kinds and their codec between
   the coordinator and `ko-pane`.
 - `ko_pane_wire/src/ring.rs`: the ring header and record layout.
 
-This document gives only what the code cannot say: the routes and what
-each does, the ordering, flow control, resume, snapshot, reconnect
+This document is the authority for behaviour. It gives only what the
+code and the schema cannot say: what each route does, the ordering, flow control, resume, snapshot, reconnect
 and security rules, the rationale, and the decisions. It repeats no
 field list, JSON example, byte layout or enum table. A message that a
 later stage adds is specified in that stage's plan ([s1.md](s1.md),
@@ -143,7 +149,9 @@ delete whose condition does not hold), `gone` (410, a closed client),
 `busy` (503),
 `io` (500), `unknown` (502, the prompt case: the effect may have
 happened, do not retry). The error type is `Error` in
-`ko_server/src/protocol.rs`.
+`ko_server/src/protocol.rs`. A route that takes no body refuses a
+request with a non-empty body as `invalid` (400), so a client error
+does not pass unseen.
 
 ## 3. Clients
 

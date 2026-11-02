@@ -1,3 +1,4 @@
+pub mod api;
 mod client;
 pub mod config;
 mod conn;
@@ -19,8 +20,10 @@ mod pane_status;
 mod panes;
 mod program_status;
 pub mod protocol;
+mod route;
 mod router;
 pub mod runs;
+pub mod schema;
 pub mod server;
 mod state;
 mod telemetry;

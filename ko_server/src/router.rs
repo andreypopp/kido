@@ -1,23 +1,28 @@
 use ko_sys::event::{Poll, Token};
 use serde::Serialize;
 
+use crate::api::{Offset, Request, Route, routes};
 use crate::client::Client;
-use crate::conn::{Conn, Payload, Phase, Request};
+use crate::conn::{Conn, Payload, Phase, Request as Incoming};
 use crate::http::{self, LAST_CHUNK, Status};
 use crate::ids::{ClientId, PaneId};
 use crate::link::{Link, Role};
 use crate::pane_proc::{Life, Refusal};
 use crate::protocol::{
-    self, DeleteVars, Empty, Error, ErrorKind, Input, PROTOCOL_HEADER, PasteResult, PutLayout,
-    ReportOutcome, Route, Selection, SendPrompt, StartRun, StopRun, VT_HEADER, check_version,
+    self, Empty, Error, ErrorKind, InputResult, PROTOCOL_HEADER, PasteResult, VT_HEADER,
+    check_version,
 };
+use crate::route::{self, Alt, Endpoint, Invalid};
 use crate::state::{Owner, PutFailure, SelectFailure, State};
 use crate::view::View;
 use crate::ws::{self, Ws};
 
-fn reply<T: Serialize>(conn: &mut Conn, result: Result<T, Error>) {
+fn reply<E: Endpoint>(conn: &mut Conn, result: Result<E::Reply, Error>)
+where
+    E::Reply: Serialize,
+{
     match result {
-        Ok(value) => ok(conn, &value),
+        Ok(value) => ok::<E>(conn, &value),
         Err(Error { kind, message }) => error(conn, kind, message),
     }
 }
@@ -34,8 +39,18 @@ fn respond(conn: &mut Conn, status: Status, body: &str) {
     ));
 }
 
-fn ok(conn: &mut Conn, value: &impl Serialize) {
+fn ok<E: Endpoint>(conn: &mut Conn, value: &E::Reply)
+where
+    E::Reply: Serialize,
+{
     respond(conn, Status::Ok, &protocol::json(value));
+}
+
+fn alt<E: Alt<CODE>, const CODE: u16>(conn: &mut Conn, body: &E::Body)
+where
+    E::Body: Serialize,
+{
+    respond(conn, E::STATUS, &protocol::json(body));
 }
 
 fn error(conn: &mut Conn, kind: ErrorKind, message: impl Into<String>) {
@@ -57,34 +72,21 @@ fn upgrade(state: &mut State, poll: &mut Poll, index: usize, response: Vec<u8>, 
     let _ = poll.start(conn.timer, ws::FIRST_PING, None);
 }
 
-fn body<T: serde::Serialize + serde::de::DeserializeOwned>(
-    conn: &mut Conn,
-    body: &Payload,
-) -> Option<T> {
-    match body {
-        Payload::Oversized => error(conn, ErrorKind::Invalid, "body exceeds 1 MiB"),
-        Payload::Bytes(bytes) => match protocol::decode(bytes) {
-            Ok(value) => return Some(value),
-            Err(message) => error(conn, ErrorKind::Invalid, message.to_string()),
-        },
-    }
-    None
-}
-
-pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: Request) {
-    let Request {
+pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming: Incoming) {
+    let Incoming {
         head,
         body: payload,
-    } = request;
+    } = incoming;
     let Some(conn) = state.conns.get_mut(index) else {
         return;
     };
     let route = match Route::of_request(&head.method, &head.target) {
-        Ok(route) => route,
+        Ok(route) => Some(route),
+        Err(Invalid::NoRoute) => None,
         Err(invalid) => return error(conn, ErrorKind::Invalid, invalid.to_string()),
     };
     let ours = protocol::version();
-    let discovery = route == Some(Route::Version);
+    let discovery = route == Some(Route::Version {});
     let protocol = head
         .header(PROTOCOL_HEADER)
         .or(discovery.then_some(ours.protocol.as_str()));
@@ -128,16 +130,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
             "resource not found",
         );
     };
-    if let Route::DeletePane(id)
-    | Route::ClearHistory(id)
-    | Route::Input(id)
-    | Route::Screen(id, ..)
-    | Route::View(id, ..)
-    | Route::Vars(id)
-    | Route::DeleteVars(id)
-    | Route::Var(id, _)
-    | Route::SetVar(id, _)
-    | Route::DeleteVar(id, _) = route
+    if let Some(id) = route.pane()
         && state.panes.find(id).is_none()
     {
         return error(
@@ -149,59 +142,61 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
     let Some(token) = state.token(index) else {
         return;
     };
-    match route {
-        Route::Version => ok(&mut state.conns[index], &ours),
-        Route::ListPanes => {
+    let bytes = match &payload {
+        Payload::Bytes(bytes) => Some(bytes.as_slice()),
+        Payload::Oversized => None,
+    };
+    let request = match route.with_body(bytes) {
+        Ok(request) => request,
+        Err(invalid) => {
+            return error(
+                &mut state.conns[index],
+                ErrorKind::Invalid,
+                invalid.to_string(),
+            );
+        }
+    };
+    match request {
+        Request::Version {} => ok::<routes::Version>(&mut state.conns[index], &ours),
+        Request::ListPanes {} => {
             let listing = state.listing();
-            ok(&mut state.conns[index], &listing);
+            ok::<routes::ListPanes>(&mut state.conns[index], &listing);
         }
-        Route::GetLayout => {
+        Request::GetLayout {} => {
             let snapshot = state.snapshot_layout();
-            ok(&mut state.conns[index], &snapshot);
+            ok::<routes::GetLayout>(&mut state.conns[index], &snapshot);
         }
-        Route::PutLayout => {
-            let Some(request) = body::<PutLayout>(&mut state.conns[index], &payload) else {
-                return;
-            };
-            match state.put_layout(poll, request) {
-                Ok(snapshot) => ok(&mut state.conns[index], &snapshot),
-                Err(PutFailure::Stale(snapshot)) => respond(
+        Request::PutLayout { body } => match state.put_layout(poll, body) {
+            Ok(snapshot) => ok::<routes::PutLayout>(&mut state.conns[index], &snapshot),
+            Err(PutFailure::Stale(snapshot)) => {
+                alt::<routes::PutLayout, 409>(&mut state.conns[index], &snapshot);
+            }
+            Err(failure) => {
+                reply::<routes::PutLayout>(&mut state.conns[index], Err(failure.into()));
+            }
+        },
+        Request::SelectClient { id, body } => match state.select_client(poll, id, body) {
+            Ok(()) => ok::<routes::SelectClient>(&mut state.conns[index], &Empty {}),
+            Err(SelectFailure::NoClient) => {
+                error(
                     &mut state.conns[index],
-                    Status::Conflict,
-                    &protocol::json(&snapshot),
-                ),
-                Err(failure) => {
-                    reply::<Empty>(&mut state.conns[index], Err(failure.into()));
-                }
+                    ErrorKind::Missing,
+                    "client not found",
+                );
             }
-        }
-        Route::SelectClient(id) => {
-            let Some(selection) = body::<Selection>(&mut state.conns[index], &payload) else {
-                return;
-            };
-            match state.select_client(poll, id, selection) {
-                Ok(()) => ok(&mut state.conns[index], &Empty {}),
-                Err(SelectFailure::NoClient) => {
-                    error(
-                        &mut state.conns[index],
-                        ErrorKind::Missing,
-                        "client not found",
-                    );
-                }
-                Err(SelectFailure::NoTarget) => {
-                    error(
-                        &mut state.conns[index],
-                        ErrorKind::Invalid,
-                        "nothing to select",
-                    );
-                }
+            Err(SelectFailure::NoTarget) => {
+                error(
+                    &mut state.conns[index],
+                    ErrorKind::Invalid,
+                    "nothing to select",
+                );
             }
-        }
-        Route::ClearHistory(id) => {
+        },
+        Request::ClearHistory { id } => {
             state.clear_history(poll, id);
-            ok(&mut state.conns[index], &Empty {});
+            ok::<routes::ClearHistory>(&mut state.conns[index], &Empty {});
         }
-        Route::Client => match ws::handshake(&head) {
+        Request::Client {} => match ws::handshake(&head) {
             None => error(
                 &mut state.conns[index],
                 ErrorKind::Invalid,
@@ -213,35 +208,24 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
                 state.read_ws(poll, index);
             }
         },
-        Route::DeletePane(id) => {
+        Request::DeletePane { id } => {
             state.delete_pane(poll, id);
-            ok(&mut state.conns[index], &Empty {});
+            ok::<routes::DeletePane>(&mut state.conns[index], &Empty {});
         }
-        Route::DeleteWindow(_) | Route::DeleteSession(_) => {
-            let (deleted, what) = match route {
-                Route::DeleteWindow(id) => (state.delete_window(poll, id), "window"),
-                Route::DeleteSession(id) => (state.delete_session(poll, id), "session"),
-                _ => return,
-            };
-            if deleted {
-                ok(&mut state.conns[index], &Empty {});
-            } else {
-                error(
-                    &mut state.conns[index],
-                    ErrorKind::Missing,
-                    format!("{what} not found"),
-                );
-            }
+        Request::DeleteWindow { id } => {
+            let deleted = state.delete_window(poll, id);
+            ok_or_missing::<routes::DeleteWindow>(&mut state.conns[index], deleted, "window");
         }
-        Route::Input(id) => {
-            let Some(input) = body::<Input>(&mut state.conns[index], &payload) else {
-                return;
-            };
+        Request::DeleteSession { id } => {
+            let deleted = state.delete_session(poll, id);
+            ok_or_missing::<routes::DeleteSession>(&mut state.conns[index], deleted, "session");
+        }
+        Request::Input { id, body } => {
             let (sent, events) =
-                state.input(poll, id, &input, |paste| Owner::HttpPaste(token, paste));
+                state.input(poll, id, &body, |paste| Owner::HttpPaste(token, paste));
             let conn = &mut state.conns[index];
             match sent {
-                Ok(None) => ok(conn, &Empty {}),
+                Ok(None) => ok::<routes::Input>(conn, &InputResult::Sent(Empty {})),
                 Ok(Some(_)) => conn.phase = Phase::Handling,
                 Err(Refusal::Ended) => error(conn, ErrorKind::Io, Refusal::Ended.to_string()),
                 Err(refusal @ Refusal::TooLarge(_)) => {
@@ -250,16 +234,20 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
             }
             state.dispatch(poll, id, events);
         }
-        Route::Screen(id, format, rows) => state.screen(poll, index, id, format, rows),
-        Route::Vars(id) => {
+        Request::Screen {
+            id,
+            format,
+            history,
+        } => state.screen(poll, index, id, format, history),
+        Request::Vars { id } => {
             if let Some(pane) = state.panes.find(id) {
-                ok(&mut state.conns[index], &pane.vars().all());
+                ok::<routes::Vars>(&mut state.conns[index], pane.vars());
             }
         }
-        Route::Var(id, name) => {
+        Request::Var { id, name } => {
             let value = state.panes.find(id).and_then(|pane| pane.vars().get(&name));
             match value {
-                Some(value) => ok(&mut state.conns[index], value),
+                Some(value) => ok::<routes::Var>(&mut state.conns[index], value),
                 None => error(
                     &mut state.conns[index],
                     ErrorKind::Missing,
@@ -267,27 +255,18 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
                 ),
             }
         }
-        Route::SetVar(id, name) => {
-            let value = match &payload {
-                Payload::Oversized => Err("variable too large".to_owned()),
-                Payload::Bytes(bytes) => serde_json::from_slice(bytes).map_err(|e| e.to_string()),
-            };
-            let set = value.and_then(|value| {
-                state
-                    .set_var(poll, id, name, value)
-                    .map_err(|refusal| refusal.to_string())
-            });
-            match set {
-                Ok(()) => ok(&mut state.conns[index], &Empty {}),
+        Request::SetVar { id, name, body } => {
+            match state
+                .set_var(poll, id, name, body.0)
+                .map_err(|refusal| refusal.to_string())
+            {
+                Ok(()) => ok::<routes::SetVar>(&mut state.conns[index], &Empty {}),
                 Err(message) => error(&mut state.conns[index], ErrorKind::Invalid, message),
             }
         }
-        Route::DeleteVars(id) => {
-            let Some(request) = body::<DeleteVars>(&mut state.conns[index], &payload) else {
-                return;
-            };
-            if state.delete_vars(poll, id, request) {
-                ok(&mut state.conns[index], &Empty {});
+        Request::DeleteVars { id, body } => {
+            if state.delete_vars(poll, id, body) {
+                ok::<routes::DeleteVars>(&mut state.conns[index], &Empty {});
             } else {
                 error(
                     &mut state.conns[index],
@@ -296,69 +275,62 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
                 );
             }
         }
-        Route::DeleteVar(id, name) => {
+        Request::DeleteVar { id, name } => {
             state.delete_var(poll, id, name);
-            ok(&mut state.conns[index], &Empty {});
+            ok::<routes::DeleteVar>(&mut state.conns[index], &Empty {});
         }
-        Route::StartRun => {
-            let Some(request) = body::<StartRun>(&mut state.conns[index], &payload) else {
-                return;
-            };
-            let result = state.start_run(poll, caller, request);
-            reply(&mut state.conns[index], result);
+        Request::StartRun { body } => {
+            let result = state.start_run(poll, caller, body);
+            reply::<routes::StartRun>(&mut state.conns[index], result);
         }
-        Route::ListRuns(show, parent) => {
+        Request::ListRuns { show, parent } => {
             let infos = state.list_runs(show, parent.as_ref());
-            ok(&mut state.conns[index], &infos);
+            ok::<routes::ListRuns>(&mut state.conns[index], &infos);
         }
-        Route::Reap => {
+        Request::Reap {} => {
             state.reap_runs(poll);
-            ok(&mut state.conns[index], &Empty {});
+            ok::<routes::Reap>(&mut state.conns[index], &Empty {});
         }
-        Route::GetRun(id) => {
+        Request::GetRun { id } => {
             let result = state.run_detail(&id);
-            reply(&mut state.conns[index], result);
+            reply::<routes::GetRun>(&mut state.conns[index], result);
         }
-        Route::WaitRun(id, timeout) => {
-            if let Some(result) = state.wait_run(poll, index, id, timeout) {
-                reply(&mut state.conns[index], result);
+        Request::WaitRun { id, timeout_ms } => {
+            if let Some(result) = state.wait_run(poll, index, id, timeout_ms.get()) {
+                reply::<routes::WaitRun>(&mut state.conns[index], result);
             }
         }
-        Route::RunOutcome(id) => {
-            let Some(report) = body::<ReportOutcome>(&mut state.conns[index], &payload) else {
-                return;
-            };
-            if let Some(result) = state.run_outcome(poll, index, id, report) {
-                reply(&mut state.conns[index], result);
+        Request::RunOutcome { id, body } => {
+            if let Some(result) = state.run_outcome(poll, index, id, body) {
+                reply::<routes::RunOutcome>(&mut state.conns[index], result);
             }
         }
-        Route::StopRun(id) => {
-            let Some(request) = body::<StopRun>(&mut state.conns[index], &payload) else {
-                return;
-            };
-            if let Some(result) = state.stop_run(poll, index, id, request) {
-                reply(&mut state.conns[index], result);
+        Request::StopRun { id, body } => {
+            if let Some(result) = state.stop_run(poll, index, id, body) {
+                reply::<routes::StopRun>(&mut state.conns[index], result);
             }
         }
-        Route::PromptResolve { window_only } => {
-            let result = state.resolve_prompt(caller, window_only);
-            reply(&mut state.conns[index], result);
+        Request::PromptResolve { window } => {
+            let result = state.resolve_prompt(caller, window.is_some());
+            reply::<routes::PromptResolve>(&mut state.conns[index], result);
         }
-        Route::SendPrompt => {
-            let Some(request) = body::<SendPrompt>(&mut state.conns[index], &payload) else {
-                return;
-            };
-            if let Some(result) = state.send_prompt(poll, index, caller, request) {
-                reply(&mut state.conns[index], result);
+        Request::SendPrompt { body } => {
+            if let Some(result) = state.send_prompt(poll, index, caller, body) {
+                reply::<routes::SendPrompt>(&mut state.conns[index], result);
             }
         }
-        Route::View(id, options, offset) => {
+        Request::View {
+            id,
+            history,
+            offset,
+            ..
+        } => {
             let opened = state
                 .panes
                 .find(id)
                 .filter(|pane| pane.proc().life() == Life::Open)
                 .and_then(|pane| pane.proc().delivery())
-                .map(|delivery| View::new(id, client, options.history, delivery));
+                .map(|delivery| View::new(id, client, history, delivery));
             let Some(view) = opened else {
                 return error(
                     &mut state.conns[index],
@@ -374,9 +346,17 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, request: 
                 );
             };
             upgrade(state, poll, index, response, Role::View(view));
-            state.open_view(poll, index, offset);
+            state.open_view(poll, index, offset.map(Offset::get));
             state.read_ws(poll, index);
         }
+    }
+}
+
+fn ok_or_missing<E: Endpoint<Reply = Empty>>(conn: &mut Conn, found: bool, what: &str) {
+    if found {
+        ok::<E>(conn, &Empty {});
+    } else {
+        error(conn, ErrorKind::Missing, format!("{what} not found"));
     }
 }
 
@@ -391,12 +371,12 @@ fn finish(state: &mut State, poll: &mut Poll, conn: Token, reply: impl FnOnce(&m
     }
 }
 
-pub(crate) fn screen(
+pub(crate) fn screen<E: Endpoint<Reply = route::text>>(
     state: &mut State,
     poll: &mut Poll,
     conn: Token,
     started: bool,
-    text: &[u8],
+    chunk: &[u8],
     last: bool,
 ) {
     let mut out = Vec::new();
@@ -410,7 +390,7 @@ pub(crate) fn screen(
             b"",
         );
     }
-    http::chunk(text, &mut out);
+    http::chunk(chunk, &mut out);
     if last {
         out.extend_from_slice(LAST_CHUNK);
         finish(state, poll, conn, |conn| conn.out.send(out));
@@ -419,17 +399,21 @@ pub(crate) fn screen(
     }
 }
 
-pub(crate) fn answer<T: Serialize>(
+pub(crate) fn answer<E: Endpoint>(
     state: &mut State,
     poll: &mut Poll,
     conn: Token,
-    result: Result<T, Error>,
-) {
-    finish(state, poll, conn, |conn| reply(conn, result));
+    result: Result<E::Reply, Error>,
+) where
+    E::Reply: Serialize,
+{
+    finish(state, poll, conn, |conn| reply::<E>(conn, result));
 }
 
-pub(crate) fn pasted(state: &mut State, poll: &mut Poll, conn: Token, result: &PasteResult) {
-    finish(state, poll, conn, |conn| ok(conn, result));
+pub(crate) fn pasted(state: &mut State, poll: &mut Poll, conn: Token, result: PasteResult) {
+    finish(state, poll, conn, |conn| {
+        ok::<routes::Input>(conn, &InputResult::Pasted(result));
+    });
 }
 
 pub(crate) fn failed(
@@ -1318,7 +1302,11 @@ mod tests {
 
     impl Harness {
         fn call(&mut self, request: &str, body: &Value) -> (String, Value) {
-            let body = body.to_string();
+            let body = if body.is_null() {
+                String::new()
+            } else {
+                body.to_string()
+            };
             let reply = self.reply(
                 request,
                 &format!("Content-Length: {}\r\n\r\n{body}", body.len()),
@@ -1484,7 +1472,11 @@ mod tests {
     }
 
     fn prompt_call(server: &mut Harness, request: &str, body: &Value) -> (String, Value) {
-        let body = body.to_string();
+        let body = if body.is_null() {
+            String::new()
+        } else {
+            body.to_string()
+        };
         let reply = server.reply(
             request,
             &format!(

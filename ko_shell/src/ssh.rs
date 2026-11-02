@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ko_client::api;
+use ko_server::api::Route;
 use ko_server::ids::{PaneId, VarName};
-use ko_server::protocol::Route;
 use serde_json::json;
 
 use crate::prime::ssh_bootstrap;
@@ -160,17 +160,35 @@ fn mark(pane: &Pane, parsed: Option<&SshArgs>) {
     let requests = [
         match parsed {
             Some(parsed) => (
-                Route::SetVar(pane.id, dest),
+                Route::SetVar {
+                    id: pane.id,
+                    name: dest,
+                },
                 json!(parsed.dest).to_string().into_bytes(),
             ),
-            None => (Route::DeleteVar(pane.id, dest), Vec::new()),
+            None => (
+                Route::DeleteVar {
+                    id: pane.id,
+                    name: dest,
+                },
+                Vec::new(),
+            ),
         },
         match parsed.and_then(connection_args) {
             Some(connection) => (
-                Route::SetVar(pane.id, extra),
+                Route::SetVar {
+                    id: pane.id,
+                    name: extra,
+                },
                 json!(connection).to_string().into_bytes(),
             ),
-            None => (Route::DeleteVar(pane.id, extra), Vec::new()),
+            None => (
+                Route::DeleteVar {
+                    id: pane.id,
+                    name: extra,
+                },
+                Vec::new(),
+            ),
         },
     ];
     let deadline = Instant::now() + MARK_DEADLINE;

@@ -342,7 +342,8 @@ These requirements are fixed:
   the end of the source.
 - **Dependencies.** The production crates are `libc`, `httparse`,
   `tungstenite` (feature `handshake` only), `serde` (`derive`),
-  `serde_json`, `vte` and `clap` (`default-features = false`, with
+  `serde_json`, `schemars` (`default-features = false`, with
+  `derive` only), `vte` and `clap` (`default-features = false`, with
   exactly `std`, `derive`, `help`, `usage` and `error-context`),
   and `vstd` and `verus_state_machines_macros` in `ko_pane_wire`
   and `vstd` in `ko_server`, pinned with `=` to the crates version of `scripts/verus.sh`
@@ -562,7 +563,28 @@ Conventions:
   input's shape with the re-encoded value. Do not write a codec by hand, and do not walk a
   `serde_json::Value` to decode a wire type. Catch a decode error only
   at an untrusted-input edge: an HTTP body or a WebSocket text
-  message.
+  message. Every wire type derives `JsonSchema` (schemars). A type
+  with a `try_from` codec writes its `JsonSchema` by hand, with the
+  pattern or range that its `TryFrom` checks. A range that a `///`
+  states is also a `#[schemars(range(...))]`.
+- **Routes.** `ko_server::api` declares every route in one
+  `routes!` block (the macro is in `ko_server::route`). The block
+  generates `Route` (path and query, parsed from the head before the
+  body), `Request` (the route with its decoded body), one marker type
+  for each route in `routes::` and `ROUTES`, the catalog from which
+  `ko_server::schema` builds the OpenAPI document of `ko api-schema`. A query or path parameter type implements
+  `Param`, and its validation (the wait cap, a range) is in that type,
+  not in the router. `router.rs` matches `Request` exhaustively and
+  replies through `ok::<routes::X>` and `alt::<routes::X, STATUS>`, so
+  a reply that the declaration does not name does not compile. To add
+  a route: add its block with its `///` doc (the OpenAPI description),
+  add the arm in `router.rs`, then run `make schemas`. `make schemas`
+  (`scripts/lint.sh --update-schemas`) rewrites
+  `share/ko/openapi.json` from `ko api-schema` and
+  `share/pi/ko-api.d.ts` from it through openapi-typescript (pinned
+  in `share/pi/package.json`). lint fails when either file differs
+  from the generated output. `ko-pi.ts` takes its HTTP and `/client`
+  shapes from `ko-api.d.ts` and writes none by hand.
 - **HTTP.** `ko_server::http` is the only code that reads or writes
   HTTP framing, for the server and for the client. httparse parses
   heads. A request head has a limit of 16 KiB of bytes; a longer head
@@ -1305,6 +1327,7 @@ Thus, `scripts/ci-like/Dockerfile` sets a relative one.
     make build-bench  the C helpers of bench/ in build/bench/, after build-ko
     make test    dune test --force, ko's e2e suite and scripts/test-ts.sh (including scripts/lint.sh)
     make prompts regenerate the prompt fixtures through scripts/lint.sh --update-prompts
+    make schemas regenerate share/ko/openapi.json and share/pi/ko-api.d.ts through scripts/lint.sh --update-schemas
     make e2e     builds the pinned fork and runs the e2e suite
     make flake RUN=TestFoo COUNT=20  repeat one e2e test in the scrubbed environment
     make fuzz TARGET=ring TIME=600  one time-boxed ko fuzz run, for CI or the user; no TARGET lists the targets

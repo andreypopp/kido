@@ -13,15 +13,14 @@ use ko_vt::{Extent, Format, Terminal};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 
+use crate::api::{Offset, Route};
 use crate::config::DEFAULT_LIMITS;
 use crate::conn::Phase;
 use crate::fuzz::Rig;
 use crate::http::{Response, read_response, request};
 use crate::link::Role;
 use crate::pane_proc::{Cause, Life};
-use crate::protocol::{
-    self, Images, Marker, Route, ViewEvent, ViewOptions, ViewRequest, version_headers,
-};
+use crate::protocol::{self, Images, Marker, ViewEvent, ViewOptions, ViewRequest, version_headers};
 use crate::server::Verified;
 use crate::ws::{BadRecord, Frame, Record, masked, parse_frame, parse_record};
 
@@ -960,14 +959,12 @@ impl Harness {
         let token = self.rig.state.conns.last().unwrap().token;
         send_request(
             &mut theirs,
-            &Route::View(
-                self.rig.pane,
-                ViewOptions {
-                    history,
-                    images: Images::None,
-                },
-                offset,
-            ),
+            &Route::View {
+                id: self.rig.pane,
+                history,
+                images: Images::None,
+                offset: offset.and_then(Offset::new),
+            },
             &[
                 ("upgrade", "websocket"),
                 ("connection", "Upgrade"),
@@ -1013,7 +1010,11 @@ impl Harness {
         self.rig
             .state
             .accept(&mut self.rig.poll, Verified::admit(ours).unwrap());
-        let route = Route::Screen(self.rig.pane, ScreenFormat::Plain, rows);
+        let route = Route::Screen {
+            id: self.rig.pane,
+            format: ScreenFormat::Plain,
+            history: rows,
+        };
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
             theirs

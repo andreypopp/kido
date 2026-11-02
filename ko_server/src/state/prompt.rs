@@ -1,6 +1,7 @@
 use ko_pane_wire::frame::{Key, KeyAction, KeyCode};
 
 use super::*;
+use crate::api::routes;
 use crate::ids::WindowId;
 use crate::msg::{self, Delivery, Step};
 use crate::pane_kind::{self, Kind, RUN, RemoteKind};
@@ -234,7 +235,7 @@ impl State {
         } else {
             Err(Error::new(ErrorKind::Io, "no Enter key"))
         };
-        router::answer(self, poll, conn, reply);
+        router::answer::<routes::SendPrompt>(self, poll, conn, reply);
     }
 
     pub(super) fn prompt_ready(&mut self, poll: &mut Poll, ready: Ready) -> bool {
@@ -278,7 +279,7 @@ impl State {
             let reply = result
                 .map(|()| Sent { via: Via::Inbox })
                 .map_err(|failure| inbox_error(&name, failure));
-            router::answer(self, poll, conn, reply);
+            router::answer::<routes::SendPrompt>(self, poll, conn, reply);
         }
     }
 }

@@ -5,9 +5,9 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use ko_server::api::Route;
 use ko_server::http::{self, Response, call};
 use ko_server::ids::{ClientId, PaneId};
-use ko_server::protocol::Route;
 use ko_server::ws::{accepted, upgrade_request};
 use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token};
 use ko_sys::fd::{self, Queue};

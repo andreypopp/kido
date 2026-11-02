@@ -5,10 +5,11 @@ use std::time::Duration;
 
 use clap::{Args, ValueEnum};
 use ko_client::runs::{self, Failure};
+use ko_server::api::WaitMs;
 use ko_server::ids::{PaneId, RunId};
 use ko_server::protocol::{
     self, Error, ErrorKind, Info, ReportOutcome, Reported, SendPrompt, SessionRef, Show, StartRun,
-    StopResult, StopRun, Variable, WAIT_MAX_MS,
+    StopResult, StopRun, Variable,
 };
 use ko_server::runs::{Parent, RunName, RunOutcome};
 use ko_server::timestamp::Timestamp;
@@ -148,11 +149,11 @@ fn seconds(text: &str) -> Result<Duration, String> {
     text.parse::<f64>()
         .ok()
         .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
-        .filter(|wait| wait.as_millis() <= u128::from(WAIT_MAX_MS))
+        .filter(|wait| wait.as_millis() <= u128::from(WaitMs::MAX.get()))
         .ok_or_else(|| {
             format!(
                 "{text:?} is not a number of seconds from 0 to {}",
-                WAIT_MAX_MS / 1000
+                WaitMs::MAX.get() / 1000
             )
         })
 }
@@ -502,7 +503,7 @@ pub(crate) fn run_stop(args: RunStopArgs) -> ExitCode {
         Err(code) => return code,
     };
     let request = StopRun {
-        wait_ms: u64::try_from(args.wait.as_millis()).unwrap_or(WAIT_MAX_MS),
+        wait_ms: u64::try_from(args.wait.as_millis()).unwrap_or(WaitMs::MAX.get()),
         result: match args.result {
             StopChoice::Stopped => StopResult::Stopped,
             StopChoice::Completed => StopResult::Completed,

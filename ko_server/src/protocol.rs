@@ -1,12 +1,12 @@
-use std::fmt;
+use std::borrow::Cow;
 use std::num::{NonZeroU16, NonZeroUsize};
 
 use ko_pane_wire::frame::{
-    self, CellPx, Dim, History, KeyAction, KeyCode, MouseAction, MouseButton, ScreenFormat,
-    ScreenRows,
+    self, CellPx, Dim, History, KeyAction, KeyCode, MouseAction, MouseButton,
 };
 use ko_pane_wire::ring;
 use ko_sys::pid::Exit;
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::de::{self, DeserializeOwned};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,6 +15,7 @@ use crate::config::BUILD;
 use crate::http::Status;
 use crate::ids::{ClientId, Instance, Name, PaneId, RunId, SessionId, VarName, WindowId};
 use crate::pane_proc::{self, Death};
+use crate::route::{Body, Invalid};
 use crate::runs::{Meta, Parent, RunName, RunOutcome, RunResult};
 use crate::timestamp::Timestamp;
 use crate::vars::{Loose, Vars};
@@ -22,7 +23,6 @@ use crate::vars::{Loose, Vars};
 const PROTOCOL: &str = "1.0";
 const PROTOCOL_MAJOR: &str = "1";
 const VT: &str = env!("KO_VT");
-const MAX_OFFSET: u64 = (1 << 62) - 1;
 
 pub(crate) const PROTOCOL_HEADER: &str = "ko-protocol";
 pub(crate) const VT_HEADER: &str = "ko-vt";
@@ -67,7 +67,7 @@ pub fn json(value: &impl Serialize) -> String {
     serde_json::to_string(value).unwrap_or_default()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Version {
     pub protocol: String,
     pub vt: String,
@@ -82,7 +82,7 @@ pub fn version() -> Version {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ErrorKind {
     Invalid,
@@ -110,7 +110,7 @@ impl ErrorKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Error {
     #[serde(flatten)]
     pub kind: ErrorKind,
@@ -126,7 +126,7 @@ impl Error {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Empty {}
 
 pub(crate) fn check_version(protocol: Option<&str>, vt: Option<&str>) -> Result<(), Error> {
@@ -152,22 +152,29 @@ pub(crate) fn check_version(protocol: Option<&str>, vt: Option<&str>) -> Result<
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "CellPixels")]
 struct RawCellPx {
+    #[schemars(range(min = 1))]
     width: u16,
+    #[schemars(range(min = 1))]
     height: u16,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "Size")]
 struct RawSize {
+    #[schemars(range(min = 1, max = 4096))]
     cols: u16,
+    #[schemars(range(min = 1, max = 4096))]
     rows: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cell_px: Option<CellPixels>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "RawSize", into = "RawSize")]
+#[schemars(with = "RawSize")]
 pub struct Size(pub frame::Size);
 
 impl TryFrom<RawSize> for Size {
@@ -192,7 +199,7 @@ impl From<Size> for RawSize {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Cause {
     Exited { code: i32 },
@@ -200,7 +207,7 @@ pub enum Cause {
     Failed { message: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Dead {
     pub at: u64,
     pub cause: Cause,
@@ -229,7 +236,7 @@ impl From<&Death> for Dead {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProgramKind {
     Permission,
@@ -237,7 +244,7 @@ pub enum ProgramKind {
     Auth,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ProgramState {
     Idle,
@@ -255,7 +262,7 @@ pub enum ProgramState {
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProgramRecord {
     pub id: String,
     #[serde(flatten)]
@@ -268,26 +275,26 @@ pub struct ProgramRecord {
     pub msg: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProgramStatus {
     pub serial: u64,
     pub records: Vec<ProgramRecord>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum OutcomeResult {
     Success,
     Failure,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Outcome {
     pub serial: u64,
     pub result: OutcomeResult,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentState {
     Running {
@@ -306,7 +313,7 @@ pub enum AgentState {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Agent {
     pub since: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -314,7 +321,7 @@ pub struct Agent {
     pub state: AgentState,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CommandExit {
     pub code: i32,
     pub command: String,
@@ -322,14 +329,14 @@ pub struct CommandExit {
     pub ended_at: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Origin {
     Unknown,
     Command { command: String, started_at: u64 },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Phase {
     Unknown,
@@ -343,7 +350,7 @@ pub enum Phase {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Shell {
     pub phase: Phase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -366,14 +373,14 @@ impl Shell {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Remote {
     Terminal { interactive: bool, status: Shell },
     Agent { name: String, status: Agent },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Live {
     Terminal(Shell),
@@ -407,7 +414,7 @@ impl Live {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PaneStatus {
     pub kind: Live,
     pub program_status: ProgramStatus,
@@ -419,13 +426,13 @@ pub struct PaneStatus {
     pub since: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Foreground {
     pub pid: u32,
     pub name: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProgressState {
     Set,
@@ -434,20 +441,21 @@ pub enum ProgressState {
     Pause,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Progress {
     pub state: ProgressState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Row {
     pub id: PaneId,
     pub pid: i32,
     pub command: Vec<String>,
     pub cwd: String,
     pub title: String,
+    #[schemars(extend("x-always-sent" = true))]
     pub dead: Option<Dead>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground: Option<Foreground>,
@@ -457,15 +465,16 @@ pub struct Row {
     pub progress: Option<Progress>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Listing {
     #[serde(flatten)]
     pub row: Row,
     #[serde(default)]
+    #[schemars(extend("x-always-sent" = true))]
     pub vars: Vars,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PasteResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<u64>,
@@ -474,27 +483,34 @@ pub struct PasteResult {
     pub unsafe_paste: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(remote = "KeyAction", rename_all = "lowercase")]
+#[schemars(rename = "KeyAction")]
 enum KeyActionDef {
     Release,
     Press,
     Repeat,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "Key")]
 struct RawKey {
     #[serde(with = "KeyActionDef")]
+    #[schemars(with = "KeyActionDef")]
     action: KeyAction,
+    #[schemars(range(max = 175))]
     key: u16,
     mods: u16,
+    #[schemars(range(max = 1_114_111))]
+    #[schemars(description = "A Unicode scalar value: no surrogate, 0xD800 to 0xDFFF.")]
     unshifted_codepoint: u32,
     text: String,
     composing: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "RawKey", into = "RawKey")]
+#[schemars(with = "RawKey")]
 pub struct Key(pub frame::Key);
 
 impl TryFrom<RawKey> for Key {
@@ -525,16 +541,18 @@ impl From<Key> for RawKey {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(remote = "MouseAction", rename_all = "lowercase")]
+#[schemars(rename = "MouseAction")]
 enum MouseActionDef {
     Press,
     Release,
     Motion,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(remote = "MouseButton", rename_all = "lowercase")]
+#[schemars(rename = "MouseButton")]
 enum MouseButtonDef {
     Unknown,
     Left,
@@ -550,22 +568,26 @@ enum MouseButtonDef {
     Eleven,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(remote = "frame::Mouse")]
+#[schemars(rename = "Mouse")]
 struct MouseDef {
     #[serde(with = "MouseActionDef")]
+    #[schemars(with = "MouseActionDef")]
     action: MouseAction,
     #[serde(with = "MouseButtonDef")]
+    #[schemars(with = "MouseButtonDef")]
     button: MouseButton,
     col: u16,
     row: u16,
     mods: u16,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[schemars(with = "MouseDef")]
 pub struct Mouse(#[serde(with = "MouseDef")] pub frame::Mouse);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Paste {
     pub text: String,
     pub check_safe: bool,
@@ -623,9 +645,22 @@ pub fn base64_encode(bytes: &[u8]) -> String {
     out
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "String", into = "String")]
+#[schemars(with = "Base64")]
 pub struct Text(pub Vec<u8>);
+
+struct Base64;
+
+impl JsonSchema for Base64 {
+    fn schema_name() -> Cow<'static, str> {
+        "Base64".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "string", "contentEncoding": "base64"})
+    }
+}
 
 impl TryFrom<String> for Text {
     type Error = &'static str;
@@ -641,7 +676,7 @@ impl From<Text> for String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Input {
     Key(Key),
@@ -664,20 +699,20 @@ impl<'a> From<&'a Input> for pane_proc::Input<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
     Argv { argv: Vec<String> },
     Shell { command: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Variable {
     pub name: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CreatePane {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
@@ -692,6 +727,16 @@ pub struct CreatePane {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "u16", into = "u16")]
 pub struct Cells(Dim);
+
+impl JsonSchema for Cells {
+    fn schema_name() -> Cow<'static, str> {
+        "Cells".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "integer", "minimum": Dim::MIN.get(), "maximum": Dim::MAX.get()})
+    }
+}
 
 impl Cells {
     pub fn new(count: u16) -> Option<Cells> {
@@ -734,7 +779,9 @@ impl From<Cells> for u16 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(transparent)]
 pub struct Revision(u64);
 
@@ -750,8 +797,9 @@ impl Revision {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "RawCellPx", into = "RawCellPx")]
+#[schemars(with = "RawCellPx")]
 pub struct CellPixels(pub CellPx);
 
 impl TryFrom<RawCellPx> for CellPixels {
@@ -774,7 +822,7 @@ impl From<CellPixels> for RawCellPx {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum Axis {
     #[serde(rename = "h")]
     Horizontal,
@@ -782,21 +830,22 @@ pub enum Axis {
     Vertical,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
+#[schemars(rename = "{L}Node")]
 pub enum Node<L> {
     Split { split: Axis, children: Vec<Node<L>> },
     Leaf(L),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Leaf {
     pub pane: PaneId,
     pub cols: Cells,
     pub rows: Cells,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Float {
     pub pane: PaneId,
     pub x: u16,
@@ -808,7 +857,7 @@ pub struct Float {
     pub title: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Window {
     pub id: WindowId,
     pub name: Name,
@@ -824,7 +873,7 @@ pub struct Window {
     pub floats: Vec<Float>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Session {
     pub id: SessionId,
     pub name: Name,
@@ -832,25 +881,25 @@ pub struct Session {
     pub windows: Vec<Window>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Layout {
     pub sessions: Vec<Session>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Snapshot {
     pub revision: Revision,
     pub layout: Layout,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum PaneRef {
     Existing(PaneId),
     New { new: CreatePane },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DraftLeaf {
     pub pane: PaneRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -859,7 +908,7 @@ pub struct DraftLeaf {
     pub rows: Option<Cells>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DraftFloat {
     pub pane: PaneRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -878,7 +927,7 @@ pub struct DraftFloat {
     pub title: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DraftWindow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<WindowId>,
@@ -899,7 +948,7 @@ pub struct DraftWindow {
     pub floats: Vec<DraftFloat>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DraftSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<SessionId>,
@@ -909,7 +958,7 @@ pub struct DraftSession {
     pub windows: Vec<DraftWindow>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DraftLayout {
     pub sessions: Vec<DraftSession>,
 }
@@ -947,7 +996,7 @@ impl DraftSession {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PutLayout {
     pub revision: Revision,
     pub layout: DraftLayout,
@@ -1109,14 +1158,15 @@ impl From<&Layout> for DraftLayout {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(remote = "History", rename_all = "lowercase")]
-enum HistoryDef {
+#[schemars(rename = "History")]
+pub(crate) enum HistoryDef {
     None,
     All,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Images {
     #[default]
@@ -1127,15 +1177,16 @@ fn no_history() -> History {
     History::None
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ViewOptions {
     #[serde(with = "HistoryDef", default = "no_history")]
+    #[schemars(with = "HistoryDef")]
     pub history: History,
     #[serde(default)]
     pub images: Images,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Marker {
     Resize(Size),
@@ -1154,14 +1205,14 @@ impl From<ring::Marker> for Marker {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ClientKind {
     Terminal,
     App,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Hello {
     pub kind: ClientKind,
     pub name: String,
@@ -1173,7 +1224,7 @@ pub struct Hello {
     pub ignore_size: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Selection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionId>,
@@ -1183,27 +1234,27 @@ pub struct Selection {
     pub pane: Option<PaneId>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Over {
     Session,
     Window,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Direction {
     Next,
     Previous,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Switch {
     pub over: Over,
     pub direction: Direction,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientRequest {
     Hello(Hello),
@@ -1213,14 +1264,14 @@ pub enum ClientRequest {
     Focused { focused: bool },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ViewRequest {
     Resync(ViewOptions),
     Input { input: Input },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub(crate) struct Bounds {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) max_bytes: Option<NonZeroUsize>,
@@ -1228,14 +1279,14 @@ pub(crate) struct Bounds {
     pub(crate) max_lines: Option<NonZeroUsize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum Scrollback {
     Disabled,
     Scrollback(Bounds),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Terminal {
     pub(crate) scrollback: Scrollback,
     pub(crate) apc_max_bytes: usize,
@@ -1243,18 +1294,20 @@ pub struct Terminal {
     pub(crate) continuation_max_bytes: usize,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(remote = "frame::Medium", rename_all = "snake_case")]
+#[schemars(rename = "Medium")]
 enum MediumDef {
     File,
     TempFile,
     SharedMem,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[schemars(with = "MediumDef")]
 pub(crate) struct Medium(#[serde(with = "MediumDef")] pub(crate) frame::Medium);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Limits {
     pub terminal: Terminal,
     pub(crate) media: Vec<Medium>,
@@ -1300,7 +1353,7 @@ impl Terminal {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Welcome {
     pub client: ClientId,
     pub limits: Limits,
@@ -1308,32 +1361,32 @@ pub struct Welcome {
     pub now: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Title {
     pub pane: PaneId,
     pub title: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Pwd {
     pub(crate) pane: PaneId,
     pub(crate) pwd: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PaneDead {
     pub pane: PaneId,
     pub dead: Dead,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StatusChange {
     pub pane: PaneId,
     pub status: PaneStatus,
     pub now: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientEvent {
     Welcome(Welcome),
@@ -1367,12 +1420,13 @@ pub enum ClientEvent {
     },
     Progress {
         pane: PaneId,
+        #[schemars(extend("x-always-sent" = true))]
         progress: Option<Progress>,
     },
     Run(RunEvent),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunEvent {
     pub id: RunId,
     pub name: RunName,
@@ -1398,7 +1452,7 @@ impl RunEvent {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Show {
     Live,
@@ -1406,13 +1460,7 @@ pub enum Show {
     All,
 }
 
-const SHOWS: [(Show, &str); 3] = [
-    (Show::Live, "live"),
-    (Show::Present, "present"),
-    (Show::All, "all"),
-];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Reported {
     Completed,
@@ -1430,7 +1478,7 @@ impl From<Reported> for RunResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Info {
     #[serde(flatten)]
     pub meta: Meta,
@@ -1441,7 +1489,7 @@ pub struct Info {
     pub outcome: Option<RunOutcome>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Detail {
     #[serde(flatten)]
     pub info: Info,
@@ -1454,6 +1502,19 @@ pub struct Detail {
 pub enum SessionRef {
     Id(SessionId),
     Name(Name),
+}
+
+impl JsonSchema for SessionRef {
+    fn schema_name() -> Cow<'static, str> {
+        "SessionRef".into()
+    }
+
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "anyOf": [generator.subschema_for::<SessionId>(), generator.subschema_for::<Name>()],
+            "description": "A session id, or the name of a session."
+        })
+    }
 }
 
 impl TryFrom<String> for SessionRef {
@@ -1476,7 +1537,7 @@ impl From<SessionRef> for String {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StartRun {
     pub name: RunName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1490,7 +1551,7 @@ pub struct StartRun {
     pub argv: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Started {
     pub id: RunId,
     pub window: WindowId,
@@ -1498,47 +1559,47 @@ pub struct Started {
     pub output: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Waited {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<RunOutcome>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ReportOutcome {
     pub result: Reported,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub text: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StopResult {
     Stopped,
     Completed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StopRun {
     #[serde(default)]
     pub wait_ms: u64,
     pub result: StopResult,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VarCondition {
     pub name: VarName,
     pub value: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DeleteVars {
     pub names: Vec<VarName>,
     #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
     pub condition: Option<VarCondition>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Candidate {
     pub pane: PaneId,
     pub session: SessionId,
@@ -1546,38 +1607,38 @@ pub struct Candidate {
     pub title: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SendPrompt {
     pub target: PaneId,
     pub text: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Via {
     Inbox,
     Paste,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Sent {
     pub via: Via,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Marked {
     pub offset: u64,
     pub marker: Marker,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Skipped {
     pub offset: u64,
     pub from: u64,
     pub to: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ViewEvent {
     Marked(Marked),
@@ -1585,308 +1646,23 @@ pub enum ViewEvent {
     Pasted(PasteResult),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Invalid(&'static str);
-
-impl fmt::Display for Invalid {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.0)
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub(crate) enum InputResult {
+    Pasted(PasteResult),
+    Sent(Empty),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Route {
-    Version,
-    ListPanes,
-    GetLayout,
-    PutLayout,
-    Client,
-    SelectClient(ClientId),
-    DeletePane(PaneId),
-    DeleteWindow(WindowId),
-    DeleteSession(SessionId),
-    ClearHistory(PaneId),
-    Input(PaneId),
-    Screen(PaneId, ScreenFormat, ScreenRows),
-    View(PaneId, ViewOptions, Option<u64>),
-    Vars(PaneId),
-    Var(PaneId, VarName),
-    SetVar(PaneId, VarName),
-    DeleteVar(PaneId, VarName),
-    DeleteVars(PaneId),
-    StartRun,
-    ListRuns(Show, Option<Parent>),
-    Reap,
-    GetRun(RunId),
-    WaitRun(RunId, u64),
-    RunOutcome(RunId),
-    StopRun(RunId),
-    PromptResolve { window_only: bool },
-    SendPrompt,
-}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub(crate) struct VarValue(pub(crate) Value);
 
-pub const WAIT_DEFAULT_MS: u64 = 30_000;
-pub const WAIT_MAX_MS: u64 = 3_600_000;
+impl Body for VarValue {
+    const OVERSIZED: &'static str = "variable too large";
 
-fn percent_decode(text: &str) -> Option<String> {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut at = 0;
-    while let Some(&byte) = bytes.get(at) {
-        if byte == b'%' {
-            let hex = text.get(at + 1..at + 3)?;
-            out.push(u8::from_str_radix(hex, 16).ok()?);
-            at += 3;
-        } else {
-            out.push(byte);
-            at += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
-fn percent_encode(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for byte in text.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
-            out.push(char::from(byte));
-        } else {
-            out.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    out
-}
-
-fn natural(value: &str, max: u64) -> Result<u64, Invalid> {
-    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(Invalid("invalid number"));
-    }
-    value
-        .parse()
-        .ok()
-        .filter(|&number| number <= max)
-        .ok_or(Invalid("invalid number"))
-}
-
-impl Route {
-    pub fn websocket(&self) -> bool {
-        matches!(self, Route::Client | Route::View(..))
-    }
-
-    pub fn of_request(method: &str, target: &str) -> Result<Option<Route>, Invalid> {
-        let mut parts = target.split('?');
-        let path = parts.next().unwrap_or_default();
-        let query = parts.next();
-        if parts.next().is_some() {
-            return Err(Invalid("invalid target"));
-        }
-        let args: Vec<(&str, &str)> = match query {
-            None => Vec::new(),
-            Some(query) => query
-                .split('&')
-                .map(|pair| {
-                    let mut sides = pair.split('=');
-                    match (sides.next(), sides.next(), sides.next()) {
-                        (Some(key), Some(value), None) => Ok((key, value)),
-                        _ => Err(Invalid("invalid query")),
-                    }
-                })
-                .collect::<Result<_, _>>()?,
-        };
-        let arg = |name: &str| {
-            args.iter()
-                .find(|(key, _)| *key == name)
-                .map(|(_, value)| *value)
-        };
-        let segments: Vec<&str> = path.split('/').collect();
-        Ok(match (method, segments.as_slice()) {
-            ("GET", ["", "version"]) => Some(Route::Version),
-            ("GET", ["", "panes"]) => Some(Route::ListPanes),
-            ("GET", ["", "layout"]) => Some(Route::GetLayout),
-            ("PUT", ["", "layout"]) => Some(Route::PutLayout),
-            ("GET", ["", "client"]) => Some(Route::Client),
-            ("POST", ["", "clients", id, "select"]) => id.parse().ok().map(Route::SelectClient),
-            ("DELETE", ["", "windows", id]) => id.parse().ok().map(Route::DeleteWindow),
-            ("DELETE", ["", "sessions", id]) => id.parse().ok().map(Route::DeleteSession),
-            ("POST", ["", "runs"]) => Some(Route::StartRun),
-            ("GET", ["", "runs"]) => {
-                let show = match arg("show") {
-                    None => Show::Live,
-                    Some(name) => SHOWS
-                        .iter()
-                        .find(|(_, known)| *known == name)
-                        .map(|(show, _)| *show)
-                        .ok_or(Invalid("invalid show"))?,
-                };
-                let parent = arg("parent")
-                    .map(|parent| parent.parse().map_err(|_| Invalid("invalid parent")))
-                    .transpose()?;
-                Some(Route::ListRuns(show, parent))
-            }
-            ("POST", ["", "runs", "reap"]) => Some(Route::Reap),
-            (_, ["", "runs", id, rest @ ..]) => {
-                let Ok(id) = id.parse::<RunId>() else {
-                    return Ok(None);
-                };
-                match (method, rest) {
-                    ("GET", []) => Some(Route::GetRun(id)),
-                    ("GET", ["wait"]) => {
-                        let timeout = arg("timeout_ms")
-                            .map_or(Ok(WAIT_DEFAULT_MS), |timeout| natural(timeout, WAIT_MAX_MS))?;
-                        Some(Route::WaitRun(id, timeout))
-                    }
-                    ("POST", ["outcome"]) => Some(Route::RunOutcome(id)),
-                    ("POST", ["stop"]) => Some(Route::StopRun(id)),
-                    _ => None,
-                }
-            }
-            ("GET", ["", "prompt", "resolve"]) => {
-                let window_only = match arg("window") {
-                    None => false,
-                    Some("true") => true,
-                    Some(_) => return Err(Invalid("invalid window")),
-                };
-                Some(Route::PromptResolve { window_only })
-            }
-            ("POST", ["", "prompt"]) => Some(Route::SendPrompt),
-            (_, ["", "panes", id, rest @ ..]) => {
-                let Ok(id) = id.parse::<PaneId>() else {
-                    return Ok(None);
-                };
-                match (method, rest) {
-                    ("DELETE", []) => Some(Route::DeletePane(id)),
-                    ("POST", ["clear_history"]) => Some(Route::ClearHistory(id)),
-                    ("POST", ["input"]) => Some(Route::Input(id)),
-                    ("GET", ["screen"]) => {
-                        let format = match arg("format") {
-                            None | Some("plain") => ScreenFormat::Plain,
-                            Some("ansi") => ScreenFormat::Ansi,
-                            Some(_) => return Err(Invalid("invalid format")),
-                        };
-                        let rows = match arg("history") {
-                            None | Some("none") => ScreenRows::Visible,
-                            Some("all") => ScreenRows::Full,
-                            Some(rows) => ScreenRows::Last(
-                                u32::try_from(natural(rows, u64::from(u32::MAX))?)
-                                    .map_err(|_| Invalid("invalid number"))?,
-                            ),
-                        };
-                        Some(Route::Screen(id, format, rows))
-                    }
-                    ("GET", ["vars"]) => Some(Route::Vars(id)),
-                    ("DELETE", ["vars"]) => Some(Route::DeleteVars(id)),
-                    (_, ["vars", name]) => {
-                        let name = percent_decode(name)
-                            .and_then(|name| VarName::new(&name).ok())
-                            .ok_or(Invalid("invalid variable name"))?;
-                        match method {
-                            "GET" => Some(Route::Var(id, name)),
-                            "PUT" => Some(Route::SetVar(id, name)),
-                            "DELETE" => Some(Route::DeleteVar(id, name)),
-                            _ => None,
-                        }
-                    }
-                    ("GET", ["view"]) => {
-                        let history = match arg("history") {
-                            None | Some("none") => History::None,
-                            Some("all") => History::All,
-                            Some(_) => return Err(Invalid("invalid history")),
-                        };
-                        let images = match arg("images") {
-                            None | Some("none") => Images::None,
-                            Some(_) => return Err(Invalid("P1 supports images=none only")),
-                        };
-                        let offset = arg("offset")
-                            .map(|offset| natural(offset, MAX_OFFSET))
-                            .transpose()?;
-                        Some(Route::View(id, ViewOptions { history, images }, offset))
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        })
-    }
-
-    pub fn to_request(&self) -> (&'static str, String) {
-        let pane = |id: &PaneId| format!("/panes/{id}");
-        match self {
-            Route::Version => ("GET", "/version".to_owned()),
-            Route::ListPanes => ("GET", "/panes".to_owned()),
-            Route::GetLayout => ("GET", "/layout".to_owned()),
-            Route::PutLayout => ("PUT", "/layout".to_owned()),
-            Route::Client => ("GET", "/client".to_owned()),
-            Route::SelectClient(id) => ("POST", format!("/clients/{id}/select")),
-            Route::DeletePane(id) => ("DELETE", pane(id)),
-            Route::DeleteWindow(id) => ("DELETE", format!("/windows/{id}")),
-            Route::DeleteSession(id) => ("DELETE", format!("/sessions/{id}")),
-            Route::ClearHistory(id) => ("POST", format!("{}/clear_history", pane(id))),
-            Route::Input(id) => ("POST", format!("{}/input", pane(id))),
-            Route::Screen(id, format, rows) => {
-                let format = match format {
-                    ScreenFormat::Plain => "plain",
-                    ScreenFormat::Ansi => "ansi",
-                };
-                let rows = match rows {
-                    ScreenRows::Visible => "none".to_owned(),
-                    ScreenRows::Full => "all".to_owned(),
-                    ScreenRows::Last(rows) => rows.to_string(),
-                };
-                (
-                    "GET",
-                    format!("{}/screen?format={format}&history={rows}", pane(id)),
-                )
-            }
-            Route::Vars(id) => ("GET", format!("{}/vars", pane(id))),
-            Route::DeleteVars(id) => ("DELETE", format!("{}/vars", pane(id))),
-            Route::Var(id, name) => (
-                "GET",
-                format!("{}/vars/{}", pane(id), percent_encode(name.as_str())),
-            ),
-            Route::SetVar(id, name) => (
-                "PUT",
-                format!("{}/vars/{}", pane(id), percent_encode(name.as_str())),
-            ),
-            Route::DeleteVar(id, name) => (
-                "DELETE",
-                format!("{}/vars/{}", pane(id), percent_encode(name.as_str())),
-            ),
-            Route::StartRun => ("POST", "/runs".to_owned()),
-            Route::ListRuns(show, parent) => {
-                let show = SHOWS
-                    .iter()
-                    .find(|(known, _)| known == show)
-                    .map_or("live", |(_, name)| *name);
-                let parent = parent
-                    .as_ref()
-                    .map_or(String::new(), |parent| format!("&parent={parent}"));
-                ("GET", format!("/runs?show={show}{parent}"))
-            }
-            Route::Reap => ("POST", "/runs/reap".to_owned()),
-            Route::GetRun(id) => ("GET", format!("/runs/{id}")),
-            Route::WaitRun(id, timeout) => ("GET", format!("/runs/{id}/wait?timeout_ms={timeout}")),
-            Route::RunOutcome(id) => ("POST", format!("/runs/{id}/outcome")),
-            Route::StopRun(id) => ("POST", format!("/runs/{id}/stop")),
-            Route::PromptResolve { window_only } => (
-                "GET",
-                format!(
-                    "/prompt/resolve{}",
-                    if *window_only { "?window=true" } else { "" }
-                ),
-            ),
-            Route::SendPrompt => ("POST", "/prompt".to_owned()),
-            Route::View(id, options, offset) => {
-                let history = match options.history {
-                    History::None => "none",
-                    History::All => "all",
-                };
-                let offset = offset.map_or(String::new(), |offset| format!("&offset={offset}"));
-                (
-                    "GET",
-                    format!("{}/view?history={history}&images=none{offset}", pane(id)),
-                )
-            }
-        }
+    fn decode(payload: Option<&[u8]>) -> Result<VarValue, Invalid> {
+        let bytes = payload.ok_or_else(|| Invalid::message(Self::OVERSIZED))?;
+        serde_json::from_slice(bytes).map_err(|error| Invalid::message(error.to_string()))
     }
 }
 
@@ -1895,40 +1671,6 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use serde::de::DeserializeOwned;
-
-    #[test]
-    fn variable_routes_decode_and_encode_their_name() {
-        let pane: PaneId = "pane_2".parse().unwrap();
-        let name = VarName::new("pi.session é/x?").unwrap();
-        let encoded = "/panes/pane_2/vars/pi.session%20%C3%A9%2Fx%3F";
-        for (method, route) in [
-            ("GET", Route::Var(pane, name.clone())),
-            ("PUT", Route::SetVar(pane, name.clone())),
-            ("DELETE", Route::DeleteVar(pane, name.clone())),
-        ] {
-            assert_eq!(Route::of_request(method, encoded), Ok(Some(route.clone())));
-            assert_eq!(route.to_request(), (method, encoded.to_owned()));
-        }
-        assert_eq!(
-            Route::of_request("GET", "/panes/pane_2/vars"),
-            Ok(Some(Route::Vars(pane)))
-        );
-        assert_eq!(Route::of_request("POST", "/panes/pane_2/vars/a"), Ok(None));
-        for bad in [
-            "/panes/pane_2/vars/",
-            "/panes/pane_2/vars/%FF",
-            "/panes/pane_2/vars/%0A",
-            "/panes/pane_2/vars/%",
-            &format!("/panes/pane_2/vars/{}", "n".repeat(257)),
-        ] {
-            assert!(Route::of_request("GET", bad).is_err(), "{bad}");
-        }
-        let longest = format!("/panes/pane_2/vars/{}", "n".repeat(256));
-        assert!(matches!(
-            Route::of_request("GET", &longest),
-            Ok(Some(Route::Var(..)))
-        ));
-    }
 
     #[test]
     fn every_wire_type_round_trips_its_json() {
@@ -2213,111 +1955,6 @@ mod tests {
     }
 
     #[test]
-    fn a_route_parses_its_own_request_and_refuses_a_bad_query() {
-        let pane = PaneId::new(7);
-        let run: RunId = "0123456789abcdef0123456789abcdef".parse().unwrap();
-        for route in [
-            Route::Version,
-            Route::ListPanes,
-            Route::GetLayout,
-            Route::PutLayout,
-            Route::SelectClient(ClientId::new(4)),
-            Route::ClearHistory(pane),
-            Route::Client,
-            Route::DeletePane(pane),
-            Route::DeleteWindow(WindowId::new(2)),
-            Route::DeleteSession(SessionId::new(3)),
-            Route::DeleteVars(pane),
-            Route::Input(pane),
-            Route::Screen(pane, ScreenFormat::Ansi, ScreenRows::Last(40)),
-            Route::Screen(pane, ScreenFormat::Plain, ScreenRows::Full),
-            Route::StartRun,
-            Route::ListRuns(Show::Live, None),
-            Route::ListRuns(Show::All, Some(Parent::Pane(pane))),
-            Route::ListRuns(Show::Present, Some(Parent::Run(run.clone()))),
-            Route::Reap,
-            Route::GetRun(run.clone()),
-            Route::WaitRun(run.clone(), 250),
-            Route::RunOutcome(run.clone()),
-            Route::StopRun(run),
-            Route::PromptResolve { window_only: false },
-            Route::PromptResolve { window_only: true },
-            Route::SendPrompt,
-            Route::View(
-                pane,
-                ViewOptions {
-                    history: History::All,
-                    images: Images::None,
-                },
-                Some(9),
-            ),
-            Route::View(
-                pane,
-                ViewOptions {
-                    history: History::None,
-                    images: Images::None,
-                },
-                None,
-            ),
-        ] {
-            let (method, target) = route.to_request();
-            assert_eq!(Route::of_request(method, &target), Ok(Some(route)));
-        }
-        let parsed: Vec<String> = [
-            ("GET", "/panes/pane_7/screen?history=4294967296"),
-            ("GET", "/panes/pane_7/view?offset=4611686018427387904"),
-            ("GET", "/panes/pane_7/view?images=all"),
-            ("GET", "/panes/pane_7/view?a=b=c"),
-            ("GET", "/panes/pane_7/view?"),
-            ("GET", "/panes/pane_x/view"),
-            ("PUT", "/panes"),
-            ("POST", "/clients/client_x/select"),
-            ("POST", "/panes/pane_1/clear_history/x"),
-            ("GET", "/panes?x=1"),
-            ("GET", "/runs?show=some"),
-            ("GET", "/prompt/resolve?window=1"),
-            ("GET", "/runs?parent=nope"),
-            (
-                "GET",
-                "/runs/0123456789abcdef0123456789abcdef/wait?timeout_ms=3600001",
-            ),
-            ("GET", "/runs/0123456789abcdef0123456789abcdef/wait"),
-            ("GET", "/runs/abc"),
-            ("POST", "/runs/reap"),
-            ("PUT", "/runs"),
-        ]
-        .into_iter()
-        .map(|(method, target)| match Route::of_request(method, target) {
-            Ok(route) => format!("{route:?}"),
-            Err(invalid) => invalid.to_string(),
-        })
-        .collect();
-        assert_eq!(
-            parsed,
-            [
-                "invalid number",
-                "invalid number",
-                "P1 supports images=none only",
-                "invalid query",
-                "invalid query",
-                "None",
-                "None",
-                "None",
-                "None",
-                "Some(ListPanes)",
-                "invalid show",
-                "invalid window",
-                "invalid parent",
-                "invalid number",
-                "Some(WaitRun(RunId(\"0123456789abcdef0123456789abcdef\"), 30000))",
-                "None",
-                "Some(Reap)",
-                "None",
-            ]
-        );
-    }
-
-    #[test]
     fn the_version_check_takes_a_higher_minor_and_refuses_another_major_or_terminal() {
         let checked: Vec<String> = [
             (Some("1.3"), Some(VT)),
@@ -2498,21 +2135,6 @@ mod tests {
             .flatten()
             {
                 prop_assert!(serde_json::from_str::<serde_json::Value>(&decoded).is_ok());
-            }
-        }
-
-        #[test]
-        fn routes_return_a_route_nothing_or_invalid(
-            method in prop::sample::select(vec!["GET", "POST", "DELETE", "PUT", ""]),
-            path in prop::sample::select(vec!["/version", "/panes", "/client", "/panes/pane_1", "/panes/pane_1/view", "/panes/pane_1/screen", "/panes/pane_1/input", "/panes/pane_1/vars", "/panes/pane_1/vars/a%20b", "/panes/pane_1/vars/%FF", "/panes/1/view", "/", ""]),
-            query in prop::collection::vec((prop::sample::select(vec!["history", "images", "offset", "format", "x", ""]), prop::sample::select(vec!["", "a", "all", "none", "0", "-1", "99999999999999999999", "4294967296", "%00", "=", "&", "?", "/"])), 0..3),
-            with_query in any::<bool>(),
-        ) {
-            let query: Vec<String> = query.into_iter().map(|(key, value)| format!("{key}={value}")).collect();
-            let target = if with_query { format!("{path}?{}", query.join("&")) } else { path.to_owned() };
-            if let Ok(Some(route)) = Route::of_request(method, &target) {
-                let (method, target) = route.to_request();
-                prop_assert_eq!(Route::of_request(method, &target), Ok(Some(route)));
             }
         }
     }

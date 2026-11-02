@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 
 use ko_pane_wire::frame::Size as FrameSize;
-use ko_server::protocol::{self, ClientEvent, ClientKind, Hello, Route, Selection};
+use ko_server::api::Route;
+use ko_server::protocol::{self, ClientEvent, ClientKind, Hello, Selection};
 
 use crate::launch::{self, Cancel, PATIENCE};
 use crate::model::{Applied, Model};
@@ -239,7 +240,8 @@ fn failure(error: &io::Error) -> (Code, String) {
 
 fn session(shared: &Arc<Shared>, socket: &Path) -> Result<(), (Code, String)> {
     let stream = launch::connect(socket, PATIENCE).map_err(|error| failure(&error))?;
-    let mut link = Link::upgrade(stream, None, &Route::Client).map_err(|error| failure(&error))?;
+    let mut link =
+        Link::upgrade(stream, None, &Route::Client {}).map_err(|error| failure(&error))?;
     let hello = Hello {
         kind: ClientKind::App,
         name: "ko_client".to_owned(),

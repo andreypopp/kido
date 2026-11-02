@@ -3,9 +3,10 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use ko_pane_wire::frame::Limits;
+use ko_server::api::Route;
 use ko_server::ids::{ClientId, Instance, PaneId, RunId, SessionId, VarName, WindowId};
 use ko_server::protocol::{
-    self, ClientEvent, ClientRequest, Hello, Info, Listing, Route, Row, RunEvent, Selection, Show,
+    self, ClientEvent, ClientRequest, Hello, Info, Listing, Row, RunEvent, Selection, Show,
     Snapshot, Window,
 };
 use ko_server::runs::Parent;
@@ -130,9 +131,12 @@ impl Model {
     }
 
     fn refresh(&mut self) -> Result<(), String> {
-        let body = wire::request(&self.socket, Some(self.client), &Route::ListPanes, b"")?;
+        let body = wire::request(&self.socket, Some(self.client), &Route::ListPanes {}, b"")?;
         self.load(protocol::decode(&body).map_err(text)?);
-        let route = Route::ListRuns(Show::Present, None);
+        let route = Route::ListRuns {
+            show: Show::Present,
+            parent: None,
+        };
         let body = wire::request(&self.socket, Some(self.client), &route, b"")?;
         self.load_runs(protocol::decode(&body).map_err(text)?);
         Ok(())

@@ -1,9 +1,9 @@
 use std::path::Path;
 
+use ko_server::api::Route;
 use ko_server::ids::{ClientId, Name, PaneId, SessionId, WindowId};
 use ko_server::protocol::{
-    self, CreatePane, DraftLayout, DraftSession, DraftWindow, Node, PutLayout, Revision, Route,
-    Snapshot,
+    self, CreatePane, DraftLayout, DraftSession, DraftWindow, Node, PutLayout, Revision, Snapshot,
 };
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +21,7 @@ pub struct Document {
 type Put = Result<Snapshot, Snapshot>;
 
 fn fetch(socket: &Path, client: Option<ClientId>) -> Result<Snapshot, String> {
-    protocol::decode(&wire::request(socket, client, &Route::GetLayout, b"")?).map_err(text)
+    protocol::decode(&wire::request(socket, client, &Route::GetLayout {}, b"")?).map_err(text)
 }
 
 fn send(
@@ -31,7 +31,7 @@ fn send(
     layout: DraftLayout,
 ) -> Result<Put, String> {
     let request = PutLayout { revision, layout };
-    let (method, target) = Route::PutLayout.to_request();
+    let (method, target) = Route::PutLayout {}.to_request();
     let response = wire::exchange(
         socket,
         (client, None),

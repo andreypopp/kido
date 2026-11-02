@@ -12,8 +12,10 @@ use ko_client::api;
 use ko_client::launch::{self, PATIENCE};
 use ko_client::layout::Document;
 use ko_pane_wire::frame::Scrollback;
+use ko_server::api::Route;
 use ko_server::config::{self, Config, DEFAULT_LIMITS};
-use ko_server::protocol::{self, Cause, Route, Row};
+use ko_server::protocol::{self, Cause, Row};
+use ko_server::schema;
 use ko_server::server::{Server, Status, Timing};
 use ko_shell::{bin_dir, shell, ssh};
 use ko_tui::client;
@@ -45,6 +47,11 @@ enum Command {
     },
     /// Print the build, protocol and terminal revisions.
     Version,
+    /// Print the OpenAPI 3.1 description of the HTTP and WebSocket interface.
+    ///
+    /// The command needs no running server. The WebSocket endpoints are GET operations with a 101
+    /// response and the x-ko-websocket extension, which names the schemas of their messages.
+    ApiSchema,
     /// Send one HTTP request to the ko server and print the response.
     ///
     /// Sends PATH, which starts with /, to the ko server and prints the response body. Query
@@ -424,7 +431,7 @@ fn state(row: &Row) -> String {
 }
 
 fn panes(args: PanesArgs) -> ExitCode {
-    let body = match get("panes", args.server, &Route::ListPanes) {
+    let body = match get("panes", args.server, &Route::ListPanes {}) {
         Ok(body) => body,
         Err(code) => return code,
     };
@@ -458,7 +465,7 @@ fn panes(args: PanesArgs) -> ExitCode {
 
 fn layout(args: LayoutArgs) -> ExitCode {
     let Some(LayoutCommand::Put { file }) = args.command else {
-        return match get("layout", args.server, &Route::GetLayout) {
+        return match get("layout", args.server, &Route::GetLayout {}) {
             Ok(body) => {
                 let mut out = io::stdout().lock();
                 let _ = out.write_all(&body);
@@ -520,6 +527,10 @@ fn main() -> ExitCode {
         Command::Version => {
             let mut out = io::stdout().lock();
             let _ = writeln!(out, "{}", protocol::json(&protocol::version()));
+            ExitCode::SUCCESS
+        }
+        Command::ApiSchema => {
+            let _ = writeln!(io::stdout().lock(), "{}", schema::openapi());
             ExitCode::SUCCESS
         }
         Command::Api(args) => api(args),

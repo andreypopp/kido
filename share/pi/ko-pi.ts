@@ -8,6 +8,11 @@ import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
+import type { components, paths } from "./ko-api.d.ts";
+
+type Api = components["schemas"];
+
+type Outcome = Required<Pick<Api["RunOutcome"], "text">> & { result: string };
 
 const SOCKET_PATH_MAX = 103;
 
@@ -36,12 +41,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
-const parseOutcome = (value: unknown): { result: string; text: string } | undefined => {
+const parseOutcome = (value: unknown): Outcome | undefined => {
   if (!isRecord(value) || typeof value.result !== "string") return undefined;
   return { result: value.result, text: str(value.text) };
 };
 
-const outcomeOf = (text: string): { result: string; text: string } | undefined => {
+const outcomeOf = (text: string): Outcome | undefined => {
   try {
     return parseOutcome(JSON.parse(text.trim()));
   } catch {
@@ -203,14 +208,13 @@ export type PaneInfo = {
   title: string;
 };
 
-function rootRecord(programStatus: unknown): { app: string; state: string } | null {
-  if (!isRecord(programStatus) || !Array.isArray(programStatus.records)) return null;
-  const root = programStatus.records.find((r: unknown) => isRecord(r) && r.id === "");
-  if (!isRecord(root)) return null;
-  return {
-    app: typeof root.app === "string" ? root.app : "",
-    state: typeof root.state === "string" ? root.state : "unknown",
-  };
+type Reply<P extends keyof paths> = paths[P] extends { get: { responses: { 200: { content: { "application/json": infer R } } } } }
+  ? R
+  : never;
+
+function rootRecord(programStatus: Api["ProgramStatus"] | null): { app: string; state: string } | null {
+  const root = programStatus?.records.find((r) => r.id === "");
+  return root ? { app: root.app ?? "", state: root.state } : null;
 }
 
 function isAgentPane(pane: PaneInfo): boolean {
@@ -219,53 +223,44 @@ function isAgentPane(pane: PaneInfo): boolean {
 
 type Place = { session: string; window: string };
 
-function placeLeaves(node: unknown, place: Place, into: Map<string, Place>): void {
-  if (!isRecord(node)) return;
-  if (typeof node.pane === "string") into.set(node.pane, place);
-  if (Array.isArray(node.children)) for (const child of node.children) placeLeaves(child, place, into);
+function placeLeaves(node: Api["LeafNode"] | Api["Float"], place: Place, into: Map<string, Place>): void {
+  if ("pane" in node) into.set(node.pane, place);
+  else for (const child of node.children) placeLeaves(child, place, into);
 }
 
-function placesOf(layout: unknown): Map<string, Place> {
+function placesOf(layout: Api["Snapshot"]): Map<string, Place> {
   const places = new Map<string, Place>();
-  if (!isRecord(layout) || !isRecord(layout.layout) || !Array.isArray(layout.layout.sessions)) return places;
   for (const session of layout.layout.sessions) {
-    if (!isRecord(session) || !Array.isArray(session.windows)) continue;
     for (const window of session.windows) {
-      if (!isRecord(window)) continue;
-      const place = { session: str(session.id), window: str(window.id) };
+      const place = { session: session.id, window: window.id };
       placeLeaves(window.tree, place, places);
-      if (Array.isArray(window.floats)) for (const float of window.floats) placeLeaves(float, place, places);
+      for (const float of window.floats) placeLeaves(float, place, places);
     }
   }
   return places;
 }
 
-function parsePanes(rows: unknown, layout: unknown): PaneInfo[] {
+function parsePanes(rows: Api["Listing"][], layout: Api["Snapshot"]): PaneInfo[] {
   const places = placesOf(layout);
-  const panes: PaneInfo[] = [];
-  if (!Array.isArray(rows)) return panes;
-  for (const row of rows) {
-    if (!isRecord(row) || typeof row.id !== "string") continue;
-    const vars = isRecord(row.vars) ? row.vars : {};
+  return rows.map((row) => {
     const place = places.get(row.id);
-    panes.push({
+    return {
       pane: row.id,
       session: place?.session ?? "",
       window: place?.window ?? "",
-      agentSession: str(vars[VAR_SESSION]),
-      name: str(vars[VAR_NAME]),
-      inbox: str(vars[VAR_INBOX]),
-      activity: str(vars[VAR_ACTIVITY]),
-      cwd: str(row.cwd),
-      dead: isRecord(row.dead),
-      root: isRecord(row.status) ? rootRecord(row.status.program_status) : null,
-      title: str(row.title),
-    });
-  }
-  return panes;
+      agentSession: str(row.vars[VAR_SESSION]),
+      name: str(row.vars[VAR_NAME]),
+      inbox: str(row.vars[VAR_INBOX]),
+      activity: str(row.vars[VAR_ACTIVITY]),
+      cwd: row.cwd,
+      dead: row.dead !== null,
+      root: rootRecord(row.status?.program_status ?? null),
+      title: row.title,
+    };
+  });
 }
 
-async function readJson(path: string, timeoutMs: number): Promise<{ ok: true; value: unknown } | { ok: false }> {
+async function readJson<P extends "/panes" | "/layout">(path: P, timeoutMs: number): Promise<{ ok: true; value: Reply<P> } | { ok: false }> {
   const res = await runCommand("ko", ["api", path], { timeoutMs });
   if (!res.ok) return { ok: false };
   try {
@@ -361,22 +356,13 @@ type AgentRow = {
   koSession: string;
   inbox: string;
   startedAt?: string;
-  outcome?: { result: string; text?: string };
+  outcome?: Outcome;
   task?: string;
   report?: string;
 };
 
-type RunRow = {
-  id: string;
-  name?: string;
-  parent?: string;
-  pane?: string;
-  cwd?: string;
-  startedAt?: string;
-  session?: string;
-  output?: string;
-  outcome?: { result: string; text?: string };
-};
+type RunRow = Pick<Api["Info"], "id"> &
+  Partial<Pick<Api["Info"], "name" | "parent" | "pane" | "cwd" | "startedAt" | "session" | "output">> & { outcome?: Outcome };
 
 const handleClick = (event: TuiMouseEvent, click: () => void) => {
   if (event.button !== "left") return;
@@ -723,8 +709,10 @@ export default function (pi: ExtensionAPI) {
   // The server deletes the names only while pi.session still holds this
   // session's id (412 otherwise), so a new owner of the pane keeps its variables.
   const unsetVarsArgv = (): string[] => ["api", "-X", "DELETE", "--input", "-", varsPath()];
-  const unsetVarsBody = (): string =>
-    JSON.stringify({ names: VAR_KEYS, if: { name: VAR_SESSION, value: ownSessionId } });
+  const unsetVarsBody = (): string => {
+    const body: Api["DeleteVars"] = { names: VAR_KEYS, if: { name: VAR_SESSION, value: ownSessionId } };
+    return JSON.stringify(body);
+  };
 
   const unsetVars = async (): Promise<void> => {
     if (!pane || !ownSessionId) return;
@@ -1118,7 +1106,7 @@ export default function (pi: ExtensionAPI) {
 
   const isMyself = (target: AgentRow): boolean => target.self || target.id === ownSessionId || (!!edge && target.id === edge.run);
 
-  type Created = { id: string; window: string; pane: string; output: string };
+  type Created = Api["Started"];
   type Started = { created: Created } | { error: string };
 
   const startChild = async (parent: string | null, name: string, agentDir: string | null, command: string[], cwd?: string, sessionId?: string): Promise<Started> => {

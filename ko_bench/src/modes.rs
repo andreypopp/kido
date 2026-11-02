@@ -7,9 +7,10 @@ use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::{CellPx, Dim, History, Size};
+use ko_server::api::Route;
 use ko_server::config::{DEFAULT_LIMITS, scratch};
 use ko_server::protocol::{
-    self, ClientKind, ClientRequest, Hello, Images, Route, Row, ViewOptions, ViewRequest, json,
+    self, ClientKind, ClientRequest, Hello, Images, Row, ViewOptions, ViewRequest, json,
 };
 use ko_server::server::{Server, Status, Timing};
 use ko_sys::clock::{Mono, children_cpu_time, process_cpu, thread_cpu_time};
@@ -327,7 +328,7 @@ pub(crate) fn snapshot(lines: &str) -> Result<(), String> {
         let mut results = vec![("full", resync(&mut view, History::All)?)];
         results.push(("screen", resync(&mut view, History::None)?));
         let started = Instant::now();
-        let mut client = upgrade(socket, &Route::Client).map_err(failed)?;
+        let mut client = upgrade(socket, &Route::Client {}).map_err(failed)?;
         let (cols, rows) = (Dim::new(100), Dim::new(30));
         let size = Size {
             cols: cols.ok_or("columns")?,
@@ -511,7 +512,7 @@ pub(crate) fn flood(
             seconds[index] = at.duration_since(started).as_secs_f64();
         }
         if views < panes {
-            while exchange(socket, &Route::ListPanes, "")
+            while exchange(socket, &Route::ListPanes {}, "")
                 .map_err(failed)
                 .and_then(|response| protocol::decode::<Vec<Row>>(&response.body).map_err(failed))?
                 .iter()

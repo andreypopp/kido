@@ -2,11 +2,12 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use super::*;
+use crate::api::{WaitMs, routes};
 use crate::ids::RunId;
 use crate::pane_kind::{self, Kind, RUN};
 use crate::protocol::{
     Command, DraftLayout, Empty, Error, ErrorKind, Info, ReportOutcome, Reported, RunEvent,
-    SessionRef, Show, StartRun, Started, StopResult, StopRun, Variable, WAIT_MAX_MS, Waited,
+    SessionRef, Show, StartRun, Started, StopResult, StopRun, Variable, Waited,
 };
 use crate::runs::{self, Closing, Condition, Ended, Meta, RunOutcome, RunResult, Seen};
 use crate::timestamp::Timestamp;
@@ -263,11 +264,11 @@ impl State {
         }
         match settled.done {
             Done::Outcome(outcome) => {
-                router::answer(self, poll, settled.conn, Ok(Waited { outcome }));
+                router::answer::<routes::WaitRun>(self, poll, settled.conn, Ok(Waited { outcome }));
             }
             Done::Stop(pane) => {
                 self.kill_run_pane(poll, pane);
-                router::answer(self, poll, settled.conn, Ok(Empty {}));
+                router::answer::<routes::StopRun>(self, poll, settled.conn, Ok(Empty {}));
             }
         }
     }
@@ -286,10 +287,12 @@ impl State {
         };
         let wait = self.runs.waits.swap_remove(at);
         match wait.kind {
-            WaitKind::Ending(_) => router::answer(self, poll, token, Ok(Waited { outcome: None })),
+            WaitKind::Ending(_) => {
+                router::answer::<routes::WaitRun>(self, poll, token, Ok(Waited { outcome: None }));
+            }
             WaitKind::Stopping(pane) => {
                 self.kill_run_pane(poll, pane);
-                router::answer(self, poll, token, Ok(Empty {}));
+                router::answer::<routes::StopRun>(self, poll, token, Ok(Empty {}));
             }
         }
         true
@@ -368,7 +371,7 @@ impl State {
         let Some(meta) = runs::read_meta(&self.runs.root, &id) else {
             return Some(Err(no_such_run(&id)));
         };
-        if request.wait_ms > WAIT_MAX_MS {
+        if request.wait_ms > WaitMs::MAX.get() {
             return Some(Err(Error::new(ErrorKind::Invalid, "wait is too long")));
         }
         let live = self.live_run_pane(&meta);
@@ -681,7 +684,7 @@ impl State {
                 } else {
                     Err(lost(&meta.id))
                 };
-                router::answer(self, poll, conn, reply);
+                router::answer::<routes::RunOutcome>(self, poll, conn, reply);
             }
         }
     }

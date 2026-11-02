@@ -1,10 +1,11 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use ko_server::api::Route;
 use ko_server::config::{self, Dir};
 use ko_server::http::Response;
 use ko_server::ids::PaneId;
-use ko_server::protocol::{Route, Snapshot};
+use ko_server::protocol::Snapshot;
 
 use crate::launch;
 use crate::layout::{self, Document};
@@ -58,7 +59,7 @@ pub fn request_within(
     body: &[u8],
     within: Duration,
 ) -> Result<Response, Error> {
-    let route = Route::of_request(method, path).ok().flatten();
+    let route = Route::of_request(method, path).ok();
     if route.is_some_and(|route| route.websocket()) {
         return Err(Error::Websocket);
     }

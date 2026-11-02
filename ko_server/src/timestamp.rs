@@ -1,7 +1,9 @@
+use std::borrow::Cow;
 use std::fmt;
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 const MICROS: i64 = 1_000_000;
@@ -9,6 +11,16 @@ const MICROS: i64 = 1_000_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Timestamp(i64);
+
+impl JsonSchema for Timestamp {
+    fn schema_name() -> Cow<'static, str> {
+        "Timestamp".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "string", "format": "date-time"})
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidTimestamp(String);

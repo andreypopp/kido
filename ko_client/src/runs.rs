@@ -1,10 +1,11 @@
 use std::path::Path;
 use std::time::Duration;
 
+use ko_server::api::{Route, WaitMs, WindowOnly};
 use ko_server::ids::{PaneId, RunId};
 use ko_server::protocol::{
-    self, Candidate, Detail, Empty, Error, Info, ReportOutcome, Route, SendPrompt, Sent, Show,
-    StartRun, Started, StopRun, Waited,
+    self, Candidate, Detail, Empty, Error, Info, ReportOutcome, SendPrompt, Sent, Show, StartRun,
+    Started, StopRun, Waited,
 };
 use ko_server::runs::{Parent, RunOutcome};
 use serde::Serialize;
@@ -53,7 +54,7 @@ fn plain<T: Serialize + DeserializeOwned>(
 pub fn start(dir: &Path, caller: Option<PaneId>, request: &StartRun) -> Result<Started, Failure> {
     call(
         dir,
-        &Route::StartRun,
+        &Route::StartRun {},
         caller,
         Some(request),
         wire::READ_TIMEOUT,
@@ -61,19 +62,22 @@ pub fn start(dir: &Path, caller: Option<PaneId>, request: &StartRun) -> Result<S
 }
 
 pub fn list(dir: &Path, show: Show, parent: Option<Parent>) -> Result<Vec<Info>, Failure> {
-    plain(dir, &Route::ListRuns(show, parent), None)
+    plain(dir, &Route::ListRuns { show, parent }, None)
 }
 
 pub fn detail(dir: &Path, id: &RunId) -> Result<Detail, Failure> {
-    plain(dir, &Route::GetRun(id.clone()), None)
+    plain(dir, &Route::GetRun { id: id.clone() }, None)
 }
 
 pub fn wait(dir: &Path, id: &RunId, timeout: Duration) -> Result<Option<RunOutcome>, Failure> {
-    let milliseconds = u64::try_from(timeout.as_millis()).unwrap_or(protocol::WAIT_MAX_MS);
+    let milliseconds = u64::try_from(timeout.as_millis()).unwrap_or(WaitMs::MAX.get());
     let within = timeout.saturating_add(wire::READ_TIMEOUT);
     call::<Waited>(
         dir,
-        &Route::WaitRun(id.clone(), milliseconds.min(protocol::WAIT_MAX_MS)),
+        &Route::WaitRun {
+            id: id.clone(),
+            timeout_ms: WaitMs::clamped(milliseconds),
+        },
         None,
         None::<&Empty>,
         within,
@@ -84,7 +88,7 @@ pub fn wait(dir: &Path, id: &RunId, timeout: Duration) -> Result<Option<RunOutco
 pub fn outcome(dir: &Path, id: &RunId, report: &ReportOutcome) -> Result<(), Failure> {
     call::<Empty>(
         dir,
-        &Route::RunOutcome(id.clone()),
+        &Route::RunOutcome { id: id.clone() },
         None,
         Some(report),
         wire::READ_TIMEOUT,
@@ -96,7 +100,7 @@ pub fn stop(dir: &Path, id: &RunId, request: &StopRun) -> Result<(), Failure> {
     let within = Duration::from_millis(request.wait_ms).saturating_add(wire::READ_TIMEOUT);
     call::<Empty>(
         dir,
-        &Route::StopRun(id.clone()),
+        &Route::StopRun { id: id.clone() },
         None,
         Some(request),
         within,
@@ -105,7 +109,7 @@ pub fn stop(dir: &Path, id: &RunId, request: &StopRun) -> Result<(), Failure> {
 }
 
 pub fn reap(dir: &Path) -> Result<(), Failure> {
-    call::<Empty>(dir, &Route::Reap, None, Some(&Empty {}), wire::READ_TIMEOUT).map(drop)
+    plain::<Empty>(dir, &Route::Reap {}, None).map(drop)
 }
 
 pub fn resolve(
@@ -113,13 +117,19 @@ pub fn resolve(
     caller: Option<PaneId>,
     window_only: bool,
 ) -> Result<Vec<Candidate>, Failure> {
-    plain(dir, &Route::PromptResolve { window_only }, caller)
+    plain(
+        dir,
+        &Route::PromptResolve {
+            window: window_only.then_some(WindowOnly),
+        },
+        caller,
+    )
 }
 
 pub fn send(dir: &Path, caller: Option<PaneId>, request: &SendPrompt) -> Result<Sent, Failure> {
     call(
         dir,
-        &Route::SendPrompt,
+        &Route::SendPrompt {},
         caller,
         Some(request),
         wire::READ_TIMEOUT,

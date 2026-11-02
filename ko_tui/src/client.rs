@@ -9,10 +9,11 @@ use ko_client::launch::{self, PATIENCE};
 use ko_client::model::{Applied, Model};
 use ko_client::wire::{self, Link, Next, WATCHDOG, silent, text};
 use ko_pane_wire::frame::{Dim, ScreenFormat, ScreenRows, Size};
+use ko_server::api::Route;
 use ko_server::ids::PaneId;
 use ko_server::protocol::{
     self, ClientKind, ClientRequest, CreatePane, Hello, Input as Wire, Key as WireKey,
-    Mouse as WireMouse, Paste, Route, Selection, ViewRequest, json,
+    Mouse as WireMouse, Paste, Selection, ViewRequest, json,
 };
 use ko_sys::event::{Due, Events, Interest, Mode, Poll, Ready, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
@@ -301,7 +302,7 @@ impl Client {
             Signal::Child,
         ])
         .map_err(text)?;
-        let mut link = Link::upgrade(stream, None, &Route::Client).map_err(text)?;
+        let mut link = Link::upgrade(stream, None, &Route::Client {}).map_err(text)?;
         let mut session = Session {
             tty: Tty::raw().map_err(text)?,
             modes: Modes::default(),
@@ -529,7 +530,7 @@ impl Client {
             return Ok(());
         };
         self.close_view();
-        self.request(&Route::DeletePane(pane)).map(drop)
+        self.request(&Route::DeletePane { id: pane }).map(drop)
     }
 
     fn pager(&mut self) -> Result<(), String> {
@@ -561,7 +562,11 @@ impl Client {
                 Err(error) => return Err(text(error)),
             }
         };
-        let route = Route::Screen(pane, ScreenFormat::Ansi, ScreenRows::Full);
+        let route = Route::Screen {
+            id: pane,
+            format: ScreenFormat::Ansi,
+            history: ScreenRows::Full,
+        };
         let started = wire::download(&self.socket, self.model.client, &route, &mut file)
             .and_then(|()| file.flush().map_err(text))
             .and_then(|()| self.launch(&path));

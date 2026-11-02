@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -27,11 +28,12 @@ impl fmt::Display for Refusal {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(
     try_from = "BTreeMap<VarName, Value>",
     into = "BTreeMap<VarName, Value>"
 )]
+#[schemars(with = "BTreeMap<VarName, Value>")]
 pub struct Vars {
     map: BTreeMap<VarName, (Value, usize)>,
     bytes: usize,
@@ -81,13 +83,6 @@ impl Vars {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.map.is_empty()
-    }
-
-    pub(crate) fn all(&self) -> BTreeMap<&VarName, &Value> {
-        self.map
-            .iter()
-            .map(|(name, (value, _))| (name, value))
-            .collect()
     }
 
     pub(crate) fn get(&self, name: &VarName) -> Option<&Value> {
