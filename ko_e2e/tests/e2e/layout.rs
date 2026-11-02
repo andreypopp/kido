@@ -326,12 +326,12 @@ fn every_edit_of_the_layout_is_normalized_and_resizes_the_panes() {
         json!("window_3")
     );
 
-    let listed = s.ko(&["panes", "--json"], "").json();
+    let mut listed = Value::Null;
+    poll("the CLI and the HTTP pane lists to agree", || {
+        listed = s.ko(&["panes", "--json"], "").json();
+        serde_json::from_str::<Value>(&s.request("GET", "/panes", None, 200)).unwrap() == listed
+    });
     assert_eq!(listed.as_array().map(Vec::len), Some(7));
-    assert_eq!(
-        serde_json::from_str::<Value>(&s.request("GET", "/panes", None, 200)).unwrap(),
-        listed
-    );
     let table = s.ko(&["panes"], "").ok();
     assert!(
         table.starts_with("PANE  ") && table.lines().count() == 8 && table.contains("running"),
