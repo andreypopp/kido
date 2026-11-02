@@ -428,22 +428,50 @@ fn a_control_frame_is_handled_while_the_program_keeps_the_pty_readable() {
 
 #[test]
 fn reports_and_the_foreground_arrive_as_frames_after_the_record_that_carried_them() {
-    let script = "printf '\\033[?1049h\\033]9;4;1;50\\007\\033]9;hello\\007\\007\\033]777;notify;T;B\\007\\033]9;4;0\\007\\033]133;C\\007'; \
+    let script = "stty -echo; read gate; printf '\\033[?1049h\\033]9;4;1;50\\007\\033]9;hello\\007\\007\\033]777;notify;T;B\\007\\033]9;4;0\\007\\033]133;C\\007'; \
         exec /usr/bin/awk 'BEGIN{printf \"LATE\"; system(\"sleep 5\")}'";
     let mut pane = Harness::start(1 << 16);
     pane.send(&init(&["/bin/sh", "-c", script], "/"));
     let (mut alternate, mut bells, mut notices, mut progress) =
         (Vec::new(), 0, Vec::new(), Vec::new());
     let mut foregrounds = Vec::new();
-    while foregrounds.last() != Some(&b"awk".to_vec()) {
+    while foregrounds.last() != Some(&b"awk".to_vec()) || progress.len() < 2 {
         let bytes = pane.receive();
         pane.drain();
+        let carried = |pane: &Harness, sequence: &[u8]| {
+            pane.seen
+                .output
+                .windows(sequence.len())
+                .any(|window| window == sequence)
+        };
         match frame::decode(&bytes).unwrap().unwrap() {
-            FromPane::Alternate(on) => alternate.push(on),
-            FromPane::Bell => bells += 1,
-            FromPane::Notify { title, body } => notices.push((title.to_vec(), body.to_vec())),
-            FromPane::Progress(report) => progress.push(report),
-            FromPane::Foreground(foreground) => foregrounds.push(foreground.name.to_vec()),
+            FromPane::Alternate(on) => {
+                assert!(carried(&pane, b"\x1b[?1049h"));
+                alternate.push(on);
+            }
+            FromPane::Bell => {
+                assert!(carried(&pane, b"hello\x07\x07"));
+                bells += 1;
+            }
+            FromPane::Notify { title, body } => {
+                assert!(carried(&pane, b"\x1b]777;notify;T;B\x07"));
+                notices.push((title.to_vec(), body.to_vec()));
+            }
+            FromPane::Progress(report) => {
+                let sequence: &[u8] = if progress.is_empty() {
+                    b"\x1b]9;4;1;50\x07"
+                } else {
+                    b"\x1b]9;4;0\x07"
+                };
+                assert!(carried(&pane, sequence));
+                progress.push(report);
+            }
+            FromPane::Foreground(foreground) => {
+                if foregrounds.is_empty() {
+                    pane.send(&encoded(&ToPane::Text(b"\r")));
+                }
+                foregrounds.push(foreground.name.to_vec());
+            }
             FromPane::Ready(_) | FromPane::Head(_) | FromPane::Prompt(_) => {}
             other => panic!("unexpected frame {other:?}"),
         }
@@ -473,7 +501,8 @@ fn reports_and_the_foreground_arrive_as_frames_after_the_record_that_carried_the
 
 #[test]
 fn output_inside_the_throttle_window_then_silence_gets_one_trailing_foreground_check() {
-    let script = "exec /usr/bin/awk 'BEGIN{printf \"X\"; system(\"sleep 5\")}'";
+    let script =
+        "stty -echo; read gate; exec /usr/bin/awk 'BEGIN{printf \"X\"; system(\"sleep 5\")}'";
     let mut pane = Harness::start(1 << 16);
     pane.send(&init(&["/bin/sh", "-c", script], "/"));
     let mut foregrounds = Vec::new();
@@ -481,11 +510,17 @@ fn output_inside_the_throttle_window_then_silence_gets_one_trailing_foreground_c
         let bytes = pane.receive();
         pane.drain();
         match frame::decode(&bytes).unwrap().unwrap() {
-            FromPane::Foreground(foreground) => foregrounds.push(foreground.name.to_vec()),
+            FromPane::Foreground(foreground) => {
+                if foregrounds.is_empty() {
+                    pane.send(&encoded(&ToPane::Text(b"\r")));
+                }
+                foregrounds.push(foreground.name.to_vec());
+            }
             FromPane::Ready(_) | FromPane::Head(_) => {}
             other => panic!("unexpected frame {other:?}"),
         }
     }
+    assert_eq!(foregrounds.first(), Some(&b"sh".to_vec()));
     assert!(foregrounds.len() <= 2, "{foregrounds:?}");
     assert_eq!(pane.finish(), Waited::Ended(Exit::Exited(0)));
 }
