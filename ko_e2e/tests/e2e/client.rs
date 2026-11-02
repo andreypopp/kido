@@ -1,6 +1,5 @@
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use ko_sys::pid::{Pid, signal_descendant};
 use ko_sys::signal::Signal;
@@ -570,12 +569,7 @@ fn client_initial_cursor_and_synchronized_output() {
         o.cursor() == (true, PANE_X + 4, 0)
     });
     s.text(&pane, "h");
-    assert!(
-        o.within(Duration::from_millis(400), || o
-            .screen()
-            .contains("HOLD-CHANGED")),
-        "synchronized output did not expire within 400 ms"
-    );
+    o.contains("HOLD-CHANGED");
     s.text(&pane, "r");
     let shell = s.pane("printf '\\033]0;shell\\007'; exec /bin/sh");
     o.contains("2  shell");

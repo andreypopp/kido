@@ -22,6 +22,35 @@ const SLACK: Duration = Duration::from_millis(2);
 const MAX_OPS: usize = 80;
 const SIGNALS: [Signal; 2] = [Signal::Usr1, Signal::Usr2];
 
+// A spawn in another thread holds a copy of every descriptor until its child execs, so a closed
+// peer is not a hangup at once (ko_sys/src/spawn.rs).
+fn hung_up(fd: std::os::fd::BorrowedFd<'_>) {
+    use std::os::fd::AsRawFd;
+    let started = Instant::now();
+    loop {
+        let mut wait = libc::pollfd {
+            fd: fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: wait is one initialized pollfd.
+        let found =
+            crate::retry::retry(|| crate::retry::check(unsafe { libc::poll(&mut wait, 1, 10) }))
+                .unwrap();
+        if found > 0 && wait.revents & libc::POLLHUP != 0 {
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "no hangup: revents {:#x}",
+            wait.revents
+        );
+        if found > 0 {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
 fn pattern(i: usize) -> u8 {
     ((i * 7 + 3) & 0xff) as u8
 }
@@ -546,6 +575,7 @@ impl Run {
                 let c = &mut self.channels[i];
                 if c.b.take().is_some() {
                     c.full = false;
+                    hung_up(c.a.as_fd());
                 }
             }
             Op::PauseAfter(i, k) => self.channels[i].pause_after = Some(k),

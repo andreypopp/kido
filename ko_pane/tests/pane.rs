@@ -199,7 +199,7 @@ impl Harness {
 
 #[test]
 fn a_recorded_stream_arrives_as_frames_records_and_a_snapshot_across_a_full_ring() {
-    let script = "printf '\\033]2;ko test\\007\\033]7;file://localhost/tmp\\007\\033]133;A\\007\
+    let script = "stty -echo; read gate; printf '\\033]2;ko test\\007\\033]7;file://localhost/tmp\\007\\033]133;A\\007\
         \\033]133;C;cmdline_url=echo\\007\\033]133;D;7\\007\\033]7501;state=working:app=ko\\007\
         \\033[?2026h'; i=0; while [ $i -lt 200 ]; do \
         printf '\\033]8;;https://example.org\\033\\\\line %s\\033]8;;\\033\\\\\\r\\n' $i; \
@@ -221,7 +221,12 @@ fn a_recorded_stream_arrives_as_frames_records_and_a_snapshot_across_a_full_ring
             FromPane::Record(record) => {
                 records.push((record.state, record.app.to_vec()));
             }
-            FromPane::Foreground(foreground) => foregrounds.push(foreground.name.to_vec()),
+            FromPane::Foreground(foreground) => {
+                if foregrounds.is_empty() {
+                    pane.send(&encoded(&ToPane::Text(b"\r")));
+                }
+                foregrounds.push(foreground.name.to_vec());
+            }
             FromPane::Full(_) => {
                 fulls += 1;
                 let tail = pane.cursor;

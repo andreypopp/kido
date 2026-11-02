@@ -418,11 +418,15 @@ impl Record<'_> {
 pub(crate) struct Ws {
     socket: WebSocket<Steady>,
     deadline: Instant,
+    began: Instant,
+    received: usize,
+    last: String,
 }
 
 impl Ws {
     pub(crate) fn within(&mut self, limit: Duration) {
-        self.deadline = Instant::now() + limit;
+        self.began = Instant::now();
+        self.deadline = self.began + limit;
     }
 
     pub(crate) fn next(&mut self) -> Result<Message, End> {
@@ -437,8 +441,16 @@ impl Ws {
                 .set_read_timeout(Some(left))
                 .map_err(|_| End::Closed)?;
             match self.socket.read() {
-                Ok(Msg::Text(text)) => return Ok(Message::Text(text.to_string())),
-                Ok(Msg::Binary(bytes)) => return Ok(Message::Binary(bytes.to_vec())),
+                Ok(Msg::Text(text)) => {
+                    self.received += 1;
+                    self.last = format!("text {:.120}", text.as_str());
+                    return Ok(Message::Text(text.to_string()));
+                }
+                Ok(Msg::Binary(bytes)) => {
+                    self.received += 1;
+                    self.last = format!("binary kind {:?}, {} bytes", bytes.first(), bytes.len());
+                    return Ok(Message::Binary(bytes.to_vec()));
+                }
                 Ok(Msg::Close(_)) => return Err(End::Closed),
                 Ok(_) => {}
                 Err(tungstenite::Error::Io(error))
@@ -457,7 +469,12 @@ impl Ws {
     pub(crate) fn read(&mut self) -> Message {
         match self.next() {
             Ok(message) => message,
-            Err(end) => panic!("read: {end:?}"),
+            Err(end) => panic!(
+                "read: {end:?} after {:?}; {} messages, the last: {}",
+                self.began.elapsed(),
+                self.received,
+                self.last
+            ),
         }
     }
 
@@ -884,6 +901,9 @@ impl Server {
             Ok((socket, _)) => Some(Ws {
                 socket,
                 deadline: Instant::now() + DEADLINE,
+                began: Instant::now(),
+                received: 0,
+                last: String::new(),
             }),
             Err(error) => panic!("upgrade {path}: {error} ({})", self.log()),
         }
