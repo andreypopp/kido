@@ -9,10 +9,13 @@ use crate::outer::{Keys, Outer};
 
 const EMPTY: &str = "\x1b]52;c;\x1b\\";
 
-// A pane that sends one OSC 52 read after a newline and records whatever the pty gives it.
-fn reading_pane(s: &Server, record: &Path) -> String {
+const OSC_52_ST: &str = "\\033]52;c;?\\033\\\\";
+
+// A pane that sends one read (a printf format) after a newline and records whatever the pty
+// gives it.
+fn reading_pane(s: &Server, record: &Path, request: &str) -> String {
     let pane = s.pane(&format!(
-        "stty raw -echo; printf READY; read line; printf '\\033]52;c;?\\007'; exec cat > {}",
+        "stty raw -echo; printf READY; read line; printf '{request}'; exec cat > {}",
         quote(text_of(record))
     ));
     s.screen_has(&pane, "READY");
@@ -29,6 +32,14 @@ fn reply_of(text: &str) -> String {
 
 fn answer(id: &Value, text: &str) -> Value {
     json!({"type": "clipboard_answer", "id": id, "contents": [{"mime": "text/plain", "data": base64(text.as_bytes())}]})
+}
+
+fn served(id: &Value, contents: &[(&str, &str)], available: &[&str]) -> Value {
+    let contents: Vec<Value> = contents
+        .iter()
+        .map(|(mime, data)| json!({"mime": mime, "data": base64(data.as_bytes())}))
+        .collect();
+    json!({"type": "clipboard_answer", "id": id, "contents": contents, "available": available})
 }
 
 // Everything the server sent before its reply to a request that it answers in order.
@@ -53,7 +64,7 @@ fn tags_until(ws: &mut Ws, last: &str) -> Vec<String> {
 fn one_clipboard_read_gets_exactly_one_answer_with_two_clients() {
     let s = start(&[]);
     let record = s.dir.join("answers");
-    let pane = reading_pane(&s, &record);
+    let pane = reading_pane(&s, &record, OSC_52_ST);
     let (mut focused, _) = s.app_client(json!({"pane": pane}), true, (80, 24));
     let (mut other, _) = s.app_client(json!({"pane": pane}), false, (80, 24));
     s.text(&pane, "\n");
@@ -93,7 +104,7 @@ fn an_unanswered_read_ends_at_the_timer_with_an_empty_clipboard() {
         &[],
     );
     let record = s.dir.join("answers");
-    let pane = reading_pane(&s, &record);
+    let pane = reading_pane(&s, &record, OSC_52_ST);
     let (mut silent, _) = s.app_client(json!({"pane": pane}), true, (80, 24));
     s.text(&pane, "\n");
     silent.event("clipboard_read");
@@ -109,7 +120,7 @@ fn an_unanswered_read_ends_at_the_timer_with_an_empty_clipboard() {
 fn a_read_for_a_pane_that_no_client_shows_is_refused_at_once() {
     let s = start(&[]);
     let record = s.dir.join("answers");
-    let pane = reading_pane(&s, &record);
+    let pane = reading_pane(&s, &record, OSC_52_ST);
     s.text(&pane, "\n");
     poll("the refusal, long before the 8 s timer", || {
         recorded(&record) == EMPTY
@@ -141,7 +152,7 @@ fn an_osc_52_write_of_a_pane_reaches_the_outer_terminal() {
 fn a_clipboard_read_of_a_pane_is_answered_from_the_outer_terminal() {
     let s = start(&[]);
     let record = s.dir.join("answers");
-    let pane = reading_pane(&s, &record);
+    let pane = reading_pane(&s, &record, OSC_52_ST);
     let o = Outer::new(&s.dir, Keys::Extended);
     o.set_clipboard(b"outer-text");
     o.attach("");
@@ -184,10 +195,136 @@ fn a_clipboard_payload_over_the_limit_is_dropped_and_never_closes_the_client() {
 fn an_answer_over_the_limit_is_a_refusal() {
     let s = start(&[]);
     let record = s.dir.join("answers");
-    let pane = reading_pane(&s, &record);
+    let pane = reading_pane(&s, &record, OSC_52_ST);
     let (mut client, _) = s.app_client(json!({"pane": pane}), true, (80, 24));
     s.text(&pane, "\n");
     let read = client.event("clipboard_read");
     client.send(&answer(&read["id"], &"x".repeat(600_000)));
     poll("the refusal in the pane", || recorded(&record) == EMPTY);
+}
+
+// Sends one read from a new pane, lets `reply` build the client's answer from the server's event,
+// and returns the event and everything the pane then received, up to a barrier. The barrier
+// follows a request of the same WebSocket that the server answers in order, so the server has
+// dealt with the answer before the barrier reaches the pane.
+fn read_through_a_client(
+    s: &Server,
+    case: &str,
+    request: &str,
+    reply: impl FnOnce(&Value) -> Value,
+) -> (Value, String) {
+    let record = s.dir.join(case);
+    let pane = reading_pane(s, &record, request);
+    let (mut client, _) = s.app_client(json!({"pane": pane}), true, (80, 24));
+    s.text(&pane, "\n");
+    let read = client.event("clipboard_read");
+    client.send(&reply(&read["id"]));
+    client.send(&json!({"type": "select", "pane": pane}));
+    tags_until(&mut client, "selected");
+    s.text(&pane, "BARRIER");
+    poll("the barrier in the pane", || {
+        recorded(&record).ends_with("BARRIER")
+    });
+    (
+        read,
+        recorded(&record).trim_end_matches("BARRIER").to_owned(),
+    )
+}
+
+#[test]
+fn an_osc_52_read_is_answered_with_the_terminator_of_its_request() {
+    let s = start(&[]);
+    let (_, bel) = read_through_a_client(&s, "bel", "\\033]52;c;?\\007", |id| answer(id, "hi"));
+    assert_eq!(bel, "\x1b]52;c;aGk=\x07");
+    let (_, st) = read_through_a_client(&s, "st", OSC_52_ST, |id| answer(id, "hi"));
+    assert_eq!(st, "\x1b]52;c;aGk=\x1b\\");
+}
+
+#[test]
+fn osc_5522_reads_get_ok_data_and_done_or_eperm() {
+    let s = start(&[]);
+
+    let (read, one) = read_through_a_client(
+        &s,
+        "one",
+        "\\033]5522;type=read:id=r1;dGV4dC9wbGFpbg==\\033\\\\",
+        |id| served(id, &[("text/plain", "hi")], &[]),
+    );
+    assert_eq!(read["mimes"], json!(["text/plain"]));
+    assert_eq!(read["list"], Value::Null);
+    assert_eq!(
+        one,
+        "\x1b]5522;type=read:status=OK:id=r1\x1b\\\
+         \x1b]5522;type=read:status=DATA:id=r1:mime=dGV4dC9wbGFpbg==;aGk=\x1b\\\
+         \x1b]5522;type=read:status=DONE:id=r1\x1b\\"
+    );
+
+    // Several types and the list: served in request order, only as requested, and the list
+    // first. The terminator of the request ends every packet.
+    let (read, several) = read_through_a_client(
+        &s,
+        "several",
+        "\\033]5522;type=read:id=r2;LiB0ZXh0L2h0bWwgdGV4dC9wbGFpbg==\\007",
+        |id| {
+            served(
+                id,
+                &[
+                    ("image/png", "png"),
+                    ("text/plain", "hi"),
+                    ("text/html", "<b>hi</b>"),
+                ],
+                &["text/plain", "text/html"],
+            )
+        },
+    );
+    assert_eq!(read["mimes"], json!(["text/html", "text/plain"]));
+    assert_eq!(read["list"], json!(true));
+    assert_eq!(
+        several,
+        "\x1b]5522;type=read:status=OK:id=r2\x07\
+         \x1b]5522;type=read:status=DATA:id=r2:mime=Lg==;dGV4dC9wbGFpbiB0ZXh0L2h0bWwK\x07\
+         \x1b]5522;type=read:status=DATA:id=r2:mime=dGV4dC9odG1s;PGI+aGk8L2I+\x07\
+         \x1b]5522;type=read:status=DATA:id=r2:mime=dGV4dC9wbGFpbg==;aGk=\x07\
+         \x1b]5522;type=read:status=DONE:id=r2\x07"
+    );
+
+    let (_, refused) = read_through_a_client(
+        &s,
+        "refused",
+        "\\033]5522;type=read:id=r3;dGV4dC9wbGFpbg==\\033\\\\",
+        |id| json!({"type": "clipboard_answer", "id": id}),
+    );
+    assert_eq!(refused, "\x1b]5522;type=read:status=EPERM:id=r3\x1b\\");
+}
+
+#[test]
+fn the_terminal_client_answers_a_text_read_from_the_outer_terminal_and_refuses_a_list_read() {
+    let s = start(&[]);
+    let record = s.dir.join("answers");
+    let pane = s.pane(&format!(
+        "stty raw -echo; printf READY; read line; \
+         printf '\\033]5522;type=read:id=a;dGV4dC9wbGFpbg==\\033\\\\\\033]5522;type=read:id=b;LiB0ZXh0L3BsYWlu\\033\\\\'; \
+         exec cat > {}",
+        quote(text_of(&record))
+    ));
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.set_clipboard(b"outer-text");
+    o.attach("");
+    o.contains("READY");
+    s.text(&pane, "\n");
+
+    // The refusal of the list read does not wait for the outer terminal, so the order of the two
+    // answers is not fixed.
+    let text = "\x1b]5522;type=read:status=OK:id=a\x1b\\\
+                \x1b]5522;type=read:status=DATA:id=a:mime=dGV4dC9wbGFpbg==;b3V0ZXItdGV4dA==\x1b\\\
+                \x1b]5522;type=read:status=DONE:id=a\x1b\\";
+    let eperm = "\x1b]5522;type=read:status=EPERM:id=b\x1b\\";
+    poll("both answers in the pane", || {
+        recorded(&record).len() == text.len() + eperm.len()
+    });
+    let got = recorded(&record);
+    assert!(
+        got == format!("{text}{eperm}") || got == format!("{eperm}{text}"),
+        "{got:?}"
+    );
 }

@@ -940,18 +940,17 @@ below does not apply. Where the build differs from the scope below
 `images=all` is still refused, and
 Kido.app's part (below) waits for K5.
 
-**Follow-up: a Ghostty fork change for clipboard reads** (on
-`10d8dd8a6`, after K6s merges). The pinned `GhosttyClipboardRead`
-does not name the read's protocol. An unnamed OSC 5522 read of the
-one MIME type `text/plain` has the same fields as an OSC 52 read, so
-`ko-pane` answers it as OSC 52, and that program gets a reply in the
-wrong format (protocol.md 9). The preferred change is a reply handle
-that stays valid after the callback returns, with the OSC 52
-terminator in the request. Then `ko-pane` answers each protocol
-through the terminal's own reply, does not drop the terminal's empty
-reply, and does not write the OSC 52 bytes itself. The minimum change
-is a protocol field (OSC 52 or kitty) in the request, so that
-`ko-pane` can refuse OSC 5522 reads.
+**Follow-up: a Ghostty fork change for clipboard reads** (built in
+the server; the fork commit waits for its pin bump). The request of
+`GhosttyClipboardRead` names its protocol, and
+`ghostty_clipboard_read_defer` gives a handle that
+`ghostty_clipboard_read_complete` answers after the callback
+returns, so the terminal encodes OSC 52 (with the request's
+terminator) and OSC 5522 replies itself. `ko-pane` forwards OSC
+5522 reads with `mimes` and `list` (protocol.md 9). What remains is
+the app's part: pass `mimes` and `list` through, answer with
+`available` for a `list` read, and turn 5522 reads on again at the
+mirror, with `ClipboardTests`' 5522 cases as the acceptance.
 
 **First task: the Ghostty fork** (built; one fork commit on
 `1972e7a1a`). The header is `include/ghostty/vt/kitty_graphics.h`

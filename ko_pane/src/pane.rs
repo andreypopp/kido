@@ -2,7 +2,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::{
-    self, ContentsBuf, Dead, FromPane, History, Init, Kind, Mimes, Prompt, Record, Req, Request,
+    self, ContentsBuf, Dead, FromPane, History, Init, Kind, Prompt, Record, Req, Request,
     ScreenFormat, ScreenRows, Size,
 };
 use ko_pane_wire::ring::{DEAD_LEN, Marker, RESIZE_LEN, RecordKind, SLICE_HEADER, Slice, Writer};
@@ -109,7 +109,7 @@ fn frame_of(report: &Report, at: Mono) -> Option<FromPane<'_>> {
     })
 }
 
-fn clipboard_event(report: &Report, clipboard: &mut Reads, out: &mut Out) {
+fn clipboard_event(report: Report, clipboard: &mut Reads, out: &mut Out) {
     match report {
         Report::ClipboardWrite { location, contents } => {
             let pairs = contents
@@ -117,17 +117,23 @@ fn clipboard_event(report: &Report, clipboard: &mut Reads, out: &mut Out) {
                 .map(|(mime, data)| (mime.as_slice(), data.as_slice()));
             if let Ok(packed) = ContentsBuf::new(pairs) {
                 out.event(&FromPane::ClipboardWrite {
-                    location: *location,
+                    location,
                     contents: packed.view(),
                 });
             }
         }
-        Report::ClipboardRead { location } => {
-            let req = clipboard.open(*location);
+        Report::ClipboardRead {
+            location,
+            mimes,
+            list,
+            read,
+        } => {
+            let req = clipboard.open(read);
             out.event(&FromPane::ClipboardRead {
                 req,
-                location: *location,
-                mimes: Mimes::TEXT,
+                location,
+                list,
+                mimes: mimes.view(),
             });
         }
         _ => {}
@@ -343,9 +349,10 @@ fn simple(live: &mut Option<Live>, out: &mut Out, request: Request<'_>) -> Resul
                 object: answer.as_ref().map(Answer::object),
             });
         }
-        Request::ClipboardAnswer { req, contents } => {
-            if let Some(bytes) = live.clipboard.answer(req, contents) {
-                live.push(&bytes);
+        Request::ClipboardAnswer { req, served } => {
+            if let Some(read) = live.clipboard.close(req) {
+                live.vt.complete_clipboard_read(read, served);
+                live.collect();
             }
         }
         Request::Search { req, needle } => match Searching::start(&mut live.vt, req, needle) {
@@ -732,7 +739,7 @@ impl Pane {
             event |= matches!(report, Report::Prompt { .. });
             match frame_of(&report, at) {
                 Some(frame) => out.event(&frame),
-                None => clipboard_event(&report, clipboard, out),
+                None => clipboard_event(report, clipboard, out),
             }
         }
         for name in objects.retire(vt) {

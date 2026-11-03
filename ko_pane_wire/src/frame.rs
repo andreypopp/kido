@@ -322,12 +322,27 @@ pub const MAX_CLIPBOARD: usize = 512 << 10;
 
 fn strings_of(bytes: &[u8]) -> Result<usize, Malformed> {
     let mut fields = Fields(bytes);
-    let count = fields.u32()?;
-    for _ in 0..count {
-        fields.bytes()?;
-    }
+    let count = fields.walk_strings()?;
     fields.end()?;
-    usize::try_from(count).map_err(|_| Malformed::Field)
+    Ok(count)
+}
+
+fn pack<'a>(strings: impl Iterator<Item = &'a [u8]> + Clone) -> Result<Vec<u8>, Oversize> {
+    let (count, bytes) = strings
+        .clone()
+        .fold((0usize, 0usize), |(count, bytes), string| {
+            (count.saturating_add(1), bytes.saturating_add(string.len()))
+        });
+    if bytes > MAX_CLIPBOARD {
+        return Err(Oversize);
+    }
+    let mut out = Vec::with_capacity(
+        bytes
+            .saturating_add(count.saturating_mul(4))
+            .saturating_add(4),
+    );
+    Body { out: &mut out }.strings(strings)?;
+    Ok(out)
 }
 
 fn strings(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
@@ -344,12 +359,8 @@ pub fn first_text<'a>(mut pairs: impl Iterator<Item = (&'a [u8], &'a [u8])>) -> 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mimes<'a>(&'a [u8]);
 
-impl Mimes<'static> {
-    pub const TEXT: Mimes<'static> = Mimes(b"\x01\0\0\0\x0a\0\0\0text/plain");
-}
-
 impl<'a> Mimes<'a> {
-    pub fn of(bytes: &'a [u8]) -> Result<Mimes<'a>, Malformed> {
+    fn of(bytes: &'a [u8]) -> Result<Mimes<'a>, Malformed> {
         strings_of(bytes).map(|_| Mimes(bytes))
     }
 
@@ -358,11 +369,30 @@ impl<'a> Mimes<'a> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MimesBuf(Vec<u8>);
+
+impl MimesBuf {
+    pub fn new<'a>(mimes: impl Iterator<Item = &'a [u8]> + Clone) -> Result<MimesBuf, Oversize> {
+        pack(mimes).map(MimesBuf)
+    }
+
+    pub fn view(&self) -> Mimes<'_> {
+        Mimes(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Served<'a> {
+    pub available: Mimes<'a>,
+    pub contents: Contents<'a>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Contents<'a>(&'a [u8]);
 
 impl<'a> Contents<'a> {
-    pub fn of(bytes: &'a [u8]) -> Result<Contents<'a>, Malformed> {
+    fn of(bytes: &'a [u8]) -> Result<Contents<'a>, Malformed> {
         if strings_of(bytes)?.is_multiple_of(2) {
             Ok(Contents(bytes))
         } else {
@@ -374,10 +404,6 @@ impl<'a> Contents<'a> {
         let mut items = strings(self.0);
         std::iter::from_fn(move || Some((items.next()?, items.next()?)))
     }
-
-    pub fn text(&self) -> Option<&'a [u8]> {
-        first_text(self.pairs())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -387,34 +413,45 @@ impl ContentsBuf {
     pub fn new<'a>(
         pairs: impl Iterator<Item = (&'a [u8], &'a [u8])> + Clone,
     ) -> Result<ContentsBuf, Oversize> {
-        let (count, bytes) =
-            pairs
-                .clone()
-                .fold((0usize, 0usize), |(count, bytes), (mime, data)| {
-                    (
-                        count.saturating_add(1),
-                        bytes.saturating_add(mime.len()).saturating_add(data.len()),
-                    )
-                });
-        if bytes > MAX_CLIPBOARD {
-            return Err(Oversize);
-        }
-        let mut out = Vec::with_capacity(
-            bytes
-                .saturating_add(count.saturating_mul(8))
-                .saturating_add(4),
-        );
-        let mut body = Body { out: &mut out };
-        body.u32(u32::try_from(count.saturating_mul(2)).map_err(|_| Oversize)?);
-        for (mime, data) in pairs {
-            body.string(mime)?;
-            body.string(data)?;
-        }
-        Ok(ContentsBuf(out))
+        pack(pairs.flat_map(|(mime, data)| [mime, data])).map(ContentsBuf)
     }
 
     pub fn view(&self) -> Contents<'_> {
         Contents(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServedBuf {
+    available: MimesBuf,
+    contents: ContentsBuf,
+}
+
+impl ServedBuf {
+    // MAX_CLIPBOARD is one budget for every name and every byte of data in an answer.
+    pub fn new<'a>(
+        pairs: impl Iterator<Item = (&'a [u8], &'a [u8])> + Clone,
+        available: impl Iterator<Item = &'a [u8]> + Clone,
+    ) -> Result<ServedBuf, Oversize> {
+        let total = pairs
+            .clone()
+            .flat_map(|(mime, data)| [mime, data])
+            .chain(available.clone())
+            .fold(0usize, |total, string| total.saturating_add(string.len()));
+        if total > MAX_CLIPBOARD {
+            return Err(Oversize);
+        }
+        Ok(ServedBuf {
+            available: MimesBuf::new(available)?,
+            contents: ContentsBuf::new(pairs)?,
+        })
+    }
+
+    pub fn view(&self) -> Served<'_> {
+        Served {
+            available: self.available.view(),
+            contents: self.contents.view(),
+        }
     }
 }
 
@@ -698,7 +735,7 @@ pub enum ToPane<'a> {
     },
     ClipboardAnswer {
         req: Req,
-        contents: Option<Contents<'a>>,
+        served: Option<Served<'a>>,
     },
     Search {
         req: Req,
@@ -805,9 +842,12 @@ impl Body<'_> {
         Ok(())
     }
 
-    fn strings(&mut self, values: &[Vec<u8>]) -> Result<(), Oversize> {
-        self.u32(u32::try_from(values.len()).map_err(|_| Oversize)?);
-        values.iter().try_for_each(|value| self.string(value))
+    fn strings<'a>(
+        &mut self,
+        values: impl Iterator<Item = &'a [u8]> + Clone,
+    ) -> Result<(), Oversize> {
+        self.u32(u32::try_from(values.clone().count()).map_err(|_| Oversize)?);
+        values.into_iter().try_for_each(|value| self.string(value))
     }
 
     fn size(&mut self, size: Size) {
@@ -846,8 +886,8 @@ impl Body<'_> {
         }));
         self.u64(limits.continuation_max_bytes as u64);
         self.string(init.cwd.as_os_str().as_bytes())?;
-        self.strings(&init.argv)?;
-        self.strings(&init.env)?;
+        self.strings(init.argv.iter().map(Vec::as_slice))?;
+        self.strings(init.env.iter().map(Vec::as_slice))?;
         self.string(init.id.as_bytes())
     }
 
@@ -999,10 +1039,12 @@ impl Body<'_> {
             FromPane::ClipboardRead {
                 req,
                 location,
+                list,
                 mimes,
             } => {
                 self.u32(req.0);
                 self.location(location);
+                self.bool(list);
                 self.bytes(mimes.0);
                 Kind::ClipboardRead
             }
@@ -1093,11 +1135,12 @@ impl Body<'_> {
                 self.string(name)?;
                 Kind::Image
             }
-            ToPane::ClipboardAnswer { req, contents } => {
+            ToPane::ClipboardAnswer { req, served } => {
                 self.u32(req.0);
-                self.bool(contents.is_some());
-                if let Some(contents) = contents {
-                    self.bytes(contents.0);
+                self.bool(served.is_some());
+                if let Some(served) = served {
+                    self.bytes(served.available.0);
+                    self.bytes(served.contents.0);
                 }
                 Kind::ClipboardAnswer
             }
@@ -1248,6 +1291,7 @@ pub enum FromPane<'a> {
     ClipboardRead {
         req: Req,
         location: ClipboardLocation,
+        list: bool,
         mimes: Mimes<'a>,
     },
     Matches {
@@ -1541,10 +1585,12 @@ pub fn decode(frame: &[u8]) -> Result<Option<FromPane<'_>>, Malformed> {
             let mut fields = Fields(body);
             let req = Req(fields.u32()?);
             let location = fields.location()?;
+            let list = fields.flag()?;
             let mimes = Mimes::of(fields.rest())?;
             FromPane::ClipboardRead {
                 req,
                 location,
+                list,
                 mimes,
             }
         }
@@ -1610,7 +1656,7 @@ pub enum Request<'a> {
     },
     ClipboardAnswer {
         req: Req,
-        contents: Option<Contents<'a>>,
+        served: Option<Served<'a>>,
     },
     Search {
         req: Req,
@@ -1703,6 +1749,21 @@ impl<'a> Fields<'a> {
 
     fn size(&mut self) -> Result<Size, Malformed> {
         size(self.take(8)?).ok_or(Malformed::Field)
+    }
+
+    fn walk_strings(&mut self) -> Result<usize, Malformed> {
+        let count = self.u32()?;
+        for _ in 0..count {
+            self.bytes()?;
+        }
+        usize::try_from(count).map_err(|_| Malformed::Field)
+    }
+
+    fn mimes(&mut self) -> Result<Mimes<'a>, Malformed> {
+        let start = self.0;
+        self.walk_strings()?;
+        let used = start.len().saturating_sub(self.0.len());
+        Ok(Mimes(start.get(..used).ok_or(Malformed::Short)?))
     }
 
     fn rest(&mut self) -> &'a [u8] {
@@ -1874,12 +1935,16 @@ pub fn decode_request(frame: &[u8]) -> Result<Request<'_>, Malformed> {
         }
         Kind::ClipboardAnswer => {
             let req = Req(fields.u32()?);
-            let contents = if fields.flag()? {
-                Some(Contents::of(fields.rest())?)
+            let served = if fields.flag()? {
+                let available = fields.mimes()?;
+                Some(Served {
+                    available,
+                    contents: Contents::of(fields.rest())?,
+                })
             } else {
                 None
             };
-            Request::ClipboardAnswer { req, contents }
+            Request::ClipboardAnswer { req, served }
         }
         Kind::Search => {
             let req = Req(fields.u32()?);
@@ -2444,6 +2509,8 @@ mod tests {
     #[test]
     fn image_clipboard_and_search_frames_round_trip() {
         let contents = ContentsBuf::new([(&b"text/plain"[..], &b"hello"[..])].into_iter()).unwrap();
+        let available = MimesBuf::new([&b"image/png"[..], b"text/plain"].into_iter()).unwrap();
+        let plain = MimesBuf::new([&b"text/plain"[..]].into_iter()).unwrap();
         let found = [
             Match {
                 start: Cell { row: 4, col: 2 },
@@ -2482,7 +2549,14 @@ mod tests {
             FromPane::ClipboardRead {
                 req: Req(9),
                 location: ClipboardLocation::Standard,
-                mimes: Mimes::TEXT,
+                list: false,
+                mimes: plain.view(),
+            },
+            FromPane::ClipboardRead {
+                req: Req(11),
+                location: ClipboardLocation::Primary,
+                list: true,
+                mimes: available.view(),
             },
             FromPane::Matches {
                 req: Req(10),
@@ -2500,11 +2574,9 @@ mod tests {
             contents.view().pairs().collect::<Vec<_>>(),
             [(&b"text/plain"[..], &b"hello"[..])]
         );
-        assert_eq!(contents.view().text(), Some(&b"hello"[..]));
-        assert_eq!(Mimes::TEXT.iter().collect::<Vec<_>>(), [&b"text/plain"[..]]);
         assert_eq!(
-            Mimes::of(b"\x01\0\0\0\x0a\0\0\0text/plain"),
-            Ok(Mimes::TEXT)
+            plain.view().iter().collect::<Vec<_>>(),
+            [&b"text/plain"[..]]
         );
 
         let key = ImageKey {
@@ -2512,7 +2584,10 @@ mod tests {
             frame: 2,
             generation: 99,
         };
-        let answer = contents.view();
+        let served = Served {
+            available: available.view(),
+            contents: contents.view(),
+        };
         for (frame, expected) in [
             (
                 ToPane::Image {
@@ -2533,16 +2608,16 @@ mod tests {
             (
                 ToPane::ClipboardAnswer {
                     req: Req(4),
-                    contents: None,
+                    served: None,
                 },
-                "ClipboardAnswer { req: Req(4), contents: None }",
+                "ClipboardAnswer { req: Req(4), served: None }",
             ),
             (
                 ToPane::ClipboardAnswer {
                     req: Req(4),
-                    contents: Some(answer),
+                    served: Some(served),
                 },
-                &format!("ClipboardAnswer {{ req: Req(4), contents: Some({answer:?}) }}"),
+                &format!("ClipboardAnswer {{ req: Req(4), served: Some({served:?}) }}"),
             ),
         ] {
             let mut out = Vec::new();
@@ -2568,13 +2643,17 @@ mod tests {
         assert_eq!(
             decode(&frame(
                 Kind::ClipboardWrite,
-                &[&[0][..], Mimes::TEXT.0].concat()
+                &[&[0][..], b"\x01\0\0\0\x0a\0\0\0text/plain"].concat()
             )),
             Err(Malformed::Field)
         );
         let large = vec![0u8; MAX_CLIPBOARD];
         assert!(ContentsBuf::new([(&b"text/plain"[..], &large[..])].into_iter()).is_err());
         assert!(ContentsBuf::new([(&b"a"[..], &large[..MAX_CLIPBOARD - 1])].into_iter()).is_ok());
+        let half = vec![0u8; MAX_CLIPBOARD / 2];
+        let (name, rest) = (&b"a"[..], &half[..MAX_CLIPBOARD / 2 - 1]);
+        assert!(ServedBuf::new([(name, rest)].into_iter(), [&half[..]].into_iter()).is_ok());
+        assert!(ServedBuf::new([(name, &half[..])].into_iter(), [&half[..]].into_iter()).is_err());
         assert_eq!(
             decode(&frame(Kind::ClipboardWrite, &[3, 0, 0, 0, 0])),
             Err(Malformed::Field)
@@ -2584,7 +2663,7 @@ mod tests {
             Err(Malformed::Field)
         );
         assert_eq!(
-            decode(&frame(Kind::ClipboardRead, &[1, 0, 0, 0, 0, 1, 0, 0, 0])),
+            decode(&frame(Kind::ClipboardRead, &[1, 0, 0, 0, 0, 0, 1, 0, 0, 0])),
             Err(Malformed::Short)
         );
     }

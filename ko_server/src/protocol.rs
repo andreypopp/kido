@@ -1340,8 +1340,8 @@ pub enum ClientRequest {
     },
     ClipboardAnswer {
         id: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        contents: Option<Vec<ClipboardContent>>,
+        #[serde(flatten)]
+        served: Option<ClipboardServed>,
     },
 }
 
@@ -1507,6 +1507,8 @@ pub enum ClientEvent {
         id: u64,
         location: ClipboardLocation,
         mimes: Vec<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        list: bool,
     },
     Notify {
         pane: PaneId,
@@ -1548,6 +1550,13 @@ impl From<ClipboardLocation> for frame::ClipboardLocation {
             ClipboardLocation::Primary => frame::ClipboardLocation::Primary,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ClipboardServed {
+    pub contents: Vec<ClipboardContent>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

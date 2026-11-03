@@ -34,6 +34,7 @@ pub enum Notice {
         id: u64,
         location: ClipboardLocation,
         mimes: Vec<String>,
+        list: bool,
     },
 }
 
@@ -349,12 +350,14 @@ impl Model {
                 id,
                 location,
                 mimes,
+                list,
             } => {
                 return Applied::Notice(Notice::ClipboardRead {
                     pane,
                     id,
                     location,
                     mimes,
+                    list,
                 });
             }
             ClientEvent::Welcome(_) => {}

@@ -6,7 +6,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ko_pane_wire::frame::{CellPx, Dim, Limits, Scrollback, Size};
+use ko_pane_wire::frame::{CellPx, Dim, Limits, Scrollback, ServedBuf, Size};
 use ko_sys::fd;
 use ko_sys::pid::Pid;
 use ko_sys::pty::{self, Program, Winsize};
@@ -180,12 +180,17 @@ fn pump(shared: &Shared, master: &OwnedFd, keys: Keys) {
                         screen.terminal.write(&input);
                     }
                 }
-                let mut replies = std::mem::take(screen.terminal.replies());
                 for report in std::mem::take(screen.terminal.reports()) {
                     match report {
-                        Report::ClipboardRead { location } => {
-                            let answer = location.osc52(&screen.clipboard);
-                            replies.extend_from_slice(answer.as_bytes());
+                        Report::ClipboardRead { read, .. } => {
+                            let served = ServedBuf::new(
+                                [(&b"text/plain"[..], screen.clipboard.as_slice())].into_iter(),
+                                [&b"text/plain"[..]].into_iter(),
+                            )
+                            .unwrap();
+                            screen
+                                .terminal
+                                .complete_clipboard_read(read, Some(served.view()));
                         }
                         Report::ClipboardWrite { contents, .. } => {
                             if let Some((_, data)) = contents.into_iter().next() {
@@ -195,7 +200,7 @@ fn pump(shared: &Shared, master: &OwnedFd, keys: Keys) {
                         _ => {}
                     }
                 }
-                replies
+                std::mem::take(screen.terminal.replies())
             };
             if write_all(master, &replies).is_err() {
                 return;

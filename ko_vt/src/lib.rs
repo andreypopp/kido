@@ -7,8 +7,8 @@ use std::num::NonZeroUsize;
 use std::ptr::{self, NonNull};
 
 use ko_pane_wire::frame::{
-    ClipboardLocation, Dim, Limits, Medium, ProgramKind, ProgramState, ProgressReport,
-    ProgressState, PromptStep, Scrollback, Size,
+    ClipboardLocation, Dim, Limits, Medium, MimesBuf, ProgramKind, ProgramState, ProgressReport,
+    ProgressState, PromptStep, Scrollback, Served, Size,
 };
 use ko_vt_sys as sys;
 
@@ -133,12 +133,66 @@ pub enum Report {
     },
     ClipboardRead {
         location: ClipboardLocation,
+        mimes: MimesBuf,
+        list: bool,
+        read: ReadId,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadId(u64);
+
+pub const MAX_OPEN_READS: usize = 16;
+
+fn ghostty_string(bytes: &[u8]) -> sys::GhosttyString {
+    sys::GhosttyString {
+        ptr: bytes.as_ptr(),
+        len: bytes.len(),
+    }
+}
+
+// The C API passes arrays as a pointer that is null when the length is zero.
+unsafe fn entries<'a, T>(ptr: *const T, len: usize) -> &'a [T] {
+    if len == 0 {
+        &[]
+    } else {
+        // SAFETY: the caller passes an array of len entries that outlives 'a (terminal.h).
+        unsafe { std::slice::from_raw_parts(ptr, len) }
+    }
+}
+
+fn complete_read(handle: NonNull<sys::GhosttyClipboardReadHandleImpl>, served: Option<Served<'_>>) {
+    let Some(served) = served else {
+        // SAFETY: the handle is live and consumed here; a null reply refuses (terminal.h).
+        return unsafe { sys::ghostty_clipboard_read_complete(handle.as_ptr(), ptr::null()) };
+    };
+    let contents: Vec<_> = served
+        .contents
+        .pairs()
+        .map(|(mime, data)| sys::GhosttyClipboardContent {
+            mime: ghostty_string(mime),
+            data: ghostty_string(data),
+        })
+        .collect();
+    let available: Vec<_> = served.available.iter().map(ghostty_string).collect();
+    let reply = sys::GhosttyClipboardReadReply {
+        size: std::mem::size_of::<sys::GhosttyClipboardReadReply>(),
+        result: sys::GHOSTTY_CLIPBOARD_READ_RESULT_SUCCESS,
+        contents: contents.as_ptr(),
+        contents_len: contents.len(),
+        available: available.as_ptr(),
+        available_len: available.len(),
+        remember: false,
+    };
+    // SAFETY: the handle is live and consumed here, and the reply and the arrays that it points
+    // to are borrowed only for the call (terminal.h).
+    unsafe { sys::ghostty_clipboard_read_complete(handle.as_ptr(), &reply) };
 }
 
 #[derive(Debug, Default)]
 struct Notes {
-    swallow_reply: bool,
+    reads: Vec<(ReadId, NonNull<sys::GhosttyClipboardReadHandleImpl>)>,
+    next_read: u64,
     replies: Vec<u8>,
     reports: Vec<Report>,
     changes: Changes,
@@ -167,9 +221,6 @@ unsafe extern "C" fn write_pty(
     // SAFETY: userdata is the `Notes` that `serve` registered, which the terminal owns and
     // nothing else touches during a write; data holds len readable bytes (terminal.h).
     let notes = unsafe { &mut *userdata.cast::<Notes>() };
-    if std::mem::take(&mut notes.swallow_reply) {
-        return;
-    }
     // SAFETY: data holds len readable bytes (terminal.h).
     notes
         .replies
@@ -327,15 +378,11 @@ unsafe extern "C" fn clipboard_write(
 ) {
     // SAFETY: write is valid for the call (terminal.h).
     let write = unsafe { &*write };
-    let contents = if write.contents_len == 0 {
-        Vec::new()
-    } else {
-        // SAFETY: contents holds contents_len entries for the call (terminal.h).
-        unsafe { std::slice::from_raw_parts(write.contents, write.contents_len) }
-            .iter()
-            .map(|entry| (text(&entry.mime), text(&entry.data)))
-            .collect()
-    };
+    // SAFETY: contents holds contents_len entries for the call (terminal.h).
+    let contents = unsafe { entries(write.contents, write.contents_len) }
+        .iter()
+        .map(|entry| (text(&entry.mime), text(&entry.data)))
+        .collect();
     record(
         userdata,
         Report::ClipboardWrite {
@@ -355,46 +402,51 @@ unsafe extern "C" fn clipboard_write(
     }
 }
 
-// An OSC 52 read is the one request with these fields. It gets no reply here: the terminal then
-// writes an empty answer to the pty, which `write_pty` drops, and the real answer follows when a
-// client has given one. Any other read is denied.
+// The callback takes the read out of the callback, and the terminal answers the program when
+// `complete_clipboard_read` runs, not before. A read that cannot be kept (too many open, or a
+// request that does not pack) is not deferred, and the terminal refuses it when this returns.
 unsafe extern "C" fn clipboard_read(
     _terminal: sys::GhosttyTerminal,
     userdata: *mut c_void,
     read: *const sys::GhosttyClipboardRead,
 ) {
     // SAFETY: read is valid for the call (terminal.h).
-    let read = unsafe { &*read };
-    let plain_text = read.mimes_len == 1
-        // SAFETY: mimes holds mimes_len entries for the call (terminal.h).
-        && text(&unsafe { *read.mimes }) == b"text/plain";
-    if plain_text && !read.list && read.name.len == 0 && !read.granted && !read.can_remember {
-        record(
-            userdata,
-            Report::ClipboardRead {
-                location: location(read.location),
-            },
-        );
-        // SAFETY: as in `write_pty`.
-        unsafe { (*userdata.cast::<Notes>()).swallow_reply = true };
+    let request = unsafe { &*read };
+    // SAFETY: userdata is the `Notes` that `serve` registered (see `write_pty`).
+    let notes = unsafe { &mut *userdata.cast::<Notes>() };
+    // SAFETY: mimes holds mimes_len entries for the call (terminal.h).
+    let mimes = unsafe { entries(request.mimes, request.mimes_len) };
+    let names: Vec<Vec<u8>> = mimes.iter().map(text).collect();
+    let Ok(mimes) = MimesBuf::new(names.iter().map(Vec::as_slice)) else {
+        return;
+    };
+    if notes.reads.len() >= MAX_OPEN_READS {
         return;
     }
-    let reply = sys::GhosttyClipboardReadReply {
-        size: std::mem::size_of::<sys::GhosttyClipboardReadReply>(),
-        result: sys::GHOSTTY_CLIPBOARD_READ_RESULT_DENIED,
-        ..Default::default()
+    // SAFETY: read is the request that the terminal lent for this call (terminal.h).
+    let Some(handle) = NonNull::new(unsafe { sys::ghostty_clipboard_read_defer(read) }) else {
+        return;
     };
-    if let Some(answer) = read.reply {
-        // SAFETY: read is the request that the terminal lent for this call (terminal.h).
-        unsafe { answer(read, &reply) };
-    }
+    let id = ReadId(notes.next_read);
+    notes.next_read = notes.next_read.wrapping_add(1);
+    notes.reads.push((id, handle));
+    notes.reports.push(Report::ClipboardRead {
+        location: location(request.location),
+        mimes,
+        list: request.list,
+        read: id,
+    });
 }
 
 impl Drop for Terminal {
     fn drop(&mut self) {
         self.notes.render = None;
         // SAFETY: the terminal owns its handle, and no decoder borrows it after `decode` returns.
-        unsafe { sys::ghostty_terminal_free(self.vt.as_ptr()) }
+        unsafe { sys::ghostty_terminal_free(self.vt.as_ptr()) };
+        // A handle that outlives its terminal only releases itself (terminal.h).
+        for (_, handle) in self.notes.reads.drain(..) {
+            complete_read(handle, None);
+        }
     }
 }
 
@@ -623,10 +675,7 @@ impl Terminal {
             sys::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE,
             ptr::from_ref(&flag(Medium::File)).cast(),
         )?;
-        let tmpdir = sys::GhosttyString {
-            ptr: tmpdir.as_ptr(),
-            len: tmpdir.len(),
-        };
+        let tmpdir = ghostty_string(tmpdir.as_bytes());
         set(
             sys::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_TEMP_FILE,
             if flag(Medium::TempFile) {
@@ -696,6 +745,12 @@ impl Terminal {
         )? == sys::GHOSTTY_TERMINAL_SCREEN_ALTERNATE)
     }
 
+    pub fn complete_clipboard_read(&mut self, id: ReadId, served: Option<Served<'_>>) {
+        if let Some(at) = self.notes.reads.iter().position(|(open, _)| *open == id) {
+            complete_read(self.notes.reads.swap_remove(at).1, served);
+        }
+    }
+
     pub fn replies(&mut self) -> &mut Vec<u8> {
         &mut self.notes.replies
     }
@@ -730,7 +785,6 @@ impl Terminal {
     pub fn write(&mut self, bytes: &[u8]) {
         // SAFETY: the handle is live and bytes is a valid slice for the call.
         unsafe { sys::ghostty_terminal_vt_write(self.vt.as_ptr(), bytes.as_ptr(), bytes.len()) };
-        self.notes.swallow_reply = false;
     }
 
     pub fn resize(&mut self, size: Size) -> Result<(), Error> {
@@ -1127,7 +1181,7 @@ impl Default for ReadyScan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ko_pane_wire::frame::Key;
+    use ko_pane_wire::frame::{ContentsBuf, Key, MimesBuf};
 
     fn dim(value: u16) -> Dim {
         Dim::new(value).unwrap()
@@ -1364,27 +1418,116 @@ mod tests {
         );
     }
 
+    fn read_of(report: Report) -> (ClipboardLocation, Vec<Vec<u8>>, bool, ReadId) {
+        let Report::ClipboardRead {
+            location,
+            mimes,
+            list,
+            read,
+        } = report
+        else {
+            panic!("not a read: {report:?}");
+        };
+        (
+            location,
+            mimes.view().iter().map(<[u8]>::to_vec).collect(),
+            list,
+            read,
+        )
+    }
+
     #[test]
-    fn an_osc_52_write_is_reported_and_a_read_gets_no_empty_answer() {
+    fn a_clipboard_read_is_answered_by_the_terminal_when_it_is_completed() {
         let mut vt = served(20, 4);
-        vt.write(b"\x1b]52;c;aGVsbG8=\x07\x1b]52;p;?\x1b\\\x1b[c");
+        vt.write(
+            b"\x1b]52;c;aGVsbG8=\x07\x1b]52;p;?\x07\
+              \x1b]5522;type=read:id=a;LiB0ZXh0L3BsYWluIGltYWdlL3BuZw==\x1b\\\x1b[c",
+        );
+        let mut reports = std::mem::take(vt.reports());
+        assert_eq!(reports.len(), 3);
+        let (location, mimes, list, kitty) = read_of(reports.pop().unwrap());
         assert_eq!(
-            std::mem::take(vt.reports()),
-            [
-                Report::ClipboardWrite {
-                    location: ClipboardLocation::Standard,
-                    contents: vec![(b"text/plain".to_vec(), b"hello".to_vec())],
-                },
-                Report::ClipboardRead {
-                    location: ClipboardLocation::Primary,
-                },
-            ]
+            (location, mimes, list),
+            (
+                ClipboardLocation::Standard,
+                vec![b"text/plain".to_vec(), b"image/png".to_vec()],
+                true
+            )
+        );
+        let (location, mimes, list, osc52) = read_of(reports.pop().unwrap());
+        assert_eq!(
+            (location, mimes, list),
+            (
+                ClipboardLocation::Primary,
+                vec![b"text/plain".to_vec()],
+                false
+            )
+        );
+        assert_eq!(
+            reports.pop().unwrap(),
+            Report::ClipboardWrite {
+                location: ClipboardLocation::Standard,
+                contents: vec![(b"text/plain".to_vec(), b"hello".to_vec())],
+            }
         );
         let replies = String::from_utf8_lossy(vt.replies()).into_owned();
         assert!(
-            replies.starts_with("\x1b[?") && !replies.contains("]52;"),
+            replies.starts_with("\x1b[?")
+                && !replies.contains("]52;")
+                && !replies.contains("]5522;"),
             "{replies:?}"
         );
+
+        vt.replies().clear();
+        let contents = ContentsBuf::new([(&b"text/plain"[..], &b"hi"[..])].into_iter()).unwrap();
+        let available = MimesBuf::new([&b"text/plain"[..]].into_iter()).unwrap();
+        let served = Served {
+            available: available.view(),
+            contents: contents.view(),
+        };
+        vt.complete_clipboard_read(osc52, Some(served));
+        assert_eq!(vt.replies().as_slice(), b"\x1b]52;p;aGk=\x07");
+
+        vt.replies().clear();
+        vt.complete_clipboard_read(kitty, Some(served));
+        vt.complete_clipboard_read(kitty, None);
+        assert_eq!(
+            String::from_utf8_lossy(vt.replies()),
+            "\x1b]5522;type=read:status=OK:id=a\x1b\\\
+             \x1b]5522;type=read:status=DATA:id=a:mime=Lg==;dGV4dC9wbGFpbgo=\x1b\\\
+             \x1b]5522;type=read:status=DATA:id=a:mime=dGV4dC9wbGFpbg==;aGk=\x1b\\\
+             \x1b]5522;type=read:status=DONE:id=a\x1b\\"
+        );
+    }
+
+    #[test]
+    fn a_read_past_the_open_limit_is_refused_at_once_and_a_completion_frees_a_place() {
+        let mut vt = served(20, 4);
+        for _ in 0..MAX_OPEN_READS {
+            vt.write(b"\x1b]52;c;?\x07");
+        }
+        let reports = std::mem::take(vt.reports());
+        assert_eq!(reports.len(), MAX_OPEN_READS);
+        assert_eq!(vt.replies().as_slice(), b"");
+
+        vt.write(b"\x1b]52;c;?\x07");
+        assert!(vt.reports().is_empty());
+        assert_eq!(vt.replies().as_slice(), b"\x1b]52;c;\x07");
+
+        vt.replies().clear();
+        let (_, _, _, first) = read_of(reports[0].clone());
+        vt.complete_clipboard_read(first, None);
+        vt.write(b"\x1b]52;c;?\x07");
+        assert_eq!(vt.reports().len(), 1);
+    }
+
+    #[test]
+    fn open_clipboard_reads_are_released_with_the_terminal() {
+        let mut vt = served(20, 4);
+        vt.write(b"\x1b]5522;type=read:id=a;dGV4dC9wbGFpbg==\x1b\\");
+        let reports = std::mem::take(vt.reports());
+        assert_eq!(reports.len(), 1);
+        drop(vt);
     }
 
     #[test]

@@ -8,8 +8,8 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use ko_pane_wire::frame::{
-    self, ContentsBuf, FromPane, History, ImageKey, Init, Key, MAX_FRAME_BYTES, Malformed, Mouse,
-    Oversize, Req, ScreenFormat, ScreenRows, Size, ToPane,
+    self, FromPane, History, ImageKey, Init, Key, MAX_FRAME_BYTES, Malformed, Mouse, Oversize, Req,
+    ScreenFormat, ScreenRows, ServedBuf, Size, ToPane,
 };
 use ko_pane_wire::ring::Pos;
 use ko_sys::clock::Mono;
@@ -24,8 +24,8 @@ use crate::delivery::{self, Delivery, Done, Handle, Stamps};
 use crate::ids::PaneId;
 use crate::program_status::Report;
 use crate::protocol::{
-    ClipboardContent, ClipboardLocation, Foreground, ImageShm, ProgramKind, ProgramRecord,
-    ProgramState, Progress, ProgressState, SearchMatch, Text,
+    ClipboardContent, ClipboardLocation, ClipboardServed, Foreground, ImageShm, ProgramKind,
+    ProgramRecord, ProgramState, Progress, ProgressState, SearchMatch, Text,
 };
 use crate::telemetry::Prompt;
 
@@ -102,6 +102,7 @@ pub(crate) enum Event {
         req: Req,
         location: ClipboardLocation,
         mimes: Vec<String>,
+        list: bool,
     },
     Matches {
         req: Req,
@@ -591,19 +592,21 @@ impl PaneProc {
     pub(crate) fn clipboard_answer(
         &mut self,
         req: Req,
-        contents: Option<&[ClipboardContent]>,
+        served: Option<&ClipboardServed>,
         io: &mut Io<'_>,
     ) {
-        let packed = contents.and_then(|contents| {
-            ContentsBuf::new(
-                contents
+        let packed = served.and_then(|served| {
+            ServedBuf::new(
+                served
+                    .contents
                     .iter()
                     .map(|content| (content.mime.as_bytes(), content.data.0.as_slice())),
+                served.available.iter().map(|mime| mime.as_bytes()),
             )
             .ok()
         });
-        let contents = packed.as_ref().map(ContentsBuf::view);
-        let _ = self.send(&ToPane::ClipboardAnswer { req, contents }, io);
+        let served = packed.as_ref().map(ServedBuf::view);
+        let _ = self.send(&ToPane::ClipboardAnswer { req, served }, io);
     }
 
     pub(crate) fn input(
@@ -855,11 +858,13 @@ impl PaneProc {
             FromPane::ClipboardRead {
                 req,
                 location,
+                list,
                 mimes,
             } => io.events.push(Event::ClipboardRead {
                 req,
                 location: location.into(),
                 mimes: mimes.iter().map(lossy).collect(),
+                list,
             }),
             FromPane::Matches { req, matches } => {
                 if self.pending.get(&req) == Some(&Reply::Search) {
