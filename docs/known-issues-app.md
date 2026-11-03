@@ -195,15 +195,6 @@ pin the runner environment (medium). Status: accepted coverage limitation.
 
 # Accepted limitations
 
-## Full-screen header colour coverage
-
-The real full-screen header colour is verified only by authorized on-screen
-captures. `make visual` covers a transferred-host stand-in, not AppKit's
-`NSToolbarFullScreenWindow`; see [Sidebar](design-app.md#sidebar).
-The dark-theme negative control can differ by no more than the 2/255
-pixel tolerance, so it cannot reliably detect a missing background cover.
-Status: accepted coverage limitation.
-
 ## Early-wrapped wide glyph under a coloured background
 
 When a wide glyph does not fit in the last column, the terminal wraps it
@@ -317,7 +308,7 @@ or keep the bounded restore. Status: accepted.
 ## Top floats leave a sub-cell gap
 
 A top float can leave background between its whole-cell frame and the
-titlebar separator; floats do not use tiled render insets.
+top edge of the terminal area.
 See [Panes](design-app.md#panes).
 This is cosmetic and persists at that geometry. Extending float chrome or
 changing its coordinate contract is small-to-medium work. Status: accepted.

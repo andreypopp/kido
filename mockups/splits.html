@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kido split panes</title>
+<style>
+:root{color-scheme:light}
+body{margin:0;padding:24px 32px 48px;background:#ececec;font:13px/1.4 -apple-system,system-ui,sans-serif;color:#222}
+h1{font-size:15px;margin:0 auto 4px;max-width:1180px}
+.lede{max-width:1180px;margin:0 auto 14px;color:#666;font-size:12px}
+.controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px 16px;margin:0 auto 14px;max-width:1180px}
+.controls label{display:flex;gap:6px;align-items:center;font-size:12px;color:#555}
+.controls select,.controls button{border:1px solid #ccc;border-radius:7px;background:#fff;padding:4px 8px;font:inherit;font-size:12px}
+.seg{display:inline-flex;border:1px solid #ccc;border-radius:8px;overflow:hidden;background:#fff}
+.seg button{border:0;border-radius:0;border-right:1px solid #ddd;padding:5px 10px}.seg button:last-child{border-right:0}
+.seg button.on{background:#222;color:#fff}
+.readout{max-width:1180px;margin:10px auto 0;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#555;white-space:pre-wrap}
+.spec{max-width:1180px;margin:8px auto 0;font-size:12px;color:#444;line-height:1.55}
+.spec b{font-weight:600}
+.gallery{max-width:1180px;margin:30px auto 0;display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:22px 18px}
+.gallery h2{grid-column:1/-1;font-size:13px;margin:0}
+.thumb{cursor:pointer}.thumb .frame{position:relative;overflow:hidden;border-radius:10px;box-shadow:0 6px 24px #0002,0 0 0 .5px #0002}
+.thumb .cap{font-size:12px;margin-top:6px;color:#333}.thumb .cap span{color:#888}
+.thumb.sel .frame{outline:2px solid #0a84ff;outline-offset:2px}
+
+/* window */
+.win{--bg:#192028;--fg:#e6e6e6;--text:#dddddd;--muted:#9a9a9a;--guide:#ffffff1f;--border:#ffffff13;--tabfill:#ffffff13;--focus:#ffffff1a;--accent:#0a84ff;--running:#30d158;--attention:#ff9f0a;--error:#ff453a;
+  --sidebar:color-mix(in srgb,var(--bg) 95%,#fff);--canvas:color-mix(in srgb,var(--bg) 62%,#000);--capsule:color-mix(in srgb,var(--bg) 92%,var(--fg) 8%);--capsule-edge:color-mix(in srgb,var(--fg) 12%,transparent);
+  --c-dim:#6b7785;--c-green:#8fd18a;--c-blue:#7cb4ff;--c-yellow:#e7c46b;--c-red:#ff7b72;--c-mag:#d59cff;--c-cyan:#6fd4d4;
+  position:relative;display:flex;margin:auto;background:var(--bg);color:var(--text);border-radius:18px;overflow:hidden;box-shadow:0 18px 60px #0003,0 0 0 .5px #0002;font-size:13px;user-select:none}
+.win.light{--bg:#fefaf1;--fg:#1a1a1a;--text:#000000d9;--muted:#00000080;--guide:#0000001f;--border:#00000013;--tabfill:#00000013;--focus:#0000001a;--accent:#007aff;--running:#34c759;--attention:#ff9500;--error:#ff3b30;
+  --sidebar:color-mix(in srgb,var(--bg) 95%,#000);--canvas:color-mix(in srgb,var(--bg) 91%,#7a6a50);
+  --c-dim:#8a8378;--c-green:#2f7d32;--c-blue:#1f5fbf;--c-yellow:#8a6300;--c-red:#c4372c;--c-mag:#8a3fb8;--c-cyan:#1b7a7a}
+.sidebar{position:relative;flex-shrink:0;background:var(--sidebar);padding-top:52px;overflow:hidden}
+.lights{position:absolute;left:19px;top:19px;display:flex;gap:9px;z-index:3}
+.lights i{height:14px;width:14px;border-radius:50%;background:linear-gradient(#ff5f57,#ff817a);box-shadow:inset 0 0 0 .5px #e64b43}
+.lights i:nth-child(2){background:linear-gradient(#ffb51b,#ffdb55);box-shadow:inset 0 0 0 .5px #dfa009}
+.lights i:nth-child(3){background:linear-gradient(#49c827,#99e477);box-shadow:inset 0 0 0 .5px #49ae25}
+.sess{padding:6px 16px 4px 16px;font-size:11px;font-weight:600;color:var(--muted)}
+.srow{position:relative;margin:0 8px;padding:7px 10px 7px 26px;line-height:18px;border-radius:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+.srow.focused{background:var(--focus)}
+.srow.agent{font-weight:600}
+.srow .dot{position:absolute;left:9px;top:13px;width:6px;height:6px;border-radius:50%;background:var(--muted);opacity:.45}
+.srow .dot.running{background:var(--running);opacity:1}.srow .dot.attention{background:var(--attention);opacity:1}
+.srow.child{padding-left:41px}.srow.child .dot{left:24px}
+.srow .cap{display:block;font-size:11px;line-height:15px;font-weight:400;color:var(--muted);overflow:hidden;text-overflow:ellipsis}
+.main{position:relative;flex:1;min-width:0;display:flex;flex-direction:column}
+.titlebar{height:52px;flex-shrink:0;display:flex;align-items:center;padding:0 8px;gap:2px;border-bottom:.5px solid var(--guide);background:var(--bg)}
+.titlebar .host{color:var(--muted);font-size:11px;font-weight:500;padding:0 12px 0 6px;border-right:1px solid var(--guide);margin-right:8px}
+.tab{width:150px;height:28px;line-height:28px;text-align:center;font-size:11px;color:var(--muted);border-radius:7px}
+.tab.active{color:var(--text);background:var(--tabfill);box-shadow:0 0 0 .5px var(--border),inset 0 0 0 .5px var(--border)}
+.area{position:relative;flex:1;overflow:hidden}
+.area.canvas{background:var(--canvas)}
+
+.card{position:absolute;box-sizing:border-box;background:var(--bg);overflow:hidden;cursor:text}
+.card .grid{position:absolute;white-space:pre;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text)}
+.card .grid div{height:var(--ch);line-height:var(--ch);overflow:hidden}
+.card .dim{position:absolute;inset:0;background:var(--bg);pointer-events:none;transition:opacity .12s}
+.card .ring{position:absolute;inset:0;pointer-events:none;border-radius:inherit}
+.card .cells{position:absolute;pointer-events:none;display:none;background-image:linear-gradient(to right,color-mix(in srgb,var(--accent) 22%,transparent) 1px,transparent 1px),linear-gradient(to bottom,color-mix(in srgb,var(--accent) 22%,transparent) 1px,transparent 1px)}
+.show-cells .card .cells{display:block}
+.divcell{position:absolute;display:none;pointer-events:none;background:repeating-linear-gradient(45deg,color-mix(in srgb,var(--attention) 45%,transparent) 0 2px,transparent 2px 5px)}
+.show-cells .divcell{display:block}
+.pill{position:absolute;height:22px;display:flex;align-items:center;gap:6px;padding:0 9px;border-radius:8px;background:var(--capsule);box-shadow:0 0 0 .5px var(--capsule-edge),0 6px 18px #0003;font:11px -apple-system,system-ui,sans-serif;color:var(--muted);white-space:nowrap;z-index:5}
+.pill b{font-weight:600;color:var(--text)}
+.zg{width:11px;height:11px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.sheet{position:absolute;box-sizing:border-box;background:color-mix(in srgb,var(--bg) 88%,var(--fg));box-shadow:inset 0 0 0 .5px color-mix(in srgb,var(--fg) 22%,transparent)}
+.minimap{margin-left:auto;margin-right:6px;position:relative;width:36px;height:24px;border-radius:5px;cursor:pointer}
+.minimap i{position:absolute;border-radius:2px;box-sizing:border-box;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text) 35%,transparent)}
+.minimap i.z{background:var(--accent);box-shadow:none}
+.tab .zt{display:inline-flex;align-items:center;gap:5px;color:var(--accent)}.tab .zt span{color:var(--muted);font-variant-numeric:tabular-nums}
+.badge{position:absolute;height:20px;padding:0 7px 0 6px;display:flex;align-items:center;gap:4px;border-radius:10px;background:var(--accent);color:#fff;font:600 11px -apple-system,system-ui,sans-serif;box-shadow:0 0 0 3px var(--canvas),0 0 0 3.5px var(--guide);z-index:6}
+.tick{position:absolute;border-radius:2px;background:var(--accent);opacity:.85;z-index:6}
+.srow .zm{position:absolute;right:10px;top:10px;color:var(--accent)}
+.srow.hidden{opacity:.45}
+.cur{background:var(--text);color:var(--bg)}
+.cur.hollow{background:none;color:inherit;box-shadow:inset 0 0 0 1px var(--muted)}
+.k-dim{color:var(--c-dim)}.k-g{color:var(--c-green)}.k-b{color:var(--c-blue)}.k-y{color:var(--c-yellow)}.k-r{color:var(--c-red)}.k-m{color:var(--c-mag)}.k-c{color:var(--c-cyan)}.k-bold{font-weight:700}
+.k-inv{background:color-mix(in srgb,var(--text) 14%,transparent)}
+.k-bar{color:var(--c-green)}
+</style></head>
+<body>
+<h1>Kido.app — split panes</h1>
+<p class="lede">Every variant uses the real geometry: tmux places panes on a cell grid with a one-cell divider between them, and the app places each pane's grid. A variant that needs a wider gap than one cell adds points per divider and reports fewer columns or rows to tmux. The readout under the window gives that cost. Click a pane to focus it. The panes have no titles and no buttons.</p>
+<div class="controls">
+  <label>Variant <span class="seg" id="variants"></span></label>
+  <label>Layout <select id="layout"></select></label>
+  <label>Theme <span class="seg" id="theme"><button data-v="dark" class="on">Dark</button><button data-v="light">Light</button></span></label>
+  <label>Zoom sign <select id="zoomsign"></select></label>
+  <label><input type="checkbox" id="sidebar" checked> Sidebar</label>
+  <label><input type="checkbox" id="cells"> Show cells and tmux dividers</label>
+  <label>Width <select id="width"><option value="1180">1180</option><option value="960">960</option><option value="760">760</option></select></label>
+</div>
+<div id="stage"></div>
+<div class="readout" id="readout"></div>
+<div class="spec" id="spec"></div>
+<div class="gallery" id="gallery"></div>
+
+<script>
+
+// Each variant: outer margin, visual gap, minimum padding between the grid and the card edge,
+// corner radius, and how the focused pane is marked.
+const VARIANTS = [
+  {id:'strict', name:'A · One-cell gutter', margin:4, gapX:3, gapY:3, padX:2, padY:2, radius:6, canvas:true,
+   dim:.38, focus:'ring', ringW:1.5, edge:true,
+   spec:'Today\'s geometry, no extra points. The tmux divider cell holds both card edges and the gap. Horizontally the text is only about 2.5pt from the card edge. Vertically the cell is tall, so the padding is about 7pt. Zero columns lost, but the left/right padding is tight.'},
+  {id:'gutter', name:'B · Gutter cards', margin:8, gapX:8, gapY:8, padX:8, padY:4.5, radius:10, canvas:true,
+   dim:.32, focus:'ring', ringW:1.5, edge:true,
+   spec:'Recommended. The app adds points to each vertical divider so that cards have 8pt padding and an 8pt gap. A horizontal divider fits in its 17pt cell without extra points. The focused card gets a 1.5pt accent ring. Other cards have a 0.5pt edge and the existing dim, a little lighter.'},
+  {id:'raised', name:'C · Raised focus', margin:10, gapX:10, gapY:10, padX:10, padY:6, radius:12, canvas:true,
+   dim:.42, focus:'raise', edge:false,
+   spec:'No accent color. The focused card has a shadow and a bright edge on a darker canvas. Other cards are flat and dimmer. This is quiet and reads as macOS window focus. A wider gap costs more columns.'},
+  {id:'dimonly', name:'D · Dim only', margin:6, gapX:6, gapY:6, padX:6, padY:4, radius:8, canvas:true,
+   dim:.5, focus:'none', edge:true,
+   spec:'No accent color and no ring. Only the brightness marks focus: the other cards are dimmed more strongly. All cards have the same 0.5pt edge. The focus does not draw any line, so the layout stays calm, but a pane with dark content is harder to tell apart.'},
+  {id:'outline', name:'E · Outline, no dim', margin:6, gapX:6, gapY:6, padX:6, padY:4, radius:8, canvas:false,
+   dim:0, focus:'outline', edge:true,
+   spec:'Minimal: no canvas color and no dim. The cards are on the terminal background with a hairline edge. Only the focused card has a 1pt accent outline and a block cursor. All the text stays readable.'},
+];
+
+const LAYOUTS = {
+  two:   {name:'Two side by side', root:['lr',[['shell',.5],['pi',.5]]], active:'pi'},
+  three: {name:'Agent + stacked', root:['lr',[['pi',.56],[['tb',[['logs',.55],['shell',.45]]],.44]]], active:'pi'},
+  grid:  {name:'Grid of four', root:['tb',[[['lr',[['pi',.5],['claude',.5]]],.55],[['lr',[['shell',.5],['logs',.5]]],.45]]], active:'claude'},
+  mixed: {name:'Nested, uneven', root:['lr',[[['tb',[['pi',.66],['shell',.34]]],.5],[['tb',[[['lr',[['htop',.5],['logs',.5]]],.4],['vim',.6]]],.5]]], active:'vim'},
+  rows:  {name:'Three rows', root:['tb',[['logs',.34],['shell',.33],['pi',.33]]], active:'shell'},
+  zoom:  {name:'Zoomed (of agent + stacked)', root:['lr',[['pi',.56],[['tb',[['logs',.55],['shell',.45]]],.44]]], active:'pi', zoomed:true},
+  float: {name:'Floating pane', root:['lr',[['shell',.5],['vim',.5]]], active:'pi', float:'pi'},
+};
+
+const ZG = '<svg class="zg" viewBox="0 0 12 12"><path d="M7 1.5h3.5V5M5 10.5H1.5V7M10.5 1.5 7 5M1.5 10.5 5 7"/></svg>';
+const SIGNS = {
+  stack:  {name:'Stacked sheets', spec:'Two sheets peek out under the zoomed card, like a stack of windows. They show that other panes are behind it. The sheets use the bottom margin, so the client size does not change.'},
+  edges:  {name:'Edge ticks', spec:'A short accent tick in the gutter on each side where hidden panes are. It also tells where they are: here, the hidden panes are to the right.'},
+  map:    {name:'Layout map', spec:'A small map of the full layout at the right of the title bar. The zoomed pane is filled with the accent color. It is outside the panes, so it covers no text. A click restores the layout.'},
+  tab:    {name:'Tab glyph', spec:'The window tab shows a zoom glyph and the count of panes, for example 1/3. It is quiet and it is visible from every tab, but it is far from the pane.'},
+  corner: {name:'Corner badge', spec:'A small accent badge with the zoom glyph and the pane count sits on the card\'s top-right corner, in the gutter. It is the most visible sign. It covers a few points of the first row on the right.'},
+};
+const TITLES = {shell:'zsh — ~/kido/kido', pi:'pi · implementer', claude:'Claude Code', logs:'tail -f e2e.log', htop:'htop', vim:'nvim lib/state.ml'};
+const STATUS = {shell:'idle', pi:'running', claude:'attention', logs:'running', htop:'running', vim:'idle'};
+
+// --- terminal content, clipped to the pane's own cols × rows ---
+const S = (cls, t) => [cls, t];
+function fit(line, cols){ let out=[], n=0; for(const [c,t] of line){ if(n>=cols) break; const s=[...t].slice(0, cols-n).join(''); out.push([c,s]); n+= [...s].length; } return out; }
+function bottom(lines, rows){ return lines.length>rows ? lines.slice(lines.length-rows) : lines; }
+const rep = (ch, n) => n>0 ? ch.repeat(n) : '';
+
+const CONTENT = {
+  shell(c, r, focused){
+    const p = [S('k-c','~/kido/kido'), S('k-dim',' command-palette*'), S('k-g',' ❯ ')];
+    return bottom([
+      [...p, S('','dune build 2>&1 | head')],
+      [S('','Done: 412/412 (jobs: 8)')],
+      [...p, S('','git status --short')],
+      [S('k-r',' M'), S('',' .gitignore')], [S('k-r',' M'), S('',' Makefile')], [S('k-r','??'), S('',' kido-from-uk.sh')],
+      [...p, S('','make verify E2E=TestPalette')],
+      [S('k-g','PASS'), S('',' build  (6.1s)')], [S('k-g','PASS'), S('',' unit   (4.8s)')], [S('k-g','PASS'), S('',' e2e    (9.3s)')], [S('k-g','PASS'), S('',' ts     (3.0s)')],
+      [...p, S(focused?'cur':'cur hollow',' ')],
+    ], r);
+  },
+  pi(c, r, focused){
+    const w = Math.max(10, c-1);
+    const body = [
+      [S('k-bold','pi'), S('k-dim',' · implementer · claude-opus-5-5')], [],
+      [S('k-dim','› '), S('','Add pane gutters to PaneLayout.tiled')], [],
+      [S('k-g','● '), S('','Read '), S('k-b','PaneLayout.swift'), S('k-dim',' (128 lines)')],
+      [S('k-g','● '), S('','Read '), S('k-b','WindowView.swift'), S('k-dim',' 215–360')],
+      [S('','  The divider is one cell. I add the gutter per')],
+      [S('','  left-right divider and reduce the client width')],
+      [S('','  by the widest divider count in the layout.')],
+      [S('k-y','● '), S('','Edit '), S('k-b','PaneLayout.swift'), S('k-g',' +31'), S('k-r',' -9')],
+      [S('k-y','● '), S('','Run '), S('k-dim','swift test --filter PaneLayout')],
+    ];
+    const box = [
+      [S('k-dim','╭'+rep('─',w-2)+'╮')],
+      [S('k-dim','│ '), S('','> '), S(focused?'cur':'cur hollow',' '), S('',rep(' ',Math.max(0,w-6))), S('k-dim','│')],
+      [S('k-dim','╰'+rep('─',w-2)+'╯')],
+      [S('k-dim','  ~/kido/kido · ctx 41% · ↑12k ↓3k')],
+    ];
+    const pad = Math.max(0, r - body.length - box.length);
+    return bottom([...body, ...Array(pad).fill([]), ...box], r);
+  },
+  claude(c, r, focused){
+    const w = Math.max(10, c-1);
+    const body = [
+      [S('k-m','✻ '), S('k-bold','Claude Code')], [],
+      [S('k-dim','> '), S('','Make the e2e harness wait for the palette')], [],
+      [S('k-g','⏺ '), S('','Update('), S('k-b','test_e2e/palette_test.go'), S('',')')],
+      [S('k-dim','  ⎿  Updated with 12 additions and 4 removals')],
+      [S('k-y','⏺ '), S('','Bash(go test ./test_e2e/ -run TestPalette)')],
+    ];
+    const ask = [
+      [S('k-y','╭'+rep('─',w-2)+'╮')],
+      [S('k-y','│ '), S('k-bold','Do you want to run this command?')],
+      [S('k-y','│ '), S('','❯ 1. Yes')],
+      [S('k-y','│ '), S('k-dim','  2. No, tell Claude what to do')],
+      [S('k-y','╰'+rep('─',w-2)+'╯')],
+    ];
+    const pad = Math.max(0, r - body.length - ask.length);
+    return bottom([...body, ...Array(pad).fill([]), ...ask], r);
+  },
+  logs(c, r){
+    const ev = [['k-g','PASS','TestPaletteListsHosts'],['k-dim','RUN ','TestSidebarGuides'],['k-g','PASS','TestSidebarGuides'],['k-dim','RUN ','TestRunWaitTimeout'],
+      ['k-g','PASS','TestRunWaitTimeout'],['k-y','SKIP','TestKidoSSHPrimes (KIDO_E2E_HOST_SSH)'],['k-dim','RUN ','TestReapOrphan'],['k-g','PASS','TestReapOrphan'],
+      ['k-dim','RUN ','TestPromptPaste'],['k-g','PASS','TestPromptPaste'],['k-dim','RUN ','TestZoomedPalette'],['k-g','PASS','TestZoomedPalette'],['k-dim','RUN ','TestLaunchSlowConf']];
+    const lines = [];
+    for(let i=0;i<Math.max(r,ev.length);i++){ const [k,a,b]=ev[i%ev.length]; const s=String(10+i).padStart(2,'0'); lines.push([S('k-dim',`14:02:${s} `), S(k,a), S('',' '+b)]); }
+    return bottom(lines, r);
+  },
+  htop(c, r){
+    const bar = (n, v) => { const w=Math.max(4,c-12); const f=Math.round(w*v); return [S('k-dim',String(n).padStart(3)+' ['), S('k-g',rep('|',Math.round(f*.7))), S('k-r',rep('|',f-Math.round(f*.7))), S('',rep(' ',w-f)), S('k-dim',(v*100).toFixed(0).padStart(3)+'%]')]; };
+    const lines = [bar(0,.62),bar(1,.31),bar(2,.88),bar(3,.12),[S('k-dim','Mem ['),S('k-b',rep('|',Math.max(1,Math.round((c-14)*.55)))),S('',rep(' ',Math.max(0,Math.round((c-14)*.45)))),S('k-dim','] 9.1G')],[],
+      [S('k-inv k-bold','  PID USER     CPU% COMMAND'+rep(' ',c))]];
+    const procs=[['41822','zindel',' 88.0','kido-tmux -u -S …/socket'],['41907','zindel',' 31.4','Kido'],['42011','zindel',' 12.9','node pi --extension'],['42150','zindel','  6.2','dune build @install'],['39001','zindel','  1.1','zsh -l']];
+    for(const p of procs) lines.push([S('k-c',p[0].padStart(5)),S('',' '+p[1].padEnd(8)),S('k-g',p[2]),S('',' '+p[3])]);
+    while(lines.length<r) lines.push([]);
+    return lines.slice(0,r);
+  },
+  vim(c, r, focused){
+    const code = [
+      [S('k-m','let'),S('',' tiled g ~alternate ='),], [S('','  '),S('k-m','let'),S('',' grid = grid g '),S('k-m','in')],
+      [S('','  '),S('k-m','let'),S('',' left = '),S('k-m','if'),S('',' g.x = '),S('k-y','0'),S('k-m',' then'),S('',' bounds.min_x')],
+      [S('','    '),S('k-m','else'),S('',' chrome.min_x -. gutter '),S('k-m','in')],
+      [S('','  '),S('k-dim','(* the divider cell holds both edges *)')],
+      [S('','  { grid; content; chrome; insets }')], [],
+      [S('k-m','let'),S('',' line divider ~pixel =')], [S('','  '),S('k-m','match'),S('',' divider.direction '),S('k-m','with')],
+      [S('','  | '),S('k-c','Left_right'),S('',' -> vertical divider')], [S('','  | '),S('k-c','Top_bottom'),S('',' -> horizontal divider')],
+    ];
+    const lines=[]; const n=r-1;
+    for(let i=0;i<n;i++){ const ln=String(212+i).padStart(4)+' '; const l=code[i]; lines.push(l?[S('k-dim',ln),...(i===2&&focused?[S('cur',' ')]:[]),...l]:[S('k-dim',rep(' ',4)+'~')]); }
+    lines.push([S('k-inv k-bold',' NORMAL '),S('k-inv',' lib/state.ml'+rep(' ',Math.max(0,c-30))+'214:5  41% ')]);
+    return lines;
+  },
+};
+
+// --- geometry: tmux cells first, then the app's point placement ---
+const leaf = n => typeof n === 'string';
+// Number of vertical (left-right) dividers on the widest path across the node; same for horizontal.
+function across(n, dir){ if(leaf(n)) return 0; const [d,kids]=n; const v=kids.map(([k])=>across(k,dir)); return d===dir ? v.reduce((a,b)=>a+b,0)+kids.length-1 : Math.max(...v); }
+// tmux: children share the parent size minus one divider cell between each pair.
+function cells(n, x, y, w, h, out){
+  if(leaf(n)){ out.push({id:n,x,y,w,h}); return; }
+  const [d,kids]=n; const total=(d==='lr'?w:h)-(kids.length-1); let at=d==='lr'?x:y, used=0;
+  kids.forEach(([k,f],i)=>{ const s = i===kids.length-1 ? total-used : Math.max(1,Math.round(total*f)); used+=s;
+    if(d==='lr'){ cells(k,at,y,s,h,out); at+=s+1; } else { cells(k,x,at,w,s,out); at+=s+1; } });
+}
+// App: place each child's grid; a child gets its cells plus extra points for the dividers inside it.
+// Slack (a node with fewer dividers than its siblings) goes to the card, never to the grid.
+function points(n, px, py, pw, ph, g, out){
+  if(leaf(n)){ out.push({id:n, px, py, pw, ph}); return; }
+  const [d,kids]=n; const sizes = kids.map(([k])=>leafSpan(k,d,g));
+  let at = d==='lr'?px:py;
+  kids.forEach(([k],i)=>{
+    const last = i===kids.length-1;
+    const span = last ? (d==='lr'?px+pw:py+ph)-at : sizes[i].pt;
+    if(d==='lr') points(k, at, py, span, ph, g, out); else points(k, px, at, pw, span, g, out);
+    at += span + (d==='lr' ? g.cw + g.exX : g.ch + g.exY);
+  });
+}
+function leafSpan(n, d, g){ // points for a node along d: its cells plus its own dividers' extra
+  const box = g.cellOf(n); const c = d==='lr'?box.w:box.h;
+  return {pt: c*(d==='lr'?g.cw:g.ch) + across(n,d)*(d==='lr'?g.exX:g.exY)};
+}
+function first(n){ return leaf(n)?n:first(n[1][0][0]); }
+
+function measureCell(){
+  const s=document.createElement('span'); s.style.cssText='position:absolute;visibility:hidden;white-space:pre;font:13px ui-monospace,SFMono-Regular,Menlo,monospace';
+  s.textContent='M'.repeat(200); document.body.appendChild(s); const w=s.getBoundingClientRect().width/200; s.remove();
+  return {cw: Math.round(w*2)/2, ch: 17};
+}
+const CELL = measureCell();
+
+function geometry(v, root, W, H, clientRoot = root){
+  const {cw,ch}=CELL;
+  const exX = Math.max(0, 2*v.padX + v.gapX - cw), exY = Math.max(0, 2*v.padY + v.gapY - ch);
+  const padX = exX ? v.padX : (cw - v.gapX)/2, padY = exY ? v.padY : (ch - v.gapY)/2;
+  const inX = v.margin + padX, inTop = v.margin + padY, inBot = v.margin + padY;
+  const aw = W - 2*inX, ah = H - inTop - inBot;
+  const cols = Math.floor((aw - across(clientRoot,'lr')*exX)/cw), rows = Math.floor((ah - across(clientRoot,'tb')*exY)/ch);
+  const list=[]; cells(root,0,0,cols,rows,list);
+  const byId = {}; list.forEach(p=>byId[p.id]=p);
+  const g = {cw,ch,exX,exY, cellOf(n){ // bounding cells of a subtree
+    const ids=[]; (function walk(k){ if(leaf(k)) ids.push(k); else k[1].forEach(([c])=>walk(c)); })(n);
+    const ps=ids.map(i=>byId[i]); const x=Math.min(...ps.map(p=>p.x)), y=Math.min(...ps.map(p=>p.y));
+    return {x,y,w:Math.max(...ps.map(p=>p.x+p.w))-x, h:Math.max(...ps.map(p=>p.y+p.h))-y}; }};
+  const pts=[]; points(root, inX, inTop, aw, ah, g, pts);
+  // today's app: 4pt minimum side margin, 12pt minimum bottom margin, 1pt-ish top line
+  const todayCols = Math.floor((W - 8 - cw + 1)/cw), todayRows = Math.floor((H - 12 - 1)/ch);
+  return {cols, rows, padX, padY, exX, exY, list:byId, pts, todayCols, todayRows};
+}
+
+// --- render ---
+function render(host, opt){
+  const v = VARIANTS.find(x=>x.id===opt.variant), L = LAYOUTS[opt.layout];
+  const sideW = opt.sidebar ? 232 : 0, W = opt.width, H = opt.height;
+  host.innerHTML='';
+  const win = document.createElement('div');
+  win.className='win '+(opt.theme==='light'?'light':'')+(opt.cells?' show-cells':'');
+  win.style.width=W+'px'; win.style.height=H+'px'; win.style.setProperty('--ch',CELL.ch+'px');
+  const active = opt.active ?? L.active;
+  const ids = []; (function walk(k){ if(leaf(k)) ids.push(k); else k[1].forEach(([c])=>walk(c)); })(L.root); if(L.float) ids.push(L.float);
+  win.innerHTML = `<div class="lights"><i></i><i></i><i></i></div>` +
+    (opt.sidebar ? `<div class="sidebar" style="width:${sideW}px"><div class="sess">kido</div>` +
+      `<div class="srow" ><span class="dot"></span>editor<span class="cap">1 pane</span></div>` +
+      `<div class="srow focused-win" style="font-weight:500"><span class="dot running"></span>splits<span class="cap">${ids.length} panes</span></div>` +
+      ids.map(id=>`<div class="srow child ${id===active?'focused':''} ${['pi','claude'].includes(id)?'agent':''} ${L.zoomed&&id!==active?'hidden':''}" data-pane="${id}"><span class="dot ${STATUS[id]}"></span>${id==='pi'?'@':''}${TITLES[id]}${L.zoomed&&id===active?`<span class="zm">${ZG}</span>`:''}</div>`).join('') +
+      `<div class="sess" style="margin-top:10px">devbox</div><div class="srow"><span class="dot"></span>zsh — ~</div></div>` : '') +
+    `<div class="main"><div class="titlebar" style="${opt.sidebar?'':'padding-left:84px'}"><span class="host">kido</span><span class="tab">editor</span><span class="tab active">${L.zoomed&&opt.zoomSign==='tab'?`<span class="zt">${ZG}splits <span>1/${ids.length}</span></span>`:'splits'}</span><span class="tab">notes</span></div><div class="area ${v.canvas?'canvas':''}"></div></div>`;
+  host.appendChild(win);
+  const area = win.querySelector('.area');
+  const AW = W - sideW, AH = H - 52;
+  const root = L.zoomed ? active : L.root;
+  const g = geometry(v, root, AW, AH, L.root);
+
+  const card = (id, rect, grid, floating) => {
+    const el = document.createElement('div'); el.className='card'; el.dataset.pane=id;
+    const focused = id===active;
+    Object.assign(el.style,{left:rect.x+'px',top:rect.y+'px',width:rect.w+'px',height:rect.h+'px',borderRadius:(floating?Math.max(v.radius,10):v.radius)+'px'});
+    const lines = CONTENT[id](grid.cols, grid.rows, focused).map(l=>`<div>${fit(l,grid.cols).map(([c,t])=>c?`<span class="${c}">${esc(t)}</span>`:esc(t)).join('')}</div>`).join('');
+    const gx = grid.x-rect.x, gy = grid.y-rect.y, gw=grid.cols*CELL.cw, gh=grid.rows*CELL.ch;
+    let html = `<div class="grid" style="left:${gx}px;top:${gy}px;width:${gw}px;font-size:13px;letter-spacing:${(CELL.cw-measuredW)}px">${lines}</div>`;
+    html += `<div class="cells" style="left:${gx}px;top:${gy}px;width:${gw}px;height:${gh}px;background-size:${CELL.cw}px ${CELL.ch}px"></div>`;
+    html += `<div class="dim" style="opacity:${focused||floating?0:v.dim}"></div><div class="ring"></div>`;
+    el.innerHTML = html;
+    style(el, focused, floating);
+    el.addEventListener('mousedown',()=>{ opt.onFocus?.(id); });
+    area.appendChild(el);
+  };
+  const style = (el, focused, floating) => {
+    const ring = el.querySelector('.ring');
+    const edge = 'inset 0 0 0 .5px var(--guide)';
+    let shadow = v.edge ? edge : 'none';
+    if(focused){
+      if(v.focus==='ring') shadow = `inset 0 0 0 ${v.ringW}px var(--accent), 0 0 0 3px color-mix(in srgb,var(--accent) 22%,transparent)`;
+      if(v.focus==='outline') shadow = 'inset 0 0 0 1px var(--accent)';
+      if(v.focus==='raise') { shadow = 'inset 0 0 0 .5px color-mix(in srgb,var(--fg) 30%,transparent)'; el.style.boxShadow='0 8px 24px #0006, 0 1px 3px #0004'; el.style.zIndex=2; }
+    }
+    if(floating){ el.style.boxShadow='0 14px 40px #0007, 0 0 0 .5px var(--guide)'; el.style.zIndex=4; if(!focused) shadow='inset 0 0 0 .5px var(--guide)'; }
+    ring.style.boxShadow = shadow;
+  };
+
+  const cardOf = (p, cellBox) => {
+    const touchR = cellBox.x+cellBox.w===g.cols, touchB = cellBox.y+cellBox.h===g.rows, touchL = cellBox.x===0, touchT = cellBox.y===0;
+    const x = touchL ? v.margin : p.px - g.padX;
+    const y = touchT ? v.margin : p.py - g.padY;
+    const r = touchR ? AW - v.margin : p.px + p.pw + g.padX;
+    const b = touchB ? AH - v.margin : p.py + p.ph + g.padY;
+    return {x, y, w:r-x, h:b-y};
+  };
+  let zoomRect;
+  for(const p of g.pts){
+    const c = g.list[p.id];
+    zoomRect = cardOf(p,c);
+    card(p.id, cardOf(p,c), {x:p.px, y:p.py, cols:c.w, rows:c.h}, false);
+  }
+  // tmux divider cells, for the overlay
+  for(const p of g.pts){ const c=g.list[p.id];
+    if(c.x+c.w<g.cols){ const d=document.createElement('div'); d.className='divcell'; Object.assign(d.style,{left:p.px+c.w*CELL.cw+'px',top:p.py+'px',width:CELL.cw+'px',height:c.h*CELL.ch+'px'}); area.appendChild(d); }
+    if(c.y+c.h<g.rows){ const d=document.createElement('div'); d.className='divcell'; Object.assign(d.style,{left:p.px+'px',top:p.py+c.h*CELL.ch+'px',width:c.w*CELL.cw+'px',height:CELL.ch+'px'}); area.appendChild(d); }
+  }
+  if(L.float){
+    const cols = Math.min(64, Math.floor(AW*.5/CELL.cw)), rows = Math.min(16, Math.floor(AH*.45/CELL.ch));
+    const pad = 9, w = cols*CELL.cw+2*pad, h = rows*CELL.ch+2*pad, x = Math.round((AW-w)/2)+40, y = AH - h - 34;
+    card(L.float, {x,y,w,h}, {x:x+pad, y:y+pad, cols, rows}, true);
+  }
+  if(L.zoomed){
+    const el = area.querySelector('.card'), rect = zoomRect;
+    const add = (cls, css, html='') => { const d=document.createElement('div'); d.className=cls; Object.assign(d.style, css); d.innerHTML=html; area.appendChild(d); return d; };
+    const full=[]; cells(L.root,0,0,g.cols,g.rows,full); const z = full.find(p=>p.id===active);
+    if(opt.zoomSign==='stack'){
+      const peek = 5, lift = Math.max(0, 2*peek + 3 - v.margin);
+      el.style.height = rect.h - lift + 'px';
+      for(const [i,inset] of [[2,28],[1,14]]) add('sheet', {left:rect.x+inset+'px', top:rect.y+8+'px', width:rect.w-2*inset+'px', height:rect.h-lift-8+i*peek+'px', borderRadius:v.radius+'px', zIndex:0, opacity:i===2?.55:1});
+      el.style.zIndex = 1;
+    }
+    if(opt.zoomSign==='edges'){
+      const m = Math.max(3, v.margin), t = 3;
+      if(z.x>0) add('tick', {left:(m-t)/2+'px', top:rect.y+rect.h/2-16+'px', width:t+'px', height:'32px'});
+      if(z.x+z.w<g.cols) add('tick', {left:AW-(m+t)/2+'px', top:rect.y+rect.h/2-16+'px', width:t+'px', height:'32px'});
+      if(z.y>0) add('tick', {top:(m-t)/2+'px', left:rect.x+rect.w/2-16+'px', height:t+'px', width:'32px'});
+      if(z.y+z.h<g.rows) add('tick', {top:AH-(m+t)/2+'px', left:rect.x+rect.w/2-16+'px', height:t+'px', width:'32px'});
+    }
+    if(opt.zoomSign==='map'){
+      const mm = document.createElement('div'); mm.className='minimap'; mm.title='Zoomed. Click to restore the layout.';
+      const sx = 36/g.cols, sy = 24/g.rows;
+      mm.innerHTML = full.map(p=>`<i class="${p.id===active?'z':''}" style="left:${p.x*sx}px;top:${p.y*sy}px;width:${p.w*sx-1}px;height:${p.h*sy-1}px"></i>`).join('');
+      win.querySelector('.titlebar').appendChild(mm);
+    }
+    if(opt.zoomSign==='corner') add('badge', {right:AW-(rect.x+rect.w)-6+'px', top:rect.y-6+'px'}, `${ZG}${ids.length}`);
+  }
+  return g;
+}
+const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+const measuredW = (()=>{ const s=document.createElement('span'); s.style.cssText='position:absolute;visibility:hidden;white-space:pre;font:13px ui-monospace,SFMono-Regular,Menlo,monospace'; s.textContent='M'.repeat(200); document.body.appendChild(s); const w=s.getBoundingClientRect().width/200; s.remove(); return w; })();
+
+// --- controls ---
+const state = {variant:'gutter', layout:'three', theme:'dark', sidebar:true, cells:false, width:1180, active:null, zoomSign:'stack'};
+try { Object.assign(state, JSON.parse(localStorage.getItem('kido-splits')||'{}')); } catch {}
+for(const [k,v] of new URLSearchParams(location.hash.slice(1))) state[k] = v==='true'?true:v==='false'?false:/^\d+$/.test(v)?+v:v;
+const save = () => { try { localStorage.setItem('kido-splits', JSON.stringify({...state, active:null})); } catch {} };
+const $ = id => document.getElementById(id);
+$('variants').innerHTML = VARIANTS.map(v=>`<button data-v="${v.id}">${v.name.split(' · ')[0]}</button>`).join('');
+$('layout').innerHTML = Object.entries(LAYOUTS).map(([k,l])=>`<option value="${k}">${l.name}</option>`).join('');
+$('variants').onclick = e => { const b=e.target.closest('button'); if(b){ state.variant=b.dataset.v; draw(); } };
+$('theme').onclick = e => { const b=e.target.closest('button'); if(b){ state.theme=b.dataset.v; draw(); } };
+$('layout').onchange = e => { state.layout=e.target.value; state.active=null; draw(); };
+$('sidebar').onchange = e => { state.sidebar=e.target.checked; draw(); };
+$('cells').onchange = e => { state.cells=e.target.checked; draw(); };
+$('zoomsign').innerHTML = Object.entries(SIGNS).map(([k,z])=>`<option value="${k}">${z.name}</option>`).join('');
+$('zoomsign').onchange = e => { state.zoomSign=e.target.value; draw(); };
+$('width').onchange = e => { state.width=+e.target.value; draw(); };
+
+function draw(){
+  save();
+  for(const b of $('variants').children) b.classList.toggle('on', b.dataset.v===state.variant);
+  for(const b of $('theme').children) b.classList.toggle('on', b.dataset.v===state.theme);
+  $('layout').value=state.layout; $('sidebar').checked=state.sidebar; $('cells').checked=state.cells; $('width').value=state.width; $('zoomsign').value=state.zoomSign;
+  const v = VARIANTS.find(x=>x.id===state.variant);
+  const g = render($('stage'), {...state, height:700, onFocus:id=>{ state.active=id; draw(); }});
+  const lostC = g.todayCols - g.cols, lostR = g.todayRows - g.rows;
+  $('readout').textContent =
+    `${v.name}   cell ${CELL.cw}×${CELL.ch}pt   client ${g.cols}×${g.rows} (today ${g.todayCols}×${g.todayRows}: −${lostC} cols, −${lostR} rows)\n` +
+    `extra per vertical divider ${g.exX.toFixed(1)}pt · per horizontal divider ${g.exY.toFixed(1)}pt · grid-to-edge padding ${g.padX.toFixed(1)}pt × ${g.padY.toFixed(1)}pt · radius ${v.radius}pt · gap ${v.gapX}×${v.gapY}pt`;
+  $('spec').innerHTML = `<b>${v.name}.</b> ${v.spec}` + (LAYOUTS[state.layout].zoomed ? `<br><b>Zoom sign · ${SIGNS[state.zoomSign].name}.</b> ${SIGNS[state.zoomSign].spec} In every zoom sign, the sidebar marks the zoomed pane with the glyph and shows the hidden panes faded.` : '');
+  const gal = $('gallery'); gal.innerHTML = '';
+  if(LAYOUTS[state.layout].zoomed){
+    gal.insertAdjacentHTML('beforeend', `<h2>All zoom signs · ${v.name} · ${state.theme}</h2>`);
+    for(const [k,z] of Object.entries(SIGNS)){
+      const t = document.createElement('div'); t.className='thumb'+(k===state.zoomSign?' sel':'');
+      const fw = 1000, fh = 620, scale = .37;
+      t.innerHTML = `<div class="frame" style="width:${fw*scale}px;height:${fh*scale}px"><div class="inner" style="transform:scale(${scale});transform-origin:0 0;pointer-events:none"></div></div><div class="cap">${z.name}</div>`;
+      render(t.querySelector('.inner'), {...state, zoomSign:k, width:fw, height:fh, sidebar:true});
+      t.querySelector('.win').style.borderRadius='0';
+      t.onclick = () => { state.zoomSign=k; draw(); window.scrollTo({top:0,behavior:'smooth'}); };
+      gal.appendChild(t);
+    }
+  }
+  gal.insertAdjacentHTML('beforeend', `<h2>All variants · ${LAYOUTS[state.layout].name} · ${state.theme}</h2>`);
+  for(const vv of VARIANTS){
+    const t = document.createElement('div'); t.className='thumb'+(vv.id===state.variant?' sel':'');
+    const fw = 1000, fh = 620, scale = .37;
+    t.innerHTML = `<div class="frame" style="width:${fw*scale}px;height:${fh*scale}px"><div class="inner" style="transform:scale(${scale});transform-origin:0 0;pointer-events:none"></div></div>`;
+    const gg = render(t.querySelector('.inner'), {...state, variant:vv.id, width:fw, height:fh, sidebar:false});
+    t.querySelector('.win').style.borderRadius='0';
+    t.insertAdjacentHTML('beforeend', `<div class="cap">${vv.name} <span>· ${gg.cols}×${gg.rows} at 1000pt (−${gg.todayCols-gg.cols} cols, −${gg.todayRows-gg.rows} rows)</span></div>`);
+    t.onclick = () => { state.variant=vv.id; draw(); window.scrollTo({top:0,behavior:'smooth'}); };
+    gal.appendChild(t);
+  }
+}
+draw();
+</script>
+</body></html>

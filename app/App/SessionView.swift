@@ -10,10 +10,14 @@ final class SessionView: NSView {
     var reorder = Reorder()
     var onPaneChange: () -> Void = {}
     var sidebarFocused: () -> Bool = { false }
+    var ring = Chrome.accent {
+        didSet { if ring != oldValue { (Array(windows.values) + others.values).forEach { $0.updateFocusTreatment() } } }
+    }
     private(set) var updating = false
     let runtime: GhosttyRuntime
     var canPrompt: () -> Bool = { false }
     var onPrompt: (PaneView, String?) -> Void = { _, _ in }
+    var onNotice: (String, String) -> Void = { _, _ in }
     // The client's session's windows, and the hot windows of other sessions,
     // which tmux sends no output for.
     private(set) var windows: [WindowID: WindowView] = [:]
@@ -113,7 +117,7 @@ final class SessionView: NSView {
         for id in recent {
             guard let view = windows[id] ?? others[id], view.hot else { continue }
             hot += view.panes.count
-            guard hot > Self.budget, view !== shown else { continue }
+            guard hot > Self.budget, view !== shown, !view.hasScrollback else { continue }
             debug("evict \(id): \(view.panes.count) of \(hot) hot surfaces")
             hot -= view.panes.count
             if others.removeValue(forKey: id) != nil { view.close() } else { view.evict() }

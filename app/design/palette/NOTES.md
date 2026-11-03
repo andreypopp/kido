@@ -12,7 +12,7 @@
 
 ## One palette for the app
 
-- Over the key Kido window: horizontally centred on the window, the card's top 20% of the content area below the toolbar. The panes show the 0.31 treatment under it (shifted inactive panes; the focused pane keeps its edge but its cursor goes hollow because the panel is key).
+- Over the key Kido window: horizontally centred on the window, the card's top 20% of the content area. The panes show the 0.31 treatment under it (shifted inactive panes; the focused pane keeps its edge but its cursor goes hollow because the panel is key).
 - With no Kido window: a floating panel on the main screen, centred, top at 20% of the screen height (Spotlight's position). The root then lists every recent host, New Session and Connect to Remote Host… only.
 - Following: the palette is one `NSPanel` at `.floating` level, keyed. It closes when it resigns key (PR behaviour). Thus switching to another Kido window closes it; reopening ⌘P there opens it over that window. It does not move with a window drag; it closes on window resign-key.
 

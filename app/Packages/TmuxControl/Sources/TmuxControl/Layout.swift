@@ -22,7 +22,7 @@ extension Layout {
     }
 }
 
-public struct Geometry: Equatable, Sendable {
+public struct Geometry: Hashable, Sendable {
     public let x: Int, y: Int, width: Int, height: Int
 }
 
@@ -85,6 +85,21 @@ public indirect enum Node: Decodable, Equatable, Sendable {
 }
 
 extension Node {
+    public var geometry: Geometry {
+        switch self {
+        case .pane(let pane): pane.geometry
+        case .split(_, let geometry, _): geometry
+        }
+    }
+
+    var tiled: Bool { if case .pane(let p) = self, case .floating = p.layer { false } else { true } }
+
+    func across(_ direction: Direction) -> Int {
+        guard case .split(let d, _, let children) = self else { return 0 }
+        let counts = children.filter(\.tiled).map { $0.across(direction) }
+        return d == direction ? counts.reduce(0, +) + max(0, counts.count - 1) : counts.max() ?? 0
+    }
+
     public var panes: [Pane] {
         switch self {
         case .pane(let pane): [pane]
@@ -94,13 +109,9 @@ extension Node {
 
     public var dividers: [Divider] {
         guard case .split(let direction, let g, let children) = self else { return [] }
-        let tiled = children.filter { if case .pane(let p) = $0, case .floating = p.layer { false } else { true } }
-        let between = tiled.dropLast().map { a in
+        let between = children.filter(\.tiled).dropLast().map { a in
             let anchor = a.anchor(direction)
-            let a = switch a {
-            case .pane(let pane): pane.geometry
-            case .split(_, let geometry, _): geometry
-            }
+            let a = a.geometry
             return switch direction {
             case .leftRight:
                 Divider(geometry: Geometry(x: a.x + a.width, y: g.y, width: 1, height: g.height),

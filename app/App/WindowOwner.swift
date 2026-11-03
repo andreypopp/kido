@@ -86,13 +86,14 @@ private class AlertEscape: NSView {
     private var drain: Drain?
     private var initial: DispatchWorkItem?
     private(set) var ssh: SSH?
+    let accents: HostAccents
     var menuChanged: () -> Void = {}
     var onClose: () -> Void = {}
     var snapshotReceived: () -> Void = {}
     private(set) var window: NSWindow!
     private var banner: Banner!
     private var session: SessionView?
-    private var link = Link.down { didSet { sidebar.tabs.needsDisplay = true } }
+    private var link = Link.down
     let sidebar = Sidebar()
     let reorder = Reorder()
     private var feed: Feed?
@@ -159,7 +160,7 @@ private class AlertEscape: NSView {
 
     private func refreshSeen() {
         sidebar.list.refresh()
-        updateTabs()
+        updateNavigation()
     }
 
     @objc private func localServerRestarted(_ notification: Notification) {
@@ -200,13 +201,15 @@ private class AlertEscape: NSView {
         openBrowser(url)
     }
 
-    init(host: Host, runtime: GhosttyRuntime, start: Bool = true, cause: DialCause = .launch, openBrowser: @escaping (URL) -> Void = { if !background { NSWorkspace.shared.open($0) } }) {
+    init(host: Host, runtime: GhosttyRuntime, accents: HostAccents, start: Bool = true, cause: DialCause = .launch, openBrowser: @escaping (URL) -> Void = { if !background { NSWorkspace.shared.open($0) } }) {
         self.openBrowser = openBrowser
         self.host = host
+        self.accents = accents
         if case .newSession = cause { pendingNewSession = true }
         self.runtime = runtime
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(localServerRestarted(_:)), name: Self.localServerRestarted, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(accentChanged(_:)), name: HostAccents.changed, object: accents)
         sidebar.list.seen = seen
         NotificationCenter.default.addObserver(self, selector: #selector(seenChanged(_:)), name: Self.seenChanged, object: seen)
         NotificationCenter.default.addObserver(self, selector: #selector(attend), name: NSApplication.didBecomeActiveNotification, object: nil)
@@ -218,7 +221,7 @@ private class AlertEscape: NSView {
         window.delegate = self
         Notifier.shared.register(self)
         window.isReleasedWhenClosed = false
-        window.title = host.label
+        show(title: host.label)
         window.collectionBehavior = .fullScreenPrimary
         window.contentMinSize = Sidebar.minSize
         let width = background ? 292 : UserDefaults.standard.object(forKey: "nativeSidebarWidth") as? Double ?? 292
@@ -227,16 +230,6 @@ private class AlertEscape: NSView {
         window.titlebarSeparatorStyle = .none
         updateAppearance()
         window.contentViewController = sidebar
-        sidebar.tabs.hostLabel = { [weak self] in
-            guard let self, self.host != .local else { return nil }
-            return (self.host.label, { if case .connected = self.link { return true }; return false }())
-        }
-        let toolbar = NSToolbar(identifier: "KidoSidebar")
-        toolbar.delegate = sidebar
-        toolbar.displayMode = .iconOnly
-        toolbar.allowsUserCustomization = false
-        window.toolbar = toolbar
-        window.toolbarStyle = .unified
         window.setContentSize(NSSize(width: 900, height: 560))
         window.contentView?.layoutSubtreeIfNeeded()
         sidebar.splitView.setPosition(max(200, min(360, width)), ofDividerAt: 0)
@@ -258,15 +251,7 @@ private class AlertEscape: NSView {
             renameSession(id, name, done: done)
         }
         sidebar.list.reorder = reorder
-        sidebar.tabs.reorder = reorder
         sidebar.list.move = { [weak self] in self?.submit($0) }
-        sidebar.tabs.move = sidebar.list.move
-        sidebar.tabs.select = { [weak self] in self?.selectWindow($0) }
-        sidebar.tabs.close = { [weak self] tab in self?.confirmClose(.window(tab.id), name: tab.name) }
-        sidebar.tabs.addWindow.invoke = { [weak self] in
-            guard let self, let window = model.window else { return }
-            perform(.newWindow(window))
-        }
         sidebar.list.closePane = { [weak self] row in
             guard let pane = row.target?.pane else { return }
             self?.confirmClose(.pane(pane), name: row.title)
@@ -293,27 +278,30 @@ private class AlertEscape: NSView {
         if start { begin(cause) }
     }
 
+    @objc private func accentChanged(_ notification: Notification) {
+        if notification.userInfo?["host"] as? Host == host { updateAppearance() }
+    }
+
+    private func show(title: String) {
+        window.title = title
+        sidebar.windowTitle = title
+    }
+
     func updateAppearance() {
         let background = runtime.background
-        window.backgroundColor = runtime.unfocusedPaper
-        sidebar.terminalHost.wantsLayer = true
-        sidebar.terminalHost.layer?.backgroundColor = runtime.unfocusedPaper.cgColor
-        sidebar.content.wantsLayer = true
-        sidebar.content.layer?.backgroundColor = background.cgColor
+        window.backgroundColor = runtime.canvas
+        for view in [sidebar.terminalHost, sidebar.content] {
+            view.wantsLayer = true
+            view.layer?.backgroundColor = runtime.canvas.cgColor
+        }
         banner?.background = background
-        let dark = background.isDark
-        let theme = (background: background, appearance: NSAppearance(named: dark ? .darkAqua : .aqua))
-        window.appearance = theme.appearance
-        sidebar.updateAppearance(runtime: runtime)
+        window.appearance = NSAppearance(named: background.isDark ? .darkAqua : .aqua)
+        let colors = accents.colors(for: host, runtime: runtime)
+        sidebar.updateAppearance(runtime: runtime, colors: colors)
+        session?.ring = colors.ring
+        sidebar.margin = runtime.settings.paneSpacing
         session?.updateBackground()
     }
-
-    func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions) -> NSApplication.PresentationOptions {
-        proposedOptions.subtracting(.autoHideToolbar)
-    }
-
-    func windowDidEnterFullScreen(_ notification: Notification) { updateAppearance() }
-    func windowDidExitFullScreen(_ notification: Notification) { updateAppearance() }
 
     func send(_ commands: [Command], then done: (@MainActor @Sendable ([Reply]?) -> Void)? = nil) {
         guard case .connected(let connection, _, _) = link else { return done?(nil) ?? () }
@@ -679,7 +667,7 @@ private class AlertEscape: NSView {
         pane.paste(text)
     }
 
-    private func notice(_ title: String, _ detail: String) {
+    func notice(_ title: String, _ detail: String) {
         note("\(host.label): \(title): \(detail)")
         guard alive, preparedAlert == nil, window.attachedSheet == nil else { return }
         let alert = NSAlert()
@@ -728,16 +716,18 @@ private class AlertEscape: NSView {
         do throws(Failure) { try tools.validate() } catch { return bundleChanged(error) }
         note("dialing \(server.socket) (\(cause.label.replacingOccurrences(of: "\n", with: "; "))) [owner \(ownerID)]")
         let view = SessionView(runtime: runtime)
+        view.ring = accents.colors(for: host, runtime: runtime).ring
         view.sidebarFocused = { [weak sidebar] in sidebar?.list.containsFocus == true }
         view.reorder = reorder
         view.canPrompt = { [weak self] in self?.canPrompt == true }
+        view.onNotice = { [weak self] in self?.notice($0, $1) }
         view.onPrompt = { [weak self] pane, quote in
             guard let self else { return }
             (NSApp.delegate as? AppDelegate)?.openPrompt(owner: self, pane: pane, quote: quote)
         }
         view.onPaneChange = { [weak self] in
             guard let self, accepts(generation) else { return }
-            updateTabs()
+            updateNavigation()
             if focusTarget != nil { focusSelected() }
         }
         view.frame = sidebar.content.bounds
@@ -814,7 +804,7 @@ private class AlertEscape: NSView {
         if case .running(let snapshot) = status {
             let projected = reorder.state.project(snapshot)
             sidebar.list.update(.running(projected))
-            updateTabs(projected)
+            updateNavigation(projected)
         } else { sidebar.list.update(status) }
         ready()
         if case .running = status { menuChanged(); snapshotReceived() }
@@ -827,17 +817,21 @@ private class AlertEscape: NSView {
     }
     #endif
 
-    private func updateTabs(_ projected: Snapshot?? = nil) {
-        let next = model.navigation(projected ?? snapshot.map(reorder.state.project), activePanes: session?.windows.compactMapValues(\.active) ?? [:], seen: seen.value)
-        if sidebar.tabs.entries != next.tabs { sidebar.tabs.entries = next.tabs }
-        sidebar.tabs.scope = next.model.session.map { .init(session: $0, generation: generation, instance: snapshot?.serverInstance) }
-        if navigationModel != next.model {
-            navigationModel = next.model
+    private func updateNavigation(_ projected: Snapshot?? = nil) {
+        let next = model.navigation(projected ?? snapshot.map(reorder.state.project))
+        if navigationModel != next {
+            navigationModel = next
             menuChanged()
         }
     }
 
     private func changed(_ view: SessionView, _ model: SessionModel) {
+        var model = model
+        model.previous = controlModel.previous
+        if let session = controlModel.session, let window = controlModel.window, model.session != nil, model.window != nil,
+           session != model.session || window != model.window {
+            model.previous = .init(session: session, window: window)
+        }
         controlModel = model
         present(view)
     }
@@ -845,9 +839,9 @@ private class AlertEscape: NSView {
     private func present(_ view: SessionView) {
         if let held, !holds(held) { self.held = nil }
         let model = model
-        window.title = host == .local ? model.title : "\(host.label) / \(model.title)"
+        show(title: host == .local ? model.title : "\(host.label) / \(model.title)")
         if model.session == nil { snapshot = nil }
-        updateTabs()
+        updateNavigation()
         if view.superview == nil {
             session?.removeFromSuperview()
             session = view
@@ -1068,7 +1062,7 @@ private class AlertEscape: NSView {
     private func showOrder() {
         let projected = snapshot.map(reorder.state.project)
         sidebar.list.show(projected)
-        sidebar.tabs.animated { updateTabs(projected) }
+        updateNavigation(projected)
     }
 
     func focusSelected() {
@@ -1139,6 +1133,7 @@ private class AlertEscape: NSView {
             session?.close()
             session = nil
         }
+        controlModel.previous = nil
         let closing = drain
         drain = nil
         closing?.close()
@@ -1147,9 +1142,9 @@ private class AlertEscape: NSView {
         if !keepingSnapshot {
             controlModel = SessionModel()
             snapshot = nil
-            updateTabs()
+            updateNavigation()
         }
-        window.title = host == .local ? "Local" : host.label
+        show(title: host == .local ? "Local" : host.label)
     }
 
     func close(cause: Connection.CloseCause = .windowClosed) {
