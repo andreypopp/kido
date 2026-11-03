@@ -2,6 +2,8 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::ptr::{self, NonNull};
 
+#[cfg(target_os = "linux")]
+use crate::retry::check_code;
 use crate::retry::{check, retry};
 
 const MAX_NAME: usize = 30;
@@ -77,6 +79,20 @@ pub(super) fn truncate(fd: &OwnedFd, len: usize) -> io::Result<()> {
     retry(|| check(unsafe { libc::ftruncate(fd.as_raw_fd(), size) })).map(drop)
 }
 
+// A mapped tmpfs object reserves no pages: on a full /dev/shm the first write to a page raises
+// SIGBUS, not an error. posix_fallocate reserves them, and returns the error number.
+#[cfg(target_os = "linux")]
+fn reserve(fd: &OwnedFd, len: usize) -> io::Result<()> {
+    let size = libc::off_t::try_from(len).map_err(io::Error::other)?;
+    // SAFETY: fd is a shared memory object.
+    retry(|| check_code(unsafe { libc::posix_fallocate(fd.as_raw_fd(), 0, size) }))
+}
+
+#[cfg(target_os = "macos")]
+fn reserve(_fd: &OwnedFd, _len: usize) -> io::Result<()> {
+    Ok(())
+}
+
 pub(super) fn size_of(fd: &OwnedFd) -> io::Result<usize> {
     // SAFETY: an all-zero stat is valid, and fstat fills it.
     let mut stat: libc::stat = unsafe { std::mem::zeroed() };
@@ -99,7 +115,9 @@ pub(super) fn open_fd(name: &Name, flags: libc::c_int, mode: libc::mode_t) -> io
 impl Named {
     pub fn create(name: &Name, len: usize) -> io::Result<Named> {
         let fd = open_fd(name, libc::O_CREAT | libc::O_EXCL | libc::O_RDWR, 0o600)?;
-        let mapped = truncate(&fd, len).and_then(|()| map_shared(&fd, len, true));
+        let mapped = truncate(&fd, len)
+            .and_then(|()| reserve(&fd, len))
+            .and_then(|()| map_shared(&fd, len, true));
         match mapped {
             Ok(base) => Ok(Named {
                 base,

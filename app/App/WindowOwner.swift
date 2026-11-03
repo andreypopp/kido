@@ -804,10 +804,10 @@ private class AlertEscape: NSView {
             guard let self, accepts(generation) else { return }
             paneCommand(command, pane)
         }
-        view.sizeClient = { [weak self, weak view] cols, rows in
+        view.sizeClient = { [weak self] cols, rows, cell in
             guard let self, accepts(generation), case .connected(let client) = link else { return }
             debug("client-size-send \(cols)x\(rows)")
-            try? client.size(cols: cols, rows: rows, cell: view?.cellPixels ?? (0, 0))
+            try? client.size(cols: cols, rows: rows, cell: cell)
         }
         view.canPrompt = { [weak self] in self?.canPrompt == true }
         view.onPrompt = { [weak self] pane, quote in

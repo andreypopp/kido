@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::{Dead, History, ImageKey, Req, ScreenFormat, ScreenRows, Size};
@@ -81,6 +82,7 @@ impl From<PutFailure> for protocol::Error {
 #[derive(Debug)]
 pub(crate) struct State {
     pub(crate) config: Config,
+    pub(crate) spill_dir: Arc<Path>,
     instance: Instance,
     pub(crate) panes: Panes,
     document: Document,
@@ -190,6 +192,7 @@ impl State {
         let leaks = Leaks::new(&config.dir);
         leaks.release_all();
         State {
+            spill_dir: Arc::from(config.dir.as_path()),
             config,
             instance,
             panes: Panes::default(),
@@ -677,7 +680,7 @@ impl State {
 
     pub(crate) fn shutdown(&mut self, poll: &mut Poll) {
         for conn in &mut self.conns {
-            conn.out.close();
+            conn.out.shut();
         }
         self.panes.shutdown(&mut Io {
             poll,
@@ -1163,7 +1166,8 @@ impl State {
     }
 
     pub(crate) fn accept(&mut self, poll: &mut Poll, stream: Verified) {
-        self.conns.push(Conn::new(stream, poll));
+        self.conns
+            .push(Conn::new(stream, poll, self.config.view_queue.cap_bytes));
     }
 
     pub(crate) fn turn(
@@ -1466,7 +1470,7 @@ impl State {
             for conn in &mut self.conns {
                 conn.settle();
             }
-            let Some(index) = self.conns.iter().position(|conn| !conn.out.is_open()) else {
+            let Some(index) = self.conns.iter().position(|conn| conn.out.is_shut()) else {
                 break;
             };
             let conn = self.conns.remove(index);

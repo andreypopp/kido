@@ -216,6 +216,7 @@ fn drive(parts: &[&[u8]]) -> Vec<Next> {
     let mut conn = Conn::new(
         Verified::admit(server).expect("an admitted stream"),
         &mut poll,
+        crate::config::QUEUE_BYTES,
     );
     let mut ws = Ws::new(Vec::new());
     let mut events = Events::default();

@@ -1,15 +1,18 @@
 use std::ffi::{c_char, c_int};
+use std::path::Path;
 
 use ko_server::api::Route;
 use ko_server::http::Response;
+use ko_server::ids::ClientId;
 use ko_server::protocol::{
-    self, IMAGE_FORMAT_HEADER, IMAGE_FRAMES_HEADER, IMAGE_GAP_HEADER, IMAGE_GENERATION_HEADER,
-    IMAGE_HEIGHT_HEADER, IMAGE_WIDTH_HEADER, ImageShm, PixelFormat,
+    self, ACCEPT_SHM_HEADER, IMAGE_FORMAT_HEADER, IMAGE_FRAMES_HEADER, IMAGE_GAP_HEADER,
+    IMAGE_GENERATION_HEADER, IMAGE_HEIGHT_HEADER, IMAGE_WIDTH_HEADER, ImageShm, PixelFormat,
 };
+use ko_sys::event::Wake;
 
 use super::calls::{call, rejected};
 use super::{Buffer, Client, Code, client, ko_buffer_free, text_of};
-use crate::wire;
+use crate::wire::{READ_TIMEOUT, Rejected, exchange, succeeded, text};
 
 const NAME_CAPACITY: usize = 32;
 
@@ -25,6 +28,32 @@ pub struct Image {
     pub length: u64,
     pub shm_name: [c_char; NAME_CAPACITY],
     pub body: Buffer,
+}
+
+fn request(
+    socket: &Path,
+    client: Option<ClientId>,
+    route: &Route,
+    accept_shm: bool,
+    cancel: Option<&Wake>,
+) -> Result<Response, Rejected> {
+    let (method, target) = route.to_request();
+    let headers: &[(&str, &str)] = if accept_shm {
+        &[(ACCEPT_SHM_HEADER, "1")]
+    } else {
+        &[]
+    };
+    let response = exchange(
+        socket,
+        (client, None),
+        (method, &target),
+        headers,
+        b"",
+        READ_TIMEOUT,
+        cancel,
+    )
+    .map_err(|error| Rejected::Unanswered(text(error)))?;
+    succeeded(response)
 }
 
 fn format_number(format: PixelFormat) -> c_int {
@@ -87,7 +116,7 @@ pub unsafe extern "C" fn ko_client_image(
     let mut shm = None;
     let code = call(client, &mut body, |socket, client, cancel| {
         let response =
-            wire::image(socket, client, &route, accept_shm, Some(cancel)).map_err(rejected)?;
+            request(socket, client, &route, accept_shm, Some(cancel)).map_err(rejected)?;
         let Some(described) = described(&response, accept_shm) else {
             return Err((
                 Code::Protocol,

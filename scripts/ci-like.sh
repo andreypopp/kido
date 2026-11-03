@@ -177,7 +177,7 @@ if [ "$timeout_s" -gt 0 ]; then
 	(
 		sleep "$timeout_s"
 		"$podman" stop -t 2 "$container_name" >/dev/null 2>&1
-	) &
+	) >/dev/null 2>&1 &
 	watcher_pid=$!
 fi
 
@@ -186,6 +186,7 @@ status=0
 	--name "$container_name" \
 	--cpus "$cpus" \
 	--memory "$memory" \
+	--shm-size 1g \
 	${cpu_shares_args[@]+"${cpu_shares_args[@]}"} \
 	${userns_args[@]+"${userns_args[@]}"} \
 	-e KIDO_STATE_DIR=/tmp/kido-state \

@@ -113,7 +113,7 @@ class Private:
         sshd = subprocess.Popen([SSHD, "-D", "-e", "-f", f"{d}/sshd_config"], stdin=subprocess.DEVNULL, stdout=self.sshd_log, stderr=self.sshd_log)
         self.procs.append(sshd)
         wait_listening(port, 5, sshd)
-        server = subprocess.Popen([args.ko, "server", "--server", self.server_dir], env=scrubbed(HOME=f"{d}/state"),
+        server = subprocess.Popen([args.ko, "server", "--server", self.server_dir, "--scrollback-bytes", "2G"], env=scrubbed(HOME=f"{d}/state"),
                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.procs.append(server)
         end = time.monotonic() + 10
@@ -273,7 +273,7 @@ def main():
     args = parser.parse_args()
     args.ko = os.path.abspath(args.ko)
     args.app = os.path.abspath(args.app)
-    root = os.path.dirname(os.path.dirname(os.path.dirname(args.ko)))
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     args.proxy = args.proxy or f"{root}/bench/rtt_proxy.py"
     args.produce = args.produce or f"{root}/build/bench/produce"
     if not os.path.exists(args.produce):
@@ -301,8 +301,7 @@ def main():
             app.idle(args.interval / 1000)
         attach = app.find(t="attach", step="first-layout")[0]["ms"]
         restore = app.find(t="restore", pane=big)[0]
-        if history is not None and restore["bytes"] < history:
-            fail(f"the restore read {restore['bytes']} bytes, fewer than the {history} of the history text")
+        failed = history is not None and restore["bytes"] < history
         echoes = [e["ms"] for e in app.find(t="echo", pane=echo)]
         wire = private.wire()
         cells = ["%.0f" % args.rtt, "%.0f" % attach, "%.0f" % restore["total_ms"], "%d" % restore["bytes"],
@@ -313,6 +312,8 @@ def main():
         cells += [server, bundled if bundled != server else "same"]
         if not args.no_header:
             print("rtt_ms attach_ms restore_ms restore_bytes echo_p50_ms echo_p95_ms wire_up wire_down server_build app_build")
+        if failed:
+            cells.append(f"FAILED(restore read {restore['bytes']} bytes, fewer than the {history} of the history text)")
         print(" ".join(cells))
     finally:
         if app:

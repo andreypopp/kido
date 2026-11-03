@@ -1,5 +1,4 @@
 use std::io::{BufRead, Write};
-use std::time::Duration;
 
 fn name_of(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
@@ -33,7 +32,7 @@ fn main() {
     match name_of(&program) {
         "ko-probe" => {
             emit("OUT\n");
-            std::thread::sleep(Duration::from_secs(1));
+            let _ = std::io::stdin().lock().read_line(&mut String::new());
         }
         _ => session(&args),
     }

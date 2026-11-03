@@ -4,6 +4,7 @@ pub mod clock;
 pub mod entropy;
 pub mod event;
 pub mod fd;
+pub mod file;
 #[cfg(any(test, feature = "fuzz"))]
 pub mod fuzz;
 pub mod mapping;
