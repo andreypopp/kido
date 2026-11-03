@@ -9,8 +9,8 @@ use tungstenite::protocol::frame::coding::{Data, OpCode};
 use tungstenite::protocol::frame::{Frame, FrameHeader};
 
 use crate::harness::{
-    DEADLINE, HEAVY, Hello, Message, Record, contains, decode, history_lines, size, size_request,
-    start, tagged, wait_gone,
+    DEADLINE, HEAVY, Hello, Message, Record, contains, decode, history_lines, poll, size,
+    size_request, start, tagged, wait_gone,
 };
 
 const SOCKET_BUFFER: usize = 1 << 20;
@@ -432,7 +432,11 @@ fn view_resume_resize_and_input() {
             Message::Text(text) => panic!("resume sent a snapshot or marker: {text:?}"),
         }
     }
-    let input = std::fs::read(&record).unwrap();
+    let mut input = Vec::new();
+    poll("the record to hold the resumed input", || {
+        input = std::fs::read(&record).unwrap_or_default();
+        input.ends_with(b"resumed\n")
+    });
     assert_eq!(
         input, b"\x1b[97;5uFIRST\x1b[97;5uBARRIER\x1b[200~hello\n\x1b[201~\x1b[?2004lresumed\n",
         "pty input: {input:?}"

@@ -2,7 +2,7 @@
 
 Status: plan, 2026-11-02. Written against `ko-rust` at 476db906 (the
 RW and RV4 merge) and the ko-rust handover report of the same day.
-RL (Linux and CI) is still uncommitted. Decided 2026-11-03: `ko-rust`
+RL (Linux and CI) is done. Decided 2026-11-03: `ko-rust`
 is closed, and `kido-app-ko` is the one development branch of ko and
 Kido.app until K8. Units work in worktrees under
 `~/Workspace/kido-<unit>`. Only the top-level session merges into
@@ -37,7 +37,7 @@ From the code at 476db906, not from the RFCs.
 | sizing | per pane: `Pane.sizer`, `client::claims` (focused client, else first unfocused, never `ignore_size`) |
 | proofs | Verus on `ko_pane_wire::ring`, `ko_server::delivery`, `ko_server::view`, `conn::Batch`; loom on the ring handshake |
 | tests | `ko_e2e` (28 tests, the test process is the outer terminal), unit and proptest modules, the view harness, 10 fuzz targets, Miri |
-| platform | macOS; RL adds Linux and CI |
+| platform | macOS and Linux |
 | protocol | serde internal tagging, `kind`-flattened errors |
 | crates | `libc`, `httparse`, `tungstenite` (`handshake`), `serde`, `serde_json`, `vte`, `clap`, `vstd` |
 
@@ -778,8 +778,7 @@ the exported C functions did not change.
 
 ### K4. Linux measurements (1 to 2 agent-days, after RL)
 
-RL builds, tests and verifies the Rust ko on Linux and adds Ubuntu to
-CI and the nightly workflow. K4 is what remains of migration.md S4:
+RL made the Rust ko build, test and verify on Linux in CI. K4 is what remains of migration.md S4:
 `bench/table.sh` and `bench/client.py` on a Linux box, the rows
 recorded beside the macOS rows in p1-mvp.md 6.5, and a check of
 `SO_SNDBUF` behaviour and the 4 KiB pty read. A row that misses its

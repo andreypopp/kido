@@ -12,7 +12,9 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::status::{self, Mark, Seen};
+#[cfg(target_vendor = "apple")]
+use crate::status;
+use crate::status::{Mark, Seen};
 use crate::tree;
 use crate::wire::{Link, Next, text};
 
