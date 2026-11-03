@@ -1194,7 +1194,49 @@ at most 20 s. The first master start can wait 60 s for a password
 prompt. A SIGKILL of `ko` leaves the master and the private
 directory. The 60 s limit has no test.
 
-Open: the app part, the RTT table and question 2 of section 7.
+RTT table (measured 2026-11-03, macOS, cut short by the user: no
+50 ms or 10 Mbit/s cells and no review). Method: a localhost private
+sshd (the recipe of `ko_e2e`'s remote tests) behind
+`bench/rtt_proxy.py` as ssh's `ProxyCommand`, which delays each
+direction by RTT/2, caps the bandwidth with a token bucket and counts
+the wire bytes; `bench/rtt.sh` drives `bench/client.py`'s `Remote`
+target. "History loaded" is from the spawn of `ko HOST` to the last
+history row in the client, so it includes the ssh setup that "screen"
+shows; "transfer" is a protocol view's first to last snapshot slice.
+The mixed history is `bench/produce.c`'s mixed lines (SGR runs, wide
+cells, emoji, combining marks, OSC 8), 77.3 MB of snapshot; plain is
+6.9 MB. miniz is a scratch build (not in the tree) that deflates only
+snapshot slices. Medians of 3; 1-minute load averages were 2.5 to
+6.6, one run at 10.1, whose result agrees with the unlimited cell.
+
+| 150 ms, 100 Mbit/s | none | `ssh -C` | miniz l1 | miniz l6 |
+|---|---|---|---|---|
+| attach, empty pane | 2.22 s | 2.19 s | 2.21 s | 2.19 s |
+| plain, history loaded | 2.75 s | 2.67 s | 2.26 s | 2.23 s |
+| mixed, history loaded | 8.74 s | 8.35 s | 4.87 s | 5.01 s |
+| mixed, transfer | 6.19 s | 5.80 s | 2.38 s | 2.52 s |
+| mixed, wire bytes down | 77.4 MB | 24.8 MB | 29.7 MB | 25.1 MB |
+| mixed, server deflate CPU | - | - | 0.29 s | 2.4 s |
+| echo over RTT, p50 / p99 | 0.6 / 0.8 ms | 0.6 / 2.1 ms | 0.6 / 4.1 ms | 0.8 / 11 ms |
+
+At 300 ms the mixed history loads in 15.9 s (none), 16.0 s
+(`ssh -C`), 8.8 s (l1) and 8.2 s (l6); attach is 4.1 s. The local
+floor is 20 ms attach and 0.35 s mixed. Unlimited bandwidth gives the
+same times as 100 Mbit/s: OpenSSH's 2 MiB channel window, which counts
+uncompressed bytes, limits the transfer, so `ssh -C` sends a third of
+the bytes and gains nothing, and only compression inside ko helps.
+
+The decision rule: (1) fails, the mixed history needs 8.7 s, not 3 s;
+(2) fails, `ssh -C` is 1.7 times slower than miniz; (3) fails
+narrowly on history loaded, l1 is 1.71 times faster than `ssh -C`
+(1.82 at 300 ms) where the rule needs 2. Its CPU is in bounds
+(0.29 s per 77 MB), and l6's is not. Thus the rule gives no crate. On
+the transfer alone, l1 is 2.4 times faster, and the rule would add it:
+the fixed ~2.2 s of ssh setup decides the result. The decision is the
+user's (section 7, question 2). The scratch patch and the raw runs are
+kept outside the tree.
+
+Open: the app part, and the decision on question 2 of section 7.
 
 ### K8. The cut-over (6 to 9 agent-days)
 

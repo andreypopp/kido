@@ -53,6 +53,81 @@ static int await_reply(void) {
   return 1;
 }
 
+static uint64_t mixed_state;
+
+static uint32_t mixed_random(void) {
+  mixed_state ^= mixed_state << 13;
+  mixed_state ^= mixed_state >> 7;
+  mixed_state ^= mixed_state << 17;
+  return (uint32_t)(mixed_state >> 16);
+}
+
+static size_t utf8_encode(char *out, uint32_t cp) {
+  if (cp < 0x80) {
+    out[0] = (char)cp;
+    return 1;
+  }
+  if (cp < 0x800) {
+    out[0] = (char)(0xc0 | (cp >> 6));
+    out[1] = (char)(0x80 | (cp & 0x3f));
+    return 2;
+  }
+  if (cp < 0x10000) {
+    out[0] = (char)(0xe0 | (cp >> 12));
+    out[1] = (char)(0x80 | ((cp >> 6) & 0x3f));
+    out[2] = (char)(0x80 | (cp & 0x3f));
+    return 3;
+  }
+  out[0] = (char)(0xf0 | (cp >> 18));
+  out[1] = (char)(0x80 | ((cp >> 12) & 0x3f));
+  out[2] = (char)(0x80 | ((cp >> 6) & 0x3f));
+  out[3] = (char)(0x80 | (cp & 0x3f));
+  return 4;
+}
+
+enum { MIXED_COLS = 70 };
+
+static size_t mixed_line(char *out, long number, uint32_t longest_run) {
+  size_t n = (size_t)sprintf(out, "\033[0mline %06ld ", number);
+  int col = 12;
+  mixed_state = (uint64_t)number * 0x9e3779b97f4a7c15ull + 1;
+  while (col < MIXED_COLS) {
+    uint32_t run = 1 + mixed_random() % longest_run;
+    if (run > (uint32_t)(MIXED_COLS - col)) run = (uint32_t)(MIXED_COLS - col);
+    n += (size_t)sprintf(out + n, "\033[0");
+    switch (mixed_random() % 4) {
+      case 0: n += (size_t)sprintf(out + n, ";38;2;%u;%u;%u", mixed_random() % 256, mixed_random() % 256, mixed_random() % 256); break;
+      case 1: n += (size_t)sprintf(out + n, ";48;5;%u;38;5;%u", mixed_random() % 256, mixed_random() % 256); break;
+      case 2: n += (size_t)sprintf(out + n, ";1;3;4;3%u", mixed_random() % 8); break;
+      default: n += (size_t)sprintf(out + n, ";7;9;4%u", mixed_random() % 8); break;
+    }
+    out[n++] = 'm';
+    int link = mixed_random() % 16 == 0;
+    if (link) n += (size_t)sprintf(out + n, "\033]8;id=%u;https://example.com/%ld/%u\033\\", mixed_random() % 1000, number, mixed_random());
+    for (uint32_t used = 0; used < run;) {
+      uint32_t kind = mixed_random() % 20, room = run - used;
+      if (kind < 3 && room >= 2) {
+        n += utf8_encode(out + n, 0x4e00 + mixed_random() % 20000);
+        used += 2;
+      } else if (kind == 3 && room >= 2) {
+        n += utf8_encode(out + n, 0x1f600 + mixed_random() % 80);
+        used += 2;
+      } else if (kind < 5) {
+        out[n++] = (char)('a' + mixed_random() % 26);
+        n += utf8_encode(out + n, 0x300 + mixed_random() % 0x70);
+        used += 1;
+      } else {
+        out[n++] = (char)(' ' + 1 + mixed_random() % 94);
+        used += 1;
+      }
+    }
+    if (link) n += (size_t)sprintf(out + n, "\033]8;;\033\\");
+    col += (int)run;
+  }
+  n += (size_t)sprintf(out + n, "\033[0m\r\n");
+  return n;
+}
+
 int main(int argc, char **argv) {
   int query = argc > 1 && !strcmp(argv[1], "--query");
   if (query) {
@@ -65,7 +140,7 @@ int main(int argc, char **argv) {
     argc--;
   }
   if (argc < 3) {
-    fprintf(stderr, "usage: produce [--query|--stamped] BYTES FILE... | --latency COUNT | --lines COUNT\n");
+    fprintf(stderr, "usage: produce [--query|--stamped] BYTES FILE... | --latency COUNT | --lines COUNT | --mixed COUNT LONGEST_RUN\n");
     return 2;
   }
   struct termios term;
@@ -91,6 +166,13 @@ int main(int argc, char **argv) {
       int n = snprintf(line, sizeof(line), "%06ld: \033[32mok\033[0m build step completed\r\n", i);
       output(line, (size_t)n);
     }
+    return 0;
+  }
+  if (!strcmp(argv[1], "--mixed")) {
+    long count = atol(argv[2]);
+    uint32_t longest_run = argc > 3 ? (uint32_t)atol(argv[3]) : 8;
+    char line[8192];
+    for (long i = 1; i <= count; i++) output(line, mixed_line(line, i, longest_run));
     return 0;
   }
   uint64_t remaining = strtoull(argv[1], NULL, 10);

@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """usage: KIDO_TMUX=path/to/kido-tmux [KO_BIN=build/ko/bin/ko] bench/client.py [latency] [yes] [attach] [resize] [memory] [scroll] [busy] [idle]
+       [KO_BIN=...] bench/client.py rtt --rtt MS --bw MBIT --variant local|none|ssh-c|miniz1|miniz6 --out FILE [--rows attach,plain,mixed,echo] [--runs N]
+       bench/client.py rtt-table FILE...   (a Markdown table of the rtt records; bench/rtt.sh runs both)
 
 KO_BIN names the ko to measure (a reference build); without it `make build-ko` runs and build/ko/bin/ko is measured."""
 import base64
+import argparse
 import fcntl
+import getpass
+import glob
 import http.client
 import json
 import os
@@ -42,6 +47,7 @@ BUSY = (
 )
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ECHO = "import os,tty\ntty.setraw(0)\nos.write(1,b'BENCH-READY')\nn=0\nwhile True:\n os.read(0,1)\n n+=1\n os.write(1,b'<%04d>'%n)"
+RTT_ECHO = "import os,tty\ntty.setraw(0)\nos.write(1,b'BENCH-READY')\nn=0\nwhile True:\n os.read(0,1)\n n+=1\n os.write(1,chr(0x4e00+n).encode())"
 HISTORY_LINES = 100000
 HISTORY = rf"""awk 'BEGIN{{for(i=1;i<={HISTORY_LINES};i++) printf "line %06d the quick brown fox jumps over the lazy dog 0123456789\n", i}}'"""
 WHEEL_UP = b"\x1b[<64;40;10M"
@@ -101,6 +107,15 @@ def children(pid):
 
 def load():
     return f"load {os.getloadavg()[0]:.2f}"
+
+
+BEAT = [time.monotonic()]
+
+
+def beat(label):
+    if time.monotonic() - BEAT[0] >= 20:
+        print(f"  ... {label}", flush=True)
+        BEAT[0] = time.monotonic()
 
 
 def readable(fd, timeout):
@@ -185,7 +200,8 @@ class Outer:
         regex = re.compile(pattern)
         plain = b""
         while time.monotonic() < end:
-            if readable(self.fd, end - time.monotonic()):
+            beat(f"waiting for {pattern!r}")
+            if readable(self.fd, min(end - time.monotonic(), 5)):
                 plain += re.sub(CSI, b"", self.feed())
                 if regex.search(plain):
                     return time.monotonic()
@@ -208,10 +224,16 @@ class Outer:
             self.feed()
         raise RuntimeError("never quiet")
 
-    def open_history(self):
-        end = time.monotonic() + 10
+    def open_history(self, timeout=10):
+        end = time.monotonic() + timeout
         while time.monotonic() < end:
-            os.write(self.fd, WHEEL_UP)
+            beat("waiting for the history")
+            os.set_blocking(self.fd, False)
+            try:
+                os.write(self.fd, WHEEL_UP)
+            except BlockingIOError:
+                pass
+            os.set_blocking(self.fd, True)
             self.collect(0.002)
             if (self.screen.lowest_line() or HISTORY_LINES) <= HISTORY_LINES - ROWS:
                 return time.monotonic()
@@ -239,6 +261,8 @@ class Outer:
 
 class WebSocket:
     def __init__(self, directory, vt, path):
+        self.began = time.monotonic()
+        self.bytes = 0
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(10)
         self.sock.connect(directory + "/socket")
@@ -283,18 +307,20 @@ class WebSocket:
     def snapshot(self):
         first = None
         while True:
+            beat("reading the snapshot")
             opcode, data = self.receive()
-            if opcode == 2 and len(data) >= 11 and data[0] == 2:
+            if opcode == 2 and len(data) >= 11 and data[0] & 0x7F == 2:
+                self.bytes += len(data)
                 first = first or time.monotonic()
                 if data[9] & 2:
                     return first, time.monotonic()
 
 
 class Ko:
-    def __init__(self, scrollback="200M"):
+    def __init__(self, scrollback="200M", exe=None, env=None):
         self.dir = tempfile.mkdtemp(prefix="p13-ko-", dir="/tmp")
-        self.exe = os.environ.get("KO_BIN") or os.path.join(ROOT, "build/ko/bin/ko")
-        self.env = scrubbed(HOME=self.dir, XDG_CONFIG_HOME=self.dir, XDG_STATE_HOME=self.dir, SHELL="/bin/sh", TERM="xterm-ghostty")
+        self.exe = exe or os.environ.get("KO_BIN") or os.path.join(ROOT, "build/ko/bin/ko")
+        self.env = scrubbed(HOME=self.dir, XDG_CONFIG_HOME=self.dir, XDG_STATE_HOME=self.dir, SHELL="/bin/sh", TERM="xterm-ghostty", **(env or {}))
         self.log = open(self.dir + "/server.log", "wb")
         self.server = subprocess.Popen([self.exe, "server", "--server", self.dir, "--shell", "/bin/sh", "--scrollback-bytes", scrollback], env=self.env, stdout=self.log, stderr=self.log)
         self.vt = json.loads(subprocess.check_output([self.exe, "version"], env=self.env))["vt"]
@@ -336,6 +362,12 @@ class Ko:
         c = Outer([self.exe, "--server", self.dir], self.env, ROWS, PANE_COLS + SIDEBAR, track=True)
         self.clients.append(c)
         return c
+
+    def view(self, pane, history="all"):
+        return WebSocket(self.dir, self.vt, f"/panes/{pane}/view?history={history}")
+
+    def wire(self):
+        return 0, 0
 
     def claim(self, pane):
         self.sizing = WebSocket(self.dir, self.vt, "/client")
@@ -399,17 +431,18 @@ class Tmux:
 def wait_screen(target, pane, needle, timeout=30):
     end = time.monotonic() + timeout
     while needle not in target.screen(pane):
+        beat(f"waiting for the pane to show {needle!r}")
         if time.monotonic() > end:
             raise RuntimeError(f"pane never showed {needle!r}")
         time.sleep(0.02)
 
 
-def history_pane(target):
+def history_pane(target, producer=HISTORY, tail="exec sleep 3000", done=f"line {HISTORY_LINES}", timeout=30):
     gate = target.dir + "/gate"
-    pane = target.pane(f"until [ -e {gate} ]; do sleep 0.01; done; stty size > {gate}.size; {HISTORY}; exec sleep 3000")
+    pane = target.pane(f"until [ -e {gate} ]; do sleep 0.01; done; stty size > {gate}.size; {producer}; {tail}")
     target.claim(pane)
     open(gate, "w").close()
-    wait_screen(target, pane, f"line {HISTORY_LINES}")
+    wait_screen(target, pane, done, timeout)
     if open(gate + ".size").read().split() != [str(ROWS), str(PANE_COLS)]:
         raise RuntimeError("history producer did not run at the benchmark size")
     return pane
@@ -718,9 +751,348 @@ def scroll_row():
             target.close()
 
 
+HOST = "koremote"
+SSH, SSHD, KEYGEN = "/usr/bin/ssh", "/usr/sbin/sshd", "/usr/bin/ssh-keygen"
+PROXY = os.path.join(ROOT, "bench/rtt_proxy.py")
+PRODUCE = os.path.join(ROOT, "build/bench/produce")
+MIXED_LONGEST_RUN = 8
+RTT_DEADLINE = 180
+
+
+def cpu_or_zero(pid):
+    try:
+        return cpu(pid)
+    except subprocess.CalledProcessError:
+        return 0.0
+
+
+class Remote(Ko):
+    """A Ko server behind a private sshd on 127.0.0.1; every ssh connection goes through bench/rtt_proxy.py."""
+
+    def __init__(self, rtt, bw, compress, **kw):
+        super().__init__(**kw)
+        self.rdir = d = tempfile.mkdtemp(prefix="p13-rtt-", dir="/tmp")
+        for sub in ("stats", "bin", "home", "fw"):
+            os.mkdir(f"{d}/{sub}")
+        for name in ("host_key", "client_key"):
+            subprocess.run([KEYGEN, "-q", "-t", "ed25519", "-N", "", "-f", f"{d}/{name}"], check=True)
+        with open(f"{d}/client_key.pub") as f, open(f"{d}/authorized_keys", "w") as g:
+            g.write(f.read())
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        bin_dir = os.path.dirname(self.exe)
+        with open(f"{d}/sshd_config", "w") as f:
+            f.write(f"Port {port}\nListenAddress 127.0.0.1\nHostKey {d}/host_key\nPidFile {d}/sshd.pid\nAuthorizedKeysFile {d}/authorized_keys\n"
+                    f"StrictModes no\nUsePAM no\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\n"
+                    f"AllowStreamLocalForwarding yes\nSetEnv KO_STATE_DIR={self.dir} PATH={bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin\n")
+        proxy = f"{shlex.quote(sys.executable)} -I {shlex.quote(PROXY)} --delay {rtt / 2} --bw {bw} --stats {d}/stats/{{pid}}.json %h %p"
+        with open(f"{d}/ssh_config", "w") as f:
+            f.write(f"Host {HOST}\n  HostName 127.0.0.1\n  Port {port}\n  User {getpass.getuser()}\n  IdentityFile {d}/client_key\n  IdentitiesOnly yes\n"
+                    f"  IdentityAgent none\n  UserKnownHostsFile /dev/null\n  StrictHostKeyChecking no\n  BatchMode yes\n  LogLevel ERROR\n"
+                    f"  Compression {'yes' if compress else 'no'}\n  ProxyCommand {proxy}\n")
+        self.ssh = f"{d}/bin/ssh"
+        with open(self.ssh, "w") as f:
+            f.write(f"#!/bin/sh\nexec {SSH} -F {d}/ssh_config \"$@\"\n")
+        os.chmod(self.ssh, 0o700)
+        self.sshd_log = open(f"{d}/sshd.log", "wb")
+        self.sshd = subprocess.Popen([SSHD, "-D", "-e", "-f", f"{d}/sshd_config"], stdin=subprocess.DEVNULL, stdout=self.sshd_log, stderr=self.sshd_log)
+        end = time.monotonic() + 5
+        while True:
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=1).close()
+                break
+            except OSError:
+                if time.monotonic() >= end or self.sshd.poll() is not None:
+                    raise RuntimeError("sshd did not listen: " + open(f"{d}/sshd.log").read())
+                select.select([], [], [], 0.01)
+        self.masters = []
+
+    def client_env(self):
+        h = f"{self.rdir}/home"
+        return scrubbed(HOME=h, XDG_CONFIG_HOME=h, XDG_STATE_HOME=h, SHELL="/bin/sh", TERM="xterm-ghostty", PATH=f"{self.rdir}/bin:{os.environ['PATH']}", KO_INFLATE_STATS=f"{self.rdir}/inflate")
+
+    def attach(self):
+        c = Outer([self.exe, HOST], self.client_env(), ROWS, PANE_COLS + SIDEBAR, track=True)
+        self.clients.append(c)
+        return c
+
+    def view(self, pane, history="all"):
+        ctl = f"{self.rdir}/view.ctl"
+        options = ["-o", f"ControlPath={ctl}", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-o", "StreamLocalBindUnlink=yes"]
+        quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "check": True, "timeout": 120}
+        subprocess.run([self.ssh, "-f", "-M", "-N", "-T", "-o", "ControlMaster=yes", "-o", "ControlPersist=no", "-o", "BatchMode=yes", *options, HOST], **quiet)
+        self.masters.append(ctl)
+        subprocess.run([self.ssh, "-S", ctl, "-O", "forward", "-L", f"{self.rdir}/fw/socket:{self.dir}/socket", HOST], **quiet)
+        return WebSocket(f"{self.rdir}/fw", self.vt, f"/panes/{pane}/view?history={history}")
+
+    def wire(self):
+        up = down = 0
+        for name in glob.glob(f"{self.rdir}/stats/*.json"):
+            with open(name) as f:
+                counts = json.load(f)
+            up, down = up + counts["up"], down + counts["down"]
+        return up, down
+
+    def sshd_pids(self):
+        return children(self.sshd.pid)
+
+    def close(self):
+        for ctl in self.masters:
+            subprocess.run([self.ssh, "-S", ctl, "-O", "exit", HOST], stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+        super().close()
+        signal_child(self.sshd.pid, signal.SIGTERM)
+        self.sshd.wait(timeout=10)
+        self.sshd_log.close()
+        subprocess.run(["rm", "-rf", self.rdir])
+
+
+def rtt_target(args):
+    variant = args.variant
+    if variant == "local":
+        return Ko(scrollback="2G")
+    exe, env = os.environ.get("KO_BIN_REMOTE"), {}
+    if variant.startswith("miniz"):
+        env = {"KO_DEFLATE_LEVEL": variant[5:]}
+    return Remote(args.rtt, args.bw, variant == "ssh-c", exe=exe, env=env, scrollback="2G")
+
+
+def echo_samples(c, count, first=1):
+    samples = []
+    for n in range(first, first + count):
+        beat("key echo samples")
+        c.collect(0.01)
+        began = time.monotonic()
+        os.write(c.fd, b"x")
+        done = c.wait(chr(0x4E00 + n).encode(), RTT_DEADLINE)
+        samples.append((done - began) * 1000)
+    return samples
+
+
+def cpu_seconds(target, c, before):
+    server, kids = target.pids()
+    used = {"server": cpu(server) - before[0], "pane": cpu(kids[0]) - before[1], "client": cpu_or_zero(c.pid)}
+    if isinstance(target, Remote):
+        ssh = children(c.pid)
+        used["ssh"] = sum(cpu_or_zero(p) for p in ssh)
+        used["proxy"] = sum(cpu_or_zero(x) for p in ssh for x in children(p))
+        used["sshd"] = sum(cpu_or_zero(p) for p in target.sshd_pids())
+    return {k: round(v, 2) for k, v in used.items()}
+
+
+def scratch_stats(target):
+    out = {}
+    try:
+        with open(target.dir + "/server.log") as f:
+            found = re.findall(r"deflate_ms=([\d.]+) in=(\d+) out=(\d+)", f.read())
+        if found:
+            out["deflate_ms"], out["deflate_in"], out["deflate_out"] = float(found[-1][0]), int(found[-1][1]), int(found[-1][2])
+        with open(target.rdir + "/inflate") as f:
+            out["inflate_ms"] = float(f.read().split()[0])
+    except (OSError, AttributeError, IndexError):
+        pass
+    return out
+
+
+def row_attach(args, echo):
+    target = rtt_target(args)
+    try:
+        target.pane("exec python3 -c " + shlex.quote(RTT_ECHO))
+        before = target.wire()
+        began = time.monotonic()
+        c = target.attach()
+        ready = c.wait(rb"BENCH-READY", RTT_DEADLINE)
+        c.quiet(0.3, 10)
+        up, down = (b - a for a, b in zip(before, target.wire()))
+        out = {"attach_ms": (ready - began) * 1000, "wire_up": up, "wire_down": down}
+        if echo:
+            samples = echo_samples(c, 100)
+            out.update(echo_p50=pct(samples, 50) - args.rtt, echo_p99=pct(samples, 99) - args.rtt, echo_min=min(samples) - args.rtt)
+        return out
+    finally:
+        target.close()
+
+
+def restore_pane(target, kind):
+    producer = HISTORY if kind == "plain" else f"{PRODUCE} --mixed {HISTORY_LINES} {MIXED_LONGEST_RUN}"
+    return history_pane(target, producer, "exec python3 -c " + shlex.quote(RTT_ECHO), "BENCH-READY", 120)
+
+
+def row_restore(args, kind):
+    target = rtt_target(args)
+    try:
+        pane = restore_pane(target, kind)
+        server, kids = target.pids()
+        before = (cpu(server), cpu(kids[0]))
+        wire = target.wire()
+        began = time.monotonic()
+        c = target.attach()
+        shown = c.wait(rb"BENCH-READY", RTT_DEADLINE)
+        loaded = c.open_history(RTT_DEADLINE)
+        used = cpu_seconds(target, c, before)
+        c.quiet(0.3, 10)
+        up, down = (b - a for a, b in zip(wire, target.wire()))
+        out = {"shown_ms": (shown - began) * 1000, "loaded_ms": (loaded - began) * 1000, "wire_up": up, "wire_down": down, "cpu": used}
+        out.update(scratch_stats(target))
+        c.close()
+        target.clients.remove(c)
+        signal.alarm(RTT_DEADLINE)
+        wire = target.wire()
+        view = target.view(pane)
+        first, last = view.snapshot()
+        up, down = (b - a for a, b in zip(wire, target.wire()))
+        out.update(view_first_ms=(first - view.began) * 1000, view_last_ms=(last - view.began) * 1000, view_bytes=view.bytes, view_wire_down=down)
+        return out
+    finally:
+        target.close()
+
+
+def row_echo_restore(args):
+    target = rtt_target(args)
+    try:
+        restore_pane(target, "mixed")
+        began = time.monotonic()
+        c = target.attach()
+        c.wait(rb"BENCH-READY", RTT_DEADLINE)
+        samples = []
+        for n in range(1, 51):
+            beat("key echo samples")
+            c.collect(0.01)
+            sent = time.monotonic()
+            os.write(c.fd, b"x")
+            done = c.wait(chr(0x4E00 + n).encode(), RTT_DEADLINE)
+            samples.append(((done - began) * 1000, (done - sent) * 1000 - args.rtt))
+        return {"samples": [[round(a, 1), round(b, 2)] for a, b in samples]}
+    finally:
+        target.close()
+
+
+def guarded(label, run, record):
+    def expired(*_):
+        raise TimeoutError(label)
+
+    signal.signal(signal.SIGALRM, expired)
+    load = os.getloadavg()
+    began = time.monotonic()
+    signal.alarm(RTT_DEADLINE)
+    try:
+        result = run()
+    except TimeoutError:
+        print(f"{label}: timeout", flush=True)
+        result = {"error": "timeout"}
+    except Exception as error:
+        print(f"{label}: error {error!r}", flush=True)
+        result = {"error": repr(error)}
+    finally:
+        signal.alarm(0)
+    result.update(load=[round(x, 2) for x in load], seconds=round(time.monotonic() - began, 1))
+    record(result)
+    if "error" not in result:
+        print(f"{label}: {json.dumps({k: (round(v, 1) if isinstance(v, float) else v) for k, v in result.items() if k != 'samples'})}", flush=True)
+
+
+def rtt(argv):
+    parser = argparse.ArgumentParser(prog="client.py rtt")
+    parser.add_argument("--rtt", type=float, required=True)
+    parser.add_argument("--bw", type=float, required=True)
+    parser.add_argument("--variant", required=True, choices=["local", "none", "ssh-c", "miniz1", "miniz6"])
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--rows", default="attach,plain,mixed,echo")
+    parser.add_argument("--runs", type=int, default=3)
+    args = parser.parse_args(argv)
+    for row in args.rows.split(","):
+        runs = {"attach": args.runs, "plain": args.runs, "mixed": 1 if args.bw and args.bw <= 10 else args.runs, "echo": 1}[row]
+        for run in range(runs):
+            def record(result, row=row, run=run):
+                with open(args.out, "a") as f:
+                    f.write(json.dumps({"rtt": args.rtt, "bw": args.bw, "variant": args.variant, "row": row, "run": run, **result}) + "\n")
+
+            label = f"{args.variant} rtt={args.rtt:g} bw={args.bw:g} {row} #{run + 1}"
+            fns = {"attach": lambda: row_attach(args, run == 0), "plain": lambda: row_restore(args, "plain"), "mixed": lambda: row_restore(args, "mixed"), "echo": lambda: row_echo_restore(args)}
+            guarded(label, fns[row], record)
+
+
+VARIANT_NAMES = [("local", "local"), ("none", "none"), ("ssh-c", "ssh -C"), ("miniz1", "miniz l1"), ("miniz6", "miniz l6")]
+
+
+def rtt_table(files):
+    records = []
+    for name in files:
+        with open(name) as f:
+            records += [json.loads(line) for line in f if line.strip()]
+    cells = sorted({(r["rtt"], r["bw"]) for r in records if r["variant"] != "local"})
+
+    def pick(variant, cell, row):
+        return [r for r in records if r["variant"] == variant and r["row"] == row and (variant == "local" or (r["rtt"], r["bw"]) == cell)]
+
+    def show(runs, get, fmt):
+        ok = [r for r in runs if "error" not in r]
+        values = sorted(v for v in (get(r) for r in ok) if v is not None)
+        if not values:
+            return "timeout" if any(r.get("error") == "timeout" for r in runs) else ("error" if any("error" in r for r in runs) else "-")
+        return f"{fmt(values[len(values) // 2])} ({fmt(values[0])})" if len(values) > 1 else fmt(values[0])
+
+    def block(title, row, get, fmt, note=""):
+        print(f"\n### {title}\n{note}")
+        print("| RTT ms | Mbit/s | " + " | ".join(label for _, label in VARIANT_NAMES) + " |")
+        print("|---|---|" + "---|" * len(VARIANT_NAMES))
+        for cell in cells:
+            bandwidth = f"{cell[1]:g}" if cell[1] else "unlimited"
+            print(f"| {cell[0]:g} | {bandwidth} | " + " | ".join(show(pick(v, cell, row), get, fmt) for v, _ in VARIANT_NAMES) + " |")
+
+    ms = lambda v: f"{v:.0f}"
+    ms1 = lambda v: f"{v:.1f}"
+    mb = lambda v: f"{v / 1e6:.1f}"
+    sec = lambda v: f"{v:.2f}"
+    print("Entries are the median of the runs with the minimum in parentheses. ms unless stated; echo figures are over the RTT.")
+    block("attach, empty pane: `ko HOST` spawn to prompt visible (ms)", "attach", lambda r: r["attach_ms"], ms)
+    block("key echo, quiet pane, p50 over RTT (ms), 100 samples", "attach", lambda r: r.get("echo_p50"), ms1)
+    block("key echo, quiet pane, p99 over RTT (ms)", "attach", lambda r: r.get("echo_p99"), ms1)
+    for row, label in (("plain", "restore 100k plain lines"), ("mixed", "restore 100k mixed lines")):
+        sizes = sorted({r["view_bytes"] for r in records if r["row"] == row and "view_bytes" in r and r["variant"] in ("local", "none")})
+        note = f"snapshot bytes (history=all, uncompressed, first to last slice): {', '.join(f'{b / 1e6:.1f} MB' for b in sizes)}" if sizes else ""
+        block(f"{label}: screen visible (ms)", row, lambda r: r["shown_ms"], ms, note)
+        block(f"{label}: history loaded in the client (ms)", row, lambda r: r["loaded_ms"], ms)
+        block(f"{label}: protocol view, first slice (ms)", row, lambda r: r["view_first_ms"], ms)
+        block(f"{label}: protocol view, last slice (ms)", row, lambda r: r["view_last_ms"], ms)
+        block(f"{label}: wire bytes down, client run (MB)", row, lambda r: r["wire_down"], mb)
+        block(f"{label}: wire bytes up, client run (KB)", row, lambda r: r["wire_up"] / 1e3, ms1)
+        block(f"{label}: CPU seconds, server + ko-pane", row, lambda r: r["cpu"]["server"] + r["cpu"]["pane"], sec)
+        block(f"{label}: CPU seconds, client ko", row, lambda r: r["cpu"]["client"], sec)
+        block(f"{label}: CPU seconds, ssh master + proxy", row, lambda r: r["cpu"].get("ssh", 0) + r["cpu"].get("proxy", 0) if "ssh" in r["cpu"] else None, sec)
+        block(f"{label}: CPU seconds, sshd", row, lambda r: r["cpu"].get("sshd"), sec)
+    block("mixed: server deflate time per restore (ms, in-process timer)", "mixed", lambda r: r.get("deflate_ms"), ms)
+    block("mixed: client inflate time per restore (ms)", "mixed", lambda r: r.get("inflate_ms"), ms)
+    block("mixed: deflate output / input bytes", "mixed", lambda r: r["deflate_out"] / r["deflate_in"] if "deflate_in" in r else None, lambda v: f"{v:.3f}")
+    print("\n### key echo while the mixed restore streams: the first key, typed when the screen is visible, then the keys delayed by more than 20 ms over RTT (of 50, 10 ms apart)")
+    print("| RTT ms | Mbit/s | " + " | ".join(label for _, label in VARIANT_NAMES) + " |")
+    print("|---|---|" + "---|" * len(VARIANT_NAMES))
+    for cell in cells:
+        out = []
+        for v, _ in VARIANT_NAMES:
+            runs = [r for r in pick(v, cell, "echo") if "samples" in r]
+            out.append(" ".join(f"{r['samples'][0][1] / 1000:.1f} s, {sum(1 for _, lat in r['samples'] if lat > 20)} late" for r in runs) or ("timeout" if any(r.get("error") for r in pick(v, cell, "echo")) else "-"))
+        print(f"| {cell[0]:g} | {cell[1]:g} | " + " | ".join(out) + " |")
+    print("\n### load average (1 min at run start), max over the runs of the cell")
+    print("| RTT ms | Mbit/s | " + " | ".join(label for _, label in VARIANT_NAMES) + " |")
+    print("|---|---|" + "---|" * len(VARIANT_NAMES))
+    for cell in cells:
+        loads = []
+        for v, _ in VARIANT_NAMES:
+            runs = [r["load"][0] for r in records if r["variant"] == v and (r["rtt"], r["bw"]) == cell]
+            loads.append(f"{max(runs):.1f}" if runs else "-")
+        print(f"| {cell[0]:g} | {cell[1]:g} | " + " | ".join(loads) + " |")
+
+
 ROWS_BY_NAME = {"latency": latency, "yes": yes_row, "attach": attach_row, "resize": resize_row, "memory": memory_row, "scroll": scroll_row, "busy": busy_row, "idle": idle_row}
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["rtt-table"]:
+        rtt_table(sys.argv[2:])
+        raise SystemExit(0)
+    if sys.argv[1:2] == ["rtt"]:
+        rtt(sys.argv[2:])
+        raise SystemExit(0)
     names = sys.argv[1:] or list(ROWS_BY_NAME)
     if any(n not in ROWS_BY_NAME for n in names):
         raise SystemExit(__doc__)
