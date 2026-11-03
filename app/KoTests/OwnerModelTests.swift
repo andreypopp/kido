@@ -107,7 +107,7 @@ import XCTest
                        URL(fileURLWithPath: NSHomeDirectory()).standardizedFileURL)
     }
 
-    func testSwitchingWindowsVisitsANestedRunWindowAfterItsParent() throws {
+    func testSwitchingWindowsSkipsANestedRunWindow() throws {
         let pi = shell("printf '\\033]7501;state=idle:app=pi\\007'; " + cat, vars: #"{"pi.session":"s1","pi.name":"Parent"}"#)
         let (dir, owner) = try shown(#"[{"name":"parent","tree":\#(pi)},{"name":"last","tree":\#(shell(cat))}]"#)
         try run(["run-child", "--session", "session_1", "--name", "kid", "pane_1", "--", "/bin/sleep", "60"], dir: dir)
@@ -117,10 +117,13 @@ import XCTest
         let windows = try XCTUnwrap(owner.testModel.map(\.layout.layout.windows)).map(\.id)
         XCTAssertEqual(owner.navigation.window, windows[0])
         owner.perform(.switchWindow(next: true))
-        wait("the nested run window") { owner.navigation.window == windows[2] }
+        wait("the last top-level window") { owner.navigation.window == windows[1] }
         owner.perform(.switchWindow(next: true))
-        wait("the last window") { owner.navigation.window == windows[1] }
+        wait("the first window again") { owner.navigation.window == windows[0] }
+        let session = try XCTUnwrap(owner.navigation.session)
+        owner.perform(.selectWindow(session, windows[2]))
+        wait("the nested run window") { owner.navigation.window == windows[2] }
         owner.perform(.switchWindow(next: false))
-        wait("back to the nested window") { owner.navigation.window == windows[2] }
+        wait("its parent") { owner.navigation.window == windows[0] }
     }
 }
