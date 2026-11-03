@@ -741,7 +741,14 @@ the app engine's fetch thread.
   both with the variables. The variable reads `GET /panes/{id}/vars`
   (`Vars`) and `GET /panes/{id}/vars/{name}` (`Var`) are removed. The
   writes (`SetVar`, `DeleteVar`, the conditional `DeleteVars`) stay.
-- If the run events leave a gap, the runs come into the same message.
+- A pane's row carries its run, if it has one: an optional `run` field
+  with the run id, parent, argv, start time and, once ended, its
+  outcome. Each run has exactly one pane and a pane at most one run, so
+  an active run is a run whose pane is in the layout. A run's start puts
+  its pane, with the `run` field, into the layout in one layout event;
+  its outcome travels in the existing run event without moving the
+  revision. `ko_client` then drops its `/runs` read too. Runs whose
+  pane is gone stay history: `GET /runs` and `ko runs` serve them.
 - `POST /clients/{id}/select` is removed: both clients select over
   their own `/client` socket. `stress.py` and the e2e cases use the
   socket. `ClientRequest::Select` stays.
