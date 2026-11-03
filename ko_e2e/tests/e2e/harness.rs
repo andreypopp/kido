@@ -21,6 +21,9 @@ use tungstenite::{Message as Msg, WebSocket};
 
 pub(crate) const DEADLINE: Duration = Duration::from_secs(5);
 
+// Parallel heavy panes starve a small macOS runner past the 5 s deadline.
+pub(crate) static HEAVY: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub(crate) fn ko() -> PathBuf {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../build/ko/bin/ko");
     assert!(

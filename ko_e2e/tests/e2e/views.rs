@@ -9,8 +9,8 @@ use tungstenite::protocol::frame::coding::{Data, OpCode};
 use tungstenite::protocol::frame::{Frame, FrameHeader};
 
 use crate::harness::{
-    DEADLINE, Hello, Message, Record, contains, decode, history_lines, size, size_request, start,
-    tagged, wait_gone,
+    DEADLINE, HEAVY, Hello, Message, Record, contains, decode, history_lines, size, size_request,
+    start, tagged, wait_gone,
 };
 
 const SOCKET_BUFFER: usize = 1 << 20;
@@ -42,6 +42,7 @@ fn history_program(record: &str) -> String {
 
 #[test]
 fn full_snapshot_slow_reader() {
+    let _heavy = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
     let s = start(&[]);
     let (mut c, _) = s.client(None);
     let p = s.pane(&history_program("/dev/null"));
@@ -86,6 +87,7 @@ fn full_snapshot_slow_reader() {
 
 #[test]
 fn paste_then_enter_during_snapshot() {
+    let _heavy = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
     let s = start(&[]);
     let (mut c, _) = s.client(None);
     let record = s.dir.join("input");
@@ -187,6 +189,7 @@ fn unfocused_first_client_sizes_pane() {
 // view's snapshot then pushes that marker out of the ring. The stalled view must still learn the new size.
 #[test]
 fn stalled_view_learns_resize_after_ring_retention() {
+    let _heavy = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
     let s = start(&[]);
     let (mut c, _) = s.client(None);
     let p = s.pane(&history_program("/dev/null"));
@@ -253,6 +256,7 @@ fn client_close_closes_its_views() {
 
 #[test]
 fn stalled_view_skips() {
+    let _heavy = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
     let s = start(&[]);
     let (mut c, _) = s.client(None);
     let p = s.pane(&format!(

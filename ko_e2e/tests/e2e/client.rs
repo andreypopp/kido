@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use ko_sys::pid::{Pid, signal_descendant};
 use ko_sys::signal::Signal;
 
-use crate::harness::{DEADLINE, Dir, Server, quote, run_ko, start, text_of};
+use crate::harness::{DEADLINE, Dir, HEAVY, Server, quote, run_ko, start, text_of};
 use crate::outer::{
     CHORD_DOWN, CHORD_UP, DOWN_PRESS_RELEASE, FOCUS_IN, FOCUS_OUT, Keys, Outer, UP,
 };
@@ -253,6 +253,7 @@ impl Drop for Resume<'_> {
 
 #[test]
 fn client_history_and_alternate_screen() {
+    let _heavy = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
     let s = start(&[]);
     let history_pane = s.pane("seq 300; printf '\x1b]0;history\x07HISTORY-READY\\n'; exec cat");
     let o = Outer::new(&s.dir, Keys::Extended);

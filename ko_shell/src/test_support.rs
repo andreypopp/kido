@@ -13,7 +13,11 @@ pub(crate) fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+// ETXTBSY: a child forked in another test thread holds a just-written script open until it execs.
+static SPAWN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub(crate) fn write(path: &Path, body: &str, mode: u32) -> PathBuf {
+    let _no_spawn_while_open = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, body).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
@@ -27,6 +31,7 @@ pub(crate) fn run(program: &Path, args: &[&str], stdin: &str, env: &[(&str, &str
         .iter()
         .map(|(name, value)| format!("{name}={value}").into_bytes())
         .collect();
+    let spawned = SPAWN.lock().unwrap_or_else(|e| e.into_inner());
     let pid = spawn::program(
         program,
         args,
@@ -34,6 +39,7 @@ pub(crate) fn run(program: &Path, args: &[&str], stdin: &str, env: &[(&str, &str
         Env::Only(&env),
     )
     .unwrap();
+    drop(spawned);
     drop((input, sink));
     let _ = feed.write_all(stdin.as_bytes());
     drop(feed);
