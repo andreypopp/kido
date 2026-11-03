@@ -1,4 +1,0 @@
-module KoModel {
-header "KoModel-Swift.h"
-export *
-}
