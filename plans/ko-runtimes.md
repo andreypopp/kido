@@ -656,13 +656,22 @@ maps. `SSH_AUTH_SOCK` follows the kind's `agent` or `ssh_agent`.
   pane's runtime (the host for a host pane). It has no chooser; the
   CLI and Kido.app have.
 - Kido.app: the row shows the runtime name as a dimmed suffix of the
-  title, one style for every runtime; the command palette gains "New
-  Window in Runtime…" with the runtimes of the `Welcome`, and a
-  `Failed` runtime shows its message in the palette row; a split or a
-  new pane inside a runtime window inherits the runtime of the source
-  pane. The sidebar's tree nests across runtimes by `parent` as
-  before. A remote window to a Linux host offers that host's runtimes
-  through the same `Welcome`.
+  title, one style for every runtime. The command palette gains one
+  entry for each runtime of the `Welcome`, "Runtime: NAME", whose
+  detail is the kind and the state (`ssh · up`); a `Failed` runtime
+  shows its message there. When the focused pane is in a runtime, a
+  "Host" entry comes first. Enter on an entry opens its step
+  (`PaletteMode.runtime`), as Connect and Theme do, with three
+  entries: New Window, Split Right and Split Down. The splits need a
+  live focused pane, as the split commands do; Esc goes back to the
+  root. Each entry sends one layout edit whose new pane names the
+  runtime (none for Host); a runtime that is down starts with that
+  pane. The step has no New Session: a session holds host and
+  runtime windows together. The menu's split and new-window commands
+  and their shortcuts keep one rule: the new pane takes the runtime
+  of the focused pane. The sidebar's tree nests across runtimes by
+  `parent` as before. A remote window to a Linux host offers that
+  host's runtimes through the same `Welcome`.
 
 ## 9. Security
 
@@ -882,8 +891,10 @@ rule of section 5 needs both.
   about 1.5.
 - **U4 clients** (section 8): `ko_client` model, the terminal
   client's suffix and `Ctrl+Shift+N` inheritance, Kido.app's palette
-  entry, row suffix and inheritance on split, visual tests. About
-  2 agent-days.
+  entries and runtime step (with Host), row suffix and inheritance on
+  split, visual snapshot tests for each palette state (the root
+  entries, the step with and without a focused pane, a failed
+  runtime, Host). About 2.5 agent-days.
 - **U5 ko-pi** (section 5's interface): `runtime` on `spawn_agent`,
   `runtime` in `list_agents` rows, the refusals' wording, the prompt
   snapshot. About half an agent-day, after the agents plan's U3.
