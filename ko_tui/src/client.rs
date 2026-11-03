@@ -27,7 +27,7 @@ use crate::mirror::Mirror;
 use crate::modes::{self, Modes};
 use crate::renderer::{Layout, Renderer};
 use crate::sidebar;
-use crate::tty::Tty;
+use crate::tty::{Geometry, Tty};
 
 const PACE: Duration = Duration::from_millis(8);
 const PROBE: Duration = Duration::from_millis(500);
@@ -303,7 +303,7 @@ struct Client {
     panel: Panel,
     warning: bool,
     kitty: bool,
-    geometry: (usize, usize),
+    geometry: Geometry,
     focused: bool,
     immediate: bool,
     last_paint: Option<Instant>,
@@ -340,7 +340,7 @@ impl Client {
         session.write(ENTER)?;
         let geometry = session.tty.size();
         let warning = !probed.kitty;
-        let panel = if warning || sidebar::visible(geometry.0) {
+        let panel = if warning || sidebar::visible(geometry.cols) {
             Panel::Visible
         } else {
             Panel::Hidden
@@ -423,7 +423,7 @@ impl Client {
     }
 
     fn layout(&self) -> Layout {
-        let (cols, rows) = self.geometry;
+        let Geometry { cols, rows, .. } = self.geometry;
         let outline = match self.panel {
             Panel::Hidden => Vec::new(),
             _ => self.model.outline(),
@@ -867,7 +867,7 @@ impl Client {
     fn tick(&mut self) -> Result<(), String> {
         if self.warning && self.kitty {
             self.warning = false;
-            self.panel = if sidebar::visible(self.geometry.0) {
+            self.panel = if sidebar::visible(self.geometry.cols) {
                 Panel::Visible
             } else {
                 Panel::Hidden
@@ -1240,7 +1240,7 @@ impl Client {
     }
 }
 
-fn hello(geometry: (usize, usize), panel: Panel, warning: bool, focused: bool) -> Hello {
+fn hello(geometry: Geometry, panel: Panel, warning: bool, focused: bool) -> Hello {
     Hello {
         kind: ClientKind::Terminal,
         name: "ko".to_owned(),
@@ -1266,12 +1266,16 @@ fn new_pane(remote: bool) -> CreatePane {
     }
 }
 
-fn pane_size(geometry: (usize, usize), panel: Panel, warning: bool) -> Size {
-    let (cols, rows) = geometry;
+fn pane_size(geometry: Geometry, panel: Panel, warning: bool) -> Size {
+    let Geometry {
+        cols,
+        rows,
+        cell_px,
+    } = geometry;
     Size {
         cols: dim(cols.saturating_sub(panel.x(cols))),
         rows: dim(rows.saturating_sub(usize::from(warning) * WARNING_ROWS)),
-        cell_px: None,
+        cell_px,
     }
 }
 

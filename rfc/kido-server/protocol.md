@@ -179,6 +179,21 @@ A size has at least one column and row and at most
 a hello or a size outside that range. A larger grid is never useful,
 and one 65535x65535 grid takes gigabytes.
 
+A size can carry `cell_px`, the pixel size of one cell of the client's
+font. The window keeps the last `cell_px` that its sizing client sent;
+a size without it keeps the earlier one. Each pane of the window gets
+its own cell count times that cell size as the pixel size of its pty
+(`TIOCSWINSZ`, each side saturated at 65535), and its terminal answers
+`CSI 14t`, `16t` and the in-band size reports (mode 2048) with the same
+product, not saturated. A window that never got a `cell_px` has 0
+pixels in its ptys, and its terminals do not answer `CSI 14t`, `16t`
+or the report when mode 2048 is set; the report that libghostty sends
+on a later resize has 0 pixels. A change of only `cell_px` resizes every
+pane of the window. Kido.app sends the cell size of a shown pane; the
+terminal client sends its outer tty's `TIOCGWINSZ` pixels divided by
+its columns and rows, or no `cell_px` when the outer terminal reports
+0 pixels.
+
 The client exists from the hello to the close. There is no
 registration request, no linger and no delete: detach is a close, and
 a crash, a network loss or a ping timeout is a close too. On close the

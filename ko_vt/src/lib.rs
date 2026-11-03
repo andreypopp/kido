@@ -189,7 +189,7 @@ fn complete_read(handle: NonNull<sys::GhosttyClipboardReadHandleImpl>, served: O
     unsafe { sys::ghostty_clipboard_read_complete(handle.as_ptr(), &reply) };
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Notes {
     reads: Vec<(ReadId, NonNull<sys::GhosttyClipboardReadHandleImpl>)>,
     next_read: u64,
@@ -197,6 +197,25 @@ struct Notes {
     reports: Vec<Report>,
     changes: Changes,
     render: Option<render::Render>,
+    size: Size,
+}
+
+impl Notes {
+    fn new(cols: Dim, rows: Dim) -> Box<Notes> {
+        Box::new(Notes {
+            reads: Vec::new(),
+            next_read: 0,
+            replies: Vec::new(),
+            reports: Vec::new(),
+            changes: Changes::default(),
+            render: None,
+            size: Size {
+                cols,
+                rows,
+                cell_px: None,
+            },
+        })
+    }
 }
 
 // SAFETY: libghostty-vt keeps no thread-local or thread-affine state, and terminal.h requires
@@ -225,6 +244,33 @@ unsafe extern "C" fn write_pty(
     notes
         .replies
         .extend_from_slice(unsafe { std::slice::from_raw_parts(data, len) });
+}
+
+unsafe extern "C" fn size_report(
+    _terminal: sys::GhosttyTerminal,
+    userdata: *mut c_void,
+    out_size: *mut sys::GhosttySizeReportSize,
+) -> bool {
+    // SAFETY: as in `write_pty`.
+    let notes = unsafe { &*userdata.cast::<Notes>() };
+    let Size {
+        cols,
+        rows,
+        cell_px: Some(cell),
+    } = notes.size
+    else {
+        return false;
+    };
+    // SAFETY: out_size is writable for the duration of the callback (terminal.h).
+    unsafe {
+        *out_size = sys::GhosttySizeReportSize {
+            rows: rows.get(),
+            columns: cols.get(),
+            cell_width: u32::from(cell.width.get()),
+            cell_height: u32::from(cell.height.get()),
+        };
+    }
+    true
 }
 
 unsafe extern "C" fn title_changed(_terminal: sys::GhosttyTerminal, userdata: *mut c_void) {
@@ -573,7 +619,7 @@ impl Terminal {
         check(unsafe { sys::ghostty_terminal_new(ptr::null(), &mut vt, cols.get(), rows.get()) })?;
         let mut terminal = Terminal {
             vt: NonNull::new(vt).ok_or(Error::NoHandle)?,
-            notes: Box::default(),
+            notes: Notes::new(cols, rows),
         };
         terminal.configure(limits)?;
         Ok(terminal)
@@ -656,13 +702,21 @@ impl Terminal {
         unsafe { sys::ghostty_snapshot_decoder_free(decoder) };
         let terminal = NonNull::new(vt).map(|vt| Terminal {
             vt,
-            notes: Box::default(),
+            notes: Notes::new(Size::DEFAULT.cols, Size::DEFAULT.rows),
         });
         if let Some(error) = source.error {
             return Err(Error::Read(error));
         }
         result?;
-        terminal.ok_or(Error::NoTerminal)
+        let mut terminal = terminal.ok_or(Error::NoTerminal)?;
+        let cols: u16 = terminal.get(sys::GHOSTTY_TERMINAL_DATA_COLS, 0)?;
+        let rows: u16 = terminal.get(sys::GHOSTTY_TERMINAL_DATA_ROWS, 0)?;
+        terminal.notes.size = Size {
+            cols: Dim::new(cols).ok_or(Error::NoTerminal)?,
+            rows: Dim::new(rows).ok_or(Error::NoTerminal)?,
+            cell_px: None,
+        };
+        Ok(terminal)
     }
 
     pub fn serve(&mut self, media: &[Medium], tmpdir: &str) -> Result<(), Error> {
@@ -695,6 +749,10 @@ impl Terminal {
         set(
             sys::GHOSTTY_TERMINAL_OPT_WRITE_PTY,
             write_pty as unsafe extern "C" fn(_, _, _, _) as *const c_void,
+        )?;
+        set(
+            sys::GHOSTTY_TERMINAL_OPT_SIZE,
+            size_report as unsafe extern "C" fn(_, _, _) -> bool as *const c_void,
         )?;
         set(
             sys::GHOSTTY_TERMINAL_OPT_TITLE_CHANGED,
@@ -789,6 +847,7 @@ impl Terminal {
 
     pub fn resize(&mut self, size: Size) -> Result<(), Error> {
         let (width, height) = size.cell_pixels();
+        self.notes.size = size;
         // SAFETY: the handle is live.
         check(unsafe {
             sys::ghostty_terminal_resize(

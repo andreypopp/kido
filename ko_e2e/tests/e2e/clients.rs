@@ -2,8 +2,8 @@ use ko_sys::pid::{Pid, signal_descendant};
 use ko_sys::signal::Signal;
 use serde_json::{Value, json};
 
-use crate::harness::{Server, decode, poll, sh, size, size_request, start};
-use crate::layout::{consistent, new, old, ptys_follow, shape, split, tree, windows};
+use crate::harness::{Server, decode, poll, quote, sh, size, size_request, start};
+use crate::layout::{consistent, leaves, new, old, ptys_follow, shape, split, tree, windows};
 
 fn layout_until(client: &mut crate::harness::Ws, wanted: impl Fn(&Value) -> bool) -> Value {
     loop {
@@ -350,4 +350,75 @@ fn clearing_the_history_reaches_every_view_as_output_and_a_fresh_mirror_has_none
     );
     s.ko(&["api", "-X", "POST", "/panes/pane_9/clear_history"], "")
         .http_error(404);
+}
+
+const SIZE_PROBE: &str = r#"import os,fcntl,termios,struct,tty,select
+tty.setraw(0)
+def out(s): os.write(1,(s+'\r\n').encode())
+def ask(q):
+ os.write(1,q); buf=b''
+ while not buf.endswith(b't'):
+  if not select.select([0],[],[],3)[0]: return 'NONE'
+  buf+=os.read(0,64)
+ return buf.decode().replace('\x1b','E')
+n=0
+out('READY')
+while os.read(0,1):
+ n+=1
+ r,c,x,y=struct.unpack('4H',fcntl.ioctl(0,termios.TIOCGWINSZ,b'\0'*8))
+ out('%d px=%dx%d'%(n,x,y))
+ out('%d t14=%s'%(n,ask(b'\x1b[14t')))
+ out('%d t16=%s'%(n,ask(b'\x1b[16t')))
+"#;
+
+fn probe(s: &Server, pane: &str, n: u32, (cols, rows): (u32, u32), (width, height): (u32, u32)) {
+    s.text(pane, "x");
+    let (x, y) = (cols * width, rows * height);
+    for line in [
+        format!("{n} px={x}x{y}"),
+        format!("{n} t14=E[4;{y};{x}t"),
+        format!("{n} t16=E[6;{height};{width}t"),
+    ] {
+        s.screen_has(pane, &line);
+    }
+}
+
+#[test]
+fn a_pane_knows_its_pixel_size_from_the_cell_size_of_the_sizing_client() {
+    let s = start(&[]);
+    let command = format!("exec python3 -u -c {}", quote(SIZE_PROBE));
+    let first = s.pane(&command);
+    let mut client = s.hello(crate::harness::Hello {
+        kind: "app",
+        selection: json!({"pane": first}),
+        focused: true,
+        size: json!({"cols": 100, "rows": 30, "cell_px": {"width": 16, "height": 35}}),
+    });
+    client.welcome();
+    wait_doc("the client's size", &s, |d| window_size(d, 0) == (100, 30));
+    s.screen_has(&first, "READY");
+    probe(&s, &first, 1, (100, 30), (16, 35));
+
+    s.edit(|layout| {
+        layout["sessions"][0]["windows"][0]["tree"] = split(
+            "h",
+            vec![old(&first), json!({"pane": {"new": sh(&command)}})],
+        );
+    });
+    let mut panes = Vec::new();
+    leaves(&windows(&s.doc())[0]["tree"], &mut panes);
+    let (second, rows, cols) = panes[1].clone();
+    s.screen_has(&second, "READY");
+    probe(&s, &second, 1, (cols, rows), (16, 35));
+    assert_eq!((panes[0].2, cols), (50, 49));
+    probe(&s, &first, 2, (panes[0].2, panes[0].1), (16, 35));
+
+    client.send(&size_request(
+        json!({"cols": 100, "rows": 30, "cell_px": {"width": 9, "height": 20}}),
+    ));
+    wait_doc("the new cell size", &s, |d| {
+        windows(d)[0]["cell_px"] == json!({"width": 9, "height": 20})
+    });
+    probe(&s, &first, 3, (panes[0].2, panes[0].1), (9, 20));
+    probe(&s, &second, 2, (cols, rows), (9, 20));
 }
