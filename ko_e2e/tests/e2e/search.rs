@@ -4,7 +4,7 @@ use crate::harness::{DEADLINE, Message, Ws, poll, start, tagged};
 
 fn lines_program(count: u32) -> String {
     format!(
-        "stty raw -echo; i=0; while [ $i -lt {count} ]; do if [ $((i % 10)) -eq 0 ]; then printf 'row-%d NEEDLE\\r\\n' $i; else printf 'row-%d plain\\r\\n' $i; fi; i=$((i+1)); done; printf READY; exec cat"
+        "stty raw -echo; awk 'BEGIN {{ for (i = 0; i < {count}; i++) printf \"row-%d %s\\r\\n\", i, (i % 10 == 0 ? \"NEEDLE\" : \"plain\") }}'; printf READY; exec cat"
     )
 }
 

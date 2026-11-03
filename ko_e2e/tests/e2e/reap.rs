@@ -64,16 +64,16 @@ fn a_dead_run_is_collected_after_the_linger_with_its_ending_and_its_last_screen(
 fn the_sweep_acts_only_on_the_pane_a_run_names() {
     let s = lingering();
     let caller = caller(&s);
+    let bystander = s.new_pane(json!({
+        "command": {"type": "argv", "argv": ["/bin/sh", "-c", "exit 0"]},
+    }));
+    let user = s.pane("exit 0");
     let young = run_of(
         &s,
         &caller,
         "young",
         &["sh", "-c", "echo young-screen-e2e; exit 0"],
     );
-    let bystander = s.new_pane(json!({
-        "command": {"type": "argv", "argv": ["/bin/sh", "-c", "exit 0"]},
-    }));
-    let user = s.pane("exit 0");
     poll("the other panes to die", || {
         s.row(&bystander)["dead"].is_object() && s.row(&user)["dead"].is_object()
     });
