@@ -363,17 +363,15 @@ extension VisualTests {
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let owner = WindowOwner(host: .remote("copy-host"), runtime: runtime, start: false)
         owner.testUploadBase = "/tmp/kc-" + UUID().uuidString.prefix(8)
-        var replies: [Data] = []
-        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, host: owner.host) { replies.append($0) })
+        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, host: owner.host) { _ in })
         owner.window.contentView = pane
         owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         owner.window.orderFront(nil)
         owner.window.makeFirstResponder(pane)
         pane.resize(cols: 80, rows: 24)
         defer { Upload.visualImagePreparation = nil; pane.dispose(); owner.close(); board.releaseGlobally() }
-        nonisolated(unsafe) let target = pane
-        func feed(_ text: String) async {
-            await withCheckedContinuation { done in DispatchQueue.global().async { target.feed(Data(text.utf8)); done.resume() } }
+        func read(_ id: UInt64, _ mime: String) {
+            pane.receiveClipboardRead(KoClipboardRead(pane: pane.pane, id: id, mimes: [mime], list: false))
         }
         func refused(_ why: String) {
             let beeps = pane.visualBeeps
@@ -389,7 +387,7 @@ extension VisualTests {
         refused("paste sheet")
         owner.window.endSheet(try XCTUnwrap(owner.window.attachedSheet), returnCode: .alertSecondButtonReturn)
         try await wait("paste sheet closed", within: 2) { owner.window.attachedSheet == nil }
-        await feed("\u{1b}]52;c;?\u{7}")
+        read(1, "text/plain")
         try await wait("clipboard consent sheet", within: 2) { owner.preparedAlert != nil }
         refused("clipboard consent sheet")
         owner.respondToAlert(.alertThirdButtonReturn)
@@ -411,17 +409,16 @@ extension VisualTests {
             windowNumber: owner.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)))
 
         owner.clipboardPermission = [.rich: .allow, .clipboard: .allow]
-        let b64 = { (text: String) in Data(text.utf8).base64EncodedString() }
         board.clearContents()
         board.setData(pngData(width: 2, height: 2, type: .tiff), forType: .tiff)
         var convert: CheckedContinuation<Void, Never>?
         Upload.visualImagePreparation = { await withCheckedContinuation { convert = $0 } }
-        await feed("\u{1b}]5522;type=read;\(b64("image/png"))\u{1b}\\")
+        read(2, "image/png")
         try await wait("TIFF conversion started", within: 2) { convert != nil }
         refused("pending TIFF conversion")
         convert?.resume()
         convert = nil
-        try await wait("conversion served", within: 2) { String(decoding: replies.joined(), as: UTF8.self).contains("DONE") }
+        try await wait("conversion served", within: 2) { !pane.visualClipboardPending }
         let drag = SyntheticDrag(board)
         XCTAssertEqual(pane.draggingEntered(drag), .copy)
     }

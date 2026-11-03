@@ -89,6 +89,7 @@ pub(crate) fn send(
         socket,
         (client, None),
         (method, &target),
+        &[],
         protocol::json(&request).as_bytes(),
         wire::READ_TIMEOUT,
         cancel,

@@ -1574,6 +1574,28 @@ pub enum PixelFormat {
     Gray,
 }
 
+impl PixelFormat {
+    pub fn header(self) -> &'static str {
+        match self {
+            PixelFormat::Rgb => "rgb",
+            PixelFormat::Rgba => "rgba",
+            PixelFormat::GrayAlpha => "gray_alpha",
+            PixelFormat::Gray => "gray",
+        }
+    }
+
+    pub fn from_header(text: &str) -> Option<PixelFormat> {
+        [
+            PixelFormat::Rgb,
+            PixelFormat::Rgba,
+            PixelFormat::GrayAlpha,
+            PixelFormat::Gray,
+        ]
+        .into_iter()
+        .find(|format| format.header() == text)
+    }
+}
+
 impl From<frame::PixelFormat> for PixelFormat {
     fn from(format: frame::PixelFormat) -> PixelFormat {
         match format {
@@ -1612,13 +1634,13 @@ pub enum SearchEvent {
     Done,
 }
 
-pub(crate) const IMAGE_FORMAT_HEADER: &str = "ko-image-format";
-pub(crate) const IMAGE_WIDTH_HEADER: &str = "ko-image-width";
-pub(crate) const IMAGE_HEIGHT_HEADER: &str = "ko-image-height";
-pub(crate) const IMAGE_GENERATION_HEADER: &str = "ko-image-generation";
-pub(crate) const IMAGE_GAP_HEADER: &str = "ko-image-gap-ms";
-pub(crate) const IMAGE_FRAMES_HEADER: &str = "ko-image-frames";
-pub(crate) const ACCEPT_SHM_HEADER: &str = "ko-accept-shm";
+pub const IMAGE_FORMAT_HEADER: &str = "ko-image-format";
+pub const IMAGE_WIDTH_HEADER: &str = "ko-image-width";
+pub const IMAGE_HEIGHT_HEADER: &str = "ko-image-height";
+pub const IMAGE_GENERATION_HEADER: &str = "ko-image-generation";
+pub const IMAGE_GAP_HEADER: &str = "ko-image-gap-ms";
+pub const IMAGE_FRAMES_HEADER: &str = "ko-image-frames";
+pub const ACCEPT_SHM_HEADER: &str = "ko-accept-shm";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunRow {
@@ -2312,5 +2334,19 @@ mod tests {
                 prop_assert!(serde_json::from_str::<serde_json::Value>(&decoded).is_ok());
             }
         }
+    }
+
+    #[test]
+    fn a_pixel_format_header_is_its_json_name_and_parses_back() {
+        for format in [
+            PixelFormat::Rgb,
+            PixelFormat::Rgba,
+            PixelFormat::GrayAlpha,
+            PixelFormat::Gray,
+        ] {
+            assert_eq!(format!("\"{}\"", format.header()), json(&format));
+            assert_eq!(PixelFormat::from_header(format.header()), Some(format));
+        }
+        assert_eq!(PixelFormat::from_header("RGB"), None);
     }
 }

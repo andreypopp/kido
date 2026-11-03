@@ -46,7 +46,7 @@ extern "C" {
  * bytes of an older snapshot never follow a newer restore. The surface may
  * be fed from that thread only; the caller's queue plays no part in it. The
  * calls that return a ko_buffer (ko_client_put_layout, ko_client_runs,
- * ko_client_prompt, ko_client_prompt_resolve, ko_client_delete, ko_client_edit) and ko_client_launch and ko_client_stop_server block
+ * ko_client_prompt, ko_client_prompt_resolve, ko_client_delete, ko_client_edit, ko_client_image) and ko_client_launch and ko_client_stop_server block
  * until the server answered: call them off the main queue.
  *
  * Close. After ko_client_close or ko_view_close returns, no callback of that
@@ -113,6 +113,8 @@ enum {
     KO_EVENT_VIEW_RESTORED = 7,
     KO_EVENT_VIEW_CLOSED = 8,
     KO_EVENT_MISMATCH = 9,
+    KO_EVENT_CLIPBOARD_WRITE = 10,
+    KO_EVENT_CLIPBOARD_READ = 11,
 };
 
 typedef struct ko_welcome {
@@ -153,6 +155,45 @@ typedef struct ko_alert {
     const char *title; /* NULL when absent */
     const char *body;  /* NULL for a bell */
 } ko_alert;
+
+enum {
+    KO_CLIPBOARD_STANDARD = 1,
+    KO_CLIPBOARD_SELECTION = 2,
+    KO_CLIPBOARD_PRIMARY = 3,
+};
+
+/* One representation of a clipboard: its MIME type and its bytes. */
+typedef struct ko_clipboard_content {
+    const char *mime;
+    const uint8_t *data;
+    size_t len;
+} ko_clipboard_content;
+
+/*
+ * A program wrote the clipboard `location` of `pane`. Every client whose window shows the pane gets
+ * the event, and applies its own consent. `contents` is valid during the callback.
+ */
+typedef struct ko_clipboard_write {
+    const char *pane;
+    int location;
+    const ko_clipboard_content *contents;
+    size_t count;
+} ko_clipboard_write;
+
+/*
+ * A program of `pane` asks to read the clipboard `location`, as the MIME types `mimes` (`list` asks
+ * which types the clipboard holds: answer with `available`). The server picked this client to
+ * answer: it must call ko_client_clipboard_answer with `id`, within 8 seconds, or the read is
+ * refused. An answer that lands later is ignored.
+ */
+typedef struct ko_clipboard_read {
+    const char *pane;
+    uint64_t id;
+    int location;
+    const char *const *mimes;
+    size_t count;
+    bool list;
+} ko_clipboard_read;
 
 /* The protocol version, the terminal revision and the build of a ko binary. */
 typedef struct ko_version {
@@ -206,6 +247,8 @@ typedef struct ko_event {
         ko_view_restored view_restored;
         ko_view_closed view_closed;
         ko_mismatch mismatch;
+        ko_clipboard_write clipboard_write;
+        ko_clipboard_read clipboard_read;
     };
 } ko_event;
 
@@ -381,6 +424,68 @@ ko_code ko_client_switch(const ko_client *client, int over, int direction);
 ko_code ko_client_size(const ko_client *client, uint16_t cols, uint16_t rows, uint16_t cell_width, uint16_t cell_height);
 
 ko_code ko_client_focus(const ko_client *client, bool focused);
+
+/*
+ * Answers the clipboard read `id` of a KO_EVENT_CLIPBOARD_READ. `contents` NULL refuses the read;
+ * an array (also of `count` 0) answers it with exactly those representations, and `available`
+ * (NULL or `available_count` strings) names the types the clipboard holds, for a `list` read. The call copies them
+ * and returns at once. An answer over the server's clipboard budget (every name and every byte
+ * together) is sent as a refusal. A read that the server already ended (an answer that came too late, another
+ * answerer) is ignored by the server. KO_ERR_CLOSED when the connection is not up.
+ */
+ko_code ko_client_clipboard_answer(const ko_client *client,
+                                   uint64_t id,
+                                   const ko_clipboard_content *contents,
+                                   size_t count,
+                                   const char *const *available,
+                                   size_t available_count);
+
+/* The server's limits that a mirror must share. KO_ERR_CLOSED before the first welcome. */
+typedef struct ko_limits {
+    uint64_t kitty_images_max_bytes;
+} ko_limits;
+
+ko_code ko_client_limits(const ko_client *client, ko_limits *out);
+
+enum {
+    KO_PIXELS_RGB = 1,
+    KO_PIXELS_RGBA = 2,
+    KO_PIXELS_GRAY_ALPHA = 3,
+    KO_PIXELS_GRAY = 4,
+};
+
+/*
+ * One frame of an image of a pane (GET /panes/P/images/I/frames/N?generation=G, protocol.md
+ * section 5). `shm_name` is a NUL-terminated name when the reply named a shared memory object
+ * (`length` bytes, mapped read-only by the caller, never unlinked), and empty when the pixels are
+ * `body`, which the caller frees with ko_buffer_free. On a failure `body` holds the text of the
+ * error and the other members are zero. Initialize the struct to zero before the call.
+ */
+typedef struct ko_image {
+    int format;
+    uint32_t width;
+    uint32_t height;
+    uint64_t generation;
+    uint32_t gap_ms;
+    uint32_t frames;
+    uint64_t length;
+    char shm_name[32];
+    ko_buffer body;
+} ko_image;
+
+/*
+ * Fetches one frame on a new connection, parallel with any other call. `accept_shm` asks for a
+ * shared memory object instead of a body: only a client of the server's own machine may. KO_ERR_NOT_FOUND:
+ * the image was evicted, the frame does not exist or the generation moved on. It blocks:
+ * call it off the main queue.
+ */
+ko_code ko_client_image(const ko_client *client,
+                        const char *pane,
+                        uint32_t image,
+                        uint32_t frame,
+                        uint64_t generation,
+                        bool accept_shm,
+                        ko_image *out);
 
 /*
  * The seen record: the panes that the window shows now, and whether the user

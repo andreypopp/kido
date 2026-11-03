@@ -434,7 +434,7 @@ private class AlertEscape: NSView {
         if clipboardPermission[scope] == .allow || Self.clipboardConsent.allows(host, scope) { return pane.finishClipboard(true) }
         guard !pane.isHiddenOrHasHiddenAncestor, window.isVisible,
               preparedAlert == nil, window.attachedSheet == nil,
-              Self.clipboardConsent.askingHosts.insert(scope.rawValue + " " + host.clipboardKey).inserted else { return pane.finishClipboard(false) }
+              Self.clipboardConsent.askingHosts.insert("read " + host.clipboardKey).inserted else { return pane.finishClipboard(false) }
         let alert = NSAlert()
         alert.messageText = scope == .rich
             ? "Allow applications on “\(host.label)” to read images, HTML and file lists from your Mac clipboard?"
@@ -457,8 +457,14 @@ private class AlertEscape: NSView {
     func releaseClipboard(_ pane: PaneView) {
         guard let prompt = clipboardPrompt, prompt.pane === pane else { return }
         clipboardPrompt = nil
-        Self.clipboardConsent.askingHosts.remove(prompt.scope.rawValue + " " + host.clipboardKey)
+        Self.clipboardConsent.askingHosts.remove("read " + host.clipboardKey)
         cancelClipboardAlert(prompt.alert)
+    }
+
+    func writeClipboard(_ contents: [KoClipboardContent]) {
+        guard runtime.clipboard.write == .allow, let items = PasteboardMIME.items(contents),
+              !items.isEmpty else { return }
+        _ = runtime.store(items)
     }
 
     enum ClipboardPermission { case ask, allow, deny }
@@ -706,6 +712,7 @@ private class AlertEscape: NSView {
     private func makeSessionView() -> SessionView {
         let generation = generation
         let view = SessionView(runtime: runtime)
+        view.host = host
         if case .connected(let client) = link { view.client = client }
         view.sidebarFocused = { [weak sidebar] in sidebar?.list.containsFocus == true }
         view.reorder = reorder
@@ -784,6 +791,14 @@ private class AlertEscape: NSView {
             down("Disconnected from \(host.label)", detail + "\nReconnecting…", button: "Start")
         case .mismatch(let code, let server, let own):
             protocolMismatch(code: code, server: server, own: own)
+        case .clipboardWrite(_, let contents):
+            writeClipboard(contents)
+        case .clipboardRead(let read):
+            guard let pane = session?.pane(read.pane) else {
+                if case .connected(let client) = link { client.answerClipboard(id: read.id, contents: nil) }
+                return
+            }
+            pane.receiveClipboardRead(read)
         }
     }
 

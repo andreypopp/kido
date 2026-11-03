@@ -249,6 +249,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             editor?.layoutChanged(revision: Int(revision))
         case .welcome, .model, .selected: receive()
         case .failed, .mismatch: break
+        case .clipboardWrite(_, let contents): (window.delegate as? WindowOwner)?.writeClipboard(contents)
+        case .clipboardRead(let read): session.pane(read.pane)?.receiveClipboardRead(read)
         }
     }
 
@@ -1626,6 +1628,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         board.setString("before", forType: .string)
         board.clearContents()
         board.setString("before-live", forType: .string)
+        try client?.focus(true)
         try Data().write(to: go)
         try await wait("OSC52 private pane printf live copy") { board.string(forType: .string) == "copied ✓" }
         try Data().write(to: ready)

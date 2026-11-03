@@ -70,6 +70,34 @@ def pane(command=None):
     return {'pane': {'new': {'command': {'type': 'shell', 'command': command}} if command else {}}}
 
 
+IMAGE_PROGRAM = r"""
+import _posixshmem, base64, mmap, os, sys, time
+count = 0
+def up(control, pixels):
+    global count
+    count += 1
+    name = "/ko-st-%d-%d" % (os.getpid() % 100000, count % 1000)
+    try:
+        descriptor = _posixshmem.shm_open(name, os.O_CREAT | os.O_EXCL | os.O_RDWR, mode=0o600)
+    except FileExistsError:
+        return
+    os.ftruncate(descriptor, len(pixels))
+    memory = mmap.mmap(descriptor, len(pixels))
+    memory[:] = pixels
+    memory.close()
+    os.close(descriptor)
+    sys.stdout.write("\x1b_G%s,t=s,f=32,s=1,v=1,q=2;%s\x1b\\" % (control, base64.b64encode(name.encode()).decode()))
+    sys.stdout.flush()
+while True:
+    up("a=T,i=1,c=2,r=1", bytes([255, 0, 0, 255]))
+    up("a=f,i=1,z=40", bytes([0, 255, 0, 255]))
+    sys.stdout.write("\x1b_Ga=a,i=1,s=3,q=2\x1b\\")
+    up("a=f,i=1,r=1", bytes([0, 0, 255, 255]))
+    time.sleep(0.2)
+    sys.stdout.write("\x1b[2J\x1b[H")
+"""
+
+
 def edit(change):
     """One layout edit through ko, applied again by the core after a revision conflict; what it answers, or None."""
     return ko('layout', 'edit', json.dumps(change))
@@ -127,6 +155,9 @@ def setup(full):
     for name, n in [('log-1m', 1000000), ('log-100k', 100000)]:
         sessions[0]['windows'].append({'name': name, 'tree': pane(f"seq 1 {n}; while :; do printf 'INFO built ERROR %s\\n' $RANDOM; sleep 0.03; done"),
                                        'floats': [{'x': 20, 'y': 5, 'cols': 45, 'rows': 15, **pane()}]})
+    with open(out + '/image.py', 'w') as image_program:
+        image_program.write(IMAGE_PROGRAM)
+    sessions[0]['windows'].append({'name': 'images', 'tree': pane('exec /usr/bin/python3 -I ' + out + '/image.py')})
     sessions[1]['windows'].append({'name': 'seq', 'tree': pane('seq 2000000; sleep 3600')})
     sessions[2]['windows'].append({'name': 'yes', 'tree': pane('yes | head -50000000; sleep 3600')})
     if api('PUT', '/layout', {'revision': 0, 'layout': {'sessions': sessions}}) is None:

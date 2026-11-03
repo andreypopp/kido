@@ -19,8 +19,8 @@ enum PasteboardMIME {
         }
     }
 
-    @MainActor static func read(_ board: NSPasteboard, _ mimes: [String]) -> [(mime: String, data: Data)] {
-        mimes.compactMap { mime -> (mime: String, data: Data)? in
+    @MainActor static func read(_ board: NSPasteboard, _ mimes: [String]) -> [KoClipboardContent] {
+        mimes.compactMap { mime -> KoClipboardContent? in
             let data: Data? = switch mime {
             case "text/plain": board.string(forType: .string).map { Data($0.utf8) }
             case "text/uri-list": (board.pasteboardItems ?? []).compactMap { $0.string(forType: .fileURL) }.joined(separator: "\r\n").data(using: .utf8)
@@ -28,7 +28,7 @@ enum PasteboardMIME {
             }
             guard let data, data.count <= (mime.hasPrefix("text/") ? textLimit : limit),
                   !mime.hasPrefix("text/") || !data.contains(0) else { return nil }
-            return (mime, data)
+            return KoClipboardContent(mime: mime, data: data)
         }
     }
 
@@ -40,5 +40,14 @@ enum PasteboardMIME {
         guard type == .fileURL else { return (type, data) }
         let url = text.trimmingCharacters(in: .newlines)
         return url.contains(where: \.isNewline) ? nil : (type, Data(url.utf8))
+    }
+
+    nonisolated static func items(_ contents: [KoClipboardContent]) -> [(type: NSPasteboard.PasteboardType, data: Data)]? {
+        var items: [(type: NSPasteboard.PasteboardType, data: Data)] = []
+        for content in contents {
+            guard let item = written(content.mime, content.data) else { return nil }
+            if !items.contains(where: { $0.type == item.type }) { items.append(item) }
+        }
+        return items
     }
 }

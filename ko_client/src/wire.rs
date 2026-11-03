@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use ko_server::api::Route;
 use ko_server::http::{self, Response, call};
 use ko_server::ids::{ClientId, PaneId};
+use ko_server::protocol::ACCEPT_SHM_HEADER;
 use ko_server::ws::{accepted, upgrade_request};
 use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token, Wake};
 use ko_sys::fd::{self, Queue, Waited, Want};
@@ -19,6 +20,7 @@ use crate::launch::{self, PATIENCE};
 
 const MAX_MESSAGE: usize = 128 << 20;
 const RECEIVE_BUFFER: usize = 1 << 20;
+const MAX_RESERVE: usize = 64 << 20;
 pub const READ_TIMEOUT: Duration = Duration::from_secs(40);
 pub const WATCHDOG: Duration = Duration::from_secs(40);
 
@@ -97,6 +99,7 @@ fn open(
     socket: &Path,
     (client, caller): (Option<ClientId>, Option<PaneId>),
     (method, target): (&str, &str),
+    headers: &[(&str, &str)],
     body: &[u8],
     within: Duration,
     cancel: Option<&Wake>,
@@ -106,6 +109,7 @@ fn open(
     stream.set_write_timeout(Some(within))?;
     let caller = caller.map(|pane| pane.to_string());
     let mut extra = vec![("Connection", "keep-alive")];
+    extra.extend_from_slice(headers);
     if let Some(caller) = &caller {
         extra.push(("Ko-Pane", caller));
     }
@@ -122,16 +126,32 @@ pub(crate) fn exchange(
     socket: &Path,
     who: Who,
     target: (&str, &str),
+    headers: &[(&str, &str)],
     body: &[u8],
     within: Duration,
     cancel: Option<&Wake>,
 ) -> io::Result<Response> {
-    let stream = open(socket, who, target, body, within, cancel)?;
-    http::read_response(&mut Interruptible {
-        stream: &stream,
-        cancel,
-        within,
-    })
+    let stream = open(socket, who, target, headers, body, within, cancel)?;
+    let mut answer = Vec::new();
+    let mut response = http::read_response_with(
+        &mut Interruptible {
+            stream: &stream,
+            cancel,
+            within,
+        },
+        |head, piece| {
+            if answer.is_empty() {
+                let length = head
+                    .header("content-length")
+                    .and_then(|length| length.parse().ok());
+                answer.reserve(length.unwrap_or(0).min(MAX_RESERVE));
+            }
+            answer.extend_from_slice(piece);
+            Ok(())
+        },
+    )?;
+    response.body = answer;
+    Ok(response)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,14 +204,14 @@ fn fetch(
     mut sink: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> Result<(), Rejected> {
     let (method, target) = route.to_request();
-    let stream = open(socket, who, (method, &target), body, within, cancel)?;
+    let stream = open(socket, who, (method, &target), &[], body, within, cancel)?;
     let mut failure = Vec::new();
     let mut reader = Interruptible {
         stream: &stream,
         cancel,
         within,
     };
-    let response = http::read_response_with(&mut reader, |head, piece| {
+    let mut response = http::read_response_with(&mut reader, |head, piece| {
         if head.status == 200 {
             sink(piece)
         } else {
@@ -200,13 +220,18 @@ fn fetch(
         }
     })
     .map_err(|error| Rejected::Unanswered(text(error)))?;
+    response.body = failure;
+    succeeded(response).map(|_| ())
+}
+
+fn succeeded(response: Response) -> Result<Response, Rejected> {
     if response.status == 200 {
-        Ok(())
+        Ok(response)
     } else {
         Err(Rejected::Status {
             status: response.status,
             reason: response.reason,
-            body: failure,
+            body: response.body,
         })
     }
 }
@@ -253,6 +278,32 @@ pub fn download(
         |piece| file.write_all(piece),
     )
     .map_err(String::from)
+}
+
+pub(crate) fn image(
+    socket: &Path,
+    client: Option<ClientId>,
+    route: &Route,
+    accept_shm: bool,
+    cancel: Option<&Wake>,
+) -> Result<Response, Rejected> {
+    let (method, target) = route.to_request();
+    let headers: &[(&str, &str)] = if accept_shm {
+        &[(ACCEPT_SHM_HEADER, "1")]
+    } else {
+        &[]
+    };
+    let response = exchange(
+        socket,
+        (client, None),
+        (method, &target),
+        headers,
+        b"",
+        READ_TIMEOUT,
+        cancel,
+    )
+    .map_err(|error| Rejected::Unanswered(text(error)))?;
+    succeeded(response)
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

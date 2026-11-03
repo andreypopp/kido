@@ -48,15 +48,16 @@ the same team signing as the release script.
 Each `WindowOwner` has one `KoClient`. `WindowOwner.dial` calls
 `ko_client_connect` with a hello (`KoHello`: the owner id as the client
 name, `sizes_windows`), and the core posts its events on the main queue:
-welcome, layout, model, selected, failed and mismatch (`KoEvent`); the
-app ignores the core's alert event.
+welcome, layout, model, selected, failed, mismatch, clipboard write and
+clipboard read (`KoEvent`); the app ignores the core's other alerts.
 The model is a snapshot: a layout, model or selected event marks it
 stale, and once per main-queue turn the owner reads it again with
 `ko_client_model`, decodes it into `KoModel` and derives the session view,
 the sidebar `Snapshot` and the tabs from it. The owner keeps only that
 model; the layout editor still gets every layout revision. The owner's link is
 `down`, `starting`, `mismatch`, `changed` (the bundle changed on disk) or
-`connected`. There is no second connection and no image client.
+`connected`. There is no second long-lived connection: an image fetch
+(`ko_client_image`) is one request on its own short connection.
 
 The server directory is `$XDG_STATE_HOME/ko-app`, else
 `~/.local/state/ko-app`, so an old kido-app tmux socket is never opened as
@@ -528,13 +529,39 @@ Shift-press gesture continues. The wheel still scrolls.
 ### Images
 
 Live kitty-graphics images from the view's feed reach Ghostty through
-`process_output`, and Ghostty draws them. Restored images are blank until
-ko K6: a snapshot restores the text under an image, not its pixels. Each
-surface keeps its accepted media (`kitty_image_media` in the surface
-config): a local window accepts `t=d` and `t=s`, a remote window `t=d`
-only, so a remote program cannot make the app open, unlink or read a local
-shared-memory object or file. Memory is bounded by Ghostty's
-`image-storage-limit` (the user's setting; the app sets none).
+`process_output`, and Ghostty draws them. A mirror accepts only `t=d` on
+every host (`kitty_image_media` is `DIRECT`): the pane's terminal reads
+and unlinks a program's `t=s` object, so a mirror that also opened it
+would race the pane, and a program can never make the app open, unlink or
+read a shared-memory object or file. Every frame that the mirror cannot
+fill (a refused `t=s`, a restored image, an edit of such a frame) is
+pending with a stamp, and `PaneImages` completes it from the server's
+frame resource (rfc/kido-server/protocol.md, section 5).
+
+After each restore and each feed of bytes, the decoder thread reads the
+surface's pending generation; only when it moved does it list the pending
+frames (`ghostty_surface_kitty_pending_frames`, the active screen first)
+and queue the frames that are not already in flight. Every pending frame is fetched, not only the frames on screen: a
+pending frame holds no pixels, and the list is bounded by the storage
+limit. Each fetch runs on its own connection. A local
+window asks for shared memory (`Ko-Accept-Shm`), maps the named object
+read-only and gives the mapping to the surface
+(`ghostty_surface_kitty_frame_adopt`), so a frame is never copied; on a
+refusal the app unmaps it, and it never unlinks an object (the server
+does). A remote window gets the pixels as a body and attaches a copy
+(`_attach`); it keeps a bounded cache of recent bodies, so a copy-mode
+resync does not download an animation again. A local window keeps no
+cache: a fetch by name is one small request. A not-found answer (evicted,
+moved on) drops the key and leaves the frame blank, as the pane holds it;
+a re-upload moves the stamp and fetches again. Another failure retries a
+bounded number of times. The fetches of all panes of one client share
+one bounded queue. Animations play from the
+attached frames in Ghostty's renderer, with no app code.
+
+The surface's `image-storage-limit` is the server's
+`kitty_images_max_bytes` from `welcome` (`ko_client_limits`), not the
+user's setting, so the mirror evicts what the pane evicts and a restore
+keeps every image that the snapshot holds.
 
 ### Focus treatment
 
@@ -639,16 +666,32 @@ the grip, zoom, split or close button only activates the window.
 
 ### Clipboard
 
-Live OSC 52 writes copy text to the Mac general pasteboard. Reads use Ghostty's
-asynchronous completion through the original pane's input path
-(`ko_view_input`). `c`, `p` and `s` share that text pasteboard; replies
-retain the requested selector. Empty clipboard text gets an empty reply. Text
-is capped at 1 MiB; NUL-containing writes are ignored and reads refused with an
-empty reply. Clipboard contents are not logged.
+A program's clipboard access (OSC 52 and the kitty protocol, OSC 5522)
+reaches the app as server events, never through the mirror
+(rfc/kido-server/protocol.md, section 9). The surfaces get
+`clipboard-read = deny`, `clipboard-write = deny` and
+`kitty_clipboard = false`, so a mirror neither touches the pasteboard nor
+writes a reply toward the pane; `ko-pane`'s terminal encodes every reply.
+The runtime reduces the user's `clipboard-read` and `clipboard-write`
+to the app's policy (`GhosttyRuntime.ClipboardPolicy`): a read `deny`
+refuses every server read at once and any other read value asks; a write
+`allow` applies server writes and any other write value ignores them.
 
-Application reads always use `clipboard-read = ask`, including configuration
-updates; explicit `deny` wins. Before accessing the pasteboard, the first read
-asks: “Allow applications on “HOST” to read your Mac clipboard?” The sheet notes
+A `clipboard_write` event writes the general pasteboard: every content
+through `PasteboardMIME`, which refuses text with a NUL, text over 1 MiB
+and an unknown type; one refused content drops the whole write. The
+server sends writes only to clients whose window shows the pane, and `c`,
+`p` and `s` share the one pasteboard. A `clipboard_read` event goes to the
+one answerer that the server elects; the owner hands it to the pane's
+`PaneView`, or refuses it when no pane of its session has that id. The
+answer (`ko_client_clipboard_answer`) carries the requested types, the
+available types when the read asks for the list, or nothing for a
+refusal. The server's own limit (`MAX_CLIPBOARD` in
+`ko_pane_wire/src/frame.rs`) refuses a
+larger answer, and its 8 s timer makes the deadline exact. Clipboard
+contents are not logged.
+
+Before accessing the pasteboard, the first read asks: “Allow applications on “HOST” to read your Mac clipboard?” The sheet notes
 that this also permits applications reached through SSH inside its panes.
 **Allow for this connection**, **Always allow** and **Deny** grant or deny that
 window's connection. A connection's Deny wins over its Allow, then persisted host grants; otherwise the read asks. Edit → Reset Clipboard Permissions clears all persisted grants and every open window's connection answer, without confirmation. Always allow is shared between windows and persisted in
@@ -659,21 +702,26 @@ inside local panes. Background test composition has no persistent grant store
 and injects a named pasteboard; production supplies the general pasteboard.
 
 The guarded WindowOwner presenter shows consent only in a visible window.
-An unapproved hidden pane/window read is denied immediately, never deferred.
-There is one pending read per pane and at most one consent sheet per host;
-additional reads receive empty replies. Eight seconds without a decision
-completes with an empty reply; an overdue sheet answer does the same. Pane removal, window close, eviction and connection
-retirement cancel the opaque Ghostty state without input, before freeing its
-surface. Late sheet responses and retired-surface input are ignored.
+An unapproved hidden pane/window read is refused at once, never deferred;
+the server can elect an occluded window's client, and the program then
+gets its empty reply at once. There is one pending read per pane and at
+most one consent sheet per host; additional reads are refused. Eight
+seconds without a decision refuses; an overdue sheet answer does the same.
+Pane removal, window close, eviction and connection retirement refuse the
+pending read before freeing the surface. Late sheet responses are ignored.
+
+A mode 5522 paste event stays in the app, because the mode is the
+mirror's parser state: Cmd-V tells the program the available types, and
+the program's next read of that pane within `PaneView.pasteEventTimeout`,
+while the pasteboard is unchanged, is served without a sheet. A read in that window after the pasteboard
+changed gets no contents.
 
 Snapshot restore explicitly resets Ghostty's parser before it writes the
-snapshot, including when its old state was mid-OSC. Restore mode
-suppresses clipboard operations at the parser boundary, before surface
-messages are queued. Already queued live operations remain live across a
-resync. MANUAL_MIRROR still suppresses every other parser reply.
+snapshot, including when its old state was mid-OSC. MANUAL_MIRROR
+suppresses every other parser reply.
 
-Guarantees cover displayed panes only, with one clipboard-enabled app per
-pane. Output that a frozen or evicted pane does not parse is best effort.
+The server's election makes one answerer per read, so two attached apps
+do not both answer.
 
 Cmd-V and unsafe paste are separate from application reads. An unsafe paste is
 asked about in a sheet showing its text, and completed exactly once: pasted,
@@ -886,9 +934,20 @@ cell change. The fork's `Surface.size_mutex` orders the two, so no
 callback that runs under the renderer lock may call
 `ghostty_surface_size` or `grid_metrics`. The decoder thread is the only writer of a surface's
 terminal state: the restore, the grid and the parse run only from the view's
-callbacks. `app/scripts/lint.sh` refuses a `restore_snapshot` or
-`set_grid_size` call outside `app/App/Ko/KoClient.swift`, and a
-`process_output` call outside it and `app/App/PaneView.swift`. A `PaneView` is freed on main
+callbacks. The one exception is a fetched image frame: `PaneImages`
+attaches or adopts it on the fetch's task, under the fork's renderer
+lock. Its order against a restore needs no thread rule, because the
+frame's stamp decides: a restore that replaced the terminal makes the
+frame pending again, the pending generation moves, and the decoder queues
+the fetch again, while the surface refuses an attach whose stamp no
+longer matches a pending frame. `PaneImages.stop`, on main before the
+surface is freed, waits for a running attach and lets none start.
+`app/scripts/lint.sh` refuses a `restore_snapshot` or
+`set_grid_size` call outside `app/App/Ko/KoClient.swift`, a
+`process_output` call outside it and `app/App/PaneView.swift`, and a
+`kitty_frame_attach` or `_adopt` call outside `app/App/PaneImages.swift`.
+Image fetches (`ko_client_image`) block on global utility-queue work
+items, never on main or the decoder thread. A `PaneView` is freed on main
 (`dispatchPrecondition` in its `deinit`). Renderer callbacks publish asynchronously to main; runtime wakeups
 coalesce main ticks.
 Ghostty paces rendering with one CVDisplayLink for each surface, as

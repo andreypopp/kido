@@ -941,8 +941,19 @@ below does not apply. Where the build differs from the scope below
 (the coordinator mints each object name and records it before
 `ko-pane` creates the object; the leak record is
 `ko_server/src/shm.rs`), protocol.md is the reference. Open:
-`images=all` is still refused, and
-Kido.app's part (below) waits for K5.
+`images=all` is still refused.
+
+**Kido.app's part is built** (2026-11-03): docs/design-app.md
+("Images", "Clipboard", "Threads") is the reference. Where it differs
+from the scope below: the mirror accepts only `t=d` on both hosts, and
+the app fetches every pending frame, not only the frames of on-screen
+placements, which it lists with one surface wrapper in the fork
+(`ghostty_surface_kitty_pending_frames`); the surface's image limit is
+the server's `kitty_images_max_bytes`; OSC 52 and OSC 5522 reads and
+writes travel only as the server's clipboard events, with the mirror's
+own handling off by config, no fork change; the app does not use
+`/search`, because its mirrors are full (K7 decides for a partial
+remote mirror).
 
 **Follow-up: a Ghostty fork change for clipboard reads** (built in
 the server; the fork commit waits for its pin bump). The request of

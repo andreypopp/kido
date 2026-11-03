@@ -43,6 +43,7 @@ nonisolated(unsafe) private var tickedApp: ghostty_app_t?
         config.scale_factor = 2
         config.font_size = 13
         config.io_mode = GHOSTTY_SURFACE_IO_MANUAL_MIRROR
+        config.kitty_image_media = GHOSTTY_IMAGE_MEDIA_DIRECT
         config.io_write_cb = { _, _, _ in }
         surface = ghostty_surface_new(KoGhostty.shared.app, &config)!
         XCTAssertTrue(ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil))
@@ -63,6 +64,20 @@ nonisolated(unsafe) private var tickedApp: ghostty_app_t?
                 ghostty_surface_process_output(surface, $0, UInt(buffer.count))
             }
         }
+    }
+
+    var pendingFrames: [ghostty_kitty_pending_frame_s] { surface.kittyPendingFrames }
+
+    // The stamp of a frame of the primary screen, nil when the image or the frame does not exist.
+    func generation(image: UInt32, frame: UInt32) -> UInt64? {
+        // GhosttyKittyGraphicsFrameData.generation, which ghostty.h does not name.
+        var key: Int32 = 5
+        var value: UInt64 = 0
+        let result = withUnsafeMutablePointer(to: &value) { pointer -> Int32 in
+            var out: UnsafeMutableRawPointer? = UnsafeMutableRawPointer(pointer)
+            return ghostty_surface_kitty_frame_get_multi(surface, GHOSTTY_KITTY_SCREEN_E_PRIMARY, image, frame, 1, &key, &out, nil)
+        }
+        return result == GHOSTTY_SUCCESS ? value : nil
     }
 
     var text: String {

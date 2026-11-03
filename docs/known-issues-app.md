@@ -24,13 +24,6 @@ successful initialization are not examined. These inherited error-path leaks
 are outside the renderer-thread ownership fix. Status: parked by decision; not
 fixed or covered.
 
-## Restored images are blank until K6
-
-A restore brings back the text under a kitty image, not its pixels: the
-view's snapshot carries no image data until ko K6. Live images draw. An
-image that was on screen before a reconnect or a copy-mode resync shows
-as the text under it. Status: planned (K6).
-
 # Unverified
 
 ## A stress jump can miss its selection deadline
@@ -195,21 +188,27 @@ interiors and the paper match within 2/255, and the difference is not
 visible at normal size. A Ghostty-side paper colour would remove it, but it
 needs a fork change (medium). Status: accepted limitation.
 
-## OSC 52 clipboard scope and permission
+## Clipboard scope and permission
 
-Clipboard guarantees cover displayed panes only. Hidden hot panes are best
-effort; output that a frozen or evicted pane does not parse cannot perform
-its OSC operations later. Hidden unapproved reads are denied, not deferred
-until the pane becomes visible.
-
-Only one clipboard-enabled app may consume a pane. Two attached apps can
-both answer raw OSC reads; there is no responder election.
+The server sends a read to one answerer and refuses a read for a pane that
+no attended window shows. An elected client whose window is occluded or
+hidden refuses an unapproved read at once; it is not deferred until the
+pane becomes visible.
 
 Always allow is per exact configured host key, including Local. Edit → Reset Clipboard Permissions revokes all grants and connection answers. Retargeting an SSH alias does not revoke its stored grant;
 SSH host-key policy remains OpenSSH's. Local grants also cover applications
 reached through SSH inside its panes because OSC carries no authenticated
 remote identity. The app's 8s deadline cannot detect an application's
 earlier cancellation. Status: accepted scope.
+
+## A frame that the server does not find stays blank
+
+A fetched image frame that the server answers with not found (evicted, or
+an edit moved its stamp on) stays blank until the program sends it again,
+as on the pane. A fetch that fails for another reason (a dropped
+connection) retries a bounded number of times; after the last failure the
+frame stays blank until the pending generation moves again. Status:
+accepted limitation.
 
 ## Sub-row wheel remainder can cross program changes
 

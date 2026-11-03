@@ -14,7 +14,7 @@ use crate::edit::{Edit, Refusal};
 use crate::layout::{self, Document, EditError};
 use crate::wire;
 
-fn call(
+pub(super) fn call(
     client: &Client,
     out: *mut Buffer,
     work: impl FnOnce(&Path, Option<ClientId>, &Wake) -> Result<Vec<u8>, (Code, Vec<u8>)>,
@@ -52,7 +52,7 @@ fn io_failure(message: String) -> (Code, Vec<u8>) {
     (Code::Io, message.into_bytes())
 }
 
-fn rejected(rejected: wire::Rejected) -> (Code, Vec<u8>) {
+pub(super) fn rejected(rejected: wire::Rejected) -> (Code, Vec<u8>) {
     match rejected {
         wire::Rejected::Io(message) | wire::Rejected::Unanswered(message) => io_failure(message),
         wire::Rejected::Status { body, .. } => match protocol::decode::<protocol::Error>(&body) {

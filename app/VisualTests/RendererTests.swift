@@ -107,6 +107,65 @@ import KoModel
         }
     }
 
+    // The program uploads an 8x8 image as t=s: the mirror refuses it, and only the fetched frame can show it.
+    private static let imageProgram = """
+    import _posixshmem, base64, mmap, os, sys, time
+    pixels = bytearray()
+    for y in range(8):
+        for x in range(8):
+            pixels += bytes([255, 0, 0, 255] if (x < 4) == (y < 4) else [0, 0, 255, 255]) if x != y else bytes([0, 255, 0, 255])
+    name = "/ko-vt-%d" % (os.getpid() % 100000)
+    descriptor = _posixshmem.shm_open(name, os.O_CREAT | os.O_EXCL | os.O_RDWR, mode=0o600)
+    os.ftruncate(descriptor, len(pixels))
+    memory = mmap.mmap(descriptor, len(pixels))
+    memory[:] = bytes(pixels)
+    memory.close()
+    os.close(descriptor)
+    sys.stdout.write("\\x1b[2J\\x1b[Habove\\r\\n")
+    sys.stdout.write("\\x1b_Ga=T,i=1,t=s,f=32,s=8,v=8,c=16,r=8,q=2;%s\\x1b\\\\" % base64.b64encode(name.encode()).decode())
+    sys.stdout.write("\\x1b[12;1Hbelow")
+    sys.stdout.flush()
+    time.sleep(3600)
+    """
+
+    func testARestoredImageIsVisible() async throws {
+        let dir = try koServerDir()
+        let script = dir + "/image.py"
+        try Self.imageProgram.write(toFile: script, atomically: true, encoding: .utf8)
+        _ = try await KoServer.launch(dir: dir)
+        try await koMain(dir, pane: koPane("exec /usr/bin/python3 -I \(script)"))
+        let client = try KoClient(socket: dir + "/socket") { _ in }
+        addTeardownBlock { @MainActor in client.close() }
+        try await wait("the pane's layout") { (try? client.model())?.panes.count == 1 }
+        let window = try XCTUnwrap(try client.model().layout.layout.windows.first)
+        guard case .leaf(let leaf) = window.tree else { return XCTFail("not a single pane window") }
+        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: leaf.pane, font: 13))
+        let host = NSWindow(contentRect: pane.bounds, styleMask: .borderless, backing: .buffered, defer: false)
+        host.isReleasedWhenClosed = false
+        host.contentView = pane
+        addTeardownBlock { @MainActor in pane.dispose(); host.close() }
+        pane.resize(cols: leaf.cols, rows: leaf.rows)
+        pane.attach(client)
+        try await wait("the program's output") { pane.visualText.contains("below") }
+        try await wait("the image drawn") { pane.visualPendingImageFrames == 0 }
+        let restores = pane.visualRestores
+        try pane.koView?.resync()
+        try await wait("the resync restored") { pane.visualRestores > restores }
+        try await wait("the image fetched again") { pane.visualText.contains("below") && pane.visualPendingImageFrames == 0 }
+        var status = GHOSTTY_RENDER_PRESENTATION_DISCARDED
+        for _ in 0..<5 where status != GHOSTTY_RENDER_PRESENTATION_PRESENTED {
+            let frame = expectation(description: "presented")
+            pane.visualFrame { result in status = result; frame.fulfill() }
+            await fulfillment(of: [frame], timeout: 10)
+        }
+        XCTAssertEqual(status, GHOSTTY_RENDER_PRESENTATION_PRESENTED)
+        pane.scroller.isHidden = true
+        CATransaction.flush()
+        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+        if let failure = verifySnapshot(of: pane, as: .image, named: "restored", record: record),
+           !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+    }
+
     func testFailedSurfaceInitJoinsRendererAndReleasesAllocations() async throws {
         let view = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         var options = ghostty_surface_config_new()

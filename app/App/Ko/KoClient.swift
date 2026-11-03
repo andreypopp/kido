@@ -10,6 +10,20 @@ enum KoEvent: Equatable {
     case model
     case selected(session: SessionID?, window: WindowID?, pane: PaneID?)
     case mismatch(code: ko_code, server: KoVersion, own: KoVersion)
+    case clipboardWrite(pane: PaneID, contents: [KoClipboardContent])
+    case clipboardRead(KoClipboardRead)
+}
+
+struct KoClipboardRead: Equatable {
+    let pane: PaneID
+    let id: UInt64
+    let mimes: [String]
+    let list: Bool
+}
+
+enum KoImage {
+    case shm(name: String, length: Int)
+    case body(Data)
 }
 
 struct KoVersion: Equatable {
@@ -95,6 +109,13 @@ private func take(_ code: ko_code, _ buffer: inout ko_buffer) throws -> Data {
 
 private func optional(_ pointer: UnsafePointer<CChar>?) -> String? { pointer.map { String(cString: $0) } }
 
+// Frees a core buffer when the last reference goes.
+private final class FreedBuffer: @unchecked Sendable {
+    private var buffer: ko_buffer
+    init(_ buffer: ko_buffer) { self.buffer = buffer }
+    deinit { ko_buffer_free(&buffer) }
+}
+
 // ko_client_close frees the handle, and no call may start during or after it: every call holds
 // the handle while it runs, and the close takes it only when no call holds it.
 private final class ClientHandle: @unchecked Sendable {
@@ -135,6 +156,12 @@ private final class ClientHandle: @unchecked Sendable {
 @MainActor final class KoClient {
     private let sink: (KoEvent) -> Void
     private let handle = ClientHandle()
+    let imageFetches: OperationQueue = {
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 8
+        queue.qualityOfService = .utility
+        return queue
+    }()
     private var user: Unmanaged<KoClient>?
     private var closed = false
 
@@ -189,6 +216,18 @@ private final class ClientHandle: @unchecked Sendable {
             let selected = event.selected
             sink(.selected(session: optional(selected.session).flatMap(SessionID.init(ko:)), window: optional(selected.window).flatMap(WindowID.init(ko:)),
                            pane: optional(selected.pane).flatMap(PaneID.init(ko:))))
+        case KO_EVENT_CLIPBOARD_WRITE:
+            let write = event.clipboard_write
+            guard let pane = PaneID(ko: String(cString: write.pane)) else { break }
+            let contents = (0..<write.count).map { i in
+                let item = write.contents![i]
+                return KoClipboardContent(mime: String(cString: item.mime), data: item.len == 0 ? Data() : Data(bytes: item.data, count: item.len))
+            }
+            sink(.clipboardWrite(pane: pane, contents: contents))
+        case KO_EVENT_CLIPBOARD_READ:
+            let read = event.clipboard_read
+            guard let pane = PaneID(ko: String(cString: read.pane)) else { break }
+            sink(.clipboardRead(KoClipboardRead(pane: pane, id: read.id, mimes: (0..<read.count).map { String(cString: read.mimes![$0]!) }, list: read.list)))
         case KO_EVENT_ALERT:
             // Bell and notify alerts reach the user in a later step.
             break
@@ -281,6 +320,38 @@ private final class ClientHandle: @unchecked Sendable {
         var buffer = ko_buffer()
         let bytes = Array(text.utf8)
         _ = try handle.call { try take(ko_client_prompt($0, caller.description, target.description, bytes, bytes.count, &buffer), &buffer) }
+    }
+
+    func answerClipboard(id: UInt64, contents: [KoClipboardContent]?, available: [String] = []) {
+        withClipboard(contents ?? [], available: available, item: { ko_clipboard_content(mime: $0, data: $1.assumingMemoryBound(to: UInt8.self), len: $2) }) { items, types in
+            // An answer with no contents still needs an array: NULL refuses.
+            let empty = [ko_clipboard_content()]
+            _ = try? handle.call { client in
+                empty.withUnsafeBufferPointer { empty in
+                    ko_client_clipboard_answer(client, id, contents == nil ? nil : (items.baseAddress ?? empty.baseAddress), items.count, types.baseAddress, types.count)
+                }
+            }
+        }
+    }
+
+    var kittyImagesMaxBytes: UInt64? {
+        var limits = ko_limits()
+        return (try? handle.call { ko_client_limits($0, &limits) }) == KO_OK ? limits.kitty_images_max_bytes : nil
+    }
+
+    // Blocks until the server answered: run it off the main queue. A frame that is gone is KO_ERR_NOT_FOUND.
+    nonisolated func image(pane: PaneID, image: UInt32, frame: UInt32, generation: UInt64, acceptShm: Bool) throws -> KoImage {
+        var out = ko_image()
+        let code = try handle.call { ko_client_image($0, pane.description, image, frame, generation, acceptShm, &out) }
+        guard code == KO_OK else { throw KoError(code: code, detail: String(decoding: owned(&out.body), as: UTF8.self)) }
+        let name = withUnsafeBytes(of: &out.shm_name) { String(cString: $0.bindMemory(to: CChar.self).baseAddress!) }
+        guard name.isEmpty else {
+            ko_buffer_free(&out.body)
+            return .shm(name: name, length: Int(out.length))
+        }
+        guard let bytes = out.body.data else { return .body(Data()) }
+        let box = FreedBuffer(out.body)
+        return .body(Data(bytesNoCopy: bytes, count: out.body.len, deallocator: .custom { _, _ in withExtendedLifetime(box) {} }))
     }
 
     func openView(pane: PaneID, history: Bool = true, surface: ghostty_surface_t, hooks: KoViewHooks = KoViewHooks(), sink: @escaping @MainActor (KoViewEvent) -> Void) throws -> KoView {

@@ -67,6 +67,7 @@ targets:
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
         INFOPLIST_KEY_CFBundleDisplayName: Kido
         OTHER_LDFLAGS: [-lko_client_private, -lc++]
+        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/App/Shm.h"
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: com.andreypopp.kido.debug

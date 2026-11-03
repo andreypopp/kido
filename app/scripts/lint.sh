@@ -37,9 +37,11 @@ END { if (failed) exit 1 }
 ' {} +
 
 # A surface's terminal changes only on its view's decoder thread: the restore and the grid size in
-# KoClient.swift, the pty output in KoClient.swift and PaneView.feed.
+# KoClient.swift, the pty output in KoClient.swift and PaneView.feed. The one exception is a fetched
+# Kitty image frame: PaneImages attaches it from its fetch task, and the surface refuses a stale stamp.
 writers=$(grep -rnE 'ghostty_surface_(restore_snapshot|set_grid_size)' app/App --include='*.swift' | grep -v '^app/App/Ko/KoClient.swift:' || true)
 writers="$writers$(grep -rnE 'ghostty_surface_process_output' app/App --include='*.swift' | grep -v '^app/App/Ko/KoClient.swift:\|^app/App/PaneView.swift:' || true)"
+writers="$writers$(grep -rnE 'ghostty_surface_kitty_frame_(attach|adopt)' app/App --include='*.swift' | grep -v '^app/App/PaneImages.swift:' || true)"
 if [ -n "$writers" ]; then
 	echo "lint.sh: a surface's terminal changes only on its view's decoder thread:" >&2
 	echo "$writers" >&2
