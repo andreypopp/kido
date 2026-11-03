@@ -866,7 +866,8 @@ impl State {
                 req,
                 location,
                 mimes,
-            } => self.clipboard_read(poll, id, req, location, mimes),
+                list,
+            } => self.clipboard_read(poll, id, req, location, mimes, list),
             Event::Matches { req, matches } => self.search_matches(id, req, matches),
             Event::SearchDone { req } => self.search_done(id, req),
             Event::Output => {
@@ -1348,8 +1349,8 @@ impl State {
                 return;
             }
             Change::Nothing => return self.refocus(poll),
-            Change::Answer { id: read, contents } => {
-                return self.clipboard_answered(poll, id, read, contents);
+            Change::Answer { id: read, served } => {
+                return self.clipboard_answered(poll, id, read, served);
             }
         };
         self.enter(poll, index, current, notify);

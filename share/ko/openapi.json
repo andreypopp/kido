@@ -451,6 +451,9 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "list": {
+                "type": "boolean"
+              },
               "location": {
                 "$ref": "#/components/schemas/ClipboardLocation"
               },
@@ -645,6 +648,12 @@
           },
           {
             "properties": {
+              "available": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
               "contents": {
                 "items": {
                   "$ref": "#/components/schemas/ClipboardContent"

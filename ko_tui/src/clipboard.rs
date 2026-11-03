@@ -12,6 +12,10 @@ pub(crate) fn write(location: ClipboardLocation, contents: &[ClipboardContent]) 
     frame::first_text(pairs).map(|text| frame::ClipboardLocation::from(location).osc52(text))
 }
 
+pub(crate) fn answerable(mimes: &[String], list: bool) -> bool {
+    !list && mimes.iter().any(|mime| mime == "text/plain")
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Pending(VecDeque<(u64, ClipboardLocation)>);
 

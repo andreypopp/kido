@@ -725,16 +725,15 @@ Clipboard is the exception, because the answer lives in a client:
   `clipboard_write` event to the clients that have an **interactive
   focus** on that pane's window (the app window that shows it, the
   terminal client attached to it). Each client applies its own consent.
-- `CLIPBOARD_READ` (OSC 52 read): the server picks **one answerer**
+- `CLIPBOARD_READ` (OSC 52 and OSC 5522 reads): the server picks **one answerer**
   (protocol.md 9): the client whose focus is on the pane, else a
   focused client of a window that shows it, else the newest client of
   such a window, else none, which refuses the read at once. It sends a
   `clipboard_read` event and waits with a deadline (8 s, the app's
-  today). The client answers with data or a refusal; `ko-pane` drops
-  the terminal's immediate empty reply and writes the OSC 52 answer
-  when it arrives. One answerer by construction removes the
-  two-responder problem. OSC 5522 reads and its paste events are
-  refused for now; serving them is future work.
+  today). The client answers with data or a refusal; `ko-pane` defers the
+  terminal's reply and completes it when the answer arrives, and the
+  terminal encodes the reply in the read's protocol. One answerer by
+  construction removes the two-responder problem.
 - Consent, grants and "always allow" stay in the client. The server
   never decides.
 

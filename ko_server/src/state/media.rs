@@ -5,7 +5,9 @@ use super::*;
 use crate::clipboard::{self, Viewer};
 use crate::link::Searching;
 use crate::pane_proc::Object;
-use crate::protocol::{ClipboardContent, ClipboardLocation, SearchEvent, SearchMatch};
+use crate::protocol::{
+    ClipboardContent, ClipboardLocation, ClipboardServed, SearchEvent, SearchMatch,
+};
 use crate::router::ImageReply;
 
 const IMAGE_WAIT: Duration = Duration::from_secs(10);
@@ -222,6 +224,7 @@ impl State {
         req: Req,
         location: ClipboardLocation,
         mimes: Vec<String>,
+        list: bool,
     ) {
         let viewers = self.viewers(pane);
         let chosen = clipboard::answerer(viewers.iter().map(|(viewer, _)| *viewer));
@@ -243,6 +246,7 @@ impl State {
                 id,
                 location,
                 mimes,
+                list,
             }),
         );
     }
@@ -258,12 +262,12 @@ impl State {
         poll: &mut Poll,
         client: ClientId,
         id: u64,
-        contents: Option<Vec<ClipboardContent>>,
+        served: Option<ClipboardServed>,
     ) {
         if let Some(read) = self.clipboard.answered(poll, id, client) {
             self.run(poll, read.pane, |pane, io| {
                 pane.proc_mut()
-                    .clipboard_answer(read.req, contents.as_deref(), io);
+                    .clipboard_answer(read.req, served.as_ref(), io);
             });
         }
     }

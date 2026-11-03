@@ -15,8 +15,8 @@ use ko_pane_wire::frame::{Dim, ScreenFormat, ScreenRows, Size};
 use ko_server::api::Route;
 use ko_server::ids::PaneId;
 use ko_server::protocol::{
-    self, ClientKind, ClientRequest, CreatePane, Hello, Input as Wire, Key as WireKey,
-    Mouse as WireMouse, Paste, Selection, ViewRequest, json,
+    self, ClientKind, ClientRequest, ClipboardContent, ClipboardServed, CreatePane, Hello,
+    Input as Wire, Key as WireKey, Mouse as WireMouse, Paste, Selection, ViewRequest, json,
 };
 use ko_sys::event::{Due, Events, Interest, Mode, Poll, Ready, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
@@ -818,9 +818,7 @@ impl Client {
             }
             Event::Reply(Reply::Clipboard(location, text)) => {
                 match self.clipboard_reads.answered(location.into(), text) {
-                    Some((id, contents)) => {
-                        self.client_send(&ClientRequest::ClipboardAnswer { id, contents })
-                    }
+                    Some((id, contents)) => self.clipboard_answer(id, contents),
                     None => Ok(()),
                 }
             }
@@ -836,12 +834,34 @@ impl Client {
                 Some(sequence) if self.pager.is_none() => self.session.write(&sequence),
                 _ => Ok(()),
             },
-            Notice::ClipboardRead { id, location, .. } if self.pager.is_none() => {
-                let query = self.clipboard_reads.ask(id, location);
-                self.session.write(&query)
+            Notice::ClipboardRead {
+                id,
+                location,
+                mimes,
+                list,
+                ..
+            } if self.pager.is_none() => {
+                if clipboard::answerable(&mimes, list) {
+                    let query = self.clipboard_reads.ask(id, location);
+                    self.session.write(&query)
+                } else {
+                    self.clipboard_answer(id, None)
+                }
             }
             Notice::ClipboardRead { .. } | Notice::Bell(_) | Notice::Notify { .. } => Ok(()),
         }
+    }
+
+    fn clipboard_answer(
+        &mut self,
+        id: u64,
+        contents: Option<Vec<ClipboardContent>>,
+    ) -> Result<(), String> {
+        let served = contents.map(|contents| ClipboardServed {
+            contents,
+            available: Vec::new(),
+        });
+        self.client_send(&ClientRequest::ClipboardAnswer { id, served })
     }
 
     fn tick(&mut self) -> Result<(), String> {

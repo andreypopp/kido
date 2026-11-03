@@ -5,7 +5,7 @@ use ko_pane_wire::frame::Size;
 use crate::ids::{ClientId, PaneId, SessionId, WindowId};
 use crate::layout::nearest;
 use crate::protocol::{
-    ClientKind, ClientRequest, ClipboardContent, Direction, Layout, Over, Selection, Switch,
+    ClientKind, ClientRequest, ClipboardServed, Direction, Layout, Over, Selection, Switch,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +51,7 @@ pub(crate) enum Change {
     Nothing,
     Answer {
         id: u64,
-        contents: Option<Vec<ClipboardContent>>,
+        served: Option<ClipboardServed>,
     },
 }
 
@@ -118,8 +118,8 @@ impl Client {
                     Change::Nothing
                 })
             }
-            (Some(_), ClientRequest::ClipboardAnswer { id, contents }) => {
-                Ok(Change::Answer { id, contents })
+            (Some(_), ClientRequest::ClipboardAnswer { id, served }) => {
+                Ok(Change::Answer { id, served })
             }
             (Some(_), ClientRequest::Hello(_)) => Err("hello already received"),
         }

@@ -490,6 +490,7 @@ export interface components {
             type: "clipboard_write";
         } | {
             id: number;
+            list?: boolean;
             location: components["schemas"]["ClipboardLocation"];
             mimes: string[];
             pane: components["schemas"]["PaneId"];
@@ -530,6 +531,7 @@ export interface components {
             /** @constant */
             type: "focused";
         } | {
+            available?: string[];
             contents?: components["schemas"]["ClipboardContent"][];
             id: number;
             /** @constant */

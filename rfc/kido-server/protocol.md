@@ -580,32 +580,42 @@ Clipboard contents have one limit for the whole path,
 `MAX_CLIPBOARD` in `ko_pane_wire/src/frame.rs`, chosen so that the
 base64 and JSON of the client's answer stay under the 1 MiB limit of a
 client's message (section 1): `ko-pane` drops a larger write, and a
-larger answer is a refusal, so a clipboard payload never closes
+larger answer (its types, its contents and the `available` types
+together) is a refusal, so a clipboard payload never closes
 `/client`.
 
-The answerer replies with a `clipboard_answer` request on the same
-WebSocket, with contents or without them for a refusal. The server
+A read names the MIME types that the program asked for, in its
+order: `text/plain` alone for OSC 52, and the types of the request
+for OSC 5522. An OSC 5522 read that asks which types the clipboard
+holds has `list` set. The answerer replies with a `clipboard_answer`
+request on the same WebSocket, with contents or without them for a
+refusal; the answer to a `list` read also names the types that the
+clipboard holds in `available`. The server
 takes only the first answer, only from that client; it refuses the
 read when the answerer disconnects, and when no answer comes within
 8 s (`KO_CLIPBOARD_TIMEOUT_MS` shortens it for tests). Each read
 waits on its own timer of the loop.
 
-In `ko-pane` only OSC 52 reads are served: `ko-pane` drops the empty
-reply that the terminal writes at once and writes the OSC 52 answer
-to the pty when the coordinator's answer arrives, so a read never
-blocks the pane's other output. The answer always ends with ST,
-because libghostty-vt does not report the read's terminator. Other
-reads (OSC 5522 reads and its paste events) are refused. A known
-limit: the pinned callback does not name the read's protocol, and an
-unnamed OSC 5522 read of the one MIME type `text/plain` has the same
-fields as an OSC 52 read, so `ko-pane` answers it as OSC 52. The
-fork change that removes the limit is a field for the protocol, or a
-reply that stays valid after the callback returns and carries the
-terminator.
+`ko-pane` serves OSC 52 and OSC 5522 reads. It defers the
+terminal's reply (`ghostty_clipboard_read_defer` of the Ghostty
+fork) and completes it when the coordinator's answer arrives, so a
+read never blocks the pane's other output, and the terminal encodes
+the reply itself: OSC 52 data with the request's terminator (BEL or
+ST), or the OSC 5522 OK, DATA and DONE packets, with only the
+requested types, in the request's order. Every refusal (the answerer's,
+a pane that no attended window shows, the timer, a disconnect, an
+answer over `MAX_CLIPBOARD`) is an empty OSC 52 reply or an OSC 5522
+EPERM. A pane keeps at most 16 reads open; it refuses a 17th at once, and a
+read whose types are over `MAX_CLIPBOARD`. A read
+that is still open when the pane exits is refused. An OSC 5522 read's
+password and name are not forwarded: ko makes no paste events, and the
+answerer applies its own consent to every read.
 
 The terminal client (`ko_tui/src/clipboard.rs`) forwards a write to
-the outer terminal as OSC 52, and answers a read with an OSC 52 query
-to the outer terminal; the reply router of `ko_tui/src/input.rs`
+the outer terminal as OSC 52, and answers a read that asks for
+`text/plain` with an OSC 52 query to the outer terminal. It refuses a
+`list` read and a read of other types at once, because OSC 52 carries
+only text; the reply router of `ko_tui/src/input.rs`
 gives the outer terminal's reply back as the `clipboard_answer`.
 It keeps the pending reads in arrival order, at most 16; a 17th
 drops the oldest, which the server's timer then refuses. The outer
