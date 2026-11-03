@@ -123,17 +123,4 @@ import SidebarFeed
         try await wait("SIGSTOP child must be killed and reaped", within: 4) { !child.process.isRunning }
         XCTAssertEqual(child.process.terminationStatus, SIGKILL)
     }
-
-    // Remote hosts wait for the ko remote transport: the window says so and starts nothing.
-    func testARemoteHostShowsThatItIsDisabled() async throws {
-        let board = NSPasteboard(name: .init("kr-remote-" + UUID().uuidString))
-        let owner = WindowOwner(host: .remote("devbox"), runtime: try XCTUnwrap(GhosttyRuntime(pasteboard: board)), start: false)
-        addTeardownBlock { @MainActor in owner.close(); board.releaseGlobally() }
-        owner.start()
-        try await wait("the disabled message", within: 5) { owner.testBanner.testText.title == "Remote hosts return with the ko remote transport" }
-        XCTAssertEqual(owner.testBanner.testText.detail, "devbox")
-        XCTAssertNil(owner.testBanner.testText.button)
-        XCTAssertNil(owner.ssh)
-        XCTAssertNil(owner.testClient)
-    }
 }

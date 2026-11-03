@@ -39,6 +39,7 @@ final class PaneImages: @unchecked Sendable {
         var bodies: [Key: Data] = [:]
         var order: [Key] = []
         var bodyBytes = 0
+        var gaveUp = false
     }
 
     static let retryDelays: [TimeInterval] = [0.25, 1, 4]
@@ -48,10 +49,12 @@ final class PaneImages: @unchecked Sendable {
     private let local: Bool
     private let fetches: OperationQueue
     private let fetch: Fetch
+    private let retryDelays: [TimeInterval]
     private let state = OSAllocatedUnfairLock(initialState: State())
     private let attaching = NSLock()
 
-    init(surface: ghostty_surface_t, local: Bool, fetches: OperationQueue, fetch: @escaping Fetch) {
+    init(surface: ghostty_surface_t, local: Bool, fetches: OperationQueue, retryDelays: [TimeInterval] = PaneImages.retryDelays, fetch: @escaping Fetch) {
+        self.retryDelays = retryDelays
         self.surface = surface
         self.local = local
         self.fetches = fetches
@@ -64,6 +67,12 @@ final class PaneImages: @unchecked Sendable {
             defer { state.seen = generation }
             return state.seen != generation && !state.stopped
         }) else { return }
+        walk()
+    }
+
+    // A fetch that gave up during an outage is retried after the next welcome.
+    func retry() {
+        guard state.withLock({ state in defer { state.gaveUp = false }; return state.gaveUp && !state.stopped }) else { return }
         walk()
     }
 
@@ -103,10 +112,11 @@ final class PaneImages: @unchecked Sendable {
             if !transient { state.withLock { _ = $0.gone.insert(key) } }
         }
         let retry = state.withLock { state -> TimeInterval? in
-            if transient, !state.stopped, case let attempt = state.attempts[key, default: 0], attempt < Self.retryDelays.count {
+            if transient, !state.stopped, case let attempt = state.attempts[key, default: 0], attempt < retryDelays.count {
                 state.attempts[key] = attempt + 1
-                return Self.retryDelays[attempt]
+                return retryDelays[attempt]
             }
+            if transient { state.gaveUp = true }
             state.known.remove(key)
             state.attempts[key] = nil
             return nil

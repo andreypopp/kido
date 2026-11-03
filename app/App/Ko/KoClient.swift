@@ -26,10 +26,16 @@ enum KoImage {
     case body(Data)
 }
 
-struct KoVersion: Equatable {
+struct KoVersion: Equatable, Decodable {
     let protocolVersion: String
     let vt: String
     let build: String
+
+    private enum CodingKeys: String, CodingKey {
+        case protocolVersion = "protocol", vt, build
+    }
+
+    var major: Int? { protocolVersion.split(separator: ".").first.flatMap { Int($0) } }
 
     init(_ version: ko_version) {
         self.init(protocolVersion: String(cString: version.protocol), vt: String(cString: version.vt), build: String(cString: version.build))
@@ -156,17 +162,14 @@ private final class ClientHandle: @unchecked Sendable {
 @MainActor final class KoClient {
     private let sink: (KoEvent) -> Void
     private let handle = ClientHandle()
-    let imageFetches: OperationQueue = {
-        let queue = OperationQueue()
-        queue.maxConcurrentOperationCount = 8
-        queue.qualityOfService = .utility
-        return queue
-    }()
+    let imageFetches = OperationQueue()
     private var user: Unmanaged<KoClient>?
     private var closed = false
 
-    init(socket: String, hello: KoHello = KoHello(), sink: @escaping (KoEvent) -> Void) throws {
+    init(socket: String, hello: KoHello = KoHello(), fetches: Int = 8, sink: @escaping (KoEvent) -> Void) throws {
         self.sink = sink
+        imageFetches.maxConcurrentOperationCount = fetches
+        imageFetches.qualityOfService = .utility
         let user = Unmanaged.passRetained(self)
         var pointer: OpaquePointer?
         let code = hello.name.withCString { name in
@@ -255,6 +258,44 @@ private final class ClientHandle: @unchecked Sendable {
     nonisolated static func stopServer(dir: String) throws {
         var buffer = ko_buffer()
         _ = try take(ko_client_stop_server(dir, &buffer), &buffer)
+    }
+
+    // The remote host's steps. The probe blocks until the server answered: run it off the main queue.
+    enum Probe {
+        case compatible(KoVersion)
+        case mismatch(code: ko_code, server: KoVersion)
+        case unreachable(code: ko_code, detail: String)
+    }
+
+    nonisolated static func probe(socket: String, within: TimeInterval) -> Probe {
+        var buffer = ko_buffer()
+        let code = ko_client_probe(socket, UInt32(within * 1000), &buffer)
+        let text = String(decoding: owned(&buffer), as: UTF8.self)
+        switch code {
+        case KO_OK, KO_ERR_PROTOCOL_MISMATCH, KO_ERR_VT_MISMATCH:
+            guard let server = try? JSONDecoder().decode(KoVersion.self, from: Data(text.utf8)) else { return .unreachable(code: KO_ERR_PROTOCOL, detail: text) }
+            return code == KO_OK ? .compatible(server) : .mismatch(code: code, server: server)
+        default: return .unreachable(code: code, detail: text)
+        }
+    }
+
+    // The remote socket path that `ko server --print-socket` printed, or the text for the banner.
+    nonisolated static func remoteSocket(host: String, status: Int32, signaled: Bool, stdout: String, stderr: String) -> Result<String, KoError> {
+        var buffer = ko_buffer()
+        let code = Array(stdout.utf8).withUnsafeBufferPointer { out in
+            Array(stderr.utf8).withUnsafeBufferPointer { err in
+                var run = ko_ssh_run(status: status, signaled: signaled, stdout_data: out.baseAddress, stdout_len: out.count, stderr_data: err.baseAddress, stderr_len: err.count)
+                return ko_remote_socket(host, &run, &buffer)
+            }
+        }
+        let text = String(decoding: owned(&buffer), as: UTF8.self)
+        return code == KO_OK ? .success(text) : .failure(KoError(code: code, detail: text))
+    }
+
+    nonisolated static func unreachable(host: String, remoteAnswers: Bool) -> KoError {
+        var buffer = ko_buffer()
+        let code = ko_remote_unreachable(host, remoteAnswers, &buffer)
+        return KoError(code: code, detail: String(decoding: owned(&buffer), as: UTF8.self))
     }
 
     static var version: KoVersion {
@@ -356,6 +397,7 @@ private final class ClientHandle: @unchecked Sendable {
 
     func openView(pane: PaneID, history: Bool = true, surface: ghostty_surface_t, hooks: KoViewHooks = KoViewHooks(), sink: @escaping @MainActor (KoViewEvent) -> Void) throws -> KoView {
         let view = KoView(surface: surface, hooks: hooks, sink: sink)
+        view.label = pane.description
         let user = Unmanaged.passRetained(view)
         let code = (try? handle.call { ko_view_open($0, pane.description, history, KoView.restoreCallback, KoView.feedCallback, user.toOpaque(), &view.handle) }) ?? KO_ERR_CLOSED
         guard code == KO_OK else {
@@ -389,6 +431,10 @@ final class KoView: @unchecked Sendable {
     let surface: ghostty_surface_t
     @MainActor let sink: @MainActor (KoViewEvent) -> Void
     private let hooks: KoViewHooks
+    fileprivate var label = ""
+    fileprivate let opened = ContinuousClock.now
+    private let inputStamp = NSLock()
+    private var inputAt: ContinuousClock.Instant?
 
     @MainActor fileprivate init(surface: ghostty_surface_t, hooks: KoViewHooks, sink: @escaping @MainActor (KoViewEvent) -> Void) {
         self.surface = surface
@@ -415,7 +461,7 @@ final class KoView: @unchecked Sendable {
         hooks.beforeRestore?(snapshot)
         limit = hooks.continuationOverride ?? limit
         #endif
-        let result = koResult(ghostty_surface_restore_snapshot(surface, snapshot.read, snapshot.reader, snapshot.history, limit))
+        let result = Timing.enabled ? timedRestore(snapshot, limit) : koResult(ghostty_surface_restore_snapshot(surface, snapshot.read, snapshot.reader, snapshot.history, limit))
         hooks.afterRestore?(result)
         return result
     }
@@ -424,6 +470,9 @@ final class KoView: @unchecked Sendable {
         switch Int(item.kind) {
         case KO_FEED_BYTES:
             guard let data = item.data else { break }
+            if Timing.enabled, let start = takeInputStamp() {
+                Timing.emit(["t": "echo", "pane": label, "ms": Timing.milliseconds(since: start)])
+            }
             if let bytes = hooks.bytes { bytes(UnsafeRawBufferPointer(start: data, count: item.len)) }
             else { ghostty_surface_process_output(surface, UnsafeRawPointer(data).assumingMemoryBound(to: CChar.self), UInt(item.len)) }
         case KO_FEED_RESIZE:
@@ -434,7 +483,39 @@ final class KoView: @unchecked Sendable {
         hooks.afterFeed?(item)
     }
 
+    private func takeInputStamp() -> ContinuousClock.Instant? {
+        inputStamp.withLock { defer { inputAt = nil }; return inputAt }
+    }
+
+    // Counts what the restore reads; the core calls the reads on the decoder thread that runs the restore.
+    private final class CountingReader {
+        let read: ko_read_fn
+        let reader: UnsafeMutableRawPointer?
+        let opened: ContinuousClock.Instant
+        var bytes = 0
+        var first: Double?
+        init(read: ko_read_fn, reader: UnsafeMutableRawPointer?, opened: ContinuousClock.Instant) { self.read = read; self.reader = reader; self.opened = opened }
+    }
+
+    private func timedRestore(_ snapshot: ko_snapshot, _ limit: Int) -> Int32 {
+        let counting = CountingReader(read: snapshot.read!, reader: snapshot.reader, opened: opened)
+        let result = koResult(ghostty_surface_restore_snapshot(surface, { context, buffer, capacity, count in
+            let counting = Unmanaged<CountingReader>.fromOpaque(context!).takeUnretainedValue()
+            let more = counting.read(counting.reader, buffer, capacity, count)
+            if more, let count {
+                counting.bytes += count.pointee
+                if counting.first == nil { counting.first = Timing.milliseconds(since: counting.opened) }
+            }
+            return more
+        }, Unmanaged.passUnretained(counting).toOpaque(), snapshot.history, limit))
+        var fields: [String: Any] = ["t": "restore", "pane": label, "bytes": counting.bytes, "total_ms": Timing.milliseconds(since: opened)]
+        if let first = counting.first { fields["ready_ms"] = first }
+        Timing.emit(fields)
+        return result
+    }
+
     func text(_ data: Data) throws {
+        if Timing.enabled { inputStamp.withLock { if inputAt == nil { inputAt = .now } } }
         try check(data.withUnsafeBytes { ko_view_input(handle, $0.bindMemory(to: UInt8.self).baseAddress, $0.count) })
     }
 

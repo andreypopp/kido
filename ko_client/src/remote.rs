@@ -152,7 +152,12 @@ fn remote_ko_args(ctl: &Path, host: &str, ko: &[&str]) -> Vec<String> {
     args
 }
 
-fn remote_socket(host: &str, exit: Exit, stdout: &[u8], stderr: &[u8]) -> Result<String, Error> {
+pub(crate) fn remote_socket(
+    host: &str,
+    exit: Exit,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<String, Error> {
     let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_owned();
     let query = |message: String| Error::Query {
         host: host.to_owned(),
@@ -176,7 +181,7 @@ fn remote_socket(host: &str, exit: Exit, stdout: &[u8], stderr: &[u8]) -> Result
     }
 }
 
-fn unreachable(host: &str, remote_answers: bool) -> Error {
+pub(crate) fn unreachable(host: &str, remote_answers: bool) -> Error {
     let host = host.to_owned();
     if remote_answers {
         Error::Refused { host }

@@ -110,10 +110,91 @@ read at launch; a different value at a later connection means that the app
 was replaced on disk and requires a relaunch.
 ## Remote hosts
 
-Remote windows do not connect until ko has its remote transport: a remote
-owner shows "Remote hosts return with the ko remote transport" with the
-host label and no button. The entry points below stay, so routing and the
-recent list keep working.
+A remote window reaches the ko server on the host through an SSH forward
+of a unix socket. The app owns the SSH layer; the ko client connects to the
+forward's local socket as to a local server, and its engine does the
+reconnect, the resume by offset and the `instance` gate as for a local
+server. Each remote window has its own `SSH`: one ControlMaster, one 0700
+directory `/tmp/ka-<12>` with the control socket `c` and the forward's
+local end `socket`. Two windows to one host have two masters and two
+forwards. The app never starts a remote server: the server on the host
+starts only with an explicit `ssh HOST ko server`, which the banner names.
+
+The connect sequence (`open` in `app/App/Remote.swift`) runs on one
+task of the owner, with each ssh child off main:
+
+1. `ssh -G` for the resolved `user@host`, then the master (`-M -N -T`),
+   ready when `-O check` succeeds, within 10 s.
+2. A passenger `ko server --print-socket`. `ko_remote_socket` classifies
+   its result with the same code and texts as `ko HOST`
+   (`ko_client/src/remote.rs`): no `ko` on the PATH of ssh commands, an
+   ssh failure, a reply that is not a socket path, or the remote socket.
+3. `ssh -O forward -L <dir>/socket:<remote socket>`. Exit 255 is an ssh
+   failure. Any other result goes on to the probe, because OpenSSH
+   reports a missing remote socket and a refused forward with the same
+   exit 0, and a connect through such a forward gets EOF.
+4. The agent publication (below), in parallel with the probe.
+5. `ko_client_probe`, a `GET /version` through the forward within 20 s.
+   A compatible server is dialled; another protocol or terminal revision
+   opens the mismatch sheet. A forward that leads nowhere runs the
+   passenger `ko api --server <remote dir> /version`: exit 0 means that
+   the host refuses unix-socket forwarding (`AllowStreamLocalForwarding`),
+   else no server runs there. `ko_remote_unreachable` gives the text.
+
+Each failure is a banner with Reconnect (`RemoteFailure.banner`). The
+title is the app's; the detail is the core's text, so `ko HOST` and the
+app name a failure alike.
+The no-server banner has no button that starts a server: `ko server` runs
+in the foreground, and K7's scope starts it only on an explicit command.
+
+**Outage.** A `failed` event from the core shows "Disconnected from HOST"
+with "The connection to HOST is down." for an absent socket and the
+button Reconnect, which runs the whole sequence again. When the master
+ends, the owner runs a recovery loop: a new master at the same
+`ControlPath` in the same directory, `-O check` within 15 s, the same
+forward again (`StreamLocalBindUnlink=yes` lets ssh bind over the stale
+socket file) and the agent publication again. The remote socket path is
+kept; the engine's next retry finds the socket and its own version check
+runs. Before the new master, the loop removes the old control socket:
+a killed master leaves `c`, and ssh then starts a master that serves no
+control socket and reports nothing. The loop's attempts back off from
+1 s to 30 s with no deadline, so a Mac that slept for hours connects again
+at wake (the master ends through `ServerAliveInterval=15` and
+`ServerAliveCountMax=3`); only a terminal ssh failure (authentication, a
+host key) stops it. `ko HOST` has a 60 s deadline instead, because it is a
+foreground command. The banner shows the loop's last error, and a welcome
+hides it. A welcome of another `instance` resets the session view as for a
+local server.
+
+**Mismatch.** A remote sheet has Reconnect and Close (the default and
+Escape); nothing is destructive, because a restart does not change the
+installed binary. A server of a lower protocol major reads "Update ko on
+HOST", a higher one "Update Kido.app to connect to HOST", another terminal
+revision "Kido.app and ko on HOST are from different releases". The second
+paragraph gives both versions and builds.
+
+**SSH agent forwarding.** `ko server` gives every pane
+`SSH_AUTH_SOCK=<state dir>/agent.sock`. After the query, the app links that
+path to the agent that its master forwards: one short passenger that keeps
+the configured `ForwardAgent` of the destination runs `sh -c` with the
+remote state directory. If `SSH_AUTH_SOCK` is a socket and `agent.sock` is
+absent or a symlink, the script makes a link under a temporary name and
+renames it over `agent.sock` without following a symlink there (`mv -h` on
+BSD and macOS, `mv -T` on GNU); a regular file or a directory stays. It
+exits 0, and its stderr goes to the log. The dial does not wait for it, and
+it is skipped when `ssh -G` reports `forwardagent no`. OpenSSH sets up agent forwarding
+once for each connection and keeps the forwarded socket until the
+connection ends, so the short session suffices. The master itself honours
+the configuration (`ForwardAgent` yes, no, a path); every other passenger
+and the check have `ForwardAgent=no` and run under `env -u SSH_AUTH_SOCK`.
+After a master loss the link dangles until the recovery loop publishes
+again. The last publication wins across windows and Macs, and a window
+close leaves the link. Setting up the remote (the master, the query, the
+forward, the link) is administrative and may write in the server's state
+directory; the client actions (the dial, views, image fetches, API calls,
+the probe) only connect to `<dir>/socket`.
+
+The entry points below route every remote request to a remote owner.
 
 On macOS Tahoe, the Shortcuts action **Connect to Remote Host in Kido**
 has a required Host string in its parameter summary. It works only in
@@ -550,7 +631,11 @@ read-only and gives the mapping to the surface
 refusal the app unmaps it, and it never unlinks an object (the server
 does). A remote window gets the pixels as a body and attaches a copy
 (`_attach`); it keeps a bounded cache of recent bodies, so a copy-mode
-resync does not download an animation again. A local window keeps no
+resync does not download an animation again. A remote window runs at most
+4 fetches at once (8 for a local one), because every fetch is one ssh
+channel on the master's one TCP connection, and parallel fetches delay the
+view's bytes. A fetch that failed after its retries, for example during an
+outage, is queued again at the next welcome of the same instance. A local window keeps no
 cache: a fetch by name is one small request. A not-found answer (evicted,
 moved on) drops the key and leaves the frame blank, as the pane holds it;
 a re-upload moves the stamp and fetches again. Another failure retries a
@@ -754,7 +839,9 @@ another process's drops. Quit removes only this process's directory. Both
 sweeps refuse symlinked parents and subdirectories. Cleanup does not depend
 on cancelled tasks running in the termination loop.
 Promised files never paste temporary paths, even in Local panes. They use the existing transfer script and drops
-directory, with its seven-day cleanup. Remote and Local-pane SSH consent
+directory, with its seven-day cleanup. On both hosts the drops directory is
+`${XDG_STATE_HOME:-~/.local/state}/kido-app/drops`, never inside a ko state
+directory: an upload is a client action. Remote and Local-pane SSH consent
 rules still apply. Text and web links without files or promises are refused.
 
 Surfaces are kept per window, for the most recently shown windows of
@@ -912,8 +999,8 @@ Client events arrive on the main queue (`ko_client_connect` with the main
 queue), and the owner reads the model on main. Every ABI call that waits
 for the server runs off main: `ko_client_edit` on the `LayoutEditor`'s
 utility queue, `ko_client_delete`, `ko_client_prompt_resolve`,
-`ko_client_prompt`, `ko_client_launch` and `ko_client_stop_server` on
-detached tasks, and `ko_view_close` on a utility queue. A close of the
+`ko_client_prompt`, `ko_client_launch`, `ko_client_stop_server` and
+`ko_client_probe` on detached tasks, and `ko_view_close` on a utility queue. A close of the
 client ends a waiting call with `KO_ERR_CLOSED`. Each view has a
 decoder thread in the core, which runs the restore and the feed in the
 server's order. The feed hands bytes to the pane's serial scroll queue
@@ -1825,6 +1912,41 @@ gives the host app a private `KIDO_APP_SERVER` and stops it afterwards.
 `PaneGeometryTests/Fixtures/ko-layout.json`; the recorder tests skip
 unless `KO_RECORD_FIXTURES` is set. Other tests build snapshots in Swift
 (`SidebarFeedTests/Fixtures.swift`, `VisualTests/SidebarFixture.swift`).
+
+`KoTests/RemoteTests.swift` connects remote owners over ssh only with
+`KO_E2E_HOST_SSH=1` (`TEST_RUNNER_KO_E2E_HOST_SSH=1 make ko-test`), the
+variable of ko's e2e; without it those tests skip, and with it a failed
+ssh setup is a failure. The class starts one sshd on a loopback port
+with its own host and client keys, `known_hosts` and an `-F` config
+(the `testConfiguration` of `SSH`) whose aliases cover the cases; each test gets its
+own remote home, state directory and ko server under `/tmp`. Only the
+refused-forwarding case starts a second sshd. The
+"remote" state directory and `ko` come from `SSH`'s test seam, which runs
+each passenger under `/usr/bin/env` with a private `HOME`,
+`XDG_STATE_HOME` and a `PATH` with the built `ko`; the master and its
+helpers get a private local environment (`testLocalEnvironment`), so no
+test uses the user's agent, `~/.ssh` or servers. The agent test runs a
+private `ssh-agent` with a throwaway key and names it with
+`IdentityAgent`: `IdentityAgent none` in the config would make forwarding
+fail. macOS sshd puts the forwarded agent socket in the real
+`~/.ssh/agent/` and removes it at disconnect; the test makes and removes
+nothing there. The tests without ssh check the argv of the forward, the
+helpers' agent policy, the relaunch, the remote mismatch wording and the
+classifiers through the ABI.
+
+`make rtt RTT_ARGS=...` builds the app with `KIDO_VISUAL` into
+`derived-rtt` and runs `app/scripts/rtt.py`, the app's row of ko's RTT
+table (kido-app-notes/k7-rtt-plan.md). With `KIDO_APP_TIMING=1`, which every
+build honours, the app writes one JSON line to stderr for each attach step
+from the start of the connect to the first layout, each view restore (bytes, first read, total) and each key
+echo (from `ko_view_input` to the next bytes of that view). In VISUAL and
+STRESS builds, `KIDO_APP_CONNECT=ALIAS` opens a remote window at launch,
+`KIDO_APP_SSH_CONFIG` gives its master an `-F` config and
+`KIDO_APP_RTT_REQUESTS` names a request file through which the script has
+the app type keys. The script runs its own sshd, ko server and app state
+under `/tmp`, with ko's delay proxy as the master's `ProxyCommand`, or
+uses `--ssh-config` and `--host`; it refuses `localhost` without
+`--allow-localhost`.
 
 The Swift model types (`Packages/KoModel/Sources/KoModel/KoSchema.swift`)
 are generated by `make ko-model` (`scripts/gen-ko-model.py`) from

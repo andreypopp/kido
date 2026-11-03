@@ -46,7 +46,7 @@ extern "C" {
  * bytes of an older snapshot never follow a newer restore. The surface may
  * be fed from that thread only; the caller's queue plays no part in it. The
  * calls that return a ko_buffer (ko_client_put_layout, ko_client_runs,
- * ko_client_prompt, ko_client_prompt_resolve, ko_client_delete, ko_client_edit, ko_client_image) and ko_client_launch and ko_client_stop_server block
+ * ko_client_prompt, ko_client_prompt_resolve, ko_client_delete, ko_client_edit, ko_client_image) and ko_client_launch, ko_client_stop_server and ko_client_probe block
  * until the server answered: call them off the main queue.
  *
  * Close. After ko_client_close or ko_view_close returns, no callback of that
@@ -382,6 +382,45 @@ ko_code ko_client_stop_server(const char *dir, ko_buffer *error);
 
 /* The protocol, terminal revision and build of this core; the strings are static. */
 ko_code ko_client_version(ko_version *out);
+
+/*
+ * Asks the server at the unix socket `socket` for its version (GET /version) and waits up to
+ * `within_ms` milliseconds for each read. `out` holds the server's version as JSON
+ * ({"protocol", "vt", "build"}) on KO_OK, KO_ERR_PROTOCOL_MISMATCH and KO_ERR_VT_MISMATCH,
+ * and the text of the error on any other code: KO_ERR_NO_SERVER (no socket, or nothing listens),
+ * KO_ERR_CLOSED (the connection ended before the answer: a forward whose remote socket does not
+ * exist), KO_ERR_IO, KO_ERR_PROTOCOL (an answer that is not a version). It never connects as a
+ * client and starts nothing. It blocks: call it off the main queue.
+ */
+ko_code ko_client_probe(const char *socket, uint32_t within_ms, ko_buffer *out);
+
+/*
+ * What a finished ssh command printed and how it ended: `status` is the exit status, or the
+ * signal number when `signaled`. The buffers are not NUL-terminated and may be NULL when empty.
+ */
+typedef struct ko_ssh_run {
+    int status;
+    bool signaled;
+    const uint8_t *stdout_data;
+    size_t stdout_len;
+    const uint8_t *stderr_data;
+    size_t stderr_len;
+} ko_ssh_run;
+
+/*
+ * Classifies `ssh HOST ko server --print-socket`. KO_OK: `out` is the remote socket path.
+ * Otherwise `out` is the text to show: KO_ERR_NOT_FOUND (no ko on the PATH of ssh commands),
+ * KO_ERR_IO (ssh itself failed), KO_ERR_INVALID (a path that is not one, or another failure
+ * of the command). Pure: it starts nothing.
+ */
+ko_code ko_remote_socket(const char *host, const ko_ssh_run *run, ko_buffer *out);
+
+/*
+ * The text for a forward that leads nowhere. `remote_answers` is whether `ko api /version` ran on
+ * the host: true means the host refuses unix-socket forwarding (KO_ERR_REFUSED), false that no
+ * server runs there (KO_ERR_NO_SERVER). `out` holds the text. Pure.
+ */
+ko_code ko_remote_unreachable(const char *host, bool remote_answers, ko_buffer *out);
 
 /*
  * The model as one JSON document in a buffer: the client and instance ids, the

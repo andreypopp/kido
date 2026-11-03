@@ -83,6 +83,8 @@ private class AlertEscape: NSView {
     private(set) var alive = true
     private(set) var generation = 0
     private var task: Task<Void, Never>?
+    private var recovering: Task<Void, Never>?
+    private var attachStart: ContinuousClock.Instant?
     private var drain: Drain?
     private var initial: DispatchWorkItem?
     private(set) var ssh: SSH?
@@ -313,6 +315,11 @@ private class AlertEscape: NSView {
     @objc func start() {
         guard case .connected = link else { return begin(.reconnect) }
         if koModel?.layout.layout.sessions.isEmpty == true { return newSession() }
+        guard host == .local else {
+            invalidate()
+            link = .down
+            return connect(cause: .reconnect)
+        }
         let generation = generation
         down("Starting the ko server…", "", button: nil)
         task = Task {
@@ -340,14 +347,18 @@ private class AlertEscape: NSView {
         connect(cause: cause)
     }
 
+    private func markAttach(_ step: String) {
+        guard Timing.enabled, let start = attachStart else { return }
+        Timing.emit(["t": "attach", "host": host.label, "step": step, "ms": Timing.milliseconds(since: start)])
+        if step == "first-layout" { attachStart = nil }
+    }
+
     private func connect(cause: DialCause) {
-        guard host == .local else {
-            link = .down
-            return down("Remote hosts return with the ko remote transport", host.label, button: nil)
-        }
+        attachStart = .now
         let generation = generation
         link = .starting
         down("Connecting to \(host.label)…", "", button: nil)
+        if case .remote(let alias) = host { return connectRemote(alias, cause: cause) }
         task = Task { [self] in
             do throws(Failure) {
                 let socket = try await KoServer.launch(dir: serverDir)
@@ -361,27 +372,94 @@ private class AlertEscape: NSView {
         }
     }
 
+    private func connectRemote(_ alias: String, cause: DialCause) {
+        let generation = generation
+        task = Task { [self] in
+            let session: SSH
+            do throws(Failure) { session = try SSH(alias) } catch { return remoteFailed(.ssh(error)) }
+            ssh = session
+            session.mark = { [weak self] step in self?.markAttach(step) }
+            #if KIDO_VISUAL || KIDO_STRESS
+            session.testConfiguration = ProcessInfo.processInfo.environment["KIDO_APP_SSH_CONFIG"]
+            testSSH?(session)
+            #endif
+            let closing = Drain()
+            drain = closing
+            do throws(RemoteFailure) {
+                let opened = try await session.open(drain: closing) { [weak self] failure in self?.masterLost(failure, generation: generation) }
+                guard accepts(generation) else { return }
+                identity = opened.identity
+                dial(opened.socket, cause: cause)
+            } catch {
+                guard accepts(generation) else { return }
+                remoteFailed(error)
+            }
+        }
+    }
+
+    private func remoteFailed(_ failure: RemoteFailure) {
+        if case .mismatch(let code, let server) = failure { return protocolMismatch(code: code, server: server, own: KoClient.version) }
+        link = .down
+        let text = failure.banner(host.label)
+        down(text.title, text.detail, button: "Reconnect")
+    }
+
+    private func masterLost(_ failure: Failure, generation: Int) {
+        guard accepts(generation), recovering == nil, case .connected = link, let ssh, let drain else { return }
+        var detail = failure.message
+        recovering = Task { [self] in
+            var delay: TimeInterval = 1
+            while accepts(generation), !Task.isCancelled {
+                down("Disconnected from \(host.label)", detail + "\nReconnecting…", button: "Reconnect")
+                do throws(Failure) {
+                    try await ssh.recover(drain: drain)
+                    guard accepts(generation) else { return }
+                    if ssh.master?.process.isRunning == true { return recovering = nil }
+                    detail = "The SSH connection to \(host.label) ended again."
+                } catch {
+                    guard accepts(generation) else { return }
+                    detail = error.message
+                    if case .terminal = error {
+                        invalidate()
+                        link = .down
+                        return down("Kido could not reach \(host.label)", error.message, button: "Reconnect")
+                    }
+                }
+                try? await Task.sleep(for: .seconds(delay))
+                delay = min(delay * 2, 30)
+            }
+        }
+    }
+
     static func mismatchAlert(host: Host, code: ko_code, server: KoVersion, own: KoVersion) -> NSAlert {
         let alert = NSAlert()
         let local = host == .local
-        let detail = code == KO_ERR_PROTOCOL_MISMATCH
-            ? "This app speaks ko protocol \(own.protocolVersion). The server speaks \(server.protocolVersion)."
-            : "This app runs terminal revision \(own.vt.prefix(9)). The server runs \(server.vt.prefix(9))."
-        alert.messageText = local ? "Restart the local ko server" : "Restart ko on \(host.label)"
-        alert.informativeText = "\(detail) The server is build \(server.build); this app is build \(own.build). Restart the server, then reconnect."
+        let builds = "The server is build \(server.build); this app is build \(own.build)."
+        let protocols = "This app speaks ko protocol \(own.protocolVersion). The server speaks \(server.protocolVersion)."
+        let revisions = "This app runs terminal revision \(own.vt.prefix(9)); the server runs \(server.vt.prefix(9))."
         if local {
-            alert.informativeText += "\n\nRestarting ends all sessions and panes on this local ko server. Running commands and agents will stop. Other clients attached to this server will disconnect."
+            let detail = code == KO_ERR_PROTOCOL_MISMATCH ? protocols : "This app runs terminal revision \(own.vt.prefix(9)). The server runs \(server.vt.prefix(9))."
+            alert.messageText = "Restart the local ko server"
+            alert.informativeText = "\(detail) \(builds) Restart the server, then reconnect."
+                + "\n\nRestarting ends all sessions and panes on this local ko server. Running commands and agents will stop. Other clients attached to this server will disconnect."
+        } else if code == KO_ERR_PROTOCOL_MISMATCH, let major = server.major, let ours = own.major, major > ours {
+            alert.messageText = "Update Kido.app to connect to \(host.label)"
+            alert.informativeText = "The server speaks ko protocol \(server.protocolVersion); this app speaks \(own.protocolVersion). Update Kido.app on this Mac. \(builds)"
+        } else if code == KO_ERR_PROTOCOL_MISMATCH {
+            alert.messageText = "Update ko on \(host.label)"
+            alert.informativeText = "\(protocols) Update ko on the host, then reconnect. \(builds)"
+        } else {
+            alert.messageText = "Kido.app and ko on \(host.label) are from different releases"
+            alert.informativeText = "\(revisions) Install the ko release of this Kido.app on the host, or update Kido.app. \(builds)"
         }
         alert.addButton(withTitle: local ? "Restart" : "Reconnect").hasDestructiveAction = local
         alert.addButton(withTitle: "Close").keyEquivalent = "\u{1b}"
-        if local {
-            alert.buttons[0].keyEquivalent = ""
-            alert.window.defaultButtonCell = alert.buttons[1].cell as? NSButtonCell
-            alert.window.initialFirstResponder = alert.buttons[1]
-            let escape = AlertEscape()
-            escape.button = alert.buttons[1]
-            alert.accessoryView = escape
-        }
+        alert.buttons[0].keyEquivalent = ""
+        alert.window.defaultButtonCell = alert.buttons[1].cell as? NSButtonCell
+        alert.window.initialFirstResponder = alert.buttons[1]
+        let escape = AlertEscape()
+        escape.button = alert.buttons[1]
+        alert.accessoryView = escape
         return alert
     }
 
@@ -477,7 +555,7 @@ private class AlertEscape: NSView {
         #if KIDO_VISUAL || KIDO_STRESS
         if let testUploadBase { return testUploadBase }
         #endif
-        if case .connected = link { return serverDir }
+        if case .connected = link { return "" }
         return nil
     }
 
@@ -502,7 +580,7 @@ private class AlertEscape: NSView {
         guard admitsUpload() else { return }
         if host == .local || uploadPermission == .allow || Self.clipboardConsent.allows(host, .upload) { return transfer(plan, base: base, to: pane) }
         if uploadPermission == .deny { return notice("Kido did not upload", "Uploads to “\(host.label)” are denied for this connection.") }
-        askUpload(plan, to: host.label, "Kido copies them to \(base)/drops on \(identity ?? host.label) and pastes their paths. Files are kept for about 7 days.",
+        askUpload(plan, to: host.label, "Kido copies them to \(base.isEmpty ? "~/.local/state/\(Upload.stateName)" : base)/drops on \(identity ?? host.label) and pastes their paths. Files are kept for about 7 days.",
                   ["Allow for this connection", "Always allow", "Deny"]) { [weak self, weak pane] response in
             guard let self else { return }
             if response == .alertSecondButtonReturn { Self.clipboardConsent.allowAlways(host, .upload) }
@@ -598,7 +676,7 @@ private class AlertEscape: NSView {
         guard let launch else { return notice("Kido did not upload", "\(host.label) is not connected.") }
         let task = Task { [weak self] in
             guard !Task.isCancelled else { return }
-            let result: Result<(status: Int32, out: String, err: String), Failure>
+            let result: Result<Child.Finished, Failure>
             do throws(Failure) { result = .success(try await Child.run(launch, deadline: 60 + Double(plan.size >> 20), drain: drain, input: plan.send)) }
             catch { result = .failure(error) }
             guard let self, accepts(generation), uploads.removeValue(forKey: id) != nil else { return }
@@ -681,7 +759,7 @@ private class AlertEscape: NSView {
         let view = makeSessionView()
         do {
             let hello = KoHello(name: ownerID, sizesWindows: true)
-            let client = try KoClient(socket: socket, hello: hello) { [weak self] event in
+            let client = try KoClient(socket: socket, hello: hello, fetches: host.imageFetches) { [weak self] event in
                 guard let self, accepts(generation) else { return }
                 handle(event)
             }
@@ -705,7 +783,7 @@ private class AlertEscape: NSView {
         } catch {
             note("could not connect to \(socket): \(error)")
             link = .down
-            down("Kido could not reach \(host.label)", "\(error)", button: "Start")
+            down("Kido could not reach \(host.label)", "\(error)", button: host == .local ? "Start" : "Reconnect")
         }
     }
 
@@ -771,6 +849,9 @@ private class AlertEscape: NSView {
                 if welcomed { resetSession() }
             }
             welcomed = true
+            markAttach("welcome")
+            ready()
+            if !fresh { session?.retryImages() }
             observeSeen()
         case .layout(let revision):
             receiveSoon()
@@ -787,8 +868,9 @@ private class AlertEscape: NSView {
                 sidebar.list.leave()
             }
         case .failed(let code, let message):
-            let detail = code == KO_ERR_NO_SERVER ? "No ko server is running." : message
-            down("Disconnected from \(host.label)", detail + "\nReconnecting…", button: "Start")
+            guard recovering == nil else { return }
+            let absent = host == .local ? "No ko server is running." : "The connection to \(host.label) is down."
+            down("Disconnected from \(host.label)", (code == KO_ERR_NO_SERVER ? absent : message) + "\nReconnecting…", button: host == .local ? "Start" : "Reconnect")
         case .mismatch(let code, let server, let own):
             protocolMismatch(code: code, server: server, own: own)
         case .clipboardWrite(_, let contents):
@@ -863,6 +945,7 @@ private class AlertEscape: NSView {
     }
 
     private func adopt(_ snapshot: Snapshot) {
+        markAttach("first-layout")
         reorder.state.observe(snapshot)
         // The core reads a pane's status after its listing: a live pane without one is not known yet,
         // and the notification baseline waits for it.
@@ -1207,6 +1290,8 @@ private class AlertEscape: NSView {
         if let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .abort) }
         task?.cancel()
         task = nil
+        recovering?.cancel()
+        recovering = nil
         initial?.cancel()
         initial = nil
         reorder.state.reset()
@@ -1253,6 +1338,7 @@ private class AlertEscape: NSView {
 
     #if KIDO_VISUAL || KIDO_STRESS
     var testServerDir: String?
+    var testSSH: ((SSH) -> Void)?
     var testUploadBase: String?
     var testBanner: Banner { banner }
     var testSession: SessionView? { session }

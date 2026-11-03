@@ -298,6 +298,46 @@ its size, which follows the server's rule for clients that size windows.
 Client-local find, scroll and surface budgets remain independent. Status:
 accepted.
 
+## The remote agent link dangles during an outage
+
+The forwarded agent socket ends with the master's connection, so
+`agent.sock` on the host points at nothing until the recovery loop
+publishes again. A pane that uses the agent in that interval fails. The
+last publication wins: two windows to one host, or two Macs, link the agent
+of the window that connected last, and a window close leaves its link. The
+server replaces a dangling link with its own inherited agent only when it
+starts. The publisher checks `agent.sock` and then renames over it; a file
+that a process of the same user puts there between the two steps can be
+replaced. The state directory is 0700, so only that user can do it. Status:
+accepted.
+
+## A killed app leaves its remote directory
+
+A SIGKILL of Kido.app leaves the master's `/tmp/ka-<12>` directory with its
+control socket and the forward's socket file; the next window makes a new
+directory. A sweep of old `ka-*` directories at launch is a follow-up.
+Status: accepted.
+
+## A remote shell that prints at start breaks the socket query
+
+`ko server --print-socket` runs through the remote login shell. A shell
+that prints text on a noninteractive start gives a reply that is not a
+socket path, and the window shows "Kido could not find the ko socket on
+HOST" with the text. `ko HOST` has the same limit. Status: accepted.
+
+## Upload drops keep the kido-app name
+
+Uploads go to `${XDG_STATE_HOME:-~/.local/state}/kido-app/drops` on both
+hosts. The rename of the app's paths to ko names is K8 work. Status: open.
+
+## The remote restore and echo are not measured yet
+
+`make rtt` has run only a 2000-row smoke on localhost without delay. The
+100k-line restore, the echo at 50, 150 and 300 ms and the compression
+decision wait for ko's delay proxy (kido-app-notes/k7-rtt-plan.md). The
+generator's `--line-bytes` default needs calibration against the 78 MB
+snapshot on that run. Status: open.
+
 # Dev/tooling
 
 ## make -j can race on the xcframework

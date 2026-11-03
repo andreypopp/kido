@@ -183,8 +183,11 @@ struct Upload: Sendable {
         sources = [Source(name: "clipboard-\(UUID().uuidString.prefix(8).lowercased()).png", size: png.count, bytes: .data(png))]
     }
 
+    // The directory under the state home that holds the drops when the caller gives no base.
+    static let stateName = "kido-app"
+
     static let script = """
-    base=${1:-${XDG_STATE_HOME:-$HOME/.local/state}/kido-app}; id=$2; shift 2
+    base=${1:-${XDG_STATE_HOME:-$HOME/.local/state}/\(stateName)}; id=$2; shift 2
     refuse() { printf '%s\\n' "kido-drop: $1" >&2; exit 1; }
     me=$(id -u)
     check() { case $(uname -s) in

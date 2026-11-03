@@ -3,10 +3,12 @@
 mod calls;
 mod engine;
 mod images;
+mod remote;
 mod view;
 
 pub use calls::*;
 pub use images::*;
+pub use remote::*;
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -3257,6 +3259,143 @@ mod tests {
                 owned(version.build)
             ),
             (ours.protocol, ours.vt, ours.build)
+        );
+    }
+
+    #[test]
+    fn a_probe_reports_the_servers_version_and_how_a_forward_leads_nowhere() {
+        let ours = protocol::version();
+        let answering = |name: &str, body: String| {
+            serve(
+                name,
+                Routes {
+                    clients: Vec::new(),
+                    views: Vec::new(),
+                    plain: Arc::new(move |request| match request.target.as_str() {
+                        "/version" => Some((200, body.clone())),
+                        _ => Some((404, String::new())),
+                    }),
+                    stall: None,
+                },
+            )
+        };
+        let probe = |socket: Vec<u8>| {
+            let socket = CString::new(socket).unwrap();
+            let mut out = empty_buffer();
+            // SAFETY: the string is valid and out is writable.
+            let code = unsafe { ko_client_probe(socket.as_ptr(), 5_000, &mut out) };
+            let text = contents(&out);
+            freed_once(&mut out);
+            (code, text)
+        };
+        let theirs = [
+            (
+                Code::Ok,
+                format!(
+                    r#"{{"protocol":"{}","vt":"{}","build":"b"}}"#,
+                    ours.protocol, ours.vt
+                ),
+            ),
+            (
+                Code::ProtocolMismatch,
+                format!(r#"{{"protocol":"2.0","vt":"{}","build":"b"}}"#, ours.vt),
+            ),
+            (
+                Code::VtMismatch,
+                format!(
+                    r#"{{"protocol":"{}","vt":"abc","build":"b"}}"#,
+                    ours.protocol
+                ),
+            ),
+        ];
+        for (code, body) in theirs {
+            let server = answering("probe", body.clone());
+            assert_eq!(probe(server.socket()), (code, body));
+        }
+
+        let server = answering("probe-garbage", "not a version".to_owned());
+        assert_eq!(probe(server.socket()).0, Code::Protocol);
+
+        let dir = PathBuf::from(format!("/tmp/ko-ffi-probe-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("socket").as_os_str().as_bytes().to_vec();
+        assert_eq!(probe(socket.clone()).0, Code::NoServer, "no socket file");
+
+        let listener = UnixListener::bind(dir.join("socket")).unwrap();
+        let hangup = std::thread::spawn(move || drop(listener.accept()));
+        assert_eq!(
+            probe(socket).0,
+            Code::Closed,
+            "a listener that closes at once"
+        );
+        hangup.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_remote_classifiers_name_each_failure_of_the_ssh_steps() {
+        let classify = |status: c_int, signaled: bool, stdout: &[u8], stderr: &[u8]| {
+            let run = SshRun {
+                status,
+                signaled,
+                stdout_data: stdout.as_ptr(),
+                stdout_len: stdout.len(),
+                stderr_data: stderr.as_ptr(),
+                stderr_len: stderr.len(),
+            };
+            let mut out = empty_buffer();
+            // SAFETY: the string and the run are valid and out is writable.
+            let code = unsafe { ko_remote_socket(c"box".as_ptr(), &run, &mut out) };
+            let text = contents(&out);
+            freed_once(&mut out);
+            (code, text)
+        };
+        assert_eq!(
+            classify(0, false, b"/home/u/.local/state/ko/socket\n", b""),
+            (Code::Ok, "/home/u/.local/state/ko/socket".to_owned())
+        );
+        assert_eq!(
+            classify(0, false, b"welcome!\n", b"").0,
+            Code::Invalid,
+            "a shell that prints on start"
+        );
+        assert_eq!(
+            classify(127, false, b"", b"sh: ko: not found"),
+            (
+                Code::NotFound,
+                "ko was not found on box; install it there, on the PATH of ssh commands".to_owned()
+            )
+        );
+        assert_eq!(
+            classify(255, false, b"", b"Permission denied\n"),
+            (Code::Io, "Permission denied".to_owned())
+        );
+        assert_eq!(classify(1, false, b"", b"boom").0, Code::Invalid);
+        assert_eq!(classify(9, true, b"", b"").0, Code::Invalid);
+
+        let unreachable = |answers: bool| {
+            let mut out = empty_buffer();
+            // SAFETY: the string is valid and out is writable.
+            let code = unsafe { ko_remote_unreachable(c"box".as_ptr(), answers, &mut out) };
+            let text = contents(&out);
+            freed_once(&mut out);
+            (code, text)
+        };
+        assert_eq!(
+            unreachable(true),
+            (
+                Code::Refused,
+                "box refuses unix-socket forwarding, and ko needs it (sshd AllowStreamLocalForwarding)".to_owned()
+            )
+        );
+        assert_eq!(
+            unreachable(false),
+            (
+                Code::NoServer,
+                "no ko server is running on box; start one there with: ssh box ko server"
+                    .to_owned()
+            )
         );
     }
 

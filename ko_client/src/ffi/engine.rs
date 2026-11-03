@@ -1,6 +1,7 @@
 #![deny(unsafe_code)]
 
 use std::io;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
@@ -14,14 +15,14 @@ use ko_server::protocol::{
     check_version, json,
 };
 use ko_server::ws::{Record, parse_record};
-use ko_sys::event::{Events, Interest, Mode, Poll, Ready, Timer, Token};
+use ko_sys::event::{Events, Interest, Mode, Poll, Ready, Timer, Token, Wake};
 use tungstenite::Bytes;
 
 use super::view::{Feed, Slice, View};
 use super::{Code, Command, Posted, Shared, ViewEvent, layout_of, locked, post, string};
 use crate::launch::{self, BACKOFF_FIRST, backoff_after};
 use crate::model::{Applied, Model, Rejoin};
-use crate::wire::{Link, Next, WATCHDOG, buffered, request, silent, text};
+use crate::wire::{Link, Next, READ_TIMEOUT, WATCHDOG, buffered, exchange, silent, text};
 
 const WATCH: Duration = Duration::from_secs(2);
 
@@ -74,6 +75,45 @@ fn failure(error: &io::Error) -> Failed {
 
 fn protocol_error(message: String) -> Failed {
     (Code::Protocol, message)
+}
+
+pub(super) fn probe(
+    socket: &Path,
+    within: Duration,
+    cancel: Option<&Wake>,
+) -> Result<Version, Failed> {
+    let (method, target) = Route::Version {}.to_request();
+    let response = exchange(
+        socket,
+        (None, None),
+        (method, &target),
+        &[],
+        b"",
+        within,
+        cancel,
+    )
+    .map_err(|error| failure(&error))?;
+    if response.status != 200 {
+        return Err(protocol_error(format!(
+            "GET /version answered {} {}",
+            response.status, response.reason
+        )));
+    }
+    protocol::decode::<Version>(&response.body).map_err(|error| protocol_error(text(error)))
+}
+
+pub(super) fn mismatch_of(server: &Version) -> Option<Code> {
+    match check_version(Some(&server.protocol), Some(&server.vt)) {
+        Err(Error {
+            kind: ErrorKind::ProtocolMismatch(_),
+            ..
+        }) => Some(Code::ProtocolMismatch),
+        Err(Error {
+            kind: ErrorKind::VtMismatch(_),
+            ..
+        }) => Some(Code::VtMismatch),
+        _ => None,
+    }
 }
 
 pub(super) fn run(shared: &Arc<Shared>) {
@@ -144,27 +184,8 @@ impl Engine<'_> {
 
     fn mismatch(&self) -> Option<(Code, Version)> {
         let shared = self.shared;
-        let route = Route::Version {};
-        let body = request(
-            shared.socket.as_path(),
-            (None, None),
-            &route,
-            b"",
-            Some(&shared.cancel),
-        )
-        .ok()?;
-        let server = protocol::decode::<Version>(&body).ok()?;
-        match check_version(Some(&server.protocol), Some(&server.vt)) {
-            Err(Error {
-                kind: ErrorKind::ProtocolMismatch(_),
-                ..
-            }) => Some((Code::ProtocolMismatch, server)),
-            Err(Error {
-                kind: ErrorKind::VtMismatch(_),
-                ..
-            }) => Some((Code::VtMismatch, server)),
-            _ => None,
-        }
+        let server = probe(shared.socket.as_path(), READ_TIMEOUT, Some(&shared.cancel)).ok()?;
+        mismatch_of(&server).map(|code| (code, server))
     }
 
     fn join(&mut self) -> Result<(), Failed> {

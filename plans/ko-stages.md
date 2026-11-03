@@ -1194,7 +1194,29 @@ at most 20 s. The first master start can wait 60 s for a password
 prompt. A SIGKILL of `ko` leaves the master and the private
 directory. The 60 s limit has no test.
 
-Open: the app part, the RTT table and question 2 of section 7.
+Built (the app part, docs/design-app.md "Remote hosts"): Swift owns
+the master, the forward and the agent publication; the ko client
+connects to the forward's local socket as to a local server, and its
+engine reconnects and resumes by offset gated on `instance`.
+`ko_client` gained `ko_client_probe` (the engine's version check,
+shared), and `ko_remote_socket` and `ko_remote_unreachable`, which give
+the app the classification and the texts of `ko HOST`. A refused
+forward and a missing remote socket both exit 0 and give EOF, so the
+probe comes first and `ko api /version` on the host second. After a
+master loss the app starts a new master at the same ControlPath and the
+same forward, with no outage deadline (backoff 1 s to 30 s, a sleeping
+Mac comes back at wake). A killed master leaves its control socket, and
+ssh then starts a master without one; the app removes it first. Remote
+image fetches are bodies, at most 4 at once, retried after a welcome.
+The remote setup (the master, the query, the forward, the agent link) is
+administrative and may write in the server's state directory; client
+actions only connect to `<dir>/socket` (decided 2026-11-03), so local
+uploads moved out of the server directory. Tests: `app/KoTests/RemoteTests.swift`
+under `KO_E2E_HOST_SSH=1` with a private sshd for each test. The RTT
+harness (`make rtt`, `app/scripts/rtt.py`, `KIDO_APP_TIMING=1`) waits
+for ko's delay proxy.
+
+Open: the RTT table and question 2 of section 7.
 
 ### K8. The cut-over (6 to 9 agent-days)
 

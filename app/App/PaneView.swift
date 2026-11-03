@@ -548,6 +548,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     private var imageLimit: UInt64?
     private var images: PaneImages?
+    func retryImages() { images?.retry() }
     private var presented = (visible: true, realized: true)
     private var eventMonitor: Any?
     private var paste: (alert: NSAlert, state: UnsafeMutableRawPointer?)?

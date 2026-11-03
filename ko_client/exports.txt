@@ -10,6 +10,7 @@ _ko_client_launch
 _ko_client_limits
 _ko_client_model
 _ko_client_observe
+_ko_client_probe
 _ko_client_prompt
 _ko_client_prompt_resolve
 _ko_client_put_layout
@@ -20,6 +21,8 @@ _ko_client_stop_server
 _ko_client_switch
 _ko_client_version
 _ko_code_message
+_ko_remote_socket
+_ko_remote_unreachable
 _ko_view_close
 _ko_view_input
 _ko_view_open
