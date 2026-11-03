@@ -32,6 +32,8 @@ unexpected_cfgs = { level = "deny", check-cfg = ["cfg(loom)", "cfg(verus_only)",
 [workspace.lints.clippy]
 expect_used = "deny"
 panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
 todo = "deny"
 undocumented_unsafe_blocks = "deny"
 unimplemented = "deny"

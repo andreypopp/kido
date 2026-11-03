@@ -1,9 +1,11 @@
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 
+use ko_sys::pid::Exit;
 use serde_json::json;
 
 use crate::harness::{
-    Child, DEADLINE, Dir, PROTOCOL, poll, run_ko, start, test_env, text_of, wait_gone, which,
+    Child, DEADLINE, Dir, PROTOCOL, ko, poll, run_ko, start, test_env, text_of, wait_gone, which,
 };
 
 #[test]
@@ -186,4 +188,22 @@ fn api() {
     }
     let entries: Vec<_> = std::fs::read_dir(&*empty).unwrap().collect();
     assert!(entries.is_empty(), "ko api created {entries:?}");
+}
+
+#[test]
+fn a_lost_stdout_or_stderr_is_not_a_crash() {
+    let no_server = Dir::new("ko-");
+    let env = test_env(&no_server);
+    let null = std::fs::File::open("/dev/null").unwrap();
+    let lost = UnixStream::pair().unwrap().0;
+    let api = ["api", "/version", "--server", text_of(&no_server)];
+    let mut failing = Child::spawn(&ko(), &api, &env, &[(null.as_fd(), 1), (lost.as_fd(), 2)]);
+    assert_eq!(failing.wait(DEADLINE), Some(Exit::Exited(1)));
+    let mut printing = Child::spawn(
+        &ko(),
+        &["version"],
+        &env,
+        &[(lost.as_fd(), 1), (null.as_fd(), 2)],
+    );
+    assert_eq!(printing.wait(DEADLINE), Some(Exit::Exited(0)));
 }

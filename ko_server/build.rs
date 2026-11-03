@@ -1,4 +1,4 @@
-#![allow(clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::panic, clippy::print_stdout)]
 
 use std::env;
 use std::path::PathBuf;
