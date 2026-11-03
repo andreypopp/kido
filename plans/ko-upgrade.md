@@ -1,7 +1,16 @@
 # ko: upgrade in place
 
-Status: plan. The one open stage of ko after the cut-over. Until it is
-built, an upgrade of `ko` restarts the server and ends its panes.
+Status: tabled (2026-11-04). Until it is built, an upgrade of `ko`
+restarts the server and ends its panes.
+
+When it is taken up again, consider the simpler variant first: one
+mechanism for both processes, "write state, keep the descriptors,
+`execve` self, read state". A `ko-pane` re-execs itself with its
+snapshot in a file, so the pid, the pty, the ring and the control
+socket stay, and the `SCM_RIGHTS` handoff, the `master` frame and the
+second process below are not needed. The coordinator writes its whole
+state as one serde value, so no new field can be forgotten. Rough
+estimate of that variant: 4 to 6 agent-days.
 
 Terminal state lives in the pane processes, so a coordinator upgrade
 moves none of it. `ko upgrade` (sent by the launcher when the binary
