@@ -15,7 +15,7 @@ use ko_server::runs::{Parent, RunName, RunOutcome};
 use ko_server::timestamp::Timestamp;
 use ko_shell::bin_dir;
 
-use crate::{client_dir, fail, server_message, table};
+use crate::{client_dir, complain, fail, server_message, table};
 
 const WAIT_POLL: Duration = Duration::from_secs(30);
 
@@ -186,7 +186,7 @@ fn exit(code: u8) -> ExitCode {
 }
 
 fn refused(name: &str, message: impl std::fmt::Display, code: u8) -> ExitCode {
-    eprintln!("ko {name}: {message}");
+    fail(name, message);
     exit(code)
 }
 
@@ -522,7 +522,7 @@ pub(crate) fn prompt(args: PromptArgs) -> ExitCode {
     }
     let text = text.strip_suffix('\n').unwrap_or(&text).to_owned();
     if text.is_empty() {
-        eprintln!("no prompt given");
+        complain("no prompt given");
         return exit(1);
     }
     let dir = client_dir(args.server);
@@ -535,7 +535,7 @@ pub(crate) fn prompt(args: PromptArgs) -> ExitCode {
     };
     match found.as_slice() {
         [] => {
-            eprintln!("agent not found");
+            complain("agent not found");
             exit(4)
         }
         [one] => {
@@ -549,7 +549,7 @@ pub(crate) fn prompt(args: PromptArgs) -> ExitCode {
             }
         }
         _ => {
-            eprintln!("multiple agents found");
+            complain("multiple agents found");
             exit(5)
         }
     }

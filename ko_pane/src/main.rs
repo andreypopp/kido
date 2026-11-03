@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::process::ExitCode;
 
 use ko_pane::pane::Pane;
@@ -15,7 +16,7 @@ fn main() -> ExitCode {
     match outcome {
         Outcome::Stopped => ExitCode::SUCCESS,
         Outcome::Failed(failure) => {
-            eprintln!("pane control failed: {failure}");
+            let _ = writeln!(std::io::stderr().lock(), "pane control failed: {failure}");
             ExitCode::from(2)
         }
     }

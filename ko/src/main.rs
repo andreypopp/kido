@@ -272,8 +272,12 @@ pub(crate) fn client_dir(server: Option<PathBuf>) -> PathBuf {
     config::dir(server.or(pane_server))
 }
 
+pub(crate) fn complain(message: impl std::fmt::Display) {
+    let _ = writeln!(io::stderr().lock(), "{message}");
+}
+
 pub(crate) fn fail(name: &str, message: impl std::fmt::Display) -> ExitCode {
-    eprintln!("ko {name}: {message}");
+    complain(format_args!("ko {name}: {message}"));
     ExitCode::FAILURE
 }
 
@@ -324,7 +328,7 @@ fn server(args: ServerArgs) -> ExitCode {
         Err(message) => return fail("server", message),
     };
     if let Err(error) = agent::publish(&config.dir, std::env::var_os("SSH_AUTH_SOCK").as_deref()) {
-        eprintln!("ko server: SSH_AUTH_SOCK: {error}");
+        complain(format_args!("ko server: SSH_AUTH_SOCK: {error}"));
     }
     let served = launch::bind(&config.dir, &config.socket, PATIENCE)
         .and_then(|listener| Server::new(config, listener, Timing::DEFAULT))
@@ -405,10 +409,10 @@ fn api(args: ApiArgs) -> ExitCode {
     );
     match api::request(&dir, &method, &args.path, &body) {
         Err(api::Error::Websocket) => {
-            eprintln!(
+            complain(format_args!(
                 "ko api: {} is a WebSocket endpoint; ko api sends one request and prints one response",
                 args.path
-            );
+            ));
             ExitCode::from(2)
         }
         Err(api::Error::Server(failure)) => match &remote {
