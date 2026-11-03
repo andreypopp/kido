@@ -1,10 +1,10 @@
 import { AgentSession, type ExtensionAPI, type ExtensionContext, type MessageRenderer, type Theme } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { accessSync, closeSync, constants, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { accessSync, closeSync, constants, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
@@ -101,11 +101,27 @@ export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
   return join(homedir(), ".local", "state", "ko-pi");
 }
 
-function inboxPath(dir: string, session: string): string | null {
-  const path = join(dir, "inbox", session + ".sock");
+const OWN_UID = userInfo().uid;
+const FALLBACK_INBOX_DIR = `/tmp/ko-pi-${OWN_UID}`;
+
+function inboxPath(dir: string, session: string): { path: string; fallback: boolean } | null {
   if (session.includes("/") || session.includes("..")) return null;
-  if (Buffer.byteLength(path, "utf8") > SOCKET_PATH_MAX) return null;
-  return path;
+  const path = join(dir, "inbox", session + ".sock");
+  if (Buffer.byteLength(path, "utf8") <= SOCKET_PATH_MAX) return { path, fallback: false };
+  const tag = createHash("sha256").update(dir).update("\0").update(session).digest("hex").slice(0, 24);
+  const short = join(FALLBACK_INBOX_DIR, tag + ".sock");
+  return Buffer.byteLength(short, "utf8") <= SOCKET_PATH_MAX ? { path: short, fallback: true } : null;
+}
+
+export function privateDir(dir: string): string | null {
+  try {
+    mkdirSync(dir, { mode: 0o700 });
+  } catch (err) {
+    if (!(err instanceof Error && "code" in err && err.code === "EEXIST")) return `cannot create ${dir}: ${err instanceof Error ? err.message : err}`;
+  }
+  const info = lstatSync(dir);
+  if (!info.isDirectory() || info.uid !== OWN_UID || (info.mode & 0o077) !== 0) return `${dir} is not a private directory of this user`;
+  return null;
 }
 
 type AgentRecord = { session: string; run: string; model: string; fork: boolean };
@@ -1241,9 +1257,13 @@ export default function (pi: ExtensionAPI) {
         return;
       }
     }
-    if (!found?.inbox) return;
+    if (!found?.inbox) {
+      session?.ui?.notify?.(`the parent has no inbox: the ${notice.kind} was not delivered`, "warning");
+      return;
+    }
     const body = notice.kind === "status" ? utf8Prefix(notice.text, MAX_NOTICE_BYTES) : reportNotice(notice.text, path);
-    await sendEnvelope(found.inbox, "notice", body);
+    const sent = await sendEnvelope(found.inbox, "notice", body);
+    if (!sent.ok) session?.ui?.notify?.(`the ${notice.kind} was not delivered: ${sent.message}`, "warning");
   };
 
   type Watch = WatchData & {
@@ -1569,7 +1589,7 @@ export default function (pi: ExtensionAPI) {
 
   const sessionFileOf = (entry: AgentEntry): string => readTextFile(join(entry.dir, "session-file"))?.trim() ?? "";
 
-  const childInbox = (entry: AgentEntry): string => (dir ? inboxPath(dir, entry.session) ?? "" : "");
+  const childInbox = (entry: AgentEntry): string => (dir ? inboxPath(dir, entry.session)?.path ?? "" : "");
 
   const entryRow = (entry: AgentEntry): AgentRow => ({
     id: entry.session,
@@ -1796,13 +1816,20 @@ export default function (pi: ExtensionAPI) {
     return hold?.state === "owned" && hold.handler === onConnection;
   };
 
-  const startInbox = async (sessionId: string, base: string): Promise<void> => {
-    const path = inboxPath(base, sessionId);
-    if (!path) return;
-    try {
-      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    } catch (err) {
-      if (!(err instanceof Error && "code" in err && err.code === "EEXIST")) return;
+  const startInbox = async (sessionId: string, base: string): Promise<string | undefined> => {
+    const place = inboxPath(base, sessionId);
+    if (!place) return `no inbox: no socket path for session ${sessionId} fits ${SOCKET_PATH_MAX} bytes`;
+    const { path } = place;
+    const inboxDir = dirname(path);
+    if (place.fallback) {
+      const problem = privateDir(inboxDir);
+      if (problem) return `no inbox: ${problem}`;
+    } else {
+      try {
+        mkdirSync(inboxDir, { recursive: true, mode: 0o700 });
+      } catch (err) {
+        return `no inbox: cannot create ${inboxDir}: ${err instanceof Error ? err.message : err}`;
+      }
     }
     if (await answered(path)) return;
     try {
@@ -1814,7 +1841,7 @@ export default function (pi: ExtensionAPI) {
       server.once("error", () => resolve(false));
       server.listen(path, () => resolve(true));
     });
-    if (!bound) return;
+    if (!bound) return `no inbox: cannot listen on ${path}`;
     server.unref();
     setHeldInbox({ server, path, state: "owned", handler: onConnection });
   };
@@ -2376,8 +2403,11 @@ export default function (pi: ExtensionAPI) {
     if (!adoptInbox()) {
       stopInbox();
       try {
-        await startInbox(ownSessionId, dir);
-      } catch {}
+        const failure = await startInbox(ownSessionId, dir);
+        if (failure) ctx.ui?.notify?.(failure, "warning");
+      } catch (err) {
+        ctx.ui?.notify?.(`no inbox: ${err instanceof Error ? err.message : err}`, "warning");
+      }
     }
     const hold = inboxOpen() ? heldInbox() : null;
     const options: Array<[string, string]> = [

@@ -147,5 +147,13 @@ ko's bin directory loads it. The differences:
   `$XDG_STATE_HOME/ko-pi`, else `~/.local/state/ko-pi`. A ko agent
   starts with an empty directory: nothing migrates from `kido-pi`, and
   ko-pi never reads it. kido and ko never share state.
+- Its inbox socket is `inbox/<session-id>.sock` in the state directory
+  only when that path fits the 103-byte socket limit. Otherwise it is
+  in `/tmp/ko-pi-<uid>/`, which must be a directory of the user with
+  mode 0700 and not a symlink. Its name is a hash of the state
+  directory and the session id. Thus, a parent still computes a
+  child's inbox with no lookup, and two state directories do not
+  collide. When ko-pi cannot bind its inbox, or cannot deliver a
+  notice to its parent's inbox, pi shows a warning.
 - Descriptions and refusals say "session" and "window", not "tmux
   session".
