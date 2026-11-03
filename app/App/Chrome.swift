@@ -32,7 +32,6 @@ enum Chrome {
     static var accent: NSColor { .controlAccentColor }
     static var swatchChevron: NSColor { NSColor.labelColor.withAlphaComponent(0.6) }
     static func pole(dark: Bool) -> NSColor { dark ? .white : .black }
-    static func hex(_ value: Int) -> NSColor { rgb(Double((value >> 16) & 255) / 255, Double((value >> 8) & 255) / 255, Double(value & 255) / 255) }
     static func rgb(_ red: Double, _ green: Double, _ blue: Double) -> NSColor { NSColor(srgbRed: red, green: green, blue: blue, alpha: 1) }
     static var insertion: NSColor { .controlAccentColor }
     static var renameEdge: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.4) }

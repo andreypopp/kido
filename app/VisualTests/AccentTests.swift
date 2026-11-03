@@ -32,12 +32,20 @@ import TmuxControl
         XCTAssertEqual(try JSONDecoder().decode([String: Accent].self, from: JSONEncoder().encode(accents)), accents)
     }
 
-    func testLeastUsedPresetIsTheFirstUnusedOne() {
-        XCTAssertEqual(Preset.leastUsed([]), .red)
-        XCTAssertEqual(Preset.leastUsed([.red, .orange]), .green)
-        XCTAssertEqual(Preset.leastUsed([.orange]), .red)
-        XCTAssertEqual(Preset.leastUsed(Preset.allCases), .red)
-        XCTAssertEqual(Preset.leastUsed(Preset.allCases + [.red]), .orange)
+    func testSuggestionIsTheLeastUsedPreset() throws {
+        func suggestion(_ used: [Preset]) throws -> Accent {
+            let (preferences, cleanup) = try suite()
+            defer { cleanup() }
+            let store = HostAccents(preferences: preferences)
+            store.set(.system, for: .local)
+            for (number, preset) in used.enumerated() { store.set(.preset(preset), for: .remote("host\(number)")) }
+            return store.suggestion
+        }
+        XCTAssertEqual(try suggestion([]), .preset(.red))
+        XCTAssertEqual(try suggestion([.red, .orange]), .preset(.green))
+        XCTAssertEqual(try suggestion([.orange]), .preset(.red))
+        XCTAssertEqual(try suggestion(Preset.allCases), .preset(.red))
+        XCTAssertEqual(try suggestion(Preset.allCases + [.red]), .preset(.orange))
     }
 
     func testStoreIsKeyedByHostAndSurvivesRecreation() throws {
@@ -76,7 +84,7 @@ import TmuxControl
         store.assign(.remote("a"), chosen: .preset(.green))
         XCTAssertEqual(store.known(.remote("a")), .preset(.green))
         XCTAssertEqual(store.suggestion, .preset(.red))
-        let local = HostAccents(preferences: nil)
+        let local = isolatedAccents()
         local.assign(.local)
         XCTAssertNil(local.known(.local))
     }

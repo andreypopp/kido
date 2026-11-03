@@ -222,7 +222,7 @@ final class Connection: @unchecked Sendable {
                 self.fetchPixels(id, feed)
             }
         }
-        pane.onSend = { [weak self] commands, done in self?.send(commands, then: done) ?? done?(nil) ?? () }
+        pane.onCapture = { [weak self, id = pane.pane] limit, done in self?.capture(id, limit: limit, then: done) ?? done(.failure(Failure(message: "Kido could not read the pane history."))) }
         pane.onScrollTop = { [weak self, id = pane.pane] in self?.load(id, metadataOnly: true) }
         pane.onLoadMore = { [weak self, id = pane.pane] in self?.load(id) }
         pane.onFindCoverage = { [weak self, id = pane.pane] distance, token in
@@ -294,6 +294,18 @@ final class Connection: @unchecked Sendable {
         #endif
         client.send(commands) { [weak self] replies in
             if let done { DispatchQueue.main.async { [weak self] in done(self?.active == true ? replies : nil) } }
+        }
+    }
+
+    func capture(_ pane: PaneID, limit: Int, then done: @escaping @MainActor @Sendable (Result<(text: String, capped: Bool), Failure>) -> Void) {
+        send([ScrollbackCapture.historyRequest(pane)]) { [weak self] replies in
+            guard let self, let history = ScrollbackCapture.historySize(replies?.first) else {
+                return done(.failure(Failure(message: "Kido could not read the pane history.")))
+            }
+            send([ScrollbackCapture.capture(pane, history: history, limit: limit)]) { replies in
+                guard let text = ScrollbackCapture.text(replies?.first) else { return done(.failure(Failure(message: "The pane has no text to open."))) }
+                done(.success((text, history > limit)))
+            }
         }
     }
 

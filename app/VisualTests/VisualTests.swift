@@ -26,6 +26,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
 @MainActor class VisualTestCase: XCTestCase {
     var serverEnvironment: [String: String] = [:]
+    func isolatedAccents() -> HostAccents {
+        let name = "accents-" + UUID().uuidString
+        let preferences = UserDefaults(suiteName: name)!
+        addTeardownBlock { preferences.removePersistentDomain(forName: name) }
+        return HostAccents(preferences: preferences)
+    }
     func surfaceText(_ pane: PaneView, in tag: ghostty_point_tag_e = GHOSTTY_POINT_SCREEN) -> String {
         var text = ghostty_text_s()
         let selection = ghostty_selection_s(top_left: ghostty_point_s(tag: tag, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
@@ -256,7 +262,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
     private func sidebarOwner() throws -> WindowOwner {
         try loadRuntime()
-        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: isolatedAccents(), start: false)
         addTeardownBlock { @MainActor in owner.close() }
         return owner
     }
@@ -323,7 +329,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let config = directory.appendingPathComponent("single-pane-header.conf")
         try "background = #fffaf0\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
-        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: isolatedAccents(), start: false)
         defer { owner.close() }
         let content = owner.sidebar.content
         content.addSubview(session)
@@ -908,7 +914,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             .write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
         window.styleMask.insert([.closable, .miniaturizable])
-        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: isolatedAccents(), start: false)
         addTeardownBlock { @MainActor in owner.close() }
         let sidebar = owner.sidebar
         window.titleVisibility = .hidden
@@ -1088,7 +1094,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             let pure = dark ? [23, 23, 23] : [255, 249, 236]
             let shifted = dark ? [30, 30, 30] : [247, 242, 229]
             let sidebarShifted = dark ? [15, 15, 15] : [239, 234, 222]
-            sidebar.updateAppearance(runtime: runtime)
+            sidebar.updateAppearance(runtime: runtime, colors: (Chrome.accent, Chrome.accent))
             window.backgroundColor = runtime.background
             let terminal = try XCTUnwrap(terminal)
             if dark {
@@ -1199,7 +1205,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 let kido = firstMouse.filter { !$0.hasPrefix("NS") && !$0.hasPrefix("_") }
                 let toolbarButtons = PaneToolbar(runtime: runtime).subviews.compactMap { $0 as? IconButton }
                 XCTAssertTrue(toolbarButtons.allSatisfy { !$0.acceptsFirstMouse(for: nil) }, "a first click on a hover toolbar button only activates the window")
-                XCTAssertEqual(kido, ["IconButton", "MouseButton", "PaneView", "Table"], "pane chrome, dividers, tabs and sidebar rows never take first mouse; PaneView and Table answer true only in the visual build")
+                XCTAssertEqual(kido, ["IconButton", "MouseButton", "PaneView", "Table", "Title"], "pane chrome, dividers and sidebar rows never take first mouse; PaneView and Table answer true only in the visual build; the title label takes no mouse at all")
             }
             var image = try capture()
             let textRect = root.convert(CGRect(x: 20, y: active.bounds.maxY - 80, width: 240, height: 75), from: active)
@@ -1370,7 +1376,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             guard let self else { return }
             session.updateBackground()
             window.backgroundColor = runtime.background
-            sidebar.updateAppearance(runtime: runtime)
+            sidebar.updateAppearance(runtime: runtime, colors: (Chrome.accent, Chrome.accent))
             reloaded.fulfill()
         }
         try ("theme = \(themes)/kido-light\n" + settings).write(to: config, atomically: false, encoding: .utf8)
@@ -1906,7 +1912,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     func testSameWindowDeferredPaneFocus() async throws {
         try await start()
         let pane = try await command(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", "%0", "exec /bin/cat"])
-        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: isolatedAccents(), start: false)
         let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
         owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(endpoint.out.utf8)), kido: tools.kido)
         defer { owner.close() }
@@ -1933,7 +1939,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await start()
         let other = try await command(["new-session", "-d", "-P", "-F", "#{session_id}", "-s", "other", "exec /bin/cat"])
         let current = try await command(["new-window", "-P", "-F", "#{window_id}", "-t", other, "exec /bin/cat"])
-        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: isolatedAccents(), start: false)
         let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
         owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(endpoint.out.utf8)), kido: tools.kido)
         defer { owner.close() }
@@ -2033,7 +2039,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     func testOSC52ClipboardConsentAndPrivatePaneTransport() async throws {
         let clipboardModeBeforeAttach = try await start()
         XCTAssertNotEqual(runtime.pasteboard.name.rawValue, "NSGeneralPboard")
-        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: isolatedAccents(), start: false)
         window.contentView = nil
         window.isReleasedWhenClosed = false
         window.close()
@@ -2648,7 +2654,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         })
         defer { unstamped.stop() }
         try await wait("unstamped RPC refusal") { refused }
-        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: isolatedAccents(), start: false)
         let unstampedOutput = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
         owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(unstampedOutput.out.utf8)), kido: tools.kido)
         defer { owner.close() }

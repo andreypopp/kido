@@ -11,7 +11,7 @@ enum ScrollbackEditor {
     static let statusVariable = "KIDO_SCROLLBACK_STATUS"
     static let commandVariable = "KIDO_SCROLLBACK_COMMAND"
 
-    @MainActor private static var cache: [String: Login] = [:]
+    @MainActor private static var cache: [String: Task<Login?, Never>] = [:]
 
     // A word of the editor setting is not quoted, as git does not quote it.
     // login(1) prints its last-login banner before the command starts, so the
@@ -37,12 +37,16 @@ enum ScrollbackEditor {
     // Ghostty starts the command under bash with no startup files, so the
     // editor settings and PATH come from the user's login shell.
     @MainActor static func login(shell: String = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh") async -> Login {
-        if let cached = cache[shell] { return cached }
+        if let cached = cache[shell] { return await cached.value ?? Login() }
         let script = "printf 'kido-visual=%s\\nkido-editor=%s\\nkido-path=%s\\n' \"$VISUAL\" \"$EDITOR\" \"$PATH\""
-        guard let result = try? await Child.run(shell, ["-ilc", script], deadline: 3) else { return Login() }
-        let login = parse(result.out)
-        cache[shell] = login
-        return login
+        let task = Task<Login?, Never> {
+            guard let result = try? await Child.run(shell, ["-ilc", script], deadline: 3) else { return nil }
+            return parse(result.out)
+        }
+        cache[shell] = task
+        let login = await task.value
+        if login == nil, cache[shell] == task { cache[shell] = nil }
+        return login ?? Login()
     }
 
     #if KIDO_VISUAL

@@ -9,7 +9,7 @@ func floatingGeometry(pixel: CGFloat) {
     let g = Geometry(x: 10, y: 8, width: 20, height: 10)
     let root = Node.pane(Pane(id: PaneID(number: 0), index: 0,
         geometry: Geometry(x: 0, y: 0, width: 100, height: 40), focus: .active, layer: .tiled))
-    let layout = PaneLayout(root: root, bounds: CGRect(x: 0, y: 0, width: 824, height: 750), cell: cell, pixel: pixel, spacing: 8)
+    let layout = PaneLayout(root: root, shape: root, bounds: CGRect(x: 0, y: 0, width: 824, height: 750), cell: cell, pixel: pixel, spacing: 8)
     let initial = layout.frame(g)
     let moved = initial.offsetBy(dx: 13.3, dy: 3.1)
     #expect(layout.clamp(moved) == moved)
@@ -84,12 +84,13 @@ func spacedCards(pixel: CGFloat, spacing: CGFloat) {
         ])
     }
     let probe = tree(80, 30)
-    let client = PaneLayout(root: probe, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing).client
+    let client = PaneLayout(root: probe, shape: probe, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing).client
     let root = tree(Int(client.width), Int(client.height))
-    let layout = PaneLayout(root: root, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing)
+    let layout = PaneLayout(root: root, shape: root, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing)
     #expect(layout.client == client)
     let cards = root.panes.map { layout.tiled($0.geometry) }
-    let resized = PaneLayout(root: tree(Int(client.width), Int(client.height), shift: 1), bounds: bounds, cell: cell, pixel: pixel, spacing: spacing)
+    let shifted = tree(Int(client.width), Int(client.height), shift: 1)
+    let resized = PaneLayout(root: shifted, shape: shifted, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing)
     #expect(resized == layout)
     #expect(resized.tiled(Geometry(x: 0, y: 0, width: Int(client.width) / 2 + 1, height: Int(client.height) / 2)).chrome.maxX > cards[0].chrome.maxX)
     let close = { (a: CGFloat, b: CGFloat) in abs(a - b) < 0.0001 }
@@ -123,8 +124,8 @@ func spacedCards(pixel: CGFloat, spacing: CGFloat) {
     let whole = zoom.tiled(zoomed.geometry)
     #expect(close(whole.chrome.minX - bounds.minX, spacing) && close(bounds.maxX - whole.chrome.maxX, spacing))
     #expect(abs(whole.grid.midX - whole.chrome.midX) <= pixel && abs(whole.grid.midY - whole.chrome.midY) <= pixel)
-    #expect(PaneLayout(root: zoomed, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing).client.width >= client.width)
-    #expect((PaneLayout(root: zoomed, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing).client.width > client.width) == (3 * spacing > cell.width))
+    #expect(PaneLayout(root: zoomed, shape: zoomed, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing).client.width >= client.width)
+    #expect((PaneLayout(root: zoomed, shape: zoomed, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing).client.width > client.width) == (3 * spacing > cell.width))
 }
 
 @Test(arguments: [CGFloat(44), 52, 52.3], [CGFloat(1), 0.5])
@@ -133,7 +134,7 @@ func nativeHeaderBoundary(header: CGFloat, pixel: CGFloat) {
     let bounds = CGRect(x: 0, y: header, width: 700, height: 700 - header)
     let g = Geometry(x: 0, y: 0, width: 80, height: 1)
     let root = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: g, focus: .active, layer: .tiled))
-    let layout = PaneLayout(root: root, bounds: bounds, cell: cell, pixel: pixel, spacing: 8)
+    let layout = PaneLayout(root: root, shape: root, bounds: bounds, cell: cell, pixel: pixel, spacing: 8)
     #expect(layout.top == ceil(header / pixel) * pixel)
     #expect(layout.floatingBounds.minY == layout.top)
     #expect(abs(layout.tiled(g).chrome.minY - layout.top - 8) < 0.0001)

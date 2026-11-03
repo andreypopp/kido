@@ -11,11 +11,7 @@ enum Preset: String, CaseIterable, Codable {
     func color(dark: Bool) -> NSColor {
         let value = Self.values[self]!
         let hex = dark ? value.dark : value.light
-        return Chrome.hex(hex)
-    }
-
-    static func leastUsed(_ used: [Preset]) -> Preset {
-        allCases.min { first, second in used.filter { $0 == first }.count < used.filter { $0 == second }.count }!
+        return Chrome.rgb(Double((hex >> 16) & 255) / 255, Double((hex >> 8) & 255) / 255, Double(hex & 255) / 255)
     }
 }
 
@@ -42,10 +38,17 @@ enum Accent: Codable, Equatable {
 
     func color(dark: Bool) -> NSColor {
         switch self {
-        case .system: Chrome.accent.resolved(dark: dark)
-        case .preset(let preset): preset.color(dark: dark)
-        case .custom(let red, let green, let blue): Chrome.rgb(red, green, blue)
+        case .system:
+            var result = Chrome.accent
+            NSAppearance(named: dark ? .darkAqua : .aqua)!.performAsCurrentDrawingAppearance { result = Chrome.accent.usingColorSpace(.sRGB)! }
+            return result
+        case .preset(let preset): return preset.color(dark: dark)
+        case .custom(let red, let green, let blue): return Chrome.rgb(red, green, blue)
         }
+    }
+
+    @MainActor func colors(runtime: GhosttyRuntime) -> (text: NSColor, ring: NSColor) {
+        (legible(on: runtime.canvas, minimum: Accent.textContrast), legible(on: runtime.background, minimum: Accent.ringContrast))
     }
 
     func legible(on background: NSColor, minimum: Double) -> NSColor {
@@ -60,38 +63,32 @@ enum Accent: Codable, Equatable {
     }
 }
 
-extension NSColor {
-    func resolved(dark: Bool) -> NSColor {
-        var result = self
-        NSAppearance(named: dark ? .darkAqua : .aqua)!.performAsCurrentDrawingAppearance { result = usingColorSpace(.sRGB)! }
-        return result
-    }
-
-}
-
 @MainActor final class HostAccents {
     static let changed = Notification.Name("HostAccents.changed")
-    private let preferences: UserDefaults?
-    private var stored: [String: Accent]
+    private let preferences: UserDefaults
 
-    init(preferences: UserDefaults? = background ? nil : .standard) {
+    init(preferences: UserDefaults) {
         self.preferences = preferences
-        stored = preferences?.data(forKey: "hostAccents").flatMap { try? JSONDecoder().decode([String: Accent].self, from: $0) } ?? [:]
     }
 
-    func accent(for host: Host) -> Accent { stored[host.clipboardKey] ?? (host == .local ? .preset(.blue) : .system) }
+    private var stored: [String: Accent] {
+        get { preferences.data(forKey: "hostAccents").flatMap { try? JSONDecoder().decode([String: Accent].self, from: $0) } ?? [:] }
+        set { preferences.set(try? JSONEncoder().encode(newValue), forKey: "hostAccents") }
+    }
+
+    func accent(for host: Host) -> Accent { known(host) ?? (host == .local ? .preset(.blue) : .system) }
     func known(_ host: Host) -> Accent? { stored[host.clipboardKey] }
 
     var suggestion: Accent {
+        let stored = stored
         var used = stored.values.compactMap { if case .preset(let preset) = $0 { preset } else { nil } }
         if stored["local"] == nil { used.append(.blue) }
-        return .preset(Preset.leastUsed(used))
+        return .preset(Preset.allCases.min { first, second in used.filter { $0 == first }.count < used.filter { $0 == second }.count }!)
     }
 
     func set(_ accent: Accent, for host: Host) {
-        guard stored[host.clipboardKey] != accent else { return }
+        guard known(host) != accent else { return }
         stored[host.clipboardKey] = accent
-        preferences?.set(try? JSONEncoder().encode(stored), forKey: "hostAccents")
         NotificationCenter.default.post(name: Self.changed, object: self, userInfo: ["host": host])
     }
 
@@ -101,7 +98,6 @@ extension NSColor {
     }
 
     func colors(for host: Host, runtime: GhosttyRuntime) -> (text: NSColor, ring: NSColor) {
-        let accent = accent(for: host)
-        return (accent.legible(on: runtime.canvas, minimum: Accent.textContrast), accent.legible(on: runtime.background, minimum: Accent.ringContrast))
+        accent(for: host).colors(runtime: runtime)
     }
 }

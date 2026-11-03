@@ -29,7 +29,9 @@ struct RemoteShortcuts: AppShortcutsProvider {
     let accents: HostAccents
     init(preferences: UserDefaults? = background ? nil : .standard) {
         self.preferences = preferences
-        accents = HostAccents(preferences: preferences)
+        let scratch = UserDefaults(suiteName: "kido-background")!
+        if preferences == nil { scratch.removePersistentDomain(forName: "kido-background") }
+        accents = HostAccents(preferences: preferences ?? scratch)
         recent = preferences?.data(forKey: "recentHosts").flatMap { try? JSONDecoder().decode(RecentHosts.self, from: $0) } ?? RecentHosts()
     }
     func clearRecent() { recent.clear(); saveRecent() }

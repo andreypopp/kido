@@ -149,7 +149,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         defer { board.releaseGlobally() }
         let runtime = try XCTUnwrap(GhosttyRuntime(configFile: file.path, pasteboard: board))
         XCTAssertEqual(runtime.settings.unfocusedShift, 0.03)
-        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: isolatedAccents(), start: false)
         defer { runtime.onConfigChange = {}; owner.close() }
         func reload(_ edit: () throws -> Void) async throws {
             let changed = expectation(description: "config reload")
@@ -274,7 +274,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         let board = NSPasteboard(name: .init("live-theme-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
-        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: isolatedAccents(), start: false)
         defer { runtime.onConfigChange = {}; owner.close() }
         for (hex, appearance) in [("fffaf0", NSAppearance.Name.aqua), ("172029", .darkAqua), ("fffaf0", .aqua)] {
             let changed = expectation(description: "Ghostty config reload \(hex)")
@@ -297,9 +297,9 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         defer { board.releaseGlobally() }
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let host = Kido.Host.remote("seen-\(UUID().uuidString.prefix(8))")
-        let publisher = WindowOwner(host: host, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
-        let peer = WindowOwner(host: host, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
-        let other = WindowOwner(host: .remote("other-\(UUID().uuidString.prefix(8))"), runtime: runtime, accents: HostAccents(preferences: nil), start: false)
+        let publisher = WindowOwner(host: host, runtime: runtime, accents: isolatedAccents(), start: false)
+        let peer = WindowOwner(host: host, runtime: runtime, accents: isolatedAccents(), start: false)
+        let other = WindowOwner(host: .remote("other-\(UUID().uuidString.prefix(8))"), runtime: runtime, accents: isolatedAccents(), start: false)
         defer { [publisher, peer, other].forEach { $0.close() } }
         let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data("""
         {"v":2,"client":{"session":"$0","window":"@1","pane":"%1"},"server_instance":{"started_at":1791000000,"pid":4242},"error":null,"sessions":[{"id":"$0","name":"s","current":true,"nodes":[{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"agent","lifecycle":["Live",["Some_agent",{"name":"claude-code","status":{"since":1791000000,"msg":null,"state":["Idle",{"outcome":{"serial":3,"result":"failure"}}]}}]],"program_status":{"serial":3,"records":[]},"run":null,"started":null,"children":[]}]}]}

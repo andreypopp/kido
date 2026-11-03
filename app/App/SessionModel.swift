@@ -29,7 +29,7 @@ struct SessionModel: Equatable {
         return "\(session) — \(window.name)"
     }
 
-    func navigation(_ snapshot: Snapshot?, previous: Place? = nil) -> SessionModel {
+    func navigation(_ snapshot: Snapshot?) -> SessionModel {
         let projection = sidebarWindows(snapshot, session: session, surviving: Set(windows.map(\.id)))
         var model = self
         model.sessions = arranged(sessions, by: snapshot?.sessions.map(\.id) ?? [], \.id)

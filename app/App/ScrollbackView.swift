@@ -15,6 +15,7 @@ final class ScrollbackView: NSView, @preconcurrency NSTextInputClient, NSMenuIte
     var onFinish: (_ screen: String) -> Void = { _ in }
     var onCommand: (PaneCommand) -> Void = { _ in }
     var onSelect: () -> Void = {}
+    weak var pane: PaneView?
 
     nonisolated static func onMain(_ userdata: UnsafeMutableRawPointer?, _ body: @escaping @MainActor (ScrollbackView) -> Void) {
         guard case .scrollback(let owner) = SurfaceRef.owner(userdata) else { return }
@@ -93,10 +94,8 @@ final class ScrollbackView: NSView, @preconcurrency NSTextInputClient, NSMenuIte
         let selection = ghostty_selection_s(
             top_left: ghostty_point_s(tag: GHOSTTY_POINT_SCREEN, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
             bottom_right: ghostty_point_s(tag: GHOSTTY_POINT_SCREEN, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0), rectangle: false)
-        guard ghostty_surface_read_text(surface, selection, &text), let bytes = text.text else { return "" }
-        defer { ghostty_surface_free_text(surface, &text) }
-        return String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ghostty_surface_read_text(surface, selection, &text), let value = SurfaceInput.decode(surface, &text) else { return "" }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func setMouseShape(_ shape: ghostty_action_mouse_shape_e) {
@@ -123,7 +122,10 @@ final class ScrollbackView: NSView, @preconcurrency NSTextInputClient, NSMenuIte
 
     override var acceptsFirstResponder: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    #if KIDO_VISUAL
+    var visualAcceptsFirstMouse = true
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { visualAcceptsFirstMouse }
+    #endif
 
     override func layout() {
         super.layout()

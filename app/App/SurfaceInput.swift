@@ -170,4 +170,10 @@ enum SurfaceInput {
         default: GHOSTTY_MOUSE_MOMENTUM_NONE
         }
     }
+
+    static func decode(_ surface: ghostty_surface_t, _ text: inout ghostty_text_s) -> String? {
+        guard let bytes = text.text else { return nil }
+        defer { ghostty_surface_free_text(surface, &text) }
+        return String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self)
+    }
 }

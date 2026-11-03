@@ -125,7 +125,7 @@ final class ScrollbackUnitTests: XCTestCase {
         let configFile = scratch + "/kido-app.conf"
         try (config ?? "").write(toFile: configFile, atomically: true, encoding: .utf8)
         let runtime = try XCTUnwrap(GhosttyRuntime(configFile: configFile, pasteboard: board))
-        let owner = WindowOwner(host: .local, runtime: runtime, accents: HostAccents(preferences: nil), start: false)
+        let owner = WindowOwner(host: .local, runtime: runtime, accents: isolatedAccents(), start: false)
         self.owner = owner
         owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
         let server = server!, scratch = scratch
@@ -347,6 +347,18 @@ final class ScrollbackUnitTests: XCTestCase {
         try await wait("the ring is on the overlay's pane") { card.treatment == .edge }
     }
 
+    func testTopMarginClickKeepsTheOverlayFocused() async throws {
+        let pane = try await start(editor: "", history: 200)
+        let window = try XCTUnwrap(pane.superview as? WindowView)
+        let overlay = try await open(pane)
+        owner.window.makeKeyAndOrderFront(nil)
+        XCTAssertTrue(owner.window.firstResponder === overlay)
+        let margin = CGPoint(x: window.bounds.midX, y: 2)
+        XCTAssertTrue(window.hitTest(window.convert(margin, to: window.superview)) === overlay, "the margin above the card belongs to the overlay")
+        try click(window, at: margin)
+        XCTAssertTrue(owner.window.firstResponder === overlay)
+    }
+
     func testMenuItemKeysAndCommandWStayInTheOverlay() async throws {
         let pane = try await start(editor: "", history: 200)
         let entry = try XCTUnwrap(NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items).first { $0.action == #selector(PaneView.openScrollbackItem(_:)) })
@@ -357,7 +369,7 @@ final class ScrollbackUnitTests: XCTestCase {
         let overlay = try await open(pane)
         guard case .open(_, let file) = pane.scrollback else { return XCTFail("not open") }
         XCTAssertFalse(pane.validateMenuItem(entry))
-        XCTAssertNil(PaneView.owner(owner.window.firstResponder))
+        XCTAssertTrue(PaneView.owner(owner.window.firstResponder) === pane)
         pane.openScrollbackItem(nil)
         XCTAssertTrue(pane.scrollbackView === overlay)
         let menu = NSApp.mainMenu
@@ -410,17 +422,13 @@ final class ScrollbackUnitTests: XCTestCase {
     func testOverlayImageLight() async throws { try await overlayImage(dark: false) }
     func testOverlayImageDark() async throws { try await overlayImage(dark: true) }
 
-    private func loneFailure(_ replies: [[Reply]?]) async throws -> (title: String, state: PaneView.Scrollback) {
+    private func loneFailure(_ message: String) async throws -> (title: String, state: PaneView.Scrollback) {
         let board = NSPasteboard(name: .init("ksb-" + UUID().uuidString))
         addTeardownBlock { @MainActor in board.releaseGlobally() }
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 0, onInput: { _ in }))
-        var asked = 0, titles: [String] = []
-        pane.onSend = { _, done in
-            asked += 1
-            let reply = replies[asked - 1]
-            DispatchQueue.main.async { done?(reply) }
-        }
+        var titles: [String] = []
+        pane.onCapture = { _, done in DispatchQueue.main.async { done(.failure(Failure(message: message))) } }
         pane.onNotice = { title, _ in titles.append(title) }
         pane.openScrollbackItem(nil)
         try await wait("the failure is reported") { !titles.isEmpty }
@@ -429,8 +437,8 @@ final class ScrollbackUnitTests: XCTestCase {
     }
 
     func testLostConnectionAndEmptyPaneOpenNothing() async throws {
-        for replies: [[Reply]?] in [[nil], [[.success(["5"])], nil], [[.success(["5"])], [.success(["", ""])]]] {
-            let result = try await loneFailure(replies)
+        for message in ["Kido could not read the pane history.", "The pane has no text to open."] {
+            let result = try await loneFailure(message)
             XCTAssertEqual(result.title, "Kido could not open the scrollback")
             guard case .none = result.state else { return XCTFail("still loading") }
         }

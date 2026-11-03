@@ -94,7 +94,7 @@ final class Sidebar: NSSplitViewController {
     var changed: () -> Void = {}
     var listBackground: NSColor? { didSet { view.needsLayout = true } }
 
-    func updateAppearance(runtime: GhosttyRuntime, colors: (text: NSColor, ring: NSColor) = (Chrome.accent, Chrome.accent)) {
+    func updateAppearance(runtime: GhosttyRuntime, colors: (text: NSColor, ring: NSColor)) {
         titleLabel.textColor = colors.text
         list.accent = colors.text
         focusEdge.color = colors.ring
@@ -170,7 +170,6 @@ final class Sidebar: NSSplitViewController {
         super.viewDidLayout()
         let root = view.window?.contentView?.superview
         if let root, let glass = dockedGlass, !isFloating, !isCollapsed {
-            if focusEdge.superview !== root { root.addSubview(focusEdge, positioned: .above, relativeTo: nil) }
             if dock.superview !== root { root.addSubview(dock, positioned: .above, relativeTo: view.window?.contentView) }
             dock.frame = glass.convert(glass.bounds, to: root)
             glass.isHidden = true

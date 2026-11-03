@@ -53,7 +53,8 @@ import UserNotifications
         }
     }
 
-    static func swatch(_ color: NSColor, side: Int = 128) -> Data {
+    static func swatch(_ color: NSColor) -> Data {
+        let side = 128
         let space = CGColorSpace(name: CGColorSpace.sRGB)!
         let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0, space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
         context.setFillColor(color.usingColorSpace(.sRGB)!.cgColor)

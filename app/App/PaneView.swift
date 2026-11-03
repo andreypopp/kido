@@ -19,12 +19,12 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     func canPerformMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
-        case #selector(promptSelectionItem(_:)): canPrompt()
+        case #selector(promptSelectionItem(_:)): canPrompt() && scrollbackView == nil
         case #selector(copySelectionItem(_:)), #selector(NSText.copy(_:)): hasSelection
         case #selector(NSText.selectAll(_:)), #selector(NSText.paste(_:)): copyMode == nil
         case #selector(openScrollbackItem(_:)): if case .none = scrollback { true } else { false }
-        case #selector(runCommand(_:)), #selector(toggleCopyMode(_:)),
-             #selector(showFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)): true
+        case #selector(runCommand(_:)): true
+        case #selector(toggleCopyMode(_:)), #selector(showFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)): scrollbackView == nil
         default: false
         }
     }
@@ -65,7 +65,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var onImageFreeze: (Int) -> Void = { _ in }
     var onCopyCheck: (@escaping @MainActor @Sendable (Bool) -> Void) -> Void = { $0(true) }
     var onChromeChange: () -> Void = {}
-    var onSend: ([Command], (@MainActor @Sendable ([Reply]?) -> Void)?) -> Void = { _, done in done?(nil) }
+    var onCapture: (Int, @escaping @MainActor @Sendable (Result<(text: String, capped: Bool), Failure>) -> Void) -> Void = { _, done in done(.failure(Failure(message: "Kido could not read the pane history."))) }
     var onNotice: (String, String) -> Void = { _, _ in }
     let scroller = PaneScroller()
     var find: PaneFind? { didSet { needsLayout = true; onChromeChange() } }
@@ -223,7 +223,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         var view = responder as? NSView
         while let current = view {
             if let pane = current as? PaneView { return pane }
-            view = (current as? PaneFind)?.pane ?? current.superview
+            view = (current as? PaneFind)?.pane ?? (current as? ScrollbackView)?.pane ?? current.superview
         }
         return nil
     }
@@ -997,9 +997,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             guard let self, let window, event.window === window else { return event }
             switch event.type {
             case .leftMouseDown:
-                if acceptsKeyInput, window.attachedSheet == nil, !(NSApp.isActive && window.isKeyWindow), window.firstResponder !== self,
-                   window.contentView?.superview?.hitTest(event.locationInWindow) === self {
-                    window.makeFirstResponder(self)
+                let target = focusTarget
+                if acceptsKeyInput, window.attachedSheet == nil, !(NSApp.isActive && window.isKeyWindow), window.firstResponder !== target,
+                   window.contentView?.superview?.hitTest(event.locationInWindow) === target {
+                    window.makeFirstResponder(target)
                     onSelect()
                 }
                 return event
@@ -1286,21 +1287,21 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         let token = UUID()
         scrollback = .loading(token)
         let login = Task { await ScrollbackEditor.login() }
-        onSend([ScrollbackCapture.historyRequest(pane)]) { [weak self] replies in
+        onCapture(Self.scrollbackRows) { [weak self] result in
             guard let self, isLoading(token) else { return }
-            guard let history = ScrollbackCapture.historySize(replies?.first) else { return failScrollback("Kido could not read the pane history.") }
-            onSend([ScrollbackCapture.capture(pane, history: history, limit: Self.scrollbackRows)]) { [weak self] replies in
-                guard let self, isLoading(token) else { return }
-                guard let text = ScrollbackCapture.text(replies?.first) else { return failScrollback("The pane has no text to open.") }
-                let pane = pane, capped = history > Self.scrollbackRows
-                Task { [weak self] in
-                    let environment = await login.value
-                    let file = await Task.detached(priority: .utility) { try? ScrollbackFile.write(text, pane: pane) }.value
-                    guard let self, isLoading(token) else { return file?.remove() ?? () }
-                    guard let file else { return failScrollback("Kido could not write the scrollback file.") }
-                    showScrollback(file, environment)
-                    if capped { onNotice("Showing the newest \(Self.scrollbackRows) lines", "Older lines of this pane are not in the file.") }
-                }
+            let captured: (text: String, capped: Bool)
+            switch result {
+            case .failure(let failure): return failScrollback(failure.message)
+            case .success(let value): captured = value
+            }
+            let pane = pane
+            Task { [weak self] in
+                let environment = await login.value
+                let file = await Task.detached(priority: .utility) { try? ScrollbackFile.write(captured.text, pane: pane) }.value
+                guard let self, isLoading(token) else { return file?.remove() ?? () }
+                guard let file else { return failScrollback("Kido could not write the scrollback file.") }
+                showScrollback(file, environment)
+                if captured.capped { onNotice("Showing the newest \(Self.scrollbackRows) lines", "Older lines of this pane are not in the file.") }
             }
         }
     }
@@ -1326,6 +1327,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         view.onFinish = { [weak self] screen in self?.closeScrollback(screen: screen) }
         view.onCommand = { [weak self] in self?.onCommand($0) }
         view.onSelect = { [weak self] in self?.onSelect() }
+        view.pane = self
         view.frame = frame
         scrollback = .open(view, file)
         window?.makeFirstResponder(view)
@@ -1719,6 +1721,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     func syncFocus() {
         setSurfaceFocus(window?.firstResponder === self && (window as? OwnerWindow)?.isInputWindow != false)
+        scrollbackView?.syncFocus()
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -1869,16 +1872,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         return (Int(moved.x), Int(moved.y))
     }
 
-    private func decodedText(_ text: inout ghostty_text_s) -> String? {
-        guard let bytes = text.text else { return nil }
-        defer { ghostty_surface_free_text(surface, &text) }
-        return String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self)
-    }
-
     private func cellText(_ cell: (x: Int, y: Int)) -> String? {
         var text = ghostty_text_s()
         let selection = ghostty_selection_s(top_left: point(cell), bottom_right: point(cell), rectangle: false)
-        guard ghostty_surface_read_text(surface, selection, &text), let value = decodedText(&text) else { return nil }
+        guard ghostty_surface_read_text(surface, selection, &text), let value = SurfaceInput.decode(surface, &text) else { return nil }
         return value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : value
     }
 
@@ -1904,7 +1901,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     func readSelection() -> String {
         var text = ghostty_text_s()
         guard ghostty_surface_read_selection(surface, &text) else { return "" }
-        return decodedText(&text) ?? ""
+        return SurfaceInput.decode(surface, &text) ?? ""
     }
 
     private func selectionBounds() -> ((x: Int, y: Int), (x: Int, y: Int))? {

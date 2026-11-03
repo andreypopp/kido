@@ -32,7 +32,7 @@ public struct PaneLayout: Equatable {
             && a.cell == b.cell && a.bottom == b.bottom && a.top == b.top
     }
 
-    public init(root: Node, shape: Node? = nil, bounds: CGRect, cell: CGSize, pixel: CGFloat, spacing: CGFloat) {
+    public init(root: Node, shape: Node, bounds: CGRect, cell: CGSize, pixel: CGFloat, spacing: CGFloat) {
         self.cell = cell
         before = CGSize(width: floor((cell.width / pixel - 1) / 2) * pixel,
                         height: floor((cell.height / pixel - 1) / 2) * pixel)
@@ -45,12 +45,10 @@ public struct PaneLayout: Equatable {
         let inner = CGRect(x: bounds.minX + spacing + pad.width, y: top + spacing + pad.height,
                            width: max(0, bounds.width - 2 * (spacing + pad.width)),
                            height: max(0, bounds.maxY - top - 2 * (spacing + pad.height)))
-        let shape = shape ?? root
         client = CGSize(width: max(1, floor((inner.width - CGFloat(shape.across(.leftRight)) * extra.width) / cell.width)),
                         height: max(1, floor((inner.height - CGFloat(shape.across(.topBottom)) * extra.height) / cell.height)))
-        let area = inner
-        bottom = area.maxY
-        origin = CGPoint(x: area.minX - CGFloat(g.x) * cell.width, y: bottom - CGFloat(g.y + g.height) * cell.height)
+        bottom = inner.maxY
+        origin = CGPoint(x: inner.minX - CGFloat(g.x) * cell.width, y: bottom - CGFloat(g.y + g.height) * cell.height)
         var cards: [Geometry: Card] = [:], gutters: [Geometry: CGRect] = [:]
         func place(_ node: Node, _ area: CGRect) {
             switch node {
@@ -85,7 +83,7 @@ public struct PaneLayout: Equatable {
                 }
             }
         }
-        place(root, area)
+        place(root, inner)
         self.cards = cards
         self.gutters = gutters
     }

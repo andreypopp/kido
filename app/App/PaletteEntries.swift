@@ -170,7 +170,7 @@ extension AppDelegate {
                      tint: routes.accents.known(.remote(host)).flatMap(swatch), operation: .connectTyped(host))
     }
 
-    func swatch(_ accent: Accent) -> NSColor? { runtime.map { accent.legible(on: $0.background, minimum: Accent.ringContrast) } }
+    func swatch(_ accent: Accent) -> NSColor? { runtime.map { accent.colors(runtime: $0).ring } }
 
     func effectiveAccent(_ text: String, chosen: Accent?) -> Accent {
         chosen ?? (try? Host(text.trimmingCharacters(in: .whitespaces))).flatMap(routes.accents.known) ?? routes.accents.suggestion

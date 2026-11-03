@@ -61,7 +61,7 @@ final class WindowView: NSView {
         super.init(frame: .zero)
         autoresizingMask = [.width, .height]
         wantsLayer = true
-        layer?.backgroundColor = runtime.background.cgColor
+        layer?.backgroundColor = runtime.canvas.cgColor
     }
 
     required init?(coder: NSCoder) {
@@ -228,7 +228,6 @@ final class WindowView: NSView {
         let cell = session?.cell ?? views.values.lazy.map(\.cell).first { $0.width > 0 && $0.height > 0 } ?? .zero
         guard cell.width > 0, cell.height > 0 else { return }
         spacing = runtime.settings.paneSpacing
-        layer?.backgroundColor = runtime.canvas.cgColor
         let placement = PaneLayout(root: shown.visible.root, shape: shown.layout.root, bounds: bounds, cell: cell, pixel: pixel, spacing: spacing)
         validateFrames(placement)
         let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
@@ -803,7 +802,7 @@ final class WindowView: NSView {
                 .map { ($0.id, placement.tiled($0.geometry).chrome) }
                 .filter { $0.1.minX <= local.x && local.x < $0.1.maxX }
                 .min { $0.1.minY < $1.1.minY }
-            return panes.first { $0.pane == below?.0 }
+            return panes.first { $0.pane == below?.0 }?.focusTarget
         }
         if let placement, shown?.visible.root.dividers.contains(where: { placement.line($0).contains(local) }) == true { return self }
         return super.hitTest(point)

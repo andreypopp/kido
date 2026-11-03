@@ -308,7 +308,7 @@ or keep the bounded restore. Status: accepted.
 ## Top floats leave a sub-cell gap
 
 A top float can leave background between its whole-cell frame and the
-titlebar separator; floats do not use tiled render insets.
+top edge of the terminal area.
 See [Panes](design-app.md#panes).
 This is cosmetic and persists at that geometry. Extending float chrome or
 changing its coordinate contract is small-to-medium work. Status: accepted.
