@@ -112,6 +112,7 @@ fn message(generator: &mut SchemaGenerator, content: Content) -> Value {
         Content::Binary => {
             json!({"contentMediaType": "application/octet-stream", "description": BINARY_STREAM})
         }
+        Content::Pixels(schema) => schema(generator).to_value(),
     }
 }
 
@@ -188,6 +189,18 @@ fn operation(generator: &mut SchemaGenerator, route: &RouteInfo) -> Value {
                         json!({
                             "description": Status::Ok.reason(),
                             "content": {"text/plain": {"schema": {"type": "string"}}},
+                        }),
+                    );
+                }
+                Some(Content::Pixels(schema)) => {
+                    responses.insert(
+                        "200".to_owned(),
+                        json!({
+                            "description": Status::Ok.reason(),
+                            "content": {
+                                "application/octet-stream": {"schema": {"type": "string", "contentMediaType": "application/octet-stream"}},
+                                "application/json": {"schema": schema(generator).to_value()},
+                            },
                         }),
                     );
                 }

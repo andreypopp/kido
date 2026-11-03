@@ -898,6 +898,30 @@ The server and terminal client part depends on K1 (the callback
 plumbing); the app part on K5. Decided 2026-11-02: animation is done
 properly from the start, with no fallback (4.5).
 
+**The server and terminal client part is built** (2026-11-03): the
+image, clipboard and search behaviour is in
+rfc/kido-server/protocol.md sections 5, 9, 11 and 14. The protocol
+version stays 1.0 (the user's decision), so the "protocol minor"
+below does not apply. Where the build differs from the scope below
+(the coordinator mints each object name and records it before
+`ko-pane` creates the object; the leak record is
+`ko_server/src/shm.rs`), protocol.md is the reference. Open:
+`images=all` is still refused, and
+Kido.app's part (below) waits for K5.
+
+**Follow-up: a Ghostty fork change for clipboard reads** (on
+`10d8dd8a6`, after K6s merges). The pinned `GhosttyClipboardRead`
+does not name the read's protocol. An unnamed OSC 5522 read of the
+one MIME type `text/plain` has the same fields as an OSC 52 read, so
+`ko-pane` answers it as OSC 52, and that program gets a reply in the
+wrong format (protocol.md 9). The preferred change is a reply handle
+that stays valid after the callback returns, with the OSC 52
+terminator in the request. Then `ko-pane` answers each protocol
+through the terminal's own reply, does not drop the terminal's empty
+reply, and does not write the OSC 52 bytes itself. The minimum change
+is a protocol field (OSC 52 or kitty) in the request, so that
+`ko-pane` can refuse OSC 5522 reads.
+
 **First task: the Ghostty fork** (built; one fork commit on
 `1972e7a1a`). The header is `include/ghostty/vt/kitty_graphics.h`
 (`ghostty_kitty_graphics_frame_get`, `_frame_attach`,

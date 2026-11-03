@@ -2,22 +2,26 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::{
-    self, Dead, FromPane, History, Init, Kind, Prompt, Record, Req, Request, ScreenFormat,
-    ScreenRows, Size,
+    self, ContentsBuf, Dead, FromPane, History, Init, Kind, Mimes, Prompt, Record, Req, Request,
+    ScreenFormat, ScreenRows, Size,
 };
 use ko_pane_wire::ring::{DEAD_LEN, Marker, RESIZE_LEN, RecordKind, SLICE_HEADER, Slice, Writer};
 use ko_sys::clock::Mono;
 use ko_sys::event::Interest;
 use ko_sys::fd::Queue;
+use ko_sys::mapping::Name;
 use ko_sys::pid::Exit;
 use ko_sys::pty::{self, Program, Winsize};
 use ko_sys::signal::{Signal, Signals};
 use ko_vt::compress::{Compress, Tick};
 use ko_vt::{Format, Report, Terminal};
 
+use crate::clipboard::Reads;
 use crate::foreground::Watch;
+use crate::images::{Answer, Objects};
 use crate::io::{Fault, Io, Out, Stop};
 use crate::run::Failure;
+use crate::search::Searching;
 
 const SCREEN_CHUNK: usize = 65536;
 const MAX_READS: u8 = 16;
@@ -55,6 +59,9 @@ struct Live {
     alternate: bool,
     watch: Watch,
     clear_due: bool,
+    objects: Objects,
+    clipboard: Reads,
+    searches: Vec<Searching>,
 }
 
 #[derive(Debug)]
@@ -66,8 +73,8 @@ pub struct Pane {
     scratch: Vec<u8>,
 }
 
-fn frame_of(report: &Report, at: Mono) -> FromPane<'_> {
-    match report {
+fn frame_of(report: &Report, at: Mono) -> Option<FromPane<'_>> {
+    Some(match report {
         Report::Prompt {
             step,
             exit,
@@ -98,6 +105,32 @@ fn frame_of(report: &Report, at: Mono) -> FromPane<'_> {
         Report::Bell => FromPane::Bell,
         Report::Notify { title, body } => FromPane::Notify { title, body },
         Report::Progress(report) => FromPane::Progress(*report),
+        Report::ClipboardWrite { .. } | Report::ClipboardRead { .. } => return None,
+    })
+}
+
+fn clipboard_event(report: &Report, clipboard: &mut Reads, out: &mut Out) {
+    match report {
+        Report::ClipboardWrite { location, contents } => {
+            let pairs = contents
+                .iter()
+                .map(|(mime, data)| (mime.as_slice(), data.as_slice()));
+            if let Ok(packed) = ContentsBuf::new(pairs) {
+                out.event(&FromPane::ClipboardWrite {
+                    location: *location,
+                    contents: packed.view(),
+                });
+            }
+        }
+        Report::ClipboardRead { location } => {
+            let req = clipboard.open(*location);
+            out.event(&FromPane::ClipboardRead {
+                req,
+                location: *location,
+                mimes: Mimes::TEXT,
+            });
+        }
+        _ => {}
     }
 }
 
@@ -300,6 +333,26 @@ fn simple(live: &mut Option<Live>, out: &mut Out, request: Request<'_>) -> Resul
             live.clear_due = true;
             live.clear_history(out);
         }
+        Request::Image { req, key, name } => {
+            let answer = std::str::from_utf8(name)
+                .ok()
+                .and_then(Name::new)
+                .and_then(|name| live.objects.answer(&live.vt, key, &name));
+            out.frame(&FromPane::Image {
+                req,
+                object: answer.as_ref().map(Answer::object),
+            });
+        }
+        Request::ClipboardAnswer { req, contents } => {
+            if let Some(bytes) = live.clipboard.answer(req, contents) {
+                live.push(&bytes);
+            }
+        }
+        Request::Search { req, needle } => match Searching::start(&mut live.vt, req, needle) {
+            Some(search) => live.searches.push(search),
+            None => out.frame(&FromPane::SearchDone(req)),
+        },
+        Request::SearchCancel(req) => live.searches.retain(|search| !search.req.same(req)),
         Request::Exit => out.stopping = true,
         Request::Init(_) | Request::Resize(_) | Request::Snapshot { .. } => {
             return Err(Fault::Invalid);
@@ -403,6 +456,9 @@ impl Pane {
             alternate: false,
             watch,
             clear_due: false,
+            objects: Objects::default(),
+            clipboard: Reads::default(),
+            searches: Vec::new(),
         });
         Ok(())
     }
@@ -620,6 +676,8 @@ impl Pane {
             process: Some(process),
             alternate,
             watch,
+            objects,
+            clipboard,
             ..
         }) = &mut self.live
         else {
@@ -672,7 +730,13 @@ impl Pane {
         let mut event = false;
         for report in vt.reports().drain(..) {
             event |= matches!(report, Report::Prompt { .. });
-            out.event(&frame_of(&report, at));
+            match frame_of(&report, at) {
+                Some(frame) => out.event(&frame),
+                None => clipboard_event(&report, clipboard, out),
+            }
+        }
+        for name in objects.retire(vt) {
+            out.event(&FromPane::ImageGone(name.as_str().as_bytes()));
         }
         collect(vt, pty_input);
         out.publish(RecordKind::Bytes, used);
@@ -699,6 +763,23 @@ impl Pane {
         if let Some(live) = &mut self.live {
             live.clear_history(&mut self.io.out);
         }
+    }
+
+    pub(crate) fn search_step(&mut self) {
+        let Some(Live { vt, searches, .. }) = &mut self.live else {
+            return;
+        };
+        if self.io.out.output.is_empty() {
+            searches.retain_mut(|search| !search.step(vt, &mut self.io.out));
+        }
+    }
+
+    pub(crate) fn searching(&self) -> bool {
+        self.io.out.output.is_empty()
+            && self
+                .live
+                .as_ref()
+                .is_some_and(|live| !live.searches.is_empty())
     }
 
     pub(crate) fn dead(&mut self) -> Result<(), Stop> {

@@ -4,7 +4,9 @@ use ko_pane_wire::frame::Size;
 
 use crate::ids::{ClientId, PaneId, SessionId, WindowId};
 use crate::layout::nearest;
-use crate::protocol::{ClientKind, ClientRequest, Direction, Layout, Over, Selection, Switch};
+use crate::protocol::{
+    ClientKind, ClientRequest, ClipboardContent, Direction, Layout, Over, Selection, Switch,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Current {
@@ -39,7 +41,7 @@ pub(crate) struct Client {
     last_windows: BTreeMap<SessionId, WindowId>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Change {
     Hello(Selection),
     Select(Selection),
@@ -47,6 +49,10 @@ pub(crate) enum Change {
     Claim,
     Resize,
     Nothing,
+    Answer {
+        id: u64,
+        contents: Option<Vec<ClipboardContent>>,
+    },
 }
 
 pub(crate) fn claims<'a>(
@@ -111,6 +117,9 @@ impl Client {
                 } else {
                     Change::Nothing
                 })
+            }
+            (Some(_), ClientRequest::ClipboardAnswer { id, contents }) => {
+                Ok(Change::Answer { id, contents })
             }
             (Some(_), ClientRequest::Hello(_)) => Err("hello already received"),
         }

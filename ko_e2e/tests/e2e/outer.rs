@@ -12,7 +12,7 @@ use ko_sys::pid::Pid;
 use ko_sys::pty::{self, Program, Winsize};
 use ko_sys::signal::Signal;
 use ko_vt::render::{Cell, Frame};
-use ko_vt::{Format, Terminal};
+use ko_vt::{Format, Report, Terminal};
 
 use crate::harness::{DEADLINE, Dir, quote, test_env, text_of};
 
@@ -51,6 +51,7 @@ struct Shown {
 struct Screen {
     terminal: Terminal,
     raw: Vec<u8>,
+    clipboard: Vec<u8>,
     rows: u16,
     shown: Shown,
     covered: usize,
@@ -179,7 +180,22 @@ fn pump(shared: &Shared, master: &OwnedFd, keys: Keys) {
                         screen.terminal.write(&input);
                     }
                 }
-                std::mem::take(screen.terminal.replies())
+                let mut replies = std::mem::take(screen.terminal.replies());
+                for report in std::mem::take(screen.terminal.reports()) {
+                    match report {
+                        Report::ClipboardRead { location } => {
+                            let answer = location.osc52(&screen.clipboard);
+                            replies.extend_from_slice(answer.as_bytes());
+                        }
+                        Report::ClipboardWrite { contents, .. } => {
+                            if let Some((_, data)) = contents.into_iter().next() {
+                                screen.clipboard = data;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                replies
             };
             if write_all(master, &replies).is_err() {
                 return;
@@ -221,6 +237,7 @@ impl Outer {
         let mut screen = Screen {
             terminal,
             raw: Vec::new(),
+            clipboard: Vec::new(),
             rows: 30,
             shown: Shown {
                 text: String::new(),
@@ -280,6 +297,14 @@ impl Outer {
 
     pub(crate) fn output(&self) -> Vec<u8> {
         self.lock().raw.clone()
+    }
+
+    pub(crate) fn clipboard(&self) -> Vec<u8> {
+        self.lock().clipboard.clone()
+    }
+
+    pub(crate) fn set_clipboard(&self, text: &[u8]) {
+        self.lock().clipboard = text.to_vec();
     }
 
     pub(crate) fn screen(&self) -> String {

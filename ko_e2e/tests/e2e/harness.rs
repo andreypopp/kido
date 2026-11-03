@@ -315,23 +315,7 @@ pub(crate) fn run_program(
     }
 }
 
-pub(crate) fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let word = chunk.iter().enumerate().fold(0u32, |word, (at, byte)| {
-            word | u32::from(*byte) << (16 - 8 * at)
-        });
-        for at in 0..4 {
-            if at <= chunk.len() {
-                out.push(char::from(ALPHABET[(word >> (18 - 6 * at) & 63) as usize]));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
+pub(crate) use ko_pane_wire::base64::encode as base64;
 
 pub(crate) fn sh(command: &str) -> Value {
     json!({"command": {"type": "argv", "argv": ["/bin/sh", "-c", command]}, "cwd": "/tmp"})
@@ -615,8 +599,25 @@ pub(crate) fn decode(data: &[u8], full: bool) -> Decoded {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct Head {
+    pub(crate) status: u16,
+    pub(crate) headers: Vec<(String, String)>,
+    pub(crate) framing: Framing,
+    pub(crate) size: usize,
+}
+
+impl Head {
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(found, _)| found.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
-enum Framing {
+pub(crate) enum Framing {
     Length(usize),
     Chunked,
     Close,
@@ -744,6 +745,14 @@ impl Server {
 
     pub(crate) fn restart(&mut self, env: &[(&str, &str)]) {
         self.stop();
+        self.start_again(env);
+    }
+
+    pub(crate) fn start_again(&mut self, env: &[(&str, &str)]) {
+        assert!(
+            self.child.wait(Duration::from_secs(3)).is_some(),
+            "the old server is still running"
+        );
         self.child = spawn_server(&self.dir, &self.log, Path::new("/bin/sh"), env, &[]);
         self.wait_listening();
     }
@@ -770,6 +779,67 @@ impl Server {
         headers
     }
 
+    pub(crate) fn write_request(
+        &self,
+        stream: &mut Steady,
+        method: &str,
+        path: &str,
+        headers: &Headers,
+        body: &[u8],
+    ) {
+        let mut head = format!("{method} {path} HTTP/1.1\r\nHost: ko\r\n");
+        for (name, value) in headers {
+            head.push_str(&format!("{name}: {value}\r\n"));
+        }
+        head.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+        stream.write_all(head.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+    }
+
+    // Reads up to the end of a response head. The bytes of the body that came with it stay in
+    // `buffer` after the head's length.
+    pub(crate) fn read_head(&self, stream: &mut Steady, buffer: &mut Vec<u8>) -> Head {
+        loop {
+            let mut chunk = [0u8; 65536];
+            let count = stream
+                .read(&mut chunk)
+                .unwrap_or_else(|error| panic!("{error} ({})", self.log()));
+            assert!(count > 0, "closed ({})", self.log());
+            buffer.extend_from_slice(&chunk[..count]);
+            let mut slots = [httparse::EMPTY_HEADER; 64];
+            let mut response = httparse::Response::new(&mut slots);
+            if let httparse::Status::Complete(size) = response.parse(buffer).unwrap() {
+                let headers: Vec<(String, String)> = response
+                    .headers
+                    .iter()
+                    .map(|header| {
+                        (
+                            header.name.to_owned(),
+                            String::from_utf8_lossy(header.value).into_owned(),
+                        )
+                    })
+                    .collect();
+                let header = |name: &str| {
+                    headers
+                        .iter()
+                        .find(|(found, _)| found.eq_ignore_ascii_case(name))
+                        .map(|(_, value)| value.clone())
+                };
+                let framing = match (header("content-length"), header("transfer-encoding")) {
+                    (_, Some(coding)) if coding.eq_ignore_ascii_case("chunked") => Framing::Chunked,
+                    (Some(length), _) => Framing::Length(length.parse().unwrap()),
+                    _ => Framing::Close,
+                };
+                return Head {
+                    status: response.code.unwrap(),
+                    headers,
+                    framing,
+                    size,
+                };
+            }
+        }
+    }
+
     pub(crate) fn exchange(
         &self,
         method: &str,
@@ -780,40 +850,14 @@ impl Server {
         let mut stream = self.dial().unwrap();
         let deadline = Instant::now() + DEADLINE;
         within(&stream, deadline);
-        let mut head = format!("{method} {path} HTTP/1.1\r\nHost: ko\r\n");
-        for (name, value) in headers {
-            head.push_str(&format!("{name}: {value}\r\n"));
-        }
-        head.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
-        stream.write_all(head.as_bytes()).unwrap();
-        stream.write_all(body).unwrap();
+        self.write_request(&mut stream, method, path, headers, body);
         let mut buffer = Vec::new();
-        let (status, framing, head_len) = loop {
-            let mut chunk = [0u8; 65536];
-            read_within(&stream, deadline);
-            let count = stream
-                .read(&mut chunk)
-                .unwrap_or_else(|error| panic!("{method} {path}: {error} ({})", self.log()));
-            assert!(count > 0, "{method} {path}: closed ({})", self.log());
-            buffer.extend_from_slice(&chunk[..count]);
-            let mut slots = [httparse::EMPTY_HEADER; 64];
-            let mut response = httparse::Response::new(&mut slots);
-            if let httparse::Status::Complete(head_len) = response.parse(&buffer).unwrap() {
-                let header = |name: &str| {
-                    response
-                        .headers
-                        .iter()
-                        .find(|header| header.name.eq_ignore_ascii_case(name))
-                        .map(|header| std::str::from_utf8(header.value).unwrap().to_owned())
-                };
-                let framing = match (header("content-length"), header("transfer-encoding")) {
-                    (_, Some(coding)) if coding.eq_ignore_ascii_case("chunked") => Framing::Chunked,
-                    (Some(length), _) => Framing::Length(length.parse().unwrap()),
-                    _ => Framing::Close,
-                };
-                break (response.code.unwrap(), framing, head_len);
-            }
-        };
+        let Head {
+            status,
+            framing,
+            size: head_len,
+            ..
+        } = self.read_head(&mut stream, &mut buffer);
         let mut body = buffer.split_off(head_len);
         loop {
             let done = match framing {

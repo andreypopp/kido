@@ -6,8 +6,8 @@ use ko_pane_wire::frame::Limits;
 use ko_server::api::Route;
 use ko_server::ids::{ClientId, Instance, PaneId, RunId, SessionId, VarName, WindowId};
 use ko_server::protocol::{
-    self, ClientEvent, ClientRequest, Hello, Info, Listing, Row, RunEvent, Selection, Show,
-    Snapshot,
+    self, ClientEvent, ClientRequest, ClipboardContent, ClipboardLocation, Hello, Info, Listing,
+    Row, RunEvent, Selection, Show, Snapshot,
 };
 use ko_server::runs::Parent;
 use ko_sys::event::Wake;
@@ -26,6 +26,17 @@ pub enum Notice {
         pane: PaneId,
         title: Option<String>,
         body: String,
+    },
+    ClipboardWrite {
+        pane: PaneId,
+        location: ClipboardLocation,
+        contents: Vec<ClipboardContent>,
+    },
+    ClipboardRead {
+        pane: PaneId,
+        id: u64,
+        location: ClipboardLocation,
+        mimes: Vec<String>,
     },
 }
 
@@ -400,6 +411,30 @@ impl Model {
             ClientEvent::Bell { pane } => return Applied::Notice(Notice::Bell(pane)),
             ClientEvent::Notify { pane, title, body } => {
                 return Applied::Notice(Notice::Notify { pane, title, body });
+            }
+            ClientEvent::ClipboardWrite {
+                pane,
+                location,
+                contents,
+            } => {
+                return Applied::Notice(Notice::ClipboardWrite {
+                    pane,
+                    location,
+                    contents,
+                });
+            }
+            ClientEvent::ClipboardRead {
+                pane,
+                id,
+                location,
+                mimes,
+            } => {
+                return Applied::Notice(Notice::ClipboardRead {
+                    pane,
+                    id,
+                    location,
+                    mimes,
+                });
             }
             ClientEvent::Welcome(_) | ClientEvent::Pwd(_) => {}
         }

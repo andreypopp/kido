@@ -8,13 +8,14 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use ko_pane_wire::frame::{
-    self, FromPane, History, Init, Key, MAX_FRAME_BYTES, Malformed, Mouse, Oversize, Req,
-    ScreenFormat, ScreenRows, Size, ToPane,
+    self, ContentsBuf, FromPane, History, ImageKey, Init, Key, MAX_FRAME_BYTES, Malformed, Mouse,
+    Oversize, Req, ScreenFormat, ScreenRows, Size, ToPane,
 };
 use ko_pane_wire::ring::Pos;
 use ko_sys::clock::Mono;
 use ko_sys::event::{Interest, Poll, Read, Reads, Ready, Token};
 use ko_sys::fd::Queue;
+use ko_sys::mapping::Name;
 use ko_sys::pid::{Exit, Group, Pid, Verdict, Waited};
 use ko_sys::signal::Signal;
 
@@ -23,7 +24,8 @@ use crate::delivery::{self, Delivery, Done, Handle, Stamps};
 use crate::ids::PaneId;
 use crate::program_status::Report;
 use crate::protocol::{
-    Foreground, ProgramKind, ProgramRecord, ProgramState, Progress, ProgressState,
+    ClipboardContent, ClipboardLocation, Foreground, ImageShm, ProgramKind, ProgramRecord,
+    ProgramState, Progress, ProgressState, SearchMatch, Text,
 };
 use crate::telemetry::Prompt;
 
@@ -48,6 +50,12 @@ pub(crate) enum Cause {
 pub(crate) struct Death {
     pub(crate) at: Mono,
     pub(crate) cause: Cause,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Object {
+    pub(crate) name: Name,
+    pub(crate) shm: ImageShm,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -81,6 +89,27 @@ pub(crate) enum Event {
         body: String,
     },
     Progress(Option<Progress>),
+    Image {
+        req: Req,
+        object: Option<Object>,
+    },
+    ImageGone(Name),
+    ClipboardWrite {
+        location: ClipboardLocation,
+        contents: Vec<ClipboardContent>,
+    },
+    ClipboardRead {
+        req: Req,
+        location: ClipboardLocation,
+        mimes: Vec<String>,
+    },
+    Matches {
+        req: Req,
+        matches: Vec<SearchMatch>,
+    },
+    SearchDone {
+        req: Req,
+    },
 }
 
 fn report_of(record: &frame::Record<'_>) -> Report {
@@ -212,6 +241,8 @@ enum Claim {
 enum Reply {
     Screen,
     Paste,
+    Image,
+    Search,
 }
 
 #[derive(Debug)]
@@ -532,6 +563,49 @@ impl PaneProc {
         Some(req)
     }
 
+    pub(crate) fn image(&mut self, key: ImageKey, name: &Name, io: &mut Io<'_>) -> Option<Req> {
+        let req = self.mint().filter(|_| self.is_open())?;
+        self.pending.insert(req, Reply::Image);
+        let name = name.as_str().as_bytes();
+        let _ = self.send(&ToPane::Image { req, key, name }, io);
+        Some(req)
+    }
+
+    pub(crate) fn search(&mut self, needle: &[u8], io: &mut Io<'_>) -> Option<Req> {
+        let req = self.mint().filter(|_| self.is_open())?;
+        self.pending.insert(req, Reply::Search);
+        if self.send(&ToPane::Search { req, needle }, io).is_err() {
+            self.pending.remove(&req);
+            return None;
+        }
+        Some(req)
+    }
+
+    pub(crate) fn search_cancel(&mut self, req: Req, io: &mut Io<'_>) {
+        if self.pending.get(&req) == Some(&Reply::Search) {
+            self.pending.remove(&req);
+            let _ = self.send(&ToPane::SearchCancel(req), io);
+        }
+    }
+
+    pub(crate) fn clipboard_answer(
+        &mut self,
+        req: Req,
+        contents: Option<&[ClipboardContent]>,
+        io: &mut Io<'_>,
+    ) {
+        let packed = contents.and_then(|contents| {
+            ContentsBuf::new(
+                contents
+                    .iter()
+                    .map(|content| (content.mime.as_bytes(), content.data.0.as_slice())),
+            )
+            .ok()
+        });
+        let contents = packed.as_ref().map(ContentsBuf::view);
+        let _ = self.send(&ToPane::ClipboardAnswer { req, contents }, io);
+    }
+
     pub(crate) fn input(
         &mut self,
         input: Input<'_>,
@@ -740,6 +814,74 @@ impl PaneProc {
                 title: (!title.is_empty()).then(|| lossy(title)),
                 body: lossy(body),
             }),
+            FromPane::Image { req, object } => {
+                if self.pending.remove(&req) == Some(Reply::Image) {
+                    let object = object.and_then(|object| {
+                        let name = std::str::from_utf8(object.name).ok().and_then(Name::new)?;
+                        Some(Object {
+                            shm: ImageShm {
+                                name: name.as_str().to_owned(),
+                                length: object.len,
+                                format: object.format.into(),
+                                width: object.width,
+                                height: object.height,
+                                generation: object.generation,
+                                gap_ms: object.gap_ms,
+                                frames: object.frames,
+                            },
+                            name,
+                        })
+                    });
+                    io.events.push(Event::Image { req, object });
+                }
+            }
+            FromPane::ImageGone(name) => {
+                if let Some(name) = std::str::from_utf8(name).ok().and_then(Name::new) {
+                    io.events.push(Event::ImageGone(name));
+                }
+            }
+            FromPane::ClipboardWrite { location, contents } => {
+                io.events.push(Event::ClipboardWrite {
+                    location: location.into(),
+                    contents: contents
+                        .pairs()
+                        .map(|(mime, data)| ClipboardContent {
+                            mime: lossy(mime),
+                            data: Text(data.to_vec()),
+                        })
+                        .collect(),
+                });
+            }
+            FromPane::ClipboardRead {
+                req,
+                location,
+                mimes,
+            } => io.events.push(Event::ClipboardRead {
+                req,
+                location: location.into(),
+                mimes: mimes.iter().map(lossy).collect(),
+            }),
+            FromPane::Matches { req, matches } => {
+                if self.pending.get(&req) == Some(&Reply::Search) {
+                    io.events.push(Event::Matches {
+                        req,
+                        matches: matches
+                            .iter()
+                            .map(|found| SearchMatch {
+                                row: found.start.row,
+                                col: found.start.col,
+                                end_row: found.end.row,
+                                end_col: found.end.col,
+                            })
+                            .collect(),
+                    });
+                }
+            }
+            FromPane::SearchDone(req) => {
+                if self.pending.remove(&req) == Some(Reply::Search) {
+                    io.events.push(Event::SearchDone { req });
+                }
+            }
             FromPane::Progress(report) => {
                 io.events
                     .push(Event::Progress(report.map(|report| Progress {
@@ -1124,6 +1266,92 @@ mod tests {
             .unwrap();
         let ended = fake.with(|proc, io| proc.input(Input::Focus(true), io));
         assert_eq!(ended, Err(Refusal::Ended));
+    }
+
+    #[test]
+    fn a_search_streams_matches_and_a_cancelled_one_ignores_the_late_ones() {
+        use std::io::Read;
+        let mut fake = fake(2048);
+        fake.peer
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let asked = fake.with(|proc, io| proc.search(b"hay", io)).unwrap();
+        let mut sent = [0u8; 4 + 1 + 4 + 4 + 3];
+        fake.peer.read_exact(&mut sent).unwrap();
+        assert_eq!(sent[4], Kind::Search as u8);
+        assert_eq!(&sent[sent.len() - 3..], b"hay");
+
+        let found = [req(1), vec![4, 0, 0, 0, 2, 0, 4, 0, 0, 0, 6, 0]].concat();
+        fake.feed(&frame(Kind::Matches, &found));
+        assert_eq!(
+            fake.events,
+            [Event::Matches {
+                req: asked,
+                matches: vec![SearchMatch {
+                    row: 4,
+                    col: 2,
+                    end_row: 4,
+                    end_col: 6
+                }]
+            }]
+        );
+        fake.events.clear();
+
+        fake.with(|proc, io| proc.search_cancel(asked, io));
+        let mut cancel = [0u8; 4 + 1 + 4];
+        fake.peer.read_exact(&mut cancel).unwrap();
+        assert_eq!(cancel[4], Kind::SearchCancel as u8);
+        fake.feed(&frame(Kind::Matches, &found));
+        fake.feed(&frame(Kind::SearchDone, &req(1)));
+        assert_eq!(fake.events, []);
+    }
+
+    #[test]
+    fn an_image_reply_closes_its_request_and_a_dead_pane_fails_it() {
+        let mut fake = fake(2048);
+        let key = ImageKey {
+            image: 5,
+            frame: 1,
+            generation: 9,
+        };
+        let name = Name::new("/ko-12-0").unwrap();
+        let asked = fake.with(|proc, io| proc.image(key, &name, io)).unwrap();
+        let object = [
+            req(1),
+            vec![1],
+            8u32.to_le_bytes().to_vec(),
+            b"/ko-12-0".to_vec(),
+            8u64.to_le_bytes().to_vec(),
+            2u32.to_le_bytes().to_vec(),
+            1u32.to_le_bytes().to_vec(),
+            vec![1],
+            9u64.to_le_bytes().to_vec(),
+            40u32.to_le_bytes().to_vec(),
+            1u32.to_le_bytes().to_vec(),
+        ]
+        .concat();
+        fake.feed(&frame(Kind::ImageReply, &object));
+        let [Event::Image { req: got, object }] = &fake.events[..] else {
+            panic!("{:?}", fake.events);
+        };
+        let object = object.as_ref().unwrap();
+        assert_eq!(*got, asked);
+        assert_eq!((object.name.as_str(), object.shm.length), ("/ko-12-0", 8));
+        assert_eq!(
+            (object.shm.width, object.shm.height, object.shm.gap_ms),
+            (2, 1, 40)
+        );
+        fake.events.clear();
+        fake.feed(&frame(Kind::ImageReply, &[req(1), vec![0]].concat()));
+        assert_eq!(fake.events, [], "a second reply to the same request");
+
+        let pending = fake.with(|proc, io| proc.image(key, &name, io)).unwrap();
+        fake.with(|proc, io| proc.shutdown(io));
+        let failed = fake
+            .events
+            .iter()
+            .any(|event| matches!(event, Event::Failed { req, .. } if *req == pending));
+        assert!(failed, "{:?}", fake.events);
     }
 
     #[test]

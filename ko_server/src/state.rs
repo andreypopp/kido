@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-use ko_pane_wire::frame::{Dead, History, Req, ScreenFormat, ScreenRows, Size};
+use ko_pane_wire::frame::{Dead, History, ImageKey, Req, ScreenFormat, ScreenRows, Size};
 use ko_pane_wire::ring::Invalid;
 use ko_sys::event::{Events, Mode, Poll, Reads, Ready, Timer, Token};
 
 use crate::api::routes;
 use crate::client::{self, Change, Client, Current};
+use crate::clipboard;
 use crate::config::Config;
 use crate::conn::{Conn, Phase};
 use crate::delivery::{Delivery, Handle};
@@ -26,21 +27,33 @@ use crate::protocol::{
 };
 use crate::router;
 use crate::server::Verified;
+use crate::shm::Leaks;
 use crate::vars::{Refusal as VarRefusal, Vars};
 use crate::view::View;
 use crate::ws::{Next, Ping};
 
+mod media;
 mod prompt;
 mod run_ops;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Owner {
-    Screen { conn: Token, started: bool },
+    Screen {
+        conn: Token,
+        started: bool,
+    },
     HttpPaste(Token, Option<u64>),
     ViewPaste(Token, Option<u64>),
     Snapshot(Token),
     Capture,
     Prompt(Token),
+    Image {
+        conn: Option<Token>,
+        shm: bool,
+        key: ImageKey,
+        minted: ko_sys::mapping::Name,
+    },
+    Search(Token),
 }
 
 #[derive(Debug)]
@@ -82,6 +95,9 @@ pub(crate) struct State {
     model: Model,
     runs: run_ops::RunState,
     prompts: prompt::PromptState,
+    leaks: Leaks,
+    next_object: u32,
+    clipboard: clipboard::Reads,
     spare: Vec<Vec<Event>>,
     ticked: Vec<(PaneId, Event)>,
 }
@@ -95,14 +111,14 @@ pub(crate) enum Wake {
 pub(crate) fn client_of(conn: &Conn) -> Option<&Client> {
     match conn.role()? {
         Role::Client(client) => Some(client),
-        Role::View(_) => None,
+        Role::View(_) | Role::Search(_) => None,
     }
 }
 
 fn view_of(conn: &Conn) -> Option<&View> {
     match conn.role()? {
         Role::View(view) => Some(view),
-        Role::Client(_) => None,
+        Role::Client(_) | Role::Search(_) => None,
     }
 }
 
@@ -133,6 +149,8 @@ impl State {
     ) -> State {
         let runs = run_ops::RunState::new(&config, poll);
         let document = Document::new(&config.shell);
+        let leaks = Leaks::new(&config.dir);
+        leaks.release_all();
         State {
             config,
             instance,
@@ -147,6 +165,9 @@ impl State {
             model: Model::new(poll),
             runs,
             prompts: prompt::PromptState::default(),
+            leaks,
+            next_object: 0,
+            clipboard: clipboard::Reads::default(),
             spare: Vec::new(),
             ticked: Vec::new(),
         }
@@ -534,6 +555,7 @@ impl State {
     }
 
     fn stop_pane(&mut self, poll: &mut Poll, id: PaneId) {
+        self.clipboard.drop_where(poll, |read| read.pane == id);
         if let Some(timer) = self
             .panes
             .find_mut(id)
@@ -551,6 +573,7 @@ impl State {
             },
         );
         self.dispatch(poll, id, events);
+        self.leaks.release_pane(id);
     }
 
     pub(crate) fn reap(&mut self, poll: &mut Poll) -> std::io::Result<()> {
@@ -577,6 +600,7 @@ impl State {
             events: &mut Vec::new(),
             sink: &mut discard,
         });
+        self.leaks.release_all();
         poll.stop(self.ticker);
         self.model.stop(poll);
         self.runs.stop(poll);
@@ -739,6 +763,18 @@ impl State {
                     self.broadcast(&ClientEvent::Progress { pane: id, progress });
                 }
             }
+            Event::Image { req, object } => self.image_reply(poll, id, req, object),
+            Event::ImageGone(name) => self.leaks.gone(&name),
+            Event::ClipboardWrite { location, contents } => {
+                self.clipboard_write(id, location, contents);
+            }
+            Event::ClipboardRead {
+                req,
+                location,
+                mimes,
+            } => self.clipboard_read(poll, id, req, location, mimes),
+            Event::Matches { req, matches } => self.search_matches(id, req, matches),
+            Event::SearchDone { req } => self.search_done(id, req),
             Event::Output => {
                 let leading = !poll.is_active(self.ticker);
                 if leading {
@@ -781,7 +817,7 @@ impl State {
                     }
                     return self.capture_chunk(poll, id, req, &chunk, last);
                 }
-                let Some(Owner::Screen { conn, started }) = self.owners.get(&key).copied() else {
+                let Some(Owner::Screen { conn, started }) = self.owners.get(&key).cloned() else {
                     return;
                 };
                 if last {
@@ -820,7 +856,14 @@ impl State {
                         }
                     }
                     Some(Owner::Prompt(conn)) => self.prompt_pasted(poll, id, conn, pasted),
-                    Some(Owner::Screen { .. } | Owner::Snapshot(_) | Owner::Capture) | None => {}
+                    Some(
+                        Owner::Screen { .. }
+                        | Owner::Snapshot(_)
+                        | Owner::Capture
+                        | Owner::Image { .. }
+                        | Owner::Search(_),
+                    )
+                    | None => {}
                 }
             }
             Event::Failed { req, message } => match self.owners.remove(&(id, req)) {
@@ -839,6 +882,13 @@ impl State {
                 }
                 Some(Owner::Prompt(conn)) => router::failed(self, poll, conn, false, &message),
                 Some(Owner::Capture) => self.capture_failed(poll, id, req),
+                Some(Owner::Image { conn, minted, .. }) => {
+                    self.leaks.gone(&minted);
+                    if let Some(conn) = conn {
+                        router::failed(self, poll, conn, false, &message);
+                    }
+                }
+                Some(Owner::Search(conn)) => self.search_failed(conn),
                 Some(Owner::Snapshot(_)) | None => {}
             },
         }
@@ -1065,7 +1115,11 @@ impl State {
                     self.sweep(poll);
                 } else if self.runs.is_escalation(due.timer) {
                     self.escalate(poll);
-                } else if self.prompt_due(poll, due.timer) || self.wait_due(poll, due.timer) {
+                } else if self.prompt_due(poll, due.timer)
+                    || self.wait_due(poll, due.timer)
+                    || self.image_due(poll, due.timer)
+                    || self.clipboard_due(poll, due.timer)
+                {
                 } else if self.conns.iter().any(|conn| conn.timer == due.timer) {
                     self.ping(poll, due.timer);
                 } else if let Some(id) = self.panes.by_promotion(due.timer) {
@@ -1095,6 +1149,10 @@ impl State {
             let conn = &mut self.conns[index];
             conn.out.writable();
             if !conn.out.waiting() {
+                if matches!(conn.phase, Phase::Streaming) {
+                    conn.phase = Phase::Head;
+                    self.serve(poll, index);
+                }
                 self.pump_view(poll, index);
             }
         }
@@ -1137,15 +1195,14 @@ impl State {
             else {
                 return;
             };
-            let client = matches!(link.role, Role::Client(_));
             let text = match link.ws.next(out, poll, token, &mut reads) {
                 Next::Text(text) => text,
                 Next::Wait | Next::Close => return,
             };
-            if client {
-                self.client_text(poll, index, text.as_bytes());
-            } else {
-                self.view_text(poll, index, text.as_bytes());
+            match link.role {
+                Role::Client(_) => self.client_text(poll, index, text.as_bytes()),
+                Role::View(_) => self.view_text(poll, index, text.as_bytes()),
+                Role::Search(_) => link.ws.reject(out, "invalid"),
             }
         }
     }
@@ -1216,6 +1273,9 @@ impl State {
                 return;
             }
             Change::Nothing => return self.refocus(poll),
+            Change::Answer { id: read, contents } => {
+                return self.clipboard_answered(poll, id, read, contents);
+            }
         };
         self.enter(poll, index, current, notify);
     }
@@ -1332,17 +1392,22 @@ impl State {
             poll.free(conn.timer);
             self.runs.forget(conn.token);
             self.prompts.forget(conn.token);
-            if let Phase::Ws(link) = conn.phase
-                && let Role::Client(client) = link.role
-            {
-                client_closed = true;
-                self.sizers.retain(|_, sizer| *sizer != client.id);
-                for conn in &mut self.conns {
-                    if let Some((Role::View(view), wire)) = conn.role_mut()
-                        && view.client == Some(client.id)
-                    {
-                        view.close(wire.out);
+            if let Phase::Ws(link) = conn.phase {
+                match link.role {
+                    Role::Client(client) => {
+                        client_closed = true;
+                        self.sizers.retain(|_, sizer| *sizer != client.id);
+                        for conn in &mut self.conns {
+                            if let Some((Role::View(view), wire)) = conn.role_mut()
+                                && view.client == Some(client.id)
+                            {
+                                view.close(wire.out);
+                            }
+                        }
+                        self.clipboard_forget(poll, |read| read.client == client.id);
                     }
+                    Role::Search(search) => self.cancel_search(poll, search),
+                    Role::View(_) => {}
                 }
             }
         }

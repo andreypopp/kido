@@ -4,7 +4,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ko_server::protocol::base64_encode;
+use ko_pane_wire::base64::encode as base64_encode;
 
 use crate::bin_dir::path_prepend_script;
 const ZSH_INTEGRATION: &str = include_str!("../../share/ko/zsh/integration.zsh");

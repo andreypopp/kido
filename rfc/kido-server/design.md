@@ -269,8 +269,8 @@ at the cut-over (migration.md S8).
 | `View` | one streaming response of one pane: sync state, unsent count, pending snapshot |
 | `Pane_core`, `View_core` | the pane's delivery of ring records to its views and each view's stream decisions, generated from proved F*/Pulse (4.6) |
 | `Input` | typed events validated and forwarded to the pane process, which encodes them |
-| `Clipboard` | the OSC 52 and 5522 request routing |
-| `Images` | image resources: server-owned shm copies locally, pixel bodies remotely |
+| `Clipboard` | the OSC 52 request routing: one answerer, the timer (protocol.md 9) |
+| `Images` | image resources: the names of `ko-pane`'s shm copies locally, pixel bodies remotely, the leak record (protocol.md 5) |
 | `Runs` | run records, outcomes, the sweep, output tailing |
 | `Model` | `Pane_status` over panes, once: each pane's `status` field and its `status` event; no tree, no snapshot |
 | `Upgrade` | write state, exec the new binary with the pane rings and control sockets, read state |
@@ -722,16 +722,19 @@ There is nothing to route.
 Clipboard is the exception, because the answer lives in a client:
 
 - `CLIPBOARD_WRITE` (OSC 52 write, 5522 write): the server sends a
-  `clipboard.write` event to the clients that have an **interactive
+  `clipboard_write` event to the clients that have an **interactive
   focus** on that pane's window (the app window that shows it, the
   terminal client attached to it). Each client applies its own consent.
-- `CLIPBOARD_READ` (OSC 52 read, 5522 read, mode 5522 paste events): the
-  server picks **one answerer**: the client whose focus is on the pane,
-  else the most recent interactive client of the session, else none. It
-  sends `clipboard.read {request_id, selector, mimes}` and waits with a
-  deadline (8 s, the app's today). The client answers with data or a
-  refusal; the server completes libghostty-vt's reply struct. One
-  answerer by construction removes the two-responder problem.
+- `CLIPBOARD_READ` (OSC 52 read): the server picks **one answerer**
+  (protocol.md 9): the client whose focus is on the pane, else a
+  focused client of a window that shows it, else the newest client of
+  such a window, else none, which refuses the read at once. It sends a
+  `clipboard_read` event and waits with a deadline (8 s, the app's
+  today). The client answers with data or a refusal; `ko-pane` drops
+  the terminal's immediate empty reply and writes the OSC 52 answer
+  when it arrives. One answerer by construction removes the
+  two-responder problem. OSC 5522 reads and its paste events are
+  refused for now; serving them is future work.
 - Consent, grants and "always allow" stay in the client. The server
   never decides.
 

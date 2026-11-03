@@ -28,10 +28,12 @@ pub struct Config {
     pub cwd: PathBuf,
     pub linger: Duration,
     pub stop_escalation: Duration,
+    pub clipboard_wait: Duration,
 }
 
 pub const LINGER: Duration = Duration::from_secs(30);
 pub const STOP_ESCALATION: Duration = Duration::from_secs(5);
+pub const CLIPBOARD_WAIT: Duration = Duration::from_secs(8);
 
 pub const DEFAULT_LIMITS: Limits = Limits {
     scrollback: Scrollback::Bounded {
@@ -58,6 +60,7 @@ pub fn scratch(dir: &Path, pane_exe: PathBuf, limits: Limits) -> Config {
         cwd: PathBuf::from("/"),
         linger: LINGER,
         stop_escalation: STOP_ESCALATION,
+        clipboard_wait: CLIPBOARD_WAIT,
     }
 }
 
@@ -195,9 +198,11 @@ impl Config {
             bin_dir,
             limits: Limits {
                 scrollback,
+                kitty_images_max_bytes: positive("KO_KITTY_IMAGES_MAX_BYTES")
+                    .unwrap_or(DEFAULT_LIMITS.kitty_images_max_bytes),
                 ..DEFAULT_LIMITS
             },
-            media: Vec::new(),
+            media: vec![Medium::SharedMem],
             env: env::vars_os()
                 .map(|(name, value)| variable(name.as_encoded_bytes(), value.as_encoded_bytes()))
                 .collect(),
@@ -205,6 +210,8 @@ impl Config {
             linger: seconds(set("KO_LINGER_SECONDS")).unwrap_or(LINGER),
             stop_escalation: positive("KO_STOP_ESCALATION_MS")
                 .map_or(STOP_ESCALATION, Duration::from_millis),
+            clipboard_wait: positive("KO_CLIPBOARD_TIMEOUT_MS")
+                .map_or(CLIPBOARD_WAIT, Duration::from_millis),
         })
     }
 }

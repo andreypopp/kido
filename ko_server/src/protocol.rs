@@ -595,56 +595,6 @@ pub struct Paste {
     pub id: Option<u64>,
 }
 
-const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn sextet(byte: u8) -> Option<u32> {
-    BASE64
-        .iter()
-        .position(|&symbol| symbol == byte)
-        .and_then(|index| u32::try_from(index).ok())
-}
-
-fn base64_decode(text: &str) -> Option<Vec<u8>> {
-    let bytes = text.as_bytes();
-    if !bytes.len().is_multiple_of(4) {
-        return None;
-    }
-    let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
-    let last = bytes.len() / 4;
-    for (index, quad) in bytes.chunks(4).enumerate() {
-        let padding = quad.iter().rev().take_while(|&&byte| byte == b'=').count();
-        if padding > 2 || (padding > 0 && index + 1 != last) {
-            return None;
-        }
-        let mut word = 0;
-        for &byte in &quad[..4 - padding] {
-            word = word << 6 | sextet(byte)?;
-        }
-        word <<= 6 * padding;
-        let [_, a, b, c] = word.to_be_bytes();
-        out.extend_from_slice(&[a, b, c][..3 - padding]);
-    }
-    Some(out)
-}
-
-pub fn base64_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for group in bytes.chunks(3) {
-        let mut word = [0; 4];
-        word[1..=group.len()].copy_from_slice(group);
-        let word = u32::from_be_bytes(word);
-        for index in 0..4 {
-            if index <= group.len() {
-                let symbol = (word >> (18 - 6 * index)) & 63;
-                out.push(char::from(BASE64[symbol as usize]));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "String", into = "String")]
 #[schemars(with = "Base64")]
@@ -666,13 +616,15 @@ impl TryFrom<String> for Text {
     type Error = &'static str;
 
     fn try_from(text: String) -> Result<Text, &'static str> {
-        base64_decode(&text).map(Text).ok_or("invalid base64")
+        ko_pane_wire::base64::decode(&text)
+            .map(Text)
+            .ok_or("invalid base64")
     }
 }
 
 impl From<Text> for String {
     fn from(Text(bytes): Text) -> String {
-        base64_encode(&bytes)
+        ko_pane_wire::base64::encode(&bytes)
     }
 }
 
@@ -1368,7 +1320,14 @@ pub enum ClientRequest {
     Select(Selection),
     Switch(Switch),
     Size(Size),
-    Focused { focused: bool },
+    Focused {
+        focused: bool,
+    },
+    ClipboardAnswer {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        contents: Option<Vec<ClipboardContent>>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1519,6 +1478,17 @@ pub enum ClientEvent {
     Bell {
         pane: PaneId,
     },
+    ClipboardWrite {
+        pane: PaneId,
+        location: ClipboardLocation,
+        contents: Vec<ClipboardContent>,
+    },
+    ClipboardRead {
+        pane: PaneId,
+        id: u64,
+        location: ClipboardLocation,
+        mimes: Vec<String>,
+    },
     Notify {
         pane: PaneId,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1532,6 +1502,95 @@ pub enum ClientEvent {
     },
     Run(RunEvent),
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipboardLocation {
+    Standard,
+    Selection,
+    Primary,
+}
+
+impl From<frame::ClipboardLocation> for ClipboardLocation {
+    fn from(location: frame::ClipboardLocation) -> ClipboardLocation {
+        match location {
+            frame::ClipboardLocation::Standard => ClipboardLocation::Standard,
+            frame::ClipboardLocation::Selection => ClipboardLocation::Selection,
+            frame::ClipboardLocation::Primary => ClipboardLocation::Primary,
+        }
+    }
+}
+
+impl From<ClipboardLocation> for frame::ClipboardLocation {
+    fn from(location: ClipboardLocation) -> frame::ClipboardLocation {
+        match location {
+            ClipboardLocation::Standard => frame::ClipboardLocation::Standard,
+            ClipboardLocation::Selection => frame::ClipboardLocation::Selection,
+            ClipboardLocation::Primary => frame::ClipboardLocation::Primary,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ClipboardContent {
+    pub mime: String,
+    pub data: Text,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PixelFormat {
+    Rgb,
+    Rgba,
+    GrayAlpha,
+    Gray,
+}
+
+impl From<frame::PixelFormat> for PixelFormat {
+    fn from(format: frame::PixelFormat) -> PixelFormat {
+        match format {
+            frame::PixelFormat::Rgb => PixelFormat::Rgb,
+            frame::PixelFormat::Rgba => PixelFormat::Rgba,
+            frame::PixelFormat::GrayAlpha => PixelFormat::GrayAlpha,
+            frame::PixelFormat::Gray => PixelFormat::Gray,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ImageShm {
+    pub name: String,
+    pub length: u64,
+    pub format: PixelFormat,
+    pub width: u32,
+    pub height: u32,
+    pub generation: u64,
+    pub gap_ms: u32,
+    pub frames: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SearchMatch {
+    pub row: u32,
+    pub col: u16,
+    pub end_row: u32,
+    pub end_col: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SearchEvent {
+    Matches { matches: Vec<SearchMatch> },
+    Done,
+}
+
+pub(crate) const IMAGE_FORMAT_HEADER: &str = "ko-image-format";
+pub(crate) const IMAGE_WIDTH_HEADER: &str = "ko-image-width";
+pub(crate) const IMAGE_HEIGHT_HEADER: &str = "ko-image-height";
+pub(crate) const IMAGE_GENERATION_HEADER: &str = "ko-image-generation";
+pub(crate) const IMAGE_GAP_HEADER: &str = "ko-image-gap-ms";
+pub(crate) const IMAGE_FRAMES_HEADER: &str = "ko-image-frames";
+pub(crate) const ACCEPT_SHM_HEADER: &str = "ko-accept-shm";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunEvent {

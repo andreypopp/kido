@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod api;
 mod client;
+mod clipboard;
 pub mod config;
 mod conn;
 mod delivery;
@@ -26,6 +27,7 @@ mod router;
 pub mod runs;
 pub mod schema;
 pub mod server;
+mod shm;
 mod state;
 mod telemetry;
 pub mod timestamp;

@@ -400,6 +400,65 @@
           },
           {
             "properties": {
+              "contents": {
+                "items": {
+                  "$ref": "#/components/schemas/ClipboardContent"
+                },
+                "type": "array"
+              },
+              "location": {
+                "$ref": "#/components/schemas/ClipboardLocation"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "clipboard_write",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "location",
+              "contents"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "location": {
+                "$ref": "#/components/schemas/ClipboardLocation"
+              },
+              "mimes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "clipboard_read",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "id",
+              "location",
+              "mimes"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
               "body": {
                 "type": "string"
               },
@@ -563,8 +622,54 @@
               "focused"
             ],
             "type": "object"
+          },
+          {
+            "properties": {
+              "contents": {
+                "items": {
+                  "$ref": "#/components/schemas/ClipboardContent"
+                },
+                "type": "array"
+              },
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "clipboard_answer",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
           }
         ]
+      },
+      "ClipboardContent": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Base64"
+          },
+          "mime": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mime",
+          "data"
+        ],
+        "type": "object"
+      },
+      "ClipboardLocation": {
+        "enum": [
+          "standard",
+          "selection",
+          "primary"
+        ],
+        "type": "string"
       },
       "Command": {
         "oneOf": [
@@ -1078,6 +1183,18 @@
         ],
         "type": "object"
       },
+      "FrameNumber": {
+        "description": "1 is the image itself; 2 and up are its animation frames.",
+        "maximum": 4294967295,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "Generation": {
+        "description": "The serial that the pane's terminal stamped on the frame.",
+        "maximum": 18446744073709551615,
+        "minimum": 1,
+        "type": "integer"
+      },
       "Hello": {
         "properties": {
           "focused": {
@@ -1120,6 +1237,57 @@
           "all"
         ],
         "type": "string"
+      },
+      "ImageId": {
+        "description": "The id a program gave an image.",
+        "maximum": 4294967295,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "ImageShm": {
+        "properties": {
+          "format": {
+            "$ref": "#/components/schemas/PixelFormat"
+          },
+          "frames": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "gap_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "height": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "length": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "width": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "length",
+          "format",
+          "width",
+          "height",
+          "generation",
+          "gap_ms",
+          "frames"
+        ],
+        "type": "object"
       },
       "Images": {
         "enum": [
@@ -1635,6 +1803,12 @@
         "maxLength": 256,
         "type": "string"
       },
+      "Needle": {
+        "description": "The text to search for, percent-encoded in the query.",
+        "maxLength": 4096,
+        "minLength": 1,
+        "type": "string"
+      },
       "Offset": {
         "description": "A byte offset of the pane's stream.",
         "maximum": 4611686018427387903,
@@ -1876,6 +2050,15 @@
             "type": "object"
           }
         ]
+      },
+      "PixelFormat": {
+        "enum": [
+          "rgb",
+          "rgba",
+          "gray_alpha",
+          "gray"
+        ],
+        "type": "string"
       },
       "ProgramKind": {
         "enum": [
@@ -2217,6 +2400,70 @@
             "type": "object"
           }
         ]
+      },
+      "SearchEvent": {
+        "oneOf": [
+          {
+            "properties": {
+              "matches": {
+                "items": {
+                  "$ref": "#/components/schemas/SearchMatch"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "matches",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "matches"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "done",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SearchMatch": {
+        "properties": {
+          "col": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "end_col": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "end_row": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "row": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "row",
+          "col",
+          "end_row",
+          "end_col"
+        ],
+        "type": "object"
       },
       "Selection": {
         "properties": {
@@ -3082,6 +3329,78 @@
         }
       }
     },
+    "/panes/{id}/images/{image}/frames/{frame}": {
+      "get": {
+        "description": "One frame of an image of a pane. Frame 1 is the image itself. The reply is the pixels as an application/octet-stream body, with their format, size and timing in the ko-image-* headers. With the header Ko-Accept-Shm: 1 the reply is instead a JSON body that names a shared memory object, which the client maps and never unlinks. An image that was evicted, a frame that does not exist and a generation that moved on are not_found.",
+        "operationId": "Image",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "7",
+            "in": "path",
+            "name": "image",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ImageId"
+            }
+          },
+          {
+            "example": "1",
+            "in": "path",
+            "name": "frame",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/FrameNumber"
+            }
+          },
+          {
+            "example": "3",
+            "in": "query",
+            "name": "generation",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Generation"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageShm"
+                }
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "contentMediaType": "application/octet-stream",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
     "/panes/{id}/input": {
       "post": {
         "description": "Sends a key, a mouse event, a paste or raw text to a pane.",
@@ -3204,6 +3523,55 @@
               }
             },
             "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/panes/{id}/search": {
+      "get": {
+        "description": "A search of the pane's terminal, history included: the matches in batches, oldest first, then done. The rows count from the top of the history at the time of the search, for display only. Closing the socket cancels the search.",
+        "operationId": "Search",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "needle",
+            "in": "query",
+            "name": "needle",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Needle"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        },
+        "x-ko-websocket": {
+          "recv": {
+            "$ref": "#/components/schemas/SearchEvent"
+          },
+          "send": {
+            "$ref": "#/components/schemas/Empty"
           }
         }
       }

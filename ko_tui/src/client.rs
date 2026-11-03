@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use std::process::Child;
 use std::time::{Duration, Instant};
 
+use crate::clipboard;
 use ko_client::launch::{self, BACKOFF_FIRST, PATIENCE, backoff_after};
-use ko_client::model::{Applied, Model, Rejoin};
+use ko_client::model::{Applied, Model, Notice, Rejoin};
 use ko_client::remote::{Progress, Remote};
 use ko_client::wire::{self, Link, Next, WATCHDOG, silent, text};
 use ko_pane_wire::frame::{Dim, ScreenFormat, ScreenRows, Size};
@@ -309,6 +310,7 @@ struct Client {
     serial: u64,
     quit: bool,
     pending: Vec<Event>,
+    clipboard_reads: clipboard::Pending,
     wake: Deadline,
     escape: Deadline,
     watchdog: Deadline,
@@ -378,6 +380,7 @@ impl Client {
             serial: 0,
             quit: false,
             pending: probed.events,
+            clipboard_reads: clipboard::Pending::default(),
             wake,
             escape,
             watchdog,
@@ -813,7 +816,31 @@ impl Client {
                 self.kitty = true;
                 Ok(())
             }
+            Event::Reply(Reply::Clipboard(location, text)) => {
+                match self.clipboard_reads.answered(location.into(), text) {
+                    Some((id, contents)) => {
+                        self.client_send(&ClientRequest::ClipboardAnswer { id, contents })
+                    }
+                    None => Ok(()),
+                }
+            }
             Event::Reply(_) => Ok(()),
+        }
+    }
+
+    fn notice(&mut self, notice: Notice) -> Result<(), String> {
+        match notice {
+            Notice::ClipboardWrite {
+                location, contents, ..
+            } => match clipboard::write(location, &contents) {
+                Some(sequence) if self.pager.is_none() => self.session.write(&sequence),
+                _ => Ok(()),
+            },
+            Notice::ClipboardRead { id, location, .. } if self.pager.is_none() => {
+                let query = self.clipboard_reads.ask(id, location);
+                self.session.write(&query)
+            }
+            Notice::ClipboardRead { .. } | Notice::Bell(_) | Notice::Notify { .. } => Ok(()),
         }
     }
 
@@ -1076,6 +1103,7 @@ impl Client {
         self.link.unwatch(&mut self.poll);
         self.link = link;
         self.link_token = token;
+        self.clipboard_reads.clear();
         match rejoin {
             Rejoin::Resume(joined) => self.model = joined,
             Rejoin::Fresh(joined) => {
@@ -1145,10 +1173,8 @@ impl Client {
                         let applied = self.model.apply(event)?;
                         self.model.observe(self.pane().as_slice(), true);
                         match applied {
-                            Applied::Nothing
-                            | Applied::State
-                            | Applied::Layout
-                            | Applied::Notice(_) => {}
+                            Applied::Nothing | Applied::State | Applied::Layout => {}
+                            Applied::Notice(notice) => self.notice(notice)?,
                             Applied::Selected => match self.model.selection.pane {
                                 Some(pane) if Some(pane) != self.pane() => self.switch(pane)?,
                                 Some(_) => {}

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::{CellPx, Dim, History, ScreenFormat, ScreenRows, Size};
 use ko_sys::event::{Mode, Token};
+use ko_vt::frames::Screen;
 use ko_vt::{Extent, Format, Terminal};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
@@ -1043,6 +1044,41 @@ impl Harness {
         }
     }
 
+    fn fetch_frame(&mut self, image: u32, frame: u32, generation: u64) -> Checked<Response> {
+        let (ours, mut theirs) = UnixStream::pair().unwrap();
+        self.rig
+            .state
+            .accept(&mut self.rig.poll, Verified::admit(ours).unwrap());
+        let route = Route::of_request(
+            "GET",
+            &format!(
+                "/panes/{}/images/{image}/frames/{frame}?generation={generation}",
+                self.rig.pane
+            ),
+        )
+        .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            theirs
+                .set_read_timeout(Some(Duration::from_secs(20)))
+                .unwrap();
+            send_request(&mut theirs, &route, &[]);
+            let _ = sender.send(read_response(&mut theirs));
+        });
+        let mut response = None;
+        self.until("the pane to answer an image request", |_| {
+            if response.is_none() {
+                response = receiver.try_recv().ok();
+            }
+            response.is_some()
+        })?;
+        match response {
+            Some(Ok(response)) => Ok(response),
+            Some(Err(error)) => bug(format!("image: {error}")),
+            None => bug("no image answer".to_owned()),
+        }
+    }
+
     fn check(&mut self) -> Checked {
         if self.crashed {
             for view in &mut self.views {
@@ -1328,6 +1364,102 @@ proptest! {
 mod tests {
     use super::*;
     use ko_pane_wire::frame::Limits;
+
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    const GREEN: [u8; 4] = [0, 255, 0, 255];
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
+
+    fn graphics(control: &str, pixels: &[u8]) -> Vec<u8> {
+        let mut text = Vec::new();
+        text.extend_from_slice(format!("\x1b_G{control};").as_bytes());
+        text.extend_from_slice(ko_pane_wire::base64::encode(pixels).as_bytes());
+        text.extend_from_slice(b"\x1b\\");
+        text
+    }
+
+    fn current_pixels(term: &Terminal) -> (u32, Vec<u8>) {
+        let current = term
+            .animation(Screen::Primary, 1)
+            .unwrap()
+            .expect("the animation")
+            .current;
+        let frame = term.frame(Screen::Primary, 1, current).unwrap().unwrap();
+        (
+            current,
+            frame.pixels.expect("the pixels of the frame").to_vec(),
+        )
+    }
+
+    #[test]
+    fn an_images_none_mirror_plays_a_fetched_animation_like_the_recorder_under_animation_tick() {
+        let mut h = Harness::new();
+        h.step_op(Op::Open(History::All, Reader::Fast, false, false))
+            .unwrap();
+        let mut bytes = graphics("a=T,f=32,s=1,v=1,i=1,c=1,r=1", &RED);
+        bytes.extend(graphics("a=f,i=1,f=32,s=1,v=1,z=40", &GREEN));
+        bytes.extend(graphics("a=f,i=1,f=32,s=1,v=1,z=40", &BLUE));
+        bytes.extend(b"\x1b_Ga=a,i=1,s=3,v=1,q=2\x1b\\");
+        h.fed += bytes.len() as u64;
+        h.queued.extend(bytes);
+        h.until("the recorder to see the animation", |h| {
+            h.unsent() == 0 && h.converged(&h.views[0])
+        })
+        .unwrap();
+        h.step_op(Op::Open(History::None, Reader::Fast, false, false))
+            .unwrap();
+        h.until("the late view to hold a snapshot", |h| {
+            h.converged(&h.views[1])
+        })
+        .unwrap();
+
+        let generations: Vec<(u32, Option<u64>)> = (1..=3)
+            .map(|number| {
+                let term = h.views[1].mirror.term.as_ref().unwrap();
+                match term.frame(Screen::Primary, 1, number).unwrap() {
+                    Some(frame) if frame.pixels.is_none() => (number, Some(frame.generation)),
+                    Some(_) | None => (number, None),
+                }
+            })
+            .collect();
+        assert_eq!(
+            generations
+                .iter()
+                .map(|(_, pending)| pending.is_some())
+                .collect::<Vec<_>>(),
+            [true, true, true],
+            "an images=none snapshot holds every frame pending: {generations:?}"
+        );
+        for (number, generation) in generations {
+            let generation = generation.unwrap();
+            let response = h.fetch_frame(1, number, generation).unwrap();
+            assert_eq!(response.status, 200, "frame {number}");
+            let want = [RED, GREEN, BLUE][number as usize - 1];
+            assert_eq!(response.body, want, "pixels of frame {number}");
+            let term = h.views[1].mirror.term.as_mut().unwrap();
+            assert!(
+                term.attach_frame(Screen::Primary, 1, number, generation, &response.body)
+                    .unwrap(),
+                "frame {number} attaches"
+            );
+        }
+
+        let mut shown = Vec::new();
+        for step in 0..8u64 {
+            let now = 1000 + step * 50;
+            let recorder = h.views[0].mirror.term.as_mut().unwrap();
+            recorder.animation_tick(now).unwrap();
+            let mirror = h.views[1].mirror.term.as_mut().unwrap();
+            mirror.animation_tick(now).unwrap();
+            let expected = current_pixels(h.views[0].mirror.term.as_ref().unwrap());
+            let played = current_pixels(h.views[1].mirror.term.as_ref().unwrap());
+            assert_eq!(played, expected, "tick {step}");
+            shown.push(played.0);
+        }
+        assert!(
+            shown.contains(&2) && shown.contains(&3),
+            "the animation never left frame 1: {shown:?}"
+        );
+    }
 
     #[test]
     fn a_resume_across_a_history_clear_replays_the_clear() {
