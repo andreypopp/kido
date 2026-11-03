@@ -1,0 +1,639 @@
+{
+  "components": {
+    "schemas": {
+      "Created": {
+        "oneOf": [
+          {
+            "properties": {
+              "session": {
+                "$ref": "#/components/schemas/SessionId"
+              },
+              "type": {
+                "const": "session",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "window",
+                "type": "string"
+              },
+              "window": {
+                "$ref": "#/components/schemas/WindowId"
+              }
+            },
+            "required": [
+              "type",
+              "window"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "pane",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Edge": {
+        "enum": [
+          "left",
+          "right",
+          "top",
+          "bottom"
+        ],
+        "type": "string"
+      },
+      "Edit": {
+        "oneOf": [
+          {
+            "properties": {
+              "axis": {
+                "$ref": "#/components/schemas/Axis"
+              },
+              "before": {
+                "default": false,
+                "type": "boolean"
+              },
+              "new": {
+                "$ref": "#/components/schemas/CreatePane"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "split",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "axis",
+              "new"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "delta": {
+                "$ref": "#/components/schemas/Cells"
+              },
+              "edge": {
+                "$ref": "#/components/schemas/Edge"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "resize_by",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "edge",
+              "delta"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "first": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "first_size": {
+                "$ref": "#/components/schemas/Cells"
+              },
+              "second": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "resize_pair",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "first",
+              "second",
+              "first_size"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "equalize",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "zoom",
+                "type": "string"
+              },
+              "window": {
+                "$ref": "#/components/schemas/WindowId"
+              }
+            },
+            "required": [
+              "type",
+              "window"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "toggle_zoom",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "other": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "swap",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "other"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "edge": {
+                "$ref": "#/components/schemas/Edge"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "target": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "dock",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "target",
+              "edge"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "edge": {
+                "$ref": "#/components/schemas/Edge"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "dock_window",
+                "type": "string"
+              },
+              "window": {
+                "$ref": "#/components/schemas/WindowId"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "window",
+              "edge"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "border": {
+                "type": "boolean"
+              },
+              "cols": {
+                "$ref": "#/components/schemas/Cells"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "rows": {
+                "$ref": "#/components/schemas/Cells"
+              },
+              "title": {
+                "type": "string"
+              },
+              "type": {
+                "const": "float",
+                "type": "string"
+              },
+              "x": {
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "y": {
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "z": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "type",
+              "pane"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "edge": {
+                "$ref": "#/components/schemas/Edge"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "target": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "unfloat",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "target",
+              "edge"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "after": {
+                "$ref": "#/components/schemas/WindowId"
+              },
+              "new": {
+                "$ref": "#/components/schemas/CreatePane"
+              },
+              "session": {
+                "$ref": "#/components/schemas/SessionId"
+              },
+              "type": {
+                "const": "add_window",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session",
+              "after",
+              "new"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "name": {
+                "$ref": "#/components/schemas/Name"
+              },
+              "new": {
+                "$ref": "#/components/schemas/CreatePane"
+              },
+              "type": {
+                "const": "add_session",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "new"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "name": {
+                "$ref": "#/components/schemas/Name"
+              },
+              "session": {
+                "$ref": "#/components/schemas/SessionId"
+              },
+              "type": {
+                "const": "rename_session",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "name": {
+                "$ref": "#/components/schemas/Name"
+              },
+              "type": {
+                "const": "rename_window",
+                "type": "string"
+              },
+              "window": {
+                "$ref": "#/components/schemas/WindowId"
+              }
+            },
+            "required": [
+              "type",
+              "window",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "order": {
+                "items": {
+                  "$ref": "#/components/schemas/SessionId"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "reorder_sessions",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "order"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "order": {
+                "items": {
+                  "$ref": "#/components/schemas/WindowId"
+                },
+                "type": "array"
+              },
+              "session": {
+                "$ref": "#/components/schemas/SessionId"
+              },
+              "type": {
+                "const": "reorder_windows",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session",
+              "order"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Edited": {
+        "properties": {
+          "created": {
+            "$ref": "#/components/schemas/Created"
+          },
+          "snapshot": {
+            "$ref": "#/components/schemas/Snapshot"
+          }
+        },
+        "required": [
+          "snapshot"
+        ],
+        "type": "object"
+      },
+      "Item": {
+        "oneOf": [
+          {
+            "properties": {
+              "id": {
+                "$ref": "#/components/schemas/SessionId"
+              },
+              "name": {
+                "type": "string"
+              },
+              "type": {
+                "const": "session",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "depth": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "id": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "pane",
+                "type": "string"
+              },
+              "window": {
+                "$ref": "#/components/schemas/WindowId"
+              }
+            },
+            "required": [
+              "type",
+              "id",
+              "window",
+              "depth"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Mark": {
+        "enum": [
+          "none",
+          "running",
+          "waiting",
+          "done",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "ModelJson": {
+        "properties": {
+          "instance": {
+            "type": "string"
+          },
+          "layout": {
+            "$ref": "#/components/schemas/Snapshot"
+          },
+          "outline": {
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            },
+            "type": "array"
+          },
+          "panes": {
+            "items": {
+              "$ref": "#/components/schemas/PaneJson"
+            },
+            "type": "array"
+          },
+          "selection": {
+            "$ref": "#/components/schemas/Selection"
+          }
+        },
+        "required": [
+          "instance",
+          "selection",
+          "layout",
+          "panes",
+          "outline"
+        ],
+        "type": "object"
+      },
+      "PaneJson": {
+        "properties": {
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "dead": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Dead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "foreground": {
+            "$ref": "#/components/schemas/Foreground"
+          },
+          "id": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "label": {
+            "type": "string"
+          },
+          "mark": {
+            "$ref": "#/components/schemas/Mark"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/Progress"
+          },
+          "records_seen": {
+            "type": "boolean"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunRow"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PaneStatus"
+          },
+          "title": {
+            "type": "string"
+          },
+          "vars": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "label",
+          "mark",
+          "records_seen",
+          "id",
+          "pid",
+          "command",
+          "cwd",
+          "title",
+          "vars",
+          "dead"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "The JSON of ko_client_model and of ko_client_edit. References name the components of the server's OpenAPI document.",
+    "title": "ko client model",
+    "version": "1.0"
+  }
+}

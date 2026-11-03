@@ -11,6 +11,7 @@ env:
 
 jobs:
   test:
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -18,96 +19,113 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
+        timeout-minutes: 5
         uses: actions/checkout@v4
         with:
           submodules: true
 
-      # The dune binary distribution, pinned to the release the README
-      # installs; there is no opam. `build-deps` builds dune.lock into
-      # _build (the compiler included) and the action caches dune's shared
-      # cache and _build across runs, so a lock that did not change costs a
-      # restore, not a compiler build. Mosaic comes from the pins in
-      # dune-project.
-      - name: Set up dune
-        uses: ocaml-dune/setup-dune@v2
-        with:
-          version: 3.24.2
-          steps: install-dune build-deps
+      # ko_vt_sys/build.rs builds libghostty-vt with zig.
+      - name: Resolve zig key
+        timeout-minutes: 1
+        id: zig
+        run: echo "key=$(./scripts/install-zig.sh --print-key)" >> "$GITHUB_OUTPUT"
 
-      # Go only drives the e2e suite, which stays in Go.
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Cache zig
+        timeout-minutes: 5
+        id: zig-cache
+        uses: actions/cache@v4
         with:
-          go-version-file: go.mod
+          path: ~/zig
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ steps.zig.outputs.key }}
+
+      - name: Install zig
+        if: steps.zig-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 5
+        run: ./scripts/install-zig.sh "$HOME/zig"
+
+      - name: Put zig on PATH
+        timeout-minutes: 1
+        run: echo "$HOME/zig" >> "$GITHUB_PATH"
+
+      # The runner images ship rustup; this installs the toolchain that
+      # rust-toolchain.toml pins.
+      - name: Install the Rust toolchain
+        timeout-minutes: 5
+        run: rustup toolchain install
+
+      - name: Cache crates
+        timeout-minutes: 5
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+
+      # .cargo/config.toml keeps zig's caches here (KO_ZIG_CACHE) for every cargo profile and target directory.
+      - name: Resolve ghostty pin
+        timeout-minutes: 1
+        id: ghostty
+        run: echo "pin=$(git ls-files -s third_party/ghostty | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache libghostty-vt
+        timeout-minutes: 5
+        uses: actions/cache@v4
+        with:
+          path: target/zig-cache
+          key: zig-cache-${{ runner.os }}-${{ runner.arch }}-${{ steps.ghostty.outputs.pin }}-${{ steps.zig.outputs.key }}
+
+      - name: Download crates
+        timeout-minutes: 5
+        run: cargo fetch --locked
+
+      # The Verus release archive (452 MB for arm64 macOS, 1.4 GB unpacked) that
+      # `make verus` uses, keyed by the release in scripts/verus.sh.
+      - name: Resolve Verus key
+        timeout-minutes: 1
+        id: verus
+        run: echo "key=$(./scripts/verus.sh --print-key)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Verus
+        timeout-minutes: 5
+        id: verus-cache
+        uses: actions/cache@v4
+        with:
+          path: build/verus/${{ steps.verus.outputs.key }}
+          key: verus-${{ runner.os }}-${{ runner.arch }}-${{ steps.verus.outputs.key }}
+
+      - name: Fetch Verus
+        if: steps.verus-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 10
+        run: ./scripts/verus.sh install "$PWD/build/verus/${{ steps.verus.outputs.key }}"
 
       - name: Install dependencies (Ubuntu)
         if: runner.os == 'Linux'
+        timeout-minutes: 10
         run: |
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/80-timeouts
           sudo apt-get update
-          sudo apt-get install -y libevent-dev libncurses-dev libutf8proc-dev libpng-dev zlib1g-dev \
-            bison autoconf automake pkg-config openssh-server zsh
+          sudo apt-get install -y openssh-server zsh less procps
           # Debian's global compinit can block test shells with an insecure-directories prompt.
           echo 'skip_global_compinit=1' | sudo tee -a /etc/zsh/zshenv
 
-      - name: Install tmux dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: brew install libevent ncurses utf8proc libpng automake autoconf pkg-config
-
-      - name: Resolve tmux fork build key
-        id: tmux-fork
-        run: |
-          build_key=$(./scripts/install-tmux-fork.sh --print-build-key)
-          echo "build-key=$build_key" >> "$GITHUB_OUTPUT"
-      - name: Restore tmux fork build
-        id: tmux-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/tmux-side
-          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.build-key }}
-
-      - name: Build and install tmux fork
-        if: steps.tmux-cache.outputs.cache-hit != 'true'
-        run: ./scripts/install-tmux-fork.sh "$HOME/tmux-side"
-
-      - name: Save tmux fork build
-        if: steps.tmux-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/tmux-side
-          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.build-key }}
-
-      - name: Check tmux fork
-        run: $HOME/tmux-side/bin/kido-tmux -V
-
-      # test-ts.sh skips cleanly on a node it cannot use, and a runner's
-      # preinstalled node is whatever it happens to be, so pin one and demand
-      # the suite runs. 24 rather than the 22.18 where unflagged TypeScript
+      # The lint and ts stages need node, and a runner's preinstalled node is
+      # whatever it happens to be, so pin one. verify.sh demands that the suite
+      # runs (KO_TS_TEST_REQUIRED). 24 rather than the 22.18 where unflagged TypeScript
       # landed: 22.18 parses the files and then its test runner cancels the
       # suite, which this pin is how we learned.
       - name: Set up node
         uses: actions/setup-node@v4
+        timeout-minutes: 5
         with:
           node-version: '24'
-
-      - name: Build
-        run: dune build
-
-      - name: Install
-        run: make install PREFIX=$HOME/tmux-side && $HOME/tmux-side/bin/kido --version && test -x $HOME/tmux-side/share/kido/bin/tmux
-
-      - name: Unit tests
-        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux dune test --force
-
-      # "fork failed: Device not configured" from tmux on macOS runners reads as
-      # pty exhaustion; this records the limit next to any such failure.
-      - name: Pty limit
-        if: runner.os == 'macOS'
-        run: sysctl kern.tty.ptmx_max; ls /dev/ttys* | wc -l
 
       # Host-sshd e2e tests need localhost SSH. launchctl avoids systemsetup's
       # Full Disk Access requirement. macOS Bash 3.2 is too old to prime,
       # so the account uses zsh with a startup file instead.
       - name: Set up localhost SSH
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           diagnose_ssh() {
@@ -160,8 +178,10 @@ jobs:
               *) exit 1 ;;
             esac'
 
-      - name: E2E tests
-        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KIDO_E2E_REQUIRED=1 KIDO_E2E_HOST_SSH=1 make e2e
+      - name: Verify
+        timeout-minutes: 35
+        run: KO_VERUS_REQUIRED=1 KO_E2E_HOST_SSH=1 make verify
 
-      - name: TypeScript tests
-        run: KIDO_TS_TEST_REQUIRED=1 ./scripts/test-ts.sh
+      - name: Install
+        timeout-minutes: 10
+        run: make install PREFIX=$HOME/ko-install && $HOME/ko-install/bin/ko version && test -x $HOME/ko-install/share/ko/bin/ko

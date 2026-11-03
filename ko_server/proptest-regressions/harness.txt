@@ -1,0 +1,4 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+cc d7efcbe2d2b278210e28903899670caf8271d3442761a5dec51185b0fbaebd7b

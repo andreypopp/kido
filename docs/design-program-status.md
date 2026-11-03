@@ -1,331 +1,289 @@
 # Program status
 
-kido identifies each pane as a terminal, an agent or a pi agent with
-kido integration. It also identifies the state of each pane.
-kido reports classification and semantic status (`Pane_status`).
-Each frontend controls glyphs, labels, captions and seen outcomes.
+ko identifies each pane as a terminal, an agent or a pi agent with
+ko's harness, and the state of each pane. The server computes one
+`status` for each pane (`PaneStatus` in `ko_server/src/protocol.rs`)
+and announces a change as a `status` event. Each client controls
+glyphs, labels, captions and seen outcomes.
 
-kido classifies a pane with these sources:
-- what its programs transmit to the terminal:
-  - OSC 7501 ([spec](https://www.superlogical.com/rex/docs/build/program-status))
-  - OSC 133 ([semantic prompts](https://gitlab.freedesktop.org/Per_Bothner/specifications/-/blob/master/proposals/semantic-prompts.md))
-  - the pane title, OSC 0/2 ([xterm control sequences](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h3-Operating-System-Commands))
-- the pane options of pi's harness (`@kido_session`, `@kido_name`,
-  `@kido_inbox`, `@kido_activity`), only for local pi agents
-- the pane option `@kido_ssh`, set by kido's ssh shim
+The sources:
+
+- What the pane's programs transmit to the terminal, which `ko-pane`
+  forwards as frames ([protocol.md](protocol.md), section 14):
+  - OSC 7501 ([spec](https://www.superlogical.com/rex/docs/build/program-status)).
+  - OSC 133 ([semantic prompts](https://gitlab.freedesktop.org/Per_Bothner/specifications/-/blob/master/proposals/semantic-prompts.md)).
+  - The pane title, OSC 0/2.
+  - The foreground process of the pty and the active screen.
+- The pane variables `pi.session`, `pi.name`, `pi.inbox` and
+  `pi.activity` of pi's harness, only for local pi agents.
+- The pane variables `ssh.dest` and `ssh.args`, set by `ko ssh`.
+
+Every time is a nanosecond of the server's monotonic clock. There is
+no whole-second tie and no polling: a report is an event.
 
 ## Sources
 
-### OSC 7501 records
+### The record set
 
-tmux puts the OSC 7501 payload in the per-pane variable
-`#{pane_program_status}`. Topology is the authoritative source.
-Every topology read includes this variable in `State.format` and
-parses it once into the pane. This applies to control-mode and one-shot
-views. `%program-status` notifications only wake the tick.
-kido ignores their payload.
-tmux makes a new payload, serial and notification only when a report
-changes the pane's records. A report identical to the stored record
-with its id changes nothing, and it does not refresh the record's
-place in the eviction order.
-When it parses records, kido removes any working record with progress 0
-and no app, title or msg.
+`ko_server/src/program_status.rs` keeps one record set for each pane
+under these rules. libghostty-vt validates a report before the
+callback; `ko-pane` and the coordinator parse nothing.
 
-A program can report several records, each under an `id`.
-IDs nest with `/` (`build`, `build/test`). The [root record](https://www.superlogical.com/rex/docs/build/program-status#records-and-ids)
-has no id and reports the program's overall status.
+- A record has an id, a state, and optional app, title, message and
+  progress. An empty string in a report is an absent field. The
+  [root record](https://www.superlogical.com/rex/docs/build/program-status#records-and-ids)
+  has the empty id and reports the program's overall status. Ids nest
+  with `/` (`build`, `build/test`).
+- The set holds at most 64 records. A new record over the limit
+  removes the one updated longest ago.
+- A report whose id is in the set and whose fields equal the stored
+  record changes nothing: no serial, no event, no move in the
+  eviction order. Otherwise the stored record is removed and the new
+  one appended, which makes it the newest.
+- A `clear` with the empty id removes every record. A `clear` with id
+  `x` removes `x` and every record whose id starts with `x/`.
+- A primary prompt start (OSC 133 `A`) removes every record whose
+  state is not done or error. Pane death and RIS remove every record.
+- The serial starts at 0 and increases by one on every change.
+- The published records are sorted by id, bytewise. A working record
+  with progress 0 and no app, title or message is dropped from the
+  published set, not from the stored one.
 
 The records supply:
 
-- `app` of the root record: the program that owns the pane.
-  If the root app is `pi` or `claude-code`, the pane is an agent.
-- `state`: idle, working (running), blocked (waiting), or the final states
-  done and error. Blocked has an optional kind: permission, question or
-  auth. kido removes an unknown kind. Done and error produce outcomes
-  (below).
-- `msg` and `progress`: the status message and progress.
-- `title`: a `Terminal`'s title.
+- `app` of the root record: the program that owns the pane. A record
+  without an app takes the app of its nearest ancestor by `/`, else
+  the root's. If the root app is `pi` or `claude-code`, the pane is an
+  agent.
+- `state`: idle, working, blocked (with an optional kind: permission,
+  question or auth), or the final states done and error. Done and
+  error produce outcomes (below).
+- `msg` and `progress`: the message and the progress.
+- `title`: a terminal's title.
 
-The frontend draws non-root records as child rows under the pane row,
-nested by id, in id order. Each child row shows:
+A client draws non-root records as child rows under the pane row,
+nested by id, in id order. Each child row shows the record's title, or
+its id, its raw state and its message. A visit does not acknowledge
+them. Claude Code reports each subagent this way.
 
-- The record's `title`, or its id if the title is empty.
-- Its raw state as the indicator.
-- Its `msg` as the caption.
+### Reduction
 
-A visit does not acknowledge these records. They are only for display
-and do not accept the cursor or clicks. Claude Code reports each subagent
-this way, with the subagent's description as its title.
+`ko_server/src/pane_status.rs` reduces a pane's records to one status.
+A terminal's report and an agent use this order: blocked > working >
+idle. The smallest bytewise id resolves ties.
 
-`Pane_status.observe` reduces all records for a pane to one status.
-A terminal's generic report and an agent use this order: blocked >
-working > idle. The smallest bytewise id resolves ties.
-
-The **representative** record supplies the message and a terminal's title.
-It is the first available record in this order:
-
-1. Blocked.
-2. Working.
-3. The retained outcome's record.
-4. Idle.
-5. Any record.
+The **representative** record supplies the message and a terminal's
+title. It is the first available record in this order: blocked,
+working, the retained outcome's record, idle, any record.
 
 An **outcome** occurs when a record enters done or error from another
-state or from absence. This includes first observation, reappearance,
-and transitions from done to error and back. The outcome has that read's
-pane serial. An unchanged final record never makes another outcome,
-even if its message, title or serial changes. Entries in one read use
-the smallest id.
+state or from absence. This includes the first observation, a
+reappearance, and a change from done to error and back. The outcome
+has that change's set serial. An unchanged final record never makes
+another outcome, even if its message, title or serial changes.
 
 The outcome shows at aggregate idle. If it arrives while other records
 work, it waits. A new live episode after idle clears it. Removing a
-record keeps its outcome. `since` is when the feed first observes the
+record keeps its outcome. `since` is when the model first observed the
 current state, or the current outcome at idle.
 
-Tracking resets when:
-
-- An agent's root app changes, appears or clears.
-- Its `@kido_session` changes.
-- An ssh destination changes.
-
-A terminal report's app change or removal does not reset tracking.
-Thus, its outcome remains after the program exits and clears its records.
-It remains until a command is promoted to running or a new report
-episode begins.
-
-`Tmux.Program_status` controls record types, parsing, encoding, root and
-app lookup, and progress extraction. `Pane_status` controls reduction and
-tracking. Each frontend controls acknowledgement.
+Tracking resets when an agent's root app changes, appears or clears,
+when its `pi.session` changes, or when the ssh destination changes. A
+terminal report's app change or removal does not reset tracking, so its
+outcome remains after the program exits and clears its records, until
+a command is promoted to running or a new report episode begins.
 
 ### OSC 133
 
-The shell marks the parts of its command cycle:
+The shell marks the parts of its command cycle: `A`, a prompt starts;
+`C`, the command starts, with its command line; `D`, the command
+finishes with its exit status. `ko-pane` forwards primary `A`, `C` and
+`D`. The coordinator keeps them in `ko_server/src/telemetry.rs`: the
+last prompt's time, the last command with its start, its line and
+whether `D` has not arrived, and the last exit, which `D` sets and the
+next `C` clears. An `A` ends a command that never reported `D`, in
+one line: there is no stuck flag to heal.
 
-- `A`: a prompt starts. `N` has the same meaning and also starts a new
-  command.
-- `C`: the user has entered the command line, and the command starts.
-- `D`: the command finishes and reports its exit status.
+The shell phase:
 
-kido reads these markers through `#{pane_last_prompt_time}` and
-`#{pane_command_*}` to determine the shell phase:
+- Unknown: no prompt was seen, as with an unintegrated shell. This is
+  not idle.
+- Idle: the shell is at a known prompt. The last exit carries the
+  code, the command line, the start and the end. A `C` without a `D`
+  gives no exit; a later prompt does not mean success.
+- Running: the model observes a command for 0.2 s on its clock, from
+  the first observation (`DEBOUNCE` in `pane_status.rs`). Until
+  promotion, it reports the previous Idle, so a short command never
+  reports running. Promotion removes the previous exit and any report
+  outcome from before the command. The model arms one 200 ms timer for
+  a pane with a pending promotion.
+- The alternate screen reports running at once (`fullscreen`). It
+  keeps the OSC 133 command if known. If that command still runs when
+  the alternate screen ends, the phase remains running.
 
-- Unknown: kido has seen no prompt, as with an unintegrated shell.
-  This is not idle.
-- Idle: the shell is at a known prompt. kido captures the last command's
-  complete exit information from one read while tmux still holds it:
-  code, command line, start and end. A `C` without a `D` gives no exit.
-  A later prompt does not mean success.
-- Running: kido observes a command for 0.2s on its clock, starting from
-  the first observation. A new start restarts the wait. Until promotion,
-  kido reports the previous Idle, so a short command never reports running.
-  Promotion removes the previous exit and any report outcome from before
-  the command.
-- The alternate screen reports running immediately (`fullscreen`).
-  It keeps the OSC 133 command if known. Otherwise, its origin is unknown.
-  If that command still runs when the alternate screen ends, the phase
-  remains running.
+### The foreground and the active screen
 
-### Pane title
+`ko-pane` reads the pty's foreground process group only on events
+(protocol.md, section 14) and sends a `foreground` frame when the pid
+or the name changed, and an `alternate` frame when the active screen
+changed after a write. The known limit: a shell sends `C` before it
+forks, so a program that prints nothing shows the shell as the
+foreground until its first output or its `D`. ssh prints at once, so
+the case that matters is covered.
 
-kido reads OSC 0/2 through the tmux variable `#{pane_title}`.
+### The pane title
 
-An agent row uses this title without changes for `Some_agent` and for `Pi_agent`
-without a `/name`. A `Terminal` row does not use it.
-
-Claude Code sets `Claude Code` at startup, then a session summary
-(observed: `Reply with ok`).
+The pane title is OSC 0/2 as the terminal holds it. An agent row uses
+it unchanged for `SomeAgent`, and for `PiAgent` without a name. A
+`Terminal` row does not use it. Claude Code sets `Claude Code` at
+startup, then a session summary.
 
 ### Run records
 
-Every tracked process has one run, `<state>/runs/<run-id>/`. Its
-`meta.json` contains launch metadata: name, parent, pane, command and
-start. It contains the outcome after the run ends. The run's pane has
-the `@kido_run` mark. See design.md, "Who is authoritative for what".
+Every run has one record, `<state>/runs/<run-id>/` (design.md, "Who is
+authoritative for what"). The server ties a run to its pane when it
+creates the pane; the pane's row carries the run.
 
-A local pi that runs kido's extension (`kido-pi`) owns four pane
-options: `@kido_session`, `@kido_name`, `@kido_inbox` and
-`@kido_activity`. kido's classification and status read only these
-options, and trust them only while the pane has an OSC 7501 root with
-`app=pi`. kido stores nothing for a pi session.
+A local pi that runs ko's harness (`ko-pi`) owns the four `pi.*`
+variables. The server reads only these, and trusts them only while
+the pane has an OSC 7501 root with `app=pi`. ko stores nothing for a
+pi session.
 
 ### The ssh mark
 
-kido's `ssh` shim runs `kido ssh`. This command sets the pane option
-`@kido_ssh` (`set-option -p`) to the destination argument as typed,
-immediately before it replaces itself with ssh. kido does not resolve
-it: `ssh fish000` and `ssh -l bob fish000` give `fish000`, and
-`ssh bob@fish000` gives `bob@fish000`. If kido cannot parse the
-arguments, or the destination is absent, empty or hyphen-prefixed, it
-unsets the mark but still runs ssh.
-It never unsets the option. kido trusts `@kido_ssh` only while
-`#{pane_current_command}` is `ssh`. The next `kido ssh` in the pane
-overwrites it.
+ko's `ssh` shim runs `ko ssh` (`ko_shell/src/ssh.rs`). Inside a pane
+(`KO_PANE` and `KO_SOCKET` set), before it replaces itself with ssh, it
+writes two pane variables through the API, with a 2 s deadline, and a
+failed or refused write never stops ssh:
 
-Before exec, `kido ssh` also sets the pane option `@kido_ssh_args`.
-Its value is a JSON array of strings. The last element is the destination
-as entered, the same token as `@kido_ssh`. The preceding elements are ssh
-options and their values, in the user's order, before the destination.
-Grouped options and attached values become separate elements. ssh parses
-options before and after the destination, until `--` or the first remote
-command argument. `--` before the destination also stops option parsing
-after it. The remote command is not included.
+- `ssh.dest`: the destination as typed. ko does not resolve it: `ssh
+  fish000` and `ssh -l bob fish000` give `fish000`, and `ssh
+  bob@fish000` gives `bob@fish000`. If ko cannot parse the arguments,
+  or the destination is absent, empty or hyphen-prefixed, it deletes
+  the variable but still runs ssh.
+- `ssh.args`: a JSON array of strings. The last element is the
+  destination. The preceding elements are the kept options and their
+  values, in the user's order. The remote command is not included.
 
-A consumer must put its required `-o` settings before the recorded
-arguments. OpenSSH uses the first value for each setting. For example,
-`-o BatchMode=yes` must precede a recorded `-o BatchMode=no`.
-The recorded `-o` values stay unchanged.
+The variables stay after ssh exits. The server trusts them only while
+the pane's foreground process is `ssh`. The next `ko ssh` in the pane
+replaces them.
 
-The command keeps these options:
+`ko_shell/src/ssh.rs` classes each option letter: an option that
+names the connection target (port, jump hosts, configuration,
+identity, user, address family, ciphers, a control socket) is kept
+with its value; an option that controls the terminal, forwarding,
+background operation, stdin, messages or logs is dropped; a mode that
+cannot supply an ordinary remote command (a control operation, master
+mode, stdio forwarding, a tunnel, a subsystem, a query) prevents
+recording, as does a missing option value, a bad destination or an
+argument that is not UTF-8. A consumer must put its own `-o` settings
+before the recorded arguments, because OpenSSH takes the first value
+for each setting.
 
-- `-p`, `-J`, `-F`, `-i`, `-l`, `-o`: port, jump hosts, configuration,
-  identity, user and configuration options. Each `-o` value stays intact.
-- `-4`, `-6`: address family.
-- `-B`, `-b`: interface and source address.
-- `-c`, `-m`: cipher and MAC selection.
-- `-I`, `-K`, `-k`: PKCS#11 provider and GSSAPI authentication.
-- `-P`: configuration tag.
-- `-C`: compression.
-- `-S`: control socket. A new connection can use the same master.
-
-It removes `-t`, `-T`, `-L`, `-R`, `-D`, `-A`, `-a`, `-g`, `-X`,
-`-Y`, `-x`, `-N`, `-f`, `-n`, `-q`, `-v`, `-y`, `-E` and `-e`.
-These options control the terminal, forwarding, background operation,
-stdin, messages, logs or escape characters, not the connection target.
-
-It does not record `-O` (a control operation), `-M` (master mode),
-`-W` (stdio forwarding), `-w` (a tunnel), `-s` (a subsystem),
-`-G`, `-Q` or `-V` (configuration, query or version output).
-These modes cannot supply an ordinary remote command. An unknown option,
-a missing option value, an absent, empty or hyphen-prefixed destination,
-or invalid UTF-8 in any argument also prevents recording. Valid non-ASCII
-text stays intact. JSON escaping preserves control bytes.
-
-Each call replaces `@kido_ssh_args`, or unsets it if the arguments cannot
-be recorded. The value remains after ssh exits. The command sets the
-option through tmux argv, without format expansion or a shell command
-string. If the set fails, it attempts to unset the option. A failed set
-or unset does not stop ssh and produces no warning, as with `@kido_ssh`.
-If tmux cannot accept the unset, an old value can remain.
-
-A client reads the value with `show-options -p -v -t %P @kido_ssh_args`.
-It must use the same foreground-ssh check as for `@kido_ssh`. This option
-is not part of RPC. It does not change the RPC protocol or server stamp:
-the fork build key, server configuration and launcher environment stay
-the same.
+ssh parses options before and after the destination, until `--` or
+the first remote command argument.
 
 ## Pane kinds
 
-kido classifies a pane's kind, `pane_kind`, in this order:
+`Kind` in `ko_server/src/pane_kind.rs` classifies a pane in this
+order. A variable that is not a JSON string counts as absent.
 
-1. A trusted ssh mark gives `Ssh`. Its `pane` is the kind of the root
-   record from the remote side. If the app is `pi` or `claude-code`, the
-   kind is `Remote_agent { name = app }`. Otherwise, it is
-   `Remote_terminal`.
-2. A root record with `app = "pi"` on a pane with `@kido_session` gives
-   `Pi_agent`.
-3. A root record with `app = "claude-code"`, or `app = "pi"` without
-   `@kido_session`, gives `Some_agent { name = app }`.
-4. Anything else is `Terminal`.
+1. `ssh.dest` is a non-empty string and the foreground process is
+   `ssh`: `Ssh`. Its `pane` is `RemoteKind::Agent` when the root record's
+   app is `pi` or `claude-code`, else `RemoteKind::Terminal`.
+2. The root app is `pi` and `pi.session` is a non-empty string:
+   `PiAgent`, with its name, inbox and activity from `pi.name`,
+   `pi.inbox` and `pi.activity`.
+3. The root app is `claude-code`, or `pi` without the session
+   variable: `SomeAgent` with the app as its name.
+4. Anything else: `Terminal`.
 
-A run pane (`@kido_run`) can have any of these kinds. Its run record adds
-the run's name, elapsed time and outcome (below).
+The trust rule is the gate above and nothing else: a stale
+`pi.session` on a shell pane is no agent; a stale `ssh.dest` after ssh
+exits is no `Ssh`. A run pane can have any kind.
 
 ## The matrix
 
 |                  | local                     | over ssh                                      |
 |------------------|---------------------------|-----------------------------------------------|
-| shell            | `Terminal`                | `Ssh { pane = Remote_terminal }`              |
-| some agent       | `Some_agent`              | `Ssh { pane = Remote_agent }`                 |
-| local pi agent   | `Pi_agent`                |                                               |
+| shell            | `Terminal`                | `Ssh { pane: RemoteKind::Terminal }`              |
+| some agent       | `SomeAgent`              | `Ssh { pane: RemoteKind::Agent }`                 |
+| local pi agent   | `PiAgent`                |                                               |
 
 ### `Terminal`
 
-- Detected: no agent root app and no trusted ssh mark.
 - Status: the shell phase from OSC 133, plus a separate report from any
-  other program's records. This report uses a plain tool's OSC 7501 or
-  OSC 9;4 and is present in every phase.
-- Title: the representative record's `title`, then its `app`, then
-  `#{pane_current_command}`. A live run with no records uses the run name.
-  If there is no report, the TUI instead shows the line of a running,
-  non-fullscreen command.
+  other program's records, present in every phase.
+- Row title: the representative record's title, then its app, then the
+  foreground process name; while a non-fullscreen command runs with no
+  report, the command line.
 
-### `Some_agent { name }`
+### `SomeAgent`
 
-- Detected: the root record's app. Examples: Claude Code
-  (`app=claude-code`), pi without kido's extensions (`app=pi`, no
-  `@kido_session`).
-- Title: the pane title, or `name` when that is empty.
+- Detected: the root record's app: Claude Code (`claude-code`), or pi
+  without ko's harness (`pi`, no `pi.session`).
+- Row title: the pane title, or the app name when that is empty.
 - Status: the records' reduction.
-- Supports: `kido prompt`, by paste, when it is the only agent in scope.
+- Supports: `ko prompt`, by paste, when it is the only agent in scope.
 
-Pi and Claude Code report their status through OSC 7501.
+### `PiAgent`
 
-### `Pi_agent`
+- Detected: root app `pi` and `pi.session`.
+- Row title: `pi.name` when set, else the pane title.
+- Status: as `SomeAgent`, from the pi root. A message that repeats the
+  title is dropped; without a message, `pi.activity` supplies it.
+- Supports: everything in design.md and design-subagents.md: the inbox
+  for `ko prompt` and `message_agent`, name addressing, `list_runs`,
+  parent links, run records.
 
-- Detected: root app `pi` and `@kido_session`.
-- Title: `@kido_name` when set, otherwise the pane title.
-- Status: as `Some_agent`, from the pi root (pi 1.4.0's native emitter).
-  kido removes `msg` if it repeats the title. If there is no `msg`, `@kido_activity`
-  supplies the message.
-- Supports: everything in `design.md` and `design-subagents.md`:
-  - The inbox for `kido prompt` and `message_agent` in its three modes.
-  - Name addressing when named.
-  - `list_runs`.
-  - Parent links.
-  - Run records.
+### `Ssh`
 
-### `Ssh { destination; pane }`
+- Detected: the ssh mark, trusted while the foreground is `ssh`. A
+  remote program's OSC 133 and OSC 7501 reach the local pane through
+  ssh like other output.
+- Row title: `ssh <destination>`; while an interactive remote command
+  runs outside the alternate screen, `: <command line>` follows. A
+  `RemoteKind::Agent` keeps its agent title.
+- Status: a `RemoteKind::Agent` uses its records' reduction. Otherwise the
+  pane is an ordinary running command until a remote OSC 133 prompt
+  later than ssh's start. Then the session stays `interactive` for
+  that destination, and the remote shell's markers give the phase.
+- Priming: `ko ssh` primes the remote shell when stdin is a terminal,
+  there is no remote command, and none of `-N -T -W -f -s -n -O -Q -V
+  -G` is given (design.md, "Priming a remote shell"). Otherwise it
+  runs ssh with unchanged arguments.
 
-- Detected: the ssh mark, trusted while the pane's command is `ssh`.
-  A remote program's OSC 133 and OSC 7501 reach the local pane through
-  ssh like other output. `pane` is the kind of the remote root record.
-- Destination: the typed destination from the mark. The TUI labels a
-  remote terminal `ssh <destination>`, and search matches that text.
-  While an interactive remote command runs, it adds `: <command line>`.
-  A `Remote_agent` keeps its agent title.
-- Status: a `Remote_agent` uses its records' reduction. Otherwise, the
-  pane is an ordinary command until a remote OSC 133 prompt strictly
-  later than ssh's start. It reports running while ssh runs. Once that
-  remote prompt arrives, the session stays `interactive` for that
-  destination. The remote shell's markers then determine the phase.
-- Priming: `kido ssh` primes the remote shell if all these conditions apply:
-  - stdin is a terminal.
-  - There is no remote command.
-  - None of `-N -T -W -f -s -n -O -Q -V -G` is given.
+## The published status
 
-  Otherwise, it runs ssh with unchanged arguments.
+The model (`ko_server/src/model.rs`) writes, for each pane, the typed
+status (the kind with its phase or agent state), the published record
+set, the row title, the caption's message and progress, and `since`.
+The row title and caption rules are in the server because Kido.app and
+the terminal client both show them. The terminal client shows the mark
+and the title; Kido.app shows the caption and the child rows too.
 
 ## Precedence
 
 - A run's ending has the highest precedence. If its run has an outcome
-  or the pane is dead, the pane is Ended with that outcome.
-  Without a recorded outcome, the dead pane's exit status or signal
-  gives it.
+  or the pane is dead, the pane is ended with that outcome. Without a
+  recorded outcome, the dead pane's exit status or signal gives it.
 - While present, a terminal report has precedence over its shell phase
-  for the frontend's indicator and message. A shell prompt (`A`) clears
-  the non-final records.
-- For `Pi_agent`, `@kido_session` and `@kido_name` give identity and
-  name. OSC 7501 gives status.
-- A pane's kind determines only its row and `kido prompt` scope.
-  The extension's messaging and control use `@kido_inbox` and session
-  ids under the same trust rule, so a pane whose pi root clears is not
-  reachable as an agent. A child's report and the parent
-  watch read only `@kido_session` and pane death (design.md, "The
-  trust rule").
+  for the indicator and the message. A prompt start clears the
+  non-final records.
+- For `PiAgent`, `pi.session` and `pi.name` give identity and name.
+  OSC 7501 gives status.
+- A pane's kind determines only its row and `ko prompt` scope. The
+  harness's messaging and control use `pi.inbox` and session ids
+  under the same trust rule. A child's report and the parent watch
+  read only `pi.session` and pane death (design.md, "The trust rule").
 
-## Frontends
+## Clients
 
-The TUI makes each row from the title and status:
-
-- Glyphs for running, waiting, or an unseen success or failure.
-- A caption from message and progress, or otherwise the run's elapsed clock.
-- The result of an ended run.
-
-On each successful tick, it marks the active pane's outcomes seen.
-While a modal pane is open, it uses the pane under that modal pane.
-An exit that ends before the TUI starts counts as seen.
-
-After a displayed run finishes, the TUI continues to show it running for
-0.5s, unless an unseen exit uses the column. If a new command starts
-during that hold, the TUI shows it immediately instead of after the
-0.2s promotion.
+A client makes each row from the title and the status
+(`ko_client/src/status.rs`): a glyph for running, waiting, or an
+unseen success or failure; a caption from the message and progress, or
+the run's elapsed clock; the result of an ended run. A visit
+acknowledges the shown pane's outcomes, and an exit that ended before
+the client started counts as seen. The seen state is the client's;
+nothing goes to the server.

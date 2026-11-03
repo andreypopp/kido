@@ -1,0 +1,5 @@
+build/
+Kido.xcodeproj/**
+!Kido.xcodeproj/**/
+!Kido.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+.build/

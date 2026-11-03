@@ -100,21 +100,16 @@ if [ "$machine_state" != "true" ]; then
 	fi
 fi
 
-kido_repo_root=$(cd "$script_dir/.." && pwd)
-tmux_build_key=$("$script_dir/install-tmux-fork.sh" --print-build-key)
-dockerfile_digest=$(cat "$script_dir/ci-like/Dockerfile" "$kido_repo_root/dune-project" "$kido_repo_root/dune-workspace" "$kido_repo_root"/dune.lock/* | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-12)
-image="kido-ci-like:$tmux_build_key-$dockerfile_digest"
+ko_root=$(cd "$script_dir/.." && pwd)
+dockerfile_digest=$(cat "$script_dir/ci-like/Dockerfile" "$script_dir/install-zig.sh" "$ko_root/rust-toolchain.toml" | (shasum -a 256 2>/dev/null || sha256sum) | cut -c1-12)
+image="ko-ci-like:$dockerfile_digest"
 
 if ! "$podman" image exists "$image" 2>/dev/null; then
-	echo "==> building $image (first build compiles the tmux fork from source; can take several minutes)" >&2
-	# The build context is kido's own repo root, not scripts/: the
-	# Dockerfile builds the fork from third_party/tmux, which only exists
-	# there.
+	echo "==> building $image (installs the toolchains; can take several minutes)" >&2
 	"$podman" build \
-		--build-arg "TMUX_BUILD_KEY=$tmux_build_key" \
 		-t "$image" \
 		-f "$script_dir/ci-like/Dockerfile" \
-		"$kido_repo_root"
+		"$ko_root"
 fi
 
 userns_args=()
@@ -125,18 +120,26 @@ else
 	userns_args=(--user "$repo_owner")
 fi
 
+# A linked worktree's .git file names a directory of the main repository, which the
+# container needs for git (ko_server/build.rs reads the ghostty pin through it).
+git_args=()
+if [ -f "$repo_root/.git" ]; then
+	git_common=$(cd "$(sed -n 's/^gitdir: //p' "$repo_root/.git")/../.." && pwd)
+	git_args=(-v "$git_common:$git_common:ro")
+fi
+
 env_args=()
-for var in $(env | awk -F= '/^KIDO_/{print $1}'); do
+for var in $(env | awk -F= '/^KO_/{print $1}'); do
 	case "$var" in
-	KIDO_TMUX | KIDO_STATE_DIR) continue ;; # always the container's own, below
-	KIDO_AGENT_*) continue ;; # the host's own parent edge, never the container's
+	KO_STATE_DIR) continue ;; # always the container's own, below
+	KO_AGENT_* | KO_PANE | KO_SOCKET | KO_RUN_ID | KO_RUN_OUTPUT) continue ;; # the host's own pane and parent edge, never the container's
 	esac
 	env_args+=(-e "$var")
 done
 
 busy_names=()
 cleanup() {
-	for name in "${busy_names[@]}"; do
+	for name in ${busy_names[@]+"${busy_names[@]}"}; do
 		"$podman" stop -t 1 "$name" >/dev/null 2>&1 || true
 	done
 }
@@ -150,7 +153,7 @@ if [ "$contend" -gt 0 ]; then
 	fi
 	echo "==> starting $contend busy sibling container(s) for contention, $sibling_cpus cpu each (budget $budget total)" >&2
 	for i in $(seq 1 "$contend"); do
-		name="kido-ci-like-busy-$$-$i"
+		name="ko-ci-like-busy-$$-$i"
 		"$podman" run -d --rm --name "$name" --cpus "$sibling_cpus" busybox \
 			sh -c 'for i in $(seq 1 16); do (while true; do :; done) & done; wait' >/dev/null
 		busy_names+=("$name")
@@ -163,13 +166,13 @@ if [ -n "$cpu_shares" ]; then
 	cpu_shares_args=(--cpu-shares "$cpu_shares")
 fi
 
-container_name="kido-ci-like-$$"
+container_name="ko-ci-like-$$"
 watcher_pid=""
 if [ "$timeout_s" -gt 0 ]; then
 	(
 		sleep "$timeout_s"
 		"$podman" stop -t 2 "$container_name" >/dev/null 2>&1
-	) &
+	) >/dev/null 2>&1 &
 	watcher_pid=$!
 fi
 
@@ -178,15 +181,16 @@ status=0
 	--name "$container_name" \
 	--cpus "$cpus" \
 	--memory "$memory" \
-	"${cpu_shares_args[@]}" \
-	"${userns_args[@]}" \
-	-e KIDO_STATE_DIR=/tmp/kido-state \
+	--shm-size 1g \
+	${cpu_shares_args[@]+"${cpu_shares_args[@]}"} \
+	${userns_args[@]+"${userns_args[@]}"} \
+	-e KO_STATE_DIR=/tmp/ko-state \
 	-e HOME=/home/ci \
-	"${env_args[@]}" \
+	${env_args[@]+"${env_args[@]}"} \
 	-v "$repo_root:/repo:Z" \
-	-v kido-ci-like-gomodcache:/go/pkg/mod \
-	-v kido-ci-like-gocache:/gocache \
-	-v kido-ci-like-dune-build:/dune-build \
+	${git_args[@]+"${git_args[@]}"} \
+	-v ko-ci-like-target:/repo/target \
+	-v ko-ci-like-build:/repo/build \
 	-w /repo \
 	"$image" \
 	"$@" || status=$?

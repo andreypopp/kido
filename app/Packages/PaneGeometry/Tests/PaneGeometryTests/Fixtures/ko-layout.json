@@ -1,0 +1,418 @@
+{
+  "instance" : "d07cd59263c35f7b380fe51395ba87e4",
+  "layout" : {
+    "layout" : {
+      "sessions" : [
+        {
+          "id" : "session_1",
+          "name" : "main",
+          "vars" : {
+
+          },
+          "windows" : [
+            {
+              "cols" : 80,
+              "floats" : [
+                {
+                  "border" : false,
+                  "cols" : 20,
+                  "pane" : "pane_5",
+                  "rows" : 6,
+                  "title" : "",
+                  "x" : 12,
+                  "y" : 6,
+                  "z" : 0
+                },
+                {
+                  "border" : false,
+                  "cols" : 28,
+                  "pane" : "pane_4",
+                  "rows" : 8,
+                  "title" : "",
+                  "x" : 6,
+                  "y" : 4,
+                  "z" : 1
+                }
+              ],
+              "focus" : "pane_1",
+              "id" : "window_1",
+              "name" : "tiles",
+              "rows" : 24,
+              "tree" : {
+                "children" : [
+                  {
+                    "cols" : 40,
+                    "pane" : "pane_1",
+                    "rows" : 24
+                  },
+                  {
+                    "children" : [
+                      {
+                        "cols" : 39,
+                        "pane" : "pane_2",
+                        "rows" : 12
+                      },
+                      {
+                        "cols" : 39,
+                        "pane" : "pane_3",
+                        "rows" : 11
+                      }
+                    ],
+                    "split" : "v"
+                  }
+                ],
+                "split" : "h"
+              },
+              "vars" : {
+
+              }
+            },
+            {
+              "cols" : 80,
+              "floats" : [
+
+              ],
+              "focus" : "pane_6",
+              "id" : "window_2",
+              "name" : "zoomed",
+              "rows" : 24,
+              "tree" : {
+                "children" : [
+                  {
+                    "cols" : 40,
+                    "pane" : "pane_6",
+                    "rows" : 24
+                  },
+                  {
+                    "cols" : 39,
+                    "pane" : "pane_7",
+                    "rows" : 24
+                  }
+                ],
+                "split" : "h"
+              },
+              "vars" : {
+
+              },
+              "zoom" : "pane_7"
+            }
+          ]
+        }
+      ]
+    },
+    "revision" : 2
+  },
+  "outline" : [
+    {
+      "id" : "session_1",
+      "name" : "main",
+      "type" : "session"
+    },
+    {
+      "depth" : 0,
+      "id" : "pane_1",
+      "type" : "pane",
+      "window" : "window_1"
+    },
+    {
+      "depth" : 0,
+      "id" : "pane_2",
+      "type" : "pane",
+      "window" : "window_1"
+    },
+    {
+      "depth" : 0,
+      "id" : "pane_3",
+      "type" : "pane",
+      "window" : "window_1"
+    },
+    {
+      "depth" : 0,
+      "id" : "pane_5",
+      "type" : "pane",
+      "window" : "window_1"
+    },
+    {
+      "depth" : 0,
+      "id" : "pane_4",
+      "type" : "pane",
+      "window" : "window_1"
+    },
+    {
+      "depth" : 0,
+      "id" : "pane_6",
+      "type" : "pane",
+      "window" : "window_2"
+    },
+    {
+      "depth" : 0,
+      "id" : "pane_7",
+      "type" : "pane",
+      "window" : "window_2"
+    }
+  ],
+  "panes" : [
+    {
+      "command" : [
+        "\/bin\/sh",
+        "-c",
+        "stty raw -echo; exec cat"
+      ],
+      "cwd" : "\/",
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82015
+      },
+      "id" : "pane_1",
+      "label" : "sh",
+      "mark" : "none",
+      "pid" : 0,
+      "records_seen" : false,
+      "status" : {
+        "kind" : {
+          "phase" : {
+            "type" : "unknown"
+          },
+          "type" : "terminal"
+        },
+        "program_status" : {
+          "records" : [
+
+          ],
+          "serial" : 0
+        },
+        "since" : 1776826860298583,
+        "title" : "sh"
+      },
+      "title" : "",
+      "vars" : {
+
+      }
+    },
+    {
+      "command" : [
+        "\/bin\/sh",
+        "-c",
+        "stty raw -echo; exec cat"
+      ],
+      "cwd" : "\/",
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82033
+      },
+      "id" : "pane_2",
+      "label" : "sh",
+      "mark" : "none",
+      "pid" : 0,
+      "records_seen" : false,
+      "status" : {
+        "kind" : {
+          "phase" : {
+            "type" : "unknown"
+          },
+          "type" : "terminal"
+        },
+        "program_status" : {
+          "records" : [
+
+          ],
+          "serial" : 0
+        },
+        "since" : 1776826921802958,
+        "title" : "sh"
+      },
+      "title" : "",
+      "vars" : {
+
+      }
+    },
+    {
+      "command" : [
+        "\/bin\/sh",
+        "-c",
+        "stty raw -echo; exec cat"
+      ],
+      "cwd" : "\/",
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82014
+      },
+      "id" : "pane_3",
+      "label" : "sh",
+      "mark" : "none",
+      "pid" : 0,
+      "records_seen" : false,
+      "status" : {
+        "kind" : {
+          "phase" : {
+            "type" : "unknown"
+          },
+          "type" : "terminal"
+        },
+        "program_status" : {
+          "records" : [
+
+          ],
+          "serial" : 0
+        },
+        "since" : 1776826860301875,
+        "title" : "sh"
+      },
+      "title" : "",
+      "vars" : {
+
+      }
+    },
+    {
+      "command" : [
+        "\/bin\/sh",
+        "-c",
+        "stty raw -echo; exec cat"
+      ],
+      "cwd" : "\/",
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82019
+      },
+      "id" : "pane_4",
+      "label" : "sh",
+      "mark" : "none",
+      "pid" : 0,
+      "records_seen" : false,
+      "status" : {
+        "kind" : {
+          "phase" : {
+            "type" : "unknown"
+          },
+          "type" : "terminal"
+        },
+        "program_status" : {
+          "records" : [
+
+          ],
+          "serial" : 0
+        },
+        "since" : 1776826860302041,
+        "title" : "sh"
+      },
+      "title" : "",
+      "vars" : {
+
+      }
+    },
+    {
+      "command" : [
+        "\/bin\/sh",
+        "-c",
+        "stty raw -echo; exec cat"
+      ],
+      "cwd" : "\/",
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82017
+      },
+      "id" : "pane_5",
+      "label" : "sh",
+      "mark" : "none",
+      "pid" : 0,
+      "records_seen" : false,
+      "status" : {
+        "kind" : {
+          "phase" : {
+            "type" : "unknown"
+          },
+          "type" : "terminal"
+        },
+        "program_status" : {
+          "records" : [
+
+          ],
+          "serial" : 0
+        },
+        "since" : 1776826860302208,
+        "title" : "sh"
+      },
+      "title" : "",
+      "vars" : {
+
+      }
+    },
+    {
+      "command" : [
+        "\/bin\/sh",
+        "-c",
+        "stty raw -echo; exec cat"
+      ],
+      "cwd" : "\/",
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82016
+      },
+      "id" : "pane_6",
+      "label" : "sh",
+      "mark" : "none",
+      "pid" : 0,
+      "records_seen" : false,
+      "status" : {
+        "kind" : {
+          "phase" : {
+            "type" : "unknown"
+          },
+          "type" : "terminal"
+        },
+        "program_status" : {
+          "records" : [
+
+          ],
+          "serial" : 0
+        },
+        "since" : 1776826860302291,
+        "title" : "sh"
+      },
+      "title" : "",
+      "vars" : {
+
+      }
+    },
+    {
+      "command" : [
+        "\/bin\/sh",
+        "-c",
+        "stty raw -echo; exec cat"
+      ],
+      "cwd" : "\/",
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82018
+      },
+      "id" : "pane_7",
+      "label" : "sh",
+      "mark" : "none",
+      "pid" : 0,
+      "records_seen" : false,
+      "status" : {
+        "kind" : {
+          "phase" : {
+            "type" : "unknown"
+          },
+          "type" : "terminal"
+        },
+        "program_status" : {
+          "records" : [
+
+          ],
+          "serial" : 0
+        },
+        "since" : 1776826860302875,
+        "title" : "sh"
+      },
+      "title" : "",
+      "vars" : {
+
+      }
+    }
+  ],
+  "selection" : {
+
+  }
+}

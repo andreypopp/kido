@@ -1,0 +1,13 @@
+[package]
+name = "ko_vt"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ko_pane_wire = { path = "../ko_pane_wire" }
+ko_sys = { path = "../ko_sys" }
+ko_vt_sys = { path = "../ko_vt_sys" }
+
+[lints]
+workspace = true

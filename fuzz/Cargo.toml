@@ -1,0 +1,88 @@
+[package]
+name = "fuzz"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+ko_pane = { path = "../ko_pane" }
+ko_pane_wire = { path = "../ko_pane_wire", features = ["fuzz"] }
+ko_server = { path = "../ko_server", features = ["fuzz"] }
+ko_sys = { path = "../ko_sys", features = ["fuzz"] }
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "frame"
+path = "fuzz_targets/frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "control"
+path = "fuzz_targets/control.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ring"
+path = "fuzz_targets/ring.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "loop"
+path = "fuzz_targets/loop.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "head"
+path = "fuzz_targets/head.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http"
+path = "fuzz_targets/http.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frames"
+path = "fuzz_targets/frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client"
+path = "fuzz_targets/client.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ws"
+path = "fuzz_targets/ws.rs"
+test = false
+doc = false
+bench = false
+
+[lints]
+workspace = true

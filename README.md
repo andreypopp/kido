@@ -1,177 +1,105 @@
-# kido
+# Kido
 
-A tmux workflow to manage coding agents. It supports pi and Claude Code.
+A terminal server for coding agents. It supports pi and Claude Code.
 
 Website: <https://kido.tools>
 
-Kido runs a modified tmux to collect status from every pane and show this
-information in a sidebar. Kido includes a pi extension for process
-management: subagents and an async bash tool. Start pi as `kido-pi` to
-load it. The extension uses tmux for supervision and status reporting.
+Kido runs `ko`, its server and command-line client. ko holds the
+terminal of every pane, collects the status of every agent and shell,
+and runs agents as subagents of each other. Kido.app is the native
+macOS client. ko-pi is the pi harness for process management: subagents,
+messages between agents and an async bash tool.
 
 ## Install
 
 ```sh
-brew install andreypopp/tap/kido
+brew install andreypopp/tap/ko
 ```
 
-Then start kido from a plain terminal:
+Kido.app, the macOS client:
 
 ```sh
-kido
+brew install --cask andreypopp/tap/kido-app
 ```
 
-Use kido as you use tmux.
+## Use
 
-## Configuration
+Start ko from a plain terminal:
 
-Put your configuration in `~/.config/kido/kido.conf`, with tmux syntax.
-If you set `$XDG_CONFIG_HOME`, use `$XDG_CONFIG_HOME/kido/kido.conf` instead.
-
-If you want to use your `~/.tmux.conf`, source it from `kido.conf`:
-
-```tmux
-source-file ~/.tmux.conf
+```sh
+ko
 ```
 
-### Sidebar colours
+`ko` connects to your server, and starts one if none runs. It shows one
+pane at a time, with every pane in a list grouped by session, and one
+status mark for each pane: a running agent or command, a waiting
+agent, an unseen success, an unseen failure. The mark clears when you
+visit the pane.
 
-The sidebar colours are tmux options that use tmux style syntax:
-`fg=`, `bg=`, `bold`, `italics`, ... . Colours use the 16 ANSI colour names,
-`colourN` or `#rrggbb`. The sidebar reads the options about once a second.
-Thus, a reload changes its style within a second. An unset option keeps
-the default. The sidebar's last row names the first invalid option.
-
-| option | styles |
-|--------|--------|
-| `@kido-sidebar-row-style` | pane titles: agents, and the host of an ssh row |
-| `@kido-sidebar-command-style` | a shell's command |
-| `@kido-sidebar-dim-style` | tree lines, captions, elapsed times |
-| `@kido-sidebar-session-style` | other sessions' names; `bg=` fills the row |
-| `@kido-sidebar-current-style` | the current session's name; `bg=` fills the row |
-| `@kido-sidebar-current-rows-style` | `bg=` fills the current session's rows |
-| `@kido-sidebar-running-style`, `-waiting-`, `-done-`, `-error-` | status glyphs |
-
-`side-status-style` sets the panel behind these rows. For example:
-
-```tmux
-set -g @kido-sidebar-row-style          "fg=#eee8d5"
-set -g @kido-sidebar-command-style      "fg=#eee8d5"
-set -g @kido-sidebar-dim-style          "fg=#586e75"
-set -g @kido-sidebar-session-style      "fg=#c9d1cf,bold,bg=#123c48"
-set -g @kido-sidebar-current-style      "fg=#fdf6e3,bold,bg=#1f5566"
-set -g @kido-sidebar-current-rows-style "bg=#0f3a47"
-```
-
-## Keys
-
-The default key bindings are:
+The keys are Ctrl+Shift chords, which need a terminal with the kitty
+keyboard protocol (Ghostty, kitty, WezTerm, foot, Kido.app):
 
 | key | action |
 |-----|--------|
-| `prefix K` | show the sidebar with keyboard focus, or hide it |
-| `prefix k` | toggle keyboard focus between the sidebar and the pane |
-| `C-s` | with the sidebar hidden, open the picker in a popup; with it shown, toggle keyboard focus |
-| drag the sidebar's edge | resize it |
-| `S-Up` / `S-Down` | switch the client to the previous / next window (works with the sidebar unfocused too) |
+| `Ctrl+Shift+S` | show or hide the list |
+| `Ctrl+Shift+Up` / `Down` | show the previous / next pane |
+| `Ctrl+Shift+N` | add a window to the shown pane's session |
+| `Ctrl+Shift+E` | open the pane's scrollback in `$PAGER` |
+| `Ctrl+Shift+Q` | detach |
+| `Ctrl+D` on an exited pane | remove it |
+| click a row | show that pane |
 
-When the sidebar has keyboard focus:
+The wheel scrolls the shown pane. The terminal client shows no splits,
+tabs or windows and has no copy mode: the scrollback goes to `$PAGER`.
+Kido.app shows sessions, windows, splits and floats.
 
-| key | action |
-|-----|--------|
-| `j` / `k`, `C-j` / `C-k`, `C-n` / `C-p` | move between panes |
-| `gg` / `G` | first / last pane |
-| `/` | fuzzy-filter by session name, agent title, or ssh destination; `Esc` cancels |
-| `Esc` / `C-c` | clear the filter, or close the picker |
-| `Enter` / click | jump to the pane, then close the picker |
-| `q` | close the picker |
+`ko HOST` attaches to a ko server on another machine over ssh, and
+reconnects when the connection drops. It never starts a server there:
+run `ssh HOST ko server` once.
 
-## Status
+Every pane runs your login shell with a shell integration, so shell
+panes show a running command, a green `✓` for the last command's
+success and a red mark for a failure, until you visit the pane. Kido
+overrides `ssh` to add the same integration on the remote side.
 
-The OSC 7501 root app `pi` or `claude-code` identifies agent panes.
-pi and Claude Code show native running, waiting, done and idle status.
-Blocked messages supply the caption. Pane titles name sessions.
-Done status continues until you visit the pane.
+## Agents
 
-Claude Code runs unmodified, without a kido shim or settings.
-`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` also disables its native status.
-`kido prompt` can paste to a native agent pane. Only pi started as
-`kido-pi` appears in `list_runs` and accepts `message_agent`.
-Snapshots resume local pi identities or restart bare pi, not Claude Code.
+The OSC 7501 root app `pi` or `claude-code` identifies agent panes. pi
+and Claude Code show native running, waiting, done and idle status.
+Claude Code runs unmodified, without a shim or settings.
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` also disables its native
+status.
 
-Shell panes with the OSC 133 integration use the same indicators:
+Start pi as `ko-pi` to load the harness. Only a pi started as `ko-pi`
+appears in `list_runs` and accepts `message_agent`. `ko prompt` sends
+text from stdin to the agent in your window, over its inbox or as a
+paste for a native agent.
 
-- Green `▌` while a command runs.
-- Green `✓` if the last command exited zero, until you visit the pane.
-- Red `▌` if the last command exited nonzero, until you visit the pane.
-
-Kido overrides the `ssh` command to add shell integration on the remote side.
-Thus, shell panes also show the status and command for remote shells.
-
-## Upgrading from the setup-command era
-
-Earlier kido used a sidebar installed beside your own tmux, with
-configuration from `kido setup-*`. Those commands and the tap's `tmux`
-formula no longer exist. The old setup files have no effect under kido.
-The steps below are optional, but you can remove all these files:
-
-```sh
-brew uninstall andreypopp/tap/tmux   # and `brew install tmux` for a stock one
-rm -f ~/.pi/agent/extensions/kido-status.ts ~/.pi/agent/extensions/kido-agents.ts
-```
-
-Then manually delete the marked kido blocks (`# >>> kido ... >>>` to
-`# <<< kido ... <<<`) from these files:
-
-- `~/.tmux.conf`
-- `~/.zshrc`
-- `~/.bashrc`
-- Whichever of `~/.bash_profile`, `~/.bash_login` or `~/.profile` has a block.
-
-Delete obsolete kido entries from `~/.claude/settings.json`.
-
-If you want to keep settings from the sidebar block in `~/.tmux.conf`,
-put them in `~/.config/kido/kido.conf`.
+`ko --help` lists the commands: the server, `ko api` for one request
+to the server, the run commands, `ko panes` and `ko layout`.
 
 ## Development
 
-kido uses OCaml and dune's own package management. dune downloads and
-builds the compiler and every dependency from `dune.lock` into `_build`.
-It does not use opam.
-
-`make install` builds the tmux fork first. It needs:
+ko is a Rust cargo workspace. It needs:
 
 - git
-- A C toolchain
-- make
-- bison
-- autoconf
-- automake
-- pkg-config
-- The headers and libraries for libevent, ncurses, utf8proc, libpng
-  (1.6 or newer) and zlib.
-
-`make e2e` needs Go. The TypeScript tests need Node 24 or newer.
+- rustup from Homebrew (`brew install rustup`, then
+  `$(brew --prefix rustup)/bin/rustup toolchain install`, which reads
+  `rust-toolchain.toml`). The Makefile finds that cargo itself.
+- zig at the release of `scripts/install-zig.sh`, on PATH
+- make, a C compiler and `tic`
+- Node 24 or newer for the pi extension's tests
 
 ```sh
-curl -fsSL https://get.dune.build/install | sh -s - --release 3.24.2
-export PATH="$HOME/.local/bin:$PATH"
 git clone --recurse-submodules https://github.com/andreypopp/kido.git && cd kido
-make install   # binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/kido
-make test      # the unit tests and the pi extension's suite (needs node 24)
-make e2e       # drives kido inside a real tmux server
-dune tools install ocamlformat && dune fmt   # ocamlformat is a dune dev tool, not a dependency
+make build-ko   # the installed layout under build/ko/
+make install    # binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/ko
+make verify     # the whole verification: build, unit tests, e2e, lint, the pi extension's suite, Verus
 ```
 
-The dune installer installs into `~/.local`. It also prints an environment
-file that you can source. It cannot change the calling shell's `PATH`.
+The first build compiles libghostty-vt and the crates in a few
+minutes. Kido.app is in `app/` (docs/design-app.md). CI verifies every push to
+`main` and every pull request on Linux and macOS.
 
-The first build compiles OCaml and the dependencies in a few minutes.
-After a dependency changes in `dune-project`, `dune pkg lock` regenerates
-`dune.lock`. The project commits the resulting file.
-
-CI runs both suites on Linux and macOS for every push to `main` and every
-pull request.
-
-Ask your coding agent for help. kido is designed for development with a
+Ask your coding agent for help. Kido is designed for development with a
 coding agent.

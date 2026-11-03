@@ -1,0 +1,11 @@
+artifacts/
+corpus/*
+!corpus/control/
+!corpus/decode/
+!corpus/frames/
+!corpus/head/
+!corpus/http/
+!corpus/loop/
+!corpus/ring/
+!corpus/client/
+!corpus/ws/

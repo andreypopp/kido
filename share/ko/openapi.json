@@ -1,0 +1,4376 @@
+{
+  "components": {
+    "schemas": {
+      "Agent": {
+        "properties": {
+          "msg": {
+            "type": "string"
+          },
+          "since": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/AgentState"
+          }
+        },
+        "required": [
+          "since",
+          "state"
+        ],
+        "type": "object"
+      },
+      "AgentState": {
+        "oneOf": [
+          {
+            "properties": {
+              "progress": {
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "running",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "$ref": "#/components/schemas/ProgramKind"
+              },
+              "progress": {
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "waiting",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "outcome": {
+                "$ref": "#/components/schemas/Outcome"
+              },
+              "type": {
+                "const": "idle",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Axis": {
+        "enum": [
+          "h",
+          "v"
+        ],
+        "type": "string"
+      },
+      "Base64": {
+        "contentEncoding": "base64",
+        "type": "string"
+      },
+      "Bounds": {
+        "properties": {
+          "max_bytes": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "max_lines": {
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "Candidate": {
+        "properties": {
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "title": {
+            "type": "string"
+          },
+          "window": {
+            "$ref": "#/components/schemas/WindowId"
+          }
+        },
+        "required": [
+          "pane",
+          "session",
+          "window",
+          "title"
+        ],
+        "type": "object"
+      },
+      "Cause": {
+        "oneOf": [
+          {
+            "properties": {
+              "code": {
+                "type": "integer"
+              },
+              "type": {
+                "const": "exited",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "code"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "signal": {
+                "type": "integer"
+              },
+              "type": {
+                "const": "signaled",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "signal"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "type": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "message"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "CellPixels": {
+        "properties": {
+          "height": {
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "width": {
+            "maximum": 65535,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "width",
+          "height"
+        ],
+        "type": "object"
+      },
+      "Cells": {
+        "maximum": 4096,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "ClientEvent": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Welcome"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "welcome",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LayoutPanes"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "layout",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "focus",
+                "type": "string"
+              },
+              "window": {
+                "$ref": "#/components/schemas/WindowId"
+              }
+            },
+            "required": [
+              "type",
+              "window",
+              "pane"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Selection"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "selected",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Title"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "title",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Pwd"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "pwd",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "foreground": {
+                "$ref": "#/components/schemas/Foreground"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "foreground",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "foreground"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PaneDead"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "dead",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/StatusChange"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "status",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "name": {
+                "$ref": "#/components/schemas/VarName"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "var",
+                "type": "string"
+              },
+              "value": true
+            },
+            "required": [
+              "type",
+              "pane",
+              "name",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "name": {
+                "$ref": "#/components/schemas/VarName"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "var_deleted",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "bell",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "contents": {
+                "items": {
+                  "$ref": "#/components/schemas/ClipboardContent"
+                },
+                "type": "array"
+              },
+              "location": {
+                "$ref": "#/components/schemas/ClipboardLocation"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "clipboard_write",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "location",
+              "contents"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "list": {
+                "type": "boolean"
+              },
+              "location": {
+                "$ref": "#/components/schemas/ClipboardLocation"
+              },
+              "mimes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "clipboard_read",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "id",
+              "location",
+              "mimes"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "body": {
+                "type": "string"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "title": {
+                "type": "string"
+              },
+              "type": {
+                "const": "notify",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "body"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "progress": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Progress"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "type": {
+                "const": "progress",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "progress"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RunRow"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "run",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ClientId": {
+        "pattern": "^client_(0|[1-9][0-9]*)$",
+        "type": "string"
+      },
+      "ClientKind": {
+        "enum": [
+          "terminal",
+          "app"
+        ],
+        "type": "string"
+      },
+      "ClientRequest": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Hello"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "hello",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Selection"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "select",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Switch"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "switch",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Size"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "size",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "focused": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "focused",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "focused"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "available": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "contents": {
+                "items": {
+                  "$ref": "#/components/schemas/ClipboardContent"
+                },
+                "type": "array"
+              },
+              "id": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "clipboard_answer",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ClipboardContent": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Base64"
+          },
+          "mime": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "mime",
+          "data"
+        ],
+        "type": "object"
+      },
+      "ClipboardLocation": {
+        "enum": [
+          "standard",
+          "selection",
+          "primary"
+        ],
+        "type": "string"
+      },
+      "Command": {
+        "oneOf": [
+          {
+            "properties": {
+              "argv": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "argv",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "argv"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "command": {
+                "type": "string"
+              },
+              "type": {
+                "const": "shell",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "command"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "CommandExit": {
+        "properties": {
+          "code": {
+            "type": "integer"
+          },
+          "command": {
+            "type": "string"
+          },
+          "ended_at": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "started_at": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "code",
+          "command",
+          "started_at",
+          "ended_at"
+        ],
+        "type": "object"
+      },
+      "CreatePane": {
+        "properties": {
+          "command": {
+            "$ref": "#/components/schemas/Command"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "env": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Variable"
+            },
+            "type": "array"
+          },
+          "vars": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "Dead": {
+        "properties": {
+          "at": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cause": {
+            "$ref": "#/components/schemas/Cause"
+          }
+        },
+        "required": [
+          "at",
+          "cause"
+        ],
+        "type": "object"
+      },
+      "DeleteVars": {
+        "properties": {
+          "if": {
+            "$ref": "#/components/schemas/VarCondition"
+          },
+          "names": {
+            "items": {
+              "$ref": "#/components/schemas/VarName"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "names"
+        ],
+        "type": "object"
+      },
+      "Detail": {
+        "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "name": {
+            "$ref": "#/components/schemas/RunName"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/RunOutcome"
+          },
+          "output": {
+            "type": "string"
+          },
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "parent": {
+            "$ref": "#/components/schemas/Parent"
+          },
+          "screen": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          },
+          "startedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "argv",
+          "cwd",
+          "startedAt",
+          "output"
+        ],
+        "type": "object"
+      },
+      "Direction": {
+        "enum": [
+          "next",
+          "previous"
+        ],
+        "type": "string"
+      },
+      "DraftFloat": {
+        "properties": {
+          "border": {
+            "default": false,
+            "type": "boolean"
+          },
+          "cols": {
+            "$ref": "#/components/schemas/Cells"
+          },
+          "pane": {
+            "$ref": "#/components/schemas/PaneRef"
+          },
+          "rows": {
+            "$ref": "#/components/schemas/Cells"
+          },
+          "title": {
+            "default": "",
+            "type": "string"
+          },
+          "x": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "y": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "z": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pane"
+        ],
+        "type": "object"
+      },
+      "DraftLayout": {
+        "properties": {
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/DraftSession"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "sessions"
+        ],
+        "type": "object"
+      },
+      "DraftLeaf": {
+        "properties": {
+          "cols": {
+            "$ref": "#/components/schemas/Cells"
+          },
+          "pane": {
+            "$ref": "#/components/schemas/PaneRef"
+          },
+          "rows": {
+            "$ref": "#/components/schemas/Cells"
+          }
+        },
+        "required": [
+          "pane"
+        ],
+        "type": "object"
+      },
+      "DraftLeafNode": {
+        "anyOf": [
+          {
+            "properties": {
+              "children": {
+                "items": {
+                  "$ref": "#/components/schemas/DraftLeafNode"
+                },
+                "type": "array"
+              },
+              "split": {
+                "$ref": "#/components/schemas/Axis"
+              }
+            },
+            "required": [
+              "split",
+              "children"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/DraftLeaf"
+          }
+        ]
+      },
+      "DraftSession": {
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "name": {
+            "$ref": "#/components/schemas/Name"
+          },
+          "vars": {
+            "additionalProperties": true,
+            "default": {},
+            "type": "object"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/DraftWindow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "windows"
+        ],
+        "type": "object"
+      },
+      "DraftWindow": {
+        "properties": {
+          "cell_px": {
+            "$ref": "#/components/schemas/CellPixels"
+          },
+          "cols": {
+            "$ref": "#/components/schemas/Cells"
+          },
+          "floats": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/DraftFloat"
+            },
+            "type": "array"
+          },
+          "id": {
+            "$ref": "#/components/schemas/WindowId"
+          },
+          "name": {
+            "$ref": "#/components/schemas/Name"
+          },
+          "rows": {
+            "$ref": "#/components/schemas/Cells"
+          },
+          "tree": {
+            "$ref": "#/components/schemas/DraftLeafNode"
+          },
+          "vars": {
+            "additionalProperties": true,
+            "default": {},
+            "type": "object"
+          },
+          "zoom": {
+            "$ref": "#/components/schemas/PaneId"
+          }
+        },
+        "required": [
+          "tree"
+        ],
+        "type": "object"
+      },
+      "Empty": {
+        "type": "object"
+      },
+      "Error": {
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "const": "invalid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "refused",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "gone",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "io",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "precondition_failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "not_found",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Version"
+              }
+            ],
+            "properties": {
+              "kind": {
+                "const": "protocol_mismatch",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Version"
+              }
+            ],
+            "properties": {
+              "kind": {
+                "const": "vt_mismatch",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "Float": {
+        "properties": {
+          "border": {
+            "type": "boolean"
+          },
+          "cols": {
+            "$ref": "#/components/schemas/Cells"
+          },
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "rows": {
+            "$ref": "#/components/schemas/Cells"
+          },
+          "title": {
+            "type": "string"
+          },
+          "x": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "y": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "z": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pane",
+          "x",
+          "y",
+          "cols",
+          "rows",
+          "z",
+          "border",
+          "title"
+        ],
+        "type": "object"
+      },
+      "Foreground": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "pid": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pid",
+          "name"
+        ],
+        "type": "object"
+      },
+      "FrameNumber": {
+        "description": "1 is the image itself; 2 and up are its animation frames.",
+        "maximum": 4294967295,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "Generation": {
+        "description": "The serial that the pane's terminal stamped on the frame.",
+        "maximum": 18446744073709551615,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "Hello": {
+        "properties": {
+          "focused": {
+            "type": "boolean"
+          },
+          "ignore_size": {
+            "default": false,
+            "type": "boolean"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ClientKind"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "size": {
+            "$ref": "#/components/schemas/Size"
+          },
+          "window": {
+            "$ref": "#/components/schemas/WindowId"
+          }
+        },
+        "required": [
+          "kind",
+          "name",
+          "focused",
+          "size"
+        ],
+        "type": "object"
+      },
+      "History": {
+        "enum": [
+          "none",
+          "all"
+        ],
+        "type": "string"
+      },
+      "ImageId": {
+        "description": "The id a program gave an image.",
+        "maximum": 4294967295,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "ImageShm": {
+        "properties": {
+          "format": {
+            "$ref": "#/components/schemas/PixelFormat"
+          },
+          "frames": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "gap_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "generation": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "height": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "length": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "width": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "length",
+          "format",
+          "width",
+          "height",
+          "generation",
+          "gap_ms",
+          "frames"
+        ],
+        "type": "object"
+      },
+      "Images": {
+        "enum": [
+          "none"
+        ],
+        "type": "string"
+      },
+      "Info": {
+        "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "name": {
+            "$ref": "#/components/schemas/RunName"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/RunOutcome"
+          },
+          "output": {
+            "type": "string"
+          },
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "parent": {
+            "$ref": "#/components/schemas/Parent"
+          },
+          "session": {
+            "type": "string"
+          },
+          "startedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "argv",
+          "cwd",
+          "startedAt",
+          "output"
+        ],
+        "type": "object"
+      },
+      "Input": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Key"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "key",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Mouse"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "mouse",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Paste"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "paste",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/Base64"
+              },
+              "type": {
+                "const": "text",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "data"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "InputResult": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/PasteResult"
+          },
+          {
+            "$ref": "#/components/schemas/Empty"
+          }
+        ]
+      },
+      "Instance": {
+        "pattern": "^[0-9a-f]{32}$",
+        "type": "string"
+      },
+      "Key": {
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/KeyAction"
+          },
+          "composing": {
+            "type": "boolean"
+          },
+          "key": {
+            "maximum": 175,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mods": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          },
+          "unshifted_codepoint": {
+            "description": "A Unicode scalar value: no surrogate, 0xD800 to 0xDFFF.",
+            "maximum": 1114111,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "key",
+          "mods",
+          "unshifted_codepoint",
+          "text",
+          "composing"
+        ],
+        "type": "object"
+      },
+      "KeyAction": {
+        "enum": [
+          "release",
+          "press",
+          "repeat"
+        ],
+        "type": "string"
+      },
+      "Layout": {
+        "properties": {
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/Session"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "sessions"
+        ],
+        "type": "object"
+      },
+      "LayoutPanes": {
+        "properties": {
+          "layout": {
+            "$ref": "#/components/schemas/Layout"
+          },
+          "panes": {
+            "items": {
+              "$ref": "#/components/schemas/Listing"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "layout",
+          "panes"
+        ],
+        "type": "object"
+      },
+      "Leaf": {
+        "properties": {
+          "cols": {
+            "$ref": "#/components/schemas/Cells"
+          },
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "rows": {
+            "$ref": "#/components/schemas/Cells"
+          }
+        },
+        "required": [
+          "pane",
+          "cols",
+          "rows"
+        ],
+        "type": "object"
+      },
+      "LeafNode": {
+        "anyOf": [
+          {
+            "properties": {
+              "children": {
+                "items": {
+                  "$ref": "#/components/schemas/LeafNode"
+                },
+                "type": "array"
+              },
+              "split": {
+                "$ref": "#/components/schemas/Axis"
+              }
+            },
+            "required": [
+              "split",
+              "children"
+            ],
+            "type": "object"
+          },
+          {
+            "$ref": "#/components/schemas/Leaf"
+          }
+        ]
+      },
+      "Limits": {
+        "properties": {
+          "media": {
+            "items": {
+              "$ref": "#/components/schemas/Medium"
+            },
+            "type": "array"
+          },
+          "terminal": {
+            "$ref": "#/components/schemas/Terminal"
+          }
+        },
+        "required": [
+          "terminal",
+          "media"
+        ],
+        "type": "object"
+      },
+      "Listing": {
+        "properties": {
+          "command": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "dead": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Dead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "foreground": {
+            "$ref": "#/components/schemas/Foreground"
+          },
+          "id": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "pid": {
+            "type": "integer"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/Progress"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunRow"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PaneStatus"
+          },
+          "title": {
+            "type": "string"
+          },
+          "vars": {
+            "additionalProperties": true,
+            "default": {},
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "pid",
+          "command",
+          "cwd",
+          "title",
+          "dead",
+          "vars"
+        ],
+        "type": "object"
+      },
+      "Live": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Shell"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "terminal",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/components/schemas/Agent"
+              },
+              "type": {
+                "const": "some_agent",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "session": {
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/components/schemas/Agent"
+              },
+              "type": {
+                "const": "pi_agent",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "destination": {
+                "type": "string"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/Remote"
+              },
+              "type": {
+                "const": "ssh",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "destination",
+              "pane"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Marked": {
+        "properties": {
+          "marker": {
+            "$ref": "#/components/schemas/Marker"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "offset",
+          "marker"
+        ],
+        "type": "object"
+      },
+      "Marker": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Size"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "resize",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Dead"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "dead",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Medium": {
+        "enum": [
+          "file",
+          "temp_file",
+          "shared_mem"
+        ],
+        "type": "string"
+      },
+      "Mouse": {
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/MouseAction"
+          },
+          "button": {
+            "$ref": "#/components/schemas/MouseButton"
+          },
+          "col": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mods": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "row": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "action",
+          "button",
+          "col",
+          "row",
+          "mods"
+        ],
+        "type": "object"
+      },
+      "MouseAction": {
+        "enum": [
+          "press",
+          "release",
+          "motion"
+        ],
+        "type": "string"
+      },
+      "MouseButton": {
+        "enum": [
+          "unknown",
+          "left",
+          "right",
+          "middle",
+          "four",
+          "five",
+          "six",
+          "seven",
+          "eight",
+          "nine",
+          "ten",
+          "eleven"
+        ],
+        "type": "string"
+      },
+      "Name": {
+        "description": "At most 256 bytes, without control characters.",
+        "maxLength": 256,
+        "type": "string"
+      },
+      "Needle": {
+        "description": "The text to search for, percent-encoded in the query.",
+        "maxLength": 4096,
+        "minLength": 1,
+        "type": "string"
+      },
+      "Offset": {
+        "description": "A byte offset of the pane's stream.",
+        "maximum": 4611686018427387903,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "Origin": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "unknown",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "command": {
+                "type": "string"
+              },
+              "started_at": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "command",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "command",
+              "started_at"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Outcome": {
+        "properties": {
+          "result": {
+            "$ref": "#/components/schemas/OutcomeResult"
+          },
+          "serial": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "serial",
+          "result"
+        ],
+        "type": "object"
+      },
+      "OutcomeResult": {
+        "enum": [
+          "success",
+          "failure"
+        ],
+        "type": "string"
+      },
+      "Over": {
+        "enum": [
+          "session",
+          "window"
+        ],
+        "type": "string"
+      },
+      "PaneDead": {
+        "properties": {
+          "dead": {
+            "$ref": "#/components/schemas/Dead"
+          },
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          }
+        },
+        "required": [
+          "pane",
+          "dead"
+        ],
+        "type": "object"
+      },
+      "PaneId": {
+        "pattern": "^pane_(0|[1-9][0-9]*)$",
+        "type": "string"
+      },
+      "PaneRef": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          {
+            "properties": {
+              "new": {
+                "$ref": "#/components/schemas/CreatePane"
+              }
+            },
+            "required": [
+              "new"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "PaneStatus": {
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/Live"
+          },
+          "message": {
+            "type": "string"
+          },
+          "program_status": {
+            "$ref": "#/components/schemas/ProgramStatus"
+          },
+          "progress": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "since": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "program_status",
+          "title",
+          "since"
+        ],
+        "type": "object"
+      },
+      "Parent": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          {
+            "$ref": "#/components/schemas/RunId"
+          }
+        ],
+        "description": "A pane id, or the id of a run."
+      },
+      "Paste": {
+        "properties": {
+          "check_safe": {
+            "type": "boolean"
+          },
+          "id": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "check_safe"
+        ],
+        "type": "object"
+      },
+      "PasteResult": {
+        "properties": {
+          "id": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pasted": {
+            "type": "boolean"
+          },
+          "unsafe": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "pasted",
+          "unsafe"
+        ],
+        "type": "object"
+      },
+      "Phase": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "unknown",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "last": {
+                "$ref": "#/components/schemas/CommandExit"
+              },
+              "type": {
+                "const": "idle",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "fullscreen": {
+                "type": "boolean"
+              },
+              "origin": {
+                "$ref": "#/components/schemas/Origin"
+              },
+              "type": {
+                "const": "running",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "origin",
+              "fullscreen"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "PixelFormat": {
+        "enum": [
+          "rgb",
+          "rgba",
+          "gray_alpha",
+          "gray"
+        ],
+        "type": "string"
+      },
+      "ProgramKind": {
+        "enum": [
+          "permission",
+          "question",
+          "auth"
+        ],
+        "type": "string"
+      },
+      "ProgramRecord": {
+        "oneOf": [
+          {
+            "properties": {
+              "state": {
+                "const": "idle",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "progress": {
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "state": {
+                "const": "working",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "state": {
+                "const": "done",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
+                "$ref": "#/components/schemas/ProgramKind"
+              },
+              "progress": {
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "state": {
+                "const": "blocked",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "state": {
+                "const": "error",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "ProgramStatus": {
+        "properties": {
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/ProgramRecord"
+            },
+            "type": "array"
+          },
+          "serial": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "serial",
+          "records"
+        ],
+        "type": "object"
+      },
+      "Progress": {
+        "properties": {
+          "progress": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ProgressState"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "type": "object"
+      },
+      "ProgressState": {
+        "enum": [
+          "set",
+          "error",
+          "indeterminate",
+          "pause"
+        ],
+        "type": "string"
+      },
+      "PutLayout": {
+        "properties": {
+          "layout": {
+            "$ref": "#/components/schemas/DraftLayout"
+          },
+          "revision": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "layout"
+        ],
+        "type": "object"
+      },
+      "Pwd": {
+        "properties": {
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "pwd": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane",
+          "pwd"
+        ],
+        "type": "object"
+      },
+      "Remote": {
+        "oneOf": [
+          {
+            "properties": {
+              "interactive": {
+                "type": "boolean"
+              },
+              "status": {
+                "$ref": "#/components/schemas/Shell"
+              },
+              "type": {
+                "const": "terminal",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "interactive",
+              "status"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/components/schemas/Agent"
+              },
+              "type": {
+                "const": "agent",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "status"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ReportOutcome": {
+        "properties": {
+          "result": {
+            "$ref": "#/components/schemas/Reported"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
+      "Reported": {
+        "enum": [
+          "completed",
+          "failed",
+          "stopped"
+        ],
+        "type": "string"
+      },
+      "RunId": {
+        "pattern": "^[0-9a-f]{32}$",
+        "type": "string"
+      },
+      "RunName": {
+        "description": "At most 64 bytes, without control characters.",
+        "maxLength": 64,
+        "type": "string"
+      },
+      "RunOutcome": {
+        "properties": {
+          "at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "result": {
+            "$ref": "#/components/schemas/RunResult"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
+      "RunResult": {
+        "enum": [
+          "completed",
+          "failed",
+          "died",
+          "stopped"
+        ],
+        "type": "string"
+      },
+      "RunRow": {
+        "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "name": {
+            "$ref": "#/components/schemas/RunName"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/RunOutcome"
+          },
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "parent": {
+            "$ref": "#/components/schemas/Parent"
+          },
+          "startedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "argv",
+          "cwd",
+          "startedAt"
+        ],
+        "type": "object"
+      },
+      "Scrollback": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "disabled",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Bounds"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "scrollback",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SearchEvent": {
+        "oneOf": [
+          {
+            "properties": {
+              "matches": {
+                "items": {
+                  "$ref": "#/components/schemas/SearchMatch"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "matches",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "matches"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "done",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SearchMatch": {
+        "properties": {
+          "col": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "end_col": {
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "end_row": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "row": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "row",
+          "col",
+          "end_row",
+          "end_col"
+        ],
+        "type": "object"
+      },
+      "Selection": {
+        "properties": {
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "window": {
+            "$ref": "#/components/schemas/WindowId"
+          }
+        },
+        "type": "object"
+      },
+      "SendPrompt": {
+        "properties": {
+          "target": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "text"
+        ],
+        "type": "object"
+      },
+      "Sent": {
+        "properties": {
+          "via": {
+            "$ref": "#/components/schemas/Via"
+          }
+        },
+        "required": [
+          "via"
+        ],
+        "type": "object"
+      },
+      "Session": {
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "name": {
+            "$ref": "#/components/schemas/Name"
+          },
+          "vars": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "windows": {
+            "items": {
+              "$ref": "#/components/schemas/Window"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "vars",
+          "windows"
+        ],
+        "type": "object"
+      },
+      "SessionId": {
+        "pattern": "^session_(0|[1-9][0-9]*)$",
+        "type": "string"
+      },
+      "SessionRef": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          {
+            "$ref": "#/components/schemas/Name"
+          }
+        ],
+        "description": "A session id, or the name of a session."
+      },
+      "Shell": {
+        "properties": {
+          "phase": {
+            "$ref": "#/components/schemas/Phase"
+          },
+          "report": {
+            "$ref": "#/components/schemas/Agent"
+          }
+        },
+        "required": [
+          "phase"
+        ],
+        "type": "object"
+      },
+      "Show": {
+        "enum": [
+          "live",
+          "present",
+          "all"
+        ],
+        "type": "string"
+      },
+      "Size": {
+        "properties": {
+          "cell_px": {
+            "$ref": "#/components/schemas/CellPixels"
+          },
+          "cols": {
+            "maximum": 4096,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "rows": {
+            "maximum": 4096,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cols",
+          "rows"
+        ],
+        "type": "object"
+      },
+      "Skipped": {
+        "properties": {
+          "from": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "offset": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "to": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "offset",
+          "from",
+          "to"
+        ],
+        "type": "object"
+      },
+      "Snapshot": {
+        "properties": {
+          "layout": {
+            "$ref": "#/components/schemas/Layout"
+          },
+          "revision": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "layout"
+        ],
+        "type": "object"
+      },
+      "StartRun": {
+        "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "env": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Variable"
+            },
+            "type": "array"
+          },
+          "name": {
+            "$ref": "#/components/schemas/RunName"
+          },
+          "parent": {
+            "$ref": "#/components/schemas/Parent"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionRef"
+          }
+        },
+        "required": [
+          "name",
+          "argv"
+        ],
+        "type": "object"
+      },
+      "Started": {
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "output": {
+            "type": "string"
+          },
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "window": {
+            "$ref": "#/components/schemas/WindowId"
+          }
+        },
+        "required": [
+          "id",
+          "window",
+          "pane",
+          "output"
+        ],
+        "type": "object"
+      },
+      "StatusChange": {
+        "properties": {
+          "now": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PaneStatus"
+          }
+        },
+        "required": [
+          "pane",
+          "status",
+          "now"
+        ],
+        "type": "object"
+      },
+      "StopResult": {
+        "enum": [
+          "stopped",
+          "completed"
+        ],
+        "type": "string"
+      },
+      "StopRun": {
+        "properties": {
+          "result": {
+            "$ref": "#/components/schemas/StopResult"
+          },
+          "wait_ms": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
+      "Switch": {
+        "properties": {
+          "direction": {
+            "$ref": "#/components/schemas/Direction"
+          },
+          "over": {
+            "$ref": "#/components/schemas/Over"
+          }
+        },
+        "required": [
+          "over",
+          "direction"
+        ],
+        "type": "object"
+      },
+      "Terminal": {
+        "properties": {
+          "apc_max_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "continuation_max_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kitty_images_max_bytes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "scrollback": {
+            "$ref": "#/components/schemas/Scrollback"
+          }
+        },
+        "required": [
+          "scrollback",
+          "apc_max_bytes",
+          "kitty_images_max_bytes",
+          "continuation_max_bytes"
+        ],
+        "type": "object"
+      },
+      "Timestamp": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "Title": {
+        "properties": {
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "pane",
+          "title"
+        ],
+        "type": "object"
+      },
+      "VarCondition": {
+        "properties": {
+          "name": {
+            "$ref": "#/components/schemas/VarName"
+          },
+          "value": true
+        },
+        "required": [
+          "name",
+          "value"
+        ],
+        "type": "object"
+      },
+      "VarName": {
+        "description": "One to 256 bytes, without control characters.",
+        "maxLength": 256,
+        "minLength": 1,
+        "type": "string"
+      },
+      "Variable": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "value"
+        ],
+        "type": "object"
+      },
+      "Version": {
+        "properties": {
+          "build": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "vt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol",
+          "vt",
+          "build"
+        ],
+        "type": "object"
+      },
+      "Via": {
+        "enum": [
+          "inbox",
+          "paste"
+        ],
+        "type": "string"
+      },
+      "ViewEvent": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Marked"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "marked",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Skipped"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "skipped",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PasteResult"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "pasted",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ViewOptions": {
+        "properties": {
+          "history": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/History"
+              }
+            ],
+            "default": "none"
+          },
+          "images": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Images"
+              }
+            ],
+            "default": "none"
+          }
+        },
+        "type": "object"
+      },
+      "ViewRequest": {
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ViewOptions"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "resync",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "input": {
+                "$ref": "#/components/schemas/Input"
+              },
+              "type": {
+                "const": "input",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "input"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "WaitMs": {
+        "description": "Milliseconds.",
+        "maximum": 3600000,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "Waited": {
+        "properties": {
+          "outcome": {
+            "$ref": "#/components/schemas/RunOutcome"
+          }
+        },
+        "type": "object"
+      },
+      "Welcome": {
+        "properties": {
+          "client": {
+            "$ref": "#/components/schemas/ClientId"
+          },
+          "instance": {
+            "$ref": "#/components/schemas/Instance"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/Limits"
+          },
+          "now": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "client",
+          "limits",
+          "instance",
+          "now"
+        ],
+        "type": "object"
+      },
+      "Window": {
+        "properties": {
+          "cell_px": {
+            "$ref": "#/components/schemas/CellPixels"
+          },
+          "cols": {
+            "$ref": "#/components/schemas/Cells"
+          },
+          "floats": {
+            "items": {
+              "$ref": "#/components/schemas/Float"
+            },
+            "type": "array"
+          },
+          "focus": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "id": {
+            "$ref": "#/components/schemas/WindowId"
+          },
+          "name": {
+            "$ref": "#/components/schemas/Name"
+          },
+          "rows": {
+            "$ref": "#/components/schemas/Cells"
+          },
+          "tree": {
+            "$ref": "#/components/schemas/LeafNode"
+          },
+          "vars": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "zoom": {
+            "$ref": "#/components/schemas/PaneId"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "vars",
+          "cols",
+          "rows",
+          "focus",
+          "tree",
+          "floats"
+        ],
+        "type": "object"
+      },
+      "WindowId": {
+        "pattern": "^window_(0|[1-9][0-9]*)$",
+        "type": "string"
+      },
+      "WindowOnly": {
+        "enum": [
+          "true"
+        ],
+        "type": "string"
+      }
+    }
+  },
+  "info": {
+    "description": "The HTTP and WebSocket interface of the ko server on its unix socket.",
+    "title": "ko server",
+    "version": "1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/client": {
+      "get": {
+        "description": "The client-lifetime socket: layout, focus and status events.",
+        "operationId": "Client",
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        },
+        "x-ko-websocket": {
+          "recv": {
+            "$ref": "#/components/schemas/ClientEvent"
+          },
+          "send": {
+            "$ref": "#/components/schemas/ClientRequest"
+          }
+        }
+      }
+    },
+    "/layout": {
+      "get": {
+        "description": "The layout of every session, with its revision, and every pane that it names.",
+        "operationId": "GetLayout",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LayoutPanes"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      },
+      "put": {
+        "description": "Replaces the layout. A stale revision gets 409 with the current layout.",
+        "operationId": "PutLayout",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutLayout"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Snapshot"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Snapshot"
+                }
+              }
+            },
+            "description": "Conflict"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/panes": {
+      "get": {
+        "description": "Every pane, with its status, variables and run.",
+        "operationId": "ListPanes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Listing"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/panes/{id}": {
+      "delete": {
+        "description": "Closes a pane.",
+        "operationId": "DeletePane",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      },
+      "get": {
+        "description": "One pane, with its status, variables and run.",
+        "operationId": "GetPane",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Listing"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/panes/{id}/clear_history": {
+      "post": {
+        "description": "Drops the scrollback of a pane.",
+        "operationId": "ClearHistory",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/panes/{id}/images/{image}/frames/{frame}": {
+      "get": {
+        "description": "One frame of an image of a pane. Frame 1 is the image itself. The reply is the pixels as an application/octet-stream body, with their format, size and timing in the ko-image-* headers. With the header Ko-Accept-Shm: 1 the reply is instead a JSON body that names a shared memory object, which the client maps and never unlinks. An image that was evicted, a frame that does not exist and a generation that moved on are not_found.",
+        "operationId": "Image",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "7",
+            "in": "path",
+            "name": "image",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ImageId"
+            }
+          },
+          {
+            "example": "1",
+            "in": "path",
+            "name": "frame",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/FrameNumber"
+            }
+          },
+          {
+            "example": "3",
+            "in": "query",
+            "name": "generation",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Generation"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageShm"
+                }
+              },
+              "application/octet-stream": {
+                "schema": {
+                  "contentMediaType": "application/octet-stream",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/panes/{id}/input": {
+      "post": {
+        "description": "Sends a key, a mouse event, a paste or raw text to a pane.",
+        "operationId": "Input",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Input"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InputResult"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/panes/{id}/screen": {
+      "get": {
+        "description": "The text of a pane, from the server's terminal.",
+        "operationId": "Screen",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "ansi",
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "plain",
+              "enum": [
+                "plain",
+                "ansi"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "example": "40",
+            "in": "query",
+            "name": "history",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "none",
+                    "all"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "maximum": 4294967295,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              ],
+              "default": "none",
+              "description": "none for the visible rows, all for the whole history, or the number of last rows."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/panes/{id}/search": {
+      "get": {
+        "description": "A search of the pane's terminal, history included: the matches in batches, oldest first, then done. The rows count from the top of the history at the time of the search, for display only. Closing the socket cancels the search.",
+        "operationId": "Search",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "needle",
+            "in": "query",
+            "name": "needle",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Needle"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        },
+        "x-ko-websocket": {
+          "recv": {
+            "$ref": "#/components/schemas/SearchEvent"
+          },
+          "send": {
+            "$ref": "#/components/schemas/Empty"
+          }
+        }
+      }
+    },
+    "/panes/{id}/vars": {
+      "delete": {
+        "description": "Removes variables of a pane, if its condition holds.",
+        "operationId": "DeleteVars",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteVars"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Precondition Failed"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/panes/{id}/vars/{name}": {
+      "delete": {
+        "description": "Removes one variable of a pane.",
+        "operationId": "DeleteVar",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "pi.session",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/VarName"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      },
+      "put": {
+        "description": "Sets one variable of a pane.",
+        "operationId": "SetVar",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "pi.session",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/VarName"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": true
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/panes/{id}/view": {
+      "get": {
+        "description": "The view of a pane: the terminal byte stream, and the input of the viewer.",
+        "operationId": "View",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "all",
+            "in": "query",
+            "name": "history",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/History",
+              "default": "none"
+            }
+          },
+          {
+            "example": "none",
+            "in": "query",
+            "name": "images",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Images",
+              "default": "none"
+            }
+          },
+          {
+            "example": "0",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Offset"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        },
+        "x-ko-websocket": {
+          "recv": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ViewEvent"
+              },
+              {
+                "contentMediaType": "application/octet-stream",
+                "description": "The pane's terminal byte stream: one application/octet-stream message, framed as in docs/protocol.md section 4."
+              }
+            ]
+          },
+          "send": {
+            "$ref": "#/components/schemas/ViewRequest"
+          }
+        }
+      }
+    },
+    "/prompt": {
+      "post": {
+        "description": "Sends a prompt to an agent.",
+        "operationId": "SendPrompt",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendPrompt"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sent"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/prompt/resolve": {
+      "get": {
+        "description": "The agents that a prompt can reach from the calling pane.",
+        "operationId": "PromptResolve",
+        "parameters": [
+          {
+            "example": "true",
+            "in": "query",
+            "name": "window",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/WindowOnly"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Candidate"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/runs": {
+      "get": {
+        "description": "The runs of the server.",
+        "operationId": "ListRuns",
+        "parameters": [
+          {
+            "example": "live",
+            "in": "query",
+            "name": "show",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Show",
+              "default": "live"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "query",
+            "name": "parent",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Parent"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Info"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      },
+      "post": {
+        "description": "Starts a run in a new window.",
+        "operationId": "StartRun",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartRun"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Started"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/runs/{id}": {
+      "get": {
+        "description": "One run, with its screen when it failed.",
+        "operationId": "GetRun",
+        "parameters": [
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RunId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Detail"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/runs/{id}/outcome": {
+      "post": {
+        "description": "Reports the outcome of a run.",
+        "operationId": "RunOutcome",
+        "parameters": [
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RunId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportOutcome"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/runs/{id}/stop": {
+      "post": {
+        "description": "Stops a run.",
+        "operationId": "StopRun",
+        "parameters": [
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RunId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StopRun"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/runs/{id}/wait": {
+      "get": {
+        "description": "Waits for the outcome of a run, up to the timeout.",
+        "operationId": "WaitRun",
+        "parameters": [
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RunId"
+            }
+          },
+          {
+            "example": "250",
+            "in": "query",
+            "name": "timeout_ms",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/WaitMs",
+              "default": "30000"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Waited"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/sessions/{id}": {
+      "delete": {
+        "description": "Closes every window of a session.",
+        "operationId": "DeleteSession",
+        "parameters": [
+          {
+            "example": "session_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/SessionId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/version": {
+      "get": {
+        "description": "The protocol and terminal revisions of this server.",
+        "operationId": "Version",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Version"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/windows/{id}": {
+      "delete": {
+        "description": "Closes every pane of a window.",
+        "operationId": "DeleteWindow",
+        "parameters": [
+          {
+            "example": "window_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WindowId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,95 @@
+use serde_json::json;
+
+use crate::harness::{history_lines, run_ko, start, test_env};
+
+#[test]
+fn defaults_and_pane_environment() {
+    let s = start(&["--scrollback-bytes", "80M", "--scrollback-lines", "100"]);
+    let (mut c, welcome) = s.client(None);
+    let terminal = &welcome["limits"]["terminal"];
+    let scrollback = &terminal["scrollback"];
+    assert_eq!(
+        scrollback["type"],
+        json!("scrollback"),
+        "limits: {}",
+        welcome["limits"]
+    );
+    assert_eq!(scrollback["max_bytes"], json!(80 * 1024 * 1024));
+    assert_eq!(scrollback["max_lines"], json!(100));
+    assert_eq!(terminal["continuation_max_bytes"], json!(65 * 1024 * 1024));
+
+    let mut env = test_env(&s.dir);
+    env.extend([
+        b"KO_FUZZ_SECONDS=abc".to_vec(),
+        b"KO_FUZZ_SEED=abc".to_vec(),
+        b"KO_AFL_SOURCE=/nonexistent".to_vec(),
+    ]);
+    let version = run_ko(&s.scratch, &env, &["version"], "").json();
+    let build = version["build"].as_str().unwrap_or_default().to_owned();
+    assert!(!build.is_empty(), "ko version has no build field");
+
+    let pane = s.new_pane(json!({"cwd": "/tmp", "env": [
+        {"name": "X", "value": "custom"},
+        {"name": "TERM", "value": "wrong"},
+        {"name": "KO_PANE", "value": "wrong"}
+    ]}));
+    let mut view = s.ws(&format!("/panes/{pane}/view"));
+    let prompt_end = if ko_sys::sock::uid() == 0 { "# " } else { "$ " };
+    view.ready(prompt_end);
+    let command = format!(
+        "{}; printf '%s|%s|%s|%s|%s|%s\\n' \"$TERM\" \"$KO_PANE\" \"$KO_SOCKET\" \"$X\" \"$TERM_PROGRAM\" \"$TERM_PROGRAM_VERSION\"; pwd; exit\n",
+        history_lines(3000)
+    );
+    s.text(&pane, &command);
+    c.event("dead");
+
+    let screen = s
+        .ko(&["api", &format!("/panes/{pane}/screen?history=all")], "")
+        .ok();
+    let expected = format!(
+        "xterm-ghostty|{pane}|{}/socket|custom|ko|{build}",
+        s.dir.display()
+    );
+    assert!(screen.contains(&expected), "pane environment: {screen:?}");
+    assert!(screen.contains("/tmp"), "pane cwd: {screen:?}");
+    assert!(
+        screen.contains("history-2999"),
+        "last history line: {screen:?}"
+    );
+    assert!(
+        !screen.contains("history-0\n") && !screen.contains("history-0\r"),
+        "lines limit kept {} bytes of history",
+        screen.len()
+    );
+
+    let refused = |new: serde_json::Value| {
+        let mut document = s.doc();
+        document["layout"]["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
+                {"pane": pane}, {"pane": {"new": new}}]});
+        s.ko(
+            &["api", "-X", "PUT", "--input", "-", "/layout"],
+            &document.to_string(),
+        )
+        .http_error(400)
+    };
+    let error = refused(json!({"cwd": "relative"}));
+    assert!(error.contains("cwd must be absolute"), "{error}");
+    let error = refused(json!([]));
+    assert!(error.contains("a record must be a JSON object"), "{error}");
+}
+
+#[test]
+fn a_server_has_one_instance_for_all_its_clients() {
+    let (first, second) = (start(&[]), start(&[]));
+    let (_a, welcome_a) = first.client(None);
+    let (_b, welcome_b) = first.client(None);
+    let (_c, welcome_c) = second.client(None);
+    assert!(
+        welcome_a["instance"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty()),
+        "welcome: {welcome_a}"
+    );
+    assert_eq!(welcome_b["instance"], welcome_a["instance"]);
+    assert_ne!(welcome_c["instance"], welcome_a["instance"]);
+}

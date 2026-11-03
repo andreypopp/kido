@@ -1,8 +1,8 @@
 #!/bin/sh
 # Typecheck the pi extension and run its tests under node's native TypeScript support.
 #
-# Skips cleanly when node is missing or too old; KIDO_TS_TEST_REQUIRED=1
-# fails instead, the same convention e2e uses for KIDO_E2E_REQUIRED.
+# Skips cleanly when node is missing or too old; KO_TS_TEST_REQUIRED=1
+# fails instead, the same convention as verify.sh.
 #
 # The floor is node 24: 22.18 reads these files but its test runner then
 # abandons the suite, cancelling most cases with "Promise resolution is
@@ -11,7 +11,7 @@
 set -eu
 
 fail_or_skip() {
-	if [ "${KIDO_TS_TEST_REQUIRED:-}" = "1" ]; then
+	if [ "${KO_TS_TEST_REQUIRED:-}" = "1" ]; then
 		echo "test-ts: $1" >&2
 		exit 1
 	fi
@@ -32,18 +32,18 @@ fi
 
 cd "$(dirname "$0")/../share/pi"
 repo=$(cd ../.. && pwd)
-(cd "$repo" && dune build share/pi/testdata/fake_kido/fake_kido.exe share/pi/testdata/fake_tmux/fake_tmux.exe)
-KIDO_FAKE_TMUX="$repo/${DUNE_BUILD_DIR:-_build}/default/share/pi/testdata/fake_tmux/fake_tmux.exe"
-export KIDO_FAKE_TMUX
-KIDO_FAKE_KIDO="$repo/${DUNE_BUILD_DIR:-_build}/default/share/pi/testdata/fake_kido/fake_kido.exe"
-export KIDO_FAKE_KIDO
 if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then
 	npm install --silent
 	touch node_modules
 fi
-../../scripts/lint.sh
+if [ "${1:-}" = lint ]; then
+	exec ../../scripts/lint.sh
+fi
+make --no-print-directory -C "$repo" build-fake-ko
+KO_FAKE_KO="$repo/target/debug/fake_ko"
+export KO_FAKE_KO
 ./node_modules/.bin/tsc -p .
 ./node_modules/.bin/tsc --strict --noEmit --module NodeNext --moduleResolution NodeNext \
 	--target ES2024 --allowImportingTsExtensions --erasableSyntaxOnly --skipLibCheck \
 	--typeRoots ./node_modules/@types ../../.pi/tests/no-git-writes.test.ts
-exec node --test --test-concurrency=4 --test-reporter=spec kido-pi-*.test.ts ../../.pi/tests/no-git-writes.test.ts
+exec node --test --test-concurrency=4 --test-reporter=spec ko-pi-*.test.ts ../../.pi/tests/no-git-writes.test.ts

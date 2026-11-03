@@ -1,5 +1,0 @@
-(library
- (name fake_common)
- (flags
-  (:standard -open Containers))
- (libraries kido_fs containers yojson))
