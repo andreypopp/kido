@@ -268,8 +268,10 @@ mod tests {
     }
 
     fn fake_shell(name: &str) -> PathBuf {
+        static SHELLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let number = SHELLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         write(
-            &scratch(&format!("fake-{name}")).join(name),
+            &scratch(&format!("fake-{name}-{number}")).join(name),
             r#"#!/bin/sh
 [ "$1" = "-c" ] && { echo 5.2; exit 0; }
 [ "$2" = "-c" ] && exit 0
