@@ -3,7 +3,6 @@
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::Limits;
@@ -22,7 +21,7 @@ use super::view::{Feed, Slice, View};
 use super::{Code, Command, Posted, Shared, ViewEvent, layout_of, locked, post, string};
 use crate::launch::{self, BACKOFF_FIRST, backoff_after};
 use crate::model::{Applied, Model, Rejoin};
-use crate::wire::{self, Link, Next, WATCHDOG, buffered, request, silent, text};
+use crate::wire::{Link, Next, WATCHDOG, buffered, request, silent, text};
 
 const WATCH: Duration = Duration::from_secs(2);
 
@@ -31,7 +30,6 @@ struct Session {
     token: Token,
     client: ClientId,
     limits: Limits,
-    epoch: u64,
 }
 
 struct Conn {
@@ -55,9 +53,6 @@ struct Engine<'a> {
     backoff: Duration,
     reported: bool,
     session: Option<Session>,
-    epoch: u64,
-    fetching: Option<JoinHandle<()>>,
-    refetch: bool,
     views: Vec<Open>,
 }
 
@@ -96,16 +91,10 @@ pub(super) fn run(shared: &Arc<Shared>) {
         backoff: BACKOFF_FIRST,
         reported: false,
         session: None,
-        epoch: 0,
-        fetching: None,
-        refetch: false,
         views: Vec::new(),
     };
     engine.serve();
     shared.up.store(false, Ordering::SeqCst);
-    if let Some(fetching) = engine.fetching.take() {
-        let _ = fetching.join();
-    }
 }
 
 impl Engine<'_> {
@@ -189,8 +178,7 @@ impl Engine<'_> {
         )
         .map_err(|error| failure(&error))?;
         let hello = locked(&shared.hello).clone();
-        let joined =
-            Model::join(&mut link, hello, socket, Some(&shared.cancel)).map_err(protocol_error)?;
+        let joined = Model::join(&mut link, hello).map_err(protocol_error)?;
         let rejoin = match locked(&shared.model).as_mut() {
             Some(earlier) => earlier.gate(joined),
             None => Rejoin::Fresh(joined),
@@ -202,13 +190,11 @@ impl Engine<'_> {
         let token = link
             .watch(&mut self.poll)
             .map_err(|error| failure(&error))?;
-        self.epoch += 1;
         let session = Session {
             link,
             token,
             client: model.client,
             limits: model.limits,
-            epoch: self.epoch,
         };
         *locked(&shared.client) = Some(model.client);
         post(
@@ -248,7 +234,6 @@ impl Engine<'_> {
         if let Some(mut session) = self.session.take() {
             session.link.unwatch(&mut self.poll);
         }
-        self.refetch = false;
         self.shared.up.store(false, Ordering::SeqCst);
         self.poll.stop(self.watch);
         for open in &mut self.views {
@@ -277,9 +262,6 @@ impl Engine<'_> {
             self.shared.wake.drain();
             self.commands();
             self.resume();
-            if let Err((code, message)) = self.fetched() {
-                self.lose(code, &message);
-            }
         } else if self
             .session
             .as_ref()
@@ -339,15 +321,11 @@ impl Engine<'_> {
     }
 
     fn apply(&mut self, event: ClientEvent) {
-        let (applied, fetch) = match locked(&self.shared.model).as_mut() {
-            Some(model) => model.apply_event(event),
+        let applied = match locked(&self.shared.model).as_mut() {
+            Some(model) => model.apply(event),
             None => return,
         };
-        if fetch {
-            self.start_fetch();
-        } else {
-            self.announce(&applied);
-        }
+        self.announce(&applied);
     }
 
     fn announce(&self, applied: &Applied) {
@@ -367,47 +345,6 @@ impl Engine<'_> {
             Applied::Notice(notice) => Posted::Alert(notice.clone()),
         };
         post(shared, posted);
-    }
-
-    // The rows come from two requests that would stall every view on this thread.
-    fn start_fetch(&mut self) {
-        let Some(session) = self.session.as_ref() else {
-            return;
-        };
-        if self.fetching.is_some() {
-            self.refetch = true;
-            return;
-        }
-        let (shared, client, epoch) = (Arc::clone(self.shared), session.client, session.epoch);
-        self.fetching = Some(std::thread::spawn(move || {
-            let rows = Model::fetch(
-                &shared.socket,
-                client,
-                (Some(&shared.cancel), wire::READ_TIMEOUT),
-            );
-            *locked(&shared.fetched) = Some((epoch, rows));
-            shared.wake.wake();
-        }));
-    }
-
-    fn fetched(&mut self) -> Result<(), Failed> {
-        let Some((epoch, rows)) = locked(&self.shared.fetched).take() else {
-            return Ok(());
-        };
-        if let Some(fetching) = self.fetching.take() {
-            let _ = fetching.join();
-        }
-        if self.session.as_ref().map(|session| session.epoch) == Some(epoch) {
-            let rows = rows.map_err(protocol_error)?;
-            if let Some(model) = locked(&self.shared.model).as_mut() {
-                model.install(rows);
-            }
-            self.announce(&Applied::Layout);
-        }
-        if std::mem::take(&mut self.refetch) {
-            self.start_fetch();
-        }
-        Ok(())
     }
 
     fn commands(&mut self) {

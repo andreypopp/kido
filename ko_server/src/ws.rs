@@ -8,7 +8,7 @@ use ko_sys::event::{Poll, PollRead, Reads, Token};
 use tungstenite::protocol::frame::FrameHeader;
 use tungstenite::protocol::frame::coding::{CloseCode, Data, OpCode};
 use tungstenite::protocol::{CloseFrame, Role as Side, WebSocketConfig, WebSocketContext};
-use tungstenite::{Error, Message};
+use tungstenite::{Error, Message, Utf8Bytes};
 
 use crate::conn::{Output, Queue};
 use crate::http::{self, Head, MAX_HEAD, Status};
@@ -17,6 +17,7 @@ use crate::ids::ClientId;
 const RECORD_HEADER: usize = 9;
 const MAX_HEADER: usize = 10 + RECORD_HEADER;
 const MAX_MESSAGE: usize = 1 << 20;
+const MAX_SENT: usize = 32 << 20;
 const IDLE: Duration = Duration::from_secs(30);
 const PONG: Duration = Duration::from_secs(10);
 pub(crate) const FIRST_PING: Duration = IDLE;
@@ -248,14 +249,15 @@ impl Ws {
         next
     }
 
-    pub(crate) fn send(&mut self, out: &mut Output, text: String) {
+    pub(crate) fn send(&mut self, out: &mut Output, text: impl Into<Utf8Bytes>) {
+        let text: Utf8Bytes = text.into();
         if !out.is_open() {
             return;
         }
-        if text.len() > MAX_MESSAGE
+        if text.as_str().len() > MAX_SENT
             || self
                 .ctx
-                .write(&mut writer(out), Message::Text(text.into()))
+                .write(&mut writer(out), Message::Text(text))
                 .is_err()
         {
             out.close();

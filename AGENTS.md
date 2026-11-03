@@ -675,7 +675,7 @@ Conventions:
   threads, close and reconnect. The ffi lives in the app's process,
   so it has threads: one I/O thread (`ffi::engine`) on
   `ko_sys::event` that owns the `/client` link, every view link and
-  the reconnect, a short thread for each model fetch, and one decoder
+  the reconnect, and one decoder
   thread for each view (`ffi::view`) that runs the restore and feed
   callbacks. A call wakes the I/O thread through a
   `ko_sys::event::Wake`. A second `Wake`, set at close, is the
@@ -945,8 +945,8 @@ that a run command prints. kido never reads the extension's files.
 the cut-over (plans/ko-stages.md K8), which deletes `kido-pi.ts` and
 its suite. A change of the harness's behaviour goes into both files
 until then. ko-pi calls ko's run commands with the same contract, and
-in place of tmux it calls `ko api`: `GET /panes` and `GET /layout`
-(joined for each pane's session and window) and `PUT` and `DELETE` on
+in place of tmux it calls `ko api`: `GET /layout` (the pane rows with
+each pane's session and window) and `PUT` and `DELETE` on
 `/panes/$KO_PANE/vars/pi.*`. It never opens ko's socket. Its knobs
 are `KO_*`, and its state directory is `$KO_PI_STATE_DIR`, else
 `$XDG_STATE_HOME/ko-pi`, else `~/.local/state/ko-pi`. A ko agent

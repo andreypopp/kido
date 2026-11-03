@@ -115,7 +115,7 @@ export interface Fixture {
   panes(): PaneRow[];
   setRuns(rows: unknown[]): void;
   apiCalls(): ApiCall[];
-  paneReads(): number;
+  layoutReads(): number;
   optionWrites(): Array<{ key: string; value: string | undefined }>;
   agentDir(parent: string, name: string): string;
   writeAgent(parent: string, name: string, record: AgentRecord): string;
@@ -270,8 +270,8 @@ export function makeFixture(): Fixture {
     apiCalls() {
       return jsonLines(apiLogFile);
     },
-    paneReads() {
-      return (jsonLines(apiLogFile) as ApiCall[]).filter((call) => call.method === "GET" && call.path === "/panes").length;
+    layoutReads() {
+      return (jsonLines(apiLogFile) as ApiCall[]).filter((call) => call.method === "GET" && call.path === "/layout").length;
     },
     optionWrites() {
       const writes: Array<{ key: string; value: string | undefined }> = [];

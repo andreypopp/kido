@@ -42,16 +42,13 @@ fn variables() {
         json!({"type": "var", "pane": pane, "name": "ssh.dest", "value": "deploy@example.test"})
     );
     assert_eq!(
-        s.ko(&["api", &route("ssh.dest")], "").ok(),
-        "\"deploy@example.test\""
-    );
-    assert_eq!(
-        s.ko(&["api", &format!("/panes/{pane}/vars")], "").json(),
-        json!({"ssh.dest": "deploy@example.test"})
-    );
-    assert_eq!(
         s.row(&pane)["vars"],
         json!({"ssh.dest": "deploy@example.test"})
+    );
+    assert_eq!(
+        s.ko(&["api", &format!("/panes/{pane}")], "").json()["vars"],
+        json!({"ssh.dest": "deploy@example.test"}),
+        "one pane, with its variables"
     );
 
     s.ko(
@@ -88,12 +85,14 @@ fn variables() {
         "last",
         "deleting an absent name sends no event"
     );
-    let missing = s.ko(&["api", &route("list")], "").http_error(404);
+    assert_eq!(s.row(&pane)["vars"].get("list"), None);
+    for read in [route("list"), format!("/panes/{pane}/vars")] {
+        s.ko(&["api", &read], "").http_error(404);
+    }
     assert_eq!(
-        missing,
-        r#"{"kind":"not_found","message":"variable not found"}"#
+        s.ko(&["api", "/panes/pane_99"], "").http_error(404),
+        r#"{"kind":"not_found","message":"pane not found"}"#
     );
-    s.ko(&["api", "/panes/pane_99/vars"], "").http_error(404);
     assert_eq!(
         put(&s, &pane, "bad", "{").0,
         400,
@@ -163,8 +162,8 @@ fn variables() {
     s.text(&pane, "\n");
     late.event("dead");
     assert_eq!(
-        s.ko(&["api", &route("ssh.dest")], "").ok(),
-        "\"deploy@example.test\"",
+        s.row(&pane)["vars"]["ssh.dest"],
+        "deploy@example.test",
         "a dead pane keeps its variables"
     );
 }
@@ -240,10 +239,6 @@ fn a_layout_put_takes_vars_on_new_panes_sessions_and_windows_under_the_limits_of
     assert_eq!(found["ssh.dest"], "deploy@example.test");
     assert_eq!(found["n"], json!([1, {"a": null}]));
     assert_eq!(found["big"].as_str().map(str::len), Some(MAX_VALUE - 2));
-    assert_eq!(
-        s.request("GET", "/panes/pane_1/vars/n", None, 200),
-        "[1,{\"a\":null}]"
-    );
 
     let small = json!({"k": 1});
     let put = attempt(&small, "window").json();
@@ -269,7 +264,7 @@ fn a_conditional_delete_removes_its_names_together_and_changes_nothing_when_the_
     }
     let route = format!("/panes/{pane}/vars");
     let delete = |body: &str| s.ko(&["api", "-X", "DELETE", "--input", "-", &route], body);
-    let all = || s.ko(&["api", &route], "").json();
+    let all = || s.row(&pane)["vars"].clone();
     let before = json!({"keep": 1, "pi.name": "N", "pi.session": "mine"});
     assert_eq!(all(), before);
 
@@ -310,4 +305,38 @@ fn a_conditional_delete_removes_its_names_together_and_changes_nothing_when_the_
         r#"{"names":[]}"#,
     )
     .http_error(404);
+}
+
+#[test]
+fn a_welcome_with_variables_over_a_mebibyte_arrives_whole_and_a_variable_write_moves_no_revision() {
+    let s = start(&[]);
+    let pane = s.pane("printf READY; read x");
+    s.screen_has(&pane, "READY");
+    let big = json!("x".repeat(MAX_VALUE - 2));
+    let before = s.doc();
+    for name in ["a", "b", "c"] {
+        s.set_var(&pane, name, &big);
+    }
+    assert_eq!(
+        s.doc()["revision"],
+        before["revision"],
+        "a variable write is not a layout change"
+    );
+    assert_eq!(
+        s.put(&before)["revision"],
+        before["revision"],
+        "so the layout from before it is still current"
+    );
+    let mut ws = s.ws("/client");
+    ws.send(&json!({
+        "type": "hello", "kind": "app", "name": "test", "focused": false,
+        "size": {"cols": 80, "rows": 24}
+    }));
+    let layout = ws.event("layout");
+    let vars = &layout["panes"][0]["vars"];
+    assert_eq!(
+        ["a", "b", "c"].map(|name| vars[name].as_str().map(str::len)),
+        [Some(MAX_VALUE - 2); 3],
+        "three variables of about a mebibyte each, in one server message"
+    );
 }

@@ -113,8 +113,6 @@ enum Command {
     RunWait(runs::RunWaitArgs),
     /// Record a run's ending, then stop its process and close its pane.
     RunStop(runs::RunStopArgs),
-    /// Close the finished subagent windows a sweep names.
-    Reap(runs::ServerOnly),
     /// Send a prompt, read from stdin, to the agent in the caller's window or session.
     Prompt(runs::PromptArgs),
 }
@@ -652,7 +650,6 @@ fn main() -> ExitCode {
         Command::RunOutcome(args) => runs::run_outcome(args),
         Command::RunWait(args) => runs::run_wait(args),
         Command::RunStop(args) => runs::run_stop(args),
-        Command::Reap(args) => runs::reap(args),
         Command::Prompt(args) => runs::prompt(args),
     }
 }

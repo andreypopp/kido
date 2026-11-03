@@ -4,7 +4,7 @@ use super::*;
 use crate::api::routes;
 use crate::ids::WindowId;
 use crate::msg::{self, Delivery, Step};
-use crate::pane_kind::{self, Kind, RUN, RemoteKind};
+use crate::pane_kind::{self, Kind, RemoteKind};
 use crate::protocol::{Candidate, Error, ErrorKind, SendPrompt, Sent, Via, Window};
 
 const INBOX_TIMEOUT: Duration = Duration::from_secs(2);
@@ -67,8 +67,7 @@ impl State {
             window.panes().iter().any(|pane| {
                 self.panes
                     .find(*pane)
-                    .and_then(|pane| pane.vars().text(&RUN))
-                    .is_some()
+                    .is_some_and(|pane| pane.run().is_some())
             })
         };
         let ordered = std::iter::once(own).chain(session.windows.iter().filter(|w| w.id != own.id));

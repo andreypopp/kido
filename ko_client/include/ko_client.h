@@ -342,10 +342,10 @@ ko_code ko_client_version(ko_version *out);
 
 /*
  * The model as one JSON document in a buffer: the client and instance ids, the
- * selection, the layout document (as GET /layout gives it), every pane with
+ * selection, the layout document and its revision (GET /layout without its panes), every pane with
  * its label (the title to show), its seen mark ("none", "running", "waiting", "done" or "failed"),
- * its row (status, variables of the server, progress) and its variables, the
- * runs, and the outline (sessions and panes in tree order with depth). It is a
+ * its row (status, variables of the server, progress, and its run if it has one) and its variables, and the
+ * outline (sessions and panes in tree order with depth). It is a
  * snapshot: a later change needs a later call.
  * share/ko/client-model.json is the schema of the document (ModelJson); its
  * references name the components of share/ko/openapi.json.

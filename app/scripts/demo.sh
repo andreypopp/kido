@@ -81,7 +81,7 @@ PY
   k run --session main --name build -- sleep 3600 >/dev/null
   kido_pane=$(k api /layout | python3 -c 'import json,sys; t=json.load(sys.stdin)["layout"]["sessions"][0]["windows"][0]["tree"]; print(t["children"][0]["pane"])')
   deadline=$((SECONDS + 10))
-  until k api "/panes/$kido_pane/vars" 2>/dev/null | grep -q pi.session; do
+  until k api "/panes/$kido_pane" 2>/dev/null | python3 -c 'import json,sys; sys.exit(0 if "pi.session" in json.load(sys.stdin)["vars"] else 1)' 2>/dev/null; do
     [ "$SECONDS" -lt "$deadline" ] || break
     sleep 0.1
   done

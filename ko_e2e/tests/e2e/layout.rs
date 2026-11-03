@@ -339,6 +339,12 @@ fn every_edit_of_the_layout_is_normalized_and_resizes_the_panes() {
     );
 }
 
+fn current(s: &Server) -> Value {
+    let mut document = s.doc();
+    document.as_object_mut().unwrap().remove("panes");
+    document
+}
+
 #[test]
 fn a_stale_revision_gets_409_and_the_current_document_and_the_retry_lands() {
     let s = start(&[]);
@@ -346,7 +352,14 @@ fn a_stale_revision_gets_409_and_the_current_document_and_the_retry_lands() {
         layout["sessions"] = json!([{"name": "a", "windows": [{"name": "w", "tree": new()}]}]);
     });
     let stale = json!({"revision": 0, "layout": first["layout"]});
-    assert_eq!(put_stale(&s, &stale, |_| {}), s.doc());
+    assert_eq!(put_stale(&s, &stale, |_| {}), current(&s));
+    assert_eq!(
+        s.doc()["panes"]
+            .as_array()
+            .map(|panes| panes[0]["id"].clone()),
+        Some(json!("pane_1")),
+        "the layout names its panes with their rows"
+    );
 
     let renamed = json!({"revision": 0, "layout": {"sessions": [{"id": "session_1", "name": "b",
         "windows": [{"id": "window_1", "name": "w", "tree": old("pane_1")}]}]}});
@@ -365,7 +378,7 @@ fn a_stale_revision_gets_409_and_the_current_document_and_the_retry_lands() {
         serde_json::from_slice::<Value>(&body).unwrap(),
         json!({"kind": "invalid", "message": "pane_1 is in no window"})
     );
-    assert_eq!(s.doc(), landed);
+    assert_eq!(current(&s), landed);
 }
 
 fn revision(document: &Value) -> u64 {
@@ -427,10 +440,15 @@ fn deleting_a_window_or_a_session_is_one_change_and_a_put_from_before_it_gets_40
         wait_gone(pid, "the delete of its window");
     }
     assert_eq!(s.rows().len(), rows - 2);
-    let current = put_stale(&s, &before, |layout| {
+    let stale_reply = put_stale(&s, &before, |layout| {
         layout["sessions"][0]["windows"][0]["tree"] = split("h", vec![old("pane_1"), new()]);
     });
-    assert_eq!(current, s.doc(), "the stale edit gets the current document");
+    assert_eq!(
+        stale_reply,
+        current(&s),
+        "the stale edit gets the current document"
+    );
+    let after_stale = current(&s);
     assert_eq!(s.rows().len(), rows - 2, "no pane survived the stale edit");
     let missing = s.delete("/windows/window_1").http_error(404);
     assert_eq!(
@@ -438,7 +456,7 @@ fn deleting_a_window_or_a_session_is_one_change_and_a_put_from_before_it_gets_40
         json!("not_found")
     );
     s.delete("/windows/window_77").http_error(404);
-    assert_eq!(s.doc(), current, "a refused delete changes nothing");
+    assert_eq!(current(&s), after_stale, "a refused delete changes nothing");
 
     let before = s.doc();
     let doomed = [s.pane_program("pane_4"), s.pane_program("pane_5")];
@@ -650,4 +668,17 @@ fn selecting_another_window_sizes_it_in_the_same_change_as_the_focus() {
     let event = assert_one_event_for_one_revision(&s, &mut client, &before);
     let moved = windows(&event)[1];
     assert_eq!((&moved["cols"], &moved["rows"]), (&json!(100), &json!(30)));
+}
+
+#[test]
+fn a_title_change_moves_no_revision_so_a_layout_put_from_before_it_lands() {
+    let s = start(&[]);
+    let pane = s.pane("printf READY; read x; printf '\\033]0;changed\\007'; exec cat");
+    s.screen_has(&pane, "READY");
+    assert_eq!(s.row(&pane)["title"], "");
+    let before = s.doc();
+    s.text(&pane, "\n");
+    s.wait_row(&pane, "the title", |row| row["title"] == "changed");
+    assert_eq!(s.doc()["revision"], before["revision"]);
+    assert_eq!(s.put(&before)["revision"], before["revision"]);
 }

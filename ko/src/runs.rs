@@ -125,13 +125,6 @@ pub(crate) struct RunStopArgs {
 }
 
 #[derive(Debug, Args)]
-pub(crate) struct ServerOnly {
-    /// The server's state directory.
-    #[arg(long, value_name = "DIR")]
-    server: Option<PathBuf>,
-}
-
-#[derive(Debug, Args)]
 pub(crate) struct PromptArgs {
     /// The server's state directory.
     #[arg(long, value_name = "DIR")]
@@ -358,26 +351,27 @@ fn list(args: RunsArgs, dir: &Path, parent: Option<Parent>) -> ExitCode {
         .to_vec(),
     ];
     rows.extend(infos.iter().map(|info: &Info| {
-        let (outcome, ended) = match &info.outcome {
+        let (outcome, ended) = match &info.run.outcome {
             None => ("running".to_owned(), Some(now)),
             Some(outcome) => (outcome.result.to_string(), outcome.at),
         };
         vec![
-            info.meta.id.to_string(),
-            info.meta.name.as_str().to_owned(),
+            info.run.meta.id.to_string(),
+            info.run.meta.name.as_str().to_owned(),
             info.session.clone().unwrap_or_default(),
-            info.meta
+            info.run
+                .meta
                 .parent
                 .as_ref()
                 .map(ToString::to_string)
                 .unwrap_or_default(),
-            local_time(info.meta.started_at),
+            local_time(info.run.meta.started_at),
             ended.map_or("-".to_owned(), |ended| {
-                let whole = (ended.micros_since(info.meta.started_at) + 500_000) / 1_000_000;
+                let whole = (ended.micros_since(info.run.meta.started_at) + 500_000) / 1_000_000;
                 duration_text(whole * 1_000_000)
             }),
             outcome,
-            info.meta.cwd.clone(),
+            info.run.meta.cwd.clone(),
         ]
     }));
     table(&rows);
@@ -397,21 +391,23 @@ fn show(args: &RunsArgs, dir: &Path, id: &RunId) -> ExitCode {
     let mut line = |key: &str, value: &str| {
         let _ = writeln!(out, "{:<10}{value}", format!("{key}:"));
     };
-    line("id", &info.meta.id.to_string());
-    line("name", info.meta.name.as_str());
+    line("id", &info.run.meta.id.to_string());
+    line("name", info.run.meta.name.as_str());
     line("session", info.session.as_deref().unwrap_or_default());
     line(
         "parent",
         &info
+            .run
             .meta
             .parent
             .as_ref()
             .map(ToString::to_string)
             .unwrap_or_default(),
     );
-    line("cwd", &info.meta.cwd);
-    line("started", &local_time(info.meta.started_at));
-    match &info.outcome {
+    line("command", &info.run.meta.argv.join(" "));
+    line("cwd", &info.run.meta.cwd);
+    line("started", &local_time(info.run.meta.started_at));
+    match &info.run.outcome {
         None => line("outcome", "running"),
         Some(outcome) => {
             line("outcome", &outcome.result.to_string());
@@ -516,14 +512,6 @@ pub(crate) fn run_stop(args: RunStopArgs) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(failure) => by_kind("run-stop", &dir, failure, 5),
-    }
-}
-
-pub(crate) fn reap(args: ServerOnly) -> ExitCode {
-    let dir = client_dir(args.server);
-    match runs::reap(&dir) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(failure) => failed("reap", &dir, failure),
     }
 }
 

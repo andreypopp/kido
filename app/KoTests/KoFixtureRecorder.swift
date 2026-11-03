@@ -42,7 +42,7 @@ import XCTest
         let firstRun = try XCTUnwrap(try JSONDecoder().decode([String: String].self, from: Data(first.utf8))["id"])
         _ = try output(["run-child", "--session", "session_1", "--name", "nested", firstRun, "--", "/bin/sleep", "60"], dir: dir)
         _ = try output(["run", "--session", "session_1", "--name", "ended", "--", "/bin/sh", "-c", "exit 3"], dir: dir)
-        wait("the runs") { (try? client.model())?.runs.count == 3 }
+        wait("the runs") { (try? client.model())?.panes.filter { $0.run != nil }.count == 3 }
         wait("the ended pane") { (try? client.model())?.panes.contains { $0.dead != nil } == true }
         wait("every live pane has its status") { (try? client.model())?.panes.allSatisfy { $0.dead != nil || $0.status != nil } == true }
         try write(client.model(), destination + "/SidebarFeed/Tests/SidebarFeedTests/Fixtures/ko-tree.json")

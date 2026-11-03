@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::harness::{Server, poll, start, stays, wait_gone};
 use crate::runs::{
-    caller, child_of, code, has_pane, id_of, info, ko_as, lingering, pane_of, run_of, wait_ending,
+    caller, child_of, has_pane, id_of, info, ko_as, lingering, pane_of, run_of, wait_ending,
     wait_pane_gone, windows,
 };
 use crate::status::osc7501;
@@ -61,8 +61,8 @@ fn a_dead_run_is_collected_after_the_linger_with_its_ending_and_its_last_screen(
 }
 
 #[test]
-fn the_sweep_acts_only_on_the_pane_a_run_names_and_reap_waits_out_the_linger() {
-    let s = start(&[]);
+fn the_sweep_acts_only_on_the_pane_a_run_names() {
+    let s = lingering();
     let caller = caller(&s);
     let young = run_of(
         &s,
@@ -70,32 +70,17 @@ fn the_sweep_acts_only_on_the_pane_a_run_names_and_reap_waits_out_the_linger() {
         "young",
         &["sh", "-c", "echo young-screen-e2e; exit 0"],
     );
-    poll("the run's pane to die", || {
-        s.row(pane_of(&young))["dead"].is_object()
-    });
-    ko_as(&s, None, &["reap"], "").ok();
-    stays(
-        "a run was collected within its linger",
-        Duration::from_millis(600),
-        || has_pane(&s, pane_of(&young)),
-    );
-    assert_eq!(
-        screen(&s, id_of(&young)),
-        "",
-        "no screen is saved for a pane the sweep left alone"
-    );
-
     let bystander = s.new_pane(json!({
         "command": {"type": "argv", "argv": ["/bin/sh", "-c", "exit 0"]},
-        "vars": {"ko.run": id_of(&young)}
     }));
     let user = s.pane("exit 0");
-    poll("the panes to die", || {
+    poll("the other panes to die", || {
         s.row(&bystander)["dead"].is_object() && s.row(&user)["dead"].is_object()
     });
-    ko_as(&s, None, &["reap"], "").ok();
+    wait_pane_gone(&s, pane_of(&young));
+    assert!(screen(&s, id_of(&young)).contains("young-screen-e2e"));
     stays(
-        "a pane that no run names was collected",
+        "a pane that no run owns was collected",
         Duration::from_millis(600),
         || has_pane(&s, &bystander) && has_pane(&s, &user),
     );
@@ -139,7 +124,7 @@ fn a_split_pane_survives_a_finished_run_and_the_window_goes_plain(s: &Server, ca
         has_pane(s, &split),
         "the user's split went with the run's pane"
     );
-    assert_eq!(s.row(&split)["vars"].get("ko.run"), None);
+    assert_eq!(s.row(&split).get("run"), None);
     let document = s.doc();
     let window = crate::layout::windows(&document)
         .into_iter()
@@ -227,8 +212,6 @@ fn a_child_whose_parent_ended_is_collected_while_its_command_runs() {
         wait_ending(&s, id_of(&child)),
         ("failed".to_owned(), "its parent ended".to_owned())
     );
-    let reap = ko_as(&s, None, &["reap"], "");
-    assert_eq!(code(&reap), 0, "{reap:?}");
 }
 
 #[test]

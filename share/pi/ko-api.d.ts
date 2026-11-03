@@ -21,23 +21,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/clients/{id}/select": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** @description Selects a session, a window or a pane for a client. */
-        post: operations["SelectClient"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/layout": {
         parameters: {
             query?: never;
@@ -45,7 +28,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description The layout of every session, with its revision. */
+        /** @description The layout of every session, with its revision, and every pane that it names. */
         get: operations["GetLayout"];
         /** @description Replaces the layout. A stale revision gets 409 with the current layout. */
         put: operations["PutLayout"];
@@ -63,7 +46,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Every pane, with its status and variables. */
+        /** @description Every pane, with its status, variables and run. */
         get: operations["ListPanes"];
         put?: never;
         post?: never;
@@ -80,7 +63,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** @description One pane, with its status, variables and run. */
+        get: operations["GetPane"];
         put?: never;
         post?: never;
         /** @description Closes a pane. */
@@ -182,8 +166,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description The variables of a pane. */
-        get: operations["Vars"];
+        get?: never;
         put?: never;
         post?: never;
         /** @description Removes variables of a pane, if its condition holds. */
@@ -200,8 +183,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description The value of one variable of a pane. */
-        get: operations["Var"];
+        get?: never;
         /** @description Sets one variable of a pane. */
         put: operations["SetVar"];
         post?: never;
@@ -275,23 +257,6 @@ export interface paths {
         put?: never;
         /** @description Starts a run in a new window. */
         post: operations["StartRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/runs/reap": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** @description Collects the runs that are finished with. */
-        post: operations["Reap"];
         delete?: never;
         options?: never;
         head?: never;
@@ -477,7 +442,7 @@ export interface components {
         } & components["schemas"]["Welcome"]) | ({
             /** @constant */
             type: "layout";
-        } & components["schemas"]["Snapshot"]) | {
+        } & components["schemas"]["LayoutPanes"]) | {
             pane: components["schemas"]["PaneId"];
             /** @constant */
             type: "focus";
@@ -491,7 +456,12 @@ export interface components {
         } & components["schemas"]["Title"]) | ({
             /** @constant */
             type: "pwd";
-        } & components["schemas"]["Pwd"]) | ({
+        } & components["schemas"]["Pwd"]) | {
+            foreground: components["schemas"]["Foreground"];
+            pane: components["schemas"]["PaneId"];
+            /** @constant */
+            type: "foreground";
+        } | ({
             /** @constant */
             type: "dead";
         } & components["schemas"]["PaneDead"]) | ({
@@ -539,7 +509,7 @@ export interface components {
         } | ({
             /** @constant */
             type: "run";
-        } & components["schemas"]["RunEvent"]);
+        } & components["schemas"]["RunRow"]);
         ClientId: string;
         /** @enum {string} */
         ClientKind: "terminal" | "app";
@@ -604,6 +574,7 @@ export interface components {
             names: components["schemas"]["VarName"][];
         };
         Detail: {
+            argv: string[];
             cwd: string;
             id: components["schemas"]["RunId"];
             name: components["schemas"]["RunName"];
@@ -739,6 +710,7 @@ export interface components {
         /** @enum {string} */
         Images: "none";
         Info: {
+            argv: string[];
             cwd: string;
             id: components["schemas"]["RunId"];
             name: components["schemas"]["RunName"];
@@ -779,6 +751,11 @@ export interface components {
         Layout: {
             sessions: components["schemas"]["Session"][];
         };
+        LayoutPanes: {
+            layout: components["schemas"]["Layout"];
+            panes: components["schemas"]["Listing"][];
+            revision: number;
+        };
         Leaf: {
             cols: components["schemas"]["Cells"];
             pane: components["schemas"]["PaneId"];
@@ -800,6 +777,7 @@ export interface components {
             id: components["schemas"]["PaneId"];
             pid: number;
             progress?: components["schemas"]["Progress"];
+            run?: components["schemas"]["RunRow"];
             status?: components["schemas"]["PaneStatus"];
             title: string;
             /** @default {} */
@@ -977,14 +955,6 @@ export interface components {
         };
         /** @enum {string} */
         Reported: "completed" | "failed" | "stopped";
-        RunEvent: {
-            id: components["schemas"]["RunId"];
-            name: components["schemas"]["RunName"];
-            outcome?: components["schemas"]["RunOutcome"];
-            pane: components["schemas"]["PaneId"];
-            parent?: components["schemas"]["Parent"];
-            startedAt: components["schemas"]["Timestamp"];
-        };
         RunId: string;
         /** @description At most 64 bytes, without control characters. */
         RunName: string;
@@ -995,6 +965,16 @@ export interface components {
         };
         /** @enum {string} */
         RunResult: "completed" | "failed" | "died" | "stopped";
+        RunRow: {
+            argv: string[];
+            cwd: string;
+            id: components["schemas"]["RunId"];
+            name: components["schemas"]["RunName"];
+            outcome?: components["schemas"]["RunOutcome"];
+            pane?: components["schemas"]["PaneId"];
+            parent?: components["schemas"]["Parent"];
+            startedAt: components["schemas"]["Timestamp"];
+        };
         Scrollback: {
             /** @constant */
             type: "disabled";
@@ -1207,42 +1187,6 @@ export interface operations {
             };
         };
     };
-    SelectClient: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @example client_1 */
-                id: components["schemas"]["ClientId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["Selection"];
-            };
-        };
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Empty"];
-                };
-            };
-            /** @description The common error body. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
     GetLayout: {
         parameters: {
             query?: never;
@@ -1258,7 +1202,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Snapshot"];
+                    "application/json": components["schemas"]["LayoutPanes"];
                 };
             };
             /** @description The common error body. */
@@ -1330,6 +1274,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Listing"][];
+                };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    GetPane: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Listing"];
                 };
             };
             /** @description The common error body. */
@@ -1553,40 +1529,6 @@ export interface operations {
             };
         };
     };
-    Vars: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @example pane_1 */
-                id: components["schemas"]["PaneId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-            /** @description The common error body. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
     DeleteVars: {
         parameters: {
             query?: never;
@@ -1619,40 +1561,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description The common error body. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    Var: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @example pane_1 */
-                id: components["schemas"]["PaneId"];
-                /** @example pi.session */
-                name: components["schemas"]["VarName"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
                 };
             };
             /** @description The common error body. */
@@ -1903,35 +1811,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Started"];
-                };
-            };
-            /** @description The common error body. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    Reap: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Empty"];
                 };
             };
             /** @description The common error body. */

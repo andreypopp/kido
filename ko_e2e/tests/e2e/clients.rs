@@ -290,22 +290,9 @@ fn select_switch_and_the_server_selecting_move_one_client_and_focus_reports_foll
     );
     logs(&s, ["IO", "IOIO", "IOI"]);
 
-    let moved = s
-        .ko(
-            &["api", "--input", "-", "/clients/client_1/select"],
-            r#"{"window": "window_1"}"#,
-        )
-        .ok();
-    assert_eq!(moved, "{}");
+    c.send(&json!({"type": "select", "window": "window_1"}));
     assert_eq!(c.event("selected")["pane"], json!("pane_1"));
     logs(&s, ["IOI", "IOIO", "IOIO"]);
-    s.ko(
-        &["api", "--input", "-", "/clients/client_9/select"],
-        r#"{"window": "window_1"}"#,
-    )
-    .http_error(404);
-    s.ko(&["api", "--input", "-", "/clients/client_1/select"], "{}")
-        .http_error(400);
 
     let (mut watcher, _) = s.app_client(json!({"pane": "pane_1"}), true, (80, 24));
     c.send(&json!({"type": "select", "pane": "pane_2"}));

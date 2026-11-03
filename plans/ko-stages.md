@@ -75,7 +75,7 @@ code has; "missing" names the work; "stage" names the stage below.
 
 | Kido.app capability | Rust ko today | missing | stage |
 |---|---|---|---|
-| sessions and windows (list, create, kill, rename, select, switch, events) | flat pane set; `topology` event | the layout document, `GET`/`PUT /layout`, revision and `409`, the `layout` event, per-client current session and window, `select` and `switch` with session and window, `POST /clients/client_N/select` | K2 |
+| sessions and windows (list, create, kill, rename, select, switch, events) | flat pane set; `topology` event | the layout document, `GET`/`PUT /layout`, revision and `409`, the `layout` event, per-client current session and window, `select` and `switch` with session and window, `POST /clients/client_N/select` (removed in K2c) | K2 |
 | the split tree (split, kill, move, swap, resize, equalize, layout events) | none | `tree` per window with normalization, pane creation inside a `PUT` (`{new}`), `DELETE` that gives cells to the sibling | K2 |
 | floats (`new-pane -x/-y`, raise, geometry) | none | `floats` per window with `x, y, cols, rows, z, border, title`, clamped into the window | K2 |
 | active pane | `select {pane}` per client | the current session, window and pane per client; the last focused pane per window in the coordinator | K2 |
@@ -209,9 +209,9 @@ decodes the new form in K5, so nothing depends on the old one.
 Keep. `GET /runs/<id>/wait` is a connection in `Phase::Handling` with
 its read interest off and one deadline timer, registered in a waiter
 list keyed by run id in `State`. The run's end or the timer answers it
-through `router::finish`, as `/screen` does. No thread. First-write-wins
-outcomes use `OpenOptions::create_new` on `outcome`, with the same
-effect as kido's `link`.
+through `router::finish`, as `/screen` does. No thread. `State`
+refuses a second outcome, and `outcome` is a plain atomic write
+(K2c).
 
 The rule, for this endpoint and for every other wait that the stages
 add (the prompt's inbox send, the image request, the clipboard
@@ -465,7 +465,8 @@ Scope:
   with cell inheritance, scaling on the sizing client's `size`,
   session and window `vars`. `protocol.rs`: the document types,
   `GET`/`PUT /layout`, the `layout` event, `hello {session?, window?,
-  pane?}`, `select`, `switch`, `POST /clients/client_N/select`,
+  pane?}`, `select`, `switch`, `POST /clients/client_N/select` (removed
+  in K2c),
   the `clear_history` request. `POST /panes` and `topology` go.
 - Sizing per window: `Pane.sizer` moves to the window; a leaf's pty
   size follows its cell geometry; a window with no sizing client keeps
@@ -501,7 +502,7 @@ Shapes decided by the user for K2 (2026-11-02):
   Derived from the clients, not stored.
 - `switch {over: "session" | "window", direction: "next" |
   "previous"}` moves the client in document order and wraps.
-  `POST /clients/client_N/select` takes the `select` body and answers
+  `POST /clients/client_N/select` (removed in K2c) takes the `select` body and answers
   `{}`, `not_found` for an unknown client. The event `selected
   {session?, window?, pane?}` goes to a client only when something
   other than its own `select` moved it: its `switch`, a `POST` from
@@ -633,7 +634,8 @@ Risk: medium. Mostly moving tested logic. The long poll on the
 Built (2026-11-02):
 
 - The run's pane carries `ko.run` as a variable of the new pane in
-  the server-made `PUT`; the new pane needs no `run` field.
+  the server-made `PUT`; the new pane needs no `run` field. (K2c
+  replaced the variable: the pane record holds its run.)
 - The inbox send is in `ko_server` (`msg.rs`), because the server
   delivers: a non-blocking connect and a stored send with a 2 s
   timer, no thread. A `/runs/<id>/wait` uses the connection's own
@@ -763,6 +765,21 @@ the app engine's fetch thread.
   server sweeps by itself on each event that can end a run. The reap
   e2e tests wait for the sweep's effect (the outcome event or the pane's
   removal) with a short grace from the server's environment.
+
+Done: `GET /layout` and every `/client` layout event are the document,
+its revision and the rows of its panes (`LayoutPanes`); a later event
+lists only the panes that its revision adds. The server withholds a
+new pane's own events in `State` until its layout event has gone out,
+whatever their source. The new `foreground` event covers the last row
+field without one. Server-to-client messages are at most 32 MiB, and
+all variables of the server at most 16 MiB, so a welcome fits. A
+pane's run is fixed at its creation; the `ko.run` variable is gone.
+One `RunRow` (the run's `Meta` and its outcome) is the row's `run`,
+the `run` event and a `GET /runs` entry; a run pane's death without
+an outcome sends the `run` event with the derived outcome. The
+run event is sent only when an outcome is recorded. `Model::join` and `rejoin`
+take no socket and no timeout, and `ffi::engine` has no fetch thread;
+the exported C functions did not change.
 
 ### K4. Linux measurements (1 to 2 agent-days, after RL)
 
@@ -1153,7 +1170,7 @@ RTT measurements and compression):
   between the server's check and its rename is lost; the app
   publishes at attach, after the server started.
 
-Limits: the handshake and the model fetch of an attempt block the
+Limits: the handshake and the welcome of an attempt block the
 loop for at most the time left, the error probe for at most 3 s, and
 the refused-or-no-server check (`ko api /version` on the host) for
 at most 20 s. The first master start can wait 60 s for a password

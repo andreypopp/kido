@@ -3,7 +3,7 @@
 
 The window stays off screen (KIDO_APP_BACKGROUND=1); see docs/design-app.md, "Stress harness".
 """
-import argparse, base64, collections, glob, json, os, random, re, signal, subprocess, sys, tempfile, threading, time
+import argparse, base64, collections, glob, json, os, random, re, signal, socket, struct, subprocess, sys, tempfile, threading, time
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--app', required=True)
@@ -134,10 +134,69 @@ def setup(full):
     log.write(json.dumps(dict(event='server-started')) + '\n')
 
 
-def app_client():
-    """The app's client id, as the KIDO_STRESS build logs it at each welcome."""
-    found = re.findall(r'^kido-app stress client (client_\d+)$', open(out + '/stderr.log', errors='replace').read(), re.M)
-    return found[-1] if found else None
+def ws_read(sock, count):
+    data = b''
+    while len(data) < count:
+        piece = sock.recv(count - len(data))
+        if not piece:
+            raise OSError('closed')
+        data += piece
+    return data
+
+
+def ws_text(sock):
+    """The next text message of the server."""
+    while True:
+        first, second = ws_read(sock, 2)
+        size = second & 0x7f
+        if size == 126:
+            size = struct.unpack('>H', ws_read(sock, 2))[0]
+        elif size == 127:
+            size = struct.unpack('>Q', ws_read(sock, 8))[0]
+        payload = ws_read(sock, size)
+        if first & 0x0f == 1:
+            return json.loads(payload)
+        if first & 0x0f == 8:
+            raise OSError('closed')
+
+
+def ws_send(sock, message):
+    data = json.dumps(message).encode()
+    mask = os.urandom(4)
+    size = len(data)
+    head = bytes([0x81, 0x80 | size]) if size < 126 else b'\x81\xfe' + struct.pack('>H', size)
+    sock.sendall(head + mask + bytes(byte ^ mask[at % 4] for at, byte in enumerate(data)))
+
+
+def client_select(window):
+    """A select on a /client socket of its own, true once the server answers with its selected event."""
+    version = ko('api', '/version')
+    if not isinstance(version, dict):
+        return False
+    sock = socket.socket(socket.AF_UNIX)
+    sock.settimeout(8)
+    try:
+        sock.connect(server + '/socket')
+        key = base64.b64encode(os.urandom(16)).decode()
+        sock.sendall((f'GET /client HTTP/1.1\r\nHost: ko\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n'
+                      f'Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n'
+                      f'Ko-Protocol: {version["protocol"]}\r\nKo-Vt: {version["vt"]}\r\n\r\n').encode())
+        head = b''
+        while not head.endswith(b'\r\n\r\n'):
+            head += ws_read(sock, 1)
+        if b' 101 ' not in head.split(b'\r\n')[0]:
+            return False
+        ws_send(sock, {'type': 'hello', 'kind': 'app', 'name': 'stress', 'focused': False, 'size': {'cols': 80, 'rows': 24}})
+        while ws_text(sock).get('type') != 'layout':
+            pass
+        ws_send(sock, {'type': 'select', 'window': window})
+        while ws_text(sock).get('type') != 'selected':
+            pass
+        return True
+    except (OSError, ValueError, KeyError):
+        return False
+    finally:
+        sock.close()
 
 
 def reports():
@@ -237,8 +296,7 @@ try:
         elif a in (0, 1, 2, 3) and ws:
             name = 'log-1m' if (i // 100) % 2 else 'log-100k'
             pick = next((w for s, w in ws if w['name'] == name), None) if a == 0 else rng.choice(ws)[1]
-            client = app_client()
-            if pick and client and api('POST', f'/clients/{client}/select', {'window': pick['id']}) is not None:
+            if pick and client_select(pick['id']):
                 counts['client-select'] += 1
         elif a == 4 and target:
             edit({'type': 'split', 'pane': target, 'axis': rng.choice('hv'), 'new': {}})

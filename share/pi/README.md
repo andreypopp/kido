@@ -136,8 +136,8 @@ ko's bin directory loads it. The differences:
 
 - It calls `ko` (`run`, `run-child`, `runs --json`, `run-wait --json`,
   `run-stop`, `run-outcome`) in place of `kido`. In place of tmux it
-  calls `ko api`: `GET /panes` and `GET /layout` for the panes with
-  their sessions and windows, and `PUT` and `DELETE` on
+  calls `ko api`: `GET /layout` for the panes with their sessions and
+  windows, and `PUT` and `DELETE` on
   `/panes/$KO_PANE/vars/<name>`. It never opens ko's socket itself.
 - It writes the pane variables `pi.session`, `pi.name`, `pi.inbox` and
   `pi.activity` in place of the four `@kido_*` options.

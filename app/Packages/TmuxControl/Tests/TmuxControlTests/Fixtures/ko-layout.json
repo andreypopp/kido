@@ -1,5 +1,5 @@
 {
-  "instance" : "cd202e3f5467e7d65f32ef6be8254b58",
+  "instance" : "d07cd59263c35f7b380fe51395ba87e4",
   "layout" : {
     "layout" : {
       "sessions" : [
@@ -159,6 +159,10 @@
         "stty raw -echo; exec cat"
       ],
       "cwd" : "\/",
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82015
+      },
       "id" : "pane_1",
       "label" : "sh",
       "mark" : "none",
@@ -177,7 +181,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1764504323970791,
+        "since" : 1776826860298583,
         "title" : "sh"
       },
       "title" : "",
@@ -192,6 +196,10 @@
         "stty raw -echo; exec cat"
       ],
       "cwd" : "\/",
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82033
+      },
       "id" : "pane_2",
       "label" : "sh",
       "mark" : "none",
@@ -210,7 +218,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1764504323980791,
+        "since" : 1776826921802958,
         "title" : "sh"
       },
       "title" : "",
@@ -225,6 +233,10 @@
         "stty raw -echo; exec cat"
       ],
       "cwd" : "\/",
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82014
+      },
       "id" : "pane_3",
       "label" : "sh",
       "mark" : "none",
@@ -243,7 +255,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1764504323981291,
+        "since" : 1776826860301875,
         "title" : "sh"
       },
       "title" : "",
@@ -258,6 +270,10 @@
         "stty raw -echo; exec cat"
       ],
       "cwd" : "\/",
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82019
+      },
       "id" : "pane_4",
       "label" : "sh",
       "mark" : "none",
@@ -276,7 +292,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1764504323981708,
+        "since" : 1776826860302041,
         "title" : "sh"
       },
       "title" : "",
@@ -291,6 +307,10 @@
         "stty raw -echo; exec cat"
       ],
       "cwd" : "\/",
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82017
+      },
       "id" : "pane_5",
       "label" : "sh",
       "mark" : "none",
@@ -309,7 +329,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1764504386716291,
+        "since" : 1776826860302208,
         "title" : "sh"
       },
       "title" : "",
@@ -324,6 +344,10 @@
         "stty raw -echo; exec cat"
       ],
       "cwd" : "\/",
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82016
+      },
       "id" : "pane_6",
       "label" : "sh",
       "mark" : "none",
@@ -342,7 +366,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1764504323982250,
+        "since" : 1776826860302291,
         "title" : "sh"
       },
       "title" : "",
@@ -357,6 +381,10 @@
         "stty raw -echo; exec cat"
       ],
       "cwd" : "\/",
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82018
+      },
       "id" : "pane_7",
       "label" : "sh",
       "mark" : "none",
@@ -375,7 +403,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1764504323984375,
+        "since" : 1776826860302875,
         "title" : "sh"
       },
       "title" : "",
@@ -383,9 +411,6 @@
 
       }
     }
-  ],
-  "runs" : [
-
   ],
   "selection" : {
 

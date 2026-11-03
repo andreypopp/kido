@@ -120,6 +120,7 @@ mod tests {
                 foreground: None,
                 status: None,
                 progress: None,
+                run: None,
             },
             vars: Default::default(),
         }

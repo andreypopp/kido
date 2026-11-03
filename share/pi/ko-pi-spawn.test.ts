@@ -44,9 +44,9 @@ test("spawn_agent starts ko-pi as a run-child, writes the child's directory firs
   try {
     fx.setPanes([selfPane()]);
     const s = await startNamedSession(fx, "Self");
-    const paneReads = fx.paneReads();
+    const layoutReads = fx.layoutReads();
     const result = await s.tools.get("spawn_agent").execute("c", { task: "do the thing", name: "kid" });
-    assert.equal(fx.paneReads(), paneReads, "a fresh child does not need pane discovery");
+    assert.equal(fx.layoutReads(), layoutReads, "a fresh child does not need pane discovery");
 
     assert.match(result.content[0].text, /^spawned kid \(session [0-9a-f]+, window window_9, pane pane_9, run fake-run-id\); session id is what resume_from takes later; its result arrives as a notice/);
     const argv = fx.runCalls()[0]!;

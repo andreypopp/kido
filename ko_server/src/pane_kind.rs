@@ -9,7 +9,6 @@ pub(crate) const PI_SESSION: VarName = VarName::known("pi.session");
 const PI_NAME: VarName = VarName::known("pi.name");
 const PI_ACTIVITY: VarName = VarName::known("pi.activity");
 const PI_INBOX: VarName = VarName::known("pi.inbox");
-pub(crate) const RUN: VarName = VarName::known("ko.run");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RemoteKind {

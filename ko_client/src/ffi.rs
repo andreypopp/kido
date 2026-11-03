@@ -24,7 +24,7 @@ use ko_server::protocol::{
 use ko_sys::event::Wake;
 
 use crate::launch::{self, PATIENCE};
-use crate::model::{Fetched, Model, Notice};
+use crate::model::{Model, Notice};
 use view::{Restored, View};
 
 unsafe extern "C" {
@@ -283,7 +283,6 @@ struct Shared {
     model: Mutex<Option<Model>>,
     up: AtomicBool,
     model_pending: AtomicBool,
-    fetched: Mutex<Option<(u64, Result<Fetched, String>)>>,
     decoders: Mutex<Vec<Arc<View>>>,
     views: AtomicU64,
     calls: Mutex<usize>,
@@ -643,7 +642,6 @@ pub unsafe extern "C" fn ko_client_connect(
         model: Mutex::new(None),
         up: AtomicBool::new(false),
         model_pending: AtomicBool::new(false),
-        fetched: Mutex::new(None),
         decoders: Mutex::new(Vec::new()),
         views: AtomicU64::new(0),
         calls: Mutex::new(0),
@@ -1117,7 +1115,7 @@ pub extern "C" fn ko_code_message(code: c_int) -> *const c_char {
 mod tests {
     use std::io::{Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
-    use std::sync::atomic::{AtomicPtr, AtomicUsize};
+    use std::sync::atomic::AtomicPtr;
     use std::sync::mpsc::{Receiver, Sender, channel};
     use std::thread::ThreadId;
     use std::time::{Duration, Instant};
@@ -1160,8 +1158,13 @@ mod tests {
     }
 
     fn layout(revision: u64) -> String {
+        layout_with(revision, &[])
+    }
+
+    fn layout_with(revision: u64, rows: &[Listing]) -> String {
+        let panes = serde_json::to_string(rows).unwrap();
         format!(
-            r#"{{"type":"layout","revision":{revision},"layout":{{"sessions":[{{"id":"session_1","name":"s","vars":{{}},"windows":[{{"id":"window_1","name":"w","vars":{{}},"cols":80,"rows":24,"focus":"pane_1","tree":{{"split":"h","children":[{{"pane":"pane_1","cols":40,"rows":24}},{{"pane":"pane_2","cols":39,"rows":24}}]}},"floats":[]}}]}}]}}}}"#
+            r#"{{"type":"layout","revision":{revision},"layout":{{"sessions":[{{"id":"session_1","name":"s","vars":{{}},"windows":[{{"id":"window_1","name":"w","vars":{{}},"cols":80,"rows":24,"focus":"pane_1","tree":{{"split":"h","children":[{{"pane":"pane_1","cols":40,"rows":24}},{{"pane":"pane_2","cols":39,"rows":24}}]}},"floats":[]}}]}}]}},"panes":{panes}}}"#
         )
     }
 
@@ -2080,23 +2083,18 @@ mod tests {
     }
 
     #[test]
-    fn a_close_cancels_a_stalled_join_request_and_a_blocked_call_and_ends_the_worker() {
-        let (held, panes) = channel();
+    fn a_close_cancels_a_join_that_waits_for_the_welcome_and_ends_the_worker() {
+        let (accepting, accepted) = channel();
         let (hung_up, hangup) = channel();
-        let held = Mutex::new(held);
         let routes = client_script(move |socket, _| {
-            welcomed(socket);
+            let _ = accepting.send(());
             wait_for_hangup(socket);
             let _ = hung_up.send(());
-        })
-        .plain(move |request| {
-            let _ = locked(&held).send(request.target.clone());
-            None
         });
         let server = serve("stalled", routes);
         let fixture = Fixture::new();
         let client = fixture.connect(&server);
-        assert_eq!(panes.recv_timeout(WAIT).unwrap(), "/panes");
+        accepted.recv_timeout(WAIT).unwrap();
         let started = Instant::now();
         close(client);
         assert!(started.elapsed() < Duration::from_secs(5));
@@ -2282,72 +2280,6 @@ mod tests {
     }
 
     #[test]
-    fn a_fetch_that_outlives_its_session_does_not_swallow_the_fetch_of_the_next_one() {
-        let one = serde_json::to_string(&[pane_row(1, None)]).unwrap();
-        let both = serde_json::to_string(&[pane_row(1, None), pane_row(2, None)]).unwrap();
-        let panes = AtomicUsize::new(0);
-        let (held, is_held) = channel::<()>();
-        let (release, gate) = channel::<()>();
-        let (held, gate) = (Mutex::new(held), Mutex::new(gate));
-        let (drop_first, dropped) = channel::<()>();
-        let routes = client_script(move |socket, _| {
-            welcomed(socket);
-            send(socket, &layout(1));
-            let _ = dropped.recv_timeout(WAIT);
-            let _ = socket.close(None);
-            let _ = socket.flush();
-        })
-        .client(|socket, _| {
-            send(socket, &welcome(INSTANCE, 1));
-            send(socket, &layout(2));
-            send(socket, &layout(3));
-            send(
-                socket,
-                r#"{"type":"title","pane":"pane_1","title":"after"}"#,
-            );
-            wait_for_hangup(socket);
-        })
-        .plain(move |request| {
-            if request.target != "/panes" {
-                return answer_empty(request);
-            }
-            Some((
-                200,
-                match panes.fetch_add(1, Ordering::SeqCst) {
-                    0 => "[]".to_owned(),
-                    1 => {
-                        let _ = locked(&held).send(());
-                        let _ = locked(&gate).recv_timeout(WAIT);
-                        "[]".to_owned()
-                    }
-                    2 => one.clone(),
-                    _ => both.clone(),
-                },
-            ))
-        });
-        let server = serve("stale-fetch", routes);
-        let fixture = Fixture::new();
-        let client = fixture.connect(&server);
-        assert!(matches!(fixture.next(), Seen::Welcome(_, _, _, true)));
-        assert!(matches!(fixture.next(), Seen::Layout(0, ..)));
-        is_held.recv_timeout(WAIT).unwrap();
-        drop_first.send(()).unwrap();
-        assert!(matches!(fixture.next(), Seen::Failed(Code::Closed, _)));
-        assert!(matches!(fixture.next(), Seen::Welcome(_, _, _, false)));
-        assert!(matches!(fixture.next(), Seen::Layout(2, ..)));
-        assert_eq!(fixture.next(), Seen::Model);
-        release.send(()).unwrap();
-        assert!(matches!(fixture.next(), Seen::Layout(3, ..)));
-        let mut buffer = empty_buffer();
-        // SAFETY: the client is live and the buffer is writable.
-        assert_eq!(unsafe { ko_client_model(client, &mut buffer) }, Code::Ok);
-        let model: Value = serde_json::from_str(&contents(&buffer)).unwrap();
-        freed_once(&mut buffer);
-        assert_eq!(model["panes"].as_array().unwrap().len(), 2);
-        close(client);
-    }
-
-    #[test]
     fn a_reconnect_to_another_server_closes_the_views_and_reports_a_fresh_welcome() {
         let (server, drop_first) = reconnect_server("fresh", OTHER_INSTANCE);
         let fixture = Fixture::new();
@@ -2400,6 +2332,7 @@ mod tests {
             foreground: None,
             status,
             progress: None,
+            run: None,
         };
         Listing {
             row,
@@ -2430,24 +2363,13 @@ mod tests {
 
     #[test]
     fn the_model_buffer_carries_the_tree_the_titles_and_the_seen_marks_and_is_freed_once() {
-        let rows =
-            serde_json::to_string(&[pane_row(1, Some(failed_idle_status())), pane_row(2, None)])
-                .unwrap();
+        let rows = [pane_row(1, Some(failed_idle_status())), pane_row(2, None)];
         let server = serve(
             "model",
-            client_script(|socket, _| {
-                welcomed(socket);
+            client_script(move |socket, _| {
+                send(socket, &welcome(INSTANCE, 1));
+                send(socket, &layout_with(0, &rows));
                 wait_for_hangup(socket);
-            })
-            .plain(move |request| {
-                Some((
-                    200,
-                    if request.target == "/panes" {
-                        rows.clone()
-                    } else {
-                        "[]".to_owned()
-                    },
-                ))
             }),
         );
         let fixture = Fixture::new();
@@ -2856,8 +2778,6 @@ mod tests {
 
     #[test]
     fn runs_and_prompts_go_to_the_server_as_written_and_come_back_verbatim() {
-        let listing = Arc::new(AtomicBool::new(false));
-        let armed = Arc::clone(&listing);
         let server = serve(
             "runs",
             client_script(|socket, _| {
@@ -2865,7 +2785,6 @@ mod tests {
                 wait_for_hangup(socket);
             })
             .plain(move |request| match request.target.as_str() {
-                "/runs?show=present" if !listing.load(Ordering::SeqCst) => answer_empty(request),
                 "/prompt" if request.body.windows(5).any(|window| window == b"boom!") => Some((
                     500,
                     r#"{"kind":"io","message":"the paste was not written"}"#.to_owned(),
@@ -2895,7 +2814,6 @@ mod tests {
         let client = fixture.connect(&server);
         assert!(matches!(fixture.next(), Seen::Welcome(..)));
         assert!(matches!(fixture.next(), Seen::Layout(0, ..)));
-        armed.store(true, Ordering::SeqCst);
         for (show, expected) in [
             (1, "/runs"),
             (2, "/runs?show=present"),
@@ -4077,11 +3995,12 @@ mod tests {
 
     #[test]
     fn model_events_coalesce_while_the_queue_is_busy_and_events_that_change_nothing_post_nothing() {
-        let rows = serde_json::to_string(&[pane_row(1, None), pane_row(2, None)]).unwrap();
+        let rows = [pane_row(1, None), pane_row(2, None)];
         let server = serve(
             "coalesce",
-            client_script(|socket, _| {
-                welcomed(socket);
+            client_script(move |socket, _| {
+                send(socket, &welcome(INSTANCE, 1));
+                send(socket, &layout_with(0, &rows));
                 for title in ["a", "b"] {
                     send(
                         socket,
@@ -4092,16 +4011,6 @@ mod tests {
                 send(socket, r#"{"type":"title","pane":"pane_9","title":"x"}"#);
                 send(socket, &layout(7));
                 wait_for_hangup(socket);
-            })
-            .plain(move |request| {
-                Some((
-                    200,
-                    if request.target == "/panes" {
-                        rows.clone()
-                    } else {
-                        "[]".to_owned()
-                    },
-                ))
             }),
         );
         let fixture = Fixture::new();

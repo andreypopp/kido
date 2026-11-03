@@ -221,7 +221,7 @@
           {
             "allOf": [
               {
-                "$ref": "#/components/schemas/Snapshot"
+                "$ref": "#/components/schemas/LayoutPanes"
               }
             ],
             "properties": {
@@ -303,6 +303,26 @@
             },
             "required": [
               "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "foreground": {
+                "$ref": "#/components/schemas/Foreground"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "foreground",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "foreground"
             ],
             "type": "object"
           },
@@ -510,7 +530,7 @@
           {
             "allOf": [
               {
-                "$ref": "#/components/schemas/RunEvent"
+                "$ref": "#/components/schemas/RunRow"
               }
             ],
             "properties": {
@@ -792,6 +812,12 @@
       },
       "Detail": {
         "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "cwd": {
             "type": "string"
           },
@@ -826,6 +852,7 @@
         "required": [
           "id",
           "name",
+          "argv",
           "cwd",
           "startedAt",
           "output"
@@ -1297,6 +1324,12 @@
       },
       "Info": {
         "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "cwd": {
             "type": "string"
           },
@@ -1328,6 +1361,7 @@
         "required": [
           "id",
           "name",
+          "argv",
           "cwd",
           "startedAt",
           "output"
@@ -1479,6 +1513,29 @@
         ],
         "type": "object"
       },
+      "LayoutPanes": {
+        "properties": {
+          "layout": {
+            "$ref": "#/components/schemas/Layout"
+          },
+          "panes": {
+            "items": {
+              "$ref": "#/components/schemas/Listing"
+            },
+            "type": "array"
+          },
+          "revision": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "layout",
+          "panes"
+        ],
+        "type": "object"
+      },
       "Leaf": {
         "properties": {
           "cols": {
@@ -1573,6 +1630,9 @@
           },
           "progress": {
             "$ref": "#/components/schemas/Progress"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunRow"
           },
           "status": {
             "$ref": "#/components/schemas/PaneStatus"
@@ -2304,35 +2364,6 @@
         ],
         "type": "string"
       },
-      "RunEvent": {
-        "properties": {
-          "id": {
-            "$ref": "#/components/schemas/RunId"
-          },
-          "name": {
-            "$ref": "#/components/schemas/RunName"
-          },
-          "outcome": {
-            "$ref": "#/components/schemas/RunOutcome"
-          },
-          "pane": {
-            "$ref": "#/components/schemas/PaneId"
-          },
-          "parent": {
-            "$ref": "#/components/schemas/Parent"
-          },
-          "startedAt": {
-            "$ref": "#/components/schemas/Timestamp"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "pane",
-          "startedAt"
-        ],
-        "type": "object"
-      },
       "RunId": {
         "pattern": "^[0-9a-f]{32}$",
         "type": "string"
@@ -2367,6 +2398,45 @@
           "stopped"
         ],
         "type": "string"
+      },
+      "RunRow": {
+        "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "name": {
+            "$ref": "#/components/schemas/RunName"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/RunOutcome"
+          },
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "parent": {
+            "$ref": "#/components/schemas/Parent"
+          },
+          "startedAt": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "argv",
+          "cwd",
+          "startedAt"
+        ],
+        "type": "object"
       },
       "Scrollback": {
         "oneOf": [
@@ -3097,65 +3167,16 @@
         }
       }
     },
-    "/clients/{id}/select": {
-      "post": {
-        "description": "Selects a session, a window or a pane for a client.",
-        "operationId": "SelectClient",
-        "parameters": [
-          {
-            "example": "client_1",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/ClientId"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/Selection"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Empty"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The common error body."
-          }
-        }
-      }
-    },
     "/layout": {
       "get": {
-        "description": "The layout of every session, with its revision.",
+        "description": "The layout of every session, with its revision, and every pane that it names.",
         "operationId": "GetLayout",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Snapshot"
+                  "$ref": "#/components/schemas/LayoutPanes"
                 }
               }
             },
@@ -3222,7 +3243,7 @@
     },
     "/panes": {
       "get": {
-        "description": "Every pane, with its status and variables.",
+        "description": "Every pane, with its status, variables and run.",
         "operationId": "ListPanes",
         "responses": {
           "200": {
@@ -3272,6 +3293,43 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      },
+      "get": {
+        "description": "One pane, with its status, variables and run.",
+        "operationId": "GetPane",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Listing"
                 }
               }
             },
@@ -3633,44 +3691,6 @@
             "description": "The common error body."
           }
         }
-      },
-      "get": {
-        "description": "The variables of a pane.",
-        "operationId": "Vars",
-        "parameters": [
-          {
-            "example": "pane_1",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/PaneId"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "type": "object"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The common error body."
-          }
-        }
       }
     },
     "/panes/{id}/vars/{name}": {
@@ -3704,50 +3724,6 @@
                 "schema": {
                   "$ref": "#/components/schemas/Empty"
                 }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The common error body."
-          }
-        }
-      },
-      "get": {
-        "description": "The value of one variable of a pane.",
-        "operationId": "Var",
-        "parameters": [
-          {
-            "example": "pane_1",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/PaneId"
-            }
-          },
-          {
-            "example": "pi.session",
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/VarName"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": true
               }
             },
             "description": "OK"
@@ -4077,34 +4053,6 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Started"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The common error body."
-          }
-        }
-      }
-    },
-    "/runs/reap": {
-      "post": {
-        "description": "Collects the runs that are finished with.",
-        "operationId": "Reap",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Empty"
                 }
               }
             },

@@ -228,6 +228,7 @@ mod tests {
                     since: 0,
                 }),
                 progress: None,
+                run: None,
             },
             vars: BTreeMap::new(),
         }

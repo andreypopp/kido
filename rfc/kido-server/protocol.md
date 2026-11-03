@@ -41,7 +41,11 @@ delays another.
 
 WebSocket rules: binary messages carry bytes and snapshot slices, text
 messages carry JSON. One message is one record; nothing is split
-across messages, and a message is at most 1 MiB. Client to server
+across messages. A message from a client is at most 1 MiB. A message
+from the server is at most 32 MiB (`MAX_SENT` in `ko_server/src/ws.rs`,
+half of a connection's output queue), because a welcome's or layout
+event's pane rows carry every variable of their panes (section 7); a
+larger message closes the connection. Client to server
 frames are masked, as the RFC requires; it costs an XOR over input
 bytes and buys standard tooling (`websocat --unix`). The server pings
 every 30 s on idle streams and closes a connection without a pong
@@ -166,7 +170,8 @@ or terminal client process. The client's first message is its hello:
 kind, name, what it currently shows, focus, size and
 whether it takes part in sizing. The server answers with the
 `Welcome` event, which carries the client's id and the terminal
-limits, then the full layout document (section 7), then events
+limits, then the full layout document with every pane's row (section
+7), then events
 (section 6). Later the client sends a selection, a relative switch, a size, a
 focus change or a clipboard answer, all on this connection.
 A size has at least one column and row and at most
@@ -184,9 +189,8 @@ scope uses them. The current pane is per client and is not in the
 layout document. Each window's `focus` in the document is the pane
 that a client focused most recently in that window; a client that
 enters a window where it has no current pane gets that pane
-(section 7). When a `switch`, another
-connection's select or a removal moves a client, the client gets a
-`selected` event. A client gets `selected` for each of its own
+(section 7). When a `switch` or a removal
+moves a client, the client gets a `selected` event. A client gets `selected` for each of its own
 `select` requests, also for one that names its current pane, and
 for a hello that names only a session or a window, because the
 server chose the pane; a hello that names the pane gets none.
@@ -195,10 +199,9 @@ A client's selection names a session, a window or a pane; a pane
 implies its window and session, a window implies its session, and a
 session implies the client's last current window in it, else its
 first window. A relative switch moves over windows or sessions in
-document order, next or previous, and wraps. `POST
-/clients/client_N/select` takes the same selection for another
-client: `not_found` for an unknown client, `invalid` for an empty or
-unknown target.
+document order, next or previous, and wraps. A client selects only
+over its own connection: there is no route that moves another client
+(decided 2026-11-03).
 
 The input focus of a pane is derived, not sent as input: a pane is
 focused while at least one client whose `focused` is true has it as
@@ -376,48 +379,49 @@ drops a larger image from a restored snapshot.
 Events arrive on the client connection, one text message per event,
 in the order the server produced them. The kinds, as `Protocol`'s
 client event type defines them: the whole layout document on every
-change (section 7); a window's new `focus` when only the focus
-changed (section 7); a pane's title, pwd, status, variable, death,
-bell, notification and progress; later a pane's clipboard write and
-clipboard read (K6), a run's start or outcome (section 10), and this client's
-own state when another connection moved it (K2). The OSC 133 steps
+change, with the rows of the panes that the change adds (section 7);
+a window's new `focus` when only the focus changed (section 7); a
+pane's title, pwd, foreground, status, variable, death, bell,
+notification and progress; a pane's clipboard write and clipboard
+read (section 9), a run's outcome (section 10), and this client's
+own state when a `switch` or a removal moved it. The OSC 133 steps
 and the OSC 7501 records reach a client only through `status`.
 
-The first message after the welcome is the full layout. There is no
-event replay; a client that reconnects reads `/layout`, `/panes` and
-`/runs` and reopens its views.
+The first message after the welcome is the full layout with every
+pane's row. There is no event replay; a client that reconnects gets
+the state again from its new welcome's layout event and reopens its
+views.
 
 There is no feed and no tree snapshot (decided 2026-10-30). The server
 computes one `status` per pane and announces a change for that pane
-only; a client builds its sidebar tree from the layout document, the
-panes and the runs. `PaneStatus` in `ko_server/src/protocol.rs` is
+only; a client builds its sidebar tree from the layout document and
+the pane rows, whose `run` field names a run pane's run. `PaneStatus` in `ko_server/src/protocol.rs` is
 the reference for its shape: tagged enums for the pane kind, the
 phase and the agent state (plans/ko-stages.md 4.3), with the rules of
 kido's `Pane_status` (s1.md 6).
 
 Pane state and pane events:
 
-- A `GET /panes` row carries the pane's foreground process, its
-  status, its variables and its progress (OSC 9;4). The status is
+- A pane's row (`Listing` in `ko_server/src/protocol.rs`) carries
+  its title, pwd, foreground process, death, status, variables,
+  progress (OSC 9;4) and, for a run's pane, its run. The status is
   absent until the model has run once for the pane; the progress is
-  absent after a `remove` report.
-- A `status`, `var`, `var_deleted` or `progress` event announces a
-  change of that state. A report that changes nothing sends no event:
-  an unchanged OSC 7501 record, an equal `PUT` of a variable, a
-  `DELETE` of an absent name, an unchanged progress.
-- Only a `GET /panes` row carries a pane's variables. A `layout`
-  event carries the document and no pane rows, because one pane can
-  hold 8 MiB of variables and a client would get them again on every
-  change of the document. A client reads the rows once from `GET
-  /panes` after its `Welcome`, and again when a `layout` event names
-  a pane set that differs from its rows; then it applies `var` and
-  `var_deleted`. The read blocks, and the events that arrive on
-  `/client` before its answer stay queued; the client applies them
-  over the read's result in their order. Some of them can be older
-  than the read, so the client keeps variables without the server's
-  limits, and the last event gives the server's value. The client
-  drops a row whose pane the layout no longer has, and an event for
-  a pane without a row changes nothing.
+  absent after a `remove` report. `GET /panes` lists every row, `GET
+  /panes/pane_N` one; both read the same rows as the layout.
+- Each row field that can change has its own event of `ClientEvent`
+  in `ko_server/src/protocol.rs`, and none moves the revision. A
+  report that changes nothing
+  sends no event: an unchanged OSC 7501 record, an equal `PUT` of a
+  variable, a `DELETE` of an absent name, an unchanged progress.
+- Variables always travel with their pane (decided 2026-11-03): the
+  welcome's layout event carries every pane's row, and a later
+  `layout` event the rows of the panes that its revision adds, so a
+  client never reads `/panes` to follow the server. A pane that a
+  `layout` event no longer names is removed, and the client drops its
+  row. An event for a pane without a row changes nothing.
+- The layout event that adds a pane comes before every other event
+  of that pane: the server holds a new pane's own events until it has
+  sent that layout event.
 - `bell` and `notify` (OSC 9 and OSC 777) are events only, with no
   row field and no replay: a client that is not connected when a
   program rings or notifies does not see it (decided 2026-11-02).
@@ -431,19 +435,26 @@ The layout is one JSON document for the whole server (decided
 `Layout` module exists; now `ko_server/src/layout.rs` and the
 document types of `ko_server/src/protocol.rs` are the reference.
 
-- `GET /layout` returns the document and its revision.
+- `GET /layout` returns the document, its revision and every pane's
+  row (section 6), the same body as the welcome's layout event. A
+  `PUT` and its `409` carry only the document and its revision.
 - `PUT /layout` takes the document with the revision the client read.
   The server refuses a broken structure (`invalid`), fills and
   rescales geometry it can repair, starts every pane marked as new,
   and answers with the normalized document and the new revision. A
   stale revision is `409` with the current document; the client
   reapplies its edit and retries.
-- Every change bumps the revision and is sent as a layout event on
-  every `/client`, whether a client sent it or the server made it: a
-  new pane, a `DELETE`, a pane's death, a size from the window's
-  sizing client. The revision increases once for each published
-  change: a change and the sizes and focus moves that it causes are
-  one revision and one layout event.
+- Every change of the document bumps the revision and is sent as a
+  layout event on every `/client`, whether a client sent it or the
+  server made it: a new pane, a `DELETE`, a split, a move, a resize, a
+  name, a size from the window's sizing client. The revision increases
+  once for each published change: a change and the sizes and focus
+  moves that it causes are one revision and one layout event. A
+  change of a pane's row (its title, pwd, foreground, status, death,
+  variables or run outcome) never moves the revision, so it never
+  makes a concurrent `PUT` stale (decided 2026-11-03); it travels in
+  its own event (section 6). A pane whose program exits stays in the
+  document, so its death is a row change.
 - A `PUT` must keep every live pane: a document that omits one is
   `invalid`. A new session or window has no `id`; the server allocates
   it. A new pane is a leaf or float whose `pane` is `{new: {cwd?,
@@ -501,25 +512,26 @@ document types of `ko_server/src/protocol.rs` are the reference.
   `ko-pane` puts the clear into the ring at its position in the
   stream (plans/ko-stages.md K2), so every mirror, live or resumed,
   stays equal to the pane's terminal.
-- `POST /clients/client_N/select` moves another connected client; the
-  client itself sends its selection on its own connection.
-
 Session and window variables are the `vars` objects inside the
-document. Pane variables are resources under `/panes/pane_N/vars`:
-`GET` the set or one name, `PUT` one name with one JSON value,
-`DELETE` one name. `DELETE /panes/pane_N/vars` with a body of
+document. Pane variables are part of the pane's row (section 6), and
+they are written under `/panes/pane_N/vars`: `PUT` one name with one
+JSON value, `DELETE` one name. There is no read of one variable: a
+client reads them with the row. `DELETE /panes/pane_N/vars` with a body of
 `names` and an optional `if` (a name and a value) deletes the names
 in one step, with one `var_deleted` event for each name that existed.
 When the `if` variable is absent or has another value, it changes
 nothing and is `precondition_failed`. A harness that ends uses it to
 remove its own variables and no other owner's: the pane can have a
 new owner before the old one cleans up. A value is any JSON, at most 1 MiB minus 4 KiB
-(1,044,480 bytes) of encoded JSON, so that its `var` event, with a
-name of 256 bytes escaped and any pane id, fits in one WebSocket
-message of 1 MiB (section 1). The rule "a message is at most 1 MiB"
-holds in both directions, and the value limit is a constant that does
-not depend on the name (decided 2026-11-02). One pane holds
-at most 8 MiB and 1,024 names; a name is UTF-8 without control
+(1,044,480 bytes) of encoded JSON. The limit dates from a 1 MiB limit
+on server messages too, which it fitted with its `var` event; it stays
+a constant that does not depend on the name (decided 2026-11-02). One pane holds
+at most 8 MiB and 1,024 names. All variables of the server, of panes,
+sessions and windows together, are at most 16 MiB of encoded JSON
+(`SERVER_MAX_TOTAL` in `ko_server/src/vars.rs`), so a welcome with
+every pane's row stays under the 32 MiB limit of a server message
+(section 1); a write or a `PUT` over it is refused. A name is UTF-8
+without control
 characters, at most 256 bytes, percent-decoded from the path. A dead
 pane keeps its variables until it is removed. The server stores and announces
 variables and reads only the `pi.*` and `ssh.*` names under kido's
@@ -566,9 +578,10 @@ newest client of such a window. A read for a pane that no attended
 window shows is refused at once (decided 2026-11-02), with no wait.
 Clipboard contents have one limit for the whole path,
 `MAX_CLIPBOARD` in `ko_pane_wire/src/frame.rs`, chosen so that the
-base64 and JSON of the event stay under the 1 MiB `/client` message
-limit: `ko-pane` drops a larger write, and a larger answer is a
-refusal, so a clipboard payload never closes `/client`.
+base64 and JSON of the client's answer stay under the 1 MiB limit of a
+client's message (section 1): `ko-pane` drops a larger write, and a
+larger answer is a refusal, so a clipboard payload never closes
+`/client`.
 
 The answerer replies with a `clipboard_answer` request on the same
 WebSocket, with contents or without them for a refusal. The server
@@ -605,9 +618,11 @@ reconnect clears the queue.
 `ko_server/src/protocol.rs` and `ko_server/src/runs.rs` define the
 bodies; `ko_server/src/state/run_ops.rs` holds the routes' logic. The
 server keeps each run in `runs/<id>/` of its own state directory, as
-kido's `Run` does: `meta.json` and `command` written once at the
-start, `outcome` with first-write-wins (`create_new`), the captured
-`screen` and the `output` path that the run's command writes. kido
+kido's `Run` does: `meta.json`, with the run's argv, written once at
+the start, `outcome`, the captured `screen` and the `output` path that
+the run's command writes. Every writer of a run is on the server's
+loop thread: `State` refuses a second outcome, and the `outcome` file
+is a plain atomic write (a temporary file renamed over it). kido
 and ko never share a state directory; nothing migrates.
 
 A run request that names a caller sends the header `Ko-Pane: pane_N`.
@@ -618,13 +633,18 @@ api` sends none.
   `PUT` of the document: a new window at the end of the caller's
   session, or of the session that the body names. No client switches
   to it. The pane's environment gets `KO_RUN_ID` and `KO_RUN_OUTPUT`,
-  its variable `ko.run` is set at its creation, and its command is
-  the body's argv with no wrapper. A parent (a run id or `pane_N`)
-  that is unknown is `missing`, one that has ended is `gone`.
+  and its command is the body's argv with no wrapper. The server ties
+  the run to its pane when it creates the pane, and nothing changes
+  the tie later: no variable names a run. The run's pane enters the
+  document in one layout event whose row carries the `run` field. A
+  parent (a run id or `pane_N`) that is unknown is `missing`, one that
+  has ended is `gone`.
 - `GET /runs` lists runs, newest first: `live` (no outcome),
   `present` (the pane still exists and names the run) or `all`, and
-  optionally only the children of one parent. `GET /runs/<id>` adds
-  the captured screen.
+  optionally only the children of one parent. Each entry carries the
+  run's argv. `GET /runs/<id>` adds the captured screen. A run whose
+  pane is gone stays in this history; an active run is one whose pane
+  is in the layout.
 - `GET /runs/<id>/wait` is a long poll (plans/ko-stages.md 4.4): the
   server answers at once when the run has ended or the timeout is 0,
   else when the run ends or at the deadline. A waiting connection
@@ -639,11 +659,10 @@ api` sends none.
   `SIGKILL` 250 ms later); if the removed pane still lives after
   `KO_STOP_ESCALATION_MS`, the coordinator kills it. A run that has
   already ended is `refused`.
-- `POST /runs/reap` runs one sweep at once, for tests.
 
 The sweep runs when one of its inputs changes: a pane's death or
-removal, a recorded outcome, the focused panes, a pane's `ko.run` or
-pi evidence, and at the end of a linger grace. It closes a run's pane when the pane is dead for longer than
+removal, a recorded outcome, the focused panes, a pane's pi evidence,
+and at the end of a linger grace. It closes a run's pane when the pane is dead for longer than
 `KO_LINGER_SECONDS` (the linger grace, in seconds with an optional
 fraction), or when the run's parent has
 ended (the orphan rule: a run parent by its outcome; a pane parent
@@ -656,10 +675,15 @@ changes. The removal of a window's last pane removes the window in
 the same change, as a window delete does (section 7). An empty
 session ends.
 
-The `run` event on `/client` carries a run's row when it starts and
-when an outcome is written. A run that ends because its pane dies
-gets no `run` event; a client reads that from the pane's `dead`
-event. The CLI maps the error kinds to kido's exit codes: `missing`
+A pane's row carries its run, if it has one (`RunRow` in
+`ko_server/src/protocol.rs`): each run has exactly one pane, and a
+pane at most one run. The row's `outcome` is the recorded one, else
+the one that a dead pane gives. The `run` event on `/client` carries
+the run's row (which names its pane) when an outcome is recorded, and
+when the run's pane dies with no recorded outcome, with the outcome
+that the death gives; it does not move the revision. A run's start has
+no `run` event: its layout event carries the row. The same `RunRow`
+is a `GET /runs` entry. The CLI maps the error kinds to kido's exit codes: `missing`
 or `gone` of a parent to 2, an unknown run to 3, a refused name to 4
 (the CLI checks it before the request), `refused` to 5.
 
@@ -701,8 +725,8 @@ error, 4 no agent in scope, 5 several); its `--window` sends
 ## 12. Flow of an app window
 
 1. Open `/client` with a hello that carries the window, size and
-   focus. Read `/layout`, `/panes` and `/runs` once; they are the
-   tree's inputs.
+   focus. The welcome's layout event, with every pane's row and run,
+   is the tree's input; the later events keep it current.
 2. For each visible pane, open a view with `history=all` and
    `images=none`, and fetch the images with placements on screen in
    parallel.
@@ -712,8 +736,8 @@ error, 4 no agent in scope, 5 several); its `--window` sends
 5. On a split, close, drag, zoom or rename, edit the last layout
    received and `PUT` it with its revision; on `409` reapply the edit
    to the body and `PUT` again.
-6. On reconnect, send a new hello, read `/layout`, `/panes` and
-   `/runs` again, and reopen the views with the last offset seen:
+6. On reconnect, send a new hello, take the state from the new
+   welcome's layout event, and reopen the views with the last offset seen:
    bytes and markers resume if inside the ring, else a snapshot. An
    offset is reused only when the `Welcome`'s instance equals the one
    the client saw before; a new server restarts pane ids at
