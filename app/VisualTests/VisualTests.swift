@@ -221,9 +221,9 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         session.edit = { edit, key in editor.submit(edit, key: key) }
         session.editing = { editor.holding }
         session.selectPane = { pane in try? client.select(KO_SELECT_PANE, pane) }
-        session.sizeClient = { [weak self] cols, rows in
+        session.sizeClient = { [weak self] cols, rows, cell in
             self?.sentSizes.append("\(cols)x\(rows)")
-            try? client.size(cols: cols, rows: rows, cell: self?.session.cellPixels ?? (0, 0))
+            try? client.size(cols: cols, rows: rows, cell: cell)
         }
         session.paneCommand = { [weak self] command, pane in
             guard let self, let window = koModel?.layout.layout.locate(pane)?.window,

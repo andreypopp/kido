@@ -56,6 +56,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     #if KIDO_VISUAL
+    var visualScale: CGFloat?
     var visualKeyUps = 0
     var visualEventMonitor: ((NSEvent) -> NSEvent?)?
     var visualKeyEvents = 0
@@ -135,7 +136,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var renderInsets = PaneLayout.RenderInsets() {
         didSet {
             if renderInsets != oldValue {
-                ghostty_surface_set_render_insets(surface, UInt32((renderInsets.top * (window?.backingScaleFactor ?? 2)).rounded()), UInt32((renderInsets.bottom * (window?.backingScaleFactor ?? 2)).rounded()))
+                ghostty_surface_set_render_insets(surface, UInt32((renderInsets.top * contentScale).rounded()), UInt32((renderInsets.bottom * contentScale).rounded()))
             }
         }
     }
@@ -469,7 +470,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var resizeDebug: String {
         let size = ghostty_surface_size(surface)
         let io = installedPixels.map { "\(Int($0.width))x\(Int($0.height))" } ?? "none"
-        return "frame=\(frame) grid=\(size.columns)x\(size.rows) inset=\((renderInsets.top * (window?.backingScaleFactor ?? 2)).rounded())px visible=\(presented.visible) io=\(io)"
+        return "frame=\(frame) grid=\(size.columns)x\(size.rows) inset=\((renderInsets.top * contentScale).rounded())px visible=\(presented.visible) io=\(io)"
     }
 
     #if KIDO_VISUAL || KIDO_STRESS
@@ -834,9 +835,16 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     var font: Float { ghostty_surface_font_size(surface) }
 
+    private var contentScale: CGFloat {
+        #if KIDO_VISUAL
+        if let visualScale { return visualScale }
+        #endif
+        return window?.backingScaleFactor ?? 2
+    }
+
     var cell: CGSize {
         let size = ghostty_surface_size(surface)
-        return convertFromBacking(NSSize(width: Int(size.cell_width_px), height: Int(size.cell_height_px)))
+        return NSSize(width: CGFloat(size.cell_width_px) / contentScale, height: CGFloat(size.cell_height_px) / contentScale)
     }
 
     func beginResizeIntent(gesture: Bool = true) {
@@ -1331,7 +1339,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         layer?.contentsScale = window.backingScaleFactor
         CATransaction.commit()
         snapScroll()
-        let scale = window.backingScaleFactor
+        let scale = contentScale
         reflow { [weak self] in
             guard let self else { return }
             ghostty_surface_set_content_scale(surface, scale, scale)
