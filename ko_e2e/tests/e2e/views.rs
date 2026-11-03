@@ -1,4 +1,6 @@
 use std::io::Write;
+use std::os::fd::AsFd;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use ko_sys::pid::signal_descendant;
@@ -9,8 +11,8 @@ use tungstenite::protocol::frame::coding::{Data, OpCode};
 use tungstenite::protocol::frame::{Frame, FrameHeader};
 
 use crate::harness::{
-    DEADLINE, HEAVY, Hello, Message, Record, contains, decode, history_lines, size, size_request,
-    start, tagged, wait_gone,
+    DEADLINE, HEAVY, Hello, Message, Record, Server, Ws, contains, decode, history_lines, size,
+    size_request, start, start_with, stays, tagged, wait_gone,
 };
 
 const SOCKET_BUFFER: usize = 1 << 20;
@@ -446,5 +448,94 @@ fn view_resume_resize_and_input() {
     assert!(
         !decode(&data, false).sync,
         "snapshot after resync has synchronized output on"
+    );
+}
+
+const SPILL_LINES: usize = 80_000;
+
+fn spill_program() -> String {
+    format!(
+        "stty raw -echo; awk 'BEGIN{{x=1; for(i=0;i<{SPILL_LINES};i++){{l=\"\"; for(j=0;j<60;j++){{x=(x*48271)%2147483647; l=l sprintf(\"%c\",33+x%90)}} printf \"%s\\r\\n\", l}}}}'; printf '\\033]2;history-ready\\007'; cat"
+    )
+}
+
+fn spill_lines() -> Vec<String> {
+    let mut x: u64 = 1;
+    (0..SPILL_LINES)
+        .map(|_| {
+            (0..60)
+                .map(|_| {
+                    x = x * 48271 % 2_147_483_647;
+                    char::from(33 + (x % 90) as u8)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn slow_snapshot_view(s: &Server, c: &mut Ws) -> Ws {
+    let p = s.pane(&spill_program());
+    c.event("title");
+    let mut v = s.ws(&format!("/panes/{p}/view?offset=1000000000000&history=all"));
+    ko_sys::sock::set_receive_buffer(v.raw().as_fd(), 4096).unwrap();
+    s.ko(&["api", &format!("/panes/{p}/screen")], "").ok();
+    // Nothing reports that the server queued the snapshot (the spill file has no name and no
+    // route shows a queue), so the reader waits a fixed time before it reads.
+    stays("the pane stays served", Duration::from_millis(500), || {
+        s.request("GET", "/version", None, 200);
+        true
+    });
+    v
+}
+
+#[test]
+fn a_snapshot_over_the_queue_cap_spills_and_reaches_a_slow_reader_whole() {
+    let _heavy = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
+    let s = start_with(
+        Path::new("/bin/sh"),
+        &[("KO_VIEW_QUEUE_BYTES", "65536")],
+        &["--scrollback-bytes", "500M"],
+    );
+    let (mut c, _) = s.client(None);
+    let mut v = slow_snapshot_view(&s, &mut c);
+    let (data, _) = v.snapshot();
+    let terminal = decode(&data, true);
+    let got: Vec<&str> = terminal
+        .history
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let expected = spill_lines();
+    let first = got.iter().zip(&expected).position(|(a, b)| a != b);
+    assert!(
+        first.is_none() && got.len() == expected.len(),
+        "{} lines of {}, the first difference at {first:?}: {:?} against {:?}",
+        got.len(),
+        expected.len(),
+        first.map(|at| got[at]),
+        first.map(|at| &expected[at])
+    );
+}
+
+#[test]
+fn a_snapshot_over_the_spill_limit_closes_the_view_with_1013() {
+    let _heavy = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
+    let s = start_with(
+        Path::new("/bin/sh"),
+        &[
+            ("KO_VIEW_QUEUE_BYTES", "16384"),
+            ("KO_VIEW_SPILL_BYTES", "65536"),
+        ],
+        &["--scrollback-bytes", "500M"],
+    );
+    let (mut c, _) = s.client(None);
+    let mut v = slow_snapshot_view(&s, &mut c);
+    v.closed("the view neither ended nor finished its snapshot");
+    assert_eq!(
+        v.close_frame(),
+        Some(&(1013, "view queue overflow".to_owned())),
+        "the last message: {}",
+        v.last()
     );
 }

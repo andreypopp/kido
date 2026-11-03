@@ -4,6 +4,8 @@ use std::io::{self, IoSlice, Write};
 use std::net::Shutdown;
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
+use std::sync::Arc;
 
 use ko_pane_wire::ring::{Pos, Reader};
 use ko_sys::event::{Interest, Poll, Read, Reads, Timer, Token};
@@ -13,41 +15,161 @@ use vstd::prelude::*;
 use crate::http::{self, Framing, Head, MAX_HEAD, Parsed, Status};
 use crate::link::{Link, Role, Wire};
 use crate::server::Verified;
+use crate::spill::Spill;
 use crate::ws::{Header, Record};
 
-const MAX_QUEUED: usize = 64 << 20;
 const SLICES: usize = 64;
-const PIXEL_PIECE: usize = 1 << 20;
+const PIECE: usize = 1 << 20;
 const PIXEL_PIECES_PER_FLUSH: usize = 4;
+const FLUSH_BYTES: usize = 4 << 20;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
+struct Chunk {
+    bytes: Vec<u8>,
+    tail: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Fit {
+    Cap,
+    Spill,
+}
+
+#[derive(Debug)]
+struct Overflow {
+    dir: Arc<Path>,
+    limit: u64,
+    farewell: Vec<u8>,
+    spill: Option<Spill>,
+}
+
+impl Overflow {
+    fn store(&mut self, parts: &[&[u8]]) -> io::Result<()> {
+        if self.spill.is_none() {
+            self.spill = Some(Spill::create(&self.dir, self.limit)?);
+        }
+        match self.spill.as_mut() {
+            Some(spill) => spill.push(parts),
+            None => Err(io::ErrorKind::Unsupported.into()),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum Policy {
+    Plain,
+    View(Overflow),
+    Sealed,
+}
+
+// A chunk is one whole message, or the tail of a message that began in the socket. The messages
+// of the spill come back one chunk each, so the wire stays at a message boundary behind the
+// chunk that is being sent.
+#[derive(Debug)]
 pub(crate) struct Queue {
-    chunks: VecDeque<Vec<u8>>,
+    chunks: VecDeque<Chunk>,
     sent: usize,
     bytes: usize,
+    cap: usize,
+    policy: Policy,
 }
 
 impl Queue {
-    pub(crate) fn push(&mut self, bytes: Vec<u8>) -> bool {
-        let total = self.bytes.saturating_add(bytes.len());
-        if total > MAX_QUEUED {
-            return false;
+    pub(crate) fn new(cap: usize) -> Queue {
+        Queue {
+            chunks: VecDeque::new(),
+            sent: 0,
+            bytes: 0,
+            cap,
+            policy: Policy::Plain,
         }
-        if !bytes.is_empty() {
-            self.bytes = total;
-            self.chunks.push_back(bytes);
-        }
-        true
+    }
+
+    fn spilling(&self) -> bool {
+        matches!(&self.policy, Policy::View(Overflow { spill: Some(_), .. }))
+    }
+
+    fn fits(&self, len: usize) -> bool {
+        !self.spilling() && self.bytes.saturating_add(len) <= self.cap
+    }
+
+    fn sealed(&self) -> bool {
+        matches!(self.policy, Policy::Sealed)
     }
 
     fn is_empty(&self) -> bool {
-        self.chunks.is_empty()
+        self.chunks.is_empty() && !self.spilling()
+    }
+
+    fn push_vec(&mut self, bytes: Vec<u8>) -> bool {
+        if self.sealed() || bytes.is_empty() {
+            return !self.sealed();
+        }
+        if self.fits(bytes.len()) {
+            self.bytes = self.bytes.saturating_add(bytes.len());
+            self.chunks.push_back(Chunk { bytes, tail: false });
+            true
+        } else {
+            self.push(&[&bytes], Fit::Cap)
+        }
+    }
+
+    pub(crate) fn push(&mut self, parts: &[&[u8]], fit: Fit) -> bool {
+        let len = parts.iter().map(|part| part.len()).sum();
+        if self.sealed() || len == 0 {
+            return !self.sealed();
+        }
+        if self.fits(len) {
+            self.bytes = self.bytes.saturating_add(len);
+            self.chunks.push_back(Chunk {
+                bytes: parts.concat(),
+                tail: false,
+            });
+            return true;
+        }
+        if (self.spilling() || fit == Fit::Spill)
+            && let Policy::View(overflow) = &mut self.policy
+            && overflow.store(parts).is_ok()
+        {
+            return true;
+        }
+        self.overflow();
+        false
+    }
+
+    fn push_tail(&mut self, parts: &[&[u8]]) {
+        let bytes = parts.concat();
+        self.bytes = self.bytes.saturating_add(bytes.len());
+        self.chunks.push_back(Chunk { bytes, tail: true });
+    }
+
+    // A queue with a farewell keeps the chunk in flight, so the wire ends at a message boundary,
+    // and ends with the farewell, which no limit refuses. Any other queue drops everything.
+    fn overflow(&mut self) {
+        let farewell = match std::mem::replace(&mut self.policy, Policy::Sealed) {
+            Policy::View(overflow) => Some(overflow.farewell),
+            Policy::Plain | Policy::Sealed => None,
+        };
+        let keep = farewell.is_some()
+            && self
+                .chunks
+                .front()
+                .is_some_and(|front| self.sent > 0 || front.tail);
+        self.chunks.truncate(usize::from(keep));
+        self.bytes = self
+            .chunks
+            .front()
+            .map_or(0, |front| front.bytes.len().saturating_sub(self.sent));
+        if let Some(bytes) = farewell {
+            self.bytes = self.bytes.saturating_add(bytes.len());
+            self.chunks.push_back(Chunk { bytes, tail: false });
+        }
     }
 
     fn written(&mut self, mut count: usize) {
         self.bytes = self.bytes.saturating_sub(count);
         while let Some(front) = self.chunks.front() {
-            let left = front.len().saturating_sub(self.sent);
+            let left = front.bytes.len().saturating_sub(self.sent);
             if count < left {
                 self.sent = self.sent.saturating_add(count);
                 return;
@@ -58,21 +180,51 @@ impl Queue {
         }
     }
 
-    fn flush(&mut self, stream: &UnixStream) -> io::Result<()> {
-        while !self.is_empty() {
+    fn fill(&mut self) -> io::Result<()> {
+        let piece = self.cap.min(PIECE);
+        let Policy::View(overflow) = &mut self.policy else {
+            return Ok(());
+        };
+        let Some(file) = overflow.spill.as_mut() else {
+            return Ok(());
+        };
+        for bytes in file.take(piece)? {
+            self.bytes = self.bytes.saturating_add(bytes.len());
+            self.chunks.push_back(Chunk { bytes, tail: false });
+        }
+        if file.is_empty() {
+            overflow.spill = None;
+        }
+        Ok(())
+    }
+
+    // The bytes that the socket took, at most FLUSH_BYTES: the loop comes back for the rest when the
+    // socket is writable again, and the other connections get their turn.
+    fn flush(&mut self, stream: &UnixStream) -> io::Result<usize> {
+        let mut total = 0;
+        while total < FLUSH_BYTES {
+            if self.chunks.is_empty() && self.fill().is_err() {
+                self.overflow();
+            }
+            if self.chunks.is_empty() {
+                break;
+            }
             let mut slices = [IoSlice::new(&[]); SLICES];
             let mut used = 0;
             for (slot, (index, chunk)) in slices.iter_mut().zip(self.chunks.iter().enumerate()) {
                 let skip = if index == 0 { self.sent } else { 0 };
-                *slot = IoSlice::new(chunk.get(skip..).unwrap_or_default());
+                *slot = IoSlice::new(chunk.bytes.get(skip..).unwrap_or_default());
                 used = index.saturating_add(1);
             }
             match write_slices(stream, slices.get(..used).unwrap_or_default())? {
-                0 => return Ok(()),
-                count => self.written(count),
+                0 => break,
+                count => {
+                    total = total.saturating_add(count);
+                    self.written(count);
+                }
             }
         }
-        Ok(())
+        Ok(total)
     }
 }
 
@@ -90,13 +242,21 @@ struct Pixels {
     sent: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Life {
+    Open,
+    Draining,
+    Shut,
+}
+
 #[derive(Debug)]
 pub(crate) struct Output {
     stream: UnixStream,
     queue: Queue,
     pixels: Option<Pixels>,
-    open: bool,
+    shut: bool,
     refused: bool,
+    accepted: u64,
 }
 
 fn write_slices(stream: &UnixStream, slices: &[IoSlice<'_>]) -> io::Result<usize> {
@@ -107,8 +267,49 @@ fn write_slices(stream: &UnixStream, slices: &[IoSlice<'_>]) -> io::Result<usize
 }
 
 impl Output {
+    pub(crate) fn new(stream: UnixStream, cap: usize) -> Output {
+        Output {
+            stream,
+            queue: Queue::new(cap),
+            pixels: None,
+            shut: false,
+            refused: false,
+            accepted: 0,
+        }
+    }
+
+    // Past its cap a view spills, and past its spill limit it ends with the farewell.
+    pub(crate) fn view(&mut self, dir: Arc<Path>, limit: u64, farewell: Vec<u8>) {
+        if matches!(self.queue.policy, Policy::Plain) {
+            self.queue.policy = Policy::View(Overflow {
+                dir,
+                limit,
+                farewell,
+                spill: None,
+            });
+        }
+    }
+
+    pub(crate) fn life(&self) -> Life {
+        if self.shut {
+            Life::Shut
+        } else if self.queue.sealed() {
+            Life::Draining
+        } else {
+            Life::Open
+        }
+    }
+
     pub(crate) fn is_open(&self) -> bool {
-        self.open
+        self.life() == Life::Open
+    }
+
+    pub(crate) fn is_shut(&self) -> bool {
+        self.shut
+    }
+
+    pub(crate) fn accepted(&self) -> u64 {
+        self.accepted
     }
 
     pub(crate) fn waiting(&self) -> bool {
@@ -116,7 +317,7 @@ impl Output {
     }
 
     pub(crate) fn available(&self) -> bool {
-        self.open && !self.waiting()
+        self.is_open() && !self.waiting()
     }
 
     pub(crate) fn writable(&mut self) {
@@ -128,16 +329,33 @@ impl Output {
         (&self.stream, &mut self.queue)
     }
 
+    // An open output shuts at once. A draining one finishes sending its close frame first.
     pub(crate) fn close(&mut self) {
-        if self.open {
-            self.open = false;
+        if !self.queue.sealed() || self.queue.is_empty() {
+            self.shut();
+        }
+    }
+
+    pub(crate) fn shut(&mut self) {
+        if !self.shut {
+            self.shut = true;
             let _ = self.stream.shutdown(Shutdown::Both);
         }
     }
 
     pub(crate) fn flush(&mut self) {
-        if self.open && (self.queue.flush(&self.stream).is_err() || self.pull().is_err()) {
-            self.close();
+        if self.shut {
+            return;
+        }
+        if self.queue.sealed() {
+            self.pixels = None;
+        }
+        let sent = self.queue.flush(&self.stream).and_then(|count| {
+            self.accepted = self.accepted.saturating_add(count as u64);
+            self.pull()
+        });
+        if sent.is_err() || (self.queue.sealed() && self.queue.is_empty()) {
+            self.shut();
         }
     }
 
@@ -154,10 +372,13 @@ impl Output {
                 self.pixels = None;
                 break;
             }
-            let piece = rest.get(..PIXEL_PIECE).unwrap_or(rest);
+            let piece = rest.get(..PIECE).unwrap_or(rest);
             match write_slices(&self.stream, &[IoSlice::new(piece)])? {
                 0 => break,
-                count => *sent = sent.saturating_add(count),
+                count => {
+                    *sent = sent.saturating_add(count);
+                    self.accepted = self.accepted.saturating_add(count as u64);
+                }
             }
         }
         if self
@@ -176,44 +397,35 @@ impl Output {
 
     pub(crate) fn send_pixels(&mut self, head: Vec<u8>, object: Named) {
         self.send(head);
-        if self.open {
+        if self.is_open() {
             self.pixels = Some(Pixels { object, sent: 0 });
             self.flush();
         }
     }
 
     pub(crate) fn send(&mut self, bytes: Vec<u8>) {
-        if self.open {
-            if self.queue.push(bytes) {
-                self.flush();
-            } else {
-                self.close();
-            }
+        if self.is_open() {
+            self.queue.push_vec(bytes);
+            self.flush();
         }
     }
 
-    fn queue_rest(&mut self, header: &[u8], written: usize, payload: &[u8]) -> bool {
+    fn queue_tail(&mut self, header: &[u8], written: usize, payload: &[u8]) {
         let skip = written.saturating_sub(header.len());
-        let queued = self
-            .queue
-            .push(header.get(written..).unwrap_or_default().to_vec())
-            && self
-                .queue
-                .push(payload.get(skip..).unwrap_or_default().to_vec());
-        if !queued {
-            self.close();
-        }
-        queued
+        self.queue.push_tail(&[
+            header.get(written..).unwrap_or_default(),
+            payload.get(skip..).unwrap_or_default(),
+        ]);
     }
 
     pub(crate) fn record(
         &mut self,
-        queue: bool,
+        fit: Fit,
         record: Record,
         offset: u64,
         payload: &[u8],
     ) -> Written {
-        if !self.open {
+        if !self.is_open() {
             return Written::Closed;
         }
         let header = Header::new(record, offset, payload.len());
@@ -224,10 +436,11 @@ impl Output {
             ) {
                 Ok(count) => {
                     self.refused = count == 0;
+                    self.accepted = self.accepted.saturating_add(count as u64);
                     count
                 }
                 Err(_) => {
-                    self.close();
+                    self.shut();
                     return Written::Closed;
                 }
             }
@@ -236,17 +449,21 @@ impl Output {
         };
         if written == header.size().saturating_add(payload.len()) {
             Written::Accepted
-        } else if written == 0 && !queue {
+        } else if written > 0 {
+            self.queue_tail(header.bytes(), written, payload);
+            Written::Queued
+        } else if fit == Fit::Cap {
             Written::Blocked
-        } else if self.queue_rest(header.bytes(), written, payload) {
+        } else if self.queue.push(&[header.bytes(), payload], fit) {
             Written::Queued
         } else {
+            self.flush();
             Written::Closed
         }
     }
 
     pub(crate) fn send_batch(&mut self, batch: &Batch, ring: &Reader) -> Option<usize> {
-        if !self.open {
+        if !self.is_open() {
             return None;
         }
         let mut payloads: [&[u8]; BATCH] = [&[]; BATCH];
@@ -275,10 +492,11 @@ impl Output {
             match write_slices(&self.stream, slices.get(..2 * count).unwrap_or_default()) {
                 Ok(written) => {
                     self.refused = written == 0;
+                    self.accepted = self.accepted.saturating_add(written as u64);
                     written
                 }
                 Err(_) => {
-                    self.close();
+                    self.shut();
                     return None;
                 }
             }
@@ -294,9 +512,7 @@ impl Output {
                 continue;
             }
             if remaining > 0 {
-                if !self.queue_rest(entry.header.bytes(), remaining, payload) {
-                    return None;
-                }
+                self.queue_tail(entry.header.bytes(), remaining, payload);
                 accepted += 1;
             }
             break;
@@ -418,7 +634,7 @@ impl Output {
     pub(crate) uninterp spec fn waits(&self) -> bool;
 }
 
-// Assumes: waits() holds when the socket refused a write, or bytes or a pixel body wait to be sent.
+// Assumes: waits() holds when the socket refused a write, or bytes (queued or spilled) or a pixel body wait to be sent.
 #[verifier::external_fn_specification]
 #[allow(dead_code, unreachable_pub)]
 pub fn ex_waiting(output: &Output) -> (b: bool)
@@ -428,7 +644,7 @@ pub fn ex_waiting(output: &Output) -> (b: bool)
     output.waiting()
 }
 
-// Assumes: available() is open and not waiting; closed() holds when the stream is shut down.
+// Assumes: available() is Open and not waiting. closed() holds when the output is not Open: it is shut, or it drains a queued close frame and takes no more writes.
 #[verifier::external_fn_specification]
 #[allow(dead_code, unreachable_pub)]
 pub fn ex_available(output: &Output) -> (b: bool)
@@ -438,7 +654,7 @@ pub fn ex_available(output: &Output) -> (b: bool)
     output.available()
 }
 
-// Assumes: close() shuts the stream down.
+// Assumes: close() leaves the output not Open. closed() holds when the output is not Open: it is shut, or it drains a queued close frame and takes no more writes.
 #[verifier::external_fn_specification]
 #[allow(dead_code, unreachable_pub)]
 pub fn ex_close(output: &mut Output)
@@ -448,8 +664,8 @@ pub fn ex_close(output: &mut Output)
     output.close()
 }
 
-// Assumes: send_batch() closes the output when it returns None, returns at most the batch length,
-// and never reopens a closed output.
+// Assumes: send_batch() leaves the output not Open when it returns None, returns at most the batch length, and
+// never reopens an output that is not Open. closed() holds when the output is not Open: it is shut, or it drains a queued close frame and takes no more writes.
 #[verifier::external_fn_specification]
 #[allow(dead_code, unreachable_pub)]
 pub fn ex_send_batch(output: &mut Output, batch: &Batch, ring: &Reader) -> (r: Option<usize>)
@@ -516,19 +732,13 @@ pub(crate) struct Conn {
 }
 
 impl Conn {
-    pub(crate) fn new(stream: Verified, poll: &mut Poll) -> Conn {
+    pub(crate) fn new(stream: Verified, poll: &mut Poll, cap: usize) -> Conn {
         let stream = stream.into_stream();
         let token = poll.watch(stream.as_fd(), Interest::Read);
         Conn {
             token,
             timer: poll.timer(),
-            out: Output {
-                stream,
-                queue: Queue::default(),
-                pixels: None,
-                open: true,
-                refused: false,
-            },
+            out: Output::new(stream, cap),
             input: vec![0; MAX_HEAD].into_boxed_slice(),
             start: 0,
             end: 0,
@@ -555,15 +765,14 @@ impl Conn {
     }
 
     pub(crate) fn interest(&self) -> Interest {
-        let write = self.out.waiting();
         let read = match self.phase {
             Phase::Head | Phase::Body { .. } | Phase::Oversized { .. } | Phase::Ws(_) => !self.eof,
             Phase::Handling | Phase::Streaming | Phase::Closing => false,
         };
-        if self.out.is_open() {
-            Interest::of(read, write)
-        } else {
-            Interest::Idle
+        match self.out.life() {
+            Life::Open => Interest::of(read, self.out.waiting()),
+            Life::Draining => Interest::Write,
+            Life::Shut => Interest::Idle,
         }
     }
 
@@ -732,8 +941,10 @@ impl Conn {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::config::QUEUE_BYTES as CAP;
     use ko_sys::event::{Events, Mode};
     use std::io::Read as _;
+    use std::path::PathBuf;
 
     fn respond_ok(conn: &mut Conn) {
         conn.out.send(http::response(
@@ -765,7 +976,7 @@ pub(crate) mod tests {
         }
         conn.settle();
         poll.interest(conn.token, conn.interest());
-        if !conn.out.is_open() {
+        if conn.out.is_shut() {
             let (closed, _) = UnixStream::pair().unwrap();
             drop(std::mem::replace(&mut conn.out.stream, closed));
         }
@@ -781,7 +992,7 @@ pub(crate) mod tests {
         let (client, server) = UnixStream::pair().unwrap();
         client.set_nonblocking(true).unwrap();
         let mut poll = Poll::new();
-        let conn = Conn::new(Verified::admit(server).unwrap(), &mut poll);
+        let conn = Conn::new(Verified::admit(server).unwrap(), &mut poll, CAP);
         Pair { poll, conn, client }
     }
 
@@ -836,7 +1047,7 @@ pub(crate) mod tests {
                 .skip(1)
                 .map(|reply| reply[..3].to_owned())
                 .collect(),
-            closed: !conn.out.is_open(),
+            closed: conn.out.is_shut(),
             bounded: conn.end - conn.start <= MAX_HEAD,
         }
     }
@@ -1076,17 +1287,14 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn output() -> (Output, UnixStream) {
+        output_with(CAP)
+    }
+
+    fn output_with(cap: usize) -> (Output, UnixStream) {
         let (writer, reader) = UnixStream::pair().unwrap();
         writer.set_nonblocking(true).unwrap();
         reader.set_nonblocking(true).unwrap();
-        let out = Output {
-            stream: writer,
-            queue: Queue::default(),
-            pixels: None,
-            open: true,
-            refused: false,
-        };
-        (out, reader)
+        (Output::new(writer, cap), reader)
     }
 
     pub(crate) fn full_output() -> (Output, UnixStream) {
@@ -1095,14 +1303,139 @@ pub(crate) mod tests {
         (out, reader)
     }
 
+    pub(crate) fn drain(out: &mut Output, reader: &mut UnixStream) -> Vec<u8> {
+        let mut seen = Vec::new();
+        let mut buffer = vec![0; 65536];
+        for _ in 0..100_000 {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => seen.extend_from_slice(&buffer[..count]),
+                Err(_) => {
+                    out.writable();
+                    if !out.waiting() {
+                        break;
+                    }
+                }
+            }
+        }
+        while let Ok(count) = reader.read(&mut buffer) {
+            if count == 0 {
+                break;
+            }
+            seen.extend_from_slice(&buffer[..count]);
+        }
+        seen
+    }
+
     #[test]
     fn a_view_that_never_reads_is_closed_before_its_queue_grows_without_bound() {
         let (mut out, reader) = output();
         let payload = vec![0; 1 << 20];
-        let closed_at =
-            (1..=80).find(|_| out.record(true, Record::Snapshot, 0, &payload) == Written::Closed);
+        let closed_at = (1..=80)
+            .find(|_| out.record(Fit::Spill, Record::Snapshot, 0, &payload) == Written::Closed);
         assert!(closed_at.is_some());
         drop(reader);
+    }
+
+    const MESSAGE: usize = 30_000;
+
+    fn spilling_output(name: &str, cap: usize, limit: u64) -> (Output, UnixStream, PathBuf) {
+        let dir = crate::server::tests::scratch(name);
+        let (mut out, reader) = output_with(cap);
+        ko_sys::sock::set_send_buffer(out.stream.as_fd(), 4096).unwrap();
+        out.view(dir.as_path().into(), limit, b"BYE".to_vec());
+        (out, reader, dir)
+    }
+
+    fn message(index: u64) -> Vec<u8> {
+        let payload = vec![index as u8; MESSAGE];
+        let header = Header::new(Record::Snapshot, index, MESSAGE);
+        [header.bytes(), &payload].concat()
+    }
+
+    #[test]
+    fn a_snapshot_over_the_queue_cap_spills_and_drains_in_order_before_later_writes() {
+        let cap = 20_000;
+        let (mut out, mut reader, dir) = spilling_output("order", cap, 1 << 30);
+        let mut expected = Vec::new();
+        for index in 0..40 {
+            let payload = vec![index as u8; MESSAGE];
+            assert_ne!(
+                out.record(Fit::Spill, Record::Snapshot, index, &payload),
+                Written::Closed
+            );
+            expected.extend(message(index));
+        }
+        assert!(out.queue.spilling(), "the snapshot did not spill");
+        assert!(
+            out.queue.bytes <= cap + MESSAGE + 16,
+            "{} bytes wait in memory",
+            out.queue.bytes
+        );
+        out.send(b"tail".to_vec());
+        expected.extend_from_slice(b"tail");
+        assert!(out.waiting() && !out.available());
+        let seen = drain(&mut out, &mut reader);
+        assert!(
+            seen == expected,
+            "{} bytes, {} expected",
+            seen.len(),
+            expected.len()
+        );
+        assert!(!out.queue.spilling() && !out.waiting() && out.is_open());
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_flush_sends_at_most_its_budget_and_the_spill_keeps_the_write_interest() {
+        let (mut out, mut reader, dir) = spilling_output("budget", 20_000, 1 << 30);
+        let total = (FLUSH_BYTES / MESSAGE + 20) as u64;
+        for index in 0..total {
+            let payload = vec![index as u8; MESSAGE];
+            out.record(Fit::Spill, Record::Snapshot, index, &payload);
+        }
+        ko_sys::sock::set_send_buffer(out.stream.as_fd(), 8 << 20).unwrap();
+        let before = out.accepted();
+        out.flush();
+        let sent = (out.accepted() - before) as usize;
+        assert!(
+            sent <= FLUSH_BYTES + 64 * (MESSAGE + 16) && out.waiting(),
+            "{sent} bytes in one flush"
+        );
+        let mut poll = Poll::new();
+        let token = poll.watch(out.stream.as_fd(), Interest::Idle);
+        poll.interest(token, Interest::of(false, out.waiting()));
+        assert_eq!(poll.interest_of(token), Interest::Write);
+        let all = drain(&mut out, &mut reader).len();
+        assert_eq!(all, total as usize * message(0).len());
+        std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_spill_over_its_limit_ends_the_stream_at_a_message_with_the_farewell() {
+        let (mut out, mut reader, dir) = spilling_output("limit", 20_000, 100_000);
+        let mut closed = false;
+        for index in 0..40 {
+            let payload = vec![index as u8; MESSAGE];
+            closed |= out.record(Fit::Spill, Record::Snapshot, index, &payload) == Written::Closed;
+        }
+        assert!(closed, "the spill limit did not apply");
+        out.close();
+        assert_eq!(out.life(), Life::Draining, "a close dropped the farewell");
+        let seen = drain(&mut out, &mut reader);
+        let body = seen
+            .strip_suffix(b"BYE")
+            .expect("the farewell ends the stream");
+        let whole = message(0).len();
+        assert!(
+            !body.is_empty() && body.len().is_multiple_of(whole),
+            "{} bytes",
+            body.len()
+        );
+        let all: Vec<u8> = (0..40).flat_map(message).collect();
+        assert!(body == &all[..body.len()]);
+        assert_eq!(out.life(), Life::Shut);
+        std::fs::remove_dir(&dir).unwrap();
     }
 
     #[test]

@@ -6,12 +6,12 @@ use std::time::{Duration, Instant};
 
 use ko_pane_wire::ring::{SLICE_HEADER, SLICE_MAX};
 use ko_sys::event::{Poll, PollRead, Reads, Token};
-use tungstenite::protocol::frame::FrameHeader;
 use tungstenite::protocol::frame::coding::{CloseCode, Data, OpCode};
+use tungstenite::protocol::frame::{Frame as WireFrame, FrameHeader};
 use tungstenite::protocol::{CloseFrame, Role as Side, WebSocketConfig, WebSocketContext};
 use tungstenite::{Error, Message, Utf8Bytes};
 
-use crate::conn::{Output, Queue};
+use crate::conn::{Fit, Life, Output, Queue};
 use crate::deflate::{self, Deflate};
 use crate::http::{self, Head, MAX_HEAD, Status};
 use crate::ids::ClientId;
@@ -22,6 +22,8 @@ const MAX_MESSAGE: usize = 1 << 20;
 const MAX_SENT: usize = 32 << 20;
 const IDLE: Duration = Duration::from_secs(30);
 const PONG: Duration = Duration::from_secs(10);
+const STALL: Duration = Duration::from_secs(10);
+pub(crate) const OVERFLOW_REASON: &str = "view queue overflow";
 pub(crate) const FIRST_PING: Duration = IDLE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,7 +183,7 @@ impl Read for Io<'_> {
 
 impl Write for Io<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self.queue.push(bytes.to_vec()) {
+        if self.queue.push(&[bytes], Fit::Cap) {
             Ok(bytes.len())
         } else {
             Err(io::Error::other("connection queue full"))
@@ -191,6 +193,16 @@ impl Write for Io<'_> {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
+}
+
+pub(crate) fn overflow_close() -> Vec<u8> {
+    let frame = WireFrame::close(Some(CloseFrame {
+        code: CloseCode::Again,
+        reason: OVERFLOW_REASON.into(),
+    }));
+    let mut bytes = Vec::new();
+    let _ = frame.format(&mut bytes);
+    bytes
 }
 
 fn writer(out: &mut Output) -> Io<'_> {
@@ -218,6 +230,8 @@ pub(crate) struct Ws {
     ctx: WebSocketContext,
     last: Instant,
     ping: Option<Instant>,
+    accepted: u64,
+    blocked: Option<Instant>,
 }
 
 impl Ws {
@@ -231,6 +245,8 @@ impl Ws {
             ctx: WebSocketContext::from_partially_read(part, Side::Server, Some(config)),
             last: Instant::now(),
             ping: None,
+            accepted: 0,
+            blocked: None,
         }
     }
 
@@ -312,7 +328,37 @@ impl Ws {
         }
     }
 
+    // The time left before an output that makes no progress counts as stalled. The pong deadline
+    // restarts while the output progresses, because a ping waits behind the queued messages.
+    fn stall(&mut self, out: &Output, now: Instant) -> Option<Duration> {
+        let moved = out.accepted() != self.accepted;
+        self.accepted = out.accepted();
+        if moved && self.ping.is_some() {
+            self.ping = Some(now);
+        }
+        if moved || !out.waiting() {
+            self.blocked = None;
+            return None;
+        }
+        let since = *self.blocked.get_or_insert(now);
+        Some(
+            since
+                .checked_add(STALL)
+                .map_or(Duration::ZERO, |due| due.saturating_duration_since(now)),
+        )
+    }
+
     pub(crate) fn ping(&mut self, out: &mut Output, now: Instant) -> Ping {
+        let stall = self.stall(out, now);
+        if stall.is_some_and(|left| left.is_zero()) {
+            out.shut();
+            return Ping::Expired;
+        }
+        match out.life() {
+            Life::Shut => return Ping::Expired,
+            Life::Draining => return Ping::After(stall.unwrap_or(STALL)),
+            Life::Open => {}
+        }
         let due = match self.ping {
             Some(sent) => sent.checked_add(PONG),
             None => self.last.checked_add(IDLE),
@@ -321,23 +367,25 @@ impl Ws {
             .and_then(|due| due.checked_duration_since(now))
             .filter(|left| !left.is_zero())
         {
-            return Ping::After(left);
+            return Ping::After(stall.map_or(left, |stall| left.min(stall)));
         }
         if self.ping.is_some() {
-            self.reject(out, "gone");
+            let send = out.available();
+            self.close_with(out, CloseCode::Policy, "gone", send);
+            out.shut();
             return Ping::Expired;
         }
         self.ping = Some(now);
-        if self
+        let _ = self
             .ctx
-            .write(&mut writer(out), Message::Ping(Default::default()))
-            .is_err()
-        {
-            out.close();
-            return Ping::Expired;
-        }
+            .write(&mut writer(out), Message::Ping(Default::default()));
         out.flush();
-        Ping::After(PONG)
+        self.accepted = out.accepted();
+        if out.is_shut() {
+            Ping::Expired
+        } else {
+            Ping::After(PONG)
+        }
     }
 }
 
@@ -453,28 +501,12 @@ mod tests {
 
     #[test]
     fn a_finished_stream_queues_its_close_behind_the_messages_that_wait() {
-        use std::io::Read;
         let (mut out, mut reader) = crate::conn::tests::full_output();
         let mut ws = Ws::new(Vec::new());
         ws.send(&mut out, "last-message".to_owned());
         ws.finish(&mut out);
         assert!(out.is_open() && out.waiting());
-        let mut seen = Vec::new();
-        let mut chunk = [0u8; 8192];
-        for _ in 0..100_000 {
-            match reader.read(&mut chunk) {
-                Ok(count) => seen.extend_from_slice(&chunk[..count]),
-                Err(_) => {
-                    out.writable();
-                    if !out.waiting() {
-                        break;
-                    }
-                }
-            }
-        }
-        while let Ok(count) = reader.read(&mut chunk) {
-            seen.extend_from_slice(&chunk[..count]);
-        }
+        let seen = crate::conn::tests::drain(&mut out, &mut reader);
         let mut tail = vec![0x81, 12];
         tail.extend_from_slice(b"last-message");
         tail.extend_from_slice(&[0x88, 6, 0x03, 0xe8]);
@@ -532,7 +564,11 @@ mod tests {
     fn frames_in_one_write_and_a_frame_across_two_writes_each_give_their_message() {
         let (mut client, server) = UnixStream::pair().unwrap();
         let mut poll = Poll::new();
-        let mut conn = Conn::new(Verified::admit(server).unwrap(), &mut poll);
+        let mut conn = Conn::new(
+            Verified::admit(server).unwrap(),
+            &mut poll,
+            crate::config::QUEUE_BYTES,
+        );
         let mut ws = Ws::new(Vec::new());
         client
             .write_all(&[text("one"), text("two")].concat())
@@ -559,7 +595,11 @@ mod tests {
         let (mut client, server) = UnixStream::pair().unwrap();
         client.set_nonblocking(true).unwrap();
         let mut poll = Poll::new();
-        let mut conn = Conn::new(Verified::admit(server).unwrap(), &mut poll);
+        let mut conn = Conn::new(
+            Verified::admit(server).unwrap(),
+            &mut poll,
+            crate::config::QUEUE_BYTES,
+        );
         let mut ws = Ws::new(Vec::new());
         let start = ws.last;
         let at = |seconds| start + Duration::from_secs(seconds);
@@ -587,5 +627,62 @@ mod tests {
                 false
             )
         );
+    }
+
+    fn at(start: Instant, seconds: u64) -> Instant {
+        start + Duration::from_secs(seconds)
+    }
+
+    #[test]
+    fn a_pong_deadline_restarts_while_the_output_progresses_and_a_stalled_output_ends_after_10_seconds()
+     {
+        let (mut out, mut reader) = crate::conn::tests::full_output();
+        let mut ws = Ws::new(Vec::new());
+        let start = ws.last;
+        assert_eq!(
+            ws.ping(&mut out, at(start, 30)),
+            Ping::After(PONG),
+            "the ping waits behind the full socket"
+        );
+        out.send(vec![0; 1 << 20]);
+        let mut chunk = [0u8; 4096];
+        for second in [36, 42, 48, 54, 60] {
+            assert!(reader.read(&mut chunk).is_ok());
+            out.writable();
+            assert!(
+                matches!(ws.ping(&mut out, at(start, second)), Ping::After(_)),
+                "the link ended at {second} s while its output progressed"
+            );
+            assert!(out.is_open());
+        }
+        assert_eq!(
+            ws.ping(&mut out, at(start, 61)),
+            Ping::After(Duration::from_secs(9)),
+            "a stall begins at the first look without progress"
+        );
+        assert_eq!(ws.ping(&mut out, at(start, 71)), Ping::Expired);
+        assert!(out.is_shut());
+    }
+
+    #[test]
+    fn a_draining_output_that_makes_no_progress_ends_after_10_seconds() {
+        let (mut out, _reader) = crate::conn::tests::full_output();
+        out.view(
+            std::sync::Arc::from(std::path::Path::new("/nonexistent")),
+            0,
+            b"BYE".to_vec(),
+        );
+        out.send(vec![0; crate::config::QUEUE_BYTES + 1]);
+        assert_eq!(out.life(), Life::Draining);
+        let mut ws = Ws::new(Vec::new());
+        let start = ws.last;
+        assert_eq!(ws.ping(&mut out, at(start, 1)), Ping::After(STALL));
+        assert_eq!(
+            ws.ping(&mut out, at(start, 5)),
+            Ping::After(Duration::from_secs(6))
+        );
+        assert_eq!(out.life(), Life::Draining);
+        assert_eq!(ws.ping(&mut out, at(start, 11)), Ping::Expired);
+        assert!(out.is_shut());
     }
 }

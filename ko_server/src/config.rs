@@ -29,6 +29,25 @@ pub struct Config {
     pub linger: Duration,
     pub stop_escalation: Duration,
     pub clipboard_wait: Duration,
+    pub view_queue: ViewQueue,
+}
+
+pub(crate) const QUEUE_BYTES: usize = 64 << 20;
+const SPILL_BYTES: u64 = 1 << 30;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ViewQueue {
+    pub cap_bytes: usize,
+    pub spill_bytes: u64,
+}
+
+impl Default for ViewQueue {
+    fn default() -> ViewQueue {
+        ViewQueue {
+            cap_bytes: QUEUE_BYTES,
+            spill_bytes: SPILL_BYTES,
+        }
+    }
 }
 
 pub const LINGER: Duration = Duration::from_secs(30);
@@ -61,6 +80,7 @@ pub fn scratch(dir: &Path, pane_exe: PathBuf, limits: Limits) -> Config {
         linger: LINGER,
         stop_escalation: STOP_ESCALATION,
         clipboard_wait: CLIPBOARD_WAIT,
+        view_queue: ViewQueue::default(),
     }
 }
 
@@ -212,6 +232,12 @@ impl Config {
                 .map_or(STOP_ESCALATION, Duration::from_millis),
             clipboard_wait: positive("KO_CLIPBOARD_TIMEOUT_MS")
                 .map_or(CLIPBOARD_WAIT, Duration::from_millis),
+            view_queue: ViewQueue {
+                cap_bytes: positive("KO_VIEW_QUEUE_BYTES")
+                    .and_then(|bytes| usize::try_from(bytes).ok())
+                    .unwrap_or(QUEUE_BYTES),
+                spill_bytes: positive("KO_VIEW_SPILL_BYTES").unwrap_or(SPILL_BYTES),
+            },
         })
     }
 }

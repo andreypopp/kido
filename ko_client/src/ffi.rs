@@ -4254,6 +4254,83 @@ mod tests {
         close_view(view);
     }
 
+    fn a_server_close_during_a_restore(name: &str, paused: bool, close_frame: bool) {
+        const SLICE: usize = 512 << 10;
+        let routes = client_script(|socket, _| {
+            welcomed(socket);
+            wait_for_hangup(socket);
+        })
+        .view(move |socket, _| {
+            let count = if paused { 16 } else { 1 };
+            for index in 0..count {
+                let record = slice_record(10, index == 0, false, true, &pattern(index, SLICE));
+                send_binary(socket, record);
+            }
+            if close_frame {
+                let _ = socket.close(Some(tungstenite::protocol::CloseFrame {
+                    code: tungstenite::protocol::frame::coding::CloseCode::Again,
+                    reason: "view queue overflow".into(),
+                }));
+            }
+        });
+        let server = serve(name, routes);
+        let fixture = Fixture::new();
+        let client = fixture.connect(&server);
+        assert!(matches!(fixture.next(), Seen::Welcome(..)));
+        assert!(matches!(fixture.next(), Seen::Layout(0, ..)));
+        let (reading, is_reading) = channel();
+        let (release, gate) = channel::<()>();
+        let (cancelled, was_cancelled) = channel();
+        let decoder = Decoder::new(move |snapshot| {
+            if paused {
+                let _ = pull(snapshot, 64 << 10, 64 << 10);
+                let _ = reading.send(());
+                let _ = gate.recv_timeout(WAIT);
+            }
+            let _ = cancelled.send(pull(snapshot, usize::MAX, 64 << 10).is_err());
+            Restored::Rejected
+        });
+        let view = open_view(client, decoder, true);
+        if paused {
+            is_reading.recv_timeout(WAIT).unwrap();
+            until("the core stops reading a snapshot nobody takes", || {
+                handle_of(view).view.pause.load(Ordering::SeqCst)
+            });
+            let _ = release.send(());
+        }
+        let closed = fixture.next();
+        if close_frame {
+            assert!(
+                matches!(closed, Seen::Closed(Code::Closed, _)),
+                "{closed:?}"
+            );
+        } else {
+            assert!(matches!(closed, Seen::Closed(Code::Io, _)), "{closed:?}");
+        }
+        assert!(
+            was_cancelled.recv_timeout(WAIT).unwrap(),
+            "the restore read on after the view closed"
+        );
+        close_view(view);
+        close(client);
+    }
+
+    #[test]
+    fn a_server_close_during_a_restore_closes_the_view_and_fails_the_decoders_read() {
+        a_server_close_during_a_restore("close-restore", false, true);
+        a_server_close_during_a_restore("hangup-restore", false, false);
+    }
+
+    #[test]
+    fn a_server_hangup_closes_a_paused_view_once_its_decoder_takes_what_waits() {
+        a_server_close_during_a_restore("close-paused", true, false);
+    }
+
+    #[test]
+    fn a_close_frame_closes_a_paused_view_once_its_decoder_takes_what_waits() {
+        a_server_close_during_a_restore("close-frame-paused", true, true);
+    }
+
     #[test]
     fn a_surface_that_is_slow_to_take_live_output_pauses_the_connection_and_it_goes_on_after() {
         const RECORD: usize = 256 << 10;

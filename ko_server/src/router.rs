@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use ko_sys::event::{Poll, Token};
 use serde::Serialize;
 
@@ -67,6 +69,13 @@ fn upgrade(state: &mut State, poll: &mut Poll, index: usize, response: Vec<u8>, 
         return;
     };
     conn.out.send(response);
+    if matches!(role, Role::View(_)) {
+        conn.out.view(
+            Arc::clone(&state.spill_dir),
+            state.config.view_queue.spill_bytes,
+            ws::overflow_close(),
+        );
+    }
     let part = conn.rest();
     conn.phase = Phase::Ws(Box::new(Link {
         ws: Ws::new(part),

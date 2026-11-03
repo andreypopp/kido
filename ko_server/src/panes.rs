@@ -298,6 +298,7 @@ mod tests {
             linger: crate::config::LINGER,
             stop_escalation: crate::config::STOP_ESCALATION,
             clipboard_wait: crate::config::CLIPBOARD_WAIT,
+            view_queue: crate::config::ViewQueue::default(),
         }
     }
 
