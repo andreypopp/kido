@@ -332,8 +332,10 @@ options set (the values come from the coordinator in the first frame):
 
 Cell pixel size comes from the window (4.5). `ghostty_terminal_resize`
 takes columns, rows and the cell size together. `CSI 14t` and `16t` are
-answered through the `OPT_SIZE` callback, which the server sets and a
-mirror leaves unset.
+answered through the `OPT_SIZE` callback, which returns the size of the
+last resize and refuses the query (no reply) while the window has no
+cell size (protocol.md, section 3). The server sets it and a mirror
+leaves it unset.
 
 **The mirror contract.** A mirror is exact only if it is the same
 libghostty-vt revision with the same terminal options as the server:

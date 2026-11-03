@@ -1,8 +1,17 @@
 use std::io;
+use std::num::NonZeroU16;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
+use ko_pane_wire::frame::CellPx;
 use ko_sys::fd;
 use ko_sys::tty::{self, Saved};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Geometry {
+    pub(crate) cols: usize,
+    pub(crate) rows: usize,
+    pub(crate) cell_px: Option<CellPx>,
+}
 
 #[derive(Debug)]
 pub(crate) struct Tty {
@@ -27,9 +36,25 @@ impl Tty {
         self.input.as_fd()
     }
 
-    pub(crate) fn size(&self) -> (usize, usize) {
-        let (cols, rows) = tty::size(self.output.as_fd()).unwrap_or((80, 24));
-        (usize::from(cols), usize::from(rows))
+    pub(crate) fn size(&self) -> Geometry {
+        tty::size(self.output.as_fd()).map_or(
+            Geometry {
+                cols: 80,
+                rows: 24,
+                cell_px: None,
+            },
+            |size| Geometry {
+                cols: usize::from(size.cols),
+                rows: usize::from(size.rows),
+                cell_px: match (
+                    NonZeroU16::new(size.xpixel.checked_div(size.cols).unwrap_or(0)),
+                    NonZeroU16::new(size.ypixel.checked_div(size.rows).unwrap_or(0)),
+                ) {
+                    (Some(width), Some(height)) => Some(CellPx { width, height }),
+                    _ => None,
+                },
+            },
+        )
     }
 
     pub(crate) fn read(&self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
