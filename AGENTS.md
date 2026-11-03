@@ -2039,6 +2039,11 @@ delegates to subagents, by these rules:
   make test in app/ (plus make visual for a visible change) when the
   change touches app/ or the shared third_party/ghostty pin; nobody runs
   make fuzz, long fuzzing runs only in CI
+- a build or test run that can take more than 10 seconds runs through
+  async_bash under `scripts/quiet-limit 60 -- <command>`: it kills the
+  command's process group and exits 124 when the command prints nothing
+  for 60 seconds, so a stuck test or a deadlock ends instead of hanging
+  the agent
 - flakes and fuzzing have a time box: a flake investigation gets 5
   minutes, and a fuzz or long property-test run gets 5 minutes; then the
   agent reports what it has; first suspect the test (a race in its waits,

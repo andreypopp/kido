@@ -1,0 +1,46 @@
+#!/usr/bin/env perl
+# quiet-limit SECONDS -- COMMAND [ARGS...]
+# Runs COMMAND in its own process group and copies its output. If COMMAND
+# prints nothing for SECONDS, the whole group gets TERM, then KILL 5 s
+# later, and quiet-limit exits 124. Otherwise it exits with COMMAND's status.
+use strict;
+use warnings;
+use POSIX qw(setsid :sys_wait_h);
+use IO::Select;
+
+my $limit = shift // '';
+shift if @ARGV && $ARGV[0] eq '--';
+die "usage: quiet-limit SECONDS -- COMMAND [ARGS...]\n" unless $limit =~ /^\d+$/ && @ARGV;
+
+pipe(my $r, my $w) or die "pipe: $!";
+my $pid = fork() // die "fork: $!";
+if ($pid == 0) {
+    close $r;
+    setsid();
+    open STDOUT, '>&', $w or die;
+    open STDERR, '>&', $w or die;
+    exec @ARGV or die "quiet-limit: exec $ARGV[0]: $!\n";
+}
+close $w;
+$| = 1;
+my $sel = IO::Select->new($r);
+my $last = time;
+my $killed = 0;
+while (1) {
+    if ($sel->can_read(1)) {
+        my $n = sysread($r, my $buf, 65536);
+        last unless $n;
+        print $buf;
+        $last = time;
+    } elsif (time - $last >= $limit) {
+        print STDERR "\nquiet-limit: no output for ${limit}s, killing: @ARGV\n";
+        kill 'TERM', -$pid;
+        sleep 5;
+        kill 'KILL', -$pid;
+        $killed = 1;
+        last;
+    }
+}
+waitpid($pid, 0);
+exit 124 if $killed;
+exit($? & 127 ? 128 + ($? & 127) : $? >> 8);
