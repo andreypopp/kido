@@ -269,8 +269,30 @@ pub(crate) struct RouteInfo {
     pub(crate) path_params: &'static [ParamInfo],
     pub(crate) query: &'static [ParamInfo],
     pub(crate) body: Option<SchemaFn>,
+    pub(crate) caller: Caller,
     pub(crate) kind: Kind,
 }
+
+// Whether the route reads the calling pane from the Ko-Pane header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Caller {
+    Absent,
+    Optional,
+    Required,
+}
+
+macro_rules! caller_of {
+    () => {
+        $crate::route::Caller::Absent
+    };
+    (optional) => {
+        $crate::route::Caller::Optional
+    };
+    (required) => {
+        $crate::route::Caller::Required
+    };
+}
+pub(crate) use caller_of;
 
 macro_rules! error_body {
     () => {
@@ -354,6 +376,7 @@ macro_rules! routes {
             path: $( / $( $lit:ident )? $( { $pn:ident : $pt:ty } )? )*
             $(, query: { $( $qn:ident : $qt:ty $( = $qd:ident )? ),* $(,)? } )?
             $(, body: $bt:ty )?
+            $(, caller: $caller:ident )?
             $(, reply: $reply:ty )?
             $(, errors: { $( $es:literal $( : $et:ty )? ),* $(,)? } )?
             $(, send: $send:ty, recv: $recv:ty $( | $more:ty )* )?
@@ -422,6 +445,7 @@ macro_rules! routes {
                         },
                     )* )? ],
                     body: $crate::route::body_of!($($bt)?),
+                    caller: $crate::route::caller_of!($($caller)?),
                     kind: $crate::route::kind!($method {
                         reply: [$($reply)?],
                         errors: [$($($es $(: $et)?),*)?],

@@ -2,7 +2,9 @@ import AppKit
 import os
 import GhosttyKit
 import IOSurface
+import KoClient
 import TmuxControl
+import KoModel
 
 private final class TerminalView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -45,29 +47,19 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     let pane: PaneID
     let born = DispatchTime.now()
-    private let onInput: @MainActor @Sendable (Data) -> Void
     nonisolated let host: Host
     var onURL: (String) -> Void = { _ in }
     var onSelect: () -> Void = {}
     var onCellChange: () -> Void = {}
     var onFontChange: (Float) -> Void = { _ in }
     var onCommand: (PaneCommand) -> Void = { _ in }
-    var onResync: () -> Bool = { false }
-    var onRestoreDrain: () -> Void = {}
-    var onGridFailure: () -> Void = {}
-    var onFindCoverage: (Int, UUID) -> Void = { _, _ in }
-    var onLoadMore: () -> Void = {}
-    var onScrollTop: () -> Void = {}
-    var onImageViewport: (Int, Bool) -> Void = { _, _ in }
-    var onImageFreeze: (Int) -> Void = { _ in }
-    var onCopyCheck: (@escaping @MainActor @Sendable (Bool) -> Void) -> Void = { $0(true) }
     var onFindChange: () -> Void = {}
     let scroller = PaneScroller()
     var find: PaneFind? { didSet { needsLayout = true; onFindChange() } }
     var canPrompt: () -> Bool = { false }
     var selectionQuote: String? { hasSelection ? readSelection() : nil }
     var onPrompt: (PaneView, String?) -> Void = { _, _ in }
-    var chromeViews: [NSView] { [historyLimit, copyLabel] + [find].compactMap { $0 } }
+    var chromeViews: [NSView] { [copyLabel] + [find].compactMap { $0 } }
     enum CopyMode { case entering(DispatchWorkItem), cursor, selecting, lines(anchor: (x: Int, y: Int), cursor: (x: Int, y: Int)) }
     private(set) var copyMode: CopyMode?
     private enum MouseDrag {
@@ -117,9 +109,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         didSet {
             if renderInsets != oldValue {
                 ghostty_surface_set_render_insets(surface, UInt32((renderInsets.top * (window?.backingScaleFactor ?? 2)).rounded()), UInt32((renderInsets.bottom * (window?.backingScaleFactor ?? 2)).rounded()))
-                if finalEpoch != nil {
-                    DispatchQueue.main.async { [weak self] in self?.requestFinalRender() }
-                }
             }
         }
     }
@@ -157,15 +146,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     private let terminal = TerminalView()
-    private let historyLimit: PaneCapsule
     private let copyLabel: Overlay
-    private func loadMoreHistory() { if copyMode == nil { onLoadMore() } }
     private var pressed: Set<Int> = []
     private struct ScrollGeometry {
-        var sampledTmuxHistoryRows = 0
         var position = ScrollPosition(retainedHistoryRows: 0, offset: 0, rows: 1)
         var captured = false
-        var mayHaveOlderHistory = false
     }
     private var scrollGeometry = ScrollGeometry()
     private var scrollPresentation = (position: ScrollPosition(retainedHistoryRows: 0, offset: 0, rows: 1), distance: Optional<Double>.none, revision: 0)
@@ -175,38 +160,22 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     nonisolated var scrollTarget: Int? { target.withLock { $0.map { Int($0.rounded(.up)) } } }
     nonisolated private var scrollDistance: Double? { target.withLock { $0 } }
     private var suppressMomentum = false
-    nonisolated private let scrollIntent = OSAllocatedUnfairLock(initialState: (revision: 0, replay: Optional<Int>.none))
-    nonisolated var scrollRevision: Int { scrollIntent.withLock { $0.revision } }
+    nonisolated private let scrollIntent = OSAllocatedUnfairLock(initialState: 0)
+    nonisolated var scrollRevision: Int { scrollIntent.withLock { $0 } }
     @discardableResult nonisolated private func invalidateScroll() -> Int {
-        scrollIntent.withLock { $0.revision += 1; return $0.revision }
+        scrollIntent.withLock { $0 += 1; return $0 }
     }
     private var scrollPending: Int?
     private var scrollRender = false
-    nonisolated private(set) var resizeDirty: Bool {
-        get { grid.withLock { $0.dirty } }
-        set { grid.withLock { $0.dirty = newValue } }
-    }
-    nonisolated var frozen: Bool { grid.withLock { $0.freeze != .off } }
+    nonisolated var frozen: Bool { content.withLock { $0.freeze != .off } }
     private var resizeIntent = false
-    private var restoreRequested: Int?
-    private var finalEpoch: Int?
     private var renderSequence: UInt64 = 0
-    private var renderRetry = false
-    private var rendering: (token: UInt64, epoch: Int, pixels: CGSize, inset: PaneLayout.RenderInsets, revision: Int, distance: Double?)?
-    nonisolated private let anchor = OSAllocatedUnfairLock<ScrollAnchor?>(initialState: nil)
-    nonisolated var resizeAnchor: ScrollAnchor? {
-        get { anchor.withLock { $0 } }
-        set { anchor.withLock { $0 = newValue } }
-    }
     private var wheelRemainder = 0.0
     private var wheelOwner: ghostty_wheel_disposition_e?
     private var wheelMultiplier = (precision: 1.0, discrete: 3.0)
     private var rowHeight: CGFloat = 1
-    var onSearch: (String, UUID) -> Void = { _, _ in }
-
     @objc func showFind(_ sender: Any? = nil) {
         if case .entering = copyMode { return }
-        resizeAnchor = nil
         snapScroll()
         openFind(navigate: false)
         window?.makeFirstResponder(find?.field)
@@ -231,21 +200,14 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         return nil
     }
 
-    @objc func findNext(_ sender: Any? = nil) { resizeAnchor = nil; snapScroll(); find?.next() }
-    @objc func findPrevious(_ sender: Any? = nil) { resizeAnchor = nil; snapScroll(); find?.previous() }
+    @objc func findNext(_ sender: Any? = nil) { snapScroll(); find?.next() }
+    @objc func findPrevious(_ sender: Any? = nil) { snapScroll(); find?.previous() }
 
 
     struct ScrollPosition: Sendable {
         let retainedHistoryRows: Int
         let offset: Int
         let rows: Int
-    }
-
-    nonisolated var historyEpoch: Int { grid.withLock { $0.epoch } }
-
-    nonisolated private func advanceImageEpoch(_ epoch: inout Int) {
-        epoch += 1
-        resetImageFill()
     }
 
     nonisolated func scrollPosition() -> ScrollPosition {
@@ -262,57 +224,13 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             let row = floor(top)
             let pixels = Float(top - row) * Float(ghostty_surface_size(surface).cell_height_px)
             var delta: Int64 = 0
-            let expectedRevision = value.row_space_revision
-            #if KIDO_STRESS
-            let revision = applyProbe.withLock { probe in
-                if attempt > 0 { probe.retries += 1 }
-                defer { probe.failNext = false }
-                return probe.failNext || probe.failAll ? expectedRevision ^ 1 : expectedRevision
-            }
-            #else
-            let revision = expectedRevision
-            #endif
-            if ghostty_surface_scroll_to_row_pixel_if_revision(surface, UInt64(row), pixels, revision, &value, &delta) {
+            if ghostty_surface_scroll_to_row_pixel_if_revision(surface, UInt64(row), pixels, value.row_space_revision, &value, &delta) {
                 debug("scroll-apply pane=\(pane) time=\(CACurrentMediaTime()) distance=\(distance) row=\(value.offset) pixel=\(pixels) goal=\(scrollDistance ?? distance) history=\(value.total - value.len)")
                 return (ScrollPosition(retainedHistoryRows: max(0, Int(value.total) - Int(value.len)), offset: Int(value.offset), rows: Int(value.len)), Int(delta))
             }
             guard attempt < 2, ghostty_surface_scrollbar(surface, &value) else { return nil }
         }
         return nil
-    }
-
-    nonisolated func prepend(_ bytes: Data, epoch expected: Int) -> Int {
-        guard grid.withLock({ state in
-            guard state.epoch == expected, state.ready, !state.suspended, !state.replay, state.freeze == .off else { return false }
-            state.replay = true
-            return true
-        }) else { return 0 }
-        defer { finishMutation() }
-        return bytes.withUnsafeBytes {
-            guard let base = $0.baseAddress else { return 0 }
-            return Int(ghostty_surface_prepend_history(surface, base.assumingMemoryBound(to: CChar.self), $0.count))
-        }
-    }
-
-    nonisolated private func finishMutation() {
-        let deferred = grid.withLock { state in
-            state.replay = false
-            return !state.ready
-        }
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            defer { completeEntry() }
-            guard !grid.withLock({ $0.replay }) else { return }
-            applyReflows()
-            if deferred, !grid.withLock({ $0.ready }), let acceptedGrid {
-                resize(cols: acceptedGrid.cols, rows: acceptedGrid.rows)
-            }
-        }
-    }
-
-    nonisolated func markContentDirty(preserveAnchor: Bool = false) {
-        grid.withLock { advanceImageEpoch(&$0.epoch); $0.dirty = true; $0.suspended = true }
-        if !preserveAnchor { resizeAnchor = nil }
     }
 
     nonisolated func scroll(to row: Int) {
@@ -327,113 +245,26 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         #if KIDO_VISUAL
         visualScrollerRefreshes += 1
         #endif
-        let position = scrollPosition()
-        updateScroller(sampledTmuxHistoryRows: scrollGeometry.sampledTmuxHistoryRows, position: position,
-                       alternate: ghostty_surface_is_alternate_screen(surface), clampTarget: false)
-    }
-
-    func updateScroller(sampledTmuxHistoryRows: Int, position: ScrollPosition, alternate: Bool, mayHaveOlderHistory: Bool? = nil, clampTarget: Bool = true) {
-        let clamped = target.withLock { target in
-            guard clampTarget, let distance = target else { return false }
-            target = min(Double(position.retainedHistoryRows), distance)
-            return target != distance
-        }
-        let available = mayHaveOlderHistory ?? scrollGeometry.mayHaveOlderHistory
-        let changed = available != scrollGeometry.mayHaveOlderHistory || clamped || self.alternate != alternate || scrollGeometry.sampledTmuxHistoryRows != sampledTmuxHistoryRows
-            || scrollGeometry.position.retainedHistoryRows != position.retainedHistoryRows || scrollGeometry.position.rows != position.rows
-            || (scrollTarget == nil && scrollGeometry.position.offset != position.offset)
+        let position = scrollPosition(), alternate = ghostty_surface_is_alternate_screen(surface)
+        let changed = self.alternate != alternate || scrollGeometry.position.retainedHistoryRows != position.retainedHistoryRows
+            || scrollGeometry.position.rows != position.rows || (scrollTarget == nil && scrollGeometry.position.offset != position.offset)
         guard changed else { return }
         invalidateScroll()
         updateAlternate(alternate)
-        scrollGeometry = ScrollGeometry(sampledTmuxHistoryRows: sampledTmuxHistoryRows, position: position, captured: scrollGeometry.captured, mayHaveOlderHistory: available)
+        scrollGeometry.position = position
         if alternate { clearScrollTarget() }
         queueScroll()
     }
 
-    nonisolated func commitSnapshot(epoch: Int) -> Bool {
-        grid.withLock { state in
-            guard state.epoch == epoch, state.ready else { return false }
-            state.suspended = false
-            state.dirty = false
-            return true
-        }
-    }
-
-    func restored(epoch: Int) {
-        guard epoch == historyEpoch else { return }
-        restoreRequested = nil
-        finalEpoch = epoch
-        renderRetry = true
-        requestFinalRender()
-    }
-
-    private func requestFinalRender() {
-        guard rendering == nil, let epoch = finalEpoch, epoch == historyEpoch,
-              presented.visible, resizeAnchor == nil, scrollPresentation.distance == scrollDistance,
-              scrollPresentation.revision == scrollRevision,
-              (scrollTarget ?? 0) <= scrollGeometry.position.retainedHistoryRows, scrollPending == nil else { return }
-        layoutSubtreeIfNeeded()
-        renderSequence += 1
-        let appliedRevision = scrollPresentation.revision
-        guard let revision = scrollIntent.withLock({ $0.replay == nil && $0.revision == appliedRevision ? $0.revision : nil }) else { return }
-        rendering = (renderSequence, epoch, convertToBacking(bounds.size), renderInsets, revision, scrollDistance)
-        if !ghostty_surface_request_render_with_token(surface, renderSequence) {
-            rendering = nil
-            debug("resize render-rejected pane=\(pane) epoch=\(epoch)")
-        }
-    }
-
     private func rendered(_ token: UInt64, status: ghostty_render_presentation_status_e) {
         #if KIDO_VISUAL
-        if let completion = visualFrames.removeValue(forKey: token) { completion(status); return }
+        visualFrames.removeValue(forKey: token)?(status)
         #endif
-        let success = status == GHOSTTY_RENDER_PRESENTATION_PRESENTED
-        guard let request = rendering, request.token == token else { return }
-        rendering = nil
-        let geometry = request.epoch == historyEpoch && request.epoch == finalEpoch
-            && request.pixels == convertToBacking(bounds.size) && request.inset == renderInsets
-            && request.distance == scrollDistance
-        let applied = scrollPending == nil && resizeAnchor == nil && scrollPresentation.distance == scrollDistance
-            && scrollPresentation.revision == request.revision
-        let pixels = installedPixels == request.pixels
-        let (current, completed) = scrollIntent.withLock { intent in
-            let current = geometry && intent.replay == nil && request.revision == intent.revision
-            let completed = success && current && applied && pixels
-            if completed { MainActor.assumeIsolated { finalEpoch = nil } }
-            return (current, completed)
-        }
-        #if KIDO_STRESS
-        finalRenderDisposition = ["token": token, "status": status.rawValue, "geometry": geometry,
-                                  "current": current, "applied": applied, "pixels": pixels, "completed": completed]
-        #endif
-        if completed {
-            #if KIDO_STRESS
-            onFinalRender?()
-            #endif
-            (superview as? WindowView)?.debugResize("final-render token=\(token) epoch=\(request.epoch)", pane: pane)
-        } else {
-            debug("resize render-incomplete pane=\(pane) token=\(token) success=\(success) current=\(current)")
-            if !current || (status == GHOSTTY_RENDER_PRESENTATION_DISCARDED && renderRetry) {
-                renderRetry = false
-                DispatchQueue.main.async { [weak self] in self?.requestFinalRender() }
-            }
-        }
     }
-
-    private var imageViewport: (Int, Int, Int, Int, Bool)?
 
     private func presentScroll() {
         let (position, applied, _) = scrollPresentation
-        let visible = presented.visible && !isHiddenOrHasHiddenAncestor
-        let image = (position.offset, position.rows, position.retainedHistoryRows, historyEpoch, visible)
-        if imageViewport.map({ $0 != image }) ?? true {
-            imageViewport = image
-            onImageViewport(historyEpoch, visible)
-        }
         let distance = applied ?? Double(position.retainedHistoryRows - position.offset)
-        historyLimit.isHidden = copyMode != nil || alternate || resizeDirty || resizeIntent || restoreRequested != nil
-            || !scrollGeometry.mayHaveOlderHistory || scrollGeometry.sampledTmuxHistoryRows <= position.retainedHistoryRows
-            || distance < Double(position.retainedHistoryRows)
         scroller.update(history: position.retainedHistoryRows, rows: position.rows,
                         offset: Double(position.retainedHistoryRows) - distance, alternate: alternate)
     }
@@ -451,10 +282,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         let previous = scrollDistance ?? position
         let distance = max(0, min(limit, move(previous)))
         guard distance != previous else { return }
-        resizeAnchor = nil
         invalidateScroll()
         target.withLock { $0 = distance }
-        if distance == limit && previous != limit && copyMode == nil { onScrollTop() }
         scrollRender = true
         queueScroll()
     }
@@ -481,12 +310,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
                     self.scrollGeometry.position = moved
                     self.scrollPresentation = (moved, distance, revision)
                     self.presentScroll()
-                    if render, self.presented.visible, self.finalEpoch == nil, self.window?.firstResponder !== self {
+                    if render, self.presented.visible, self.window?.firstResponder !== self {
                         _ = ghostty_surface_request_render_with_token(self.surface, 0)
                     }
                 }
                 if self.scrollDistance != distance { self.queueScroll() }
-                else if moved != nil { self.requestFinalRender() }
             }
         }
     }
@@ -497,9 +325,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         suppressMomentum = true
         wheelRemainder = 0
         let revision = invalidateScroll()
-        #if KIDO_STRESS
-        snapProbe?()
-        #endif
         let applied = viewport.withLock { adjustment -> (ScrollPosition, Double)? in
             guard let distance = scrollDistance else { return nil }
             let aligned = distance.rounded()
@@ -508,9 +333,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             adjustment += moved.viewportDelta
             return (moved.position, aligned)
         }
-        #if KIDO_STRESS
-        snapAppliedProbe?()
-        #endif
         if let (moved, aligned) = applied {
             scrollGeometry.position = moved
             scrollPresentation = (moved, aligned, revision)
@@ -518,60 +340,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         presentScroll()
     }
 
-    #if KIDO_STRESS
-    func afterScroll(_ completion: @escaping @MainActor @Sendable () -> Void) {
-        scrolling.async { DispatchQueue.main.async { completion() } }
-    }
-
-    func verifyReplayFence(_ bytes: Data, completion: @escaping @MainActor @Sendable (Bool) -> Void) {
-        guard rendering == nil, installedPixels == convertToBacking(bounds.size) else { return completion(false) }
-        renderSequence += 1
-        let token = renderSequence, epoch = historyEpoch
-        finalEpoch = epoch
-        rendering = (token, epoch, convertToBacking(bounds.size), renderInsets, scrollRevision, scrollDistance)
-        let callback = onFinalRender
-        finalRenderCount = 0
-        onFinalRender = { [weak self] in self?.finalRenderCount += 1 }
-        let proceed = DispatchSemaphore(value: 0)
-        feedProbe.withLock { $0 = (before: {
-            DispatchQueue.main.async {
-                self.rendered(token, status: GHOSTTY_RENDER_PRESENTATION_PRESENTED)
-                if self.finalEpoch != epoch { self.finalRenderCount += 1 }
-                self.onFinalRender = callback
-                proceed.signal()
-            }
-            guard proceed.wait(timeout: .now() + 2) == .success else { exit(1) }
-        }, after: {}) }
-        DispatchQueue.global().async {
-            self.feed(bytes, kind: .snapshot)
-            self.feedProbe.withLock { $0 = nil }
-            DispatchQueue.main.async { completion(self.finalRenderCount == 0) }
-        }
-    }
-
-    var failGridInstall = false
-    var onFinalRender: (@MainActor @Sendable () -> Void)?
-    private var finalRenderCount = 0
-    #endif
-
     #if KIDO_STRESS || KIDO_VISUAL
-    var visualPill: Bool { !historyLimit.isHidden }
     var visualCopyLabel: String? { copyLabel.isHidden ? nil : (copyLabel.subviews[0] as? NSTextField)?.stringValue }
     var visualPressed: Int { pressed.count }
     var wheelRowHeight: CGFloat { rowHeight }
     var wheelDistance: Double? { scrollDistance }
-    private var finalRenderDisposition: [String: Any] = [:]
-    var finalRenderDiagnostics: [String: Any] {
-        ["token": rendering?.token ?? renderSequence, "last-disposition": finalRenderDisposition,
-         "status": rendering == nil ? "not-pending" : "awaiting-callback",
-         "epoch": historyEpoch, "final-epoch": String(describing: finalEpoch),
-         "visible": presented.visible, "anchor": resizeAnchor != nil,
-         "distance": String(describing: scrollDistance), "applied-distance": String(describing: scrollPresentation.distance),
-         "revision": scrollRevision, "applied-revision": scrollPresentation.revision,
-         "pending-scroll": String(describing: scrollPending),
-         "replay": scrollIntent.withLock { String(describing: $0.replay) }]
-    }
-    var gridReady: Bool { grid.withLock { $0.ready } }
     #if KIDO_VISUAL
     var renderedImage: CGImage? {
         guard let io = installedSurface, let pixels = renderedPixels,
@@ -596,163 +369,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     #endif
 
     #if KIDO_VISUAL
-    nonisolated let postProbe = OSAllocatedUnfairLock<(@Sendable () -> Void)?>(initialState: nil)
     private(set) var visualSwallowedDrags = 0
-    #endif
-
-    #if KIDO_STRESS || KIDO_VISUAL
-    nonisolated let feedProbe = OSAllocatedUnfairLock<(before: @Sendable () -> Void, after: @Sendable () -> Void)?>(initialState: nil)
-    #endif
-
-    #if KIDO_STRESS
-    private var snapProbe: (() -> Void)?
-    private var snapAppliedProbe: (() -> Void)?
-
-    func verifySnapReplayRevision() -> Bool {
-        snapAppliedProbe = {
-            self.invalidateScroll()
-            _ = self.viewport.withLock { _ in self.scrollPosition(distance: 0) }
-            self.invalidateScroll()
-        }
-        snapScroll()
-        snapAppliedProbe = nil
-        let rejected = scrollPresentation.revision != scrollRevision
-        queueScroll()
-        return rejected
-    }
-    nonisolated private let applyProbe = OSAllocatedUnfairLock(initialState: (failNext: false, retries: 0, failAll: false))
-
-    func verifyFailedViewport(_ completion: @escaping @MainActor @Sendable (Bool) -> Void) {
-        let position = scrollPosition()
-        updateScroller(sampledTmuxHistoryRows: position.retainedHistoryRows, position: position, alternate: false)
-        requestScroll(21)
-        snapScroll()
-        scrolling.async {
-            DispatchQueue.main.async {
-                self.applyProbe.withLock { $0.failAll = true }
-                self.finalRenderCount = 0
-                self.onFinalRender = { [weak view = self] in view?.finalRenderCount += 1 }
-                self.requestScroll(21)
-                self.restored(epoch: self.historyEpoch)
-                self.scrolling.async {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        completion(self.finalRenderCount == 0 && self.scrollTarget == 21)
-                    }
-                }
-            }
-        }
-    }
-
-    func verifyMailboxPressure(_ reached: DispatchSemaphore) {
-        let progress = OSAllocatedUnfairLock<(thread: mach_port_t?, wakes: Int)>(initialState: (nil, 0))
-        feedProbe.withLock { $0 = (before: { progress.withLock { $0.thread = pthread_mach_thread_np(pthread_self()) } }, after: {}) }
-        GhosttyRuntime.observeWakeups(surface) {
-            let saturated = progress.withLock { value in
-                guard value.thread == pthread_mach_thread_np(pthread_self()) else { return false }
-                value.wakes += 1
-                return value.wakes == 65
-            }
-            if saturated { reached.signal() }
-        }
-    }
-
-    func verifySearchInputPressure() -> Bool {
-        let entered = DispatchSemaphore(value: 0)
-        GhosttyRuntime.observeWakeups(surface) {
-            var name = [CChar](repeating: 0, count: 32)
-            pthread_getname_np(pthread_self(), &name, name.count)
-            if name.prefix(6).elementsEqual("search".utf8.map { CChar($0) }) { entered.signal() }
-        }
-        let needle = "search:row"
-        guard ghostty_surface_binding_action(surface, needle, UInt(needle.utf8.count)),
-              entered.wait(timeout: .now() + 2) == .success else { return false }
-        for i in 0..<256 {
-            let action = i % 2 == 0 ? "navigate_search:next" : "navigate_search:previous"
-            guard ghostty_surface_binding_action(surface, action, UInt(action.utf8.count)) else { return false }
-        }
-        let latest = "search:row4"
-        guard ghostty_surface_binding_action(surface, latest, UInt(latest.utf8.count)) else { return false }
-        let stop = "search:"
-        return ghostty_surface_binding_action(surface, stop, UInt(stop.utf8.count))
-    }
-
-    func finishMailboxPressure() {
-        GhosttyRuntime.observeWakeups(surface, nil)
-        feedProbe.withLock { $0 = nil }
-    }
-
-    func verifySnapAccounting(snaps: Int, bottom: Bool, retry: Bool, completion: @escaping @MainActor @Sendable (Bool) -> Void) {
-        clearScrollTarget()
-        DispatchQueue.global().async {
-            self.feed(Data(("\u{1b}c" + (0..<500).map { "row\($0)\r\n" }.joined()).utf8))
-            DispatchQueue.main.async {
-                let history = self.scrollPosition().retainedHistoryRows
-                _ = self.viewport.withLock { _ in self.scrollPosition(distance: 21) }
-                self.target.withLock { $0 = 20.25 }
-                let started = DispatchSemaphore(value: 0), proceed = DispatchSemaphore(value: 0)
-                let parsed = DispatchSemaphore(value: 0), finish = DispatchSemaphore(value: 0)
-                self.feedProbe.withLock { $0 = (
-                    before: { started.signal(); guard proceed.wait(timeout: .now() + 2) == .success else { exit(1) } },
-                    after: { parsed.signal(); guard finish.wait(timeout: .now() + 2) == .success else { exit(1) } }
-                ) }
-                self.snapProbe = {
-                    proceed.signal()
-                    guard parsed.wait(timeout: .now() + 2) == .success else { exit(1) }
-                }
-                DispatchQueue.global().async {
-                    self.feed(Data((500..<510).map { "row\($0)\r\n" }.joined().utf8))
-                    DispatchQueue.main.async {
-                        self.feedProbe.withLock { $0 = nil }
-                        let distance = self.scrollDistance
-                        let expectedDistance = bottom ? 0.0 : snaps == 2 ? 27.0 : 30.0
-                        let expectedOffset = bottom ? history + 10 : history - (snaps == 2 ? 17 : 20)
-                        self.queueScroll()
-                        self.scrolling.async {
-                            DispatchQueue.main.async {
-                                let position = self.scrollPosition()
-                                note("snap accounting target=\(distance ?? -1) expected=\(expectedDistance) offset=\(position.offset) expectedOffset=\(expectedOffset)")
-                                let retried = self.applyProbe.withLock { $0.retries }
-                                completion(distance == expectedDistance && position.offset == expectedOffset && (!retry || retried == 1))
-                            }
-                        }
-                    }
-                }
-                guard started.wait(timeout: .now() + 2) == .success else { exit(1) }
-                self.applyProbe.withLock { $0 = (retry, 0, false) }
-                if bottom { self.target.withLock { $0 = 0 } }
-                self.snapScroll()
-                self.snapProbe = nil
-                if snaps == 2 {
-                    self.target.withLock { $0 = 17.4 }
-                    self.snapScroll()
-                }
-                finish.signal()
-            }
-        }
-    }
-
-    func verifyFractionalClick() -> Bool {
-        let moved = viewport.withLock { _ in
-            target.withLock { $0 = 20.25 }
-            return scrollPosition(distance: 20.25)?.position
-        }
-        guard let moved else { return false }
-        scrollGeometry.position = moved
-        scrollPresentation = (moved, 20.25, scrollRevision)
-        presentScroll()
-        let point = convert(NSPoint(x: cell.width * 2, y: bounds.height - renderInsets.top - cell.height * 0.9), to: nil)
-        let event = NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 1,
-                                     windowNumber: window!.windowNumber, context: nil, eventNumber: 0, clickCount: 2, pressure: 1)!
-        for _ in 0..<2 {
-            mouseDown(with: event)
-            mouseUp(with: NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [], timestamp: 1,
-                                           windowNumber: window!.windowNumber, context: nil, eventNumber: 0, clickCount: 2, pressure: 0)!)
-        }
-        let position = scrollPosition()
-        let selected = readSelection()
-        note("fractional click selected=\(selected) offset=\(position.offset) history=\(position.retainedHistoryRows) distance=\(scrollDistance ?? -1)")
-        return scrollDistance == 20 && position.retainedHistoryRows - position.offset == 20 && selected == "row\(position.offset)"
-    }
     #endif
 
     func resetScroll() {
@@ -789,24 +406,27 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         let capsule = min(420, max(200, chrome.width - 16))
         find?.frame = NSRect(x: chrome.width - 8 - capsule, y: 8, width: capsule, height: 32)
         let y: CGFloat = find != nil && chrome.width - 16 - capsule < 72 ? 48 : 8
-        let copy = copyLabel.subviews[0], label = historyLimit.subviews[0], loadMore = historyLimit.subviews[1]
+        let copy = copyLabel.subviews[0]
         copy.frame = NSRect(origin: NSPoint(x: 7, y: 4), size: copy.fittingSize)
         copyLabel.frame = NSRect(x: 8, y: y, width: copy.frame.width + 14, height: 22)
-        label.frame = NSRect(origin: NSPoint(x: 7, y: 4), size: label.fittingSize)
-        historyLimit.separatorX = [label.frame.maxX + 6]
-        loadMore.frame = NSRect(x: label.frame.maxX + 10.5, y: 2, width: ceil((loadMore as? NSButton)?.attributedTitle.size().width ?? 0) + 14, height: 18)
-        historyLimit.frame = NSRect(x: (chrome.width - loadMore.frame.maxX - 2) / 2, y: y, width: loadMore.frame.maxX + 2, height: 22)
     }
 
     // Freed in deinit, so the last reference must be dropped on the main
-    // thread, and never while the reader may feed it (Connection).
+    // thread, after the view that feeds it closed.
     nonisolated(unsafe) private(set) var surface: ghostty_surface_t!
 
-    // MANUAL_MIRROR applies set_grid_size inline (termio/Termio.zig);
-    // grid_metrics confirms the actual terminal grid under its renderer lock.
-    nonisolated private let grid = OSAllocatedUnfairLock(initialState: (epoch: 0, ready: true, dirty: false, suspended: false, replay: false, freeze: Freeze.off, parsing: 0))
-    private var pendingReflow: [@MainActor () -> Void] = []
-    private var acceptedGrid: (cols: Int, rows: Int)?
+    // The pane's view on the server: its decoder thread is the only writer of the surface's terminal.
+    private(set) var koView: KoView?
+    private(set) var restoring = false
+    // Copy mode freezes the surface: the feed that arrives meanwhile is dropped and asks for a
+    // new snapshot when copy mode ends. `parsing` counts the feeds that run.
+    nonisolated private let content = OSAllocatedUnfairLock(initialState: (freeze: Freeze.off, parsing: 0, dirty: false))
+    // The pane's size in the latest layout: the decoder gives a snapshot this grid before it restores it.
+    nonisolated private let layoutGrid = OSAllocatedUnfairLock<(cols: UInt16, rows: UInt16)?>(initialState: nil)
+    // A snapshot of another size than the layout's asks for a new snapshot once; when that one does not
+    // fit either, the next layout's size asks again.
+    private var mismatchedGrid: (cols: UInt16, rows: UInt16)?
+    private var awaitingLayout = false
 
     private var installedSurface: IOSurfaceRef? {
         for layer in [terminal.layer].compactMap({ $0 }) + (terminal.layer?.sublayers ?? []) {
@@ -823,7 +443,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var resizeDebug: String {
         let size = ghostty_surface_size(surface)
         let io = installedPixels.map { "\(Int($0.width))x\(Int($0.height))" } ?? "none"
-        return "frame=\(frame) grid=\(size.columns)x\(size.rows) inset=\((renderInsets.top * (window?.backingScaleFactor ?? 2)).rounded())px visible=\(presented.visible) finalPending=\(finalEpoch != nil) io=\(io)"
+        return "frame=\(frame) grid=\(size.columns)x\(size.rows) inset=\((renderInsets.top * (window?.backingScaleFactor ?? 2)).rounded())px visible=\(presented.visible) io=\(io)"
     }
 
     #if KIDO_VISUAL || KIDO_STRESS
@@ -844,6 +464,22 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     #endif
 
     #if KIDO_VISUAL
+    // What the surface writes, for a pane that no server view feeds.
+    var visualInput: ((Data) -> Void)?
+    var visualDroppedWhileFrozen: Bool { content.withLock { $0.dirty } }
+    // The bytes that frozen copy mode dropped.
+    nonisolated let visualDropped = OSAllocatedUnfairLock(initialState: 0)
+    // The OSC 2 titles that the surface parsed: fences for what a test wrote to the pane.
+    var visualTitles: [String] = []
+    // What the surface sent to the server, and the snapshots that it restored.
+    var visualSent: [Data] = []
+    var visualRestores = 0
+    // Holds copy mode in its entry, as a feed that runs would.
+    var visualHoldCopyEntry = false
+    func visualReleaseCopyEntry() {
+        visualHoldCopyEntry = false
+        completeEntry()
+    }
     var visualBeeps = 0
     var visualScrollerRefreshes = 0
     var visualCaptured: Bool { scrollGeometry.captured }
@@ -852,9 +488,13 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     static var renderOffscreen = false
     private var visualFrames: [UInt64: (ghostty_render_presentation_status_e) -> Void] = [:]
     var visualInstalledPixels: CGSize? { installedPixels }
-    var visualReady: Bool { !resizeDirty && finalEpoch == nil && restoreRequested == nil && scrollPending == nil && rendering == nil }
+    var visualResizeIntent: Bool { resizeIntent }
+    var visualReady: Bool {
+        let size = ghostty_surface_size(surface)
+        return !restoring && scrollPending == nil && layoutGrid.withLock { $0.map { $0 == (size.columns, size.rows) } ?? true }
+    }
     var visualState: String {
-        "insets=\(renderInsets.top),\(renderInsets.bottom) pill=\(!historyLimit.isHidden) find=\(find != nil) alternate=\(alternate) scroll=\(String(describing: scrollDistance))"
+        "insets=\(renderInsets.top),\(renderInsets.bottom) find=\(find != nil) alternate=\(alternate) scroll=\(String(describing: scrollDistance))"
     }
     func visualScroll(_ distance: Double) { requestScrollDistance { _ in distance } }
     func visualFrame(_ completion: @escaping (ghostty_render_presentation_status_e) -> Void) {
@@ -882,7 +522,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         disposed = true
         _ = (window?.delegate as? WindowOwner)?.cancelUploads(self)
         invalidateClipboard()
-        grid.withLock { $0.ready = false; advanceImageEpoch(&$0.epoch) }
+        detach()
         find?.close()
         stopAutoscroll()
         if let paste {
@@ -905,12 +545,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         }
     }
 
-    init?(runtime: GhosttyRuntime, pane: PaneID, font: Float, host: Host = .local, onInput: @escaping @MainActor @Sendable (Data) -> Void) {
+    init?(runtime: GhosttyRuntime, pane: PaneID, font: Float, host: Host = .local) {
         self.runtime = runtime
         self.pane = pane
         self.host = host
-        self.onInput = onInput
-        historyLimit = PaneCapsule(runtime: runtime, radius: 8, separators: 1)
         copyLabel = Overlay(runtime: runtime, radius: 8)
         super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         wantsLayer = true
@@ -938,7 +576,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             let data = Data(bytes: bytes, count: Int(count))
             PaneView.onMain(userdata) { pane in
                 guard pane.acceptingInput else { return }
-                pane.onInput(data)
+                #if KIDO_VISUAL
+                if let input = pane.visualInput { return input(data) }
+                pane.visualSent.append(data)
+                #endif
+                try? pane.koView?.text(data)
             }
         }
         guard let surface = ghostty_surface_new(runtime.app, &config) else { return nil }
@@ -968,20 +610,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         ghostty_string_free(serialized)
         scroller.alphaValue = 0
         scroller.isHidden = true
-        scroller.begin = { [weak self] in self?.resizeAnchor = nil; self?.snapScroll() }
+        scroller.begin = { [weak self] in self?.snapScroll() }
         scroller.jump = { [weak self] in self?.requestScroll($0) }
-        let label = NSTextField(labelWithString: "Older history not loaded")
-        label.font = .systemFont(ofSize: 11)
-        label.textColor = Chrome.inkSecondary
-        let loadMore = IconButton("", "Load more", hoverStyle: .text)
-        loadMore.title = "Load more"
-        loadMore.font = .systemFont(ofSize: 11, weight: .medium)
-        loadMore.toolTip = nil
-        loadMore.invoke = { [weak self] in self?.loadMoreHistory() }
-        for (pill, views) in [(historyLimit, [label, loadMore]), (copyLabel, [NSTextField(labelWithString: "")])] {
-            for view in views { pill.addSubview(view) }
-            pill.isHidden = true
-        }
+        copyLabel.addSubview(NSTextField(labelWithString: ""))
+        copyLabel.isHidden = true
         ghostty_surface_set_color_scheme(surface, runtime.colorScheme)
         // The callback must not reenter the surface (ghostty.h).
         _ = ghostty_surface_set_font_size_action_callback(surface, { userdata, _, _, points, _, _ in
@@ -1030,43 +662,91 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         }
     }
 
-    enum FeedKind { case live, snapshot }
+    // The view feeds the surface from its decoder thread. Opened after the grid has the pane's size
+    // in the layout, which the server's snapshot has.
+    func attach(_ client: KoClient) {
+        guard koView == nil, !disposed else { return }
+        restoring = true
+        // The server's resize sets the grid on the decoder thread; copy mode does not outlive it.
+        nonisolated(unsafe) let surface = surface!
+        let grid = layoutGrid
+        let hooks = KoViewHooks(bytes: { [weak self] bytes in self?.feed(bytes) }, beforeRestore: { _ in
+            guard let size = grid.withLock({ $0 }) else { return }
+            let current = ghostty_surface_size(surface)
+            if (current.columns, current.rows) != size { _ = ghostty_surface_set_grid_size(surface, size.cols, size.rows, nil) }
+        }, afterFeed: { [weak self] item in
+            guard item.kind == Int32(KO_FEED_RESIZE) else { return }
+            DispatchQueue.main.async {
+                self?.endCopy()
+                self?.refreshScroller()
+            }
+        })
+        do {
+            koView = try client.openView(pane: pane, surface: surface, hooks: hooks) { [weak self] event in self?.viewEvent(event) }
+        } catch {
+            restoring = false
+            note("view of \(pane) did not open: \(error)")
+        }
+    }
 
-    @discardableResult nonisolated func feed(_ bytes: Data, kind: FeedKind = .live, epoch expected: Int? = nil) -> Bool {
-        guard grid.withLock({ $0.ready }) else { return false }
+    // ko_view_close waits for a restore or a feed that runs, so it runs on a utility queue; the
+    // surface stays alive until it returned.
+    func detach() {
+        guard let view = koView else { return }
+        koView = nil
+        restoring = false
+        DispatchQueue.global(qos: .utility).async {
+            view.close()
+            DispatchQueue.main.async { _ = self }
+        }
+    }
+
+    private func viewEvent(_ event: KoViewEvent) {
+        switch event {
+        case .restored(_, let result):
+            #if KIDO_VISUAL
+            visualRestores += 1
+            #endif
+            restoring = false
+            if result == GHOSTTY_SNAPSHOT_RESTORE_SIZE_MISMATCH, let grid = layoutGrid.withLock({ $0 }) {
+                restoring = true
+                note("restore of \(pane): the snapshot is not \(grid.cols)x\(grid.rows), the layout's size")
+                if mismatchedGrid.map({ $0 == grid }) == true { awaitingLayout = true; return }
+                mismatchedGrid = grid
+                try? koView?.resync()
+                return
+            }
+            mismatchedGrid = nil
+            if result != GHOSTTY_SNAPSHOT_RESTORE_OK { note("restore of \(pane) ended with \(result.rawValue)") }
+            refreshScroller()
+            queueScroll()
+            completeEntry()
+        case .closed(let code, let message):
+            detach()
+            if code != KO_OK { note("view of \(pane) closed: \(message)") }
+        }
+    }
+
+    @discardableResult nonisolated func feed(_ bytes: UnsafeRawBufferPointer) -> Bool {
+        let admitted = content.withLock { state in
+            guard state.freeze == .off else { state.dirty = true; return false }
+            state.parsing += 1
+            return true
+        }
+        guard admitted else {
+            #if KIDO_VISUAL
+            let count = bytes.count
+            visualDropped.withLock { $0 += count }
+            #endif
+            return false
+        }
         return scrolling.sync {
-            let admitted = grid.withLock { state -> Int? in
-                guard state.ready, kind == .snapshot || !state.suspended,
-                      expected.map({ $0 == state.epoch }) ?? true else { return nil }
-                guard state.freeze == .off else {
-                    if kind == .live { advanceImageEpoch(&state.epoch); state.dirty = true; state.suspended = true }
-                    return nil
-                }
-                if kind == .snapshot { state.replay = true } else { state.parsing += 1 }
-                return state.epoch
-            }
-            guard let epoch = admitted else { return false }
-            defer { if kind == .snapshot { finishMutation() } }
-            if kind == .snapshot { scrollIntent.withLock { $0.revision += 1; $0.replay = epoch } }
             let pinned = viewport.withLock { adjustment in
-                kind == .live && scrollDistance.map { $0 > 0 } == true ? (scrollPosition(), adjustment) : nil
+                scrollDistance.map { $0 > 0 } == true ? (scrollPosition(), adjustment) : nil
             }
-            let wasAlternate = kind == .live && ghostty_surface_is_alternate_screen(surface)
-            #if KIDO_STRESS || KIDO_VISUAL
-            let probes = feedProbe.withLock { $0 }
-            probes?.before()
-            #endif
-            bytes.withUnsafeBytes { buffer in
-                guard let base = buffer.baseAddress else { return }
-                if kind == .snapshot {
-                    ghostty_surface_restore_output(surface, base.assumingMemoryBound(to: CChar.self), buffer.count)
-                } else {
-                    ghostty_surface_process_output(surface, base.assumingMemoryBound(to: CChar.self), UInt(buffer.count))
-                }
+            if let base = bytes.baseAddress {
+                ghostty_surface_process_output(surface, base.assumingMemoryBound(to: CChar.self), UInt(bytes.count))
             }
-            #if KIDO_STRESS || KIDO_VISUAL
-            probes?.after()
-            #endif
             if let (pinned, before) = pinned {
                 viewport.withLock { adjustment in
                     let position = scrollPosition()
@@ -1076,59 +756,24 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
                     }
                 }
             }
-            if kind == .snapshot { scrollIntent.withLock { $0.revision += 1; $0.replay = nil } }
-            let captured = ghostty_surface_mouse_captured(surface), alternate = ghostty_surface_is_alternate_screen(surface)
-            #if KIDO_VISUAL
-            postProbe.withLock { $0 }?()
-            #endif
+            let captured = ghostty_surface_mouse_captured(surface)
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 defer {
-                    if wasAlternate && !alternate {
-                        markContentDirty()
-                        syncResize()
-                    }
-                    if kind == .live { grid.withLock { $0.parsing -= 1 } }
+                    content.withLock { $0.parsing -= 1 }
                     completeEntry()
                 }
-                guard historyEpoch == epoch else { return }
                 refreshScroller()
-                if kind == .snapshot || scrollDistance != scrollPresentation.distance { queueScroll() }
+                if scrollDistance != scrollPresentation.distance { queueScroll() }
                 if captured != scrollGeometry.captured { snapScroll() }
                 scrollGeometry.captured = captured
-                updateAlternate(alternate)
             }
             return true
         }
     }
 
-    #if KIDO_VISUAL
-    nonisolated let visualPendingQueries = OSAllocatedUnfairLock(initialState: 0)
-    #endif
-    nonisolated func pendingImageRows(start: Int64, count: Int, alternate: Bool) -> [Bool] {
-        #if KIDO_VISUAL
-        visualPendingQueries.withLock { $0 += 1 }
-        #endif
-        var rows = [Bool](repeating: false, count: count)
-        rows.withUnsafeMutableBufferPointer { ghostty_surface_pending_image_rows(surface, start, alternate, $0.baseAddress, $0.count) }
-        return rows
-    }
-
-    @discardableResult nonisolated func resetImageFill() -> UInt64 {
-        ghostty_surface_fill_images_reset(surface)
-    }
-
-    nonisolated func fillImages(_ bytes: Data, epoch: Int, alternate: Bool, generation: UInt64, final: Bool) -> Bool {
-        guard grid.withLock({ $0.ready && $0.epoch == epoch && !$0.suspended }) else { return false }
-        bytes.withUnsafeBytes { buffer in
-            guard let base = buffer.baseAddress else { return }
-            ghostty_surface_fill_images(surface, base.assumingMemoryBound(to: CChar.self), buffer.count, alternate, generation, final)
-        }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, historyEpoch == epoch else { return }
-            requestFinalRender()
-        }
-        return true
+    @discardableResult nonisolated func feed(_ data: Data) -> Bool {
+        data.withUnsafeBytes { feed($0) }
     }
 
     var font: Float { ghostty_surface_font_size(surface) }
@@ -1138,71 +783,37 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         return convertFromBacking(NSSize(width: Int(size.cell_width_px), height: Int(size.cell_height_px)))
     }
 
+    // The size of a surface that no view feeds yet: the grid of the pane in the layout, which
+    // the view's first snapshot has. Afterwards only the view's decoder sets the grid.
     func resize(cols: Int, rows: Int) {
-        acceptedGrid = (cols, rows)
-        let size = ghostty_surface_size(surface)
-        var actual = ghostty_surface_grid_metrics_s()
-        if (Int(size.columns), Int(size.rows)) == (cols, rows), grid.withLock({ $0.ready }),
-           ghostty_surface_grid_metrics(surface, &actual),
-           (Int(actual.columns), Int(actual.rows)) == (cols, rows) { return }
-        endCopy(restore: false)
-        if !resizeDirty && !resizeIntent { beginResizeIntent(gesture: false) }
-        snapScroll()
-        resizeDirty = superview != nil
-        presentScroll()
-        finalEpoch = nil
-        let deferred = grid.withLock { state in
-            advanceImageEpoch(&state.epoch)
-            state.ready = false
-            if state.replay { state.suspended = true }
-            return state.replay
+        let wanted = (UInt16(clamping: cols), UInt16(clamping: rows))
+        let changed = layoutGrid.withLock { grid in
+            defer { grid = wanted }
+            return grid.map { $0 != wanted } ?? true
         }
-        if deferred { return }
-        var metrics = ghostty_surface_grid_metrics_s()
-        #if KIDO_STRESS
-        let set = !failGridInstall && ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil)
-        #else
-        let set = ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil)
-        #endif
-        let ready = set && ghostty_surface_grid_metrics(surface, &metrics)
-            && (Int(metrics.columns), Int(metrics.rows)) == (cols, rows)
-        grid.withLock { $0.ready = ready }
-        guard ready else {
-            note("grid failed pane=\(pane) requested=\(cols)x\(rows) actual=\(metrics.columns)x\(metrics.rows) setter=\(set)")
-            onGridFailure()
+        guard koView == nil, !disposed else {
+            if changed, awaitingLayout {
+                awaitingLayout = false
+                try? koView?.resync()
+            }
             return
         }
-        (superview as? WindowView)?.debugResize("grid-confirmed", pane: pane)
-        DispatchQueue.main.async { [weak self] in self?.syncResize() }
+        let size = ghostty_surface_size(surface)
+        guard (Int(size.columns), Int(size.rows)) != (cols, rows) else { return }
+        guard ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil) else {
+            return note("grid failed pane=\(pane) requested=\(cols)x\(rows)")
+        }
+        refreshScroller()
     }
 
     func beginResizeIntent(gesture: Bool = true) {
-        endCopy(restore: false)
+        endCopy()
         if gesture { resizeIntent = true }
         snapScroll()
-        grid.withLock { advanceImageEpoch(&$0.epoch) }
-        restoreRequested = nil
-        finalEpoch = nil
-        captureAnchor()
-    }
-
-    private func captureAnchor() {
-        resizeAnchor = nil
-        guard !ghostty_surface_is_alternate_screen(surface) else { return }
-        let position = scrollPosition()
-        guard (scrollTarget ?? (position.retainedHistoryRows - position.offset)) > 0 else { return }
-        var text = ghostty_text_s()
-        let lines = ghostty_surface_viewport_anchor(surface, &text)
-        let body = text.text.map { String(decoding: UnsafeRawBufferPointer(start: $0, count: Int(text.text_len)), as: UTF8.self) }
-        resizeAnchor = ScrollAnchor(lines: Int(lines), text: body)
-        if text.text != nil { ghostty_surface_free_text(surface, &text) }
     }
 
     func endResizeIntent() {
         resizeIntent = false
-        onRestoreDrain()
-        syncResize()
-        if !resizeDirty { resizeAnchor = nil }
         presentScroll()
     }
 
@@ -1239,36 +850,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         }
     }
 
+    // A font change changes the cell, not the grid: the new pixel size reaches the server as the
+    // window's size, and the grid comes back from it.
     func reflow(_ change: @escaping @MainActor () -> Void) {
         beginResizeIntent(gesture: false)
-        grid.withLock { $0.dirty = true; $0.suspended = true }
-        pendingReflow.append(change)
-        applyReflows()
-    }
-
-    private func applyReflows() {
-        guard !pendingReflow.isEmpty, grid.withLock({ state in
-            guard !state.replay else { return false }
-            state.ready = false
-            return true
-        }) else { return }
-        let changes = pendingReflow
-        pendingReflow = []
-        changes.forEach { $0() }
-        if let acceptedGrid { resize(cols: acceptedGrid.cols, rows: acceptedGrid.rows) }
-        else { grid.withLock { $0.ready = true } }
-        syncResize()
-    }
-
-    func restoreFailed(epoch: Int) {
-        if restoreRequested == epoch { restoreRequested = nil }
-    }
-
-    func syncResize() {
-        guard resizeDirty, copyMode == nil, (superview as? WindowView)?.defersRestore != true,
-              window?.inLiveResize != true, !isHidden, superview?.isHidden != true,
-              grid.withLock({ $0.ready }), restoreRequested != historyEpoch else { return }
-        if onResync() { restoreRequested = historyEpoch }
+        change()
     }
 
     // MARK: - Copy mode
@@ -1280,7 +866,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     private func startCopy() {
         guard !disposed, acceptingInput, superview != nil, !isHiddenOrHasHiddenAncestor, window?.attachedSheet == nil,
-              paste == nil, clipboard == nil, pressed.isEmpty, !resizeDirty,
+              paste == nil, clipboard == nil, pressed.isEmpty, !restoring,
               (window?.delegate as? WindowOwner)?.uploading(self) != true else { return refuseCopy() }
         let deadline = DispatchWorkItem { [weak self] in MainActor.assumeIsolated { self?.refuseCopy() } }
         copyMode = .entering(deadline)
@@ -1290,15 +876,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         lastPerformKeyEvent = nil
         presentCopy()
         DispatchQueue.main.asyncAfter(deadline: .now() + PaneView.copyEntryTimeout, execute: deadline)
-        onCopyCheck { [weak self] admitted in
-            guard let self, case .entering(let current) = copyMode, current === deadline else { return }
-            guard admitted, grid.withLock({ state in
-                guard state.ready, !state.dirty else { return false }
-                state.freeze = .entering
-                return true
-            }) else { return refuseCopy() }
-            completeEntry()
-        }
+        content.withLock { $0.freeze = .entering }
+        completeEntry()
     }
 
     private func beep() {
@@ -1315,15 +894,15 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     private func completeEntry() {
-        guard case .entering(let deadline) = copyMode, grid.withLock({ state in
-            guard state.freeze == .entering, state.parsing == 0, !state.replay else { return false }
+        #if KIDO_VISUAL
+        guard !visualHoldCopyEntry else { return }
+        #endif
+        guard case .entering(let deadline) = copyMode, !restoring, content.withLock({ state in
+            guard state.freeze == .entering, state.parsing == 0 else { return false }
             state.freeze = .frozen
-            advanceImageEpoch(&state.epoch)
             return true
         }) else { return }
-        onImageFreeze(historyEpoch)
         deadline.cancel()
-        finalEpoch = nil
         refreshScroller()
         scrollGeometry.captured = ghostty_surface_mouse_captured(surface)
         snapScroll()
@@ -1339,13 +918,16 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         replayCopyPress()
     }
 
-    func endCopy(restore: Bool = true) {
+    func endCopy() {
         guard let mode = copyMode else { return }
         if case .entering(let deadline) = mode { deadline.cancel() } else {
             _ = ghostty_surface_set_selection(surface, nil)
             find?.close()
         }
-        let dirty = grid.withLock { $0.freeze = .off; return $0.dirty }
+        let dirty = content.withLock { state in
+            defer { state.freeze = .off; state.dirty = false }
+            return state.dirty
+        }
         copyMode = nil
         if case .pending = leftGesture { leftGesture = .swallowed }
         else if case .released = leftGesture { leftGesture = nil }
@@ -1353,10 +935,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         stopAutoscroll()
         presentCopy()
         if case .entering = mode { find?.search(navigate: false) }
-        guard restore, superview != nil, acceptingInput else { return }
-        if dirty { captureAnchor() }
-        onRestoreDrain()
-        if dirty { syncResize() }
+        if dirty {
+            restoring = true
+            try? koView?.resync()
+        }
     }
 
     private func presentCopy() {
@@ -1490,7 +1072,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     private func complete(_ state: UnsafeMutableRawPointer?, _ contents: [(mime: String, data: Data)], available: [String] = []) {
-        resizeAnchor = nil
         snapScroll()
         GhosttyRuntime.completeClipboard(surface, contents, available: available, state, confirmed: true)
     }
@@ -1566,7 +1147,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     func invalidateClipboard() {
-        endCopy(restore: false)
+        endCopy()
         acceptingInput = false
         pasteEvent = nil
         cancelClipboard()
@@ -1699,7 +1280,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         if next.visible != presented.visible { ghostty_surface_set_occlusion(surface, next.visible) }
         presented = next
         queueScroll()
-        if next.visible { requestFinalRender() }
     }
 
     override func viewDidChangeBackingProperties() {
@@ -1750,8 +1330,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             return true
         }
         if state == GHOSTTY_MOUSE_PRESS {
-            resizeAnchor = nil
-            let strip = inRenderBand(event)
+                let strip = inRenderBand(event)
             if event.buttonNumber == 0 || strip {
                 window?.makeFirstResponder(self)
                 onSelect()
@@ -1967,7 +1546,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         let cell = gridCell(point)
         let press = CopyPress(cell: cell, clickCount: event.clickCount, latest: cell,
                               point: point, selection: selectionBounds())
-        resizeAnchor = nil
         window?.makeFirstResponder(self)
         onSelect()
         startCopy()
@@ -2341,7 +1919,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         visualKeyEvents += 1
         #endif
         if copyMode != nil { return copyKey(event) }
-        resizeAnchor = nil
         if scrollTarget != nil { resetScroll() }
         if let find, event.keyCode == 53 { find.close(); return }
         if event.keyCode == 53, (window?.delegate as? WindowOwner)?.cancelUploads(self) == true { return }
@@ -2544,7 +2121,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         guard acceptsKeyInput, copyMode == nil else { return }
-        resizeAnchor = nil
         snapScroll()
         switch string {
         case let v as NSAttributedString: markedText = NSMutableAttributedString(attributedString: v)
@@ -2582,7 +2158,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         visualTextInputs += 1
         #endif
         guard copyMode == nil else { return }
-        resizeAnchor = nil
         snapScroll()
         guard NSApp.currentEvent != nil else { return }
         let chars = switch string {

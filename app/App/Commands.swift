@@ -1,26 +1,7 @@
 import AppKit
-import TmuxControl
 
 enum Side {
     case left, up, right, down
-
-    fileprivate var flag: String {
-        switch self {
-        case .left: "-L"
-        case .up: "-U"
-        case .right: "-R"
-        case .down: "-D"
-        }
-    }
-
-    fileprivate var split: String {
-        switch self {
-        case .left: "-hb"
-        case .up: "-vb"
-        case .right: "-h"
-        case .down: "-v"
-        }
-    }
 }
 
 enum PaneCommand {
@@ -29,23 +10,6 @@ enum PaneCommand {
     case resize(Side, points: Double)
     case window(WindowStep)
     case next, previous, zoom, equalize, close, newWindow
-
-    // Ghostty's resize amount is in points.
-    func command(_ pane: PaneID, cell: CGSize) -> Command? {
-        switch self {
-        case .split(let side): Command("split-window", side.split, "-t", pane, "-c", "#{pane_current_path}")
-        case .select(let side): Command("select-pane", side.flag, "-t", pane)
-        case .resize(let side, let points):
-            Command(
-                "resize-pane", side.flag, "-t", pane,
-                max(1, Int((points / max(side == .left || side == .right ? cell.width : cell.height, 1)).rounded())))
-        case .window, .newWindow, .close: nil
-        case .next: Command("select-pane", "-t", ":.+")
-        case .previous: Command("select-pane", "-t", ":.-")
-        case .zoom: Command("resize-pane", "-Z", "-t", pane)
-        case .equalize: Command("select-layout", "-E", "-t", pane)
-        }
-    }
 
     @MainActor static var menu: NSMenuItem {
         let menu = NSMenu(title: "Shell")

@@ -1,6 +1,8 @@
 import AppKit
 import Carbon
 import GhosttyKit
+import KoClient
+import KoModel
 import TmuxControl
 import XCTest
 @testable import Kido
@@ -22,7 +24,8 @@ extension VisualTests {
         Data(hex.split(separator: " ").map { UInt8($0, radix: 16)! })
     }
 
-    private func startRecorder(_ pane: PaneView, request: String) async throws -> URL {
+    // A new window whose pane records the bytes that reach it, shown.
+    private func startRecorder(request: String) async throws -> URL {
         let file = directory.appendingPathComponent("recv-\(UUID().uuidString)")
         try Data().write(to: file)
         let ready = directory.appendingPathComponent("ready-\(UUID().uuidString)")
@@ -35,10 +38,19 @@ extension VisualTests {
         exec cat >> '\(file.path)'
         """.write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
-        _ = try await command(["respawn-pane", "-k", "-t", pane.pane.description, script.path])
+        let window = try XCTUnwrap(koModel.map(\.layout.layout.windows)?.last?.id)
+        let added = try await edit(.addWindow(KoSchema.EditAddWindow(after: window, new: KoSchema.CreatePane(command: .shell(.init(command: script.path))), session: SessionID(number: 1))))
+        let recorder = try XCTUnwrap(added.createdWindow)
+        try XCTUnwrap(client).select(KO_SELECT_WINDOW, recorder)
         try await wait("recorder ready", within: 5) { FileManager.default.fileExists(atPath: ready.path) }
+        try await wait("the recorder is shown") { self.currentModel.window == recorder }
         try await settle()
-        window.makeFirstResponder(pane)
+        // The surface answers a flags query through the server: its reply is not a key.
+        if request.contains("\u{1b}[?u") {
+            try await wait("the flags reply", within: 5) { self.bytes(file).starts(with: Data("\u{1b}[?".utf8)) }
+            try Data().write(to: file)
+        }
+        self.window.makeFirstResponder(try XCTUnwrap(terminal?.panes.first))
         return file
     }
 
@@ -132,11 +144,6 @@ extension VisualTests {
         }
     }
 
-    private func toggleExtendedKeys(_ on: Bool) async throws {
-        _ = try await command(["set", "-s", "extended-keys", on ? "on" : "off"])
-        _ = try await command(["set", "-s", "extended-keys-format", "csi-u"])
-    }
-
     private func paste(_ label: String, _ file: URL) async throws -> Data {
         try Data().write(to: file)
         runtime.pasteboard.clearContents()
@@ -161,35 +168,18 @@ extension VisualTests {
             throw XCTSkip("keyboard layout is \(id); the test needs ABC or US")
         }
         try await start()
-        let pane = try XCTUnwrap(terminal?.panes.first)
-        let conf = try String(contentsOf: directory.appendingPathComponent("server.conf"), encoding: .utf8)
-        XCTAssertTrue(conf.contains("set -s extended-keys on"))
-        XCTAssertTrue(conf.contains("set -s extended-keys-format csi-u"))
-        let extendedKeys = try await command(["show", "-s", "extended-keys"])
-        XCTAssertEqual(extendedKeys, "extended-keys on")
-        let extendedKeysFormat = try await command(["show", "-s", "extended-keys-format"])
-        XCTAssertEqual(extendedKeysFormat, "extended-keys-format csi-u")
+        // The bytes that Ghostty encodes reach the pane unchanged (KO_INPUT_TEXT).
+        let plain = try await startRecorder(request: "")
+        try await expect(Self.plainBytes, "plain", plain)
+        _ = try await paste("plain", plain)
 
-        let plain = try await startRecorder(pane, request: "")
-        try await toggleExtendedKeys(true)
-        try await expect(Self.plainBytes, "plain on", plain)
-        try await toggleExtendedKeys(false)
-        try await expect(Self.plainBytes, "plain off", plain)
-        try await toggleExtendedKeys(true)
-        _ = try await paste("plain on", plain)
-        try await toggleExtendedKeys(false)
-        _ = try await paste("plain off", plain)
-        try await toggleExtendedKeys(true)
+        let kitty = try await startRecorder(request: "\u{1b}[>7u\u{1b}[?u")
+        try await expect(Self.kittyBytes, "kitty", kitty)
 
-        let kitty = try await startRecorder(pane, request: "\u{1b}[>7u\u{1b}[?u")
-        try await expect(Self.kittyBytes, "kitty on", kitty)
-        try await toggleExtendedKeys(false)
-        try await expect(Self.kittyBytes, "kitty off", kitty)
-        try await toggleExtendedKeys(true)
-
-        let commands = try await startRecorder(pane, request: "")
+        let commands = try await startRecorder(request: "")
         runtime.pasteboard.clearContents()
         let chords: [(String, UInt16)] = [("c", 8), ("v", 9), ("f", 3), ("o", 31), ("k", 40), ("t", 17), ("h", 4), ("j", 38), ("l", 37), ("w", 13)]
+        let pane = try XCTUnwrap(terminal?.panes.first)
         for (ch, code) in chords {
             window.makeFirstResponder(pane)
             let key = event(KeyCase(name: ch, characters: ch, mods: [.command], code: code))

@@ -1,5 +1,5 @@
 import Foundation
-import TmuxControl
+import KoModel
 
 public enum SessionName: Equatable, Sendable {
     case revert

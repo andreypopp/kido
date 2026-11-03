@@ -7,8 +7,9 @@ use ko_server::http::Response;
 use ko_server::ids::PaneId;
 use ko_server::protocol::Snapshot;
 
+use crate::edit::Edit;
 use crate::launch;
-use crate::layout::{self, Document};
+use crate::layout::{self, Document, Edited};
 use crate::wire;
 
 #[derive(Debug)]
@@ -81,4 +82,8 @@ pub fn get(dir: &Path, route: &Route) -> Result<Response, Failure> {
 
 pub fn replace_layout(dir: &Path, document: &Document) -> Result<Snapshot, Failure> {
     layout::replace(&socket(dir)?, None, document, None).map_err(Failure::Failed)
+}
+
+pub fn edit_layout(dir: &Path, edit: &Edit) -> Result<Edited, Failure> {
+    layout::edit(&socket(dir)?, None, edit).map_err(|error| Failure::Failed(error.to_string()))
 }

@@ -129,7 +129,7 @@ impl Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Empty {}
 
-pub(crate) fn check_version(protocol: Option<&str>, vt: Option<&str>) -> Result<(), Error> {
+pub fn check_version(protocol: Option<&str>, vt: Option<&str>) -> Result<(), Error> {
     let compatible = protocol
         .and_then(|protocol| protocol.split_once('.'))
         .is_some_and(|(major, minor)| {
@@ -963,7 +963,41 @@ pub struct DraftLayout {
     pub sessions: Vec<DraftSession>,
 }
 
+impl DraftLayout {
+    // The session and window indices of the window that holds the pane.
+    pub fn locate(&self, pane: PaneId) -> Option<(usize, usize)> {
+        self.sessions.iter().enumerate().find_map(|(s, session)| {
+            session
+                .windows
+                .iter()
+                .position(|window| window.holds(pane))
+                .map(|w| (s, w))
+        })
+    }
+
+    pub fn window_mut(&mut self, id: WindowId) -> Option<&mut DraftWindow> {
+        self.sessions
+            .iter_mut()
+            .flat_map(|session| session.windows.iter_mut())
+            .find(|window| window.id == Some(id))
+    }
+
+    pub fn session_mut(&mut self, id: SessionId) -> Option<&mut DraftSession> {
+        self.sessions
+            .iter_mut()
+            .find(|session| session.id == Some(id))
+    }
+}
+
 impl DraftWindow {
+    pub fn holds(&self, pane: PaneId) -> bool {
+        self.tree.contains(pane)
+            || self
+                .floats
+                .iter()
+                .any(|float| float.pane == PaneRef::Existing(pane))
+    }
+
     pub fn single(request: &CreatePane) -> DraftWindow {
         DraftWindow {
             id: None,
@@ -1011,11 +1045,84 @@ impl Node<Leaf> {
             }
         }
     }
+}
 
-    pub(crate) fn contains(&self, pane: PaneId) -> bool {
+pub fn pick<T>(axis: Axis, cols: T, rows: T) -> T {
+    match axis {
+        Axis::Horizontal => cols,
+        Axis::Vertical => rows,
+    }
+}
+
+// A leaf of a layout tree: its pane once it has one, and its size on an axis once known.
+pub trait Tile {
+    fn pane_id(&self) -> Option<PaneId>;
+    fn extent(&self, axis: Axis) -> Option<usize>;
+}
+
+impl Tile for Leaf {
+    fn pane_id(&self) -> Option<PaneId> {
+        Some(self.pane)
+    }
+
+    fn extent(&self, axis: Axis) -> Option<usize> {
+        Some(usize::from(pick(axis, self.cols, self.rows).get()))
+    }
+}
+
+impl Tile for DraftLeaf {
+    fn pane_id(&self) -> Option<PaneId> {
+        match self.pane {
+            PaneRef::Existing(id) => Some(id),
+            PaneRef::New { .. } => None,
+        }
+    }
+
+    fn extent(&self, axis: Axis) -> Option<usize> {
+        pick(axis, self.cols, self.rows).map(|size| usize::from(size.get()))
+    }
+}
+
+impl<L> Node<L> {
+    // The fewest cells that the node needs on the axis: one for each leaf and each divider.
+    pub fn minimum(&self, axis: Axis) -> usize {
         match self {
-            Node::Leaf(leaf) => leaf.pane == pane,
+            Node::Leaf(_) => 1,
+            Node::Split { split, children } => {
+                let mins = children.iter().map(|child| child.minimum(axis));
+                if *split == axis {
+                    mins.sum::<usize>() + children.len().saturating_sub(1)
+                } else {
+                    mins.max().unwrap_or(1)
+                }
+            }
+        }
+    }
+}
+
+impl<L: Tile> Node<L> {
+    pub fn contains(&self, pane: PaneId) -> bool {
+        match self {
+            Node::Leaf(leaf) => leaf.pane_id() == Some(pane),
             Node::Split { children, .. } => children.iter().any(|child| child.contains(pane)),
+        }
+    }
+
+    // The node's size on the axis from the sizes of the leaves that have one.
+    pub fn known(&self, axis: Axis) -> Option<usize> {
+        match self {
+            Node::Leaf(leaf) => leaf.extent(axis),
+            Node::Split { split, children } => {
+                let sizes: Vec<usize> = children
+                    .iter()
+                    .filter_map(|child| child.known(axis))
+                    .collect();
+                if *split == axis {
+                    (!sizes.is_empty()).then(|| sizes.iter().sum::<usize>() + sizes.len() - 1)
+                } else {
+                    sizes.into_iter().max()
+                }
+            }
         }
     }
 }

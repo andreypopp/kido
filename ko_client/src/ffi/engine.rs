@@ -10,7 +10,10 @@ use ko_pane_wire::frame::Limits;
 use ko_pane_wire::ring::Slice as Header;
 use ko_server::api::{Offset, Route};
 use ko_server::ids::ClientId;
-use ko_server::protocol::{self, ClientEvent, ClientRequest, ViewEvent as Wire, ViewRequest, json};
+use ko_server::protocol::{
+    self, ClientEvent, ClientRequest, Error, ErrorKind, Version, ViewEvent as Wire, ViewRequest,
+    check_version, json,
+};
 use ko_server::ws::{Record, parse_record};
 use ko_sys::event::{Events, Interest, Mode, Poll, Ready, Timer, Token};
 use tungstenite::Bytes;
@@ -19,7 +22,7 @@ use super::view::{Feed, Slice, View};
 use super::{Code, Command, Posted, Shared, ViewEvent, layout_of, locked, post, string};
 use crate::launch::{self, BACKOFF_FIRST, backoff_after};
 use crate::model::{Applied, Model, Rejoin};
-use crate::wire::{self, Link, Next, WATCHDOG, buffered, silent, text};
+use crate::wire::{self, Link, Next, WATCHDOG, buffered, request, silent, text};
 
 const WATCH: Duration = Duration::from_secs(2);
 
@@ -134,10 +137,44 @@ impl Engine<'_> {
     }
 
     fn connect(&mut self) {
-        if let Err((code, message)) = self.join()
-            && !self.shared.cancel.is_set()
+        let Err((code, message)) = self.join() else {
+            return;
+        };
+        if self.shared.cancel.is_set() {
+            return;
+        }
+        if code != Code::NoServer
+            && let Some((code, server)) = self.mismatch()
         {
+            self.shared.up.store(false, Ordering::SeqCst);
+            post(self.shared, Posted::Mismatch(code, server));
+        } else {
             self.lose(code, &message);
+        }
+    }
+
+    fn mismatch(&self) -> Option<(Code, Version)> {
+        let shared = self.shared;
+        let route = Route::Version {};
+        let body = request(
+            shared.socket.as_path(),
+            (None, None),
+            &route,
+            b"",
+            Some(&shared.cancel),
+        )
+        .ok()?;
+        let server = protocol::decode::<Version>(&body).ok()?;
+        match check_version(Some(&server.protocol), Some(&server.vt)) {
+            Err(Error {
+                kind: ErrorKind::ProtocolMismatch(_),
+                ..
+            }) => Some((Code::ProtocolMismatch, server)),
+            Err(Error {
+                kind: ErrorKind::VtMismatch(_),
+                ..
+            }) => Some((Code::VtMismatch, server)),
+            _ => None,
         }
     }
 

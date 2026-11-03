@@ -250,6 +250,13 @@ elif ! diff -u share/ko/openapi.json "$scratch/openapi.json"; then
   echo 'share/ko/openapi.json:1: OpenAPI snapshot differs; regenerate: scripts/lint.sh --update-schemas'
   failed=1
 fi
+build/ko/bin/ko api-schema --client > "$scratch/client-model.json"
+if [[ "${1:-}" == --update-schemas ]]; then
+  cp "$scratch/client-model.json" share/ko/client-model.json
+elif ! diff -u share/ko/client-model.json "$scratch/client-model.json"; then
+  echo 'share/ko/client-model.json:1: client model schema differs; regenerate: scripts/lint.sh --update-schemas'
+  failed=1
+fi
 printf 'const probe: number = 1;\n' > "$scratch/probe.ts"
 if command -v node >/dev/null 2>&1 && node "$scratch/probe.ts" >/dev/null 2>&1; then
   :

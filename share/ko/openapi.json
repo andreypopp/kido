@@ -3532,6 +3532,17 @@
       "post": {
         "description": "Sends a prompt to an agent.",
         "operationId": "SendPrompt",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3578,6 +3589,15 @@
             "required": false,
             "schema": {
               "$ref": "#/components/schemas/WindowOnly"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
             }
           }
         ],
@@ -3662,6 +3682,17 @@
       "post": {
         "description": "Starts a run in a new window.",
         "operationId": "StartRun",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {

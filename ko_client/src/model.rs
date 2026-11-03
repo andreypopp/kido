@@ -7,14 +7,15 @@ use ko_server::api::Route;
 use ko_server::ids::{ClientId, Instance, PaneId, RunId, SessionId, VarName, WindowId};
 use ko_server::protocol::{
     self, ClientEvent, ClientRequest, Hello, Info, Listing, Row, RunEvent, Selection, Show,
-    Snapshot, Window,
+    Snapshot,
 };
 use ko_server::runs::Parent;
 use ko_sys::event::Wake;
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::status::{Mark, Seen};
+use crate::status::{self, Mark, Seen};
 use crate::tree;
 use crate::wire::{self, Link, Next, text};
 
@@ -46,6 +47,8 @@ pub struct Model {
     runs: BTreeMap<RunId, RunEvent>,
     anchor: (u64, Instant),
     seen: Seen,
+    // What the caller shows, and whether the user looks: the panes that each change acknowledges.
+    watched: (Vec<PaneId>, bool),
 }
 
 #[derive(Debug)]
@@ -54,11 +57,38 @@ pub(crate) struct Fetched {
     infos: Vec<Info>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Item {
-    Session { id: SessionId, name: String },
-    Pane { id: PaneId, depth: usize },
+    Session {
+        id: SessionId,
+        name: String,
+    },
+    Pane {
+        id: PaneId,
+        window: WindowId,
+        depth: usize,
+    },
+}
+
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct PaneJson<'a> {
+    label: String,
+    mark: Mark,
+    records_seen: bool,
+    #[serde(flatten)]
+    row: &'a Row,
+    vars: &'a BTreeMap<VarName, Value>,
+}
+
+#[derive(Serialize, JsonSchema)]
+pub(crate) struct ModelJson<'a> {
+    instance: String,
+    selection: &'a Selection,
+    layout: &'a Snapshot,
+    panes: Vec<PaneJson<'a>>,
+    runs: Vec<&'a RunEvent>,
+    outline: Vec<Item>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +155,7 @@ impl Model {
             runs: BTreeMap::new(),
             anchor: (welcome.now, Instant::now()),
             seen: Seen::new(welcome.now),
+            watched: (Vec::new(), false),
         }
     }
 
@@ -148,13 +179,51 @@ impl Model {
         }
     }
 
+    #[cfg(target_vendor = "apple")]
+    pub(crate) fn json(&self) -> ModelJson<'_> {
+        ModelJson {
+            instance: self.instance.to_string(),
+            selection: &self.selection,
+            layout: &self.layout,
+            panes: self
+                .panes
+                .iter()
+                .map(|pane| PaneJson {
+                    label: status::title(pane),
+                    mark: self.mark(pane),
+                    records_seen: self.seen.records_seen(pane),
+                    row: &pane.row,
+                    vars: &pane.vars,
+                })
+                .collect(),
+            runs: self.runs().collect(),
+            outline: self.outline(),
+        }
+    }
+
     pub fn server_now(&self) -> u64 {
         let elapsed = u64::try_from(self.anchor.1.elapsed().as_nanos()).unwrap_or(u64::MAX);
         self.anchor.0.saturating_add(elapsed)
     }
 
-    pub fn observe(&mut self, shown: &[PaneId], attending: bool) {
-        self.seen.observe(shown, attending, &self.panes);
+    // Whether a mark changed.
+    pub fn observe(&mut self, shown: &[PaneId], attending: bool) -> bool {
+        let marks = |model: &Model| -> Vec<(Mark, bool)> {
+            model
+                .panes
+                .iter()
+                .map(|pane| (model.seen.mark(pane), model.seen.records_seen(pane)))
+                .collect()
+        };
+        let before = marks(self);
+        self.watched = (shown.to_vec(), attending);
+        self.acknowledge();
+        marks(self) != before
+    }
+
+    fn acknowledge(&mut self) {
+        let (shown, attending) = &self.watched;
+        self.seen.observe(shown, *attending, &self.panes);
     }
 
     #[cfg(target_vendor = "apple")]
@@ -177,13 +246,19 @@ impl Model {
         client: ClientId,
         limits: (Option<&Wake>, Duration),
     ) -> Result<Fetched, String> {
-        let body = wire::request_within(socket, Some(client), &Route::ListPanes {}, b"", limits)?;
+        let body = wire::request_within(
+            socket,
+            (Some(client), None),
+            &Route::ListPanes {},
+            b"",
+            limits,
+        )?;
         let listing = protocol::decode(&body).map_err(text)?;
         let route = Route::ListRuns {
             show: Show::Present,
             parent: None,
         };
-        let body = wire::request_within(socket, Some(client), &route, b"", limits)?;
+        let body = wire::request_within(socket, (Some(client), None), &route, b"", limits)?;
         Ok(Fetched {
             listing,
             infos: protocol::decode(&body).map_err(text)?,
@@ -193,6 +268,7 @@ impl Model {
     pub(crate) fn install(&mut self, fetched: Fetched) {
         self.load(fetched.listing);
         self.load_runs(fetched.infos);
+        self.acknowledge();
     }
 
     fn stale(&self) -> bool {
@@ -250,6 +326,7 @@ impl Model {
     pub(crate) fn apply_event(&mut self, event: ClientEvent) -> (Applied, bool) {
         let layout = matches!(event, ClientEvent::Layout(_));
         let applied = self.apply_now(event);
+        self.acknowledge();
         (applied, layout && self.stale())
     }
 
@@ -336,11 +413,15 @@ impl Model {
                 id: session.id,
                 name: String::from(session.name.clone()),
             });
-            let panes: Vec<PaneId> = session.windows.iter().flat_map(Window::panes).collect();
+            let panes: Vec<(PaneId, WindowId)> = session
+                .windows
+                .iter()
+                .flat_map(|window| window.panes().into_iter().map(|pane| (pane, window.id)))
+                .collect();
             items.extend(
-                tree::order(panes, |pane| *pane, |pane| self.parent_of(*pane))
+                tree::order(panes, |(pane, _)| *pane, |(pane, _)| self.parent_of(*pane))
                     .into_iter()
-                    .map(|(id, depth)| Item::Pane { id, depth }),
+                    .map(|((id, window), depth)| Item::Pane { id, window, depth }),
             );
         }
         items
@@ -392,6 +473,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use ko_server::protocol::Window;
 
     #[derive(Debug, Clone)]
     enum Shape {
@@ -608,7 +690,7 @@ mod tests {
             .iter()
             .map(|item| match item {
                 Item::Session { id, name } => format!("{id} {name}"),
-                Item::Pane { id, depth } => format!("{}{id}", " ".repeat(*depth)),
+                Item::Pane { id, depth, .. } => format!("{}{id}", " ".repeat(*depth)),
             })
             .collect();
         assert_eq!(
@@ -650,7 +732,7 @@ mod tests {
             .outline()
             .iter()
             .filter_map(|item| match item {
-                Item::Pane { id, depth } => Some(format!("{depth}{id}")),
+                Item::Pane { id, depth, .. } => Some(format!("{depth}{id}")),
                 Item::Session { .. } => None,
             })
             .collect()
@@ -856,6 +938,33 @@ mod tests {
         assert_eq!(found.len(), 1024);
         assert_eq!(found.get(&name("A")), Some(&json!(1)));
         assert_eq!(found.get(&name("B")), Some(&json!(2)));
+    }
+
+    #[test]
+    fn an_outcome_of_a_watched_pane_is_seen_as_it_arrives_and_others_stay_marked() {
+        let mut model = model(one_pane_layout(&[1, 2]).layout);
+        model.load(vec![entry(1, &[]), entry(2, &[])]);
+        assert!(!model.observe(&[pane(1)], true), "no mark changed");
+        let failed = |number| {
+            ClientEvent::Status(
+                serde_json::from_value(json!({
+                    "pane": pane(number), "now": 2000, "status": {
+                        "kind": {"type": "terminal", "phase": {"type": "idle", "last":
+                            {"code": 1, "command": "false", "started_at": 1500, "ended_at": 1600}}},
+                        "program_status": {"serial": 0, "records": []},
+                        "title": "zsh", "since": 0}
+                }))
+                .unwrap(),
+            )
+        };
+        model.apply_event(failed(1));
+        model.apply_event(failed(2));
+        let marks: Vec<Mark> = model.panes.iter().map(|found| model.mark(found)).collect();
+        assert_eq!(marks, [Mark::None, Mark::Failed]);
+        assert!(
+            model.observe(&[pane(2)], true),
+            "showing pane 2 acknowledges its failure"
+        );
     }
 
     #[test]

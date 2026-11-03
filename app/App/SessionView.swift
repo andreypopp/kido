@@ -1,9 +1,32 @@
 import AppKit
 import GhosttyKit
+import KoModel
 import TmuxControl
 
 final class SessionView: NSView {
-    weak var connection: Connection?
+    // The client whose views feed the panes.
+    weak var client: KoClient?
+    var edit: (KoSchema.Edit, LayoutEditor.Key?) -> Void = { _, _ in }
+    var editing: () -> Bool = { false }
+    var selectPane: (PaneID) -> Void = { _ in }
+    var paneCommand: (PaneCommand, PaneID) -> Void = { _, _ in }
+    var sizeClient: (Int, Int) -> Void = { _, _ in }
+    private var requestedSize: (cols: Int, rows: Int)?
+    private var sentSize: (cols: Int, rows: Int)?
+
+    // The size for the server, sent at most once a frame and only when it changed.
+    func requestSize(cols: Int, rows: Int) {
+        let queued = requestedSize != nil
+        requestedSize = (cols, rows)
+        guard !queued else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let size = requestedSize else { return }
+            requestedSize = nil
+            guard sentSize.map({ $0 != size }) ?? true else { return }
+            sentSize = size
+            sizeClient(size.cols, size.rows)
+        }
+    }
     #if KIDO_VISUAL
     var visualShown: (WindowID) -> Void = { _ in }
     #endif
@@ -14,8 +37,7 @@ final class SessionView: NSView {
     let runtime: GhosttyRuntime
     var canPrompt: () -> Bool = { false }
     var onPrompt: (PaneView, String?) -> Void = { _, _ in }
-    // The client's session's windows, and the hot windows of other sessions,
-    // which tmux sends no output for.
+    // The current session's windows, and the hot windows of other sessions.
     private(set) var windows: [WindowID: WindowView] = [:]
     private var others: [WindowID: WindowView] = [:]
     private var recent: [WindowID] = []
@@ -38,7 +60,6 @@ final class SessionView: NSView {
         windows = [:]
         others = [:]
         recent = []
-        connection = nil
         removeFromSuperview()
     }
 
@@ -55,31 +76,33 @@ final class SessionView: NSView {
         forEachPane { ghostty_surface_set_color_scheme($0.surface, runtime.colorScheme) }
     }
 
-    func update(_ listing: [WindowListing], alive: Set<WindowID>) {
+    // The windows of the current session, the ids of every window of the server, and the client's selected pane.
+    func update(_ listing: [KoSchema.Window], alive: Set<WindowID>, selected: PaneID?) {
         updating = true
         defer { updating = false }
         let old = windows.merging(others) { $1 }
         windows = [:]
         for w in listing {
-            let view = old[w.id] ?? WindowView(runtime: runtime, connection: connection)
-            view.windowID = w.id
+            let id = w.id
+            let view = old[id] ?? WindowView(runtime: runtime)
+            view.windowID = id
             view.name = w.name
             if view.superview == nil {
                 view.frame = bounds
                 view.isHidden = true
                 addSubview(view)
             }
-            windows[w.id] = view
-            view.update(w.layout, w.visible)
+            windows[id] = view
+            let active = selected.flatMap { w.panes.contains($0) ? $0 : nil }
+            view.update(Layout(w, active: active), Layout(w, visible: true, active: active))
         }
         others = old.filter { windows[$0.key] == nil && $0.value.hot && alive.contains($0.key) }
-        others.values.forEach { $0.stale = true }
         for (id, gone) in old where windows[id] == nil && others[id] == nil { gone.close() }
         recent.removeAll { windows[$0] == nil && others[$0] == nil }
     }
 
-    func layoutChanged(_ window: WindowID, _ layout: Layout, _ visible: Layout) {
-        windows[window]?.update(layout, visible)
+    func editsSettled() {
+        windows.values.forEach { $0.editsSettled() }
     }
 
     private var shown: WindowView? { windows.values.first { !$0.isHidden } }
@@ -96,16 +119,9 @@ final class SessionView: NSView {
         #endif
         recent.removeAll { $0 == window }
         recent.insert(window, at: 0)
-        let synced = DispatchGroup()
-        let (created, resynced) = view.present(synced)
+        let created = view.present()
         view.focusActive(force: focused)
-        if debugging {
-            synced.notify(queue: .main) {
-                debug(
-                    "switch \(last?.description ?? "-")->\(window): created \(created), resynced \(resynced), "
-                        + "shown in \(milliseconds(since: start))")
-            }
-        }
+        debug("switch \(last?.description ?? "-")->\(window): created \(created), shown in \(milliseconds(since: start))")
     }
 
     private func evict() {

@@ -1,18 +1,27 @@
 export DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 
+KO_CHECKOUT ?= ..
+KO_ABS = $(abspath $(KO_CHECKOUT))
+
+# xcodebuild prints one unindented line for each task and each test case and indents the command lines
+# that follow; the filter keeps the progress and drops the commands.
+XCODE_PROGRESS = awk '/^[^ \t]/ { print; fflush() }'
+# swift test prints one line for each build step; the filter keeps test cases, suites and diagnostics.
+SWIFT_PROGRESS = awk '!/^\[[0-9]+\/[0-9]+\]/ && !/^(Building|Build complete|Compiling|Fetching|Computing|Creating|Write)/ { print; fflush() }'
+
 DERIVED := build/xcode.noindex/derived
 CONFIG ?= Debug
 APP = $(DERIVED)/Build/Products/$(CONFIG)/Kido.app
 
-.PHONY: ko-probe visual visual-fast visual-slow project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release
+.PHONY: ko-test ko-model ko-fixtures visual visual-fast visual-slow project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release
 
 project:
 	ln -sfn "$$(GHOSTTY_OPTIMIZE=$(GHOSTTY_OPTIMIZE) scripts/build-ghosttykit.sh)" build/GhosttyKit.xcframework
 	xcodegen --quiet --spec project.yml
 
 all: project
-	xcodebuild -quiet -project Kido.xcodeproj -scheme Kido -configuration $(CONFIG) \
-		-destination platform=macOS -derivedDataPath $(DERIVED) $(SANITIZE) $(XCODE_SETTINGS) build
+	@set -o pipefail; xcodebuild -project Kido.xcodeproj -scheme Kido -configuration $(CONFIG) \
+		-destination platform=macOS -derivedDataPath $(DERIVED) KO_CHECKOUT=$(KO_ABS) $(SANITIZE) $(XCODE_SETTINGS) build 2>&1 | $(XCODE_PROGRESS)
 
 release:
 	scripts/release.sh $(if $(filter 1,$(DRY)),--dry-run) $(VERSION)
@@ -34,7 +43,7 @@ tsan-stress asan-stress: STRESS_OPTIMIZE = GHOSTTY_OPTIMIZE=ReleaseSafe
 tsan-stress asan-stress: STRESS_SANITIZE = -enable$(SANITIZER)Sanitizer YES
 stress tsan-stress asan-stress:
 	$(MAKE) all DERIVED=$(STRESS_DERIVED) $(STRESS_OPTIMIZE) SANITIZE="$(STRESS_SANITIZE) KIDO_STRESS_CONDITION=KIDO_STRESS"
-	KIDO_STRESS_TARGET=$@ scripts/stress.py --app $(STRESS_DERIVED)/Build/Products/Debug/Kido.app/Contents/MacOS/Kido --tmux $(abspath $(STRESS_DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin/kido-tmux) \
+	KIDO_STRESS_TARGET=$@ scripts/stress.py --app $(STRESS_DERIVED)/Build/Products/Debug/Kido.app/Contents/MacOS/Kido --ko $(abspath $(STRESS_DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/ko/bin/ko) \
 		--seed $(SEED) --duration $(DURATION) --find $(FIND) --out build/bundle/stress/$@-$(SEED)
 
 RECORD ?= 0
@@ -42,11 +51,10 @@ visual: VISUAL_FLAG =
 visual-fast: VISUAL_FLAG = skip
 visual-slow: VISUAL_FLAG = only
 visual visual-fast visual-slow: DERIVED = build/xcode.noindex/derived-visual
-visual visual-fast visual-slow: VISUAL_TMUX = $(abspath $(DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/kido/bin/kido-tmux)
 visual visual-fast visual-slow: project
-	mkdir -p build/bundle/visual/{home,state,tmp}
+	mkdir -p build/bundle/visual/{home,state}
 	clang -dynamiclib -Werror -Wno-deprecated-declarations scripts/renderer-probes.c -framework CoreVideo -o build/bundle/visual/renderer-probes.dylib
-	@set -e; select=''; \
+	@set -eo pipefail; select=''; \
 	if test -n '$(VISUAL_FLAG)'; then \
 		while read -r name _; do \
 			case $$name in ''|'#'*) continue ;; esac; \
@@ -59,20 +67,26 @@ visual visual-fast visual-slow: project
 		test '$(VISUAL_FLAG)' != only || test -n "$$select" || { echo "slow.txt: selects no tests" >&2; exit 1; }; \
 	fi; \
 	server=$$(mktemp -d /tmp/ka-visual-XXXXXX) || exit 1; \
-	trap '$(VISUAL_TMUX) -S "$$server/socket" kill-server 2>/dev/null || true; rm -rf "$$server"' EXIT; \
-	xcodebuild -quiet -project Kido.xcodeproj -scheme Visual -configuration Debug KIDO_VISUAL_SERVER="$$server" \
-		-destination platform=macOS -derivedDataPath $(DERIVED) KIDO_VISUAL_CONDITION=KIDO_VISUAL \
-		KIDO_VISUAL_RECORD=$(RECORD) KIDO_VISUAL_TMUX=$(VISUAL_TMUX) $$select test
+	trap '$(KO_ABS)/build/ko/bin/ko kill-server --server "$$server" 2>/dev/null || true; rm -rf "$$server"' EXIT; \
+	xcodebuild -project Kido.xcodeproj -scheme Visual -configuration Debug KIDO_VISUAL_SERVER="$$server" \
+		-destination platform=macOS -derivedDataPath $(DERIVED) KO_CHECKOUT=$(KO_ABS) KIDO_VISUAL_CONDITION=KIDO_VISUAL \
+		KIDO_VISUAL_RECORD=$(RECORD) $$select test 2>&1 | $(XCODE_PROGRESS)
 	python3 scripts/quit-check.py $(abspath $(APP))
 
-KO_CHECKOUT ?= ..
+ko-test: DERIVED = build/xcode.noindex/derived-$@
+ko-test: project
+	mkdir -p build/bundle/ko-tests/home build/bundle/ko-tests/state
+	@set -eo pipefail; server=$$(mktemp -d /tmp/ko-test-XXXXXX) || exit 1; \
+	trap '$(KO_ABS)/build/ko/bin/ko kill-server --server "$$server" 2>/dev/null || true; rm -rf "$$server"' EXIT; \
+	xcodebuild -project Kido.xcodeproj -scheme Ko -configuration Debug -destination platform=macOS \
+		-derivedDataPath $(DERIVED) KO_CHECKOUT=$(KO_ABS) KIDO_APP_SERVER="$$server" KIDO_VISUAL_CONDITION=KIDO_VISUAL \
+		$(if $(KO_RECORD_FIXTURES),KO_RECORD_FIXTURES=$(KO_RECORD_FIXTURES)) $(if $(ONLY),-only-testing:KoTests/$(ONLY)) test 2>&1 | $(XCODE_PROGRESS)
 
-ko-probe: KO_ABS = $(abspath $(KO_CHECKOUT))
-ko-probe: DERIVED = build/xcode.noindex/derived-$@
-ko-probe: project
-	$(MAKE) -C $(KO_ABS) build-ko
-	TEST_RUNNER_KO_BIN=$(KO_ABS)/build/ko/bin/ko xcodebuild -quiet -project Kido.xcodeproj -scheme KoProbe -configuration Debug -destination platform=macOS \
-		-derivedDataPath $(DERIVED) KO_CHECKOUT=$(KO_ABS) test
+ko-model:
+	python3 scripts/gen-ko-model.py $(KO_ABS)/share/ko/openapi.json $(KO_ABS)/share/ko/client-model.json Packages/KoModel/Sources/KoModel/KoSchema.swift
+
+ko-fixtures:
+	$(MAKE) ko-test ONLY=KoFixtureRecorder KO_RECORD_FIXTURES=$(abspath Packages)
 
 run: all
 	open -W $(APP)
@@ -94,9 +108,9 @@ demo-stop:
 test:
 	scripts/lint-colors.sh
 	$(MAKE) all
-	cd Packages/TmuxControl && swift test
-	cd Packages/SidebarFeed && swift test
-	cd Packages/PromptMarkdown && swift test
+	@set -eo pipefail; for package in KoModel TmuxControl SidebarFeed PromptMarkdown; do \
+		(cd Packages/$$package && swift test 2>&1 | $(SWIFT_PROGRESS)); \
+	done
 
 clean:
 	rm -rf build/xcode.noindex/derived build/xcode.noindex/derived-demo build/xcode.noindex/derived-tsan build/xcode.noindex/derived-asan build/xcode.noindex/derived-stress build/xcode.noindex/derived-tsan-stress build/xcode.noindex/derived-asan-stress

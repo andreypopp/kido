@@ -5,11 +5,12 @@ use ko_server::ids::PaneId;
 use ko_server::protocol::{
     AgentState, CommandExit, Live, Outcome, OutcomeResult, PaneStatus, Phase,
 };
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::model::Pane;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Mark {
     None,
@@ -29,6 +30,7 @@ enum Source {
 struct Keys {
     outcome: Option<(Source, u64)>,
     exit: Option<(u64, u64)>,
+    records: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -84,6 +86,7 @@ impl Seen {
                     Keys {
                         outcome: outcome.map(|(source, outcome)| (source, outcome.serial)),
                         exit: exit.map(|exit| (exit.started_at, exit.ended_at)),
+                        records: Some(status.program_status.serial),
                     }
                 });
             self.keys.insert(pane.row.id, keys);
@@ -103,6 +106,14 @@ impl Seen {
                 exit.ended_at > self.started && seen.exit != Some((exit.started_at, exit.ended_at))
             }),
         )
+    }
+
+    // The pane's program records were shown as they are now: their done and error read as idle.
+    pub fn records_seen(&self, pane: &Pane) -> bool {
+        pane.row.status.as_ref().is_some_and(|status| {
+            self.keys.get(&pane.row.id).and_then(|keys| keys.records)
+                == Some(status.program_status.serial)
+        })
     }
 
     pub fn mark(&self, pane: &Pane) -> Mark {
@@ -136,12 +147,6 @@ impl Seen {
             }
         });
         let mark = match (&shell.phase, &shell.report) {
-            (
-                Phase::Running {
-                    fullscreen: true, ..
-                },
-                _,
-            ) => None,
             (_, Some(report)) => match report.state {
                 AgentState::Running { .. } => Some(Mark::Running),
                 AgentState::Waiting { .. } => Some(Mark::Waiting),
@@ -151,6 +156,12 @@ impl Seen {
                     (report, _) => report,
                 },
             },
+            (
+                Phase::Running {
+                    fullscreen: true, ..
+                },
+                None,
+            ) => None,
             (Phase::Running { .. }, None) => Some(Mark::Running),
             (_, None) => exit,
         };
@@ -278,6 +289,24 @@ mod tests {
         let cases = [
             ("a running command", running(false), Mark::Running),
             ("a fullscreen program", running(true), Mark::None),
+            (
+                "a report of a fullscreen program",
+                Live::Terminal(Shell {
+                    phase: Phase::Running {
+                        origin: Origin::Unknown,
+                        fullscreen: true,
+                    },
+                    report: Some(Agent {
+                        since: 0,
+                        msg: None,
+                        state: AgentState::Waiting {
+                            kind: None,
+                            progress: None,
+                        },
+                    }),
+                }),
+                Mark::Waiting,
+            ),
             ("a clean exit", idle(Some(exit(0, 1, 2)), None), Mark::Done),
             (
                 "a failed exit",
@@ -382,6 +411,27 @@ mod tests {
         assert_eq!(seen.mark(&reported), Mark::None);
         let later = pane(1, Some(agent(outcome(8, OutcomeResult::Success))));
         assert_eq!(seen.mark(&later), Mark::Done);
+    }
+
+    #[test]
+    fn program_records_read_as_seen_once_shown_at_their_serial() {
+        let mut seen = Seen::new(0);
+        let with_records = |serial| {
+            let mut found = pane(1, Some(agent(AgentState::Idle { outcome: None })));
+            if let Some(status) = found.row.status.as_mut() {
+                status.program_status.serial = serial;
+            }
+            found
+        };
+        assert!(!seen.records_seen(&with_records(3)));
+        seen.observe(&[id(1)], false, &[with_records(3)]);
+        assert!(!seen.records_seen(&with_records(3)), "not attending");
+        seen.observe(&[id(1)], true, &[with_records(3)]);
+        assert!(seen.records_seen(&with_records(3)));
+        assert!(
+            !seen.records_seen(&with_records(4)),
+            "a newer record shows again"
+        );
     }
 
     #[test]

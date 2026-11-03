@@ -1,58 +1,41 @@
 import Foundation
 import Testing
-import TmuxControl
+import KoModel
 @testable import SidebarFeed
 
 private func notifier() throws -> NotifierState {
     var state = NotifierState()
-    _ = state.step(owner: "a", host: "local", snapshot: try decode(snapshotObject([])), fresh: true, seen: SidebarSeen(), shown: [], appActive: false)
+    _ = state.step(owner: "a", host: "local", snapshot: makeSnapshot([]), fresh: true, shown: [], appActive: false)
     return state
 }
 
-private func step(_ state: inout NotifierState, _ nodes: [[String: Any]], owner: String = "a", host: String = "local",
-                  identity: String? = nil, fresh: Bool = false, seen: SidebarSeen = SidebarSeen(), shown: Set<WindowID> = [], appActive: Bool = false) throws -> NotifierEffects {
-    state.step(owner: owner, host: host, identity: identity, snapshot: try decode(snapshotObject(nodes)), fresh: fresh, seen: seen, shown: shown, appActive: appActive)
+private func step(_ state: inout NotifierState, _ nodes: [Node], owner: String = "a", host: String = "local",
+                  identity: String? = nil, fresh: Bool = false, seen: Bool = false, shown: Set<WindowID> = [], appActive: Bool = false) throws -> NotifierEffects {
+    let snapshot: Snapshot = makeSnapshot(nodes)
+    return state.step(owner: owner, host: host, identity: identity, snapshot: seen ? markedSeen(snapshot) : snapshot, fresh: fresh, shown: shown, appActive: appActive)
 }
 
 @Test func notificationBaselines() throws {
-    let nodes = [pane(1, lifecycle: agent(waiting())), pane(2, lifecycle: agent(idle(outcome(17, "failure"))))]
+    let nodes = [pane(1, lifecycle: agent(waiting()), mark: .waiting), pane(2, lifecycle: agent(idle(outcome(17, .failure))), mark: .failed)]
     var state = NotifierState()
     #expect(try step(&state, nodes, fresh: true).post.isEmpty)
     #expect(try step(&state, nodes).post.isEmpty)
-    let changed = [pane(1, lifecycle: agent(idle(outcome(18, "failure"))))]
+    let changed = [pane(1, lifecycle: agent(idle(outcome(18, .failure))), mark: .failed)]
     #expect(try step(&state, changed).post.count == 1)
     #expect(try step(&state, nodes, fresh: true).withdraw.count == 1)
     #expect(try step(&state, nodes).post.isEmpty)
-    var object = snapshotObject(nodes)
-    object["server_instance"] = ["started_at": 1780000000, "pid": 12346]
     #expect(try step(&state, changed).post.count == 1)
-    let snapshot: Snapshot = try decode(object)
-    let effects = state.step(owner: "a", host: "local", snapshot: snapshot, fresh: false, seen: SidebarSeen(), shown: [], appActive: false)
+    let snapshot = makeSnapshot(nodes, instance: "12346/1780000000")
+    let effects = state.step(owner: "a", host: "local", snapshot: snapshot, fresh: false, shown: [], appActive: false)
     #expect(effects.withdraw.count == 1)
     #expect(effects.post.isEmpty)
     #expect(sidebarRows(snapshot).contains { $0.status == .error })
-    #expect(state.step(owner: "a", host: "local", snapshot: snapshot, fresh: false, seen: SidebarSeen(), shown: [], appActive: false).post.isEmpty)
-}
-
-@Test func notificationErrorsAreInert() throws {
-    var state = try notifier()
-    let nodes = [pane(1, lifecycle: agent(waiting()))]
-    #expect(try step(&state, nodes).post.count == 1)
-    let before = state
-    let error: Snapshot = try decode(snapshotObject([], error: "offline"))
-    let effects = state.step(owner: "a", host: "local", snapshot: error, fresh: true, seen: SidebarSeen(), shown: [], appActive: false)
-    #expect(effects.post.isEmpty && effects.withdraw.isEmpty)
-    #expect(state == before)
-    #expect(try step(&state, nodes, fresh: true).withdraw.count == 1)
-    #expect(try step(&state, nodes).post.isEmpty)
-    var initial = NotifierState()
-    #expect(initial.step(owner: "a", host: "local", snapshot: error, fresh: true, seen: SidebarSeen(), shown: [], appActive: false).post.isEmpty)
-    #expect(try step(&initial, nodes, fresh: true).post.isEmpty)
+    #expect(state.step(owner: "a", host: "local", snapshot: snapshot, fresh: false, shown: [], appActive: false).post.isEmpty)
 }
 
 @Test func notificationSuppressionAcknowledges() throws {
     var state = try notifier()
-    let nodes = [pane(1, window: 7, lifecycle: agent(waiting()))]
+    let nodes = [pane(1, window: 7, lifecycle: agent(waiting()), mark: .waiting)]
     #expect(try step(&state, nodes, shown: [WindowID(number: 7)]).post.isEmpty)
     #expect(try step(&state, nodes).post.isEmpty)
     _ = try step(&state, [])
@@ -61,41 +44,41 @@ private func step(_ state: inout NotifierState, _ nodes: [[String: Any]], owner:
     #expect(try step(&state, nodes).post.isEmpty)
 }
 
-@Test func notificationFailureIdentityReposts() throws {
+// A failure posts when the core's mark turns failed; it posts again only after the mark cleared.
+@Test func notificationFailureFollowsTheMark() throws {
     var state = try notifier()
-    let first = [pane(1, lifecycle: agent(idle(outcome(17, "failure"))))]
+    let first = [pane(1, lifecycle: agent(idle(outcome(17, .failure))), mark: .failed)]
     #expect(try step(&state, first).post.count == 1)
     #expect(try step(&state, first).post.isEmpty)
-    let second = [pane(1, lifecycle: agent(idle(outcome(18, "failure"))))]
-    let effects = try step(&state, second)
-    #expect(effects.post.count == 1 && effects.withdraw.isEmpty)
-    #expect(try step(&state, second, shown: [WindowID(number: 1)]).withdraw.count == 1)
+    let second = [pane(1, lifecycle: agent(idle(outcome(18, .failure))), mark: .failed)]
+    #expect(try step(&state, second).post.isEmpty, "the mark stays failed")
+    #expect(try step(&state, second, seen: true).withdraw.count == 1)
     #expect(try step(&state, first).post.count == 1)
-    let command = [pane(1, lifecycle: terminal(exited(1)))]
-    #expect(try step(&state, command).post.count == 1)
-    #expect(try step(&state, [pane(1, lifecycle: terminal(exited(1, ended: 1780000002)))]).post.count == 1)
+    #expect(try step(&state, [pane(1, lifecycle: terminal(exited(130)), mark: .failed)]).withdraw.count == 1, "an interrupted command is no failure")
+    let effects = try step(&state, [pane(1, lifecycle: terminal(exited(1)), mark: .failed)])
+    #expect(effects.post.map(\.body) == ["Exit 1: false"])
 }
 
 @Test func notificationWaitingIsOneReason() throws {
     var state = try notifier()
-    #expect(try step(&state, [pane(1, lifecycle: agent(waiting("permission")))]).post.count == 1)
-    #expect(try step(&state, [pane(1, lifecycle: agent(waiting("question")))]).post.isEmpty)
-    #expect(try step(&state, [pane(1, lifecycle: agent(working()))]).withdraw.count == 1)
-    #expect(try step(&state, [pane(1, lifecycle: agent(waiting()))]).post.count == 1)
+    #expect(try step(&state, [pane(1, lifecycle: agent(waiting(.permission)), mark: .waiting)]).post.count == 1)
+    #expect(try step(&state, [pane(1, lifecycle: agent(waiting(.question)), mark: .waiting)]).post.isEmpty)
+    #expect(try step(&state, [pane(1, lifecycle: agent(working()), mark: .running)]).withdraw.count == 1)
+    #expect(try step(&state, [pane(1, lifecycle: agent(waiting()), mark: .waiting)]).post.count == 1)
 }
 
 @Test(arguments: ["seen", "work", "success", "waiting-ended", "disappeared"])
 func notificationWithdraws(cause: String) throws {
     var state = try notifier()
-    let lifecycle = cause == "waiting-ended" ? agent(waiting()) : agent(idle(outcome(17, "failure")))
-    let nodes = [pane(1, lifecycle: lifecycle)]
+    let lifecycle = cause == "waiting-ended" ? agent(waiting()) : agent(idle(outcome(17, .failure)))
+    let nodes = [pane(1, lifecycle: lifecycle, mark: cause == "waiting-ended" ? .waiting : .failed)]
     #expect(try step(&state, nodes).post.count == 1)
-    var seen = SidebarSeen()
-    let next: [[String: Any]]
+    let seen = cause == "seen"
+    let next: [Node]
     switch cause {
-    case "seen": seen.observe(try decode(snapshotObject([])), attended: false); seen.observe(try decode(snapshotObject(nodes, client: 1)), attended: true); next = nodes
-    case "work": next = [pane(1, lifecycle: agent(working()))]
-    case "success": next = [pane(1, lifecycle: agent(idle(outcome(18, "success"))))]
+    case "seen": next = nodes
+    case "work": next = [pane(1, lifecycle: agent(working()), mark: .running)]
+    case "success": next = [pane(1, lifecycle: agent(idle(outcome(18, .success))), mark: .done)]
     case "waiting-ended": next = [pane(1, lifecycle: agent(idle()))]
     default: next = []
     }
@@ -105,43 +88,34 @@ func notificationWithdraws(cause: String) throws {
     #expect(try step(&state, next, seen: seen).withdraw.isEmpty)
 }
 
-@Test func notificationSeenAttendanceAndReconnect() throws {
-    var seen = SidebarSeen()
-    seen.observe(try decode(snapshotObject([])), attended: false)
-    let nodes = [pane(1, lifecycle: agent(idle(outcome(17, "failure"))))]
-    let snapshot: Snapshot = try decode(snapshotObject(nodes, client: 1))
-    seen.observe(snapshot, attended: false)
+// The core clears the mark of an outcome that an attended view showed; every owner withdraws it.
+@Test func notificationSeenMarkWithdrawsForEveryOwner() throws {
+    let nodes = [pane(1, lifecycle: agent(idle(outcome(17, .failure))), mark: .failed)]
     var state = try notifier()
-    #expect(try step(&state, nodes, seen: seen).post.count == 1)
+    #expect(try step(&state, nodes).post.count == 1)
     _ = try step(&state, [], owner: "b", fresh: true)
-    #expect(try step(&state, nodes, owner: "b", seen: seen).post.count == 1)
-    seen.observe(snapshot, attended: true)
-    for owner in ["a", "b"] { #expect(try step(&state, nodes, owner: owner, seen: seen).withdraw.count == 1) }
-    #expect(try step(&state, nodes, fresh: true, seen: seen).post.isEmpty)
-    #expect(try step(&state, nodes, seen: seen).post.isEmpty)
-    var object = snapshotObject(nodes)
-    object["server_instance"] = ["started_at": 1780000000, "pid": 12346]
-    let restarted: Snapshot = try decode(object)
-    seen.observe(restarted, attended: false)
-    #expect(sidebarRows(restarted, seen: seen).contains { $0.status == .error })
+    #expect(try step(&state, nodes, owner: "b").post.count == 1)
+    for owner in ["a", "b"] { #expect(try step(&state, nodes, owner: owner, seen: true).withdraw.count == 1) }
+    #expect(try step(&state, nodes, fresh: true, seen: true).post.isEmpty)
+    #expect(try step(&state, nodes, seen: true).post.isEmpty)
+    #expect(!sidebarRows(markedSeen(makeSnapshot(nodes))).contains { $0.status == .error })
+    #expect(sidebarRows(makeSnapshot(nodes)).contains { $0.status == .error })
 }
 
 @Test func notificationTopLevelRunPosts() throws {
     var state = try notifier()
-    let effects = try step(&state, [pane(1, lifecycle: piAgent(waiting()), run: "r-top")])
+    let effects = try step(&state, [pane(1, lifecycle: piAgent(waiting()), run: "r-top", mark: .waiting)])
     #expect(effects.post.count == 1 && effects.post.first?.kind == .waiting)
 }
 
 @Test func notificationNestedRunIsSilent() throws {
     var state = try notifier()
-    let parent = pane(0, lifecycle: piAgent(working()), children: [pane(1, lifecycle: piAgent(waiting()), run: "r-child")])
+    let parent = pane(0, lifecycle: piAgent(working()), mark: .running, children: [pane(1, lifecycle: piAgent(waiting()), run: "r-child", mark: .waiting)])
     #expect(try step(&state, [parent]).post.isEmpty)
 }
 
-private func runGroup() -> [String: Any] {
-    ["kind": "window", "id": "@5", "window": "@5", "name": "group",
-     "children": [pane(1, window: 5, lifecycle: piAgent(waiting()), run: "r-1"),
-                  pane(2, window: 5, lifecycle: terminal())]]
+private func runGroup() -> Node {
+    group(5, [pane(1, window: 5, lifecycle: piAgent(waiting()), run: "r-1", mark: .waiting), pane(2, window: 5, lifecycle: terminal())])
 }
 
 @Test func notificationTopLevelGroupRunPosts() throws {
@@ -152,63 +126,44 @@ private func runGroup() -> [String: Any] {
 
 @Test func notificationNestedGroupRunIsSilent() throws {
     var state = try notifier()
-    let parent = pane(0, lifecycle: piAgent(working()), children: [runGroup()])
+    let parent = pane(0, lifecycle: piAgent(working()), mark: .running, children: [runGroup()])
     #expect(try step(&state, [parent]).post.isEmpty)
 }
 
 @Test func notificationNonFailuresNeverPost() throws {
     var state = try notifier()
-    let nodes = [pane(1, lifecycle: terminal(exited(130))), pane(2, lifecycle: terminal(exited(0))),
-                 pane(3, lifecycle: agent(idle(outcome(1, "success")))),
-                 pane(5, lifecycle: terminal(running())), pane(6, lifecycle: terminal(["Unknown"]))]
+    let nodes = [pane(1, lifecycle: terminal(exited(130)), mark: .failed), pane(2, lifecycle: terminal(exited(0)), mark: .done),
+                 pane(3, lifecycle: agent(idle(outcome(1, .success))), mark: .done),
+                 pane(5, lifecycle: terminal(running()), mark: .running), pane(6, lifecycle: terminal(.unknown))]
     #expect(try step(&state, nodes).post.isEmpty)
-    #expect(sidebarRows(try decode(snapshotObject(nodes))).contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 1)) && $0.status == .error })
+    #expect(sidebarRows(makeSnapshot(nodes)).contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 1)) && $0.status == .error })
 }
 
 @Test(arguments: ["unknown", "idle", "running", "fullscreen"])
 func notificationReportsFollowIndicator(phaseName: String) throws {
-    let phase: [Any] = switch phaseName {
-    case "unknown": ["Unknown"]
-    case "idle": exited(2)
+    let phase: ShellStatus.Phase = switch phaseName {
+    case "unknown": .unknown
+    case "idle": exited(0)
     case "fullscreen": running(nil, fullscreen: true)
     default: running()
     }
     var state = try notifier()
-    let waitingNodes = [pane(1, lifecycle: terminal(phase, report: report(waiting(), msg: "permission")))]
+    let waitingNodes = [pane(1, lifecycle: terminal(phase, report: report(waiting(), msg: "permission")), mark: .waiting)]
     #expect(try step(&state, waitingNodes).post.first?.body == "Waiting: permission")
-    let failed = [pane(1, lifecycle: terminal(phase, report: report(idle(outcome(1, "failure")), msg: "broken")))]
+    let failed = [pane(1, lifecycle: terminal(phase, report: report(idle(outcome(1, .failure)), msg: "broken")), mark: .failed)]
     #expect(try step(&state, failed).post.first?.body == "Failed: broken")
-    let quiet = [pane(1, lifecycle: terminal(phase, report: report(idle(outcome(2, "success")))))]
+    let quiet = [pane(1, lifecycle: terminal(phase, report: report(idle(outcome(2, .success)))), mark: .done)]
     #expect(try step(&state, quiet).withdraw.count == 1)
     #expect(try step(&state, quiet).post.isEmpty)
     let empty = [pane(1, lifecycle: terminal(phase, report: report(idle())))]
     #expect(try step(&state, empty).post.isEmpty)
-    #expect(!sidebarRows(try decode(snapshotObject(empty))).contains { $0.status == .error })
-}
-
-@Test func notificationSeenReportStillMasksCommandFailure() throws {
-    var state = try notifier()
-    var seen = SidebarSeen()
-    seen.observe(try decode(snapshotObject([])), attended: false)
-    let nodes = [pane(1, lifecycle: terminal(exited(2), report: report(idle(outcome(17, "failure")))))]
-    #expect(try step(&state, nodes).post.first?.body == "Failed")
-    seen.observe(try decode(snapshotObject(nodes, client: 1)), attended: true)
-    let next = [pane(1, lifecycle: terminal(exited(2, ended: 1780000003), report: report(idle(outcome(17, "failure")))))]
-    #expect(try step(&state, next, seen: seen).withdraw.count == 1)
-    #expect(try step(&state, next, seen: seen).post.isEmpty)
-    #expect(!sidebarRows(try decode(snapshotObject(next)), seen: seen).contains { $0.status == .error })
-}
-
-@Test func notificationFailureSourceIsPartOfIdentity() throws {
-    var state = try notifier()
-    #expect(try step(&state, [pane(1, lifecycle: agent(idle(outcome(17, "failure"))))]).post.count == 1)
-    #expect(try step(&state, [pane(1, lifecycle: terminal(report: report(idle(outcome(17, "failure")))))]).post.count == 1)
+    #expect(!sidebarRows(makeSnapshot(empty)).contains { $0.status == .error })
 }
 
 @Test func notificationOwnersAndForgetAreIndependent() throws {
     var state = try notifier()
     _ = try step(&state, [], owner: "b", fresh: true)
-    let nodes = [pane(1, lifecycle: agent(waiting()))]
+    let nodes = [pane(1, lifecycle: agent(waiting()), mark: .waiting)]
     let a = try step(&state, nodes).post
     let b = try step(&state, nodes, owner: "b").post
     #expect(a.count == 1 && b.count == 1 && a.first?.key != b.first?.key)
@@ -222,17 +177,16 @@ func notificationReportsFollowIndicator(phaseName: String) throws {
 
 @Test func notificationLinkedPanePrefersClientSession() throws {
     var state = try notifier()
-    var object = snapshotObject([pane(1, lifecycle: agent(waiting()))], sessions: [2, 0, 1])
-    var snapshot: Snapshot = try decode(object)
-    var effects = state.step(owner: "a", host: "local", snapshot: snapshot, fresh: false, seen: SidebarSeen(), shown: [], appActive: false)
+    let nodes = [pane(1, lifecycle: agent(waiting()), mark: .waiting)]
+    var snapshot = makeSnapshot(nodes, sessions: [2, 0, 1])
+    var effects = state.step(owner: "a", host: "local", snapshot: snapshot, fresh: false, shown: [], appActive: false)
     #expect(effects.post.count == 1)
     #expect(effects.post.first?.subtitle == "session-0")
     #expect(effects.post.first?.target.position.session == SessionID(number: 0))
     _ = state.forget(owner: "a")
     _ = try step(&state, [], fresh: true)
-    object["client"] = ["session": "$9", "window": "@9", "pane": "%9"]
-    snapshot = try decode(object)
-    effects = state.step(owner: "a", host: "local", snapshot: snapshot, fresh: false, seen: SidebarSeen(), shown: [], appActive: false)
+    snapshot = makeSnapshot(nodes, client: 9, clientSession: 9, sessions: [2, 0, 1])
+    effects = state.step(owner: "a", host: "local", snapshot: snapshot, fresh: false, shown: [], appActive: false)
     #expect(effects.post.count == 1)
     #expect(effects.post.first?.subtitle == "session-2")
 }
@@ -240,10 +194,10 @@ func notificationReportsFollowIndicator(phaseName: String) throws {
 @Test func notificationContentAndTargetCoding() throws {
     var state = try notifier()
     let pi = piAgent(waiting(), msg: "Allow access")
-    let nodes = [pane(1, title: "worker", lifecycle: pi), pane(2, title: "@named", lifecycle: pi),
-                 pane(3, title: "raw", lifecycle: terminal(exited(2))),
-                 pane(4, title: "remote worker", lifecycle: remote(["Remote_agent", ["name": "pi", "status": report(waiting())]])),
-                 pane(5, title: "raw", lifecycle: remote(["Remote_terminal", ["interactive": true, "status": shell(exited(1))]]))]
+    let nodes = [pane(1, title: "worker", lifecycle: pi, mark: .waiting), pane(2, title: "@named", lifecycle: pi, mark: .waiting),
+                 pane(3, title: "raw", lifecycle: terminal(exited(2)), mark: .failed),
+                 pane(4, title: "remote worker", lifecycle: remote(.agent(name: "pi", report(waiting()))), mark: .waiting),
+                 pane(5, title: "raw", lifecycle: remote(.terminal(interactive: true, shell(exited(1)))), mark: .failed)]
     let posts = try step(&state, nodes).post
     #expect(posts.map(\.title) == ["@worker", "@named", "Terminal", "remote worker", "ssh alice@devbox"])
     #expect(posts[0].body == "Waiting: Allow access")
@@ -260,17 +214,17 @@ func notificationReportsFollowIndicator(phaseName: String) throws {
 @Test func notificationFullCommand() throws {
     var state = try notifier()
     let command = "line\n" + String(repeating: "x", count: 130)
-    let phase: [Any] = ["Idle", ["last": ["code": 2, "command": command, "started_at": 1780000000, "ended_at": 1780000001]]]
-    #expect(try step(&state, [pane(1, lifecycle: terminal(phase))]).post.first?.body == "Exit 2: " + command)
+    let phase = ShellStatus.Phase.idle(last: .init(code: 2, command: command, startedAt: since, endedAt: since + 1))
+    #expect(try step(&state, [pane(1, lifecycle: terminal(phase), mark: .failed)]).post.first?.body == "Exit 2: " + command)
 }
 
 
 @Test func notificationActiveAcknowledges() throws {
     var state = try notifier()
-    let waiting = [pane(1, lifecycle: agent(waiting()))]
+    let waiting = [pane(1, lifecycle: agent(waiting()), mark: .waiting)]
     #expect(try step(&state, waiting, appActive: true).post.isEmpty)
     #expect(try step(&state, waiting).post.isEmpty)
-    let failed = [pane(1, lifecycle: agent(idle(outcome(17, "failure"))))]
+    let failed = [pane(1, lifecycle: agent(idle(outcome(17, .failure))), mark: .failed)]
     let post = try step(&state, failed)
     #expect(post.post.first?.kind == .failed)
     #expect(state.postedCount == 1)

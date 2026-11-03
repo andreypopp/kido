@@ -17,6 +17,18 @@ enum Failure: Error {
     }
 }
 
+struct Launch: Sendable {
+    let path: String
+    let arguments: [String]
+    let environment: [String: String]?
+
+    init(_ path: String, _ arguments: [String], environment: [String: String]? = nil) {
+        self.path = path
+        self.arguments = arguments
+        self.environment = environment
+    }
+}
+
 final class Child: @unchecked Sendable {
     let process = Process()
     let ended = DispatchGroup()

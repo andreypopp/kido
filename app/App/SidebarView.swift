@@ -1,6 +1,7 @@
 import AppKit
 import SidebarFeed
 import TmuxControl
+import KoModel
 
 extension NSPasteboard.PasteboardType {
     static let kidoReorder = Self("com.andreypopp.kido.reorder")
@@ -46,7 +47,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private var heldSelection: SidebarRow.ID?
     private let insertion = Insertion()
     private let dragOwner = UUID().uuidString
-    var navigate: (RPCRequest) -> Void = { _ in }
+    var navigate: (Navigation) -> Void = { _ in }
     var onIntent: () -> Void = {}
     var leave: () -> Void = {}
     private var rendering = false
@@ -130,8 +131,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private let scroll = DropScroll()
     private let statusLine = NSTextField(labelWithString: "")
     private var snapshot: Snapshot?
-    var seen = SeenRecord()
-    private var renderedSeen = SidebarSeen()
     private var feedNote: (String, NSColor)?
     private var failure: String?
     private let fonts = SidebarFonts()
@@ -215,21 +214,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         table.setFrameSize(NSSize(width: scroll.contentSize.width, height: table.frame.height))
     }
 
-    func update(_ status: Feed.Status) {
-        switch status {
-        case .invalidBundle, .protocolMismatch: break
-        case .starting:
-            show(nil)
-            feedNote = ("Starting…", Chrome.inkSecondary)
-        case .restarting(let message):
-            captionTimer?.invalidate()
-            captionTimer = nil
-            feedNote = ("The sidebar feed is not running, retrying…\n\(message)", Chrome.inkSecondary)
-        case .running(let snapshot):
-            if feedNote != nil { captions = SidebarCaptions() }
-            show(snapshot, captionTick: feedNote != nil)
-            feedNote = nil
-        }
+    func update(_ snapshot: Snapshot) {
+        if feedNote != nil { captions = SidebarCaptions() }
+        show(snapshot, captionTick: feedNote != nil)
+        feedNote = nil
         noteChanged()
     }
 
@@ -252,7 +240,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     private func noteChanged() {
-        let note = failure.map { ($0, Chrome.errorText) } ?? feedNote ?? snapshot?.error.map { ($0, Chrome.errorText) }
+        let note = failure.map { ($0, Chrome.errorText) } ?? feedNote
         statusLine.stringValue = note?.0.replacingOccurrences(of: "\n", with: " ") ?? ""
         statusLine.toolTip = note?.0
         statusLine.textColor = note?.1
@@ -261,11 +249,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     func show(_ next: Snapshot?, pin: SidebarRow.ID? = nil, captionTick: Bool = false) {
-        if !captionTick, pin == nil, renderedCollapsed == collapsed, renderedSeen == seen.value, next.map({ snapshot?.sameSidebarContent(as: $0) == true }) ?? (snapshot == nil) {
+        if !captionTick, pin == nil, renderedCollapsed == collapsed, next == snapshot {
             snapshot = next
             return
         }
-        renderedSeen = seen.value
         renderedCollapsed = collapsed
         rendering = true
         defer { rendering = false }
@@ -280,7 +267,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         snapshot = next
         let previous = items
         if next == nil || next?.serverInstance != previousInstance { captions = SidebarCaptions() }
-        items = captions.apply(sidebarRows(snapshot, seen: seen.value), now: ProcessInfo.processInfo.systemUptime, delay: captionDelay)
+        items = captions.apply(sidebarRows(snapshot), now: ProcessInfo.processInfo.systemUptime, delay: captionDelay)
         captionTimer?.invalidate()
         captionTimer = nil
         if let deadline = captions.deadline {
@@ -432,7 +419,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private func dragItem(_ source: Source) -> DragItem? {
         guard let instance = snapshot?.serverInstance else { return nil }
         let window: String? = if case .window(_, let window) = source { window.description } else { nil }
-        return DragItem(owner: dragOwner, instance: "\(instance.pid)/\(instance.startedAt)", session: source.session.description, window: window)
+        return DragItem(owner: dragOwner, instance: instance.description, session: source.session.description, window: window)
     }
 
     private func blockRows(_ session: SessionID, _ root: WindowID) -> Range<Int> {
@@ -591,6 +578,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         return cell
     }
 
+    #if KIDO_STRESS
+    var stressRows: [SidebarRow] { items }
+    #endif
+
     #if KIDO_VISUAL
     static var visualNow: Date?
     var visualTable: NSTableView { table }
@@ -605,10 +596,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         bounds.fill()
     }
     #endif
-}
-
-@MainActor final class SeenRecord {
-    var value = SidebarSeen()
 }
 
 final class Table: NSTableView {

@@ -486,7 +486,14 @@ impl Client {
     }
 
     fn request(&self, route: &Route) -> Result<Vec<u8>, String> {
-        wire::request(&self.socket, Some(self.model.client), route, b"", None)
+        wire::request(
+            &self.socket,
+            (Some(self.model.client), None),
+            route,
+            b"",
+            None,
+        )
+        .map_err(String::from)
     }
 
     fn switch(&mut self, pane: PaneId) -> Result<(), String> {
@@ -991,7 +998,7 @@ impl Client {
         }
         let probe = wire::request_within(
             &self.socket,
-            None,
+            (None, None),
             &Route::Version {},
             b"",
             (None, PROBE_TRANSPORT),

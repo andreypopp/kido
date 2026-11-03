@@ -5,11 +5,12 @@ let package = Package(
     name: "TmuxControl",
     platforms: [.macOS(.v14)],
     products: [.library(name: "TmuxControl", targets: ["TmuxControl"])],
+    dependencies: [.package(path: "../KoModel")],
     targets: [
-        .target(name: "TmuxControl"),
+        .target(name: "TmuxControl", dependencies: ["KoModel"]),
         .testTarget(
             name: "TmuxControlTests",
-            dependencies: ["TmuxControl"],
+            dependencies: ["TmuxControl", "KoModel"],
             resources: [.copy("Fixtures")]
         ),
     ]

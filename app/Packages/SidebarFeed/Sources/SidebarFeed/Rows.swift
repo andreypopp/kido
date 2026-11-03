@@ -1,5 +1,5 @@
 import Foundation
-import TmuxControl
+import KoModel
 
 public struct SidebarRow: Equatable, Sendable {
     public enum ID: Hashable, Sendable {
@@ -44,53 +44,13 @@ public struct SidebarRow: Equatable, Sendable {
     }
 }
 
-enum OutcomeSource: Hashable, Sendable { case agent, report, command }
-
-enum OutcomeIdentity: Hashable, Sendable {
-    case serial(Int)
-    case command(started: Date, ended: Date)
-}
-
-public struct SidebarSeen: Equatable, Sendable {
-    private var instance: ServerInstance?
-    private var outcomes: [PaneID: [OutcomeSource: OutcomeIdentity]] = [:]
-
-    public init() {}
-
-    func contains(_ pane: PaneID, _ source: OutcomeSource, _ identity: OutcomeIdentity) -> Bool {
-        outcomes[pane]?[source] == identity
-    }
-
-    public mutating func observe(_ snapshot: Snapshot, attended: Bool) {
-        guard snapshot.error == nil else { return }
-        let baseline = instance == nil
-        if instance != snapshot.serverInstance { self = Self(); instance = snapshot.serverInstance }
-        guard baseline || attended || !outcomes.isEmpty else { return }
-        var present: Set<PaneID> = [], client: Item?
-        func visit(_ node: Node) {
-            if case .item(let item) = node {
-                if baseline {
-                    for outcome in item.outcomes { outcomes[item.pane, default: [:]][outcome.source] = outcome.identity }
-                }
-                if outcomes[item.pane] != nil { present.insert(item.pane) }
-                if item.pane == snapshot.client.pane { client = item }
-            }
-            node.children.forEach(visit)
-        }
-        for session in snapshot.sessions { session.nodes.forEach(visit) }
-        for pane in outcomes.keys where !present.contains(pane) { outcomes[pane] = nil }
-        guard attended, let client else { return }
-        for outcome in client.outcomes { outcomes[client.pane, default: [:]][outcome.source] = outcome.identity }
-    }
-}
-
 public func sidebarTitle(_ title: String, messageable: Bool) -> String {
     messageable && !title.hasPrefix("@") ? "@" + title : title
 }
 
 extension Item {
     var isAgent: Bool { agent != nil }
-    var isMessageable: Bool { if case .live(.piAgent) = lifecycle { true } else { false } }
+    var isMessageable: Bool { if case .live(.piAgent) = lifecycle { inbox } else { false } }
     var agent: Report? {
         switch lifecycle {
         case .live(.someAgent(_, let status)), .live(.piAgent(_, let status)), .live(.ssh(_, .agent(_, let status))): status
@@ -103,16 +63,6 @@ extension Item {
         case .live(.terminal(let status)), .live(.ssh(_, .terminal(_, let status))): status
         default: nil
         }
-    }
-
-    var outcomes: [(source: OutcomeSource, identity: OutcomeIdentity, failed: Bool)] {
-        var outcomes: [(source: OutcomeSource, identity: OutcomeIdentity, failed: Bool)] = []
-        if case .idle(let outcome?) = agent?.state { outcomes.append((.agent, .serial(outcome.serial), outcome.result == .failure)) }
-        if case .idle(let outcome?) = shell?.report?.state { outcomes.append((.report, .serial(outcome.serial), outcome.result == .failure)) }
-        if run == nil, case .idle(let exit?) = shell?.phase {
-            outcomes.append((.command, .command(started: exit.startedAt, ended: exit.endedAt), exit.code != 0))
-        }
-        return outcomes
     }
 
     var label: String {
@@ -130,7 +80,7 @@ extension Item {
     }
 
     var caption: String {
-        if case .ended(let result) = lifecycle { return result == .unknown || result == .completed ? "" : result.rawValue }
+        if case .ended(let result) = lifecycle { return result == .completed ? "" : result.rawValue }
         guard let report = agent ?? shell?.report else { return "" }
         let progress: Int? = switch report.state {
         case .running(let progress), .waiting(_, let progress): progress
@@ -139,9 +89,10 @@ extension Item {
         return [report.msg ?? "", progress.map { "\($0)%" } ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
-    var indicatedOutcome: (source: OutcomeSource, identity: OutcomeIdentity, failed: Bool)? {
-        let source: OutcomeSource = agent != nil ? .agent : shell?.report != nil ? .report : .command
-        return outcomes.first { $0.source == source }
+    // The last command of a plain shell, which neither an agent nor a report covers.
+    var lastCommand: ShellStatus.Exit? {
+        guard agent == nil, shell?.report == nil, run == nil, case .idle(let exit?) = shell?.phase else { return nil }
+        return exit
     }
 
     func rowTitle(status: SidebarRow.Status) -> (title: String, quietShell: Bool) {
@@ -151,38 +102,28 @@ extension Item {
         return (quiet ? "Terminal" : sidebarTitle(label, messageable: isMessageable), quiet)
     }
 
-    func indicator(_ seen: SidebarSeen) -> (status: SidebarRow.Status, description: String) {
-        func outcome() -> (SidebarRow.Status, String) {
-            guard let outcome = indicatedOutcome, !seen.contains(pane, outcome.source, outcome.identity) else { return (.quiet, "idle") }
-            return outcome.failed ? (.error, "failed") : (.done, "done")
-        }
+    // The core's mark of a live pane; a run's shell is busy while its run lasts.
+    var indicator: (status: SidebarRow.Status, description: String) {
         if case .ended(let result) = lifecycle {
             let status: SidebarRow.Status = switch result {
             case .completed: .done
             case .failed, .died: .error
-            case .stopped, .unknown: .quiet
+            case .stopped: .quiet
             }
-            return (status, result == .unknown ? "gone" : "gone, " + result.rawValue)
+            return (status, "gone, " + result.rawValue)
         }
-        if let report = agent ?? shell?.report {
-            switch report.state {
-            case .running: return (.running, "running")
-            case .waiting: return (.waiting, "waiting")
-            case .idle: return outcome()
-            }
-        }
-        guard let shell else { return (.quiet, "") }
-        if run != nil { return (.running, "running") }
-        if case .running(_, fullscreen: true) = shell.phase { return (.quiet, "") }
-        switch shell.phase {
-        case .unknown: return (.quiet, "")
+        if run != nil, agent == nil, let shell, shell.report == nil { return (.running, "running") }
+        switch mark {
         case .running: return (.running, "running")
-        case .idle: return outcome()
+        case .waiting: return (.waiting, "waiting")
+        case .done: return (.done, "done")
+        case .failed: return (.error, "failed")
+        case .none_: return (.quiet, "idle")
         }
     }
 }
 
-public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()) -> [SidebarRow] {
+public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
     guard let snapshot else { return [] }
     var rows: [SidebarRow] = []
     for session in snapshot.sessions {
@@ -206,7 +147,7 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                 let panes: [Item] = switch node { case .window(let group): group.children; case .item(let item): [item] }
                 let multiPane = panes.count > 1
                 for item in panes {
-                    let (status, description) = item.indicator(seen)
+                    let (status, description) = item.indicator
                     let target = Snapshot.Position(session: session.id, window: item.window, pane: item.pane)
                     let tail = item.caption
                     let agent = item.isAgent
@@ -236,7 +177,7 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                         case .blocked: .waiting
                         case .done: .done
                         case .error: .error
-                        case .idle, .unknown: .quiet
+                        case .idle: .quiet
                         }
                         let caption = record.msg ?? ""
                         let height = caption.isEmpty ? 32.0 : 48.0
@@ -244,7 +185,7 @@ public func sidebarRows(_ snapshot: Snapshot?, seen: SidebarSeen = SidebarSeen()
                                                kind: .pane(nil),
                                                indent: depth + record.id.split(separator: "/", omittingEmptySubsequences: false).count, height: height,
                                                title: record.title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
-                                               tail: caption, status: [.done, .error].contains(status) && seen.contains(item.pane, item.agent != nil ? .agent : .report, .serial(item.program_status.serial)) ? .quiet : status,
+                                               tail: caption, status: [.done, .error].contains(status) && item.recordsSeen ? .quiet : status,
                                                indicatorDescription: record.state.rawValue,
                                                started: nil, focused: false, agent: true, root: root))
                     }

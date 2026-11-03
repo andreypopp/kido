@@ -1613,7 +1613,10 @@ export interface operations {
     SendPrompt: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @example pane_1 */
+                "Ko-Pane": components["schemas"]["PaneId"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -1649,7 +1652,10 @@ export interface operations {
                 /** @example true */
                 window?: components["schemas"]["WindowOnly"];
             };
-            header?: never;
+            header: {
+                /** @example pane_1 */
+                "Ko-Pane": components["schemas"]["PaneId"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -1712,7 +1718,10 @@ export interface operations {
     StartRun: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+            };
             path?: never;
             cookie?: never;
         };

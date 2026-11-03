@@ -1,5 +1,5 @@
 import Foundation
-import TmuxControl
+import KoModel
 
 public struct NoticeKey: Hashable, Sendable {
     public let owner: String
@@ -10,18 +10,6 @@ public struct NoticeTarget: Codable, Equatable, Sendable {
     public let host: String
     public let instance: ServerInstance
     public let position: Snapshot.Position
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: Field.self)
-        try c.encode(host, forKey: "host")
-        var instanceFields = c.nestedContainer(keyedBy: Field.self, forKey: "instance")
-        try instanceFields.encode(instance.startedAt, forKey: "started_at")
-        try instanceFields.encode(instance.pid, forKey: "pid")
-        var positionFields = c.nestedContainer(keyedBy: Field.self, forKey: "position")
-        try positionFields.encode(position.session.description, forKey: "session")
-        try positionFields.encode(position.window.description, forKey: "window")
-        try positionFields.encode(position.pane.description, forKey: "pane")
-    }
 }
 
 public struct Notice: Equatable, Sendable {
@@ -39,13 +27,11 @@ public struct NotifierEffects: Equatable, Sendable {
     public var withdraw: [NoticeKey] = []
 }
 
-/// Step each window owner independently. Keep `fresh` true through error snapshots,
-/// clearing it only after stepping the first error-free snapshot of a restarted feed.
+/// Step each window owner independently. A pane's notice follows the core's mark: it is posted when the
+/// mark turns to waiting or failed in a window that the user does not look at, and withdrawn when the mark
+/// turns back. `fresh` takes the first marks of an owner, or of a restarted server, as they are.
 public struct NotifierState: Equatable, Sendable {
-    private enum Reason: Equatable, Sendable {
-        case waiting
-        case failure(OutcomeSource, OutcomeIdentity)
-    }
+    private enum Reason: Equatable, Sendable { case waiting, failed }
     private enum Entry: Equatable, Sendable {
         case posted(Reason), acknowledged(Reason)
         var reason: Reason {
@@ -78,8 +64,7 @@ public struct NotifierState: Equatable, Sendable {
     }
 
     public mutating func step(owner: String, host: String, identity: String? = nil, snapshot: Snapshot,
-                              fresh: Bool, seen: SidebarSeen, shown: Set<WindowID>, appActive: Bool) -> NotifierEffects {
-        guard snapshot.error == nil else { return NotifierEffects() }
+                              fresh: Bool, shown: Set<WindowID>, appActive: Bool) -> NotifierEffects {
         let changed = owners[owner]?.instance != snapshot.serverInstance || owners[owner]?.host != host
         var effects = changed ? forget(owner: owner) : NotifierEffects()
         var state = owners[owner] ?? WindowState(host: host, instance: snapshot.serverInstance)
@@ -95,16 +80,13 @@ public struct NotifierState: Equatable, Sendable {
             }
             guard case .item(let item) = node, present.insert(item.pane).inserted else { return }
             let key = NoticeKey(owner: owner, pane: item.pane)
-            let status = item.indicator(seen).status
-            let reason: Reason?
-            if item.run != nil, nested { reason = nil }
-            else if case .live = item.lifecycle {
-                if status == .waiting { reason = .waiting }
-                else if status == .error, let outcome = item.indicatedOutcome {
-                    if outcome.source == .command, case .idle(let exit?) = item.shell?.phase, exit.code == 130 { reason = nil }
-                    else { reason = .failure(outcome.source, outcome.identity) }
-                } else { reason = nil }
-            } else { reason = nil }
+            let status = item.indicator.status
+            let reason: Reason? = switch (item.lifecycle, item.mark) {
+            case _ where item.run != nil && nested: nil
+            case (.live, .waiting): .waiting
+            case (.live, .failed): item.lastCommand?.code == 130 ? nil : .failed
+            default: nil
+            }
             let previous = state.entries[item.pane]
             guard let reason else {
                 if case .posted = previous { effects.withdraw.append(key) }
@@ -119,13 +101,10 @@ public struct NotifierState: Equatable, Sendable {
             guard previous?.reason != reason else { return }
             let caption = item.caption
             let body: String
-            switch reason {
-            case .waiting: body = caption.isEmpty ? "Waiting" : "Waiting: " + caption
-            case .failure(.command, _):
-                if case .idle(let exit?) = item.shell?.phase {
-                    body = "Exit \(exit.code): " + exit.command
-                } else { body = "Failed" }
-            case .failure: body = caption.isEmpty ? "Failed" : "Failed: " + caption
+            switch (reason, item.lastCommand) {
+            case (.waiting, _): body = caption.isEmpty ? "Waiting" : "Waiting: " + caption
+            case (.failed, let exit?): body = "Exit \(exit.code): " + exit.command
+            case (.failed, nil): body = caption.isEmpty ? "Failed" : "Failed: " + caption
             }
             var subtitle = session.name
             if host != "local" { subtitle = "\(identity ?? String(host.dropFirst(4))) · \(subtitle)" }

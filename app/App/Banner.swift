@@ -42,4 +42,10 @@ final class Banner: NSView {
         isHidden = false
         window?.makeFirstResponder(nil)
     }
+
+    #if KIDO_VISUAL || KIDO_STRESS
+    var testText: (title: String, detail: String, button: String?) {
+        (title.stringValue, detail.stringValue, button.isHidden ? nil : button.title)
+    }
+    #endif
 }

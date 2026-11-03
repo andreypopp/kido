@@ -1191,7 +1191,7 @@ impl State {
                 (current, notify)
             }
             Change::Select(selection) => match client.select(layout, selection) {
-                Some(current) => (Some(current), selection.pane != Some(current.pane)),
+                Some(current) => (Some(current), true),
                 None => return wire.ws.reject(wire.out, "invalid"),
             },
             Change::Switch(switch) => match client.switch(layout, switch) {

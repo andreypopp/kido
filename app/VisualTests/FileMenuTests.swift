@@ -63,24 +63,19 @@ import XCTest
     }
 
     func testDockReopenWithoutAWindowOpensAndConnectsLocal() async throws {
-        let dir = "/tmp/kr-" + UUID().uuidString.prefix(8)
-        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: serverEnvironment)
-        XCTAssertEqual(result.status, 0, result.err)
-        let server = try JSONDecoder().decode(Server.self, from: Data(result.out.utf8))
+        let dir = try await koLaunched()
         let board = NSPasteboard(name: .init("kr-" + UUID().uuidString))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let app = AppDelegate(runtime: runtime)
         addTeardownBlock { @MainActor in
             app.owners.forEach { $0.close() }
             board.releaseGlobally()
-            _ = try? await Child.run(server.tmux, ["-u", "-S", server.socket, "kill-server"], env: tools.environment)
-            try? FileManager.default.removeItem(atPath: dir)
         }
         var dialed: [WindowOwner.DialCause] = []
         app.routes.ready(isDefaultLaunch: true) { host, cause in
             dialed.append(cause)
             let owner = app.open(host, start: false, cause: cause)
-            owner?.testEndpoint = Endpoint(server: server, kido: tools.kido)
+            owner?.testServerDir = dir
             owner?.start()
         }
         for round in 1...2 {

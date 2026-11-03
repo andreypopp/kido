@@ -405,6 +405,7 @@ dependencies = [
  "ko_server",
  "ko_sys",
  "proptest",
+ "schemars",
  "serde",
  "serde_json",
  "tungstenite",

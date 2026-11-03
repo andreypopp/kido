@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Seeded stress run of a KIDO_STRESS build of Kido.app against a private tmux server.
+"""Seeded stress run of a KIDO_STRESS build of Kido.app against a private ko server.
 
 The window stays off screen (KIDO_APP_BACKGROUND=1); see docs/design-app.md, "Stress harness".
 """
-import argparse, collections, glob, json, os, random, signal, subprocess, sys, tempfile, time
+import argparse, base64, collections, glob, json, os, random, re, signal, subprocess, sys, tempfile, time
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--app', required=True)
-ap.add_argument('--tmux', required=True)
+ap.add_argument('--ko', required=True)
 ap.add_argument('--seed', type=int, default=1)
 ap.add_argument('--duration', type=float, default=60)
 ap.add_argument('--find', type=int, default=1)
@@ -16,8 +16,7 @@ args = ap.parse_args()
 
 out = os.path.abspath(args.out)
 os.makedirs(out + '/config/kido', exist_ok=True)
-server = tempfile.mkdtemp(prefix='kido-stress-', dir='/tmp')
-sock = server + '/socket'
+server = tempfile.mkdtemp(prefix='ko-stress-', dir='/tmp')
 try:
     os.unlink(out + '/ui.lock')
 except FileNotFoundError:
@@ -25,76 +24,99 @@ except FileNotFoundError:
 rng = random.Random(args.seed)
 counts = collections.Counter()
 open(out + '/config/kido/kido-app.conf', 'w').write('scrollback-limit = 8388608\n')
-log = open(out + '/actions.jsonl', 'w', buffering=1)
+actions = open(out + '/actions.jsonl', 'w', buffering=1)
 
 
-def t(*a):
-    if a[0] not in ('list-clients', 'list-windows', 'list-panes', 'list-sessions', 'display-message'):
-        log.write(json.dumps(dict(event='tmux-command', command=a, uptime=time.monotonic())) + '\n')
-    server_pid = t('display-message', '-p', '#{pid}') if a[0] == 'kill-server' else ''
-    if a[0] in ('kill-pane', 'kill-window', 'kill-session', 'kill-server'):
-        if a[0] == 'kill-pane':
-            victims = [a[-1]]
-        elif a[0] == 'kill-window':
-            victims = rows('list-panes', '-t', a[-1], '-F', '#{pane_id}')
-        elif a[0] == 'kill-session':
-            victims = rows('list-panes', '-s', '-t', a[-1], '-F', '#{pane_id}')
-        else:
-            victims = rows('list-panes', '-a', '-F', '#{pane_id}')
-        log.write(json.dumps(dict(event='panes-killed', panes=victims, command=a)) + '\n')
+class log:
+    """actions.jsonl, echoed to stdout as each action happens."""
+    @staticmethod
+    def write(line):
+        actions.write(line)
+        sys.stdout.write(line)
+        sys.stdout.flush()
+
+
+def ko(*a, body=None):
+    """One request to the private server; the parsed answer, or None when it failed."""
+    command = [args.ko, *a, '--server', server]
+    log.write(json.dumps(dict(event='ko', command=a, body=body, uptime=time.monotonic())) + '\n')
+    if body is not None:
+        path = server + '/stress-body.json'
+        open(path, 'w').write(json.dumps(body))
+        command += ['--input', path]
     try:
-        p = subprocess.run([args.tmux, '-S', sock, *a], capture_output=True, text=True, timeout=8, env=helper_env)
-        if p.returncode:
-            log.write(json.dumps(dict(command=a, error=p.stderr.strip())) + '\n')
-        if a[0] == 'kill-server' and server_pid.isdecimal():
-            deadline = time.monotonic() + 8
-            while time.monotonic() < deadline:
-                try:
-                    os.kill(int(server_pid), 0)
-                except ProcessLookupError:
-                    break
-                time.sleep(0.01)
-            else:
-                state = subprocess.run(['/bin/ps', '-p', server_pid, '-o', 'pid=,ppid=,stat=,command='], capture_output=True, text=True, timeout=3).stdout
-                log.write(json.dumps(dict(event='server-exit-timeout', process=state)) + '\n')
-                if state and 'Z' not in state.split(None, 3)[2]:
-                    raise RuntimeError('private tmux server did not exit after kill-server: ' + state)
-        return p.stdout.strip()
+        p = subprocess.run(command, capture_output=True, text=True, timeout=8, env=helper_env)
     except subprocess.TimeoutExpired:
-        return ''
+        log.write(json.dumps(dict(command=a, error='timeout')) + '\n')
+        return None
+    if p.returncode:
+        log.write(json.dumps(dict(command=a, error=p.stderr.strip())) + '\n')
+        return None
+    try:
+        return json.loads(p.stdout) if p.stdout.strip() else {}
+    except ValueError:
+        return p.stdout
 
 
-def rows(*a):
-    return t(*a).splitlines()
+def api(method, path, body=None):
+    return ko('api', '-X', method, path, body=body) if method != 'GET' else ko('api', path)
+
+
+def typed(text):
+    return {'type': 'text', 'data': base64.b64encode(text.encode()).decode()}
+
+
+def pane(command=None):
+    return {'pane': {'new': {'command': {'type': 'shell', 'command': command}} if command else {}}}
+
+
+def edit(change):
+    """One layout edit through ko, applied again by the core after a revision conflict; what it answers, or None."""
+    return ko('layout', 'edit', json.dumps(change))
+
+
+def windows():
+    current = api('GET', '/layout')
+    return [(s, w) for s in current['layout']['sessions'] for w in s['windows']] if isinstance(current, dict) and 'layout' in current else []
+
+
+def panes():
+    listed = api('GET', '/panes')
+    return [p['id'] for p in listed] if isinstance(listed, list) else []
+
+
+def leaves(tree):
+    return [tree['pane']] if 'pane' in tree else [p for c in tree['children'] for p in leaves(c)]
 
 
 def setup(full):
-    kido = os.path.join(os.path.dirname(args.tmux), 'kido')
-    endpoint = subprocess.run([kido, 'server', '--server', server], capture_output=True, text=True, timeout=20, env=helper_env)
-    if endpoint.returncode:
-        raise RuntimeError('private server launch failed: ' + endpoint.stdout + endpoint.stderr)
-    log.write(json.dumps(dict(event='server-started', endpoint=json.loads(endpoint.stdout))) + '\n')
-    initial = rows('list-sessions', '-F', '#{session_id}')
-    t('new-session', '-d', '-s', 's1', '-x', '120', '-y', '40')
-    for session in initial:
-        t('kill-session', '-t', session)
-    t('set-option', '-g', 'history-limit', '1100000')
-    t('set-option', '-g', 'remain-on-exit', 'on')
+    started = subprocess.Popen([args.ko, 'server', '--server', server], env=helper_env, stdout=subprocess.DEVNULL, stderr=open(out + '/server.log', 'a'))
+    deadline = time.monotonic() + 20
+    while api('GET', '/version') is None:
+        if time.monotonic() > deadline or started.poll() is not None:
+            raise RuntimeError('private server did not start')
+        time.sleep(0.05)
+    sessions = []
     for s in range(1, 5):
-        if s > 1:
-            t('new-session', '-d', '-s', f's{s}')
+        ws = []
         for w in range(16 if full else 4):
-            wid = t('new-window', '-d', '-P', '-F', '#{window_id}', '-t', f's{s}', '-n', f'w{w}')
-            for x in range(2):
-                t('split-window', '-d', '-h' if x == 0 else '-v', '-t', wid)
-            if w == 0:
-                t('send-keys', '-t', wid, 'while :; do date; sleep 0.05; done', 'Enter')
+            first = pane('while :; do date; sleep 0.05; done') if w == 0 else pane()
+            ws.append({'name': f'w{w}', 'tree': {'split': 'h', 'children': [first, {'split': 'v', 'children': [pane(), pane()]}]}})
+        sessions.append({'name': f's{s}', 'windows': ws})
     for name, n in [('log-1m', 1000000), ('log-100k', 100000)]:
-        wid = t('new-window', '-d', '-P', '-F', '#{window_id}', '-t', 's1', '-n', name)
-        t('send-keys', '-t', wid, f"seq 1 {n}; while :; do printf 'INFO built ERROR %s\\n' $RANDOM; sleep 0.03; done", 'Enter')
-        t('new-pane', '-d', '-t', f's1:{name}', '-X', '20', '-Y', '5', '-x', '45', '-y', '15')
-    t('new-window', '-d', '-t', 's2', '-n', 'seq', 'seq 2000000')
-    t('new-window', '-d', '-t', 's3', '-n', 'yes', 'yes | head -50000000')
+        sessions[0]['windows'].append({'name': name, 'tree': pane(f"seq 1 {n}; while :; do printf 'INFO built ERROR %s\\n' $RANDOM; sleep 0.03; done"),
+                                       'floats': [{'x': 20, 'y': 5, 'cols': 45, 'rows': 15, **pane()}]})
+    sessions[1]['windows'].append({'name': 'seq', 'tree': pane('seq 2000000; sleep 3600')})
+    sessions[2]['windows'].append({'name': 'yes', 'tree': pane('yes | head -50000000; sleep 3600')})
+    if api('PUT', '/layout', {'revision': 0, 'layout': {'sessions': sessions}}) is None:
+        raise RuntimeError('the stress layout was refused')
+    log.write(json.dumps(dict(event='server-started')) + '\n')
+
+
+def app_client():
+    """The app's client id, as the KIDO_STRESS build logs it at each welcome."""
+    found = re.findall(r'^kido-app stress client (client_\d+)$', open(out + '/stderr.log', errors='replace').read(), re.M)
+    return found[-1] if found else None
 
 
 def reports():
@@ -125,17 +147,9 @@ def app_descendants(pid):
         owned.update(children)
 
 
-def app_children(pid):
-    for line in subprocess.check_output(['ps', '-axo', 'pid=,ppid=,args='], text=True, errors='replace').splitlines():
-        bits = line.split(None, 2)
-        if len(bits) == 3 and int(bits[1]) == pid and 'rpc' in bits[2].split():
-            yield int(bits[0])
-
-
-env = {k: v for k, v in os.environ.items() if not k.startswith('KIDO_AGENT_') and k not in ('TMUX', 'TMUX_PANE', 'KIDO_STATE_DIR', 'KIDO_TMUX')}
+env = {k: v for k, v in os.environ.items() if not k.startswith('KIDO_AGENT_') and k not in ('TMUX', 'TMUX_PANE', 'KIDO_STATE_DIR', 'KO_PANE', 'KO_SERVER')}
 os.makedirs(out + '/home', exist_ok=True)
-os.makedirs(out + '/tmp', exist_ok=True)
-env.update(HOME=out + '/home', XDG_STATE_HOME=out + '/state', TMUX_TMPDIR=out + '/tmp', KIDO_APP_BACKGROUND='1', KIDO_APP_SERVER=server, KIDO_APP_TMUX=args.tmux,
+env.update(HOME=out + '/home', XDG_STATE_HOME=out + '/state', KIDO_APP_BACKGROUND='1', KIDO_APP_SERVER=server,
            KIDO_APP_DEBUG='1', STRESS_UI_LOCK=out + '/ui.lock', XDG_CONFIG_HOME=out + '/config',
            STRESS_SEED=str(args.seed), STRESS_DURATION=str(args.duration))
 if not args.find:
@@ -153,13 +167,17 @@ if env.get('KIDO_MTC_VERIFY') == '1':
 
 helper_env = {k: v for k, v in env.items() if k not in ('DYLD_INSERT_LIBRARIES', 'MTC_RESET_INSERT_LIBRARIES')}
 before = reports()
-setup(True)
+try:
+    setup(True)
+except Exception:
+    ko('kill-server')
+    subprocess.run(['rm', '-rf', server], timeout=10)
+    raise
 errlog = open(out + '/stderr.log', 'w')
 start = time.time()
 p = subprocess.Popen([args.app], env=env, stdout=errlog, stderr=errlog)
 mtc_mapped = not checker
 if checker:
-    helper_env = {k: v for k, v in os.environ.items() if k not in ('DYLD_INSERT_LIBRARIES', 'MTC_RESET_INSERT_LIBRARIES')}
     deadline = time.monotonic() + 15
     with open(out + '/mapped-images.log', 'w') as images:
         while time.monotonic() < deadline and p.poll() is None:
@@ -171,8 +189,6 @@ if checker:
             time.sleep(0.1)
 steps = int(args.duration / 0.4)
 previous = set()
-feed_pending = None
-feed_restart_failed = False
 known_helpers = {}
 unreaped_helpers = []
 try:
@@ -180,92 +196,78 @@ try:
         known_helpers.update(app_descendants(p.pid))
         if p.poll() is not None:
             break
-        if feed_pending:
-            killed, deadline = feed_pending
-            if any(pid != killed for pid in app_children(p.pid)):
-                counts['feed-restarted'] += 1
-                feed_pending = None
-            elif time.monotonic() > deadline:
-                feed_restart_failed = True
-                feed_pending = None
-        clients = [line.split('\t', 1) for line in rows('list-clients', '-F', '#{client_name}\t#{client_flags}')]
-        candidates = [name for name, flags in clients if 'no-output' not in flags.split(',')]
-        c = rng.choice(candidates or [None])
-        ws = rows('list-windows', '-a', '-F', '#{session_name}:#{window_index}')
-        panes = rows('list-panes', '-a', '-F', '#{pane_id}')
-        current = set(panes)
-        if previous - current:
-            log.write(json.dumps(dict(event='panes-gone', panes=sorted(previous - current))) + '\n')
-        previous = current
-        target = rng.choice(panes or [None])
         if os.path.exists(out + '/ui.lock'):
             time.sleep(0.1)
             continue
-        a = 0 if i % 100 < 35 else rng.randrange(25)
+        current = set(panes())
+        if previous - current:
+            log.write(json.dumps(dict(event='panes-gone', panes=sorted(previous - current))) + '\n')
+        previous = current
+        target = rng.choice(sorted(current) or [None])
+        ws = windows()
+        a = 0 if i % 100 < 35 else rng.randrange(20)
         counts[a] += 1
-        log.write(json.dumps(dict(i=i, elapsed=time.time() - start, uptime=time.monotonic(), action=a, pane=target, client=c, clients=clients)) + '\n')
+        log.write(json.dumps(dict(i=i, elapsed=time.time() - start, uptime=time.monotonic(), action=a, pane=target)) + '\n')
         if i in (steps * 2 // 5, steps * 4 // 5):
-            t('kill-server')
+            ko('kill-server')
+            log.write(json.dumps(dict(event='panes-killed', panes=sorted(current))) + '\n')
             setup(False)
-        elif a == 0 and c:
-            t('switch-client', '-c', c, '-t', 's1:log-1m' if (i // 100) % 2 else 's1:log-100k')
-        elif a in (1, 2, 3) and c and ws:
-            t('switch-client', '-c', c, '-t', rng.choice(ws))
+            counts['server-restarted'] += 1
+        elif a in (0, 1, 2, 3) and ws:
+            name = 'log-1m' if (i // 100) % 2 else 'log-100k'
+            pick = next((w for s, w in ws if w['name'] == name), None) if a == 0 else rng.choice(ws)[1]
+            client = app_client()
+            if pick and client and api('POST', f'/clients/{client}/select', {'window': pick['id']}) is not None:
+                counts['client-select'] += 1
         elif a == 4 and target:
-            t('split-window', '-d', '-t', target)
+            edit({'type': 'split', 'pane': target, 'axis': rng.choice('hv'), 'new': {}})
         elif a == 5 and target:
-            t('kill-pane', '-t', target)
-        elif a == 6 and ws:
-            t('kill-window', '-t', rng.choice(ws))
+            log.write(json.dumps(dict(event='panes-killed', panes=[target])) + '\n')
+            api('DELETE', f'/panes/{target}')
+        elif a == 6 and len(ws) > 4:
+            _, w = rng.choice(ws)
+            log.write(json.dumps(dict(event='panes-killed', panes=leaves(w['tree']) + [f['pane'] for f in w.get('floats', [])])) + '\n')
+            api('DELETE', f'/windows/{w["id"]}')
         elif a == 7 and target:
-            t('resize-pane', '-Z', '-t', target)
+            edit({'type': 'toggle_zoom', 'pane': target})
         elif a == 8 and target:
-            t('resize-pane', '-' + rng.choice('LRUD'), str(rng.randrange(1, 10)), '-t', target)
-        elif a == 9 and target:
-            t('send-keys', '-t', target, 'seq 100000', 'Enter')
-        elif a in (10, 11) and ws:
-            t('new-pane', '-d', '-t', 's1:log-1m', '-X', '30', '-Y', '12', '-x', '45', '-y', '15')
-        elif a == 12 and target:
-            t('move-pane', '-t', target, '-X', str(rng.randrange(150)), '-Y', str(rng.randrange(50)))
-        elif a == 13 and target:
-            t('resize-pane', '-t', target, '-x', str(rng.randrange(10, 80)), '-y', str(rng.randrange(5, 40)))
-        elif a == 14 and c:
-            cell = t('display-message', '-c', c, '-p', '#{client_cell_width}x#{client_cell_height}')
-            t('refresh-client', '-t', c, '-C', f'{rng.randrange(90, 190)}x{rng.randrange(30, 70)}x{cell}')
-        elif a == 15 and feed_pending is None:
-            for pid in app_children(p.pid):
-                try:
-                    log.write(json.dumps(dict(event='feed-killed', pid=pid, app_pid=p.pid)) + '\n')
-                    os.kill(pid, signal.SIGTERM)
-                    counts['feed-killed'] += 1
-                    feed_pending = (pid, time.monotonic() + 10)
-                except ProcessLookupError:
-                    pass
-        elif a == 17 and c and i > 200:
-            current = t('display-message', '-c', c, '-p', '#{session_name}')
-            if current != 's1':
-                t('kill-session', '-t', current)
-        elif a == 18:
-            for s in ('s2', 's3', 's4'):
-                if s not in t('list-sessions', '-F', '#{session_name}'):
-                    t('new-session', '-d', '-s', s)
-        elif a == 19 and target:
-            t('clear-history', '-t', target)
-        elif a == 20 and target:
-            t('select-pane', '-t', target)
-        elif a == 21 and ws:
-            t('new-window', '-d', '-t', rng.choice(ws).split(':')[0])
-        elif a == 22 and ws:
-            t('rename-window', '-t', rng.choice(ws), f'renamed-{i}')
+            api('POST', f'/panes/{target}/input', typed('seq 100000\r'))
+        elif a in (9, 10) and ws:
+            host = next((w for _, w in ws if w['name'] == 'log-1m'), None)
+            made = host and edit({'type': 'split', 'pane': leaves(host['tree'])[0], 'axis': 'h', 'new': {}})
+            if isinstance(made, dict) and made.get('created', {}).get('type') == 'pane':
+                edit({'type': 'float', 'pane': made['created']['pane'], 'x': rng.randrange(60), 'y': rng.randrange(20), 'cols': 45, 'rows': 15})
+        elif a == 11:
+            floats = [f['pane'] for _, w in ws for f in w.get('floats', [])]
+            if floats:
+                edit({'type': 'float', 'pane': rng.choice(floats), 'x': rng.randrange(150), 'y': rng.randrange(50)})
+        elif a == 12 and i > 200:
+            sessions = sorted({s['id'] for s, _ in ws})
+            if len(sessions) > 1:
+                dropped = rng.choice(sessions[1:])
+                log.write(json.dumps(dict(event='panes-killed', panes=[p for s, w in ws if s['id'] == dropped for p in leaves(w['tree']) + [f['pane'] for f in w.get('floats', [])]])) + '\n')
+                api('DELETE', f'/sessions/{dropped}')
+        elif a == 13:
+            if len({s['id'] for s, _ in ws}) < 4:
+                edit({'type': 'add_session', 'name': f's-{i}', 'new': {}})
+        elif a == 14 and target:
+            api('POST', f'/panes/{target}/clear_history')
+        elif a == 15 and ws:
+            session, window = rng.choice(ws)
+            edit({'type': 'add_window', 'session': session['id'], 'after': window['id'], 'new': {}})
+        elif a == 16 and ws:
+            edit({'type': 'rename_window', 'window': rng.choice(ws)[1]['id'], 'name': f'renamed-{i}'})
             counts['rename-window'] += 1
-        elif a == 23 and len(ws) > 1:
-            source, dest = rng.sample(ws, 2)
-            t('swap-window', '-d', '-s', source, '-t', dest)
-            counts['swap-window'] += 1
-        elif a == 24 and target:
-            kido = os.path.join(os.path.dirname(args.tmux), 'kido')
-            t('send-keys', '-t', target, 'C-c')
-            t('send-keys', '-t', target, f'{kido} run --name stress-child-{i} -- sleep 8', 'Enter')
+        elif a == 17 and len(ws) > 1:
+            session = rng.choice(ws)[0]
+            order = [w['id'] for w in session['windows']]
+            if len(order) > 1:
+                x, y = rng.sample(range(len(order)), 2)
+                order[x], order[y] = order[y], order[x]
+                edit({'type': 'reorder_windows', 'session': session['id'], 'order': order})
+                counts['swap-window'] += 1
+        elif a == 18 and target:
+            api('POST', f'/panes/{target}/input', typed(f'\x03{args.ko} run --name stress-child-{i} -- sleep 8\r'))
             counts['child-window-attempted'] += 1
         due = start + (i + 1) * 0.4
         time.sleep(max(0, due - time.time()))
@@ -290,7 +292,8 @@ finally:
             os.kill(pid, signal.SIGKILL)
     if unreaped_helpers:
         log.write(json.dumps(dict(event='helpers-survived-app', pids=unreaped_helpers, app_exit=p.returncode)) + '\n')
-    t('kill-server')
+    ko('kill-server')
+    subprocess.run(['rm', '-rf', server], timeout=10)
 
 lines = open(out + '/stderr.log', errors='replace').read().splitlines()
 app = []
@@ -306,8 +309,6 @@ shown = [l for l in steps_logged if l['visible'] or l['key'] or l['main'] or l['
 new = sorted(path for path in reports() - before
              if report_matches(open(path).read(), p.pid))
 problems = []
-if feed_restart_failed:
-    problems.append('rpc did not restart within 10 seconds')
 if not mtc_mapped:
     problems.append('Main Thread Checker not mapped in app pid ' + str(p.pid))
 floating = False
@@ -337,7 +338,7 @@ for line in lines:
     elif 'client-size-send ' in line:
         size = line.rsplit('client-size-send ', 1)[1].strip()
         if floating and size not in (last_size, collapsed_size):
-            floating_errors.append('floating changed terminal size via refresh-client -C: ' + line)
+            floating_errors.append('floating changed the terminal size: ' + line)
         elif floating:
             floating_deferred += 1
         last_size = size
@@ -354,7 +355,7 @@ if done:
     for action in ('tabs', 'sidebar-jump', 'sidebar-mode'):
         if not done['counts'].get(action + '-delivered'):
             problems.append('UI action never delivered: ' + action)
-    for kind in ('displayed-window', 'tab-order', 'shortcut-order', 'one-rpc-jump', 'floating-frame', 'floating-dismiss', 'floating-no-refresh'):
+    for kind in ('displayed-window', 'tab-order', 'shortcut-order', 'jump-selects', 'floating-frame', 'floating-dismiss', 'floating-no-refresh'):
         if not done['counts'].get(kind + '-verified'):
             problems.append('UI verification never ran: ' + kind)
 gone = {event['detail'] for event in app if event.get('event') == 'drag-killed'}
@@ -383,7 +384,7 @@ if new:
 if shown:
     problems.append(f'{len(shown)} steps saw the window visible, key, main, active or on screen: {shown[0]}')
 summary = dict(seed=args.seed, find=args.find, duration=time.time() - start, exit=p.returncode,
-               tmux_actions=dict(counts), app_actions=done and done['counts'], app_steps=len(steps_logged),
+               server_actions=dict(counts), app_actions=done and done['counts'], app_steps=len(steps_logged),
                window_never_visible_key_main_active=not shown, out=out, problems=problems)
 open(out + '/summary.json', 'w').write(json.dumps(summary, indent=2))
 print(json.dumps(summary))

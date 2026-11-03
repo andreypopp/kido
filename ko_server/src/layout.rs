@@ -6,7 +6,7 @@ use ko_pane_wire::frame::Dim;
 use crate::ids::{Name, PaneId, SessionId, WindowId};
 use crate::protocol::{
     Axis, CellPixels, Cells, Command, CreatePane, DraftFloat, DraftLayout, DraftLeaf, DraftWindow,
-    Float, Layout, Leaf, Node, PaneRef, PutLayout, Revision, Session, Snapshot, Window,
+    Float, Layout, Leaf, Node, PaneRef, PutLayout, Revision, Session, Snapshot, Tile, Window, pick,
 };
 use crate::vars::Vars;
 
@@ -294,41 +294,13 @@ struct FloatIn {
     title: String,
 }
 
-fn pick<T>(axis: Axis, cols: T, rows: T) -> T {
-    match axis {
-        Axis::Horizontal => cols,
-        Axis::Vertical => rows,
+impl Tile for Raw {
+    fn pane_id(&self) -> Option<PaneId> {
+        Some(self.pane)
     }
-}
 
-fn minimum<L>(node: &Node<L>, axis: Axis) -> usize {
-    match node {
-        Node::Leaf(_) => 1,
-        Node::Split { split, children } => {
-            let mins = children.iter().map(|child| minimum(child, axis));
-            if *split == axis {
-                mins.sum::<usize>() + children.len().saturating_sub(1)
-            } else {
-                mins.max().unwrap_or(1)
-            }
-        }
-    }
-}
-
-fn known(node: &Node<Raw>, axis: Axis) -> Option<usize> {
-    match node {
-        Node::Leaf(raw) => pick(axis, raw.cols, raw.rows),
-        Node::Split { split, children } => {
-            let sizes: Vec<usize> = children
-                .iter()
-                .filter_map(|child| known(child, axis))
-                .collect();
-            if *split == axis {
-                (!sizes.is_empty()).then(|| sizes.iter().sum::<usize>() + sizes.len() - 1)
-            } else {
-                sizes.into_iter().max()
-            }
-        }
+    fn extent(&self, axis: Axis) -> Option<usize> {
+        pick(axis, self.cols, self.rows)
     }
 }
 
@@ -336,7 +308,7 @@ fn shares(children: &[Node<Raw>], axis: Axis, total: usize) -> Vec<usize> {
     let count = children.len();
     let dividers = count.saturating_sub(1);
     let room = total.saturating_sub(dividers);
-    let mut prefs: Vec<Option<usize>> = children.iter().map(|child| known(child, axis)).collect();
+    let mut prefs: Vec<Option<usize>> = children.iter().map(|child| child.known(axis)).collect();
     if prefs.iter().all(Option::is_none) {
         prefs = (0..count)
             .map(|index| Some(room / count + usize::from(index < room % count)))
@@ -362,7 +334,7 @@ fn shares(children: &[Node<Raw>], axis: Axis, total: usize) -> Vec<usize> {
     }
     let sizes: Vec<usize> = prefs.into_iter().flatten().collect();
     let sum = sizes.iter().sum::<usize>();
-    let mins: Vec<usize> = children.iter().map(|child| minimum(child, axis)).collect();
+    let mins: Vec<usize> = children.iter().map(|child| child.minimum(axis)).collect();
     let mut left = total;
     let mut out = Vec::with_capacity(count);
     for (index, size) in sizes.iter().enumerate() {
@@ -466,8 +438,8 @@ fn place(floats: Vec<FloatIn>, cols: usize, rows: usize) -> Vec<Float> {
 fn extent<L>(tree: &Node<L>, floats: bool, (cols, rows): (usize, usize)) -> (usize, usize) {
     let outer = if floats { 3 } else { 1 };
     (
-        cols.max(minimum(tree, Axis::Horizontal)).max(outer),
-        rows.max(minimum(tree, Axis::Vertical)).max(outer),
+        cols.max(tree.minimum(Axis::Horizontal)).max(outer),
+        rows.max(tree.minimum(Axis::Vertical)).max(outer),
     )
 }
 
@@ -1877,8 +1849,8 @@ mod tests {
             prop_assert_eq!(
                 (usize::from(smallest.cols.get()), usize::from(smallest.rows.get())),
                 (
-                    minimum(&smallest.tree, Axis::Horizontal).max(outer),
-                    minimum(&smallest.tree, Axis::Vertical).max(outer)
+                    smallest.tree.minimum(Axis::Horizontal).max(outer),
+                    smallest.tree.minimum(Axis::Vertical).max(outer)
                 )
             );
             document.resize_window(start.id, start.cols, start.rows, None);

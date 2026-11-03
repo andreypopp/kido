@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import KoModel
 import Testing
 @testable import TmuxControl
 
@@ -8,7 +9,7 @@ func floatingGeometry(pixel: CGFloat) {
     let cell = CGSize(width: 8, height: 17)
     let g = Geometry(x: 10, y: 8, width: 20, height: 10)
     let root = Node.pane(Pane(id: PaneID(number: 0), index: 0,
-        geometry: Geometry(x: 0, y: 0, width: 100, height: 40), focus: .active, layer: .tiled))
+        geometry: Geometry(x: 0, y: 0, width: 100, height: 40), active: true, layer: .tiled))
     let layout = PaneLayout(root: root, bounds: CGRect(x: 0, y: 0, width: 824, height: 750), cell: cell, pixel: pixel)
     let initial = layout.frame(g)
     let moved = initial.offsetBy(dx: 13.3, dy: 3.1)
@@ -66,7 +67,7 @@ func floatingGeometry(pixel: CGFloat) {
 func paddedLayout(area: CGSize, pixel: CGFloat) {
     let cell = CGSize(width: 8, height: 17)
     func pane(_ id: UInt32, _ x: Int, _ y: Int, _ width: Int, _ height: Int) -> Node {
-        .pane(Pane(id: PaneID(number: id), index: Int(id), geometry: Geometry(x: x, y: y, width: width, height: height), focus: .unvisited, layer: .tiled))
+        .pane(Pane(id: PaneID(number: id), index: Int(id), geometry: Geometry(x: x, y: y, width: width, height: height), active: false, layer: .tiled))
     }
     let bounds = CGRect(origin: .zero, size: area)
     let client = PaneLayout(root: pane(0, 0, 0, 1, 1), bounds: bounds, cell: cell, pixel: pixel).client
@@ -160,7 +161,7 @@ func tiledPlacement(pixel: CGFloat) {
     let top = Geometry(x: 0, y: 0, width: 80, height: 14)
     let interior = Geometry(x: 0, y: 15, width: 80, height: 15)
     let panes = [top, interior].enumerated().map { index, geometry in
-        Node.pane(Pane(id: PaneID(number: UInt32(index)), index: index, geometry: geometry, focus: .active, layer: .tiled))
+        Node.pane(Pane(id: PaneID(number: UInt32(index)), index: index, geometry: geometry, active: true, layer: .tiled))
     }
     let layout = PaneLayout(root: .split(.topBottom, g, panes), bounds: bounds, cell: cell, pixel: pixel)
     let upper = layout.tiled(top, alternate: false), lower = layout.tiled(interior, alternate: false)
@@ -186,7 +187,7 @@ func tiledPlacement(pixel: CGFloat) {
     let alternate = layout.tiled(top, alternate: true)
     #expect(alternate.insets.top == 0 && alternate.content == upper.grid)
     #expect(alternate.chrome.minY == pixel)
-    let zoomRoot = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: g, focus: .active, layer: .tiled))
+    let zoomRoot = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: g, active: true, layer: .tiled))
     let zoom = PaneLayout(root: zoomRoot, bounds: bounds, cell: cell, pixel: pixel).tiled(g, alternate: false)
     #expect(zoom.insets.bottom == 12 && zoom.content.maxY == bounds.maxY)
     #expect(zoom.grid.maxY == bounds.maxY - 12)
@@ -205,11 +206,11 @@ func tiledPlacement(pixel: CGFloat) {
 func titlebarBoundary(pixel: CGFloat) {
     let cell = CGSize(width: 8, height: 17)
     let g = Geometry(x: 0, y: 0, width: 80, height: 30)
-    let root = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: g, focus: .active, layer: .tiled))
+    let root = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: g, active: true, layer: .tiled))
     let exact = PaneLayout(root: root, bounds: CGRect(x: 0, y: 0, width: 700, height: 566), cell: cell, pixel: pixel)
     #expect(exact.client.height == 32)
     let fitting = Geometry(x: 0, y: 0, width: 80, height: Int(exact.client.height))
-    #expect(PaneLayout(root: .pane(Pane(id: PaneID(number: 0), index: 0, geometry: fitting, focus: .active, layer: .tiled)), bounds: CGRect(x: 0, y: 0, width: 700, height: 566), cell: cell, pixel: pixel).grid(fitting).minY >= exact.topLine.maxY)
+    #expect(PaneLayout(root: .pane(Pane(id: PaneID(number: 0), index: 0, geometry: fitting, active: true, layer: .tiled)), bounds: CGRect(x: 0, y: 0, width: 700, height: 566), cell: cell, pixel: pixel).grid(fitting).minY >= exact.topLine.maxY)
     for height in [CGFloat(522), 396] {
         let layout = PaneLayout(root: root, bounds: CGRect(x: 0, y: 0, width: 700, height: height), cell: cell, pixel: pixel)
         for alternate in [false, true] {
@@ -227,7 +228,7 @@ func nativeHeaderBoundary(header: CGFloat, pixel: CGFloat) {
     let cell = CGSize(width: 8, height: 17)
     let bounds = CGRect(x: 0, y: header, width: 700, height: 700 - header)
     let g = Geometry(x: 0, y: 0, width: 80, height: 1)
-    let root = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: g, focus: .active, layer: .tiled))
+    let root = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: g, active: true, layer: .tiled))
     let layout = PaneLayout(root: root, bounds: bounds, cell: cell, pixel: pixel)
     #expect(layout.topLine.minY == ceil(header / pixel) * pixel)
     #expect(layout.topLine.height == pixel)
@@ -247,7 +248,7 @@ func pixelAlignedBottomMargin(pixel: CGFloat) {
     for height in [CGFloat(802), 802.3, 803.2] {
         let rows = Int(floor((height - 12) / cell.height))
         let g = Geometry(x: 0, y: 0, width: 80, height: rows)
-        let root = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: g, focus: .active, layer: .tiled))
+        let root = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: g, active: true, layer: .tiled))
         let layout = PaneLayout(root: root, bounds: CGRect(x: 0, y: 0, width: 700, height: height), cell: cell, pixel: pixel)
         let grid = layout.grid(g), gap = height - grid.maxY
         let tiled = layout.tiled(g, alternate: false)
@@ -270,7 +271,7 @@ func pixelAlignedBottomMargin(pixel: CGFloat) {
     for height in stride(from: CGFloat(400), through: 700, by: 0.5) {
         for rows in [Int(floor((height - 12) / cell.height)), 20, 40] {
             let g = Geometry(x: 0, y: 0, width: 80, height: rows)
-            let root = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: g, focus: .active, layer: .tiled))
+            let root = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: g, active: true, layer: .tiled))
             let layout = PaneLayout(root: root, bounds: CGRect(x: 0, y: 0, width: 700, height: height), cell: cell, pixel: 0.5)
             #expect(layout.client.height == floor((height - 0.5 - 12) / cell.height))
             #expect(layout.grid(g).maxY == height - 12)
@@ -279,5 +280,28 @@ func pixelAlignedBottomMargin(pixel: CGFloat) {
                 #expect(layout.tiled(root.panes[0].geometry, alternate: false).insets.top == max(0, height - 0.5 - 12 - CGFloat(rows) * cell.height))
             }
         }
+    }
+}
+
+@Test func oversizedExternalLayoutClipsChromeWithoutChangingGrid() {
+    let a = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: Geometry(x: 0, y: 0, width: 20, height: 20), active: true, layer: .tiled))
+    let b = Node.pane(Pane(id: PaneID(number: 1), index: 1, geometry: Geometry(x: 21, y: 0, width: 179, height: 20), active: false, layer: .tiled))
+    let c = Node.pane(Pane(id: PaneID(number: 2), index: 2, geometry: Geometry(x: 0, y: 21, width: 200, height: 59), active: false, layer: .tiled))
+    let root = Node.split(.topBottom, Geometry(x: 0, y: 0, width: 200, height: 80), [
+        .split(.leftRight, Geometry(x: 0, y: 0, width: 200, height: 20), [a, b]), c,
+    ])
+    let bounds = CGRect(x: 0, y: 0, width: 400, height: 300)
+    let layout = PaneLayout(root: root, bounds: bounds, cell: CGSize(width: 8, height: 17), pixel: 0.5)
+    for pane in root.panes {
+        let placed = layout.tiled(pane.geometry, alternate: false)
+        #expect(placed.grid.width == CGFloat(pane.geometry.width) * 8)
+        #expect(placed.grid.height == CGFloat(pane.geometry.height) * 17)
+        #expect(placed.chrome.size.width >= 0 && placed.chrome.size.height >= 0)
+        if !placed.chrome.isEmpty { #expect(bounds.contains(placed.chrome)) }
+    }
+    for divider in root.dividers {
+        let line = layout.line(divider, pixel: 0.5)
+        #expect(line.size.width >= 0 && line.size.height >= 0)
+        if !line.isEmpty { #expect(bounds.contains(line)) }
     }
 }

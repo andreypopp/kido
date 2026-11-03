@@ -1,4 +1,5 @@
 import AppKit
+import KoModel
 import SidebarFeed
 import UserNotifications
 
@@ -132,16 +133,31 @@ import UserNotifications
         for owner in windows {
             guard let snapshot = owner.snapshot, !owner.feedFresh || owner === snapshotOwner else { continue }
             let effects = state.step(owner: owner.notificationID, host: host.clipboardKey, identity: owner.identity,
-                snapshot: snapshot, fresh: owner.feedFresh, seen: owner.seen.value, shown: shown, appActive: NSApp.isActive)
+                snapshot: snapshot, fresh: owner.feedFresh, shown: shown, appActive: NSApp.isActive)
             poster.withdraw(effects.withdraw)
             effects.post.forEach { poster.post($0) }
-            if snapshot.error == nil { owner.feedFresh = false }
+            owner.feedFresh = false
         }
         poster.setBadgeCount(state.postedCount)
     }
 
     func attendanceChanged() {
         for host in Set(owners.allObjects.filter(\.alive).map(\.host)) { update(host: host) }
+    }
+
+    struct Seen: Equatable {
+        let shown: [PaneID]
+        let attending: Bool
+    }
+
+    // The panes that the attended windows of the host show, which every window of the host marks seen.
+    func seen(host: Host) -> Seen {
+        let attended = owners.allObjects.filter { $0.alive && $0.host == host && $0.attended }
+        return Seen(shown: Set(attended.flatMap(\.shownPanes)).sorted { $0.number < $1.number }, attending: !attended.isEmpty)
+    }
+
+    func observeSeen(host: Host) {
+        for owner in owners.allObjects where owner.alive && owner.host == host { owner.observeSeen() }
     }
 
     func forget(_ owner: WindowOwner) {

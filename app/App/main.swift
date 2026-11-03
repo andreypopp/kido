@@ -105,7 +105,7 @@ import SidebarFeed
         #if KIDO_STRESS
         if owners.isEmpty { routes.ordinaryOpen() }
         if let owner = owners.first {
-            Stress(window: owner.window, send: { [weak owner] in owner?.send($0) }, reconnect: { [weak owner] in owner?.start() }).run()
+            Stress(owner: owner).run()
         }
         #endif
     }
@@ -118,7 +118,7 @@ import SidebarFeed
             guard let self else { return }
             defer { paletteStateChanged() }
             if let owner { prunePromptDrafts(owner) }
-            guard let owner, let snapshot = owner.snapshot, snapshot.error == nil else { return }
+            guard let owner, let snapshot = owner.snapshot else { return }
             guard let pending = pendingJumps[host] else { return }
             if pending.deadline <= Date() || snapshot.serverInstance != pending.target.instance {
                 pendingJumps.removeValue(forKey: host)
@@ -565,15 +565,16 @@ import SidebarFeed
             stopped.enter()
             owner.ended.notify(queue: .global()) { @Sendable in stopped.leave() }
         }
-        owners.forEach { $0.close(cause: .quit) }
+        owners.forEach { $0.close() }
         owners = []
         stopped.notify(queue: .global()) { @Sendable in
             RunLoop.main.perform(inModes: [.common]) {
                 MainActor.assumeIsolated {
                     #if KIDO_VISUAL
-                    if let files = ProcessInfo.processInfo.environment["KIDO_APP_QUIT_CHILDREN"] {
-                        let pids = files.split(separator: "|").compactMap { try? String(contentsOfFile: String($0), encoding: .utf8) }.flatMap { $0.split(whereSeparator: \.isWhitespace) }.compactMap { Int32($0) }
-                        note("quit drain completed, unreaped=\(pids.filter { kill($0, 0) == 0 })")
+                    if ProcessInfo.processInfo.environment["KIDO_APP_QUIT_VERIFY"] == "1" {
+                        var children = [pid_t](repeating: 0, count: 64)
+                        let count = proc_listchildpids(getpid(), &children, Int32(MemoryLayout<pid_t>.size * children.count))
+                        note("quit drain completed, children=\(children.prefix(Int(max(0, count))).filter { $0 > 0 })")
                     }
                     #endif
                     NSApp.reply(toApplicationShouldTerminate: true)
@@ -584,7 +585,7 @@ import SidebarFeed
     }
 
     #if KIDO_STRESS
-    var stressState: (SessionModel, SessionModel, SessionView?, Connection?, SidebarFeed.Snapshot?) { owners.first!.stressState }
+    var stressState: (SessionModel, SessionModel, SessionView?, SidebarFeed.Snapshot?) { owners.first!.stressState }
     var stressGeneration: Int { owners.first!.generation }
     var stressOwner: WindowOwner { owners.first! }
     var sidebar: Sidebar { owners.first!.sidebar }

@@ -5,8 +5,9 @@ use serde_json::{Map, Value, json};
 
 use crate::api::ROUTES;
 use crate::http::Status;
+use crate::ids::PaneId;
 use crate::protocol;
-use crate::route::{Content, Kind, ParamInfo, RouteInfo};
+use crate::route::{Caller, Content, Kind, Param, ParamInfo, RouteInfo};
 
 #[derive(Debug, Clone)]
 struct Tidy;
@@ -119,11 +120,23 @@ fn operation(generator: &mut SchemaGenerator, route: &RouteInfo) -> Value {
     operation.insert("operationId".to_owned(), json!(route.name));
     let description: Vec<&str> = route.docs.iter().map(|line| line.trim()).collect();
     operation.insert("description".to_owned(), json!(description.join(" ")));
+    let caller = ParamInfo {
+        name: "Ko-Pane",
+        schema: <PaneId as Param>::schema,
+        example: <PaneId as Param>::EXAMPLE,
+        default: None,
+    };
+    let caller = match route.caller {
+        Caller::Absent => None,
+        Caller::Optional => Some((&caller, "header", false)),
+        Caller::Required => Some((&caller, "header", true)),
+    };
     let parameters: Vec<Value> = route
         .path_params
         .iter()
         .map(|param| (param, "path", true))
         .chain(route.query.iter().map(|param| (param, "query", false)))
+        .chain(caller)
         .map(|(param, location, required)| parameter(generator, location, param, required))
         .collect();
     if !parameters.is_empty() {
@@ -210,8 +223,8 @@ pub fn openapi() -> String {
     serde_json::to_string_pretty(&document()).unwrap_or_default()
 }
 
-fn document() -> Value {
-    let mut generator = SchemaSettings::draft2020_12()
+pub fn generator() -> SchemaGenerator {
+    SchemaSettings::draft2020_12()
         .with(|settings| {
             settings.definitions_path = "/components/schemas".into();
             settings
@@ -223,7 +236,19 @@ fn document() -> Value {
             settings.transforms.push(Box::new(formats));
             settings.transforms.push(Box::new(Tidy));
         })
-        .into_generator();
+        .into_generator()
+}
+
+pub fn components() -> Map<String, Value> {
+    let mut document = document();
+    match document["components"]["schemas"].take() {
+        Value::Object(components) => components,
+        _ => Map::new(),
+    }
+}
+
+fn document() -> Value {
+    let mut generator = generator();
     let mut paths = Map::new();
     for route in ROUTES {
         let item = paths

@@ -474,6 +474,12 @@ extension NSColor {
         guard target.tag == GHOSTTY_TARGET_SURFACE, let surface = target.target.surface else { return false }
         let userdata = ghostty_surface_userdata(surface)
         switch action.tag {
+        #if KIDO_VISUAL
+        case GHOSTTY_ACTION_SET_TITLE:
+            let title = action.action.set_title.title.map { String(cString: $0) } ?? ""
+            PaneView.onMain(userdata) { $0.visualTitles.append(title) }
+            return true
+        #endif
         case GHOSTTY_ACTION_MOUSE_SHAPE:
             let shape = action.action.mouse_shape
             PaneView.onMain(userdata) { $0.setMouseShape(shape) }
@@ -553,20 +559,6 @@ extension NSColor {
     static var visualHoldSelected: (((x: Int, y: Int)?, @escaping @Sendable () -> Void) -> Void)?
     #endif
 
-    #if KIDO_STRESS
-    static func verifyDeferredSearchAction(_ surface: ghostty_surface_t) {
-        var target = ghostty_target_s()
-        target.tag = GHOSTTY_TARGET_SURFACE
-        target.target.surface = surface
-        var notification = ghostty_action_s()
-        notification.tag = GHOSTTY_ACTION_SEARCH_SELECTED
-        notification.action.search_selected.selected = 0
-        _ = action(ghostty_surface_app(surface)!, target, notification)
-        notification.tag = GHOSTTY_ACTION_SEARCH_TOTAL
-        notification.action.search_total.total = 999
-        _ = action(ghostty_surface_app(surface)!, target, notification)
-    }
-    #endif
 
     nonisolated private static func command(_ action: ghostty_action_s) -> PaneCommand? {
         let a = action.action

@@ -1,12 +1,11 @@
 import Foundation
 import Testing
-import TmuxControl
+import KoModel
 @testable import SidebarFeed
 
 @Test func sessionNameValidation() throws {
-    let sessions = try JSONDecoder().decode([SessionNodes].self, from: Data("""
-    [{"id":"$0","name":"main","current":true,"nodes":[]},{"id":"$1","name":"work","current":false,"nodes":[]}]
-    """.utf8))
+    let sessions = [SessionNodes(id: SessionID(number: 0), name: "main", current: true, nodes: []),
+                    SessionNodes(id: SessionID(number: 1), name: "work", current: false, nodes: [])]
     for (text, expected) in [
         ("", SessionName.revert), ("   ", .revert), ("main", .revert),
         ("work", .reject("A session named “work” already exists.")),

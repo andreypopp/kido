@@ -2,6 +2,7 @@ import AppKit
 import GhosttyKit
 import TmuxControl
 import XCTest
+import KoModel
 @testable import Kido
 
 @MainActor final class LinkTests: VisualTestCase {
@@ -19,10 +20,9 @@ import XCTest
                 defer { pane.dispose() }
                 owner.window.contentView = pane
                 pane.resize(cols: 80, rows: 24)
-                XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
                 pane.onURL = { handled.append($0); owner.openLink($0) }
                 let content = osc8 ? "\u{1b}]8;;\(text)\u{1b}\\click here\u{1b}]8;;\u{1b}\\" : text
-                XCTAssertTrue(pane.feed(Data(("\u{1b}c" + content).utf8), kind: .snapshot, epoch: pane.historyEpoch))
+                pane.visualRestore(Data(("\u{1b}c" + content).utf8))
                 if host == .local, !osc8 {
                     for kind in [GHOSTTY_ACTION_OPEN_URL_KIND_UNKNOWN, GHOSTTY_ACTION_OPEN_URL_KIND_TEXT, GHOSTTY_ACTION_OPEN_URL_KIND_HTML] {
                         var target = ghostty_target_s()

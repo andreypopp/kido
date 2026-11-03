@@ -2,6 +2,7 @@ import AppKit
 import GhosttyKit
 import XCTest
 import SnapshotTesting
+import KoModel
 import SidebarFeed
 import TmuxControl
 @testable import Kido
@@ -431,7 +432,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             }
         }
 
-        let fixture = try sidebarFixture()
+        let fixture = sidebarFixture()
         SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
         defer { SidebarView.visualNow = nil }
         for hex in ["fffaf0", "172029"] {
@@ -441,7 +442,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                 let owner = WindowOwner(host: .local, runtime: runtime, start: false)
                 defer { owner.close() }
                 let list = owner.sidebar.list
-                list.update(.running(fixture))
+                list.update(fixture)
                 let root = try XCTUnwrap(owner.window.contentView?.superview)
                 let channels: [Double]
                 switch (hex, value) {
@@ -649,7 +650,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             XCTAssertEqual(rgb, hex == "fff9ec" ? [242, 237, 224] : [35, 35, 35])
         }
         let list = owner.sidebar.list
-        list.update(.running(try sidebarFixture()))
+        list.update(sidebarFixture())
         SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
         defer { SidebarView.visualNow = nil }
         for floating in [false, true] {
@@ -776,43 +777,20 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         }
     }
 
-    func testSeenIsSharedAcrossSameHostWindows() throws {
-        let board = NSPasteboard(name: .init("kido-seen-test-\(UUID().uuidString)"))
-        defer { board.releaseGlobally() }
-        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
-        let host = Kido.Host.remote("seen-\(UUID().uuidString.prefix(8))")
-        let publisher = WindowOwner(host: host, runtime: runtime, start: false)
-        let peer = WindowOwner(host: host, runtime: runtime, start: false)
-        let other = WindowOwner(host: .remote("other-\(UUID().uuidString.prefix(8))"), runtime: runtime, start: false)
-        defer { [publisher, peer, other].forEach { $0.close() } }
-        let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data("""
-        {"v":2,"client":{"session":"$0","window":"@1","pane":"%1"},"server_instance":{"started_at":1791000000,"pid":4242},"error":null,"sessions":[{"id":"$0","name":"s","current":true,"nodes":[{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"agent","lifecycle":["Live",["Some_agent",{"name":"claude-code","status":{"since":1791000000,"msg":null,"state":["Idle",{"outcome":{"serial":3,"result":"failure"}}]}}]],"program_status":{"serial":3,"records":[]},"run":null,"started":null,"children":[]}]}]}
-        """.utf8))
-        func status(_ owner: WindowOwner) -> SidebarRow.Status? { owner.sidebar.list.visualRows.first { $0.target != nil }?.status }
-        let baseline = try JSONDecoder().decode(Snapshot.self, from: Data("""
-        {"v":2,"client":{"session":"$0","window":"@1","pane":"%1"},"server_instance":{"started_at":1791000000,"pid":4242},"error":null,"sessions":[]}
-        """.utf8))
-        for owner in [peer, other] { owner.testReceive(baseline); owner.testReceive(snapshot) }
-        XCTAssertEqual([peer, other].map(status), [.error, .error], "unattended windows leave the outcome unseen")
-        publisher.testAttended = true
-        publisher.testReceive(snapshot)
-        XCTAssertEqual(status(publisher), .quiet, "the attended window marks its active pane's outcome seen")
-        XCTAssertEqual(status(peer), .quiet, "a same-host window redraws from the shared seen record")
-        XCTAssertEqual(status(other), .error, "another host's seen record is separate")
-    }
-
     func testOrphanedTab() throws {
-        let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data("""
-        {"v":2,"client":{"session":"$0","window":"@1","pane":"%1"},"server_instance":{"started_at":1791000000,"pid":4242},"sessions":[{"id":"$0","name":"s","current":true,"nodes":[{"kind":"pane","id":"%0","pane":"%0","window":"@0","title":"","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[{"kind":"pane","id":"%1","pane":"%1","window":"@1","title":"","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[]},"run":"bash","started":null,"children":[]}]}]}]}
-        """.utf8))
+        let snapshot = fixtureSnapshot(window: 1, pane: 1, [("s", [fixtureNode(0, "", shellLifecycle(.unknown), children: [
+            fixtureNode(1, "", shellLifecycle(.unknown), run: "bash"),
+        ])])])
         let model = SessionModel(session: SessionID(number: 0), windows: [.init(id: WindowID(number: 1), name: "Child")], window: WindowID(number: 1))
         XCTAssertEqual(model.navigation(snapshot).tabs.map(\.id), [WindowID(number: 1)], "orphan child must retain a tab")
     }
 
     func testWindowSelectionTargetsSession() {
         let model = SessionModel(session: SessionID(number: 3), windows: [.init(id: WindowID(number: 7), name: "w")], window: WindowID(number: 7))
-        XCTAssertEqual(model.select(.number(1)), RPCRequest.selectWindow(SessionID(number: 3), WindowID(number: 7)), "selection must target the tab's session")
-        XCTAssertNil(PaneCommand.window(.number(1)).command(PaneID(number: 0), cell: .zero))
+        XCTAssertEqual(model.select(.number(1)), Navigation.selectWindow(SessionID(number: 3), WindowID(number: 7)), "selection must target the tab's session")
+        let lone = KoSchema.Window(cols: 80, floats: [], focus: PaneID(number: 0), id: WindowID(number: 0), name: "w", rows: 24,
+                                     tree: .leaf(KoSchema.Leaf(cols: 80, pane: PaneID(number: 0), rows: 24)), vars: [:])
+        XCTAssertNil(PaneCommand.window(.number(1)).action(PaneID(number: 0), in: lone, cwd: nil, cell: .zero))
         XCTAssertEqual(model.select(.next), .switchWindow(next: true))
         XCTAssertEqual(model.select(.previous), .switchWindow(next: false))
         XCTAssertEqual(SessionModel().select(.next), .switchWindow(next: true))
@@ -820,7 +798,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         XCTAssertNil(SessionModel().select(.number(1)))
         XCTAssertEqual(model.select(.last), model.select(.number(1)))
         let menus = SessionMenus()
-        var commands: [RPCRequest] = []
+        var commands: [Navigation] = []
         menus.send = { commands.append($0) }
         menus.update(model)
         let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
@@ -829,9 +807,9 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         XCTAssertEqual(commands, [model.select(.number(1))!])
     }
 
-    func testWindowShortcutsUseRPC() {
+    func testWindowShortcutsNavigate() {
         let menus = SessionMenus()
-        var requests: [RPCRequest] = []
+        var requests: [Navigation] = []
         menus.send = { requests.append($0) }
         menus.update(SessionModel())
         for (key, next) in [("}", true), ("{", false)] {
@@ -844,12 +822,14 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         let view = NSApp.mainMenu?.items.first { $0.title == "View" }?.submenu
         XCTAssertFalse(view?.items.contains { $0.title.contains("Window in Sidebar") } == true)
         XCTAssertFalse(view?.items.contains { ["j", "k"].contains($0.keyEquivalent) && $0.keyEquivalentModifierMask == [.command, .control] } == true)
-        XCTAssertNil(PaneCommand.newWindow.command(PaneID(number: 0), cell: .zero))
+        let lone = KoSchema.Window(cols: 80, floats: [], focus: PaneID(number: 0), id: WindowID(number: 0), name: "w", rows: 24,
+                                     tree: .leaf(KoSchema.Leaf(cols: 80, pane: PaneID(number: 0), rows: 24)), vars: [:])
+        XCTAssertNil(PaneCommand.newWindow.action(PaneID(number: 0), in: lone, cwd: nil, cell: .zero))
     }
 
-    func testSessionShortcutsUseRPCNavigationOnce() {
+    func testSessionShortcutsNavigateOnce() {
         let menus = SessionMenus()
-        var commands: [RPCRequest] = []
+        var commands: [Navigation] = []
         menus.send = { commands.append($0) }
         menus.update(SessionModel())
         for (key, code, next) in [("]", UInt16(30), true), ("[", UInt16(33), false)] {

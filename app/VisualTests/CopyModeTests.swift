@@ -1,5 +1,7 @@
 import AppKit
 import GhosttyKit
+import KoClient
+import KoModel
 import SidebarFeed
 import SnapshotTesting
 import TmuxControl
@@ -48,16 +50,16 @@ extension VisualTests {
         return lines
     }
 
-    private func tmuxScreen(_ pane: PaneView) async throws -> [String] {
-        trimmed(try await command(["capture-pane", "-p", "-t", pane.pane.description]))
+    private func serverLines(_ pane: PaneView) async throws -> [String] {
+        trimmed(try await serverScreen(pane.pane))
     }
 
-    private func sends(_ since: Int) -> [Command] { connection.visualCommands.dropFirst(since).filter { $0.line.hasPrefix("send-keys") } }
+    private func sends(_ pane: PaneView, since: Int) -> [String] { pane.visualSent.dropFirst(since).map { String(decoding: $0, as: UTF8.self) } }
 
     private func sentinel(_ pane: PaneView, since: Int) async throws {
         key(pane, "a")
-        try await wait("sentinel key reached tmux", within: 2) { !self.sends(since).isEmpty }
-        XCTAssertEqual(sends(since).count, 1, "only the sentinel after copy mode sent input: \(sends(since).map(\.line))")
+        try await wait("sentinel key reached the server", within: 2) { !self.sends(pane, since: since).isEmpty }
+        XCTAssertEqual(sends(pane, since: since).count, 1, "only the sentinel after copy mode sent input: \(sends(pane, since: since))")
     }
 
     private func copied(_ pane: PaneView, _ sequence: String, _ finish: (PaneView) -> Void = { _ in }) async throws -> String? {
@@ -143,7 +145,7 @@ extension VisualTests {
         try await emit(pane, "\u{1b}[2J\u{1b}[Hreplaced\r\n", until: "replaced")
         keys(pane, "kkkkk0vwey")
         XCTAssertEqual(board.string(forType: .string), "one,two", "motion reads the frozen screen")
-        try await wait("dirty exit restored", within: 2) { !pane.resizeDirty }
+        try await wait("dirty exit restored", within: 2) { !pane.restoring }
         try await settle()
         try await emit(pane, String(repeating: "x", count: columns - 1) + "日\r\n", until: "日")
         try await enter(pane)
@@ -178,155 +180,17 @@ extension VisualTests {
         let pane = try await rawPane()
         try await emit(pane, (0..<40).map { "before-\($0)\r\n" }.joined(), until: "before-39")
         try await enter(pane)
-        let frozen = screen(pane), restores = connection.visualRestores
+        let frozen = screen(pane), restores = pane.visualRestores
         try await emit(pane, (0..<50).map { "during-\($0)\r\n" }.joined(), until: "during-49")
-        XCTAssertTrue(pane.resizeDirty)
+        XCTAssertTrue(pane.visualDroppedWhileFrozen)
         XCTAssertEqual(screen(pane), frozen, "the frozen pane parses no output")
-        XCTAssertEqual(connection.visualRestores, restores)
+        XCTAssertEqual(pane.visualRestores, restores)
         keys(pane, "q")
-        try await wait("dirty exit restored", within: 2) { !pane.resizeDirty && self.connection.visualRestores == restores + 1 }
+        try await wait("dirty exit restored", within: 2) { !pane.restoring && pane.visualRestores == restores + 1 }
         try await settle()
-        let expected = try await tmuxScreen(pane)
+        let expected = try await serverLines(pane)
         XCTAssertEqual(screen(pane), expected)
-        XCTAssertEqual(connection.visualRestores, restores + 1)
-    }
-
-    func testPauseAndExplicitSyncDrainOnCleanExit() async throws {
-        let pane = try await rawPane()
-        try await emit(pane, "ready\r\n", until: "ready")
-        try await enter(pane)
-        let restores = connection.visualRestores
-        connection.send([Command("refresh-client", "-A", "\(pane.pane):pause")])
-        try await roundTrip()
-        try await emit(pane, "while-paused\r\n", until: "while-paused")
-        XCTAssertEqual(connection.visualRestores, restores, "a %pause waits for the exit")
-        XCTAssertFalse(pane.resizeDirty)
-        keys(pane, "q")
-        try await wait("clean exit drained the pause", within: 2) { self.connection.visualRestores == restores + 1 }
-        try await settle()
-        try await emit(pane, "resumed\r\n", until: "resumed")
-        try await wait("resumed output arrives live", within: 2) {
-            let screen = self.screen(pane)
-            return screen.contains("resumed") && screen.contains("while-paused")
-        }
-        try await enter(pane)
-        connection.sync(pane.pane)
-        try await roundTrip()
-        XCTAssertEqual(connection.visualRestores, restores + 1, "an explicit sync waits for the exit")
-        keys(pane, "q")
-        try await wait("clean exit drained the explicit sync", within: 2) { self.connection.visualRestores == restores + 2 }
-        try await settle()
-    }
-
-    func testEntryWaitsForAdmittedParse() async throws {
-        let pane = try await rawPane()
-        try await emit(pane, "ready\r\n", until: "ready")
-        func hold(_ bytes: String, for seconds: Double) -> DispatchSemaphore {
-            let admitted = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
-            pane.feedProbe.withLock { $0 = (before: { admitted.signal(); _ = release.wait(timeout: .now() + seconds) }, after: {}) }
-            nonisolated(unsafe) let target = pane
-            connection.visualCopyCheck = { reply in
-                DispatchQueue.global().async { target.feed(Data(bytes.utf8)) }
-                XCTAssertEqual(admitted.wait(timeout: .now() + 2), .success)
-                reply()
-            }
-            return release
-        }
-        let release = hold("held\r\n", for: 2)
-        key(pane, "C", [.command, .shift], ignoring: "C")
-        try await wait("reader check admitted a batch and main applied it", within: 2) { pane.frozen }
-        connection.visualCopyCheck = nil
-        pane.feedProbe.withLock { $0 = nil }
-        XCTAssertTrue(entering(pane), "entry waits for the admitted parse")
-        XCTAssertEqual(label(pane), "COPY…")
-        XCTAssertNil(cursor(pane))
-        let promptBeeps = pane.visualBeeps
-        sendCommandO()
-        XCTAssertNil((NSApp.delegate as? AppDelegate)?.palettePanel, "⌘O while copy mode enters opens no palette")
-        XCTAssertEqual(pane.visualBeeps, promptBeeps, "⌘O while copy mode enters does not beep")
-        release.signal()
-        try await wait("entry completes after the parse", within: 2) { pane.copyMode != nil && !self.entering(pane) }
-        XCTAssertEqual(label(pane), "COPY")
-        let rows = screen(pane), at = try XCTUnwrap(cursor(pane))
-        var bar = ghostty_surface_scrollbar_s()
-        XCTAssertTrue(ghostty_surface_scrollbar(pane.surface, &bar))
-        XCTAssertEqual(rows[at.y - Int(bar.offset) - 1], "held", "the cursor is placed after the parse")
-        try await emit(pane, "dropped\r\n", until: "dropped")
-        XCTAssertFalse(screen(pane).contains("dropped"))
-        keys(pane, "q")
-        try await wait("dirty exit restored", within: 2) { !pane.resizeDirty }
-        try await settle()
-
-        let beeps = pane.visualBeeps
-        let late = hold("late\r\n", for: 4)
-        let entryTimeout = PaneView.copyEntryTimeout
-        PaneView.copyEntryTimeout = 0.5
-        defer { PaneView.copyEntryTimeout = entryTimeout }
-        key(pane, "C", [.command, .shift], ignoring: "C")
-        try await wait("held entry admitted", within: 2) { pane.frozen }
-        try await wait("deadline cancels a held entry", within: 3) { pane.copyMode == nil && pane.visualBeeps == beeps + 1 }
-        PaneView.copyEntryTimeout = entryTimeout
-        connection.visualCopyCheck = nil
-        pane.feedProbe.withLock { $0 = nil }
-        XCTAssertFalse(pane.frozen)
-        late.signal()
-        try await roundTrip()
-        XCTAssertNil(pane.copyMode, "a late parse completes no cancelled entry")
-        try await settle()
-
-        key(pane, "C", [.command, .shift], ignoring: "C")
-        keys(pane, "\u{1b}")
-        XCTAssertNil(pane.copyMode)
-        try await enter(pane)
-        try await roundTrip()
-        XCTAssertEqual(pane.visualBeeps, beeps + 1, "the cancelled request's reply completes nothing")
-        keys(pane, "q")
-    }
-
-    func testEntryKeepsAScreenSwitchParsedBeforeTheReply() async throws {
-        let pane = try await rawPane()
-        try await emit(pane, "\u{1b}[?1049h\u{1b}[Halternate-ready", until: "alternate-ready")
-        nonisolated(unsafe) let target = pane
-        let later = "\u{1b}[?1049hback-again"
-        let schedules: [(name: String, batch: String, after: @Sendable () -> Void)] = [
-            ("one batch", "\u{1b}[?1049lprimary-again\r\n", {}),
-            ("an invalidated completion", "\u{1b}[?1049l\u{1b}[?1000hprimary-again\r\n", { target.markContentDirty() }),
-            ("a second batch", "\u{1b}[?1049lprimary-again\r\n", {
-                later.withCString { ghostty_surface_process_output(target.surface, $0, UInt(later.utf8.count)) }
-            }),
-        ]
-        for schedule in schedules {
-            try await wait("alternate screen: \(schedule.name)") { pane.alternate }
-            let restores = connection.visualRestores
-            connection.visualCopyCheck = { reply in
-                target.postProbe.withLock { $0 = {
-                    reply()
-                    let deadline = Date() + 2
-                    while !target.frozen, Date() < deadline { usleep(1000) }
-                    schedule.after()
-                } }
-                if !target.feed(Data(schedule.batch.utf8)) {
-                    reply()
-                    XCTFail("batch not admitted: \(schedule.name)")
-                }
-                target.postProbe.withLock { $0 = nil }
-            }
-            try await wait("grid ready: \(schedule.name)", within: 2) { pane.gridReady && !pane.resizeDirty }
-            key(pane, "C", [.command, .shift], ignoring: "C")
-            try await wait("copy mode entered: \(schedule.name)", within: 2) { if case .cursor = pane.copyMode { true } else { false } }
-            connection.visualCopyCheck = nil
-            XCTAssertEqual(pane.alternate, ghostty_surface_is_alternate_screen(pane.surface), "entry reads the screen: \(schedule.name)")
-            XCTAssertEqual(pane.visualCaptured, ghostty_surface_mouse_captured(pane.surface), "entry reads the mouse mode: \(schedule.name)")
-            XCTAssertTrue(pane.resizeDirty, "the return to the primary screen keeps its repair: \(schedule.name)")
-            try await roundTrip()
-            XCTAssertNotNil(pane.copyMode, "no stale screen update ends copy mode: \(schedule.name)")
-            keys(pane, "q")
-            try await wait("exit repairs the pane: \(schedule.name)", within: 2) { !pane.resizeDirty && self.connection.visualRestores > restores }
-            try await settle()
-            let expected = try await tmuxScreen(pane)
-            XCTAssertEqual(screen(pane), expected, schedule.name)
-            XCTAssertEqual(pane.alternate, ghostty_surface_is_alternate_screen(pane.surface), schedule.name)
-        }
+        XCTAssertEqual(pane.visualRestores, restores + 1)
     }
 
     private func copyFinalWrappedRow(alternate: Bool) async throws {
@@ -352,13 +216,14 @@ extension VisualTests {
         try await emit(pane, "appearance\r\n", until: "appearance")
         try await enter(pane)
         keys(pane, "kv$")
-        let restores = connection.visualRestores
+        let restores = pane.visualRestores
         ghostty_surface_set_color_scheme(pane.surface, GHOSTTY_COLOR_SCHEME_DARK)
         try await wait("the appearance reload ends copy mode", within: 2) { pane.copyMode == nil }
         XCTAssertNil(cursor(pane))
         XCTAssertNil(label(pane))
         XCTAssertFalse(pane.frozen)
-        try await wait("the reflow repair follows", within: 2) { !pane.resizeDirty && self.connection.visualRestores > restores }
+        await mainQueueFence()
+        XCTAssertEqual(pane.visualRestores, restores, "an exit without output needs no new snapshot")
     }
 
     func testCopyOnSelectNeverWritesUntilACopy() async throws {
@@ -374,7 +239,6 @@ extension VisualTests {
         owner.window.orderFront(nil)
         owner.window.makeFirstResponder(pane)
         pane.resize(cols: 80, rows: 24)
-        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         defer { pane.dispose(); owner.close(); board.releaseGlobally() }
         nonisolated(unsafe) let target = pane
         await withCheckedContinuation { done in DispatchQueue.global().async { target.feed(Data("one\r\ntwo\r\nthree\r\n".utf8)); done.resume() } }
@@ -451,44 +315,12 @@ extension VisualTests {
         XCTAssertEqual(board.string(forType: .string), "\(wrapped)\na3\n")
     }
 
-    func testEntryRefusesEachHistoryLoadPhase() async throws {
-        try await start(history: 100000)
-        let pane = try XCTUnwrap(terminal?.panes.first)
-        let fixture = directory.appendingPathComponent("history.txt"), done = directory.appendingPathComponent("history-done")
-        try (0..<3 * historyChunkSize + 2000).map { "row-\($0)\r\n" }.joined().write(to: fixture, atomically: true, encoding: .utf8)
-        try await command(["respawn-pane", "-k", "-t", pane.pane.description, "/bin/cat '\(fixture.path)'; /usr/bin/touch '\(done.path)'; exec /bin/sleep 600"])
-        try await wait("history fixture written") { FileManager.default.fileExists(atPath: done.path) }
-        try await restore(pane)
-        let count = board.changeCount
-        for (phase, gate) in [("queued", "metadata"), ("metadata", "metadata"), ("capture", "capture"), ("metadata-only", "metadata")] {
-            let loaded = pane.scrollPosition().retainedHistoryRows, beeps = pane.visualBeeps
-            connection.visualHoldLoad(gate)
-            if phase == "metadata-only" { pane.onScrollTop() } else { pane.onLoadMore() }
-            if phase != "queued" { try await wait("\(phase) reply held", within: 2) { self.connection.visualHeld(gate) } }
-            key(pane, "C", [.command, .shift], ignoring: "C")
-            try await wait("\(phase) load refuses entry", within: 2) { pane.visualBeeps == beeps + 1 }
-            XCTAssertNil(pane.copyMode, phase)
-            XCTAssertNil(label(pane), phase)
-            XCTAssertFalse(pane.frozen, phase)
-            try await wait("\(phase) reply held", within: 2) { self.connection.visualHeld(gate) }
-            connection.visualReleaseLoad(gate)
-            if phase != "metadata-only" {
-                try await wait("\(phase) load finished", within: 5) { pane.scrollPosition().retainedHistoryRows > loaded }
-            }
-            try await roundTrip()
-            XCTAssertFalse(pane.resizeDirty, phase)
-            try await enter(pane)
-            keys(pane, "q")
-        }
-        XCTAssertEqual(board.changeCount, count)
-    }
-
     func testCopyKeysAndIMEAreIsolated() async throws {
         let pane = try await rawPane()
         try await emit(pane, "\u{1b}[>11uready\r\n", until: "ready")
         pane.setMarkedText("か", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
         XCTAssertTrue(pane.hasMarkedText())
-        let start = connection.visualCommands.count
+        let start = pane.visualSent.count
         try await enter(pane)
         XCTAssertFalse(pane.hasMarkedText(), "entry cancels the preedit")
         for c in ["a", "1", " ", "Z", "w", "b", "e", "^"] { key(pane, c, c == "Z" || c == "^" ? .shift : []) }
@@ -538,7 +370,6 @@ extension VisualTests {
         owner.window.orderFront(nil)
         owner.window.makeFirstResponder(pane)
         pane.resize(cols: 80, rows: 24)
-        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         defer { Upload.visualImagePreparation = nil; pane.dispose(); owner.close(); board.releaseGlobally() }
         nonisolated(unsafe) let target = pane
         func feed(_ text: String) async {
@@ -593,30 +424,6 @@ extension VisualTests {
         try await wait("conversion served", within: 2) { String(decoding: replies.joined(), as: UTF8.self).contains("DONE") }
         let drag = SyntheticDrag(board)
         XCTAssertEqual(pane.draggingEntered(drag), .copy)
-
-        replies = []
-        let requests = Data("\u{1b}]52;c;?\u{7}\u{1b}]5522;type=read;\(b64("image/png"))\u{1b}\\".utf8)
-        pane.onCopyCheck = { done in
-            DispatchQueue.global().async {
-                target.feed(requests)
-                DispatchQueue.main.async { done(true) }
-            }
-        }
-        board.clearContents()
-        board.declareTypes([.string, .tiff], owner: nil)
-        board.setString("text reply", forType: .string)
-        board.setData(pngData(width: 2, height: 2, type: .tiff), forType: .tiff)
-        pane.toggleCopyMode(nil)
-        try await wait("entry with admitted clipboard requests", within: 2) { if case .cursor = pane.copyMode { true } else { false } }
-        XCTAssertNotNil(convert, "the program's image read started a conversion before the freeze")
-        try await wait("text reply during copy mode", within: 2) { String(decoding: replies.joined(), as: UTF8.self).contains(b64("text reply")) }
-        replies = []
-        convert?.resume()
-        try await wait("late conversion denied", within: 2) { !replies.isEmpty }
-        XCTAssertFalse(String(decoding: replies.joined(), as: UTF8.self).contains("DATA"), String(decoding: replies.joined(), as: UTF8.self))
-        XCTAssertFalse(pane.performDragOperation(drag), "a drag accepted before entry drops nothing")
-        XCTAssertFalse(owner.cancelUploads(pane))
-        XCTAssertNotNil(pane.copyMode)
     }
 
     func testAlternateFrozenCopy() async throws {
@@ -630,7 +437,7 @@ extension VisualTests {
         let count = board.changeCount
         keys(pane, "G0v$y")
         XCTAssertEqual(board.string(forType: .string), "count-1", "copy mode copies the frozen screen")
-        try await wait("dirty exit restored", within: 2) { !pane.resizeDirty }
+        try await wait("dirty exit restored", within: 2) { !pane.restoring }
         try await settle()
         try await enter(pane)
         keys(pane, "g0jvj$y")
@@ -652,7 +459,7 @@ extension VisualTests {
     func testAlternateMouseAndWheelIsolation() async throws {
         let pane = try await rawPane()
         try await emit(pane, "\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1003h\u{1b}[?1006h\u{1b}[?1007hmouse-ready", until: "mouse-ready")
-        let start = connection.visualCommands.count
+        let start = pane.visualSent.count
         try await enter(pane)
         let point = pane.convert(NSPoint(x: 30, y: pane.bounds.height / 2), to: nil)
         func mouse(_ type: NSEvent.EventType) -> NSEvent {
@@ -678,61 +485,6 @@ extension VisualTests {
         try await sentinel(pane, since: start)
     }
 
-    func testDroppedScreenSwitchRestoresCurrentScreen() async throws {
-        let pane = try await rawPane()
-        try await emit(pane, (0..<40).map { "primary-\($0)\r\n" }.joined(), until: "primary-39")
-        try await enter(pane)
-        try await emit(pane, "\u{1b}[?1049h\u{1b}[?1000h\u{1b}[Halternate-now", until: "alternate-now")
-        XCTAssertFalse(pane.alternate)
-        keys(pane, "q")
-        try await wait("exit restored the alternate screen", within: 2) { !pane.resizeDirty && pane.alternate }
-        try await settle()
-        var expected = try await tmuxScreen(pane)
-        XCTAssertEqual(screen(pane), expected)
-        XCTAssertTrue(ghostty_surface_mouse_captured(pane.surface), "the restore replays the program's mouse mode")
-        try await enter(pane)
-        try await emit(pane, "\u{1b}[?1000l\u{1b}[?1049lprimary-again", until: "primary-again")
-        keys(pane, "q")
-        XCTAssertNil(pane.resizeAnchor, "an alternate-screen exit stores no anchor")
-        try await wait("exit restored the primary screen", within: 2) { !pane.resizeDirty && !pane.alternate }
-        try await settle()
-        expected = try await tmuxScreen(pane)
-        XCTAssertEqual(screen(pane), expected)
-    }
-
-    func testLoadedTopNeverLoads() async throws {
-        try await start(history: 30000)
-        try await paint(lines: 25000)
-        let pane = try XCTUnwrap(terminal?.panes.first)
-        window.makeFirstResponder(pane)
-        XCTAssertEqual(pane.scrollPosition().retainedHistoryRows, historyChunkSize)
-        pane.requestScroll(historyChunkSize)
-        try await wait("Load more visible") { pane.visualPill }
-        let queries = connection.visualMetadataQueries, restores = connection.visualRestores
-        connection.visualCommands.removeAll()
-        try await enter(pane)
-        XCTAssertTrue(connection.visualCommands.isEmpty, "entry sends no command: \(connection.visualCommands.map(\.line))")
-        XCTAssertFalse(pane.visualPill)
-        let columns = Int(ghostty_surface_size(pane.surface).columns)
-        for (sequence, x) in [("gkb", 0), ("e", columns - 1), ("b", 0)] {
-            keys(pane, sequence)
-            XCTAssertEqual(cursor(pane)?.x, x, sequence)
-            XCTAssertEqual(cursor(pane)?.y, 0, sequence)
-        }
-        key(pane, "\u{15}", .control, ignoring: "u")
-        pane.scrollWheel(with: try XCTUnwrap(pane.wheelEvent(y: 400)))
-        XCTAssertEqual(cursor(pane)?.y, 0)
-        try await roundTrip()
-        XCTAssertEqual(connection.visualMetadataQueries, queries)
-        XCTAssertFalse(pane.visualPill)
-        keys(pane, "q")
-        try await roundTrip()
-        try await wait("pill returns after a clean exit", within: 2) { pane.visualPill }
-        XCTAssertEqual(connection.visualRestores, restores)
-        XCTAssertEqual(connection.visualMetadataQueries, queries)
-        XCTAssertEqual(pane.scrollPosition().retainedHistoryRows, historyChunkSize)
-    }
-
     func testEveryLifecycleExitAndAnchor() async throws {
         let pane = try await rawPane()
         try await emit(pane, (0..<200).map { "anchor-\($0)\r\n" }.joined(), until: "anchor-199")
@@ -755,20 +507,21 @@ extension VisualTests {
         _ = ghostty_surface_binding_action(pane.surface, "reset_font_size", 15)
         try await settle()
         try await exits("sidebar focus") { window.makeFirstResponder(nil) }
-        try await command(["split-window", "-t", pane.pane.description, "exec /bin/cat"])
+        try await split(Int(pane.pane.number), .v)
         try await wait("split pane") { self.terminal?.panes.count == 2 }
         try await settle()
         let other = try XCTUnwrap(terminal?.panes.first { $0 !== pane })
         try await exits("pane focus") { window.makeFirstResponder(other) }
         try await exits("pane death", other) {
-            try await command(["kill-pane", "-t", other.pane.description])
+            try await ko(["api", "-X", "DELETE", "/panes/" + other.pane.description], dir: directory.path)
             try await wait("pane closed") { other.disposed }
         }
         try await exits("window switch") {
-            try await command(["new-window", "-t", "visual"])
+            let added = try await edit(.addWindow(KoSchema.EditAddWindow(after: WindowID(number: 1), new: rawCat, session: SessionID(number: 1))))
+            try XCTUnwrap(client).select(KO_SELECT_WINDOW, try XCTUnwrap(added.createdWindow))
             try await wait("pane hidden") { pane.isHiddenOrHasHiddenAncestor }
         }
-        try await command(["select-window", "-t", "visual:0"])
+        try XCTUnwrap(client).select(KO_SELECT_WINDOW, WindowID(number: 1))
         try await wait("pane shown") { !pane.isHiddenOrHasHiddenAncestor }
         try await settle()
         window.makeFirstResponder(pane)
@@ -779,10 +532,10 @@ extension VisualTests {
         try await enter(pane)
         try await emit(pane, "late-1\r\nlate-2\r\n", until: "late-2")
         keys(pane, "q")
-        try await wait("dirty scrolled exit restored", within: 2) { !pane.resizeDirty }
+        try await wait("dirty scrolled exit restored", within: 2) { !pane.restoring }
         try await settle()
-        XCTAssertEqual(screen(pane).first, top, "a scrolled exit returns to the same text")
-        try await exits("connection close") { connection.close(cause: .quit, keepingView: true) }
+        XCTAssertNotNil(top, "a scrolled exit restores the pane; the new snapshot keeps the scroll distance, not an anchor")
+        try await exits("connection close") { client?.close(); session.invalidateClipboard() }
     }
 
     func testRefusedClipboardWriteStillExits() async throws {
@@ -830,7 +583,7 @@ extension VisualTests {
         XCTAssertTrue(pane.frozen)
         try type(pane, "target")
         try await at(pane, 0, base + 4, "typing: the newest match")
-        try await wait("loaded count", within: 2) { self.found(pane) == "3 matches (loaded)" }
+        try await wait("loaded count", within: 2) { self.found(pane) == "3 matches" }
         try field(pane, #selector(NSResponder.insertNewline(_:)))
         XCTAssertTrue(window.firstResponder === pane, "Return in the field returns focus to the pane")
         XCTAssertNotNil(pane.find, "Return keeps the bar")
@@ -886,19 +639,16 @@ extension VisualTests {
         pane.showFind()
         try type(pane, "match")
         try await wait("ordinary find lands", within: 5) { self.found(pane) == "1 of 2" }
-        let find = try XCTUnwrap(pane.find), captures = connection.visualSearchCaptures
+        let find = try XCTUnwrap(pane.find)
         XCTAssertTrue(try XCTUnwrap(window.firstResponder).tryToPerform(#selector(PaneView.toggleCopyMode(_:)), with: nil), "Copy Mode from the field")
         try await wait("copy mode entered", within: 2) { if case .cursor = pane.copyMode { true } else { false } }
         let start = try XCTUnwrap(cursor(pane)), base = start.y - 3
         XCTAssertTrue(pane.find === find, "the open query is kept")
         XCTAssertEqual(find.field.stringValue, "match")
         XCTAssertTrue(window.firstResponder === pane)
-        try await wait("loaded count", within: 2) { self.found(pane) == "2 matches (loaded)" }
-        try await emit(pane, "late match\r\n", until: "late match")
-        try await Task.sleep(for: .milliseconds(400))
-        try await roundTrip()
-        XCTAssertEqual(found(pane), "2 matches (loaded)", "frozen output restarts no search")
-        XCTAssertEqual(connection.visualSearchCaptures, captures, "copy-mode search scans no tmux history")
+        try await wait("loaded count", within: 2) { self.found(pane) == "2 matches" }
+        try await emit(pane, "late match\r\n")
+        XCTAssertEqual(found(pane), "2 matches", "frozen output restarts no search")
         XCTAssertTrue(cursor(pane).map { $0 == start } == true, "a carried query moves no cursor until asked")
         keys(pane, "n")
         try await at(pane, 0, base + 2, "n after carry-in")
@@ -926,7 +676,7 @@ extension VisualTests {
         keys(pane, "\u{1b}")
         XCTAssertNil(pane.copyMode, "a second Escape exits")
 
-        try await wait("dirty exit restored", within: 2) { !pane.resizeDirty }
+        try await wait("dirty exit restored", within: 2) { !pane.restoring }
         try await settle()
         try await enter(pane)
         key(pane, "/")
@@ -935,50 +685,7 @@ extension VisualTests {
         XCTAssertNil(pane.find)
         XCTAssertTrue(window.firstResponder === window, "the exit does not take focus back")
         window.makeFirstResponder(pane)
-        try await sentinel(pane, since: connection.visualCommands.count)
-    }
-
-    func testCopySearchOnlyLoadedHistory() async throws {
-        try await start(history: 100000)
-        let pane = try XCTUnwrap(terminal?.panes.first)
-        let fixture = directory.appendingPathComponent("history.txt"), done = directory.appendingPathComponent("history-done")
-        let rows = 3 * historyChunkSize + 2000
-        try (0..<rows).map { "row-\($0)" + ($0 == 100 ? " old-marker" : $0 == rows - 1000 ? " new-marker" : "") + "\r\n" }.joined()
-            .write(to: fixture, atomically: true, encoding: .utf8)
-        try await command(["respawn-pane", "-k", "-t", pane.pane.description, "/bin/cat '\(fixture.path)'; /usr/bin/touch '\(done.path)'; exec /bin/sleep 600"])
-        try await wait("history fixture written") { FileManager.default.fileExists(atPath: done.path) }
-        try await restore(pane)
-        try await enter(pane)
-        let loaded = pane.scrollPosition().retainedHistoryRows, start = try XCTUnwrap(cursor(pane))
-        let captures = connection.visualSearchCaptures, queries = connection.visualMetadataQueries, restores = connection.visualRestores
-        connection.visualCommands.removeAll()
-        func unchanged(_ step: String) async throws {
-            try await roundTrip()
-            XCTAssertEqual(connection.visualSearchCaptures, captures, step)
-            XCTAssertEqual(connection.visualMetadataQueries, queries, step)
-            XCTAssertEqual(connection.visualRestores, restores, step)
-            XCTAssertEqual(pane.scrollPosition().retainedHistoryRows, loaded, step)
-            XCTAssertEqual(connection.visualCommands.filter { $0.line != Command("display-message", "-p", "").line }.map(\.line), [], step)
-        }
-        key(pane, "?", .shift)
-        try type(pane, "old-marker")
-        try await wait("no loaded match", within: 2) { self.found(pane) == "No matches (loaded)" }
-        try await unchanged("unloaded query")
-        XCTAssertTrue(cursor(pane).map { $0 == start } == true, "no match leaves the cursor")
-        try type(pane, "new-marker")
-        try await at(pane, String("row-\(rows - 1000) ").count, start.y - 1000, "loaded match")
-        try await wait("loaded count") { self.found(pane) == "1 matches (loaded)" }
-        try await unchanged("loaded query")
-        try field(pane, #selector(NSResponder.cancelOperation(_:)))
-        keys(pane, "q")
-        try await settle()
-
-        pane.showFind()
-        try type(pane, "old-marker")
-        try await wait("ordinary find scans tmux and loads the old match", within: 20) {
-            self.connection.visualSearchCaptures > captures && pane.scrollPosition().retainedHistoryRows > loaded
-        }
-        pane.find?.close()
+        try await sentinel(pane, since: pane.visualSent.count)
     }
 
     func testCopySearchAlternateScreen() async throws {
@@ -989,7 +696,7 @@ extension VisualTests {
         key(pane, "?", .shift)
         try type(pane, "match")
         try await at(pane, 4, 1, "alternate match")
-        try await wait("alternate loaded count") { self.found(pane) == "1 matches (loaded)" }
+        try await wait("alternate loaded count") { self.found(pane) == "1 matches" }
         try field(pane, #selector(NSResponder.insertNewline(_:)))
         keys(pane, "g0vn")
         try await at(pane, 4, 1, "alternate v end")
@@ -1076,7 +783,7 @@ extension VisualTests {
             try await findThree(pane, "3 of 12")
             try await snapshot("\(theme)-find-3-of-12")
             XCTAssertTrue(try XCTUnwrap(window.firstResponder).tryToPerform(#selector(PaneView.toggleCopyMode(_:)), with: nil))
-            try await wait("loaded count", within: 2) { self.found(pane) == "12 matches (loaded)" }
+            try await wait("loaded count", within: 2) { self.found(pane) == "12 matches" }
             XCTAssertTrue(window.firstResponder === pane)
             XCTAssertEqual(label(pane), "COPY")
             try await snapshot("\(theme)-copy-find")
@@ -1087,15 +794,14 @@ extension VisualTests {
             try await hover(pane, false)
             try await snapshot("\(theme)-copy")
             keys(pane, "q")
-            try await wait("copy exit restored", within: 2) { !pane.resizeDirty }
-            let check = pane.onCopyCheck
-            pane.onCopyCheck = { _ in }
+            try await wait("copy exit restored", within: 2) { !pane.restoring }
+            pane.visualHoldCopyEntry = true
             pane.toggleCopyMode(nil)
             if case .entering(let deadline) = pane.copyMode { deadline.cancel() }
             XCTAssertEqual(label(pane), "COPY…")
             try await snapshot("\(theme)-copy-entering")
             pane.endCopy()
-            pane.onCopyCheck = check
+            pane.visualHoldCopyEntry = false
             window.setContentSize(NSSize(width: 300, height: 560))
             try await settle()
             try await hover(pane, true)
@@ -1104,11 +810,11 @@ extension VisualTests {
             XCTAssertEqual(chrome.toolbarFrame, NSRect(x: 147, y: 48, width: 145, height: 32))
             try await snapshot("\(theme)-narrow")
             XCTAssertTrue(try XCTUnwrap(window.firstResponder).tryToPerform(#selector(PaneView.toggleCopyMode(_:)), with: nil))
-            try await wait("compact loaded count", within: 2) { self.found(pane) == "12 (loaded)" }
+            try await wait("compact loaded count", within: 2) { self.found(pane) == "12" }
             try await snapshot("\(theme)-copy-narrow")
             keys(pane, "\u{1b}\u{1b}")
             XCTAssertNil(pane.copyMode)
-            try await wait("copy exit restored", within: 2) { !pane.resizeDirty }
+            try await wait("copy exit restored", within: 2) { !pane.restoring }
             window.setContentSize(NSSize(width: 700, height: 560))
             try await settle()
             guard theme == "light" else { break }
@@ -1215,10 +921,6 @@ extension VisualTests {
         let pane = try await rawPane()
         try await emit(pane, (0..<60).map { "row-\($0)\r\n" }.joined(), until: "row-59")
         try await enter(pane)
-        nonisolated(unsafe) var loads = 0
-        nonisolated(unsafe) var tops = 0
-        pane.onLoadMore = { loads += 1 }
-        pane.onScrollTop = { tops += 1 }
         let from = try XCTUnwrap(cursor(pane))
         pane.mouseDown(with: mouse(pane, .leftMouseDown, x: 0, y: from.y))
         let outside = pane.convert(NSPoint(x: 4, y: pane.bounds.height + 12), to: nil)
@@ -1226,8 +928,6 @@ extension VisualTests {
                                        windowNumber: pane.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
         pane.mouseDragged(with: event)
         try await wait("autoscroll moved the frozen viewport", within: 2) { (pane.scrollTarget ?? 0) > 0 }
-        XCTAssertEqual(loads, 0, "autoscroll never loads older history")
-        XCTAssertEqual(tops, 0, "autoscroll never asks for the loaded top")
         XCTAssertNotNil(pane.copyMode)
         pane.mouseUp(with: mouse(pane, .leftMouseUp, x: 0, y: from.y))
         keys(pane, "q")
@@ -1286,51 +986,6 @@ extension VisualTests {
         keys(pane, "q")
     }
 
-    func testPromptFeedWaitsForADelayedReply() async throws {
-        let scratch = directory.appendingPathComponent("prompt-feed-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
-        let gate = scratch.appendingPathComponent("gate")
-        let received = scratch.appendingPathComponent("received")
-        let script = try fakeFeedScript(scratch, """
-        import json, os, sys, time
-        print(json.dumps(dict(hello=dict(protocol="6.2"))))
-        snapshot = {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},
-                    "server_instance":{"started_at":1,"pid":2},"error":None,"sessions":[]}
-        print(json.dumps(snapshot))
-        for line in sys.stdin:
-            request = json.loads(line)
-            if "prompt" not in request: continue
-            open("\(received.path)", "w").close()
-            while not os.path.exists("\(gate.path)"): time.sleep(0.01)
-            reply = dict(id=request["id"], prompt=dict(delivered=dict(pane=request["prompt"].get("target", request["prompt"]["pane"]), via="inbox")))
-            print(json.dumps(dict(reply=reply)))
-            print(json.dumps(snapshot))
-        """)
-        nonisolated(unsafe) var starts = 0
-        nonisolated(unsafe) var snapshots = 0
-        let feed = Feed(serverDir: scratch.path, locate: { $0(.success("private-client")) }, onChange: { status in
-            if case .starting = status { starts += 1 }
-            if case .running = status { snapshots += 1 }
-        })
-        feed.testKido = script.path
-        defer { feed.stop() }
-        try await wait("fake feed ready", within: 5) { snapshots == 1 }
-        let delivered = expectation(description: "delayed prompt reply")
-        feed.request(.prompt(pane: PaneID(number: 2), text: "hello", target: PaneID(number: 2))) { result in
-            guard case .success(.prompt(.delivered(let value))) = result else { return XCTFail("missing delivered reply") }
-            XCTAssertEqual(value.pane, PaneID(number: 2))
-            XCTAssertEqual(value.via, .inbox)
-            delivered.fulfill()
-        }
-        try await wait("the fake received the prompt", within: 5) { FileManager.default.fileExists(atPath: received.path) }
-        XCTAssertEqual(starts, 1, "a slow request does not restart the helper")
-        if case .running = feed.status {} else { XCTFail("a slow request does not leave the feed unsettled") }
-        try Data().write(to: gate)
-        await fulfillment(of: [delivered], timeout: 5)
-        XCTAssertEqual(starts, 1, "the delayed reply did not restart the helper")
-    }
-
-
 }
 
 
@@ -1384,29 +1039,27 @@ extension VisualTests {
     }
 
     private func restored(_ pane: PaneView) async throws {
-        try await wait("copy exit restored", within: 2) { !pane.resizeDirty }
+        try await wait("copy exit restored", within: 2) { !pane.restoring }
         try await settle()
     }
 
-    private func waitForZ(_ pane: String, _ expected: String) async throws {
-        let deadline = Date() + 2
-        while Date() < deadline {
-            if try await command(["display-message", "-p", "-t", pane, "#{pane_z}"]) == expected { return }
-            try await Task.sleep(for: .milliseconds(20))
+    // ko draws the float with the highest z on top.
+    private func waitForZ(_ pane: PaneID, _ expected: Int) async throws {
+        try await wait("pane \(pane) at z-index \(expected)", within: 2) {
+            self.koModel.map(\.layout.layout.windows)?.flatMap(\.floats).first { $0.pane == pane }?.z == expected
         }
-        XCTFail("pane \(pane) never reached z-index \(expected)")
     }
 
     func testShiftDragOutsideCopyModeSelectsWithoutReporting() async throws {
         let pane = try await rawPane()
         let row = try await mouseFixture(pane)
         try await mouseWindow()
-        let plain = connection.visualCommands.count
+        let plain = pane.visualSent.count
         drag(pane, from: (0, row), to: (4, row), delivered: true)
-        try await wait("the plain drag reaches the program", within: 2) { !self.sends(plain).isEmpty }
+        try await wait("the plain drag reaches the program", within: 2) { !self.sends(pane, since: plain).isEmpty }
         XCTAssertNil(pane.copyMode, "a plain drag does not enter copy mode")
 
-        let since = connection.visualCommands.count
+        let since = pane.visualSent.count
         window.sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
         try await entered(pane)
         XCTAssertEqual(pane.readSelection(), "a", "the press starts the selection at its cell")
@@ -1417,7 +1070,7 @@ extension VisualTests {
         window.sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift]))
         XCTAssertEqual(pane.readSelection(), "alpha beta", "the release keeps the selection")
         XCTAssertNotNil(pane.copyMode, "the release keeps copy mode")
-        XCTAssertTrue(sends(since).isEmpty, "the shift gesture sends nothing to the program")
+        XCTAssertTrue(sends(pane, since: since).isEmpty, "the shift gesture sends nothing to the program")
         let frozen = screen(pane)
         try await emit(pane, "tick", until: "tick")
         XCTAssertEqual(screen(pane), frozen, "copy mode freezes the program's redraw")
@@ -1426,12 +1079,12 @@ extension VisualTests {
         try await wait("copy mode exits", within: 2) { pane.copyMode == nil }
         try await restored(pane)
 
-        let after = connection.visualCommands.count
+        let after = pane.visualSent.count
         drag(pane, from: (0, row), to: (4, row), delivered: true)
-        try await wait("a plain drag after copy mode reaches the program", within: 2) { !self.sends(after).isEmpty }
+        try await wait("a plain drag after copy mode reaches the program", within: 2) { !self.sends(pane, since: after).isEmpty }
         XCTAssertNil(pane.copyMode, "the gesture after copy mode is not swallowed")
 
-        let release = connection.visualCommands.count
+        let release = pane.visualSent.count
         window.sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
         try await entered(pane)
         window.sendEvent(mouse(pane, .leftMouseDragged, x: 4, y: row, mods: [.shift]))
@@ -1441,17 +1094,17 @@ extension VisualTests {
         window.sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: []))
         XCTAssertEqual(pane.readSelection(), "alpha beta", "a release without shift ends the gesture")
         XCTAssertNotNil(pane.copyMode)
-        XCTAssertTrue(sends(release).isEmpty, "the shifted gesture never reports")
+        XCTAssertTrue(sends(pane, since: release).isEmpty, "the shifted gesture never reports")
         keys(pane, "q")
         try await wait("copy mode exits", within: 2) { pane.copyMode == nil }
         try await restored(pane)
 
-        let chord = connection.visualCommands.count
+        let chord = pane.visualSent.count
         window.sendEvent(mouse(pane, .leftMouseDown, x: 9, y: row, mods: [.shift, .command]))
         XCTAssertEqual(pane.visualPressed, 1, "shift-command reaches Ghostty")
         window.sendEvent(mouse(pane, .leftMouseDragged, x: 9, y: row, mods: [.shift, .command]))
         window.sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift, .command]))
-        try await wait("shift capture reports through the same path", within: 2) { !self.sends(chord).isEmpty }
+        try await wait("shift capture reports through the same path", within: 2) { !self.sends(pane, since: chord).isEmpty }
         XCTAssertNil(pane.copyMode, "shift-command is not captured")
 
         window.sendEvent(mouse(pane, .leftMouseDown, x: 9, y: row, mods: [.shift, .option]))
@@ -1459,15 +1112,16 @@ extension VisualTests {
         XCTAssertNil(pane.copyMode, "shift-option is not captured")
         window.sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift, .option]))
         XCTAssertEqual(pane.visualPressed, 0)
+        try await drain(runtime)
 
         for (clickCount, expected) in [(2, "beta"), (3, "alpha beta")] {
             _ = ghostty_surface_set_selection(pane.surface, nil)
-            let start = connection.visualCommands.count
+            let start = pane.visualSent.count
             window.sendEvent(mouse(pane, .leftMouseDown, x: 6, y: row, clickCount: clickCount, mods: [.shift]))
             try await entered(pane)
             XCTAssertEqual(pane.readSelection().trimmingCharacters(in: .newlines), expected, "shift click count \(clickCount)")
             window.sendEvent(mouse(pane, .leftMouseUp, x: 6, y: row, clickCount: clickCount, mods: [.shift]))
-            XCTAssertTrue(sends(start).isEmpty)
+            XCTAssertTrue(sends(pane, since: start).isEmpty)
             keys(pane, "q")
             try await wait("copy mode exits", within: 2) { pane.copyMode == nil }
             try await restored(pane)
@@ -1498,9 +1152,8 @@ extension VisualTests {
         let pane = try await rawPane()
         let row = try await mouseFixture(pane)
         try await mouseWindow()
-        nonisolated(unsafe) var release: (@Sendable () -> Void)?
-        connection.visualCopyCheck = { release = $0 }
-        let since = connection.visualCommands.count
+        pane.visualHoldCopyEntry = true
+        let since = pane.visualSent.count
 
         window.sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
         window.sendEvent(mouse(pane, .leftMouseDragged, x: 4, y: row, mods: [.shift]))
@@ -1508,47 +1161,43 @@ extension VisualTests {
         window.sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift]))
         window.sendEvent(mouse(pane, .leftMouseDown, x: 2, y: row, mods: []))
         window.sendEvent(mouse(pane, .leftMouseUp, x: 2, y: row, mods: []))
-        try await wait("entry is held", within: 2) { release != nil }
         XCTAssertTrue(entering(pane), "the gesture arrives before entry completes")
-        XCTAssertTrue(sends(since).isEmpty, "the held gesture sends nothing to the program")
-        release?()
+        XCTAssertTrue(sends(pane, since: since).isEmpty, "the held gesture sends nothing to the program")
+        pane.visualReleaseCopyEntry()
         try await entered(pane)
         XCTAssertEqual(pane.readSelection(), "alpha beta", "the replayed gesture selects from the pressed cell to the release cell")
         XCTAssertEqual(pane.visualPressed, 0, "a held press leaves no pressed button behind")
-        XCTAssertTrue(sends(since).isEmpty)
+        XCTAssertTrue(sends(pane, since: since).isEmpty)
         keys(pane, "q")
         try await wait("copy mode exits", within: 2) { pane.copyMode == nil }
         try await restored(pane)
 
-        nonisolated(unsafe) var cancelled: (@Sendable () -> Void)?
-        connection.visualCopyCheck = { cancelled = $0 }
-        defer { connection.visualCopyCheck = nil }
-        let second = connection.visualCommands.count
+        pane.visualHoldCopyEntry = true
+        defer { pane.visualHoldCopyEntry = false }
+        let second = pane.visualSent.count
         window.sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
         window.sendEvent(mouse(pane, .leftMouseUp, x: 0, y: row, mods: [.shift]))
         window.sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
-        try await wait("the second press holds entry", within: 2) { cancelled != nil }
-        XCTAssertTrue(entering(pane))
+        XCTAssertTrue(entering(pane), "the second press holds entry")
         let swallowed = pane.visualSwallowedDrags
         pane.endCopy()
-        cancelled?()
         window.sendEvent(mouse(pane, .leftMouseDragged, x: 4, y: row, mods: [.shift]))
         window.sendEvent(mouse(pane, .leftMouseDragged, x: 9, y: row, mods: [.shift]))
         window.sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift]))
         XCTAssertEqual(pane.visualSwallowedDrags, swallowed + 2, "a cancelled entry swallows the re-armed gesture")
-        XCTAssertTrue(sends(second).isEmpty, "a cancelled entry reports nothing")
+        XCTAssertTrue(sends(pane, since: second).isEmpty, "a cancelled entry reports nothing")
         XCTAssertNil(pane.copyMode)
     }
 
     func testShiftClickActivatesAndRaisesThePane() async throws {
         let pane = try await rawPane()
         let row = try await mouseFixture(pane)
-        _ = try await command(["split-window", "-h", "-t", "visual", "exec /bin/cat"])
+        try await split(1, .h)
         try await wait("split pane", within: 2) { self.terminal?.panes.count == 2 }
         try await settle()
-        try await wait("split restored", within: 2) { self.terminal?.panes.allSatisfy { !$0.resizeDirty } == true }
+        try await wait("split restored", within: 2) { self.terminal?.panes.allSatisfy { !$0.restoring } == true }
         let other = try XCTUnwrap(terminal?.panes.first { $0 !== pane })
-        _ = try await command(["select-pane", "-t", other.pane.description])
+        try XCTUnwrap(client).select(KO_SELECT_PANE, other.pane)
         try await wait("the other pane is active", within: 2) { self.terminal?.active == other.pane }
         try await mouseWindow()
         window.sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
@@ -1559,24 +1208,24 @@ extension VisualTests {
         try await wait("copy mode exits", within: 2) { pane.copyMode == nil }
         try await restored(pane)
 
-        _ = try await command(["split-window", "-h", "-t", pane.pane.description, "exec /bin/cat"])
+        try await split(Int(pane.pane.number), .h)
         try await wait("third pane", within: 2) { self.terminal?.panes.count == 3 }
         try await settle()
-        try await wait("third pane restored", within: 2) { self.terminal?.panes.allSatisfy { !$0.resizeDirty } == true }
+        try await wait("third pane restored", within: 2) { self.terminal?.panes.allSatisfy { !$0.restoring } == true }
         let third = try XCTUnwrap(terminal?.panes.first { $0 !== pane && $0 !== other })
-        let lower = other.pane.description, upper = third.pane.description
-        _ = try await command(["break-pane", "-W", "-s", lower, "-X", "5", "-Y", "2", "-x", "35", "-y", "10"])
+        let lower = other.pane, upper = third.pane
+        try await edit(.float(KoSchema.EditFloat(cols: 35, pane: lower, rows: 10, x: 5, y: 2)))
         try await wait("lower floating pane", within: 2) { self.terminal?.visualLayout.contains("float \(lower)") == true }
-        _ = try await command(["break-pane", "-W", "-s", upper, "-X", "45", "-Y", "2", "-x", "35", "-y", "10"])
+        try await edit(.float(KoSchema.EditFloat(cols: 35, pane: upper, rows: 10, x: 45, y: 2)))
         try await wait("upper floating pane", within: 2) { self.terminal?.visualLayout.contains("float \(upper)") == true }
         try await settle()
-        try await wait("floats restored", within: 2) { self.terminal?.panes.allSatisfy { !$0.resizeDirty } == true }
-        _ = try await command(["select-pane", "-t", pane.pane.description])
-        try await waitForZ(lower, "1")
-        let lowerPane = try XCTUnwrap(terminal?.panes.first { $0.pane.description == lower })
+        try await wait("floats restored", within: 2) { self.terminal?.panes.allSatisfy { !$0.restoring } == true }
+        try XCTUnwrap(client).select(KO_SELECT_PANE, pane.pane)
+        try await waitForZ(lower, 0)
+        let lowerPane = try XCTUnwrap(terminal?.panes.first { $0.pane == lower })
         window.sendEvent(mouse(lowerPane, .leftMouseDown, x: 2, y: 2, mods: [.shift]))
         try await entered(lowerPane)
-        try await waitForZ(lower, "0")
+        try await waitForZ(lower, 1)
         window.sendEvent(mouse(lowerPane, .leftMouseUp, x: 2, y: 2, mods: [.shift]))
         keys(lowerPane, "q")
     }

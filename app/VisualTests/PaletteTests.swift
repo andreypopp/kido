@@ -1,5 +1,7 @@
 import AppKit
 import GhosttyKit
+import KoClient
+import KoModel
 import PromptMarkdown
 import XCTest
 import SnapshotTesting
@@ -61,7 +63,7 @@ import TmuxControl
         let owner = try XCTUnwrap(app.open(.local, start: false))
         var input: [Data] = []
         let panes = try (0..<2).map { index in
-            try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: index), font: 13, onInput: { input.append($0) }))
+            try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: index), font: 13, input: { input.append($0) }))
         }
         for pane in panes { owner.sidebar.content.addSubview(pane) }
         owner.window.makeFirstResponder(panes[0])
@@ -271,18 +273,11 @@ import TmuxControl
         let fixture = try ThemeFixture()
         defer { fixture.close() }
         let owner = try XCTUnwrap(fixture.app.open(.local, start: false))
-        let directory = "/tmp/kt-live-" + UUID().uuidString.prefix(8)
-        let started = try await Child.run(tools.kido, ["server", "--server", directory], env: serverEnvironment)
-        XCTAssertEqual(started.status, 0, started.err)
-        let server = try JSONDecoder().decode(Server.self, from: Data(started.out.utf8))
-        addTeardownBlock { @MainActor in
-            owner.close()
-            _ = try? await Child.run(server.tmux, ["-u", "-S", server.socket, "kill-session", "-t", "$0"], env: tools.environment)
-            try? FileManager.default.removeItem(atPath: directory)
-        }
-        let setup = try await Child.run(server.tmux, ["-u", "-S", server.socket, "respawn-pane", "-k", "-t", "$0:", "exec /bin/cat", ";", "split-window", "-d", "-t", "$0:", "exec /bin/cat"], env: tools.environment)
-        XCTAssertEqual(setup.status, 0, setup.err)
-        owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
+        let directory = try koServerDir()
+        _ = try await KoServer.launch(dir: directory)
+        try await koPut(directory, #"[{"name":"main","windows":[{"name":"w","tree":{"split":"h","children":[\#(koPane()),\#(koPane())]}}]}]"#)
+        addTeardownBlock { @MainActor in owner.close() }
+        owner.testServerDir = directory
         let ready = expectation(description: "two live panes")
         var completed = false
         let menuChanged = owner.menuChanged
@@ -404,17 +399,16 @@ import TmuxControl
     }
 
     @MainActor private final class PromptProbe {
-        var recorded: [RPCRequest] = []
+        var recorded: [WindowOwner.PromptRequest] = []
         var candidates: [PromptCandidate] = []
-        var reply: Result<RPCEvent.Reply.Value, Failure>?
-        var sends: [RPCRequest] { recorded.filter { if case .prompt(_, .some, _) = $0 { true } else { false } } }
+        var reply: Result<WindowOwner.PromptReply, Error>?
+        var sends: [WindowOwner.PromptRequest] { recorded.filter { if case .send = $0 { true } else { false } } }
         func install(_ owner: WindowOwner) {
-            owner.request = { [self] request, done in
+            owner.testPrompt = { [self] request, done in
                 recorded.append(request)
                 switch request {
-                case .prompt(_, nil, _): done(.success(.prompt(.candidates(candidates))))
-                case .prompt(_, .some, _): if let reply { done(reply) }
-                default: break
+                case .resolve: done(.success(.candidates(candidates.map(\.schema))))
+                case .send: if let reply { done(reply) }
                 }
             }
         }
@@ -425,7 +419,6 @@ import TmuxControl
         let app: AppDelegate
         let owner: WindowOwner
         let probe = PromptProbe()
-        let realRequest: RPCRequestHandler
         private let previousMenu: NSMenu?
         let snapshot: Snapshot
         var source: PromptSource
@@ -434,8 +427,7 @@ import TmuxControl
             runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("prompt-" + UUID().uuidString))))
             app = AppDelegate(runtime: runtime)
             owner = try XCTUnwrap(app.open(.local, start: false))
-            realRequest = owner.request
-            snapshot = try test.sidebarFixture()
+            snapshot = sidebarFixture()
             owner.testReceive(snapshot)
             let session = try XCTUnwrap(snapshot.sessions.first)
             source = PromptSource(owner: owner, instance: snapshot.serverInstance, session: session.id, window: WindowID(number: 0), pane: PaneID(number: 0), windowName: "app")
@@ -446,18 +438,23 @@ import TmuxControl
             probe.install(owner)
             NSApp.mainMenu = app.mainMenu()
         }
-        func startServer(_ test: VisualTestCase) async throws -> Server {
-            let dir = "/tmp/kpp-" + UUID().uuidString.prefix(8)
-            let started = try await Child.run(tools.kido, ["server", "--server", dir], env: test.serverEnvironment)
-            XCTAssertEqual(started.status, 0, started.err)
-            let server = try JSONDecoder().decode(Server.self, from: Data(started.out.utf8))
-            owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
-            test.addTeardownBlock { @MainActor [owner] in
-                owner.close()
-                _ = try? await Child.run(server.tmux, ["-u", "-S", server.socket, "kill-session", "-t", "$0"], env: tools.environment)
-                try? FileManager.default.removeItem(atPath: dir)
-            }
-            return server
+        // A private server whose one session has a window of the given panes, for the owner to start.
+        func startServer(_ test: VisualTestCase, _ panes: [String]) async throws -> String {
+            let dir = try test.koServerDir()
+            _ = try await KoServer.launch(dir: dir)
+            let tree = panes.count == 1 ? panes[0] : #"{"split":"h","children":[\#(panes.joined(separator: ","))]}"#
+            try await test.koPut(dir, #"[{"name":"main","windows":[{"name":"w","tree":\#(tree)}]}]"#)
+            owner.testServerDir = dir
+            test.addTeardownBlock { @MainActor [owner] in owner.close() }
+            return dir
+        }
+
+        // The core's answer to a request, past the probe.
+        func real(_ request: WindowOwner.PromptRequest, _ done: @escaping @MainActor (Result<WindowOwner.PromptReply, Error>) -> Void) {
+            let hook = owner.testPrompt
+            owner.testPrompt = nil
+            owner.prompt(request, done: done)
+            owner.testPrompt = hook
         }
         func open(_ selection: String? = nil) throws -> PalettePrompt {
             var source = source
@@ -493,21 +490,9 @@ import TmuxControl
             owner.window.setFrame(NSRect(origin: owner.window.frame.origin, size: NSSize(width: 1100, height: 740)), display: false)
             let remote = try XCTUnwrap(app.open(.remote("devbox"), start: false))
             defer { app.closePalette(); owner.close(); remote.close() }
-            let initialSnapshot = try sidebarFixture { object in
-                let sessions = object["sessions"] as! [[String: Any]]
-                var main = sessions[0]
-                func nodes(_ source: [[String: Any]]) -> [[String: Any]] {
-                    source.map { source in
-                        var node = source
-                        if node["title"] as? String == "pi-ui" {
-                            node["lifecycle"] = ["Live", ["Pi_agent", ["status": ["since": 1791131000, "msg": NSNull(), "state": ["Waiting", ["kind": NSNull(), "progress": NSNull()]]], "session": "session-905"]]]
-                        }
-                        if let children = node["children"] as? [[String: Any]] { node["children"] = nodes(children) }
-                        return node
-                    }
-                }
-                main["nodes"] = nodes(main["nodes"] as! [[String: Any]])
-                object["sessions"] = [main]
+            let initialSnapshot = sidebarFixture { snapshot in
+                snapshot.mapItems { if $0.title == "pi-ui" { $0.lifecycle = piLifecycle(.waiting(nil, progress: nil), session: "session-905"); $0.mark = .waiting } }
+                snapshot.sessions = [snapshot.sessions[0]]
             }
             owner.testReceive(initialSnapshot)
             owner.sidebar.list.focus()
@@ -544,7 +529,7 @@ import TmuxControl
             palette.enter(.sessionName(owner, try XCTUnwrap(owner.snapshot).serverInstance, .create)); image(palette, "\(theme)-new-session")
             palette.sessionName(""); image(palette, "\(theme)-new-session-error")
             palette.enter(.sessionName(owner, try XCTUnwrap(owner.snapshot).serverInstance, .rename(session.id, original: session.name))); image(palette, "\(theme)-rename")
-            owner.testReceive(try sidebarFixture())
+            owner.testReceive(sidebarFixture())
             query("visa"); palette.sessionName("visa"); image(palette, "\(theme)-rename-error")
             query("main.2"); palette.sessionName("main.2"); image(palette, "\(theme)-rename-error2")
             app.routes.connect(.remote("devbox-old"))
@@ -587,9 +572,9 @@ import TmuxControl
                 switch state {
                 case "prompt-picker": panel.makeFirstResponder(prompt.targetButton)
                 case "prompt-sending": probe.reply = nil; prompt.sendComposed()
-                case "prompt-refused": probe.reply = .success(.promptError("Inbox refused the prompt: agent is busy with an external editor.", .refused)); prompt.sendComposed()
-                case "prompt-unknown": probe.reply = .success(.promptError("Socket closed while sending.", .unknown)); prompt.sendComposed()
-                case "prompt-invalid": probe.reply = .success(.promptError("@kido-app is no longer an agent. Choose another target.", .invalid)); prompt.sendComposed()
+                case "prompt-refused": probe.reply = .failure(KoError(code: KO_ERR_REFUSED, detail: "Inbox refused the prompt: agent is busy with an external editor.")); prompt.sendComposed()
+                case "prompt-unknown": probe.reply = .failure(KoError(code: KO_ERR_UNKNOWN, detail: "Socket closed while sending.")); prompt.sendComposed()
+                case "prompt-invalid": probe.reply = .failure(KoError(code: KO_ERR_INVALID, detail: "@kido-app is no longer an agent. Choose another target.")); prompt.sendComposed()
                 case "prompt-paneclosed": prompt.sourceChanged(gone: true)
                 default: break
                 }
@@ -619,8 +604,8 @@ import TmuxControl
         defer { fixture.close() }
         var prompt = try fixture.open()
         XCTAssertEqual(prompt.target, a, "the closest agent is chosen before the first session candidate")
-        XCTAssertEqual(probe.recorded.first, .prompt(pane: fixture.source.pane, text: nil, target: nil))
-        XCTAssertEqual(prompt.targetButton.menu?.items.map(\.title), ["This window", "@near  this window", "Session main", "@far  window @2"])
+        XCTAssertEqual(probe.recorded.first, .resolve(from: fixture.source.pane))
+        XCTAssertEqual(prompt.targetButton.menu?.items.map(\.title), ["This window", "@near  this window", "Session main", "@far  window window_2"])
         XCTAssertEqual(prompt.targetButton.menu?.items[1].state, .on)
         prompt.type("Explain")
         let initialHeight = try XCTUnwrap(app.palettePanel).frame.height
@@ -676,10 +661,10 @@ import TmuxControl
         XCTAssertEqual(app.promptDrafts.count, 2)
         prompt.chooseTarget(1)
         XCTAssertEqual(prompt.textView.string, twice)
-        probe.reply = .success(.prompt(.delivered(PromptDelivered(pane: a.pane, via: .inbox))))
+        probe.reply = .success(.sent)
         let sending = try XCTUnwrap(app.palettePanel)
         try sendKey(sending, "\r", code: 36)
-        XCTAssertEqual(probe.sends.last, .prompt(pane: fixture.source.pane, text: twice, target: a.pane))
+        XCTAssertEqual(probe.sends.last, .send(from: fixture.source.pane, to: a.pane, text: twice))
         XCTAssertNil(app.palettePanel)
         XCTAssertNil(app.promptDrafts[PromptDraft.Key(host: owner.host, instance: snapshot.serverInstance, pane: a.pane)])
     }
@@ -692,20 +677,20 @@ import TmuxControl
         defer { fixture.close() }
         var prompt = try fixture.open()
         prompt.type("Explain")
-        probe.reply = .success(.promptError("Busy", .refused))
+        probe.reply = .failure(KoError(code: KO_ERR_REFUSED, detail: "Busy"))
         prompt.sendComposed()
         XCTAssertEqual(prompt.status.stringValue, "Busy")
         XCTAssertFalse(prompt.retry.isHidden)
         prompt.retry.performClick(nil)
         XCTAssertEqual(probe.sends.count, 2, "Retry sends again after a refusal")
-        probe.reply = .success(.promptError("Gone", .invalid))
+        probe.reply = .failure(KoError(code: KO_ERR_INVALID, detail: "Gone"))
         prompt.sendComposed()
         XCTAssertEqual(prompt.status.stringValue, "Gone")
         XCTAssertTrue(prompt.targetButton.isEnabled)
         prompt.chooseTarget(1)
         XCTAssertEqual(prompt.status.stringValue, "")
         XCTAssertTrue(prompt.send.isEnabled)
-        probe.reply = .success(.promptError("Socket closed.", .unknown))
+        probe.reply = .failure(KoError(code: KO_ERR_UNKNOWN, detail: "Socket closed."))
         prompt.sendComposed()
         XCTAssertFalse(prompt.textView.isEditable)
         XCTAssertTrue(prompt.send.isHidden)
@@ -723,9 +708,9 @@ import TmuxControl
         XCTAssertEqual(prompt.status.stringValue, "Source pane closed; agents resolved earlier stay available.")
         prompt.chooseTarget(0)
         XCTAssertTrue(prompt.targetButton.label.string.contains("in window app (pane closed)"))
-        probe.reply = .success(.promptError("Gone", .invalid))
+        probe.reply = .failure(KoError(code: KO_ERR_INVALID, detail: "Gone"))
         prompt.sendComposed()
-        XCTAssertEqual(probe.sends.last, .prompt(pane: a.pane, text: "Explain", target: a.pane))
+        XCTAssertEqual(probe.sends.last, .send(from: a.pane, to: a.pane, text: "Explain"))
         app.closePalette()
         app.promptDrafts = [:]
         probe.candidates = []
@@ -741,12 +726,12 @@ import TmuxControl
         probe.candidates = [a]
         prompt = try fixture.open()
         prompt.type("late")
-        var late: (@MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void)?
-        owner.request = { _, done in late = done }
+        var late: (@MainActor (Result<WindowOwner.PromptReply, Error>) -> Void)?
+        owner.testPrompt = { _, done in late = done }
         prompt.sendComposed()
         let savedPanel = try XCTUnwrap(app.palettePanel)
         savedPanel.palette.enter(.connect)
-        late?(.success(.prompt(.delivered(PromptDelivered(pane: a.pane, via: .inbox)))))
+        late?(.success(.sent))
         XCTAssertTrue(app.palettePanel === savedPanel, "a late delivery cannot close another mode")
         XCTAssertEqual(savedPanel.palette.mode, .connect)
         XCTAssertEqual(app.promptDrafts[prompt.key!]?.text, "late", "a late reply cannot clear the kept draft")
@@ -832,11 +817,13 @@ import TmuxControl
         let fixture = try PromptFixture(self)
         defer { fixture.close() }
         let owner = fixture.owner
-        let server = try await fixture.startServer(self)
-        _ = try await Child.run(server.tmux, ["-u", "-S", server.socket, "respawn-pane", "-k", "-t", "%0", "printf 'pane selection fixture\\r\\n'; exec /bin/cat"], env: tools.environment)
+        let feed = NSTemporaryDirectory() + "kpp-feed-" + UUID().uuidString
+        FileManager.default.createFile(atPath: feed, contents: nil)
+        addTeardownBlock { try? FileManager.default.removeItem(atPath: feed) }
+        _ = try await fixture.startServer(self, [koPane("printf 'pane selection fixture\\r\\n'; exec tail -f " + SSH.quote(feed))])
         owner.start()
-        try await wait("pane ready") { owner.testSession?.pane(PaneID(number: 0)) != nil }
-        let pane = try XCTUnwrap(owner.testSession?.pane(PaneID(number: 0)))
+        try await wait("pane ready") { owner.testSession?.pane(PaneID(number: 1)) != nil }
+        let pane = try XCTUnwrap(owner.testSession?.pane(PaneID(number: 1)))
         try await wait("pane text") { self.surfaceText(pane).contains("pane selection fixture") }
         owner.window.makeFirstResponder(pane)
         XCTAssertFalse(pane.hasSelection)
@@ -894,7 +881,9 @@ import TmuxControl
         }
         fixture.app.togglePalette()
         let payload = Data("palette OSC52".utf8).base64EncodedString()
-        _ = try await Child.run(server.tmux, ["-u", "-S", server.socket, "set-option", "-s", "set-clipboard", "on", ";", "respawn-pane", "-k", "-t", "%0", "printf '\\033]52;c;\(payload)\\007'; exec /bin/cat"], env: tools.environment)
+        let osc52 = try FileHandle(forWritingTo: URL(fileURLWithPath: feed))
+        defer { try? osc52.close() }
+        try osc52.write(contentsOf: Data("\u{1b}]52;c;\(payload)\u{7}".utf8))
         try await wait("OSC52 writes the private pasteboard while the palette is open") { fixture.runtime.pasteboard.string(forType: .string) == "palette OSC52" }
     }
 
@@ -931,10 +920,10 @@ import TmuxControl
         let fixture = try PromptFixture(self)
         let (app, owner) = (fixture.app, fixture.owner)
         defer { fixture.close() }
-        var replies: [(@MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void)] = []
-        owner.request = { _, done in replies.append(done) }
+        var replies: [(@MainActor (Result<WindowOwner.PromptReply, Error>) -> Void)] = []
+        owner.testPrompt = { _, done in replies.append(done) }
         let candidates = fixture.probe.candidates
-        let result: Result<RPCEvent.Reply.Value, Failure> = .success(.prompt(.candidates(candidates)))
+        let result: Result<WindowOwner.PromptReply, Error> = .success(.candidates(candidates.map(\.schema)))
         var source = fixture.source
         source.quote = "selected text"
         let draftKey = PromptDraft.Key(host: owner.host, instance: source.instance, pane: candidates[0].pane)
@@ -962,7 +951,7 @@ import TmuxControl
             switch cancellation {
             case "mode": panel.palette.enter(.connect)
             case "closed": app.closePalette()
-            default: owner.testReceive(try sidebarFixture { $0["server_instance"] = ["started_at": 1, "pid": 77777] })
+            default: owner.testReceive(sidebarFixture { $0.serverInstance = ServerInstance("77777/1") })
             }
             reply(result)
             XCTAssertNil(app.palettePanel?.palette.prompt, cancellation)
@@ -1013,18 +1002,16 @@ import TmuxControl
         let fixture = try PromptFixture(self)
         let (app, owner) = (fixture.app, fixture.owner)
         defer { fixture.close() }
-        let server = try await fixture.startServer(self)
-        _ = try await Child.run(server.tmux, ["-u", "-S", server.socket, "respawn-pane", "-k", "-t", "$0:", "printf '\\033]7501;state=working:app=claude-code\\007'; exec /bin/cat"], env: tools.environment)
+        _ = try await fixture.startServer(self, [koPane("printf '\\033]7501;state=working:app=claude-code\\007'; exec /bin/cat")])
         owner.start()
         try await wait("live agent") { owner.canPrompt && PaneView.owner(owner.window.firstResponder) != nil }
         let pane = try XCTUnwrap(PaneView.owner(owner.window.firstResponder))
         let delegate = NSApp.delegate
         NSApp.delegate = app
         defer { NSApp.delegate = delegate }
-        let request = fixture.realRequest
         var release: (() -> Void)?
-        owner.request = { value, done in
-            request(value) { result in release = { done(result) } }
+        owner.testPrompt = { value, done in
+            fixture.real(value) { result in release = { done(result) } }
         }
         app.updateMenu(owner, responder: pane)
         try sendKey(owner.window, "o", code: 31, modifiers: .command)
@@ -1039,7 +1026,7 @@ import TmuxControl
         if !typedEarly { first.type("one draft for this agent") }
         let key = try XCTUnwrap(first.key)
         try sendKey(app.palettePanel, "\u{1b}", code: 53)
-        owner.request = request
+        owner.testPrompt = nil
         app.togglePalette()
         let panel = try XCTUnwrap(app.palettePanel)
         let index = try XCTUnwrap(panel.palette.shown.firstIndex { if case .pane(let position) = $0.entry.id { return position.pane == key.pane }; return false })
@@ -1053,9 +1040,9 @@ import TmuxControl
         ready.textView.setSelectedRange(NSRange(location: 0, length: ready.textView.string.utf16.count))
         ready.type(raw)
         var sent: String?
-        owner.request = { value, done in
-            if case .prompt(_, let text?, _) = value { sent = text }
-            request(value, done)
+        owner.testPrompt = { value, done in
+            if case .send(_, _, let text) = value { sent = text }
+            fixture.real(value, done)
         }
         try sendKey(panel, "\r", code: 36)
         try await wait("real server accepts raw markdown") { app.palettePanel == nil }
@@ -1066,18 +1053,23 @@ import TmuxControl
         let fixture = try PromptFixture(self)
         let (app, owner, probe) = (fixture.app, fixture.owner, fixture.probe)
         defer { fixture.close() }
-        let server = try await fixture.startServer(self)
-        let setup = try await Child.run(server.tmux, ["-u", "-S", server.socket, "respawn-pane", "-k", "-t", "$0:", "printf 'alpha beta\\r\\n'; exec /bin/cat", ";", "split-window", "-d", "-t", "$0:", "printf '\\033]7501;state=working:app=claude-code\\007'; exec /bin/cat", ";", "split-window", "-d", "-t", "$0:", "printf '\\033]7501;state=working:app=claude-code\\007\\033]0;second\\007'; exec /bin/cat"], env: tools.environment)
-        XCTAssertEqual(setup.status, 0, setup.err)
+        let dir = try await fixture.startServer(self, [
+            koPane("printf 'alpha beta\\r\\n'; exec /bin/cat"),
+            koPane("printf '\\033]7501;state=working:app=claude-code\\007'; exec /bin/cat"),
+            koPane("printf '\\033]7501;state=working:app=claude-code\\007\\033]0;second\\007'; exec /bin/cat"),
+        ])
         owner.start()
         try await wait("source pane and agent are ready") { owner.currentSession != nil && (owner.snapshot?.promptPanes.filter(\.agent).count ?? 0) == 2 && PaneView.owner(owner.window.firstResponder) != nil }
         let pane = try XCTUnwrap(PaneView.owner(owner.window.firstResponder))
+        try await wait("the panes have their layout size") {
+            pane.visualReady && owner.testSession?.windows.values.contains { !$0.isHidden && $0.visualGeometryReady } == true
+        }
         let delegate = NSApp.delegate
         NSApp.delegate = app
         defer { app.closePalette(); NSApp.delegate = delegate }
         let session = try XCTUnwrap(owner.currentSession)
-        let near = PromptCandidate(pane: PaneID(number: 1), session: session.id, window: WindowID(number: 0), title: "near")
-        let second = PromptCandidate(pane: PaneID(number: 2), session: session.id, window: near.window, title: "second")
+        let near = PromptCandidate(pane: PaneID(number: 2), session: session.id, window: WindowID(number: 1), title: "near")
+        let second = PromptCandidate(pane: PaneID(number: 3), session: session.id, window: near.window, title: "second")
         probe.candidates = [near, second]; probe.install(owner)
         owner.window.makeFirstResponder(pane)
         app.updateMenu(owner, responder: pane)
@@ -1148,7 +1140,7 @@ import TmuxControl
         app.closePalette()
         try commandO()
         XCTAssertTrue(app.palettePanel?.palette.prompt?.textView.string.contains("> alpha beta") == true)
-        probe.reply = .success(.prompt(.delivered(PromptDelivered(pane: near.pane, via: .inbox))))
+        probe.reply = .success(.sent)
         try XCTUnwrap(app.palettePanel?.palette.prompt).sendComposed()
         XCTAssertNil(app.palettePanel)
         XCTAssertNil(pane.copyMode)
@@ -1157,7 +1149,7 @@ import TmuxControl
         app.promptDrafts = [:]
         probe.recorded = []
         let liveSnapshot = try XCTUnwrap(owner.snapshot)
-        owner.testReceive(try sidebarFixture { $0["sessions"] = [] })
+        owner.testReceive(sidebarFixture { $0.sessions = [] })
         owner.window.makeFirstResponder(pane)
         try commandO()
         XCTAssertNil(app.palettePanel)
@@ -1186,13 +1178,13 @@ import TmuxControl
         XCTAssertEqual(noAgentPanel.palette.mode, .root)
         XCTAssertTrue(probe.recorded.isEmpty)
         app.closePalette()
-        let runSnapshot = try sidebarFixture { object in
-            var main = (object["sessions"] as! [[String: Any]])[0]
-            var marked = (main["nodes"] as! [[String: Any]])[0]
-            marked["children"] = []; marked["run"] = "run-window"
+        let runSnapshot = sidebarFixture { snapshot in
+            var marked = snapshot.sessions[0].nodes[0].item
+            marked.children = []; marked.run = "run-window"
             var agent = marked
-            agent["id"] = "%1"; agent["pane"] = "%1"; agent["run"] = NSNull(); agent["title"] = "run-agent"
-            main["nodes"] = [marked, agent]; object["sessions"] = [main]
+            agent.id = PaneID(number: 1); agent.run = nil; agent.title = "run-agent"
+            snapshot.sessions = [snapshot.sessions[0]]
+            snapshot.sessions[0].nodes = [.item(marked), .item(agent)]
         }
         owner.testReceive(runSnapshot)
         XCTAssertFalse(owner.canPrompt, "every agent in a run window is outside prompt scope")
@@ -1217,13 +1209,12 @@ import TmuxControl
         try commandO()
         let closingSource = try XCTUnwrap(app.palettePanel?.palette.prompt)
         closingSource.type("closed source")
-        let killed = try await Child.run(server.tmux, ["-u", "-S", server.socket, "kill-pane", "-t", pane.pane.description], env: tools.environment)
-        XCTAssertEqual(killed.status, 0, killed.err)
+        try await ko(["api", "-X", "DELETE", "/panes/" + pane.pane.description], dir: dir)
         try await wait("source close reaches Prompt mode") { closingSource.sourceGone }
         XCTAssertEqual(closingSource.status.stringValue, "Source pane closed; agents resolved earlier stay available.")
         XCTAssertTrue(closingSource.targetButton.label.string.contains("(pane closed)"))
         closingSource.sendComposed()
-        XCTAssertEqual(probe.sends.last, .prompt(pane: near.pane, text: "closed source", target: near.pane))
+        XCTAssertEqual(probe.sends.last, .send(from: near.pane, to: near.pane, text: "closed source"))
 
         XCTAssertNil(app.palettePanel)
     }
@@ -1246,7 +1237,7 @@ import TmuxControl
         XCTAssertTrue(app.promptDrafts.isEmpty, "deleting the text removes the draft")
         prompt = try fixture.open()
         prompt.type("server")
-        owner.testReceive(try sidebarFixture { $0["server_instance"] = ["started_at": 1791000001, "pid": 4243] })
+        owner.testReceive(sidebarFixture { $0.serverInstance = ServerInstance("4243/1791000001") })
         XCTAssertNil(app.palettePanel)
         XCTAssertTrue(app.promptDrafts.isEmpty, "an instance change removes even the open draft")
         owner.testReceive(snapshot)
@@ -1254,12 +1245,9 @@ import TmuxControl
         prompt.type("agent")
         app.closePalette(.moved)
         XCTAssertEqual(app.promptDrafts.count, 1)
-        let editor = try sidebarFixture { object in
-            var sessions = object["sessions"] as! [[String: Any]]
-            var main = sessions[0], nodes = main["nodes"] as! [[String: Any]]
-            let children = nodes[1]["children"] as! [[String: Any]]
-            nodes[0]["lifecycle"] = children[1]["lifecycle"]
-            main["nodes"] = nodes; sessions[0] = main; object["sessions"] = sessions
+        let editor = sidebarFixture { snapshot in
+            snapshot.sessions[0].nodes[0].item.lifecycle = snapshot.sessions[0].nodes[1].group.children[1].lifecycle
+            snapshot.sessions[0].nodes[0].item.mark = snapshot.sessions[0].nodes[1].group.children[1].mark
         }
         owner.testReceive(editor)
         XCTAssertFalse(editor.promptPanes.first { $0.pane == candidate.pane }!.agent)
@@ -1299,28 +1287,19 @@ import TmuxControl
         NSApp.mainMenu = app.mainMenu()
         let connecting = try XCTUnwrap(app.paletteEntries(owner: local, responder: nil).first { $0.title == "New Session…" })
         XCTAssertEqual(connecting.check(), "Not available now")
-        let snapshot = try sidebarFixture { object in
-            var sessions = object["sessions"] as! [[String: Any]]
-            var nodes = sessions[0]["nodes"] as! [[String: Any]]
-            nodes[0]["program_status"] = ["serial": 1, "records": [
-                ["id": "", "app": "pi", "state": "working"],
-                ["id": "review", "title": "Review palette", "state": "working"]
-            ]]
-            sessions[0]["nodes"] = nodes
-            object["sessions"] = sessions
+        let snapshot = sidebarFixture { snapshot in
+            snapshot.sessions[0].nodes[0].item.program_status = ProgramStatus(serial: 1, records: [
+                programRecord("", .working, app: "pi"), programRecord("review", .working, title: "Review palette")])
         }
         XCTAssertTrue(sidebarRows(snapshot).contains { $0.title == "Review palette" })
         XCTAssertTrue(sidebarRows(snapshot).contains { $0.title == "main-watch" })
         XCTAssertTrue(sidebarRows(snapshot).contains { $0.title == "@sidebar-mockup" })
         local.testReceive(snapshot)
-        remote.testReceive(try sidebarFixture { object in
-            var sessions = object["sessions"] as! [[String: Any]]
-            sessions[0]["name"] = "remote-main"
-            object["sessions"] = [sessions[0]]
+        remote.testReceive(sidebarFixture { snapshot in
+            snapshot.sessions[0].name = "remote-main"
+            snapshot.sessions = [snapshot.sessions[0]]
         })
         app.routes.connect(.remote("devbox")); app.routes.connect(.remote("devbox-old"))
-        var requests: [RPCRequest] = []
-        remote.request = { request, _ in requests.append(request) }
         func panes(_ owner: WindowOwner?) -> [PaletteEntry] {
             app.paletteEntries(owner: owner, responder: nil).filter { if case .pane = $0.id { true } else { false } }
         }
@@ -1338,29 +1317,26 @@ import TmuxControl
         let pane = try XCTUnwrap(panes(remote).first)
         XCTAssertNil(pane.check())
         if case .run(let jump) = pane.operation { jump() }
-        XCTAssertEqual(requests.count, 1)
-        if case .pane(let target) = pane.id { XCTAssertEqual(requests, [.jump(target)]) }
-        remote.testReceive(try sidebarFixture { $0["sessions"] = [] })
+        // The owner has no server, so the jump that it sends reports that.
+        XCTAssertEqual(remote.sidebar.list.visualDiagnostic, "devbox is not connected.")
+        remote.testReceive(sidebarFixture { $0.sessions = [] })
         XCTAssertEqual(pane.check(), "That pane is gone")
         XCTAssertEqual(panes(remote).map(\.title), [])
 
         let second = try XCTUnwrap(app.open(.local, start: false))
         defer { second.close() }
         second.testReceive(snapshot)
-        var firstRequests: [RPCRequest] = [], secondRequests: [RPCRequest] = []
-        local.request = { request, _ in firstRequests.append(request) }
-        second.request = { request, _ in secondRequests.append(request) }
         let secondPane = try XCTUnwrap(panes(second).first)
         if case .run(let jump) = secondPane.operation { jump() }
-        XCTAssertTrue(firstRequests.isEmpty)
-        if case .pane(let target) = secondPane.id { XCTAssertEqual(secondRequests, [.jump(target)]) }
+        XCTAssertEqual(local.sidebar.list.visualDiagnostic, "", "the other window's row jumps in its own owner")
+        XCTAssertEqual(second.sidebar.list.visualDiagnostic, "Local is not connected.")
     }
 
     func testPaletteKeyTogglesAndRestoresFocus() async throws {
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("palette-" + UUID().uuidString))))
         let app = AppDelegate(runtime: runtime)
         let owner = try XCTUnwrap(app.open(.local, start: false))
-        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, onInput: { _ in }))
+        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, input: { _ in }))
         owner.sidebar.content.addSubview(pane)
         let previous = NSApp.mainMenu, delegate = NSApp.delegate
         NSApp.mainMenu = app.mainMenu()
@@ -1424,22 +1400,20 @@ import TmuxControl
         let app = AppDelegate(runtime: runtime)
         let owner = try XCTUnwrap(app.open(.local, start: false))
         defer { app.closePalette(); owner.close() }
-        owner.testReceive(try sidebarFixture())
-        var requests: [RPCRequest] = []
-        owner.request = { request, _ in requests.append(request) }
+        owner.testReceive(sidebarFixture())
         app.togglePalette()
         let palette = try XCTUnwrap(app.palettePanel?.palette)
         let stale = try XCTUnwrap(palette.shown.first { $0.entry.title == "@kido-app" }?.entry)
-        owner.testReceive(try sidebarFixture { $0["server_instance"] = ["started_at": 1791000001, "pid": 4243] })
+        owner.testReceive(sidebarFixture { $0.serverInstance = ServerInstance("4243/1791000001") })
         XCTAssertEqual(stale.check(), "That pane is gone")
         let rebuilt = try XCTUnwrap(palette.shown.first { $0.entry.title == "@kido-app" }?.entry)
         XCTAssertNil(rebuilt.check())
-        owner.testReceive(try sidebarFixture { $0["sessions"] = [] })
+        owner.testReceive(sidebarFixture { $0.sessions = [] })
         XCTAssertFalse(palette.shown.contains { $0.entry.title == "@kido-app" })
         XCTAssertEqual(stale.check(), "That pane is gone")
         palette.chooseEntry(stale)
         XCTAssertEqual(palette.error, "That pane is gone")
-        XCTAssertTrue(requests.isEmpty)
+        XCTAssertEqual(owner.sidebar.list.visualDiagnostic, "", "a gone pane sends no jump")
     }
 
     func testPaletteModesAndKeys() throws {
@@ -1530,30 +1504,21 @@ import TmuxControl
     }
 
     func testCloseSessionConfirmsAndKills() async throws {
-        let dir = "/tmp/kp-" + UUID().uuidString.prefix(8)
-        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: serverEnvironment)
-        XCTAssertEqual(result.status, 0, result.err)
-        let server = try JSONDecoder().decode(Server.self, from: Data(result.out.utf8))
+        let dir = try koServerDir()
+        _ = try await KoServer.launch(dir: dir)
+        let agent = koPane("printf '\\033]7501;state=working:app=claude-code\\007hello\\r\\n'; exec /bin/cat")
+        try await koPut(dir, #"[{"name":"main","windows":[{"name":"w","tree":\#(agent)}]},{"name":"survivor","windows":[{"name":"w","tree":\#(koPane())}]}]"#)
         let board = NSPasteboard(name: .init("kp-" + UUID().uuidString))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let app = AppDelegate(runtime: runtime)
         let owner = try XCTUnwrap(app.open(.local, start: false))
         let previous = NSApp.mainMenu
         defer { NSApp.mainMenu = previous }
-        owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
-        addTeardownBlock { @MainActor in
-            app.closePalette(); owner.close(); board.releaseGlobally()
-            for id in ["$0", "$1", "$2"] {
-                _ = try? await Child.run(server.tmux, ["-u", "-S", server.socket, "kill-session", "-t", id], env: tools.environment)
-            }
-            try? FileManager.default.removeItem(atPath: dir)
-        }
-        let commands = ["new-session", "-d", "-s", "survivor", ";", "respawn-pane", "-k", "-t", "$0:", "printf '\\033]7501;state=working:app=claude-code\\007hello\\r\\n'; exec /bin/cat"]
-        let setup = try await Child.run(server.tmux, ["-u", "-S", server.socket] + commands, env: tools.environment)
-        XCTAssertEqual(setup.status, 0, setup.err)
+        owner.testServerDir = dir
+        addTeardownBlock { @MainActor in app.closePalette(); owner.close(); board.releaseGlobally() }
         owner.start()
-        let first = SessionID(number: 0), survivor = SessionID(number: 1)
-        try await wait("two sessions and running cat") { owner.snapshot?.sessions.count == 2 && closeScope(owner.snapshot, target: .session(first)).running }
+        let first = SessionID(number: 1), survivor = SessionID(number: 2)
+        try await wait("two sessions and a working agent") { owner.snapshot?.sessions.count == 2 && closeScope(owner.snapshot, target: .session(first)).running }
         owner.perform(.selectSession(first))
         try await wait("selected session") { owner.navigation.session == first && PaneView.owner(owner.window.firstResponder) != nil }
         let pane = try XCTUnwrap(PaneView.owner(owner.window.firstResponder))
@@ -1574,32 +1539,23 @@ import TmuxControl
         let originalSnapshot = try XCTUnwrap(owner.snapshot)
         app.renameSession()
         let stalePanel = try XCTUnwrap(app.palettePanel)
-        owner.testReceive(try sidebarFixture { $0["server_instance"] = ["started_at": 1, "pid": 77777] })
+        owner.testReceive(sidebarFixture { $0.serverInstance = ServerInstance("77777/1") })
         stalePanel.palette.sessionName("must-not-rename")
         XCTAssertEqual(stalePanel.palette.error, "That session is gone")
         owner.testReceive(originalSnapshot)
-        var barrier = false
-        owner.send([Command("display-message", "-p", "barrier")]) { _ in barrier = true }
-        try await wait("stale rename barrier") { barrier }
-        let unchanged = try await Child.run(server.tmux, ["-u", "-S", server.socket, "display-message", "-p", "-t", first.description, "#{session_name}"], env: tools.environment)
-        XCTAssertEqual(unchanged.out.trimmingCharacters(in: .whitespacesAndNewlines), originalSnapshot.sessions.first { $0.id == first }?.name)
+        XCTAssertEqual(try XCTUnwrap(owner.testClient).model().layout.layout.sessions.first?.name, originalSnapshot.sessions.first { $0.id == first }?.name)
         app.closePalette()
         app.renameSession()
         let latePanel = try XCTUnwrap(app.palettePanel)
-        let gate = "palette-" + UUID().uuidString
-        owner.send([Command("wait-for", gate)])
+        // The rename's edit answers off the main queue, after this palette is replaced.
         latePanel.palette.sessionName("late")
         app.closePalette()
         app.togglePalette()
         let replacement = try XCTUnwrap(app.palettePanel)
-        _ = try await Child.run(server.tmux, ["-u", "-S", server.socket, "wait-for", "-S", gate], env: tools.environment)
-        barrier = false
-        owner.send([Command("display-message", "-p", "barrier")]) { _ in barrier = true }
-        try await wait("late rename reply") { barrier }
+        try await wait("late rename snapshot") { owner.snapshot?.sessions.first { $0.id == first }?.name == "late" }
         XCTAssertTrue(app.palettePanel === replacement)
         XCTAssertNil(replacement.palette.error)
         app.closePalette()
-        try await wait("late rename snapshot") { owner.snapshot?.sessions.first { $0.id == first }?.name == "late" }
         app.renameSession()
         let renamePanel = try XCTUnwrap(app.palettePanel)
         let renameEditor = try XCTUnwrap(renamePanel.firstResponder as? NSTextView)
@@ -1623,8 +1579,8 @@ import TmuxControl
         app.closeSession()
         owner.respondToAlert(.alertFirstButtonReturn)
         try await wait("control follows the surviving session") { owner.navigation.session == survivor && owner.snapshot?.sessions.count == 1 }
-        owner.send([Command("new-session", "-d", "-s", "quiet")])
-        let quiet = SessionID(number: 2)
+        owner.createSession("quiet") { _ in }
+        let quiet = SessionID(number: 3)
         try await wait("quiet session appears") { owner.snapshot?.sessions.contains { $0.id == quiet } == true }
         XCTAssertFalse(closeScope(owner.snapshot, target: .session(quiet)).running)
         owner.confirmClose(.session(quiet), name: "quiet")
@@ -1632,29 +1588,35 @@ import TmuxControl
         try await wait("quiet session closes without a sheet") { owner.snapshot?.sessions.contains { $0.id == quiet } == false }
     }
 
-    func testNewSessionWithoutAWindowOpensOneOnce() throws {
+    func testNewSessionWithoutAWindowOpensOneOnce() async throws {
+        let dir = try await koLaunched()
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("palette-" + UUID().uuidString))))
         let app = AppDelegate(runtime: runtime)
-        var requests: [RPCRequest] = []
         app.routes.ready(isDefaultLaunch: true) { host, cause in
-            app.open(host, start: false, cause: cause)?.request = { request, _ in requests.append(request) }
+            let owner = app.open(host, start: false, cause: cause)
+            owner?.testServerDir = dir
+            owner?.start()
         }
         defer { app.owners.forEach { $0.close() } }
+        func sessions() async throws -> Int {
+            try await ko(["api", "/layout"], dir: dir).components(separatedBy: #""windows""#).count - 1
+        }
         app.newSession()
         let owner = try XCTUnwrap(app.owners.first)
         XCTAssertEqual(owner.host, .local)
-        XCTAssertTrue(requests.isEmpty)
-        owner.testReceive(try sidebarFixture())
-        owner.testReceive(try sidebarFixture())
-        XCTAssertEqual(requests, [.newSession])
+        try await wait("the new session") { owner.navigation.sessions.count == 2 }
+        try await wait("its window is selected") { owner.navigation.session == SessionID(number: 2) }
+        let created = try await sessions()
+        XCTAssertEqual(created, 2, "one new session")
         owner.close()
         app.newSession()
         let pending = try XCTUnwrap(app.owners.last)
         pending.close()
         _ = app.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false)
         let reopened = try XCTUnwrap(app.owners.last)
-        reopened.testReceive(try sidebarFixture())
-        XCTAssertEqual(requests, [.newSession], "closing the pending owner drops its New Session intent")
+        try await wait("the reopened window connects") { reopened.snapshot != nil }
+        let after = try await sessions()
+        XCTAssertEqual(after, 2, "closing the pending owner drops its New Session intent")
     }
 }
 
@@ -1699,4 +1661,11 @@ import TmuxControl
 
 @MainActor private extension PalettePrompt {
     func type(_ text: String) { textView.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0)) }
+}
+
+private extension PromptCandidate {
+    init(pane: PaneID, session: SessionID, window: WindowID, title: String) {
+        self.init(KoSchema.Candidate(pane: pane, session: session, title: title, window: window))
+    }
+    var schema: KoSchema.Candidate { KoSchema.Candidate(pane: pane, session: session, title: title, window: window) }
 }

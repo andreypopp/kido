@@ -1,5 +1,8 @@
 import AppKit
+import KoClient
+import KoModel
 import XCTest
+import os
 import SidebarFeed
 import TmuxControl
 @testable import Kido
@@ -32,32 +35,57 @@ import TmuxControl
 
 @MainActor final class ReorderTests: VisualTestCase {
     private let board = NSPasteboard(name: .init("kido-reorder-test-\(UUID().uuidString)"))
-    private var sent: [(request: RPCRequest, reply: @MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void)] = []
-    private var requests: [RPCRequest] { sent.map(\.request) }
+    private enum Sent: Equatable { case reorder(ReorderMove), jump(Snapshot.Position) }
+    private enum Reply { case reordered, failure(String) }
+    // An edit that waits for the test's answer on the editor's queue.
+    private final class Pending: @unchecked Sendable {
+        private let answered = DispatchSemaphore(value: 0)
+        private var reply = Reply.reordered
+        func wait() throws -> KoSchema.Edited {
+            _ = answered.wait(timeout: .now() + 10)
+            if case .failure(let message) = reply { throw KoError(code: KO_ERR_INVALID, detail: message) }
+            return KoSchema.Edited(snapshot: KoSchema.Snapshot(layout: KoSchema.Layout(sessions: []), revision: 1))
+        }
+        func answer(_ reply: Reply) { self.reply = reply; answered.signal() }
+    }
+    private var sent: [(request: Sent, reply: (Reply) -> Void)] = []
+    private var requests: [Sent] { sent.map(\.request) }
+    private let pending = OSAllocatedUnfairLock<[Pending]>(initialState: [])
 
     override func tearDown() async throws {
         board.releaseGlobally()
         try await super.tearDown()
     }
 
-    private func fixture(sessions count: Int? = nil) throws -> Snapshot {
-        try sidebarFixture { object in
-            guard let count else { return }
-            let original = (object["sessions"] as! [[String: Any]])[0]
-            object["sessions"] = (0..<count).map { i -> [String: Any] in
-                var session = original
-                session["id"] = "$\(i)"
-                session["name"] = "session-\(i)"
-                return session
-            }
+    private func fixture(sessions count: UInt32? = nil) -> Snapshot {
+        sidebarFixture { snapshot in
+            if let count { snapshot.repeatSession(Array(0..<count)) }
         }
     }
 
     private func owner(_ snapshot: Snapshot, host: Kido.Host = .local) throws -> WindowOwner {
         let owner = try XCTUnwrap(delegate.open(host, start: false))
         addTeardownBlock { @MainActor in owner.close() }
-        owner.request = { [weak self] request, done in
-            self?.sent.append((request, done))
+        // The moves and jumps that the sidebar and the tabs ask the owner for; a move's edit waits for the test.
+        let move = owner.sidebar.list.move
+        let probe = { [weak self] (moved: ReorderMove) in
+            guard let self else { return }
+            let edit = Pending()
+            pending.withLock { $0.append(edit) }
+            sent.append((.reorder(moved), { edit.answer($0) }))
+            move(moved)
+        }
+        owner.sidebar.list.move = probe
+        owner.sidebar.tabs.move = probe
+        let navigate = owner.sidebar.list.navigate
+        owner.sidebar.list.navigate = { [weak self] navigation in
+            if case .jump(let target) = navigation { self?.sent.append((.jump(target), { _ in })) }
+            navigate(navigation)
+        }
+        let queue = pending
+        owner.testEditor { _ in
+            let edit = queue.withLock { $0.isEmpty ? nil : $0.removeFirst() }
+            return try edit?.wait() ?? KoSchema.Edited(snapshot: KoSchema.Snapshot(layout: KoSchema.Layout(sessions: []), revision: 1))
         }
         owner.testReceive(snapshot)
         owner.window.contentView?.superview?.layoutSubtreeIfNeeded()
@@ -110,7 +138,7 @@ import TmuxControl
     }
 
     func testHeadingDragCollapsesToHeadingsAndReorders() async throws {
-        let snapshot = try fixture(sessions: 20)
+        let snapshot = fixture(sessions: 20)
         let owner = try owner(snapshot)
         let list = owner.sidebar.list, table = list.visualTable as! Table
         let source = SessionID(number: 4), anchor = SessionID(number: 8)
@@ -127,7 +155,7 @@ import TmuxControl
         XCTAssertEqual(drag.items.count, 1)
         let payload = try XCTUnwrap((drag.items[0].item as? NSPasteboardItem)?.data(forType: .kidoReorder))
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
-        XCTAssertEqual(object["session"] as? String, "$4")
+        XCTAssertEqual(object["session"] as? String, "session_4")
         XCTAssertNil(object["window"] as? String)
         XCTAssertNil(object["row"], "the pasteboard carries ids, not row indexes")
 
@@ -169,7 +197,8 @@ import TmuxControl
 
         let row = try XCTUnwrap(list.visualRows.firstIndex { $0.id == .header(anchor) })
         XCTAssertNil(list.tableView(table, pasteboardWriterForRow: row), "no new drag while a drop is pending")
-        sent[0].reply(.success(.reordered))
+        sent[0].reply(.reordered)
+        try await wait("the reply", within: 5) { owner.reorder.state.pending?.replied == true }
         owner.testReceive(snapshot)
         XCTAssertEqual(list.visualRows.map(\.id), sidebarRows(moved).map(\.id), "a stale snapshot keeps the optimistic order")
         owner.testReceive(moved)
@@ -218,7 +247,7 @@ import TmuxControl
     }
 
     func testTopDropZoneAboveTheFirstHeading() async throws {
-        let snapshot = try fixture(sessions: 3)
+        let snapshot = fixture(sessions: 3)
         let owner = try owner(snapshot)
         owner.window.setContentSize(NSSize(width: 900, height: 700))
         owner.window.contentView?.superview?.layoutSubtreeIfNeeded()
@@ -232,7 +261,8 @@ import TmuxControl
         XCTAssertEqual(inset.0, .move, "the space above the first heading takes the drop")
         XCTAssertTrue(inset.1)
         XCTAssertEqual(requests, [.reorder(.session(last, relativeTo: first, .before))])
-        sent.forEach { $0.reply(.failure(.terminal("revert"))) }; sent.removeAll()
+        sent.forEach { $0.reply(.failure("revert")) }; sent.removeAll()
+        try await wait("the revert", within: 5) { owner.reorder.state.pending == nil }
 
         let upper = try await nativeDrop(list, start: header()) {
             table.convert(NSPoint(x: table.bounds.midX, y: table.rect(ofRow: 0).minY + 4), to: nil)
@@ -240,7 +270,8 @@ import TmuxControl
         XCTAssertEqual(upper.0, .move)
         XCTAssertTrue(upper.1, "the first heading's upper half means before it")
         XCTAssertEqual(requests, [.reorder(.session(last, relativeTo: first, .before))])
-        sent.forEach { $0.reply(.failure(.terminal("revert"))) }; sent.removeAll()
+        sent.forEach { $0.reply(.failure("revert")) }; sent.removeAll()
+        try await wait("the revert", within: 5) { owner.reorder.state.pending == nil }
 
         let bottom = try await nativeDrop(list, start: 0) {
             table.convert(NSPoint(x: table.bounds.midX, y: table.rect(ofRow: list.visualRows.count - 1).maxY + 40), to: nil)
@@ -250,18 +281,10 @@ import TmuxControl
     }
 
     func testWindowDragCarriesAndHidesItsWholeGroup() async throws {
-        let snapshot = try sidebarFixture { object in
-            var sessions = object["sessions"] as! [[String: Any]]
-            var nodes = sessions[0]["nodes"] as! [[String: Any]]
-            var group = nodes[1]
-            var children = group["children"] as! [[String: Any]]
-            var extra = children[1]
-            extra["id"] = "%1458"; extra["pane"] = "%1458"; extra["children"] = []
-            children.append(extra)
-            group["children"] = children
-            nodes[1] = group
-            sessions[0]["nodes"] = nodes
-            object["sessions"] = sessions
+        let snapshot = sidebarFixture { snapshot in
+            var extra = snapshot.sessions[0].nodes[1].group.children[1]
+            extra.id = PaneID(number: 1458); extra.children = []
+            snapshot.sessions[0].nodes[1].group.children.append(extra)
         }
         let owner = try owner(snapshot)
         let list = owner.sidebar.list, table = list.visualTable as! Table
@@ -296,7 +319,8 @@ import TmuxControl
         table.draggingSession(session, endedAt: .zero, operation: .move)
         XCTAssertEqual(requests, [.reorder(.window(main, group, relativeTo: last, .after))])
         XCTAssertEqual(list.visualRows.map(\.id), sidebarRows(try XCTUnwrap(snapshot.reordered(.window(main, group, relativeTo: last, .after)))).map(\.id))
-        sent[0].reply(.failure(.terminal("no such top-level window in session")))
+        sent[0].reply(.failure("no such top-level window in session"))
+        try await wait("the failure", within: 5) { owner.reorder.state.pending == nil }
         XCTAssertEqual(list.visualRows.map(\.id), rows.map(\.id), "a failure brings the rows back")
 
         let cancelled = try await nativeDrop(list, start: grabbed, cancel: true) { self.center(table, 0) }
@@ -306,7 +330,7 @@ import TmuxControl
     }
 
     func testWindowDragKeepsTheKeyboardSelection() async throws {
-        let owner = try owner(try fixture())
+        let owner = try owner(fixture())
         let list = owner.sidebar.list, table = list.visualTable as! Table
         let main = SessionID(number: 0), group = WindowID(number: 458)
         let rows = list.visualRows
@@ -338,7 +362,7 @@ import TmuxControl
     }
 
     func testHeadingStaysUnderThePointerWhenFewSessionsCollapse() async throws {
-        let snapshot = try fixture(sessions: 3)
+        let snapshot = fixture(sessions: 3)
         let owner = try owner(snapshot)
         owner.window.setContentSize(NSSize(width: 900, height: 700))
         owner.window.contentView?.superview?.layoutSubtreeIfNeeded()
@@ -360,15 +384,11 @@ import TmuxControl
     }
 
     func testNativeTableDropReordersSessionsAndWindows() async throws {
-        let snapshot = try fixture()
+        let snapshot = fixture()
         let owner = try owner(snapshot)
         let list = owner.sidebar.list, table = list.visualTable
         let header = try XCTUnwrap(list.visualRows.firstIndex { $0.id == .header(SessionID(number: 3)) })
-        let busy = try sidebarFixture { object in
-            var sessions = object["sessions"] as! [[String: Any]]
-            sessions[1]["name"] = "renamed while dragging"
-            object["sessions"] = sessions
-        }
+        let busy = sidebarFixture { $0.sessions[1].name = "renamed while dragging" }
         let cancelled = try await nativeDrop(list, start: header, cancel: true) { self.center(table, 0, dy: -6) }
         XCTAssertEqual(cancelled.0, .move)
         XCTAssertEqual(requests, [], "a cancelled heading drag sends nothing")
@@ -380,7 +400,8 @@ import TmuxControl
         XCTAssertEqual(operation, .move, "AppKit's own drag update must allow the heading drop")
         XCTAssertTrue(accepted, "AppKit's own perform must accept the heading drop")
         XCTAssertEqual(requests, [.reorder(.session(SessionID(number: 3), relativeTo: SessionID(number: 0), .before))])
-        sent.first?.reply(.success(.reordered))
+        sent.first?.reply(.reordered)
+        try await wait("the reply", within: 5) { owner.reorder.state.pending?.replied == true }
         owner.testReceive(try XCTUnwrap(snapshot.reordered(.session(SessionID(number: 3), relativeTo: SessionID(number: 0), .before))))
         XCTAssertNil(owner.reorder.state.pending)
 
@@ -396,7 +417,7 @@ import TmuxControl
     }
 
     func testWindowDragStaysInItsSessionAndRevertsOnFailure() async throws {
-        let snapshot = try fixture()
+        let snapshot = fixture()
         let owner = try owner(snapshot)
         let list = owner.sidebar.list, table = list.visualTable as! Table
         let main = SessionID(number: 0), group = WindowID(number: 458), last = WindowID(number: 797)
@@ -415,7 +436,7 @@ import TmuxControl
         let drag = try XCTUnwrap(table.visualDrag)
         list.tableView(table, draggingSession: drag.session, willBeginAt: .zero, forRowIndexes: [pane])
         XCTAssertEqual(list.visualRows, rows, "AppKit starts the session on unchanged rows")
-        XCTAssertEqual(list.visualDragging, "window($0, @458)")
+        XCTAssertEqual(list.visualDragging, "window(session_0, window_458)")
         let other = try XCTUnwrap(rows.firstIndex { $0.id == .header(SessionID(number: 3)) })
         XCTAssertEqual(list.visualScroll.draggingUpdated(try drop(list, at: center(table, other + 1))), [],
                        "another session refuses the drop")
@@ -443,30 +464,27 @@ import TmuxControl
         list.tableView(table, draggingSession: drag.session, endedAt: .zero, operation: .move)
         XCTAssertEqual(list.visualRows.map(\.id), sidebarRows(moved).map(\.id), "the whole block moves, children included")
 
-        sent[0].reply(.failure(.terminal("no such top-level window in session")))
+        sent[0].reply(.failure("no such top-level window in session"))
+
+        try await wait("the failure", within: 5) { owner.reorder.state.pending == nil }
         XCTAssertEqual(list.visualRows.map(\.id), rows.map(\.id), "a failure reverts to the latest snapshot")
         XCTAssertEqual(list.visualDiagnostic, "no such top-level window in session")
         XCTAssertNil(owner.reorder.state.pending)
 
-        let reorderTimeout = WindowOwner.reorderTimeout
-        defer { WindowOwner.reorderTimeout = reorderTimeout }
         try press(table, pane, drag: true)
         let again = try XCTUnwrap(table.visualDrag)
         list.tableView(table, draggingSession: again.session, willBeginAt: .zero, forRowIndexes: [pane])
         _ = list.visualScroll.draggingUpdated(try drop(list, at: center(table, 0)))
         let retry = try drop(list, at: center(table, gap))
         XCTAssertEqual(list.visualScroll.draggingUpdated(retry), .move)
-        WindowOwner.reorderTimeout = 0.1
         XCTAssertTrue(list.visualScroll.performDragOperation(retry))
         list.tableView(table, draggingSession: again.session, endedAt: .zero, operation: .move)
         XCTAssertEqual(list.visualDiagnostic, "", "a new drop clears the old error")
         XCTAssertEqual(list.visualRows.map(\.id), sidebarRows(moved).map(\.id))
-        try await wait("an unanswered drop times out") { owner.reorder.state.pending == nil }
-        WindowOwner.reorderTimeout = reorderTimeout
-        XCTAssertEqual(list.visualRows.map(\.id), rows.map(\.id))
-        XCTAssertEqual(list.visualDiagnostic, "The server did not answer the reorder request")
-        sent[1].reply(.success(.reordered))
-        XCTAssertEqual(list.visualRows.map(\.id), rows.map(\.id), "a late reply is never replayed")
+        sent[1].reply(.reordered)
+        try await wait("the reply", within: 5) { owner.reorder.state.pending?.replied == true }
+        owner.testReceive(moved)
+        XCTAssertNil(owner.reorder.state.pending, "the layout that shows the order ends the hold")
         XCTAssertEqual(requests.count, 2)
     }
 
@@ -506,7 +524,7 @@ import TmuxControl
         let sidebar = Sidebar()
         window.contentViewController = sidebar
         let list = sidebar.list, table = list.visualTable as! Table
-        list.update(.running(try fixture()))
+        list.update(fixture())
         window.display()
         window.contentView?.superview?.layoutSubtreeIfNeeded()
         let row = try XCTUnwrap(list.visualRows.firstIndex { $0.target != nil })
@@ -527,7 +545,7 @@ import TmuxControl
     }
 
     func testSidebarClickActivatesOnceAndDragsNever() async throws {
-        let snapshot = try fixture()
+        let snapshot = fixture()
         let owner = try owner(snapshot)
         let list = owner.sidebar.list, table = list.visualTable as! Table
         let row = try XCTUnwrap(list.visualRows.firstIndex { $0.id == .pane(SessionID(number: 0), PaneID(number: 905)) })
@@ -537,7 +555,8 @@ import TmuxControl
         try press(table, row, drag: false)
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(requests, [.jump(target)], "a click activates exactly once")
-        sent[0].reply(.failure(.terminal("not this time")))
+        sent[0].reply(.failure("not this time"))
+        try await wait("the failure", within: 5) { owner.reorder.state.pending == nil }
 
         let nested = try XCTUnwrap(list.visualRows.firstIndex { $0.indent > 0 && $0.target != nil })
         try press(table, nested, drag: true)
@@ -587,7 +606,7 @@ import TmuxControl
         let tabs = sidebar.tabs, reorder = Reorder()
         tabs.reorder = reorder
         sidebar.list.reorder = reorder
-        sidebar.list.update(.running(try fixture()))
+        sidebar.list.update(fixture())
         let ids = (1...4).map { WindowID(number: $0) }
         tabs.entries = ids.map { SessionModel.Tab(id: $0, name: "Window \($0.number)", active: $0.number == 1, status: .quiet) }
         root.layoutSubtreeIfNeeded()
@@ -626,7 +645,7 @@ import TmuxControl
         XCTAssertFalse(reorder.claim(.sidebar), "one gesture at a time")
         XCTAssertNil(sidebar.list.tableView(sidebar.list.visualTable, pasteboardWriterForRow: 0))
         send(tabs, .leftMouseUp, labels[0].midX + 2 * width)
-        XCTAssertEqual(moves, ["@1 before @4"])
+        XCTAssertEqual(moves, ["window_1 before window_4"])
         XCTAssertEqual(selected.count, 1, "a drag never selects")
         XCTAssertNil(reorder.gesture)
         XCTAssertEqual(tabs.labelRect(1), labels[1])
@@ -702,7 +721,7 @@ import TmuxControl
         XCTAssertEqual(tabs.visualPresentedLabelRect(1).minX, labels[1].minX, accuracy: 0.5, "the drawn tab starts where it was")
         XCTAssertTrue(tabs.hitTest(tabs.superview!.convert(NSPoint(x: labels[0].midX, y: 18), from: tabs)) === tabs)
         send(tabs, .leftMouseUp, labels[0].midX + width)
-        XCTAssertEqual(moves, ["@1 before @3"], "the drop uses the target layout, not the in-flight frames")
+        XCTAssertEqual(moves, ["window_1 before window_3"], "the drop uses the target layout, not the in-flight frames")
         XCTAssertTrue(tabs.visualAnimating, "the dropped tab settles into its slot")
         if CGDisplayIsAsleep(CGMainDisplayID()) == 0 { try await wait("animation ends") { !tabs.visualAnimating } }
         settled()
@@ -774,11 +793,11 @@ import TmuxControl
         send(tabs, .leftMouseDown, labels[0].midX)
         send(tabs, .leftMouseDragged, labels[2].midX)
         send(tabs, .leftMouseUp, labels[2].midX)
-        XCTAssertEqual(moves, ["$1 @1 after @3"], "an unchanged scope drops in the session it started in")
+        XCTAssertEqual(moves, ["session_1 window_1 after window_3"], "an unchanged scope drops in the session it started in")
     }
 
     func testRemoteHostLabelAndEmptyTitlebarStillMoveTheWindow() throws {
-        let owner = try owner(try fixture(), host: .remote("buildbox"))
+        let owner = try owner(fixture(), host: .remote("buildbox"))
         let tabs = owner.sidebar.tabs, window = owner.window!
         let root = try XCTUnwrap(window.contentView?.superview)
         tabs.entries = [SessionModel.Tab(id: WindowID(number: 1), name: "Only", active: true, status: .quiet)]
@@ -794,7 +813,7 @@ import TmuxControl
     }
 
     func testNavigationHidesUnknownNonCurrentWindows() throws {
-        let snapshot = try fixture()
+        let snapshot = fixture()
         var model = SessionModel(session: SessionID(number: 0),
                                  windows: [0, 786, 5].map { .init(id: WindowID(number: $0), name: "w\($0)") }, window: WindowID(number: 0))
         XCTAssertEqual(model.navigation(snapshot).tabs.map(\.id.number), [0])
@@ -808,9 +827,10 @@ import TmuxControl
     }
 
     func testNavigationFollowsProjectedRootOrder() throws {
-        let snapshot = try fixture()
+        let snapshot = fixture()
         let main = SessionID(number: 0)
-        let model = SessionModel(sessions: [try XCTUnwrap(SessionListing("$1\u{1F}@11\u{1F}visa")), try XCTUnwrap(SessionListing("$0\u{1F}@0\u{1F}main"))],
+        let model = SessionModel(sessions: [SessionModel.Session(id: SessionID(number: 1), name: "visa", window: WindowID(number: 11)),
+                                            SessionModel.Session(id: main, name: "main", window: WindowID(number: 0))],
                                  session: main,
                                  windows: [797, 0, 5, 458].map { .init(id: WindowID(number: $0), name: "w\($0)") }, window: WindowID(number: 0))
         let navigation = model.navigation(snapshot).model
@@ -825,7 +845,7 @@ import TmuxControl
         let projected = model.navigation(state.project(snapshot)).model
         XCTAssertEqual(projected.windows.map(\.id.number), [797, 0, 458])
         let menus = SessionMenus()
-        var sent: [RPCRequest] = []
+        var sent: [Navigation] = []
         menus.send = { sent.append($0) }
         menus.update(projected)
         XCTAssertEqual(menus.window.items.dropFirst(3).map(\.title), ["w797", "w0", "w458"])

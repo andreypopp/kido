@@ -1,5 +1,7 @@
 import AppKit
 import GhosttyKit
+import KoClient
+import KoModel
 import SnapshotTesting
 import SidebarFeed
 import TmuxControl
@@ -24,97 +26,27 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     """
 }
 
-@MainActor class VisualTestCase: XCTestCase {
-    var serverEnvironment: [String: String] = [:]
-    func surfaceText(_ pane: PaneView, in tag: ghostty_point_tag_e = GHOSTTY_POINT_SCREEN) -> String {
-        var text = ghostty_text_s()
-        let selection = ghostty_selection_s(top_left: ghostty_point_s(tag: tag, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
-                                            bottom_right: ghostty_point_s(tag: tag, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0), rectangle: false)
-        guard ghostty_surface_read_text(pane.surface, selection, &text), let bytes = text.text else { return "" }
-        defer { ghostty_surface_free_text(pane.surface, &text) }
-        return String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self)
-    }
-
-    func observeFrames(_ layer: CALayer, _ frame: @escaping @MainActor () -> Void) -> NSKeyValueObservation {
-        layer.observe(\.contents, options: .new) { layer, _ in
-            guard layer.contents != nil else { return }
-            MainActor.assumeIsolated { frame() }
-        }
-    }
-
-    func mainQueueFence() async {
-        await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
-    }
-
-    func drain(_ runtime: GhosttyRuntime) async throws {
-        var quiet = 0
-        for _ in 0..<20 where quiet < 3 {
-            ghostty_app_tick(runtime.app)
-            let wakeups = runtime.visualWakeups
-            await mainQueueFence()
-            quiet = runtime.visualWakeups == wakeups ? quiet + 1 : 0
-        }
-    }
-
-    func wait(_ description: String, within seconds: Double = 20, _ predicate: @escaping @MainActor () -> Bool) async throws {
-        let done = expectation(description: description)
-        var finished = false
-        func finish() { if !finished { finished = true; done.fulfill() } }
-        @MainActor func poll() {
-            if finished { return }
-            if predicate() { finish() } else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.002) { poll() } }
-        }
-        // One block at the original deadline, never a poll's own clock check: after a main-queue stall,
-        // main-queue timers due earlier than this deadline still run before the verdict.
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
-            if !finished { if !predicate() { XCTFail("Timed out: \(description)") }; finish() }
-        }
-        poll()
-        await fulfillment(of: [done], timeout: seconds + 1)
-    }
-
-    override func invokeTest() {
-        NSAppearance(named: .aqua)!.performAsCurrentDrawingAppearance { super.invokeTest() }
-    }
-
-    func headerImage(_ tabs: WindowTabs) throws -> NSImage {
-        let root = try XCTUnwrap(tabs.window?.contentView?.superview)
-        let rect = tabs.convert(tabs.bounds, to: root)
-        let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: rect))
-        root.cacheDisplay(in: rect, to: bitmap)
-        let image = NSImage(size: tabs.bounds.size)
-        image.addRepresentation(bitmap)
-        return image
-    }
-
-    func sidebarFixture(_ edit: (inout [String: Any]) -> Void = { _ in }) throws -> Snapshot {
-        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/live-feed.json")
-        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
-        edit(&object)
-        return try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
-    }
-
-    override func setUp() async throws {
-        serverEnvironment = tools.environment
-        if let tmux = ProcessInfo.processInfo.environment["KIDO_VISUAL_TMUX"] { serverEnvironment["KIDO_TMUX"] = tmux }
-        WindowOwner.clipboardConsent.reset()
-        NSApp.appearance = NSAppearance(named: .aqua)
-    }
-}
-
 @MainActor final class VisualTests: VisualTestCase {
     private let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-    var tmux = ""
-    var socket = ""
     var directory: URL!
     var window: NSWindow!
     private static var processRuntime: GhosttyRuntime?
+    // Outlives every test's directory: Ghostty reads the file again on each appearance change.
+    nonisolated private static let processConfig = FileManager.default.temporaryDirectory.appendingPathComponent("kido-visual-\(getpid()).conf")
+
+    override class func tearDown() {
+        try? FileManager.default.removeItem(at: processConfig)
+        super.tearDown()
+    }
     var runtime: GhosttyRuntime!
-    private var session: SessionView!
-    var connection: Connection!
+    private(set) var session: SessionView!
+    // The harness's own client of the private server, as an owner's: it shows the session's windows.
+    var client: KoClient?
+    private var editor: LayoutEditor?
     private var model = SessionModel()
-    private var tabSnapshot: Snapshot?
-    var rpc: Feed?
+    private(set) var koModel: KoModel?
+    // The sizes that the harness sent the server.
+    private(set) var sentSizes: [String] = []
 
     func testBackgroundLaunchIsNotActivatable() {
         XCTAssertTrue(background)
@@ -123,7 +55,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
     func testVsyncMeasurement() async throws {
         guard ProcessInfo.processInfo.environment["KIDO_VSYNC_MEASURE"] == "1" else { throw XCTSkip("authorized on-screen measurement only") }
-        try await start()
+        let go = directory.path + "/go"
+        try await start(pane: "while [ ! -e " + SSH.quote(go) + " ]; do sleep 0.01; done; python3 -u -c 'import time; end=time.monotonic()+10; print(\"\\033[?25l\"); i=0\nwhile time.monotonic()<end: print(i); i+=1; time.sleep(0.004)\ntime.sleep(30)'")
         NSApp.setActivationPolicy(.regular)
         PaneView.renderOffscreen = false
         window.isReleasedWhenClosed = false
@@ -137,7 +70,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let observation = observeFrames(try XCTUnwrap(pane.subviews.first?.layer)) { installations.append(CACurrentMediaTime()) }
         defer { observation.invalidate(); window.orderOut(nil) }
         let display = window.screen?.displayID ?? 0
-        try await command(["respawn-pane", "-k", "-t", "%0", "python3 -u -c 'import time; end=time.monotonic()+10; print(\"\\033[?25l\"); i=0\nwhile time.monotonic()<end: print(i); i+=1; time.sleep(0.004)\ntime.sleep(30)'"])
+        FileManager.default.createFile(atPath: go, contents: nil)
         try await Task.sleep(for: .seconds(10))
         let sorted = zip(installations.dropFirst(), installations).map { ($0.0 - $0.1) * 1000 }.sorted()
         XCTAssertGreaterThan(sorted.count, 30)
@@ -147,32 +80,19 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         print(report)
     }
 
-    private func updateTabs(_ status: Feed.Status? = nil) {
-        if case .running(let snapshot) = status { tabSnapshot = snapshot }
-        (window.contentViewController as? Sidebar)?.tabs.entries = model.navigation(tabSnapshot, activePanes: session.windows.compactMapValues(\.active)).tabs
-    }
-
     override func setUp() async throws {
         try await super.setUp()
-        directory = URL(fileURLWithPath: "/tmp/kido-visual-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        socket = directory.appendingPathComponent("socket").path
-        tmux = try XCTUnwrap(serverEnvironment["KIDO_TMUX"])
-        addTeardownBlock { @MainActor [self] in
-            if FileManager.default.fileExists(atPath: socket) {
-                _ = try? await Child.run(tmux, ["-S", socket, "kill-server"])
-            }
-        }
+        directory = URL(fileURLWithPath: try koServerDir())
         PaneView.renderOffscreen = true
     }
 
     override func tearDown() async throws {
-        rpc?.stop()
-        rpc = nil
-        if connection != nil { connection.gridFailed() }
+        client?.close()
+        client = nil
+        editor = nil
+        session?.close()
         window?.contentView = nil
         window?.close()
-        connection = nil
         session = nil
         runtime?.onConfigChange = {}
         runtime?.onConfigReload = { _ in }
@@ -181,77 +101,75 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         NSApp.appearance = nil
     }
 
+    // The pane that the harness starts with runs `cat` in raw mode, so what a test writes to it comes back as output.
     func rawPane(dark: Bool = false) async throws -> PaneView {
         try await start(dark: dark)
         let pane = try XCTUnwrap(terminal?.panes.first)
-        try await rawPane(pane)
-        try await restore(pane)
+        window.makeFirstResponder(pane)
         return pane
     }
 
-    func rawPane(_ pane: PaneView) async throws {
-        let ready = directory.appendingPathComponent("raw-ready-\(pane.pane.number)")
-        guard !FileManager.default.fileExists(atPath: ready.path) else { return }
-        try await command(["respawn-pane", "-k", "-t", pane.pane.description,
-                           "stty raw -echo; touch " + SSH.quote(ready.path) + "; exec /bin/cat"])
-        try await wait("raw pane ready") { FileManager.default.fileExists(atPath: ready.path) }
-    }
-
+    // A new snapshot of the pane from the server.
     func restore(_ pane: PaneView) async throws {
-        let restored = expectation(description: "pane restored")
-        pane.markContentDirty()
-        connection.sync(pane.pane) { restored.fulfill() }
-        await fulfillment(of: [restored], timeout: 20)
+        try XCTUnwrap(pane.koView).resync()
+        try await wait("the pane restored") { !pane.restoring }
         try await settle()
         window.makeFirstResponder(pane)
     }
 
+    // Writes `text` to the raw pane, which echoes it, and waits until the surface parsed all of it; a
+    // frozen pane drops it once the server parsed it.
+    // The fence title is cleared again, so that no tab shows it.
     func emit(_ pane: PaneView, _ text: String, until marker: String? = nil) async throws {
+        if !rawPanes.contains(pane.pane) {
+            try await wait("the pane's tty is raw", within: 5) { self.koModel?.panes.first { $0.id == pane.pane }?.title.isEmpty == false }
+            rawPanes.insert(pane.pane)
+        }
         let title = "raw-output-" + UUID().uuidString
-        let fixture = directory.appendingPathComponent("raw-output")
-        try (text + "\u{1b}]2;" + title + "\u{7}").write(to: fixture, atomically: true, encoding: .utf8)
-        try await command(["load-buffer", "-b", "raw-fixture", fixture.path])
-        try await command(["paste-buffer", "-S", "-r", "-d", "-b", "raw-fixture", "-t", pane.pane.description])
-        let deadline = Date().addingTimeInterval(5)
-        while try await command(["display-message", "-p", "-t", pane.pane.description, "#{pane_title}"]) != title {
-            guard Date() < deadline else { return XCTFail("raw output did not reach tmux") }
-            try await Task.sleep(for: .milliseconds(10))
+        let data = Data((text + "\u{1b}]2;" + title + "\u{7}\u{1b}]2;\u{7}").utf8)
+        let dropped = pane.visualDropped.withLock { $0 }
+        try XCTUnwrap(pane.koView).text(data)
+        let cleared = { self.koModel?.panes.first { $0.id == pane.pane }?.title.isEmpty == true }
+        if pane.frozen {
+            try await wait("the frozen pane dropped the echo", within: 5) { pane.visualDropped.withLock { $0 } >= dropped + data.count && cleared() }
+            return
         }
-        if let marker {
-            let captured = try await command(["capture-pane", "-p", "-t", pane.pane.description])
-            XCTAssertTrue(captured.contains(marker))
-        }
-        try await roundTrip()
+        try await wait("the surface parsed the output", within: 5) { pane.visualTitles.contains(title) && cleared() }
+        if let marker { XCTAssertTrue(surfaceText(pane).contains(marker)) }
+    }
+    private var rawPanes: Set<PaneID> = []
+
+    // A layout edit through the core, as a gesture sends it.
+    @discardableResult func edit(_ edit: KoSchema.Edit) async throws -> KoSchema.Edited {
+        let client = try XCTUnwrap(client)
+        return try await Task.detached { try client.edit(edit) }.value
     }
 
-    func roundTrip() async throws {
-        let done = expectation(description: "tmux reply")
-        connection.send([Command("display-message", "-p", "")]) { _ in done.fulfill() }
-        await fulfillment(of: [done], timeout: 2)
+    // A pane that runs `cat` in raw mode, so what a test writes to it comes back as output.
+    let rawCat = KoSchema.CreatePane(command: .shell(.init(command: rawScript)))
+
+    // A new raw `cat` pane beside `pane`: `.h` to its right, `.v` below it.
+    func split(_ pane: Int, _ axis: KoSchema.Axis) async throws {
+        let split = KoSchema.Edit.split(KoSchema.EditSplit(axis: axis, new: rawCat, pane: PaneID(number: UInt32(pane))))
+        let edited = try await edit(split)
+        let created = try XCTUnwrap(selectedPane(by: split, edited))
+        try client?.select(KO_SELECT_PANE, created)
     }
 
-    @discardableResult func command(_ args: [String]) async throws -> String {
-        let (status, out, err) = try await Child.run(tmux, ["-S", socket] + args)
-        XCTAssertEqual(status, 0, "\(args): \(err)")
-        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Zooms the pane's window to it, or ends the zoom.
+    func toggleZoom(_ pane: Int) async throws {
+        let zoom = KoSchema.Edit.toggleZoom(KoSchema.EditToggleZoom(pane: PaneID(number: UInt32(pane))))
+        let edited = try await edit(zoom)
+        if let selected = selectedPane(by: zoom, edited) { try client?.select(KO_SELECT_PANE, selected) }
     }
 
-    @discardableResult
-    func fakeFeedScript(_ scratch: URL, _ python: String) throws -> URL {
-        let script = scratch.appendingPathComponent("kido")
-        try ("#!/bin/sh\nexec python3 -u -c '\n" + python + "\n'\n").write(to: script, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
-        return script
+    // The server's text of a pane.
+    func serverScreen(_ pane: PaneID) async throws -> String {
+        try await ko(["api", "/panes/" + pane.description + "/screen"], dir: directory.path)
     }
 
     var terminal: WindowView? { session?.windows.values.first { !$0.isHidden } }
     var currentModel: SessionModel { model }
-
-    func rpcRequest(_ request: RPCRequest) async throws {
-        let done = expectation(description: "rpc request")
-        rpc?.request(request) { _ in done.fulfill() }
-        await fulfillment(of: [done], timeout: 5)
-    }
 
     private func loadRuntime(configFile: String? = nil) throws {
         if let configFile {
@@ -261,7 +179,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             return
         }
         if Self.processRuntime == nil {
-            let config = directory.appendingPathComponent("ghostty.conf")
+            let config = Self.processConfig
             let theme = ThemeConf.line(.init())
             try "\(theme)\nfont-family = Menlo\nfont-size = 13\ncursor-style-blink = false\nkeybind = super+e=text:X\nkeybind = super+shift+c=text:Y\n".write(to: config, atomically: true, encoding: .utf8)
             Self.processRuntime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))))
@@ -276,7 +194,9 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         return owner
     }
 
-    @discardableResult func start(height: CGFloat = 560, dark: Bool = false, history: Int = 1000, configFile: String? = nil, initialOutput: String? = nil) async throws -> String {
+    // A private server whose session "visual" has the window "zsh" of one pane that runs `pane`, or the
+    // given windows, shown in a 700-point session view.
+    func start(height: CGFloat = 560, dark: Bool = false, configFile: String? = nil, pane: String = rawScript, windows: String? = nil) async throws {
         NSApp.appearance = NSAppearance(named: .aqua)
         try loadRuntime(configFile: configFile)
         window = OwnerWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: height),
@@ -285,55 +205,63 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         window.colorSpace = .displayP3
         session = SessionView(runtime: runtime)
         runtime.onConfigReload = { [weak self] font in self?.session.reloadConfig(font: font) }
-        session.onPaneChange = { [weak self] in self?.updateTabs() }
         session.frame = NSRect(x: 0, y: 0, width: 700, height: height)
         window.contentView = session
-        let tmuxConfig = directory.appendingPathComponent("tmux.conf")
-        try "set -g history-limit \(history)\nset -s get-clipboard request\n".write(to: tmuxConfig, atomically: true, encoding: .utf8)
-        let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
-        XCTAssertEqual(endpoint.status, 0, endpoint.err)
-        _ = try await command(["source-file", tmuxConfig.path])
-        _ = try await command(["rename-session", "-t", "$0", "visual"])
-        _ = try await command(["rename-window", "-t", "@0", "zsh"])
-        _ = try await command(["respawn-pane", "-k", "-t", "%0", "exec /bin/cat"])
-        _ = try await command(["clear-history", "-t", "%0"])
-        if let initialOutput {
-            let fixture = directory.appendingPathComponent("initial-output")
-            try initialOutput.write(to: fixture, atomically: true, encoding: .utf8)
-            _ = try await command(["respawn-pane", "-k", "-t", "%0", "/bin/cat " + SSH.quote(fixture.path) + "; exec /bin/sleep 600"])
-            let deadline = Date().addingTimeInterval(5)
-            while try await !command(["capture-pane", "-p", "-t", "%0"]).contains("IMAGE-READY") {
-                guard Date() < deadline else { XCTFail("initial image fixture did not print"); break }
-                try await Task.sleep(for: .milliseconds(10))
-            }
+        _ = try await KoServer.launch(dir: directory.path)
+        try await koPut(directory.path, #"[{"name":"visual","windows":\#(windows ?? #"[{"name":"zsh","tree":\#(koPane(pane))}]"#)}]"#)
+        let client = try KoClient(socket: directory.path + "/socket", hello: KoHello(name: "visual", sizesWindows: true)) { [weak self] event in
+            self?.handle(event)
         }
-        let clipboardMode = try await command(["show", "-sv", "get-clipboard"])
-        connection = try Connection(server: Server(tmux: tmux, socket: socket, stamp: ServerStamp("visual"), expected: ServerStamp("visual")), view: session,
-                                    onChange: { [weak self] model in
-                                        self?.session.show(model.window)
-                                        self?.model = model
-                                        self?.updateTabs()
-                                    },
-                                    onDiagnostic: { XCTFail($0) }, onClose: { _, _ in })
-        try await wait("initial layout") { self.terminal?.panes.isEmpty == false }
-        rpc = Feed(serverDir: directory.path, locate: connection.locateFeed, onChange: { _ in })
-        try await wait("RPC ready") { if case .running? = self.rpc?.status { return true }; return false }
-        connection.navigate = { [weak self] command in
-            guard let self else { return }
-            switch command {
-            case .window(let step):
-                switch step {
-                case .next: rpc?.request(.switchWindow(next: true)) { _ in }
-                case .previous: rpc?.request(.switchWindow(next: false)) { _ in }
-                default: if let request = model.navigation(tabSnapshot).model.select(step) { rpc?.request(request) { _ in } }
+        self.client = client
+        let editor = LayoutEditor { try client.edit($0) }
+        editor.onFailure = { XCTFail("edit failed: \($0)") }
+        editor.onSettled = { [weak self] in self?.session?.editsSettled() }
+        self.editor = editor
+        session.client = client
+        session.edit = { edit, key in editor.submit(edit, key: key) }
+        session.editing = { editor.holding }
+        session.selectPane = { pane in try? client.select(KO_SELECT_PANE, pane) }
+        session.sizeClient = { [weak self] cols, rows in
+            self?.sentSizes.append("\(cols)x\(rows)")
+            try? client.size(cols: cols, rows: rows, cell: self?.session.cellPixels ?? (0, 0))
+        }
+        session.paneCommand = { [weak self] command, pane in
+            guard let self, let window = koModel?.layout.layout.locate(pane)?.window,
+                  let action = command.action(pane, in: window, cwd: nil, cell: session.cell ?? .zero) else { return }
+            switch action {
+            case .edit(let edit):
+                editor.submit(edit) { result in
+                    guard case .success(let edited) = result, let pane = selectedPane(by: edit, edited) else { return }
+                    try? client.select(KO_SELECT_PANE, pane)
                 }
-            case .newWindow: if let window = model.window { rpc?.request(.newWindow(window)) { _ in } }
-            default: break
+            case .select(let target): try? client.select(KO_SELECT_PANE, target)
             }
         }
+        try await wait("initial layout") { self.terminal?.panes.isEmpty == false }
         try await settle()
         if dark { try await darken() }
-        return clipboardMode
+    }
+
+    private func handle(_ event: KoEvent) {
+        switch event {
+        case .layout(let revision):
+            receive()
+            editor?.layoutChanged(revision: Int(revision))
+        case .welcome, .model, .selected: receive()
+        case .failed, .mismatch: break
+        }
+    }
+
+    private func receive() {
+        guard let client, let next = try? client.model() else { return }
+        koModel = next
+        if next.selection.session == nil, let first = next.layout.layout.sessions.first { try? client.select(KO_SELECT_SESSION, first.id) }
+        model = SessionModel(next)
+        let windows = next.layout.layout.windows
+        session.update(model.session.flatMap { next.layout.layout.session($0) }?.windows ?? [],
+                       alive: Set(windows.map(\.id)), selected: next.selection.pane)
+        session.show(model.window)
+        (window.contentViewController as? Sidebar)?.tabs.entries = model.navigation(Snapshot(model: next), activePanes: session.windows.compactMapValues(\.active)).tabs
     }
 
     func testSinglePaneHeaderPaper() async throws {
@@ -372,12 +300,13 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                     try assertPaperPixel(pixels, x: point.0, y: point.1, expected: headerPaperRGB[hex]!, "\(hex) single pane paper and outer padding stay pure")
                 }
             }
-            let split = try await command(["split-window", "-h", "-P", "-F", "#{pane_id}", "exec /bin/cat"])
+            let split = try await edit(.split(KoSchema.EditSplit(axis: .h, new: rawCat, pane: PaneID(number: 1))))
             try await wait("inactive tiled paper") { self.terminal?.panes.count == 2 }
             let inactive = try XCTUnwrap(terminal?.panes.first { $0.shiftedBackground })
             XCTAssertEqual(inactive.paperColor, owner.window.backgroundColor)
             XCTAssertEqual(inactive.paperColor, owner.sidebar.tabs.theme.background)
-            _ = try await command(["kill-pane", "-t", split])
+            let added = try XCTUnwrap(split.createdPane)
+            try await ko(["api", "-X", "DELETE", "/panes/" + added.description], dir: directory.path)
             try await wait("single pane restored") { self.terminal?.panes.count == 1 }
         }
     }
@@ -393,11 +322,13 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         first.keyDown(with: key)
         try await wait("adjusted font") { first.font > 13 }
         let adjusted = first.font
-        _ = try await command(["split-window", "-h", "exec /bin/cat"])
+        try await edit(.split(KoSchema.EditSplit(axis: .h, new: rawCat, pane: PaneID(number: 1))))
         try await wait("new pane") { self.terminal?.panes.count == 2 }
         let panes = try XCTUnwrap(terminal).panes
         for pane in panes { XCTAssertEqual(pane.font, adjusted) }
-        _ = try await command(["new-window", "exec /bin/cat"])
+        let added = try await edit(.addWindow(KoSchema.EditAddWindow(after: WindowID(number: 1), new: rawCat, session: SessionID(number: 1))))
+        let hidden = try XCTUnwrap(added.createdWindow)
+        try client?.select(KO_SELECT_WINDOW, hidden)
         try await wait("hidden window") { first.isHidden || first.superview?.isHidden == true }
         let allPanes = session.windows.values.flatMap(\.panes)
         XCTAssertTrue(allPanes.contains { $0 === first }, "the cached hidden pane must be checked")
@@ -425,19 +356,55 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await wait("reset uses new config font") { allPanes.allSatisfy { $0.font == 20 } }
     }
 
+    // A ko snapshot restores the cells with their backgrounds: the restored pane draws what the live output
+    // drew, at the bottom of the history and at its top.
+    func testRestoredCellsKeepTheirBackgrounds() async throws {
+        let pane = try await rawPane()
+        let fill = "\u{1B}[48;2;223;231;236m"
+        let boxes = (0..<40).map { "\(fill)BOX\($0)      \u{1B}[m\r\n\(fill)\u{1B}[K\u{1B}[m\r\n\u{1B}[49mtool\u{1B}[m\r\n" }.joined()
+        try await emit(pane, "\u{1B}[?25l\(fill)ABCDEFGHIJKLMNOPQRSTUVWX\u{1B}[m\r\n\u{1B}[1;3;7;9;4:3;58;2;255;0;80mreverse\u{1B}[m\r\n"
+            + boxes + "\(fill)abcdefghijklmnopqrstuvwx\u{1B}[mEND")
+        func drawn() async throws -> [(text: String, cells: [NSColor])] {
+            var drawn: [(text: String, cells: [NSColor])] = []
+            for position in ["scroll_to_bottom", "scroll_to_top"] {
+                XCTAssertTrue(ghostty_surface_binding_action(pane.surface, position, UInt(position.utf8.count)))
+                try await presented()
+                let bitmap = try XCTUnwrap(pane.bitmapImageRepForCachingDisplay(in: pane.bounds))
+                pane.cacheDisplay(in: pane.bounds, to: bitmap)
+                let rows = Int(ghostty_surface_size(pane.surface).rows), cell = pane.cell, top = pane.renderInsets.top
+                let scale = CGFloat(bitmap.pixelsWide) / pane.bounds.width
+                let cells = try (0..<rows).flatMap { row in
+                    try (0..<26).map { column in
+                        let x = Int((CGFloat(column) + 0.5) * cell.width * scale), y = Int((top + (CGFloat(row) + 0.5) * cell.height) * scale)
+                        return try XCTUnwrap(bitmap.colorAt(x: min(x, bitmap.pixelsWide - 1), y: min(y, bitmap.pixelsHigh - 1)))
+                    }
+                }
+                drawn.append((surfaceText(pane, in: GHOSTTY_POINT_VIEWPORT), cells))
+            }
+            return drawn
+        }
+        let live = try await drawn()
+        XCTAssertTrue(live[1].text.contains("ABCDEFGHIJKL"), "the top of the history")
+        try await restore(pane)
+        let restored = try await drawn()
+        for (name, index) in [("bottom", 0), ("top", 1)] {
+            XCTAssertEqual(restored[index].text, live[index].text, name)
+            XCTAssertEqual(restored[index].cells, live[index].cells, name)
+        }
+    }
+
     func testLiveConfigReflowsPane() async throws {
         let config = directory.appendingPathComponent("live.conf")
         try "font-family = Menlo\nfont-size = 13\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
         let pane = try XCTUnwrap(terminal?.panes.first)
         let before = ghostty_surface_size(pane.surface)
-        let epoch = pane.historyEpoch
         let shaded = expectation(description: "shade-only reload")
         runtime.onConfigChange = { shaded.fulfill() }
         try "font-family = Menlo\nfont-size = 13\nkido-sidebar-shade = 30%\n".write(to: config, atomically: false, encoding: .utf8)
         await fulfillment(of: [shaded], timeout: 0.3)
         await mainQueueFence()
-        XCTAssertEqual(pane.historyEpoch, epoch, "shade-only reload must not reflow the pane")
+        XCTAssertEqual(ghostty_surface_size(pane.surface).cell_height_px, before.cell_height_px, "a shade-only reload keeps the cell")
         let changed = expectation(description: "font config reload")
         runtime.onConfigChange = { changed.fulfill() }
         try "font-family = Menlo\nfont-size = 20\n".write(to: config, atomically: false, encoding: .utf8)
@@ -446,8 +413,10 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let after = ghostty_surface_size(pane.surface)
         XCTAssertGreaterThan(after.cell_height_px, before.cell_height_px)
         XCTAssertNotEqual(after.columns, before.columns)
-        let size = try await command(["display-message", "-p", "-t", pane.pane.description, "#{pane_width}x#{pane_height}"])
-        XCTAssertEqual(size, "\(after.columns)x\(after.rows)")
+        let leaf = koModel.flatMap { model -> KoSchema.Leaf? in
+            if case .leaf(let leaf)? = model.layout.layout.sessions.first?.windows.first?.tree { leaf } else { nil }
+        }
+        XCTAssertEqual(leaf.map { [$0.cols, $0.rows] }, [Int(after.columns), Int(after.rows)], "the server took the new grid")
     }
 
     func darken() async throws {
@@ -466,6 +435,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
     }
 
+    // Fills every shown pane with coloured rows, or `content`, through its raw cat.
     func paint(lines: Int? = nil, alternate: Bool = false, content: String? = nil) async throws {
         for pane in try XCTUnwrap(terminal).panes.filter({ !$0.isHidden }) {
             let grid = ghostty_surface_size(pane.surface)
@@ -478,25 +448,15 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 if i != count - 1 { text += "\r\n" }
             }
             if let content { text = "\u{1b}[2J\u{1b}[H" + content }
-            let fixture = directory.appendingPathComponent("pane-\(pane.pane.number).txt")
-            try text.write(to: fixture, atomically: true, encoding: .utf8)
-            let done = directory.appendingPathComponent("done-\(UUID().uuidString)")
-            _ = try await command(["respawn-pane", "-k", "-t", pane.pane.description, "/bin/cat '" + fixture.path + "'; /usr/bin/touch '" + done.path + "'; exec /bin/sleep 600"])
-            try await wait("fixture cat completed") { FileManager.default.fileExists(atPath: done.path) }
-        }
-        for pane in try XCTUnwrap(terminal).panes.filter({ !$0.isHidden }) {
-            let restored = expectation(description: "tmux capture replayed")
-            pane.markContentDirty()
-            connection.sync(pane.pane) { restored.fulfill() }
-            await fulfillment(of: [restored], timeout: 20)
+            try await emit(pane, text)
         }
         try await settle()
     }
 
-    func snapshot(_ name: String, pill: Bool = false, testName: String = #function, view: NSView? = nil) async throws {
+    // Waits until every shown pane presented a frame of what it holds.
+    func presented() async throws {
         try await settle()
         let terminal = try XCTUnwrap(terminal)
-        XCTAssertEqual(terminal.panes.contains { $0.visualPill }, pill)
         window.contentView?.layoutSubtreeIfNeeded()
         for pane in terminal.panes.filter({ !$0.isHidden }) {
             var status = GHOSTTY_RENDER_PRESENTATION_DISCARDED
@@ -507,6 +467,11 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             }
             XCTAssertEqual(status, GHOSTTY_RENDER_PRESENTATION_PRESENTED)
         }
+    }
+
+    func snapshot(_ name: String, testName: String = #function, view: NSView? = nil) async throws {
+        try await presented()
+        let terminal = try XCTUnwrap(terminal)
         XCTAssertFalse(window.isVisible)
         XCTAssertFalse(window.isKeyWindow)
         XCTAssertFalse(window.isMainWindow)
@@ -524,123 +489,75 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     }
 
     func testWindowTabs() async throws {
-        try await start()
-        let sidebar = Sidebar()
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.backgroundColor = runtime.background
-        window.contentViewController = sidebar
-        session.frame = sidebar.content.bounds
-        session.autoresizingMask = [.width, .height]
-        sidebar.content.addSubview(session)
-        let toolbar = NSToolbar(identifier: "WindowTabs")
-        toolbar.delegate = sidebar
-        toolbar.displayMode = .iconOnly
-        window.toolbar = toolbar
-        window.toolbarStyle = .unified
-        window.setContentSize(NSSize(width: 900, height: 560))
-        sidebar.tabs.theme = (runtime.background, window.appearance)
-        window.display()
-        let root = try XCTUnwrap(window.contentView?.superview)
+        try loadRuntime()
+        let feed = directory.path + "/child-feed"
+        FileManager.default.createFile(atPath: feed, contents: nil)
+        let status = try FileHandle(forWritingTo: URL(fileURLWithPath: feed))
+        defer { try? status.close() }
+        func titled(_ title: String) -> String { koPane("printf '\\033]2;\(title)\\007'; stty raw -echo; exec /bin/cat") }
+        let agent = koPane("printf '\\033]7501;state=idle:app=pi\\007'; stty raw -echo; exec /bin/cat", vars: #"{"pi.session":"s1","pi.name":"Agent caption"}"#)
+        let editor = #"{"split":"h","children":[\#(agent),\#(titled("Review changes"))]}"#
+        _ = try await KoServer.launch(dir: directory.path)
+        try await koPut(directory.path, #"[{"name":"visual","windows":[{"name":"Shell","tree":\#(titled("Shell prompt"))},{"name":"Editor","tree":\#(editor)},{"name":"Logs","tree":\#(titled("Build output"))}]}]"#)
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        owner.testServerDir = directory.path
+        addTeardownBlock { @MainActor in owner.close() }
+        owner.start()
+        try await wait("three tabs") { owner.sidebar.tabs.entries.count == 3 }
+        let windows = try XCTUnwrap(owner.testModel.map(\.layout.layout.windows)).map(\.id)
+        let (shell, middle, last) = (windows[0], windows[1], windows[2])
+        try await ko(["run-child", "--session", "session_1", "--name", "Child run", "pane_2", "--", "/bin/sh", "-c",
+                      "printf '\\033]7501;state=blocked:app=agent\\007'; exec tail -f " + SSH.quote(feed)], dir: directory.path)
+        try await wait("the child run nests under the editor") { owner.testModel.map(\.layout.layout.windows)?.count == 4 && owner.sidebar.tabs.entries.count == 3 }
+        let child = try XCTUnwrap(owner.testModel.map(\.layout.layout.windows)?.last?.id)
+        let sidebar = owner.sidebar
+        let root = try XCTUnwrap(owner.window.contentView?.superview)
+        owner.window.display()
         root.layoutSubtreeIfNeeded()
         sidebar.splitView.setPosition(236, ofDividerAt: 0)
-        sidebar.tabs.select = { [weak self] step in
-            guard let self, let command = model.navigation(tabSnapshot).model.select(step) else { return }
-            rpc?.request(command) { if case .failure(let error) = $0 { XCTFail(error.message) } }
-        }
-        _ = try await command(["rename-window", "-t", "visual:0", "Shell"])
-        let middle = try await command(["new-window", "-d", "-P", "-F", "#{window_id}", "-t", "visual", "-n", "Editor", "exec /bin/cat"])
-        let last = try await command(["new-window", "-d", "-P", "-F", "#{window_id}", "-t", "visual", "-n", "Logs", "exec /bin/cat"])
-        let child = try await command(["new-window", "-d", "-P", "-F", "#{window_id}", "-t", "visual", "-n", "Child run", "exec /bin/cat"])
-        let secondPane = try await command(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", middle, "exec /bin/cat"])
-        _ = try await command(["select-pane", "-t", secondPane])
-        try await wait("four tmux windows") { self.model.windows.count == 4 }
-        let listing = try await command(["list-panes", "-s", "-t", "visual", "-F", "#{window_id} #{pane_id}"])
-        let panes = listing.split(separator: "\n").map { $0.split(separator: " ").map(String.init) }
-        let shell = try XCTUnwrap(panes.first { $0[0] != middle && $0[0] != last && $0[0] != child })
-        let childPane = try XCTUnwrap(panes.first { $0[0] == child })[1]
-        func fixture(_ status: String = "waiting", review: String = "Review changes") throws -> Snapshot {
-            func item(_ pane: [String], children: [[String: Any]] = [], status: String = "idle") -> [String: Any] {
-                let state: [Any] = switch status {
-                case "waiting": ["Waiting", ["kind": NSNull(), "progress": NSNull()]]
-                case "failed", "done": ["Idle", ["outcome": ["serial": 1, "result": status == "done" ? "success" : "failure"]]]
-                default: ["Idle", ["outcome": NSNull()]]
-                }
-                return ["kind": "pane", "run": pane[0] == child ? "r-child" as Any : NSNull(), "started": NSNull(), "id": pane[1], "pane": pane[1], "window": pane[0],
-                        "program_status": ["serial": 0, "records": []], "title": pane[0] == middle ? (pane[1] == secondPane ? review : "Agent caption") : pane[0] == last ? "Build output" : "Shell prompt",
-                        "lifecycle": pane[0] == child ? agentLifecycle(state) : shellLifecycle(), "children": children]
-            }
-            let nodes: [[String: Any]] = [item(shell),
-                ["kind": "window", "id": middle, "window": middle, "name": "Editor",
-                 "children": panes.filter { $0[0] == middle }.enumerated().map { i, pane in
-                     item(pane, children: i == 0 ? [item([child, childPane], status: status)] : [])
-                 }], item(try XCTUnwrap(panes.first { $0[0] == last }))]
-            let object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": child, "pane": childPane],
-                "server_instance": ["started_at": 1791000000, "pid": 4242], "sessions": [["id": "$0", "name": "visual", "current": true,
-                    "nodes": nodes]]]
-            return try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
-        }
-        updateTabs(.running(try fixture()))
-        XCTAssertEqual(sidebar.tabs.entries.map(\.name), ["Shell prompt", "Review changes", "Build output"])
-        let firstPane = try XCTUnwrap(panes.first { $0[0] == middle && $0[1] != secondPane })[1]
-        let beforePaneChange = model
-        _ = try await command(["select-pane", "-t", firstPane])
-        try await wait("inactive window pane title") { sidebar.tabs.entries[1].name == "Agent caption" }
-        XCTAssertEqual(model, beforePaneChange)
-        _ = try await command(["select-pane", "-t", secondPane])
-        try await wait("inactive window pane restored") { sidebar.tabs.entries[1].name == "Review changes" }
-        updateTabs(.running(try fixture(review: "Review updated")))
-        XCTAssertEqual(sidebar.tabs.entries[1].name, "Review updated")
-        XCTAssertEqual((sidebar.tabs.accessibilityChildren()?[1] as? NSAccessibilityElement)?.accessibilityLabel(), "Window: Review updated — waiting")
-        updateTabs(.running(try fixture()))
-        XCTAssertEqual(sidebar.tabs.entries.map(\.status), [.quiet, .waiting, .quiet])
-        updateTabs(.running(try fixture("failed")))
-        XCTAssertEqual(sidebar.tabs.entries[1].status, .error)
-        updateTabs(.running(try fixture()))
-        connection.send([Command("select-window", "-t", child)])
-        try await wait("descendant active") { self.model.window?.description == child }
-        XCTAssertEqual(sidebar.tabs.entries.first { $0.active }?.id.description, middle)
+        try await wait("tab titles are the focus panes' labels") { sidebar.tabs.entries.map(\.name) == ["Shell prompt", "Agent caption", "Build output"] }
+        try await wait("the nested agent waits in its window's tab") { sidebar.tabs.entries.map(\.status) == [.quiet, .waiting, .quiet] }
+        XCTAssertEqual((sidebar.tabs.accessibilityChildren()?[1] as? NSAccessibilityElement)?.accessibilityLabel(), "Window: Agent caption — waiting")
+        try status.write(contentsOf: Data("\u{1b}]7501;state=error:app=agent\u{7}".utf8))
+        try await wait("a failed child") { sidebar.tabs.entries[1].status == .error }
+        try status.write(contentsOf: Data("\u{1b}]7501;state=blocked:app=agent\u{7}".utf8))
+        try await wait("waiting again") { sidebar.tabs.entries[1].status == .waiting }
+        try owner.testClient?.select(KO_SELECT_WINDOW, child)
+        try await wait("descendant active") { owner.navigation.window == child }
+        XCTAssertEqual(sidebar.tabs.entries.first { $0.active }?.id, middle, "a run window's tab is its parent's")
         root.layoutSubtreeIfNeeded()
         sidebar.viewDidLayout()
         try await wait("native tabs layout") { sidebar.tabs.frame.width > 300 && sidebar.tabs.frame.height == 36 }
-        let point = sidebar.tabs.convert(NSPoint(x: 240, y: 18), to: nil)
+        owner.perform(.selectWindow(try XCTUnwrap(owner.navigation.session), shell))
+        try await wait("first window selected") { owner.navigation.window == shell }
+        let point = sidebar.tabs.convert(NSPoint(x: sidebar.tabs.labelRect(1).midX, y: 18), to: nil)
         XCTAssertTrue(root.hitTest(root.convert(point, from: nil)) === sidebar.tabs)
-        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [],
-            timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
-        sidebar.tabs.mouseDown(with: event)
+        sidebar.tabs.mouseDown(with: try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [],
+            timestamp: 0, windowNumber: owner.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1)))
         sidebar.tabs.mouseUp(with: try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [],
-            timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 0)))
-        try await wait("middle tab selected") { self.model.window?.description == middle }
-        let current = try await command(["display-message", "-p", "-t", "visual", "#{window_id}"])
-        XCTAssertEqual(current, middle)
-        let restoredPane = try await command(["display-message", "-p", "-t", middle, "#{pane_id}"])
-        XCTAssertEqual(restoredPane, secondPane)
-        connection.send([Command("select-window", "-t", shell[0])])
-        try await wait("first window selected") { self.model.window?.description == shell[0] }
+            timestamp: 0, windowNumber: owner.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 0)))
+        try await wait("middle tab selected") { owner.navigation.window == middle }
+        owner.perform(.selectWindow(try XCTUnwrap(owner.navigation.session), shell))
+        try await wait("first window again") { owner.navigation.window == shell }
         let menus = SessionMenus()
-        menus.send = { [weak self] request in self?.rpc?.request(request) { if case .failure(let error) = $0 { XCTFail(error.message) } } }
-        menus.update(model.navigation(tabSnapshot).model)
+        menus.send = { owner.perform($0) }
+        menus.update(owner.navigation)
         let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
-            timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "2", charactersIgnoringModifiers: "2", isARepeat: false, keyCode: 19))
+            timestamp: 0, windowNumber: owner.window.windowNumber, context: nil, characters: "2", charactersIgnoringModifiers: "2", isARepeat: false, keyCode: 19))
         XCTAssertTrue(menus.window.performKeyEquivalent(with: key))
-        try await wait("Cmd-2 selects second tab") { self.model.window?.description == middle }
-        XCTAssertEqual(model.navigation(tabSnapshot).model.select(.number(2)), RPCRequest.selectWindow(SessionID(number: 0), WindowID(middle)!))
-        XCTAssertEqual(session.windows.first { !$0.value.isHidden }?.key.description, middle)
+        try await wait("Cmd-2 selects second tab") { owner.navigation.window == middle }
         let area = sidebar.content.convert(sidebar.content.bounds, to: root)
         XCTAssertGreaterThan(sidebar.tabs.convert(sidebar.tabs.bounds, to: root).minY, area.maxY)
-        XCTAssertTrue(window.toolbar?.items.first { $0.itemIdentifier.rawValue == "windowTabs" }?.view === sidebar.tabs.superview)
-        XCTAssertEqual(sidebar.tabs.frame.height, 36)
+        XCTAssertTrue(owner.window.toolbar?.items.first { $0.itemIdentifier.rawValue == "windowTabs" }?.view === sidebar.tabs.superview)
         let tabs = sidebar.tabs.entries
         sidebar.tabs.entries = []
         let empty = root.hitTest(sidebar.tabs.convert(NSPoint(x: sidebar.tabs.bounds.midX, y: 18), to: root))
         XCTAssertFalse(empty === sidebar.tabs)
         XCTAssertTrue(empty?.mouseDownCanMoveWindow == true)
         sidebar.tabs.entries = tabs
-        XCTAssertFalse(window.isVisible)
-        XCTAssertFalse(window.isKeyWindow)
+        XCTAssertFalse(owner.window.isVisible)
+        XCTAssertFalse(owner.window.isKeyWindow)
         XCTAssertFalse(NSApp.isActive)
-        updateTabs(.running(try fixture("done")))
-        XCTAssertEqual(sidebar.tabs.entries[1].status, .done)
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
         if let failure = verifySnapshot(of: try headerImage(sidebar.tabs), as: .image, named: "middle", record: record),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
@@ -651,41 +568,23 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         await mainQueueFence()
         if let failure = verifySnapshot(of: try headerImage(sidebar.tabs), as: .image, named: "collapsed", record: record),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
-        _ = try await command(["kill-window", "-t", child])
-        _ = try await command(["rename-window", "-t", middle, "Renamed"])
-        try await wait("renamed tab") { self.model.windows.map(\.name) == ["Shell", "Renamed", "Logs"] }
-        _ = try await command(["swap-window", "-d", "-s", middle, "-t", last])
-        try await wait("reordered tabs") { self.model.windows.map(\.name) == ["Shell", "Logs", "Renamed"] }
-        _ = try await command(["kill-window", "-t", last])
-        try await wait("closed tab") { self.model.windows.map(\.name) == ["Shell", "Renamed"] }
-        _ = try await command(["new-session", "-d", "-s", "other", "-n", "Other session", "exec /bin/cat"])
-        let pendingSelection = try XCTUnwrap(model.navigation(tabSnapshot).model.select(.number(2)))
-        connection.visualCommands.removeAll()
-        let selected = expectation(description: "pending selection completed")
-        _ = try await command(["switch-client", "-t", "other"])
-        rpc?.request(pendingSelection) { result in
-            if case .failure(let error) = result { XCTFail(error.message) }
-            selected.fulfill()
-        }
-        await fulfillment(of: [selected], timeout: 20)
-        let appClient: String = try await withCheckedThrowingContinuation { continuation in
-            connection.locateFeed { continuation.resume(with: $0) }
-        }
-        let selectedSession = try await command(["display-message", "-p", "-c", appClient, "#{session_id}:#{window_id}"])
-        XCTAssertEqual(selectedSession, "$0:\(middle)")
-        try await wait("pending selection returns to its own session") { self.model.session == SessionID(number: 0) && self.model.window?.description == middle }
-        XCTAssertEqual(connection.visualCommands.filter { $0.line.hasPrefix("switch-client") }.count, 0)
-        connection.send([Command("switch-client", "-t", "other")])
-        try await wait("current session tabs only") { self.model.windows.map(\.name) == ["Other session"] }
-        connection.send([Command("switch-client", "-t", "visual")])
-        try await wait("session switched back") { self.model.windows.map(\.name) == ["Shell", "Renamed"] }
-        _ = try await command(["kill-session", "-t", "other"])
-        sidebar.tabs.removeFromSuperview()
+        let client = try XCTUnwrap(owner.testClient)
+        _ = try await Task.detached { try client.delete(KO_DELETE_WINDOW, child) }.value
+        _ = try await Task.detached { try client.edit(.renameWindow(KoSchema.EditRenameWindow(name: "Renamed", window: middle))) }.value
+        try await wait("renamed window") { owner.navigation.windows.map(\.name) == ["Shell", "Renamed", "Logs"] }
+        _ = try await Task.detached { try client.edit(.reorderWindows(KoSchema.EditReorderWindows(order: [shell, last, middle], session: SessionID(number: 1)))) }.value
+        try await wait("reordered tabs") { owner.navigation.windows.map(\.name) == ["Shell", "Logs", "Renamed"] }
+        _ = try await Task.detached { try client.delete(KO_DELETE_WINDOW, last) }.value
+        try await wait("closed tab") { owner.navigation.windows.map(\.name) == ["Shell", "Renamed"] }
+        var created: String?
+        owner.createSession("other") { created = $0 ?? "" }
+        try await wait("the other session is current") { created != nil && owner.navigation.windows.count == 1 && owner.navigation.windows.first?.id != shell }
+        owner.perform(.selectSession(SessionID(number: 1)))
+        try await wait("session switched back") { owner.navigation.windows.map(\.name) == ["Shell", "Renamed"] }
     }
 
     func testPaneDragExcludesReorderGestures() async throws {
-        try await start()
-        _ = try await command(["split-window", "-d", "-t", "%0", "exec /bin/cat"])
+        try await start(windows: #"[{"name":"zsh","tree":{"split":"h","children":[\#(koPane()),\#(koPane())]}}]"#)
         try await wait("two panes") { self.terminal?.panes.count == 2 }
         let view = try XCTUnwrap(terminal), pane = try XCTUnwrap(view.panes.first?.pane)
         let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
@@ -716,7 +615,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         session.autoresizingMask = [.width, .height]
         sidebar.content.addSubview(session)
         sidebar.focusTerminal = { [weak self] in self?.session.focusActive() }
-        owner.request = { [weak self] in self?.rpc?.request($0, completed: $1) }
         let toolbar = NSToolbar(identifier: "FloatingSidebar")
         toolbar.delegate = sidebar
         toolbar.displayMode = .iconOnly
@@ -730,12 +628,10 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         sidebar.splitView.setPosition(292, ofDividerAt: 0)
         sidebar.viewDidLayout()
         let row = try XCTUnwrap(self.terminal?.panes.first)
-        let object: [String: Any] = ["v": 2, "client": ["session": "$0", "window": connection.model.window!.description, "pane": row.pane.description],
-            "server_instance": ["started_at": 1791000000, "pid": 4242],
-            "sessions": [["id": "$0", "name": "visual", "current": true, "nodes": [["kind": "pane", "id": row.pane.description,
-                "pane": row.pane.description, "window": connection.model.window!.description, "program_status": ["serial": 0, "records": []], "title": "Terminal",
-                "lifecycle": shellLifecycle(), "run": NSNull(), "started": NSNull(), "children": []]]]]]
-        sidebar.list.update(.running(try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))))
+        let shown = try XCTUnwrap(currentModel.window)
+        sidebar.list.update(Snapshot(client: .init(session: SessionID(number: 0), window: shown, pane: row.pane), serverInstance: ServerInstance("4242/1791000000"),
+                                     sessions: [SessionNodes(id: SessionID(number: 0), name: "visual", current: true,
+                                                             nodes: [.item(fixtureItem(row.pane.number, window: shown.number, "Terminal", shellLifecycle()))])]))
         let menu = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "View" }?.submenu)
         let entries = Array(menu.items.prefix(2))
         let targets = entries.map(\.target)
@@ -815,8 +711,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let frame = terminal.frame
         let tabFrame = sidebar.tabs.convert(sidebar.tabs.bounds, to: root)
         let grids = terminal.panes.map { ghostty_surface_size($0.surface) }
-        let clientSize = try await command(["list-clients", "-F", "#{client_width}x#{client_height}"])
-        connection.visualCommands.removeAll()
+        sentSizes.removeAll()
         let list = sidebar.list
         let listParent = try XCTUnwrap(list.superview)
         var native: NSView = listParent
@@ -842,9 +737,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertEqual(floatingTabFrame.maxX, tabFrame.maxX)
         XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).columns }, grids.map(\.columns))
         XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).rows }, grids.map(\.rows))
-        let floatingSize = try await command(["list-clients", "-F", "#{client_width}x#{client_height}"])
-        XCTAssertEqual(floatingSize, clientSize)
-        XCTAssertFalse(connection.visualCommands.contains { $0.line.hasPrefix("refresh-client -C") })
+        await mainQueueFence()
+        XCTAssertEqual(sentSizes, [], "a floating sidebar keeps the server's size")
         try key()
         XCTAssertFalse(sidebar.isFloating)
         XCTAssertEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root), tabFrame)
@@ -853,13 +747,13 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
         window.sendEvent(escape)
-        try await wait("RPC release returns focus") { !sidebar.isFloating && self.window.firstResponder is PaneView }
+        try await wait("the release returns focus") { !sidebar.isFloating && self.window.firstResponder is PaneView }
         XCTAssertFalse(sidebar.isFloating)
         XCTAssertTrue(window.firstResponder is PaneView)
         try key()
         XCTAssertTrue(sidebar.isFloating)
         XCTAssertTrue(sidebar.list.containsFocus)
-        connection.visualCommands.removeAll()
+        sentSizes.removeAll()
         try key([.command, .shift])
         try await settle()
         XCTAssertFalse(sidebar.isFloating)
@@ -868,7 +762,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertEqual(native.convert(native.bounds, to: root), nativeFrame)
         XCTAssertNotEqual(terminal.frame, frame)
         XCTAssertNotEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root), tabFrame)
-        XCTAssertEqual(connection.visualCommands.filter { $0.line.hasPrefix("refresh-client -C") }.count, 1)
+        try await wait("one size for the docked sidebar") { self.sentSizes.count == 1 }
         chrome("shortcut float to dock")
         try key([.command, .shift])
         try key()
@@ -898,13 +792,14 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertTrue(window.firstResponder is PaneView)
         try key()
         sidebar.list.focus()
-        connection.visualCommands.removeAll()
         let enter = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
         window.sendEvent(enter)
-        try await wait("jump dismisses sidebar") { !sidebar.isFloating }
+        XCTAssertEqual(sidebar.list.visualDiagnostic, "Local is not connected.", "the owner of this sidebar has no server")
+        window.sendEvent(try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)))
+        try await wait("Escape dismisses the sidebar") { !sidebar.isFloating }
         XCTAssertTrue(window.firstResponder is PaneView)
-        XCTAssertEqual(connection.visualCommands.filter { $0.line.hasPrefix("switch-client") }.count, 0)
         try key()
         NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
         XCTAssertFalse(sidebar.isFloating)
@@ -912,6 +807,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
         try key()
         try await paint()
+        try await presented()
         sidebar.list.layoutSubtreeIfNeeded()
         XCTAssertFalse(window.isVisible)
         XCTAssertFalse(window.isKeyWindow)
@@ -949,7 +845,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         for (name, shape, cursor) in [("pointer", GHOSTTY_MOUSE_SHAPE_POINTER, NSCursor.pointingHand),
                                       ("text", GHOSTTY_MOUSE_SHAPE_TEXT, NSCursor.iBeam),
                                       ("default", GHOSTTY_MOUSE_SHAPE_DEFAULT, NSCursor.arrow)] {
-            XCTAssertTrue(pane.feed(Data("\u{1b}]22;\(name)\u{7}".utf8)))
+            try await emit(pane, "\u{1b}]22;\(name)\u{7}")
             try await wait("mouse shape \(name)") { pane.mouseShape == shape }
             XCTAssertTrue(pane.mouseCursor === cursor)
         }
@@ -968,7 +864,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let findRect = terminal.convert(find.bounds, from: find)
         XCTAssertFalse(terminal.paneCursorRects.contains { $0.1 === NSCursor.pointingHand && $0.0.intersects(findRect) })
         find.close()
-        _ = try await command(["split-window", "-h", "-t", "visual", "exec /bin/cat"])
+        try await split(1, .h)
         try await wait("split for cursor priority") { terminal.panes.count == 2 }
         for view in terminal.panes { view.setMouseShape(GHOSTTY_MOUSE_SHAPE_POINTER) }
         let dividers = terminal.paneCursorRects.filter { $0.1 === NSCursor.resizeLeftRight }
@@ -976,8 +872,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         for (rect, _) in dividers {
             XCTAssertFalse(terminal.paneCursorRects.contains { $0.1 === NSCursor.pointingHand && $0.0.intersects(rect) })
         }
-        _ = try await command(["break-pane", "-W", "-s", "visual:0.1", "-X", "5", "-Y", "2", "-x", "35", "-y", "10"])
-        try await wait("float for cursor priority") { terminal.visualLayout.contains("float %") }
+        try await edit(.float(KoSchema.EditFloat(cols: 35, pane: PaneID(number: 2), rows: 10, x: 5, y: 2)))
+        try await wait("float for cursor priority") { terminal.visualLayout.contains("float pane_") }
         try await settle()
         XCTAssertTrue(terminal.paneCursorRects.contains { $0.1 === NSCursor.openHand })
         let linkRects = terminal.paneCursorRects.filter { $0.1 === NSCursor.pointingHand }.map { $0.0 }
@@ -1012,7 +908,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let root = try XCTUnwrap(window.contentView?.superview)
         root.layoutSubtreeIfNeeded()
         sidebar.splitView.setPosition(236, ofDividerAt: 0)
-        sidebar.list.update(.running(try sidebarFixture()))
+        sidebar.list.update(sidebarFixture())
         session.sidebarFocused = { [weak sidebar] in sidebar?.list.containsFocus == true }
         (window as? OwnerWindow)?.focusChanged = { [weak self, weak sidebar] _, _ in
             self?.terminal?.updateFocusTreatment()
@@ -1046,11 +942,11 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             window.backgroundColor = runtime.background
             let terminal = try XCTUnwrap(terminal)
             if dark {
-                _ = try await command(["resize-pane", "-Z", "-t", "%0"])
+                try await toggleZoom(1)
                 try await wait("unzoom for dark focus") { terminal.panes.filter { !$0.isHidden }.count == 3 }
             } else {
-                _ = try await command(["split-window", "-h", "-t", "%0", "exec /bin/cat"])
-                _ = try await command(["split-window", "-v", "-t", "%1", "exec /bin/cat"])
+                try await split(1, .h)
+                try await split(2, .v)
                 try await wait("three focus panes") { terminal.panes.count == 3 }
             }
             let content = "pi · kido-app\r\n\r\n› Refine pane focus.\r\nKeep the native chrome.\r\nInactive text stays readable.\r\n\r\n\u{1b}[34m$ git status --short\u{1b}[0m\r\n› "
@@ -1135,7 +1031,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 XCTAssertEqual(selected, 0, "a click under a sheet selects nothing")
                 for pane in panes { XCTAssertTrue(pane.visualEventMonitor?(down) === down, "the click continues to AppKit, which only activates the window") }
                 XCTAssertTrue(window.firstResponder === target, "the first click focuses the clicked pane")
-                XCTAssertEqual(selected, 1, "the first click selects the clicked pane in tmux")
+                XCTAssertEqual(selected, 1, "the first click selects the clicked pane on the server")
                 target.visualAcceptsFirstMouse = false
                 window.sendEvent(down)
                 XCTAssertEqual(target.visualPressed, 0, "the first click is not a terminal press")
@@ -1306,7 +1202,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                     }
                 }
             }
-            _ = try await command(["resize-pane", "-Z", "-t", "%0"])
+            try await toggleZoom(1)
             try await wait("single visible focus pane") { terminal.panes.filter { !$0.isHidden }.count == 1 }
             try await paint(content: content)
             try await snapshot("single-\(name)", view: root)
@@ -1333,7 +1229,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             XCTAssertFalse(sidebar.visualFocusEdge.isHidden)
         }
         let terminal = try XCTUnwrap(terminal)
-        _ = try await command(["resize-pane", "-Z", "-t", "%0"])
+        try await toggleZoom(1)
         try await wait("unzoom for config reload") { terminal.panes.filter { !$0.isHidden }.count == 3 }
         let reloaded = expectation(description: "focus config reloaded")
         runtime.onConfigChange = { [weak self] in
@@ -1379,69 +1275,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
     }
 
-    func testSplitZoomFloat() async throws {
-        try await start()
-        _ = try await command(["split-window", "-h", "-t", "visual", "exec /bin/cat"])
-        _ = try await command(["split-window", "-v", "-t", "visual:0.0", "exec /bin/cat"])
-        _ = try await command(["split-window", "-v", "-t", "visual:0.1", "exec /bin/cat"])
-        _ = try await command(["select-layout", "-t", "visual", "tiled"])
-        try await wait("four panes") { self.terminal?.panes.count == 4 }
-        try await paint()
-        try await snapshot("2x2")
-        _ = try await command(["resize-pane", "-Z", "-t", "visual:0.0"])
-        try await wait("zoom") { self.terminal?.panes.filter { !$0.isHidden }.count == 1 }
-        try await paint()
-        try await snapshot("zoom")
-        _ = try await command(["resize-pane", "-Z", "-t", "visual:0.0"])
-        _ = try await command(["break-pane", "-W", "-s", "visual:0.3", "-X", "5", "-Y", "0", "-x", "35", "-y", "10"])
-        try await wait("floating layout") { self.terminal?.visualLayout.contains("float %") == true }
-        try await settle()
-        try await paint()
-        try await snapshot("float-top")
-        let owner = try XCTUnwrap(window as? OwnerWindow)
-        owner.focusChanged = { [weak self] _, _ in self?.terminal?.updateFocusTreatment() }
-        let terminal = try XCTUnwrap(terminal)
-        let float = try XCTUnwrap(terminal.panes.first { !$0.transparentPaper })
-        _ = try await command(["select-pane", "-t", "\(float.pane)"])
-        try await wait("float is active") { terminal.active == float.pane }
-        window.makeFirstResponder(float)
-        let floatChrome = try XCTUnwrap(terminal.subviews.compactMap { $0 as? PaneChrome }.first { $0.pane == float.pane })
-        XCTAssertEqual(floatChrome.treatment, .plain)
-        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
-        try await paint()
-        try await snapshot("float-window-not-key")
-        XCTAssertEqual(floatChrome.treatment, .overlay, "the active float takes the inactive overlay while the window is not key")
-        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
-        XCTAssertEqual(floatChrome.treatment, .plain)
-    }
-
-    func testEmptyPaneWheelDoesNotFloodMetadata() async throws {
-        try await start()
-        let pane = try XCTUnwrap(terminal?.panes.first)
-        XCTAssertEqual(pane.scrollPosition().retainedHistoryRows, 0)
-        XCTAssertFalse(window.isKeyWindow)
-        XCTAssertFalse(NSApp.isActive)
-        let queries = connection.visualMetadataQueries
-        let revision = pane.scrollRevision
-        for _ in 0..<30 {
-            pane.scrollWheel(with: try XCTUnwrap(pane.wheelEvent(y: 1)))
-            await mainQueueFence()
-        }
-        try await drain(runtime)
-        let fenced = expectation(description: "client queue fenced")
-        connection.send([Command("display-message", "-p", "")]) { _ in fenced.fulfill() }
-        await fulfillment(of: [fenced], timeout: 2)
-        try await settle()
-        XCTAssertEqual(connection.visualMetadataQueries - queries, 0, "idle empty wheel gesture must not query tmux metadata")
-        XCTAssertEqual(pane.scrollRevision, revision, "clamped wheel packets must not invalidate an already-applied viewport")
-    }
-
     func testFirstWheelWithZeroSampleRendersFractionalFrame() async throws {
         try await start()
         let original = try XCTUnwrap(terminal?.panes.first)
         var input = Data()
         var pane: PaneView? = try XCTUnwrap(PaneView(runtime: runtime, pane: original.pane, font: original.font,
-                                         onInput: { input.append($0) }))
+                                         input: { input.append($0) }))
         window.contentView?.addSubview(pane!)
         defer { pane?.dispose(); pane?.removeFromSuperview() }
         pane!.frame = NSRect(x: -10000, y: -10000, width: pane!.cell.width * 80, height: pane!.cell.height * 24)
@@ -1449,12 +1288,11 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         pane!.needsLayout = true
         pane!.layout()
         XCTAssertGreaterThan(pane!.wheelRowHeight, 1)
-        XCTAssertTrue(pane!.feed(Data("\u{1b}c".utf8), kind: .snapshot, epoch: pane!.historyEpoch))
-        XCTAssertTrue(pane!.commitSnapshot(epoch: pane!.historyEpoch))
+        pane!.visualRestore(Data("\u{1b}c".utf8))
         try await settle()
-        pane!.updateScroller(sampledTmuxHistoryRows: 0, position: pane!.scrollPosition(), alternate: false)
+        pane!.refreshScroller()
         XCTAssertEqual(pane!.scrollPosition().retainedHistoryRows, 0)
-        XCTAssertTrue(pane!.feed(Data((0..<200).map { "live\($0)\r\n" }.joined().utf8), kind: .live, epoch: pane!.historyEpoch))
+        XCTAssertTrue(pane!.feed(Data((0..<200).map { "live\($0)\r\n" }.joined().utf8)))
         try await wait("live retained rows and frame") { pane!.scrollPosition().retainedHistoryRows > 0 && pane!.renderedPixels != nil }
         try await settle()
         let before = pane!.renderedPixels
@@ -1464,10 +1302,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let target = try XCTUnwrap(pane!.wheelDistance)
         XCTAssertGreaterThan(target, 0)
         XCTAssertLessThan(target, 1)
-        try await wait("fractional wheel frame applied") {
-            let state = pane!.finalRenderDiagnostics
-            return state["revision"] as? Int == state["applied-revision"] as? Int && pane!.renderedPixels != before
-        }
+        try await wait("fractional wheel frame applied") { pane!.visualReady && pane!.renderedPixels != before }
         XCTAssertTrue(input.isEmpty)
         weak let released = pane
         pane?.dispose()
@@ -1488,49 +1323,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await snapshot("resize-settled-dark")
     }
 
-    func testHistoryChunksAndResizeAnchors() async throws {
-        try await start(history: 200000)
-        let pane = try XCTUnwrap(terminal?.panes.first)
-        let fixture = directory.appendingPathComponent("history.txt")
-        try (0..<100000).map { "row-\($0)\r\n" }.joined().write(to: fixture, atomically: true, encoding: .utf8)
-        let done = directory.appendingPathComponent("history-done")
-        _ = try await command(["respawn-pane", "-k", "-t", pane.pane.description,
-                               "/bin/cat '" + fixture.path + "'; /usr/bin/touch '" + done.path + "'; exec /bin/sleep 600"])
-        try await wait("100k fixture completed") { FileManager.default.fileExists(atPath: done.path) }
-        let restored = expectation(description: "100k restore")
-        pane.markContentDirty()
-        connection.sync(pane.pane) { restored.fulfill() }
-        await fulfillment(of: [restored], timeout: 20)
-        try await settle()
-        XCTAssertEqual(pane.scrollPosition().retainedHistoryRows, historyChunkSize)
-        pane.requestScroll(historyChunkSize)
-        try await wait("100k pill visible") { pane.visualPill }
-        pane.onLoadMore()
-        try await wait("pill adds one chunk") { pane.scrollPosition().retainedHistoryRows == 2 * historyChunkSize }
-        pane.showFind()
-        pane.find?.field.stringValue = "row-12345"
-        pane.find?.search()
-        try await wait("find loads deep match") { pane.scrollPosition().retainedHistoryRows > 80000 }
-        try await wait("find navigates to deep match") {
-            let position = pane.scrollPosition()
-            return position.retainedHistoryRows - position.offset > 80000
-        }
-        pane.find?.close()
-        pane.requestScroll(5000)
-        try await settle()
-        window.setContentSize(NSSize(width: 700, height: 590))
-        try await settle()
-        XCTAssertEqual(pane.scrollTarget ?? 0, 5000, accuracy: 4)
-        pane.onLoadMore()
-        try await wait("older chunk reloaded") { pane.scrollPosition().retainedHistoryRows == 2 * historyChunkSize }
-        pane.requestScroll(15000)
-        try await settle()
-        window.setContentSize(NSSize(width: 700, height: 560))
-        try await settle()
-        XCTAssertEqual(pane.scrollTarget ?? 0, 0)
-        XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
-    }
-
     func hover(_ pane: PaneView, _ inside: Bool) async throws {
         let chrome = try XCTUnwrap(terminal?.subviews.compactMap { $0 as? PaneChrome }.first { $0.pane == pane.pane })
         let ended = chrome.subviews.compactMap { $0 as? PaneToolbar }.first?.visualAnimationsEnded ?? 0
@@ -1542,29 +1334,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             return toolbar.visualAnimationsEnded > ended && (inside ? toolbar.alphaValue == 1 : toolbar.alphaValue == 0)
         }
     }
-
-    func testHistoryPill() async throws { try await historyPill(dark: false) }
-    func testHistoryPillDark() async throws { try await historyPill(dark: true) }
-
-    private func historyPill(dark: Bool, testName: String = #function) async throws {
-        let fade = WindowView.toolbarFadeDuration
-        WindowView.toolbarFadeDuration = 0
-        defer { WindowView.toolbarFadeDuration = fade }
-        try await start(dark: dark, history: 100000)
-        try await paint(lines: historyChunkSize + 1000)
-        let pane = try XCTUnwrap(terminal?.panes.first)
-        pane.requestScroll(historyChunkSize)
-        try await wait("Load more visible") { pane.visualPill }
-        try await snapshot("history-top", pill: true, testName: testName)
-        try await hover(pane, true)
-        try await snapshot("history-toolbar", pill: true, testName: testName)
-    }
-
-    private func agentLifecycle(_ state: [Any], msg: Any = NSNull()) -> [Any] {
-        ["Live", ["Pi_agent", ["session": "session", "status": ["since": 1791131000, "msg": msg, "state": state]]]]
-    }
-
-    private func shellLifecycle(_ last: Any = NSNull()) -> [Any] { ["Live", ["Terminal", ["phase": ["Idle", ["last": last]], "report": NSNull()]]] }
 
     private func sidebarSnapshot(_ list: SidebarView, _ name: String, testName: String = #function) {
         window.layoutIfNeeded()
@@ -1587,17 +1356,11 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     }
 
     func testCaptionDisplayDelay() async throws {
-        func fixture(_ caption: String) throws -> Snapshot {
-            try sidebarFixture { object in
-                var sessions = object["sessions"] as! [[String: Any]]
-                var nodes = sessions[0]["nodes"] as! [[String: Any]]
-                nodes[0]["lifecycle"] = agentLifecycle(["Running", ["progress": NSNull()]], msg: caption)
-                sessions[0]["nodes"] = nodes
-                object["sessions"] = sessions
-            }
+        func fixture(_ caption: String) -> Snapshot {
+            sidebarFixture { $0.sessions[0].nodes[0].item.lifecycle = piLifecycle(.running(progress: nil), msg: caption); $0.sessions[0].nodes[0].item.mark = .running }
         }
-        let initial = try fixture("")
-        let changed = try fixture("Delayed caption")
+        let initial = fixture("")
+        let changed = fixture("Delayed caption")
         let id = try XCTUnwrap(sidebarRows(changed).first { $0.tail == "Delayed caption" }?.id)
         window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: 500),
                           styleMask: [.titled], backing: .buffered, defer: false)
@@ -1621,33 +1384,23 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await wait("caption hide deadline") { list.visualRows[index].tail.isEmpty }
         XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - hiddenAt, 0.2)
         XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 32)
-        list.update(.running(changed))
+        list.update(changed)
         XCTAssertEqual(list.visualRows[index].tail, "")
-        list.update(.restarting("Reconnect test"))
-        list.update(.running(changed))
+        list.offline("Reconnect test")
+        list.update(changed)
         XCTAssertEqual(list.visualRows[index].tail, "Delayed caption", "identical reconnect snapshot must show its caption immediately")
         XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 48)
-        list.update(.restarting("Reconnect during drag"))
+        list.offline("Reconnect during drag")
         list.show(changed, pin: id)
-        list.update(.running(try fixture("Reconnected caption")))
+        list.update(fixture("Reconnected caption"))
         XCTAssertEqual(list.visualRows[index].tail, "Reconnected caption", "drag during reconnect must not seed old captions")
     }
 
     func testNestedSidebarRowHeightsAndNavigation() throws {
-        var fixture: [String: Any] = [:]
-        let live = try sidebarFixture { object in
-            var sessions = object["sessions"] as! [[String: Any]]
-            var nodes = sessions[0]["nodes"] as! [[String: Any]]
-            var children = nodes[0]["children"] as! [[String: Any]]
-            var sibling = children[0]
-            sibling["id"] = "%999"
-            sibling["pane"] = "%999"
-            sibling["window"] = "@999"
-            children.append(sibling)
-            nodes[0]["children"] = children
-            sessions[0]["nodes"] = nodes
-            object["sessions"] = sessions
-            fixture = object
+        let live = sidebarFixture { snapshot in
+            var sibling = snapshot.sessions[0].nodes[0].item.children[0].item
+            sibling.id = PaneID(number: 999); sibling.window = WindowID(number: 999)
+            snapshot.sessions[0].nodes[0].item.children.append(.item(sibling))
         }
         let rows = sidebarRows(live)
         XCTAssertTrue(rows.contains { $0.indent > 0 && $0.target != nil })
@@ -1659,7 +1412,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let list = SidebarView()
         window.contentView = list
         list.layoutSubtreeIfNeeded()
-        list.update(.running(live))
+        list.update(live)
         let table = list.visualTable
         XCTAssertEqual(table.numberOfRows, rows.count)
         for index in rows.indices {
@@ -1668,14 +1421,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
         let nested = try XCTUnwrap(rows.lastIndex { $0.indent > 0 && $0.target != nil })
         let target = try XCTUnwrap(rows[nested].target)
-        var object = fixture
-        object["client"] = ["session": target.session.description, "window": target.window.description, "pane": target.pane.description]
-        let changed = try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))
-        list.update(.running(changed))
+        var changed = live
+        changed.client = target
+        list.update(changed)
         XCTAssertEqual(table.selectedRow, nested)
         let origin = list.visualScroll.contentView.bounds.origin
-        object["error"] = "same shape"
-        list.update(.running(try JSONDecoder().decode(Snapshot.self, from: JSONSerialization.data(withJSONObject: object))))
+        list.update(changed)
         XCTAssertEqual(table.selectedRow, nested)
         XCTAssertEqual(list.visualScroll.contentView.bounds.origin, origin)
         let previous = try XCTUnwrap(rows[..<nested].lastIndex { $0.target != nil })
@@ -1694,31 +1445,24 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         window.contentView = list
         SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
         defer { SidebarView.visualNow = nil }
-        let fixture = try sidebarFixture { object in
-            var sessions = object["sessions"] as! [[String: Any]]
-            var nodes = sessions[0]["nodes"] as! [[String: Any]]
-            nodes.insert(["kind": "pane", "id": "%2000", "pane": "%2000", "window": "@2000", "title": "Claude Code",
-                          "lifecycle": ["Live", ["Some_agent", ["name": "claude-code", "status": ["since": 1791131000, "msg": NSNull(), "state": ["Running", ["progress": NSNull()]]]]]],
-                          "run": NSNull(), "started": NSNull(), "children": [],
-                          "program_status": ["serial": 7, "records": [
-                            ["id": "", "app": "claude-code", "state": "working"],
-                            ["id": "agent-c", "title": "Review accessibility", "state": "working"],
-                            ["id": "agent-a/permission", "title": "Approve test command", "state": "blocked", "kind": "permission", "msg": "May I run the integration tests?"],
-                            ["id": "agent-b", "title": "Check toolbar geometry", "state": "working"],
-                            ["id": "agent-a", "title": "Investigate sidebar layout", "state": "working", "msg": "Comparing native row measurements"]
-                          ]]], at: 0)
-            sessions[0]["nodes"] = nodes
-            object["sessions"] = sessions
-            object["client"] = ["session": "$0", "window": "@2000", "pane": "%2000"]
+        let fixture = sidebarFixture { snapshot in
+            snapshot.sessions[0].nodes.insert(.item(fixtureItem(2000, "Claude Code", agentLifecycle(.running(progress: nil)), records: [
+                programRecord("", .working, app: "claude-code"),
+                programRecord("agent-c", .working, title: "Review accessibility"),
+                programRecord("agent-a/permission", .blocked, kind: .permission, title: "Approve test command", msg: "May I run the integration tests?"),
+                programRecord("agent-b", .working, title: "Check toolbar geometry"),
+                programRecord("agent-a", .working, title: "Investigate sidebar layout", msg: "Comparing native row measurements"),
+            ], serial: 7, mark: .running)), at: 0)
+            snapshot.client = .init(session: SessionID(number: 0), window: WindowID(number: 2000), pane: PaneID(number: 2000))
         }
         for dark in [false, true] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-            list.update(.running(fixture))
+            list.update(fixture)
             sidebarSnapshot(list, dark ? "claude-dark" : "claude-light")
         }
         let programs = list.visualRows.indices.filter { if case .program = list.visualRows[$0].id { true } else { false } }
         XCTAssertEqual(programs.count, 4)
-        var requests: [RPCRequest] = []
+        var requests: [Navigation] = []
         list.navigate = { requests.append($0) }
         for index in programs {
             XCTAssertFalse(list.tableView(list.visualTable, shouldSelectRow: index))
@@ -1745,80 +1489,61 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         window.contentView = list
         SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
         defer { SidebarView.visualNow = nil }
-        let live = try sidebarFixture()
+        let live = sidebarFixture()
         for dark in [false, true] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-            list.update(.running(live))
+            list.update(live)
             sidebarSnapshot(list, dark ? "live-dark" : "live-light")
         }
-        let nested = try sidebarFixture { object in
-            object["client"] = ["session": "$0", "window": "@458", "pane": "%502"]
-            var sessions = object["sessions"] as! [[String: Any]]
-            var nodes = sessions[0]["nodes"] as! [[String: Any]]
-            var children = nodes[1]["children"] as! [[String: Any]]
-            nodes[0]["lifecycle"] = agentLifecycle(["Idle", ["outcome": ["serial": 1, "result": "success"]]])
-            var runs = nodes[0]["children"] as! [[String: Any]]
-            runs[0]["lifecycle"] = ["Ended", ["result": "completed"]]
-            runs[0]["started"] = NSNull()
-            nodes[0]["children"] = runs
-            children[0]["lifecycle"] = agentLifecycle(["Waiting", ["kind": NSNull(), "progress": NSNull()]],
-                                                      msg: "Rebuilding the sidebar cards and testing nested window corners")
-            var agents = children[0]["children"] as! [[String: Any]]
-            agents[0]["lifecycle"] = agentLifecycle(["Idle", ["outcome": ["serial": 1, "result": "failure"]]])
-            children[0]["children"] = agents
-            children[1]["lifecycle"] = shellLifecycle(["code": 0, "command": "make -C ../kido-app/app demo", "started_at": 1791131000, "ended_at": 1791131001])
-            nodes[1]["children"] = children
-            sessions[0]["nodes"] = nodes
-            object["sessions"] = sessions
+        let nested = sidebarFixture { snapshot in
+            snapshot.client = .init(session: SessionID(number: 0), window: WindowID(number: 458), pane: PaneID(number: 502))
+            snapshot.sessions[0].nodes[0].item.lifecycle = piLifecycle(.idle(Outcome(serial: 1, result: .success)))
+            snapshot.sessions[0].nodes[0].item.mark = .done
+            snapshot.sessions[0].nodes[0].item.children[0].item.lifecycle = .ended(.completed)
+            snapshot.sessions[0].nodes[0].item.children[0].item.started = nil
+            snapshot.sessions[0].nodes[1].group.children[0].lifecycle = piLifecycle(.waiting(nil, progress: nil),
+                                                                                  msg: "Rebuilding the sidebar cards and testing nested window corners")
+            snapshot.sessions[0].nodes[1].group.children[0].mark = .waiting
+            snapshot.sessions[0].nodes[1].group.children[0].children[0].item.lifecycle = piLifecycle(.idle(Outcome(serial: 1, result: .failure)))
+            snapshot.sessions[0].nodes[1].group.children[0].children[0].item.mark = .failed
+            snapshot.sessions[0].nodes[1].group.children[1].lifecycle = shellLifecycle(shellExit(0, command: "make -C ../kido-app/app demo"))
+            snapshot.sessions[0].nodes[1].group.children[1].mark = .done
         }
-        list.update(.running(nested))
+        list.update(nested)
         sidebarSnapshot(list, "active-parent-dark")
         window.appearance = NSAppearance(named: .aqua)
         sidebarSnapshot(list, "active-parent-light")
         window.setContentSize(NSSize(width: 236, height: 680))
         sidebarSnapshot(list, "narrow-light")
         window.setContentSize(NSSize(width: 292, height: 680))
-        list.update(.running(try sidebarFixture { $0["client"] = ["session": "$0", "window": "@786", "pane": "%892"] }))
+        list.update(sidebarFixture { $0.client = .init(session: SessionID(number: 0), window: WindowID(number: 786), pane: PaneID(number: 892)) })
         sidebarSnapshot(list, "child-active-light")
-        let subtree = try sidebarFixture { object in
-            var sessions = object["sessions"] as! [[String: Any]]
-            var nodes = sessions[0]["nodes"] as! [[String: Any]]
-            var panes = nodes[1]["children"] as! [[String: Any]]
-            var children = panes[0]["children"] as! [[String: Any]]
-            children[0]["children"] = [["kind": "pane", "id": "%1990", "pane": "%1990", "window": "@1990", "program_status": ["serial": 0, "records": []],
-                                        "title": "review-notes", "lifecycle": agentLifecycle(["Running", ["progress": NSNull()]], msg: "Checking nested activity"),
-                                        "run": "r-subtree", "started": 1791131100,
-                                        "children": [["kind": "pane", "id": "%1991", "pane": "%1991", "window": "@1991", "program_status": ["serial": 0, "records": []],
-                                                      "title": "zsh", "run": NSNull(), "started": NSNull(),
-                                                      "lifecycle": shellLifecycle(["code": 0, "command": "true", "started_at": 1791131000, "ended_at": 1791131001]),
-                                                      "children": []]]]]
-            object["client"] = ["session": "$0", "window": children[0]["window"]!, "pane": children[0]["pane"]!]
-            panes[0]["children"] = children
-            nodes[1]["children"] = panes
-            sessions[0]["nodes"] = nodes
-            object["sessions"] = sessions
+        let subtree = sidebarFixture { snapshot in
+            let zsh = fixtureNode(1991, "zsh", shellLifecycle(shellExit(0)), mark: .done)
+            let notes = fixtureNode(1990, "review-notes", piLifecycle(.running(progress: nil), msg: "Checking nested activity"),
+                                    run: "r-subtree", started: 1791131100, mark: .running, children: [zsh])
+            var child = snapshot.sessions[0].nodes[1].group.children[0].children[0].item
+            child.children = [notes]
+            snapshot.sessions[0].nodes[1].group.children[0].children[0] = .item(child)
+            snapshot.client = .init(session: SessionID(number: 0), window: child.window, pane: child.pane)
         }
         XCTAssertEqual(sidebarRows(subtree).filter { $0.focused && $0.target != nil }.map { $0.target!.window },
                        [WindowID(number: 824)])
-        list.update(.running(subtree))
+        list.update(subtree)
         sidebarSnapshot(list, "focused-child-subtree-light")
         window.appearance = NSAppearance(named: .darkAqua)
         sidebarSnapshot(list, "focused-child-subtree-dark")
         window.appearance = NSAppearance(named: .aqua)
-        let grouped = try sidebarFixture { object in
-            var sessions = object["sessions"] as! [[String: Any]]
-            let nodes = sessions[0]["nodes"] as! [[String: Any]]
-            var second = (nodes[1]["children"] as! [[String: Any]])[0], third = nodes[0]
-            second["window"] = nodes[0]["window"]
-            second["lifecycle"] = agentLifecycle(["Idle", ["outcome": NSNull()]], msg: "Grouped pane activity")
-            third["id"] = "%999"; third["pane"] = "%999"
-            third["children"] = []; third["title"] = "terminal"; third["lifecycle"] = shellLifecycle()
-            sessions[0]["nodes"] = [["kind": "window", "id": nodes[0]["window"]!, "window": nodes[0]["window"]!,
-                                     "name": "group", "children": [nodes[0], second, third]]]
-            object["sessions"] = sessions
-            object["client"] = ["session": "$0", "window": nodes[0]["window"]!, "pane": nodes[0]["pane"]!]
+        let grouped = sidebarFixture { snapshot in
+            let first = snapshot.sessions[0].nodes[0].item
+            var second = snapshot.sessions[0].nodes[1].group.children[0], third = first
+            second.window = first.window
+            second.lifecycle = piLifecycle(msg: "Grouped pane activity")
+            third.id = PaneID(number: 999); third.children = []; third.title = "terminal"; third.lifecycle = shellLifecycle()
+            snapshot.sessions[0].nodes = [.window(.init(id: first.window, name: "group", children: [first, second, third]))]
+            snapshot.client = .init(session: SessionID(number: 0), window: first.window, pane: first.pane)
         }
-        list.update(.running(grouped))
+        list.update(grouped)
         list.focus()
         let down = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, characters: "j", charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38))
@@ -1833,164 +1558,58 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         header.addWindow.mouseExited(with: hover)
     }
 
-    func testSupersededSidebarReplies() throws {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 680), styleMask: [.titled], backing: .buffered, defer: false)
-        let owner = try sidebarOwner()
-        let list = owner.sidebar.list
-        window.contentView = list
-        list.update(.running(try sidebarFixture()))
-        var pending: [@MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void] = []
-        var left = 0
-        owner.request = { _, done in pending.append(done) }
-        list.leave = { left += 1 }
-        let rows = list.visualRows.filter { $0.target != nil }
-        list.focus()
-        list.visualTable.keyDown(with: NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)!)
-        list.focus()
-        pending.removeFirst()(.success(.released))
-        XCTAssertEqual(left, 0, "an old Escape must not leave after a newer intent")
-        list.focus()
-        list.visualJump(rows[0])
-        list.focus()
-        list.visualJump(rows[1])
-        XCTAssertEqual(pending.count, 2, "a newer intent must be able to replace a pending activation")
-        guard pending.count == 2 else { return }
-        pending[1](.success(.jumped(rows[1].target!)))
-        let afterB = left
-        pending[0](.success(.jumped(rows[0].target!)))
-        XCTAssertEqual(left, afterB, "A completing after B must not act on B's UI")
-    }
-
     func testSameWindowDeferredPaneFocus() async throws {
-        try await start()
-        let pane = try await command(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", "%0", "exec /bin/cat"])
+        try loadRuntime()
+        _ = try await KoServer.launch(dir: directory.path)
+        try await koPut(directory.path, #"[{"name":"visual","windows":[{"name":"zsh","tree":{"split":"h","children":[\#(koPane()),\#(koPane())]}}]}]"#)
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
-        let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
-        owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(endpoint.out.utf8)), kido: tools.kido)
+        owner.testServerDir = directory.path
         defer { owner.close() }
         owner.start()
-        try await wait("owner split snapshot") { owner.sidebar.list.visualRows.contains { $0.target?.pane.description == pane } }
-        let row = try XCTUnwrap(owner.sidebar.list.visualRows.first { $0.target?.pane.description == pane })
-        owner.request = { _, done in done(.success(.jumped(row.target!))) }
+        let split = PaneID(number: 2), first = PaneID(number: 1)
+        try await wait("owner split snapshot") { owner.sidebar.list.visualRows.contains { $0.target?.pane == split } }
+        let row = try XCTUnwrap(owner.sidebar.list.visualRows.first { $0.target?.pane == split })
         owner.sidebar.list.focus()
         owner.sidebar.list.visualJump(row)
         XCTAssertTrue(owner.sidebar.list.containsFocus, "focus must wait until the pane becomes current")
-        let view = try XCTUnwrap(owner.testSession?.windows[row.target!.window])
-        view.focus(row.target!.pane)
-        XCTAssertEqual((owner.window.firstResponder as? PaneView)?.pane.description, pane, "onPaneChange must consume deferred focus without a topology notification")
-        let original = try XCTUnwrap(owner.sidebar.list.visualRows.first { $0.target?.pane == PaneID(number: 0) })
-        owner.request = { _, done in done(.success(.jumped(original.target!))) }
+        try await wait("the jump lands") { owner.window.firstResponder.flatMap(PaneView.owner)?.pane == split }
+        let original = try XCTUnwrap(owner.sidebar.list.visualRows.first { $0.target?.pane == first })
         owner.sidebar.list.focus()
         owner.sidebar.list.visualJump(original)
         owner.sidebar.list.focus()
-        view.focus(original.target!.pane)
+        try await wait("the server moved the client") { owner.testModel?.selection.pane == first }
+        await mainQueueFence()
         XCTAssertTrue(owner.sidebar.list.containsFocus, "new focus intent must cancel a deferred pane target")
     }
 
     func testHeaderCreatesWindowInItsSession() async throws {
-        try await start()
-        let other = try await command(["new-session", "-d", "-P", "-F", "#{session_id}", "-s", "other", "exec /bin/cat"])
-        let current = try await command(["new-window", "-P", "-F", "#{window_id}", "-t", other, "exec /bin/cat"])
+        try loadRuntime()
+        _ = try await KoServer.launch(dir: directory.path)
+        try await koPut(directory.path, #"[{"name":"visual","windows":[{"name":"zsh","tree":\#(koPane())}]},{"name":"other","windows":[{"name":"a","tree":\#(koPane())},{"name":"b","tree":\#(koPane())}]}]"#)
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
-        let endpoint = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
-        owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(endpoint.out.utf8)), kido: tools.kido)
+        owner.testServerDir = directory.path
         defer { owner.close() }
         owner.start()
-        let list = owner.sidebar.list
-        try await wait("other session header") { list.visualRows.contains { $0.id == .header(SessionID(other)!) } }
-        var requests: [RPCRequest] = []
-        owner.request = { request, done in requests.append(request); done(.failure(.terminal("test response"))) }
-        let index = try XCTUnwrap(list.visualRows.firstIndex { $0.id == .header(SessionID(other)!) })
+        let list = owner.sidebar.list, other = SessionID(number: 2)
+        try await wait("other session header") { list.visualRows.contains { $0.id == .header(other) } }
+        let index = try XCTUnwrap(list.visualRows.firstIndex { $0.id == .header(other) })
         let header = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
         XCTAssertEqual(header.addWindow.accessibilityLabel(), "New window in other")
         header.addWindow.performClick(nil)
-        XCTAssertEqual(requests, [.newWindow(WindowID(current)!)], "heading plus must honour that session's current window, not the client's session")
-    }
-
-    func testSwitchWindowAndSessionOutputAndReconnect() async throws {
-        for navigation in ["switch-window", "switch-session"] {
-            let scratch = app.appendingPathComponent("build/sbfix/\(UUID().uuidString)")
-            try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
-            let fixture = scratch.appendingPathComponent("feed.json")
-            let object = try JSONSerialization.jsonObject(with: Data(contentsOf: app.appendingPathComponent("VisualTests/Fixtures/live-feed.json")))
-            try JSONSerialization.data(withJSONObject: object).write(to: fixture)
-            let script = try fakeFeedScript(scratch, """
-            import json, sys
-            print(json.dumps(dict(hello=dict(protocol="6.2"))))
-            snapshot = json.load(open("\(fixture.path)"))
-            print(json.dumps(snapshot))
-            held = None
-            for line in sys.stdin:
-                request = json.loads(line)
-                if request["id"] == 5: break
-                if "\(navigation)" not in request: continue
-                direction = request["\(navigation)"]["direction"]
-                reply = dict(id=request["id"], switched=dict(session="$3", window="@12") if direction == "next" else dict(session="$1", window="@5"))
-                if request["id"] == 3:
-                    print(json.dumps(dict(reply=dict(id=request["id"], switched=None))))
-                elif request["id"] == 4:
-                    print(json.dumps(dict(reply=dict(id=request["id"], error="navigation failed"))))
-                elif request["id"] <= 2:
-                    if held is None: held = reply
-                    else:
-                        print(json.dumps(dict(reply=reply)))
-                        print(json.dumps(snapshot))
-                        print(json.dumps(dict(reply=held)))
-            """)
-            var starts = 0
-            var snapshots = 0
-            let feed = Feed(serverDir: scratch.path, locate: { done in
-                done(.success("private-client"))
-            }, onChange: { status in
-                if case .starting = status { starts += 1 }
-                if case .running = status { snapshots += 1 }
-            })
-            feed.testKido = script.path
-            defer { feed.stop() }
-            try await wait("fake feed ready") { snapshots == 1 }
-            let next: RPCRequest = navigation == "switch-window" ? .switchWindow(next: true) : .switchSession(next: true)
-            let prev: RPCRequest = navigation == "switch-window" ? .switchWindow(next: false) : .switchSession(next: false)
-            let switched = expectation(description: "switch stdout")
-            feed.request(next) { result in
-                guard case .success(.switched(let target)) = result else { return XCTFail("switch failed") }
-                XCTAssertEqual(target?.session, SessionID(number: 3), "navigation must return its own stdout session")
-                XCTAssertEqual(target?.window, WindowID(number: 12), "navigation must return its own stdout window")
-                switched.fulfill()
-            }
-            let previous = expectation(description: "previous target")
-            feed.request(prev) { result in
-                guard case .success(.switched(let target)) = result else { return XCTFail("switch failed") }
-                XCTAssertEqual(target?.session, SessionID(number: 1))
-                XCTAssertEqual(target?.window, WindowID(number: 5))
-                previous.fulfill()
-            }
-            await fulfillment(of: [switched, previous], timeout: 5)
-            let noop = expectation(description: "null target")
-            feed.request(next) { result in
-                guard case .success(.switched(let target)) = result else { return XCTFail("switch failed") }
-                XCTAssertNil(target)
-                noop.fulfill()
-            }
-            let failed = expectation(description: "RPC error")
-            feed.request(prev) { result in
-                guard case .failure(let error) = result else { return XCTFail("missing error") }
-                XCTAssertEqual(error.message, "navigation failed")
-                failed.fulfill()
-            }
-            await fulfillment(of: [noop, failed], timeout: 5)
-            let stale = expectation(description: "pending request fails once")
-            stale.assertForOverFulfill = true
-            feed.request(next) { result in
-                guard case .failure = result else { return XCTFail("missing disconnect failure") }
-                stale.fulfill()
-            }
-            try await wait("feed reconnected") { starts == 2 && snapshots == 3 }
-            await fulfillment(of: [stale], timeout: 5)
+        try await wait("the heading's session has the new window") {
+            owner.testModel?.layout.layout.sessions.map(\.windows.count) == [1, 3]
         }
+        XCTAssertEqual(owner.navigation.session, other, "the new window is selected")
     }
 
     func testOSC52ClipboardConsentAndPrivatePaneTransport() async throws {
-        let clipboardModeBeforeAttach = try await start()
+        let copy = Data("copied ✓".utf8).base64EncodedString()
+        let script = directory.appendingPathComponent("clipboard.py")
+        let result = directory.appendingPathComponent("clipboard-reply")
+        let ready = directory.appendingPathComponent("clipboard-ready")
+        let go = directory.appendingPathComponent("clipboard-go")
+        try clipboardQueryScript(ready: ready.path, result: result.path, query: "\\x1b]52;p;?\\x1b\\\\", deadline: 12).write(to: script, atomically: true, encoding: .utf8)
+        try await start(pane: "while [ ! -e " + SSH.quote(go.path) + " ]; do sleep 0.02; done; printf '\\033]52;c;\(copy)\\007'; exec /usr/bin/python3 " + SSH.quote(script.path))
         XCTAssertNotEqual(runtime.pasteboard.name.rawValue, "NSGeneralPboard")
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         window.contentView = nil
@@ -2005,32 +1624,21 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let board = runtime.pasteboard
         board.clearContents()
         board.setString("before", forType: .string)
-        let copy = Data("copied ✓".utf8).base64EncodedString()
         let replay = Data("\u{1b}]52;c;\(copy)\u{7}\u{1b}]52;c;?\u{1b}\\".utf8)
-        pane.feed(replay, kind: .snapshot)
+        pane.visualRestore(replay)
         try await settle()
-        XCTAssertEqual(board.string(forType: .string), "before")
+        XCTAssertEqual(board.string(forType: .string), "before", "a restored write does not reach the clipboard")
         XCTAssertNil(owner.preparedAlert)
-        pane.feed(Data("\u{1b}]52;c;\(copy)".utf8), kind: .snapshot)
+        pane.visualRestore(Data("\u{1b}]52;c;\(copy)".utf8))
         pane.feed(Data([7]))
         try await wait("partial captured OSC completed live") { board.string(forType: .string) == "copied ✓" }
-        pane.feed(replay, kind: .snapshot)
+        pane.visualRestore(replay)
         try await settle()
         XCTAssertNil(owner.preparedAlert)
-        _ = try await command(["set-option", "-s", "set-clipboard", "on"])
-        let clipboardMode = try await command(["show", "-sv", "get-clipboard"])
-        XCTAssertEqual(clipboardMode, clipboardModeBeforeAttach)
-        _ = try await command(["set-buffer", "stale-tmux-buffer"])
-        let script = directory.appendingPathComponent("clipboard.py")
-        let result = directory.appendingPathComponent("clipboard-reply")
-        let ready = directory.appendingPathComponent("clipboard-ready")
         board.clearContents()
         board.setString("before-live", forType: .string)
-        let program = clipboardQueryScript(ready: ready.path, result: result.path, query: "\\x1b]52;p;?\\x1b\\\\", deadline: 12)
-        try program.write(to: script, atomically: true, encoding: .utf8)
-        _ = try await command(["respawn-pane", "-k", "-t", pane.pane.description, "printf '\\033]52;c;\(copy)\\007'; exec /usr/bin/python3 " + script.path])
+        try Data().write(to: go)
         try await wait("OSC52 private pane printf live copy") { board.string(forType: .string) == "copied ✓" }
-        _ = try await command(["set-buffer", "stale-tmux-buffer"])
         try Data().write(to: ready)
         try await wait("OSC52 private pane consent sheet") { owner.preparedAlert != nil }
         let alert = try XCTUnwrap(owner.preparedAlert?.alert)
@@ -2043,140 +1651,30 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         owner.respondToAlert(.alertFirstButtonReturn)
         try await wait("OSC52 reply received in original private pane") { FileManager.default.fileExists(atPath: result.path) }
         let expected = Data("\u{1b}]52;p;\(Data(text.utf8).base64EncodedString())\u{1b}\\".utf8)
-        XCTAssertEqual(try Data(contentsOf: result), expected)
-        let buffer = try await command(["show-buffer"])
-        XCTAssertEqual(buffer, "stale-tmux-buffer")
-        print("OSC52 E2E private pane: live write changed named board; consented p read returned exactly one named-board reply, not seeded tmux buffer")
-    }
-
-    func testServerCompatibilityFields() throws {
-        for (stamp, version, compatible) in [
-            ("null", "6.2", false), ("\"other\"", "6.2", false),
-            ("\"0123456789ab\"", "6.0", false), ("\"0123456789ab\"", "6.1", false), ("\"0123456789ab\"", "6.2", true), ("\"0123456789ab\"", "5.0", false)
-        ] {
-            let json = "{\"tmux\":\"/bin/kido-tmux\",\"socket\":\"/tmp/private/socket\",\"protocol\":\"\(version)\",\"server\":\(stamp),\"expected\":\"0123456789ab\"}"
-            let server = try JSONDecoder().decode(Server.self, from: Data(json.utf8))
-            XCTAssertEqual(server.compatible, compatible)
-        }
-    }
-
-    private func localMismatchOwners(_ count: Int, stamp: String = "2.1") async throws -> [WindowOwner] {
-        directory = try XCTUnwrap(tools.serverDir.hasPrefix("/tmp/ka-visual-") ? URL(fileURLWithPath: tools.serverDir) : nil, "Native mismatch tests require a private KIDO_APP_SERVER")
-        socket = directory.appendingPathComponent("socket").path
-        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
-        XCTAssertEqual(output.status, 0, output.err)
-        _ = try await command(["set-environment", "-g", "KIDO_SERVER", stamp])
-        var owners: [WindowOwner] = []
-        for _ in 0..<count {
-            let owner = try sidebarOwner()
-            owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
-            owner.window.orderFront(nil)
-            owner.start()
-            owners.append(owner)
-        }
-        try await wait("local mismatch sheets attached") { owners.allSatisfy { $0.window.attachedSheet != nil && $0.preparedAlert != nil } }
-        return owners
-    }
-
-    func testReorderAgainstPrivateServer() async throws {
-        directory = try XCTUnwrap(tools.serverDir.hasPrefix("/tmp/ka-visual-") ? URL(fileURLWithPath: tools.serverDir) : nil, "requires a private KIDO_APP_SERVER")
-        socket = directory.appendingPathComponent("socket").path
-        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
-        XCTAssertEqual(output.status, 0, output.err)
-        _ = try await command(["rename-session", "-t", "$0", "alpha"])
-        let alphaText = try await command(["display-message", "-p", "-t", "alpha:", "#{session_id}"])
-        let alpha = try XCTUnwrap(SessionID(alphaText))
-        let firstText = try await command(["display-message", "-p", "-t", "alpha:", "#{window_id}"])
-        let first = try XCTUnwrap(WindowID(firstText))
-        let middleText = try await command(["new-window", "-d", "-P", "-F", "#{window_id}", "-t", "alpha", "exec /bin/cat"])
-        let middle = try XCTUnwrap(WindowID(middleText))
-        let lastText = try await command(["new-window", "-d", "-P", "-F", "#{window_id}", "-t", "alpha", "exec /bin/cat"])
-        let last = try XCTUnwrap(WindowID(lastText))
-        _ = try await command(["new-session", "-d", "-s", "beta", "exec /bin/cat"])
-        let betaText = try await command(["display-message", "-p", "-t", "beta:", "#{session_id}"])
-        let beta = try XCTUnwrap(SessionID(betaText))
-        _ = try await command(["select-window", "-t", middle.description])
-        let owner = try sidebarOwner()
-        owner.start()
-        try await wait("connected") { owner.testConnection != nil && owner.testBanner.isHidden && owner.snapshot != nil }
-        owner.perform(.selectWindow(alpha, middle))
-        try await wait("client on alpha") { owner.navigation.session == alpha && owner.navigation.windows.count == 3 }
-        func roots() -> [WindowID] { owner.snapshot?.sessions.first { $0.id == alpha }?.nodes.map(\.window) ?? [] }
-        func settled(_ order: [WindowID]) async throws {
-            try await wait("server order \(order)") { owner.reorder.state.pending == nil && roots() == order }
-            XCTAssertEqual(owner.sidebar.tabs.entries.map(\.id), order, "tabs follow the snapshot")
-            XCTAssertEqual(owner.navigation.windows.map(\.id), order)
-            let current = try await command(["display-message", "-p", "-t", "alpha:", "#{window_id}"])
-            XCTAssertEqual(current, middle.description, "the session's current window is unchanged")
-        }
-        XCTAssertEqual(roots(), [first, middle, last])
-        XCTAssertEqual(owner.snapshot?.sessions.map(\.id), [alpha, beta])
-
-        owner.sidebar.list.move(.session(beta, relativeTo: alpha, .before))
-        try await wait("session order") { owner.reorder.state.pending == nil && owner.snapshot?.sessions.map(\.id) == [beta, alpha] }
-        XCTAssertEqual(owner.navigation.sessions.map(\.id), [beta, alpha])
-
-        try await wait("middle displayed") { owner.testSession?.windows[middle]?.isHidden == false }
-        var displayed: [WindowID] = []
-        owner.testSession?.visualShown = { displayed.append($0) }
-        var replied = false
-        let request = owner.request
-        owner.request = { message, done in request(message) { done($0); replied = true } }
-        owner.sidebar.tabs.move(.window(alpha, middle, relativeTo: last, .after))
-        XCTAssertEqual(owner.sidebar.tabs.entries.map(\.id), [first, last, middle], "the drop shows at once")
-        try await settled([first, last, middle])
-        try await wait("reorder reply") { replied }
-        try await Task.sleep(for: .milliseconds(300))
-        owner.request = request
-        XCTAssertEqual(displayed, [], "moving the current window never displays another one")
-        XCTAssertEqual(owner.testSession?.windows[middle]?.isHidden, false)
-        _ = try await command(["select-window", "-t", first.description])
-        try await wait("a real switch is still followed") { owner.testSession?.windows[first]?.isHidden == false }
-        XCTAssertEqual(displayed, [first])
-        _ = try await command(["select-window", "-t", middle.description])
-        try await wait("back to middle") { owner.testSession?.windows[middle]?.isHidden == false }
-        owner.sidebar.tabs.move(.window(alpha, last, relativeTo: first, .before))
-        try await settled([last, first, middle])
-
-        let rejected = expectation(description: "relative-to-itself reply")
-        owner.request(.reorder(.window(alpha, first, relativeTo: first, .before))) { result in
-            if case .failure(let error) = result { XCTAssertEqual(error.message, "cannot reorder relative to itself") } else { XCTFail("\(result)") }
-            rejected.fulfill()
-        }
-        await fulfillment(of: [rejected], timeout: 10)
-
-        _ = try await command(["new-session", "-d", "-t", "alpha", "-s", "grouped"])
-        try await wait("grouped session reported") { owner.snapshot?.sessions.count == 3 }
-        owner.sidebar.tabs.move(.window(alpha, first, relativeTo: middle, .after))
-        XCTAssertEqual(owner.sidebar.tabs.entries.map(\.id), [last, middle, first])
-        try await settled([last, first, middle])
-        XCTAssertEqual(owner.sidebar.list.visualDiagnostic, "cannot reorder windows in a grouped session", "the failure reverts and is shown")
-        XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || NSApp.isActive)
+        XCTAssertEqual(try Data(contentsOf: result), expected, "the reply goes to the pane through the server")
     }
 
     func testPaletteCreatesNamedSessionInAnchorDirectory() async throws {
-        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
-        XCTAssertEqual(output.status, 0, output.err)
-        let server = try JSONDecoder().decode(Server.self, from: Data(output.out.utf8))
         let working = directory.appendingPathComponent("active pane directory")
         try FileManager.default.createDirectory(at: working, withIntermediateDirectories: true)
         let resolved = try XCTUnwrap(realpath(working.path, nil))
         defer { free(resolved) }
         let cwd = String(cString: resolved)
-        _ = try await command(["respawn-pane", "-k", "-t", "$0:", "-c", cwd, "exec /bin/cat"])
-        _ = try await command(["rename-session", "-t", "$0", "original"])
+        _ = try await KoServer.launch(dir: directory.path)
+        let place = try String(decoding: JSONSerialization.data(withJSONObject: cwd, options: .fragmentsAllowed), as: UTF8.self)
+        try await koPut(directory.path, #"[{"name":"original","windows":[{"name":"w","tree":{"pane":{"new":{"cwd":\#(place),"command":{"type":"argv","argv":["/bin/cat"]}}}}}]}]"#)
         try loadRuntime()
         let app = AppDelegate(runtime: runtime)
         let owner = try XCTUnwrap(app.open(.local, start: false))
         let previous = NSApp.mainMenu
         let other = try XCTUnwrap(app.open(.local, start: false))
         defer { app.closePalette(); owner.close(); other.close(); NSApp.mainMenu = previous }
-        owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
-        other.testEndpoint = Endpoint(server: server, kido: tools.kido)
+        owner.testServerDir = directory.path
+        other.testServerDir = directory.path
         owner.start(); other.start()
         try await wait("both owners ready") {
-            owner.currentSession?.name == "original" && owner.testConnection != nil
-                && other.currentSession?.name == "original" && other.testConnection != nil
+            owner.currentSession?.name == "original" && owner.testClient != nil
+                && other.currentSession?.name == "original" && other.testClient != nil
         }
         NSApp.mainMenu = app.mainMenu()
         XCTAssertEqual(NSApp.mainMenu?.items.first { $0.title == "File" }?.submenu?.items.first?.title, "New Session")
@@ -2206,71 +1704,58 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertEqual(palette.mode, .root)
         try enter()
         let before = try XCTUnwrap(owner.snapshot)
-        owner.testReceive(try sidebarFixture { $0["server_instance"] = ["started_at": 1, "pid": 77777] })
+        owner.testReceive(sidebarFixture { $0.serverInstance = ServerInstance("77777/1") })
         submit("stale-create")
         XCTAssertEqual(palette.error, "That window is gone")
         owner.testReceive(before)
-        _ = try await command(["new-session", "-d", "-s", "taken-late"])
-        owner.testReceive(before)
-        submit("taken-late")
-        try await wait("tmux refusal inline") { palette.error == "duplicate session: taken-late" }
-        XCTAssertNotNil(app.palettePanel)
-        let anchorPath = try await command(["display-message", "-p", "-t", "$0:", "#{pane_current_path}"])
-        XCTAssertEqual(anchorPath, cwd)
+        XCTAssertEqual(owner.testModel?.panes.first?.cwd, cwd)
         submit("created here")
         try await wait("created session selected in opening owner") { app.palettePanel == nil && owner.currentSession?.name == "created here" }
         let created = try XCTUnwrap(owner.currentSession)
-        let facts = try await command(["display-message", "-p", "-t", "\(created.id):", "#{session_name}|#{pane_current_path}"])
-        XCTAssertEqual(facts, "created here|\(cwd)")
+        let window = try XCTUnwrap(owner.testModel?.layout.layout.session(created.id)?.windows.first)
+        try await wait("the new pane's directory") { owner.testModel?.panes.first { $0.id == window.focus }?.cwd == cwd }
         XCTAssertEqual(owner.navigation.session, created.id)
         XCTAssertEqual(other.currentSession?.name, "original")
     }
 
     func testPaletteJumpToAPaneHiddenByZoomShowsAndFocusesIt() async throws {
-        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
-        XCTAssertEqual(output.status, 0, output.err)
-        let server = try JSONDecoder().decode(Server.self, from: Data(output.out.utf8))
-        let first = try await command(["display-message", "-p", "-t", "$0:", "#{pane_id}"])
-        _ = try await command(["respawn-pane", "-k", "-t", first, "printf '\\033[2J\\033[HPALETTE UPPER\\r\\n'; exec /bin/cat"])
-        let second = try await command(["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", first, "printf '\\033[2J\\033[HPALETTE LOWER\\r\\n'; exec /bin/cat"])
-        for (pane, line) in [(first, "PALETTE UPPER"), (second, "PALETTE LOWER")] {
-            let deadline = Date().addingTimeInterval(5)
-            var text = try await command(["capture-pane", "-p", "-t", pane])
-            while text != line && Date() < deadline { text = try await command(["capture-pane", "-p", "-t", pane]) }
-            XCTAssertEqual(text, line)
-            _ = try await command(["clear-history", "-t", pane])
-            let history = try await command(["capture-pane", "-p", "-S", "-", "-t", pane])
-            XCTAssertEqual(history, line)
-        }
-        _ = try await command(["rename-window", "-t", first, "cat", ";", "select-pane", "-t", first, "-T", "cat", ";", "select-pane", "-t", second, "-T", "cat"])
-        _ = try await command(["resize-pane", "-Z", "-t", first])
+        let first = PaneID(number: 1), second = PaneID(number: 2)
+        let upper = koPane("printf '\\033]2;cat\\007\\033[2J\\033[HPALETTE UPPER\\r\\n'; exec /bin/cat")
+        let lower = koPane("printf '\\033]2;cat\\007\\033[2J\\033[HPALETTE LOWER\\r\\n'; exec /bin/cat")
+        _ = try await KoServer.launch(dir: directory.path)
+        try await koPut(directory.path, #"[{"name":"visual","windows":[{"name":"cat","tree":{"split":"v","children":[\#(upper),\#(lower)]}}]}]"#)
+        try await koUntil(directory.path, "/panes/pane_2/screen", contains: "PALETTE LOWER")
         try loadRuntime()
         let app = AppDelegate(runtime: runtime)
         let owner = try XCTUnwrap(app.open(.local, start: false))
         defer { app.closePalette(); owner.close() }
-        owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
+        owner.testServerDir = directory.path
         owner.start()
-        func shown() -> [String] {
-            owner.testSession?.windows.values.first { !$0.isHidden }?.panes.filter { !$0.isHidden }.map(\.pane.description) ?? []
+        try await wait("the owner shows the window") { owner.testClient != nil && owner.testSession?.windows.isEmpty == false }
+        let client = try XCTUnwrap(owner.testClient)
+        _ = try await Task.detached { try client.edit(.zoom(KoSchema.EditZoom(pane: PaneID(number: 1), window: WindowID(number: 1)))) }.value
+        func shown() -> [PaneID] {
+            owner.testSession?.windows.values.first { !$0.isHidden }?.panes.filter { !$0.isHidden }.map(\.pane) ?? []
         }
-        let rows = { sidebarRows(owner.snapshot, seen: owner.seen.value).filter { $0.topLevel != nil } }
+        let rows = { sidebarRows(owner.snapshot).filter { $0.topLevel != nil } }
         try await wait("the zoomed pane alone is shown") {
-            owner.testConnection != nil && shown() == [first] && rows().contains { $0.target?.pane.description == second }
+            shown() == [first] && rows().contains { $0.target?.pane == second }
         }
         app.togglePalette()
         let panel = try XCTUnwrap(app.palettePanel)
         let palette = panel.palette
         let field = try XCTUnwrap(panel.firstResponder as? NSTextView)
-        let index = try XCTUnwrap(rows().firstIndex { $0.target?.pane.description == second })
+        let index = try XCTUnwrap(rows().firstIndex { $0.target?.pane == second })
         XCTAssertEqual(palette.shown.prefix(rows().count).map(\.entry.title), rows().map(\.title))
         for _ in 0..<index { field.doCommand(by: #selector(NSResponder.moveDown(_:))) }
         field.doCommand(by: #selector(NSResponder.insertNewline(_:)))
         XCTAssertNil(app.palettePanel)
         try await wait("both panes shown, the chosen one focused") {
-            Set(shown()) == [first, second] && (owner.window.firstResponder as? PaneView)?.pane.description == second
+            Set(shown()) == [first, second] && (owner.window.firstResponder as? PaneView)?.pane == second
         }
-        let state = try await command(["display-message", "-p", "-t", second, "#{window_zoomed_flag} #{pane_active}"])
-        XCTAssertEqual(state, "0 1", "tmux unzooms the window and makes the chosen pane active")
+        try await wait("the jump unzooms the window and selects the chosen pane") {
+            owner.testModel.map(\.layout.layout.windows)?.first?.zoom == nil && owner.testModel?.selection.pane == PaneID(number: 2)
+        }
         owner.window.setFrame(NSRect(origin: owner.window.frame.origin, size: NSSize(width: 1100, height: 740)), display: false)
         let windowView = try XCTUnwrap(owner.testSession?.windows.values.first { !$0.isHidden })
         let root = try XCTUnwrap(owner.window.contentView?.superview)
@@ -2283,14 +1768,17 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         layoutWindow()
         try await wait("resized two-pane window and sidebar selection are ready") {
             windowView.visualGeometryReady && windowView.panes.allSatisfy(\.visualReady)
-                && rows().contains { $0.focused && $0.target?.pane.description == second }
+                && rows().contains { $0.focused && $0.target?.pane == second }
         }
-        _ = try await command(["select-layout", "-t", first, "even-vertical"])
-        let heights = try await command(["list-panes", "-t", first, "-F", "#{pane_id} #{pane_height}"])
-        XCTAssertEqual(heights, "\(first) 22\n\(second) 22")
-        try await wait("both even-vertical panes have 22 rendered rows") {
-            windowView.visualGeometryReady && windowView.panes.allSatisfy {
-                $0.visualReady && ghostty_surface_size($0.surface).rows == 22
+        _ = try await Task.detached { try client.edit(.equalize(KoSchema.EditEqualize(pane: PaneID(number: 1)))) }.value
+        func leafRows() -> [Int] {
+            guard case .split(let split)? = owner.testModel.map(\.layout.layout.windows)?.first?.tree else { return [] }
+            return split.children.map { if case .leaf(let leaf) = $0 { leaf.rows } else { 0 } }
+        }
+        try await wait("even rows") { let rows = leafRows(); return rows.count == 2 && abs(rows[0] - rows[1]) <= 1 }
+        try await wait("both even panes have their rendered rows") {
+            windowView.visualGeometryReady && zip(windowView.panes.sorted { $0.pane.number < $1.pane.number }, leafRows()).allSatisfy {
+                $0.visualReady && Int(ghostty_surface_size($0.surface).rows) == $1
             }
         }
         let previous = NSApp.mainMenu
@@ -2301,12 +1789,9 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         owner.window.makeFirstResponder(owner.window)
         layoutWindow()
         rootPanel.palette.layoutSubtreeIfNeeded()
-        let frames = [first: NSRect(x: 7.5, y: 0.5, width: 792, height: 338), second: NSRect(x: 7.5, y: 339, width: 792, height: 349)]
         try await wait("complete native pane layout and matching surface sizes") {
             windowView.visualGeometryReady && windowView.panes.allSatisfy { pane in
-                guard let frame = frames[pane.pane.description] else { return false }
-                return pane.frame == frame && pane.visualReady
-                    && pane.visualInstalledPixels == CGSize(width: frame.width * 2, height: frame.height * 2)
+                pane.visualReady && pane.visualInstalledPixels == CGSize(width: pane.frame.width * 2, height: pane.frame.height * 2)
             }
         }
         for pane in windowView.panes {
@@ -2321,14 +1806,11 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             XCTAssertTrue(ghostty_surface_read_text(pane.surface, selection, &text))
             let bytes = try XCTUnwrap(text.text)
             defer { ghostty_surface_free_text(pane.surface, &text) }
-            XCTAssertEqual(String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines), pane.pane.description == first ? "PALETTE UPPER" : "PALETTE LOWER")
+            XCTAssertEqual(String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines), pane.pane == first ? "PALETTE UPPER" : "PALETTE LOWER")
         }
         for pane in windowView.panes {
-            let frame = try XCTUnwrap(frames[pane.pane.description])
-            XCTAssertEqual(pane.frame, frame, pane.resizeDebug)
-            XCTAssertEqual(pane.visualInstalledPixels, CGSize(width: frame.width * 2, height: frame.height * 2), pane.resizeDebug)
+            XCTAssertEqual(pane.visualInstalledPixels, CGSize(width: pane.frame.width * 2, height: pane.frame.height * 2), pane.resizeDebug)
             print("palette capture", pane.pane, pane.resizeDebug)
-            guard pane.frame == frame, pane.visualInstalledPixels == CGSize(width: frame.width * 2, height: frame.height * 2) else { return }
         }
         for view in root.subviews { print("palette capture view", type(of: view), view.frame) }
         let scene = NSView(frame: root.bounds)
@@ -2348,306 +1830,13 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
     }
 
-    func testReorderHoldYieldsToEverythingElse() async throws {
-        directory = try XCTUnwrap(tools.serverDir.hasPrefix("/tmp/ka-visual-") ? URL(fileURLWithPath: tools.serverDir) : nil, "requires a private KIDO_APP_SERVER")
-        socket = directory.appendingPathComponent("socket").path
-        let output = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
-        XCTAssertEqual(output.status, 0, output.err)
-        _ = try await command(["rename-session", "-t", "$0", "alpha"])
-        let alphaText = try await command(["display-message", "-p", "-t", "alpha:", "#{session_id}"])
-        let alpha = try XCTUnwrap(SessionID(alphaText))
-        for _ in 0..<3 { _ = try await command(["new-window", "-d", "-t", "alpha", "exec /bin/cat"]) }
-        _ = try await command(["new-session", "-d", "-s", "beta", "exec /bin/cat"])
-        let betaText = try await command(["display-message", "-p", "-t", "beta:", "#{session_id}"])
-        let beta = try XCTUnwrap(SessionID(betaText))
-        let owner = try sidebarOwner()
-        owner.start()
-        try await wait("connected") { owner.testConnection != nil && owner.testBanner.isHidden && owner.snapshot != nil }
-        let connection = try XCTUnwrap(owner.testConnection)
-        let client: String = try await withCheckedThrowingContinuation { continuation in connection.locateFeed { continuation.resume(with: $0) } }
-        _ = try await command(["switch-client", "-c", client, "-t", "alpha"])
-        try await wait("client on alpha") { owner.navigation.session == alpha && owner.navigation.windows.count == 4 }
-        func shown() -> WindowID? { owner.testSession?.windows.first { !$0.value.isHidden }?.key }
-        func within(_ seconds: Double, _ predicate: () -> Bool) async throws -> Bool {
-            let deadline = Date().addingTimeInterval(seconds)
-            while Date() < deadline { if predicate() { return true }; try await Task.sleep(for: .milliseconds(20)) }
-            return predicate()
-        }
-        let request = owner.request
-        var parked: [() -> Void] = []
-        owner.request = { message, done in
-            guard case .reorder = message else { return request(message, done) }
-            request(message) { result in parked.append { done(result) } }
-        }
-        func moveCurrent() async throws {
-            try await wait("a window is shown") { shown() != nil && shown() == owner.navigation.window }
-            let order = owner.navigation.windows.map(\.id), current = try XCTUnwrap(shown())
-            if current != order.last { owner.sidebar.tabs.move(.window(alpha, current, relativeTo: order.last!, .after)) }
-            else { owner.sidebar.tabs.move(.window(alpha, current, relativeTo: order.first!, .before)) }
-            try await wait("the server moved it") { parked.count == 1 }
-        }
-        func finish() async throws {
-            parked.forEach { $0() }
-            parked.removeAll()
-            try await wait("reorder settled") { owner.reorder.state.pending == nil }
-        }
-
-        try await moveCurrent()
-        let target = owner.navigation.windows[0].id
-        XCTAssertNotEqual(target, shown())
-        owner.selectWindow(.number(1))
-        let navigated = try await within(1) { shown() == target }
-        XCTAssertTrue(navigated, "app navigation shows its window while a reorder reply is outstanding")
-        try await finish()
-
-        try await moveCurrent()
-        let held = try XCTUnwrap(shown())
-        _ = try await command(["kill-window", "-t", held.description])
-        let survived = try await within(1) { shown() != nil && shown() != held }
-        XCTAssertTrue(survived, "killing the held window shows a survivor, never a blank terminal")
-        try await finish()
-
-        try await moveCurrent()
-        let away = try XCTUnwrap(shown())
-        _ = try await command(["switch-client", "-c", client, "-t", "beta"])
-        try await wait("on beta") { owner.navigation.session == beta }
-        let other = try XCTUnwrap(owner.navigation.windows.first?.id)
-        let windows = try await command(["list-windows", "-t", "alpha", "-F", "#{window_id}"]).split(separator: "\n").map(String.init)
-        _ = try await command(["select-window", "-t", try XCTUnwrap(windows.first { $0 != away.description })])
-        _ = try await command(["switch-client", "-c", client, "-t", "alpha"])
-        let current = try await command(["display-message", "-p", "-t", "alpha:", "#{window_id}"])
-        XCTAssertNotEqual(current, away.description)
-        let followed = try await within(1) { owner.navigation.session == alpha && shown()?.description == current }
-        XCTAssertTrue(followed, "leaving the session drops the hold: shown \(shown().map { "\($0)" } ?? "none"), expected \(current), other \(other)")
-        try await finish()
-
-        owner.request = request
-        try await wait("a window is shown") { shown() != nil && shown() == owner.navigation.window }
-        var displayed: [WindowID] = []
-        owner.testSession?.visualShown = { displayed.append($0) }
-        let gate = DispatchSemaphore(value: 0)
-        await withCheckedContinuation { parked in
-            connection.locateFeed { _ in
-                parked.resume()
-                _ = gate.wait(timeout: .now() + 5)
-            }
-        }
-        owner.request = { message, done in
-            request(message) { result in
-                done(result)
-                if case .reorder = message { gate.signal() }
-            }
-        }
-        let order = owner.navigation.windows.map(\.id), moved = try XCTUnwrap(shown())
-        if moved != order.last { owner.sidebar.tabs.move(.window(alpha, moved, relativeTo: order.last!, .after)) }
-        else { owner.sidebar.tabs.move(.window(alpha, moved, relativeTo: order.first!, .before)) }
-        try await wait("reorder settled") { owner.reorder.state.pending == nil }
-        try await Task.sleep(for: .milliseconds(500))
-        owner.request = request
-        XCTAssertEqual(displayed, [], "a reply that beats the control stream still shows no fallback window")
-        XCTAssertEqual(shown(), moved)
-        XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || NSApp.isActive)
-    }
-
-    func testLocalMismatchNativeRestart() async throws {
-        for stamp in ["3.0", "3.2", "4.0"] {
-            let owner = try await localMismatchOwners(1, stamp: stamp)[0]
-            defer { owner.close() }
-            let alert = try XCTUnwrap(owner.preparedAlert?.alert)
-            XCTAssertEqual(alert.messageText, "Restart the local kido server")
-            XCTAssertTrue(alert.informativeText.contains("different kido build or config"))
-            XCTAssertEqual(alert.buttons.map(\.title), ["Restart", "Close"])
-            XCTAssertTrue(alert.buttons[0].hasDestructiveAction)
-            XCTAssertTrue(alert.window.defaultButtonCell === alert.buttons[1].cell)
-            XCTAssertTrue(alert.window.initialFirstResponder === alert.buttons[1])
-            let pid = try await command(["display-message", "-p", "#{pid}"])
-            alert.buttons[0].performClick(nil)
-            var secondSheet = false
-            try await wait("native Restart connects without a second sheet") {
-                if let pending = owner.preparedAlert?.alert, pending !== alert { secondSheet = true }
-                return owner.testConnection != nil && owner.testBanner.isHidden
-            }
-            XCTAssertFalse(secondSheet, "A second restart sheet was prepared")
-            XCTAssertNil(owner.preparedAlert)
-            XCTAssertNil(owner.window.attachedSheet)
-            let current = try await command(["show-environment", "-g", "KIDO_SERVER"])
-            XCTAssertEqual(current.count, "KIDO_SERVER=".count + 12)
-            let newPID = try await command(["display-message", "-p", "#{pid}"])
-            XCTAssertNotEqual(newPID, pid)
-        }
-    }
-
-    func testLocalMismatchNativeClose() async throws {
-        let owner = try await localMismatchOwners(1)[0]
-        let alert = try XCTUnwrap(owner.preparedAlert?.alert)
-        let pid = try await command(["display-message", "-p", "#{pid}"])
-        alert.buttons[1].performClick(nil)
-        try await wait("Close dismisses mismatch sheet") { owner.preparedAlert == nil && owner.window.attachedSheet == nil }
-        XCTAssertNil(owner.testConnection)
-        let stamp = try await command(["show-environment", "-g", "KIDO_SERVER"])
-        XCTAssertEqual(stamp, "KIDO_SERVER=2.1")
-        let unchangedPID = try await command(["display-message", "-p", "#{pid}"])
-        XCTAssertEqual(unchangedPID, pid)
-    }
-
-    func testLocalMismatchEscapeCloses() async throws {
-        let owner = try await localMismatchOwners(1)[0]
-        let alert = try XCTUnwrap(owner.preparedAlert?.alert)
-        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: alert.window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
-        XCTAssertTrue(alert.window.performKeyEquivalent(with: escape))
-        try await wait("Escape closes local mismatch") { owner.preparedAlert == nil && owner.window.attachedSheet == nil }
-        XCTAssertNil(owner.testConnection)
-        let stamp = try await command(["show-environment", "-g", "KIDO_SERVER"])
-        XCTAssertEqual(stamp, "KIDO_SERVER=2.1")
-    }
-
-    func testLocalMismatchNativeRestartOtherWindow() async throws {
-        let owners = try await localMismatchOwners(2)
-        let alert = try XCTUnwrap(owners[0].preparedAlert?.alert)
-        let pid = try await command(["display-message", "-p", "#{pid}"])
-        alert.buttons[0].performClick(nil)
-        try await wait("both Local windows reconnect after one Restart") {
-            owners.allSatisfy { $0.testConnection != nil && $0.testBanner.isHidden && $0.preparedAlert == nil && $0.window.attachedSheet == nil }
-        }
-        let newPID = try await command(["display-message", "-p", "#{pid}"])
-        XCTAssertNotEqual(newPID, pid)
-        for owner in owners {
-            let connected = expectation(description: "owner connected to the new server PID")
-            owner.send([Command("display-message", "-p", "#{pid}")]) { replies in
-                guard case .success(let lines)? = replies?.first else { return XCTFail("Owner control client did not reply") }
-                XCTAssertEqual(lines, [newPID])
-                connected.fulfill()
-            }
-            await fulfillment(of: [connected], timeout: 5)
-        }
-        let stamp = try await command(["show-environment", "-g", "KIDO_SERVER"])
-        XCTAssertEqual(stamp.count, "KIDO_SERVER=".count + 12)
-    }
-
-    func testMismatchAlertCases() throws {
-        for host in [Kido.Host.local, .remote("dev@buildbox")] {
-            for stamp in [nil, ServerStamp("other")] {
-                let alert = WindowOwner.mismatchAlert(host: host, server: stamp, binary: .required)
-                XCTAssertEqual(alert.messageText, host == .local ? "Restart the local kido server" : "Restart kido on dev@buildbox")
-                XCTAssertTrue(alert.informativeText.contains("different kido build or config"))
-                XCTAssertEqual(alert.buttons.map(\.title), [host == .local ? "Restart" : "Reconnect", "Close"])
-                XCTAssertEqual(alert.buttons[0].hasDestructiveAction, host == .local)
-                if host == .local { XCTAssertTrue(alert.window.defaultButtonCell === alert.buttons[1].cell) }
-            }
-            for version in ["3.1", "6.3"] {
-                let alert = WindowOwner.mismatchAlert(host: host, server: ServerStamp("same"), binary: try XCTUnwrap(RPCVersion(version)))
-                XCTAssertTrue(alert.informativeText.contains("needs kido RPC 6.2"))
-                XCTAssertTrue(alert.informativeText.contains("speaks \(version)"))
-                if host != .local && version == "3.1" { XCTAssertTrue(alert.informativeText.contains("Upgrade kido there")) }
-                if version == "6.3" { XCTAssertTrue(alert.informativeText.contains("Update Kido.app, then reconnect.")) }
-            }
-        }
-    }
-
-    func testPrivateServerRPCAndProtocolSheet() async throws {
-        let endpointOutput = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
-        XCTAssertEqual(endpointOutput.status, 0, endpointOutput.err)
-        let endpoint = try JSONDecoder().decode(Server.self, from: Data(endpointOutput.out.utf8))
-        XCTAssertEqual(endpoint.stamp, endpoint.expected)
-        XCTAssertEqual(endpoint.binaryProtocol, .required)
-        try await start()
-        _ = try await command(["new-window", "-d", "-t", "visual", "-n", "second", "exec /bin/cat"])
-        var snapshots = 0
-        let feed = Feed(serverDir: directory.path, locate: connection.locateFeed, onChange: { status in
-            if case .running = status { snapshots += 1 }
-        })
-        defer { feed.stop() }
-        try await wait("private RPC hello and snapshot") { snapshots > 0 }
-        let switched = expectation(description: "private RPC switch reply")
-        feed.request(.switchWindow(next: true)) { result in
-            guard case .success(.switched(let target)) = result else { return XCTFail("switch failed") }
-            XCTAssertNotNil(target)
-            print("RPC E2E switched: \(target?.session.description ?? "nil") \(target?.window.description ?? "nil")")
-            switched.fulfill()
-        }
-        await fulfillment(of: [switched], timeout: 5)
-        let before = try XCTUnwrap(model.window)
-        let cwd = try await command(["display-message", "-p", "-t", before.description, "#{pane_current_path}"])
-        let count = model.windows.count
-        try XCTUnwrap(terminal?.panes.first).onCommand(.newWindow)
-        try await wait("RPC-created window reaches topology") { self.model.windows.count == count + 1 && self.model.window != before }
-        let created = try XCTUnwrap(model.window)
-        let order = model.windows.map(\.id)
-        XCTAssertEqual(order.firstIndex(of: created), order.firstIndex(of: before).map { $0 + 1 })
-        let inherited = try await command(["display-message", "-p", "-t", created.description, "#{pane_current_path}"])
-        XCTAssertEqual(inherited, cwd)
-        let newSession = expectation(description: "RPC new session")
-        var location: Snapshot.Position?
-        feed.request(.newSession) { result in
-            if case .success(.created(let target)) = result { location = target }
-            else { XCTFail("new session failed") }
-            newSession.fulfill()
-        }
-        await fulfillment(of: [newSession], timeout: 5)
-        let target = try XCTUnwrap(location)
-        let selected = expectation(description: "RPC selects session")
-        feed.request(.selectSession(target.session)) { result in
-            if case .success(.selected(let selected)) = result { XCTAssertEqual(selected, target) }
-            else { XCTFail("select session failed") }
-            selected.fulfill()
-        }
-        await fulfillment(of: [selected], timeout: 5)
-        let rejected = expectation(description: "invalid jump does not navigate")
-        feed.request(.jump(Snapshot.Position(session: target.session, window: before, pane: target.pane))) { result in
-            if case .failure = result {} else { XCTFail("invalid membership succeeded") }
-            rejected.fulfill()
-        }
-        await fulfillment(of: [rejected], timeout: 5)
-        let unchanged = try await command(["list-clients", "-F", "#{session_id}:#{window_id}"])
-        XCTAssertEqual(Set(unchanged.split(separator: "\n").map(String.init)), ["\(target.session):\(target.window)"])
-        feed.stop()
-        _ = try await command(["set-environment", "-gu", "KIDO_SERVER"])
-        var refused = false
-        let unstamped = Feed(serverDir: directory.path, locate: connection.locateFeed, onChange: { status in
-            if case .protocolMismatch(let stamp, let expected, let binary) = status { XCTAssertNil(stamp); XCTAssertNotNil(expected); XCTAssertEqual(binary, .required); refused = true }
-        })
-        defer { unstamped.stop() }
-        try await wait("unstamped RPC refusal") { refused }
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
-        let unstampedOutput = try await Child.run(tools.kido, ["server", "--server", directory.path], env: serverEnvironment)
-        owner.testEndpoint = Endpoint(server: try JSONDecoder().decode(Server.self, from: Data(unstampedOutput.out.utf8)), kido: tools.kido)
-        defer { owner.close() }
-        owner.start()
-        try await wait("unstamped local Restart alert") { owner.preparedAlert != nil }
-        XCTAssertNil(owner.window.attachedSheet)
-        XCTAssertTrue(owner.testBanner.isHidden)
-        XCTAssertEqual(owner.sidebar.content.layer?.backgroundColor, runtime.background.cgColor)
-        let background = try XCTUnwrap(owner.window.backgroundColor?.usingColorSpace(.sRGB))
-        for (value, expected) in zip([background.redComponent, background.greenComponent, background.blueComponent], headerPaperRGB["fff9ec-shifted"]!) {
-            XCTAssertEqual(value * 255, expected, accuracy: 0.001)
-        }
-        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-        if let failure = verifySnapshot(of: owner.sidebar.content, as: .image, named: "no-terminal", record: record),
-           !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
-        let mismatch = try XCTUnwrap(owner.preparedAlert?.alert)
-        XCTAssertEqual(mismatch.messageText, "Restart the local kido server")
-        XCTAssertEqual(mismatch.buttons.map(\.title), ["Restart", "Close"])
-        XCTAssertTrue(mismatch.buttons[0].hasDestructiveAction)
-        XCTAssertTrue(mismatch.window.defaultButtonCell === mismatch.buttons[1].cell)
-        owner.respondToAlert(.alertSecondButtonReturn)
-        XCTAssertNil(owner.preparedAlert)
-        XCTAssertFalse(owner.testBanner.isHidden)
-        XCTAssertNil(owner.testConnection)
-        owner.start()
-        try await wait("Reconnect repeats incompatible check") { owner.preparedAlert != nil }
-        XCTAssertNil(owner.window.attachedSheet)
-        XCTAssertNil(owner.testConnection)
-        XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || owner.window.isMainWindow || NSApp.isActive)
-        print("RPC E2E hello 6.2; unstamped server refused; local mismatch alert prepared off-screen")
-    }
-
     func testSidebarHeadersKeysAndAccessibility() throws {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 260),
                           styleMask: [.titled], backing: .buffered, defer: false)
         let list = SidebarView()
         window.contentView = list
-        let fixture = try sidebarFixture()
-        list.update(.running(fixture))
+        let fixture = sidebarFixture()
+        list.update(fixture)
         list.focus()
         list.layoutSubtreeIfNeeded()
         let header = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SidebarCell)
@@ -2690,21 +1879,18 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     func testClockWidthChangeInvalidatesTitle() throws {
         defer { SidebarView.visualNow = nil }
         for multi in [false, true] {
-            let fixture = try sidebarFixture { object in
-                var sessions = object["sessions"] as! [[String: Any]]
-                var nodes = sessions[0]["nodes"] as! [[String: Any]]
-                var children = nodes[0]["children"] as! [[String: Any]]
-                children[0]["title"] = String(repeating: "Long title ", count: 20)
-                children[0]["lifecycle"] = ["Live", ["Terminal", ["phase": ["Unknown"], "report": ["since": 1791131000, "msg": "Activity", "state": ["Running", ["progress": NSNull()]]]]]]
+            let fixture = sidebarFixture { snapshot in
+                var child = snapshot.sessions[0].nodes[0].item.children[0].item
+                child.title = String(repeating: "Long title ", count: 20)
+                child.lifecycle = shellLifecycle(.unknown, report: Report(since: fixtureSince, msg: "Activity", state: .running(progress: nil)))
+                child.mark = .running
                 if multi {
-                    var sibling = children[0]
-                    sibling["id"] = "%1999"; sibling["pane"] = "%1999"
-                    children[0] = ["kind": "window", "id": children[0]["window"]!, "window": children[0]["window"]!,
-                                   "name": "group", "children": [children[0], sibling]]
+                    var sibling = child
+                    sibling.id = PaneID(number: 1999)
+                    snapshot.sessions[0].nodes[0].item.children[0] = .window(.init(id: child.window, name: "group", children: [child, sibling]))
+                } else {
+                    snapshot.sessions[0].nodes[0].item.children[0] = .item(child)
                 }
-                nodes[0]["children"] = children
-                sessions[0]["nodes"] = nodes
-                object["sessions"] = sessions
             }
             let row = try XCTUnwrap(sidebarRows(fixture).first { $0.started != nil })
             XCTAssertFalse(row.tail.isEmpty)
@@ -2737,17 +1923,16 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let owner = try sidebarOwner()
         let list = owner.sidebar.list
         window.contentView = list
-        let initial = try sidebarFixture()
-        let destination = try sidebarFixture { $0["client"] = ["session": "$0", "window": "@458", "pane": "%502"] }
-        list.update(.running(initial))
+        let initial = sidebarFixture()
+        let destination = sidebarFixture { $0.client = .init(session: SessionID(number: 0), window: WindowID(number: 458), pane: PaneID(number: 502)) }
+        list.update(initial)
         list.layoutSubtreeIfNeeded()
         let selectedBeforeNil = list.visualTable.selectedRow
         let originBeforeNil = list.visualScroll.contentView.bounds.origin
-        owner.request = { _, done in done(.success(.switched(nil))) }
         owner.perform(.switchWindow(next: true))
         XCTAssertEqual(list.visualTable.selectedRow, selectedBeforeNil)
         XCTAssertEqual(list.visualScroll.contentView.bounds.origin, originBeforeNil)
-        list.update(.running(destination))
+        list.update(destination)
         let selected = list.visualTable.selectedRow
         XCTAssertGreaterThanOrEqual(selected, 0, "feed-first completion must select the destination")
         if selected >= 0 {
@@ -2758,67 +1943,39 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     }
 
     func testSidebarNavigationAndAnchoring() async throws {
-        try await start()
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 292, height: 260), styleMask: [.titled], backing: .buffered, defer: false)
         let owner = try sidebarOwner()
         let list = owner.sidebar.list
         list.frame = NSRect(x: 0, y: 0, width: 292, height: 260)
         window.contentView = list
-        let fixture = try sidebarFixture { object in
-            let original = (object["sessions"] as! [[String: Any]])[0]
-            object["sessions"] = (0..<20).map { i -> [String: Any] in
-                var session = original
-                session["id"] = "$\(i)"
-                session["name"] = "session-\(i)"
-                return session
-            }
-        }
-        list.update(.running(fixture))
+        let fixture = sidebarFixture { $0.repeatSession(Array(0..<20)) }
+        list.update(fixture)
         list.layoutSubtreeIfNeeded()
         let anchorIndex = 12
         let anchorID = list.visualRows[anchorIndex].id
         list.visualScroll.contentView.scroll(to: NSPoint(x: 0, y: list.visualTable.rect(ofRow: anchorIndex).minY + 7.25))
         let before = list.visualScroll.contentView.bounds.minY - list.visualTable.rect(ofRow: anchorIndex).minY
-        let stable = try sidebarFixture { object in
-            let original = (object["sessions"] as! [[String: Any]])[0]
-            object["sessions"] = ([99] + Array(0..<20)).map { i -> [String: Any] in
-                var session = original
-                session["id"] = "$\(i)"
-                session["name"] = "session-\(i)"
-                return session
-            }
-        }
-        list.update(.running(stable))
+        let stable = sidebarFixture { $0.repeatSession([99] + Array(0..<20)) }
+        list.update(stable)
         list.layoutSubtreeIfNeeded()
         let newIndex = try XCTUnwrap(list.visualRows.firstIndex { $0.id == anchorID })
         XCTAssertGreaterThan(before, 0)
         XCTAssertGreaterThan(newIndex, anchorIndex)
         XCTAssertEqual(list.visualScroll.contentView.bounds.minY - list.visualTable.rect(ofRow: newIndex).minY, before, accuracy: 1)
-        list.update(.running(fixture))
+        list.update(fixture)
         XCTAssertTrue(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) })
-        let navigated = try sidebarFixture { $0["client"] = ["session": "$0", "window": "@458", "pane": "%502"] }
-        list.update(.running(navigated))
+        let navigated = sidebarFixture { $0.client = .init(session: SessionID(number: 0), window: WindowID(number: 458), pane: PaneID(number: 502)) }
+        list.update(navigated)
         XCTAssertEqual(list.visualRows[list.visualTable.selectedRow].target?.window, navigated.client.window)
         XCTAssertTrue(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) })
         let row = try XCTUnwrap(list.visualRows.first { $0.target != nil })
-        var commands: [RPCRequest] = []
         var left = 0
         list.leave = { left += 1 }
         list.focus()
-        owner.request = { request, done in commands.append(request); done(.failure(.terminal("no such pane"))) }
         list.visualJump(row)
-        XCTAssertEqual(commands, [.jump(row.target!)])
-        XCTAssertEqual(left, 0)
-        XCTAssertEqual(list.visualDiagnostic, "no such pane")
+        XCTAssertEqual(left, 0, "a jump that the server did not take keeps the sidebar")
+        XCTAssertEqual(list.visualDiagnostic, "Local is not connected.")
         XCTAssertTrue(list.containsFocus)
-        owner.request = { request, done in
-            commands.append(request)
-            XCTAssertTrue(Thread.isMainThread)
-            done(.success(request == .releaseSideFocus ? .released : .jumped(row.target!)))
-        }
-        list.visualJump(row)
-        XCTAssertEqual(commands.count, 2)
-        XCTAssertEqual(left, 1)
-        list.focus()
         let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
                                                   windowNumber: window.windowNumber, context: nil, characters: "j", charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38))
         list.visualTable.keyDown(with: event)
@@ -2826,14 +1983,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
                                                    windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
         list.visualTable.keyDown(with: escape)
-        XCTAssertEqual(left, 2)
-        let target = try XCTUnwrap(list.visualRows.first { $0.target != nil })
-        let failed = expectation(description: "real private tmux jump reply")
-        owner.request = { [weak self] request, done in
-            self?.rpc?.request(request) { result in XCTAssertTrue(Thread.isMainThread); done(result); failed.fulfill() }
-        }
-        list.visualJump(target)
-        await fulfillment(of: [failed], timeout: 5)
+        XCTAssertEqual(left, 1, "Escape leaves the sidebar without a server")
         XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
     }
 }

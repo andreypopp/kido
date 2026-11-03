@@ -72,7 +72,7 @@ pub(crate) fn lines(
                 title: name.clone(),
                 selected: false,
             },
-            Item::Pane { id, depth } => {
+            Item::Pane { id, depth, .. } => {
                 number += 1;
                 let pane = by_id.get(id).copied();
                 let suffix = match pane.and_then(|pane| pane.row.dead.as_ref()) {
@@ -139,6 +139,7 @@ mod tests {
             },
             Item::Pane {
                 id: id(1),
+                window: "window_1".parse().unwrap(),
                 depth: 0,
             },
             Item::Session {
@@ -147,10 +148,12 @@ mod tests {
             },
             Item::Pane {
                 id: id(2),
+                window: "window_1".parse().unwrap(),
                 depth: 0,
             },
             Item::Pane {
                 id: id(3),
+                window: "window_1".parse().unwrap(),
                 depth: 1,
             },
         ];

@@ -1,45 +1,18 @@
 import Foundation
 import Testing
-import TmuxControl
+import KoModel
 @testable import SidebarFeed
 
 private let s0 = SessionID(number: 0), s1 = SessionID(number: 1)
 private func w(_ n: UInt32) -> WindowID { WindowID(number: n) }
 
-private func tree(instance: Int = 12345, sessions: [Int] = [0, 1]) throws -> Snapshot {
-    let record: [String: Any] = ["id": "task", "state": "working", "title": "Task", "msg": "step", "progress": 10]
-    let nodes: [[String: Any]] = [
-        pane(0, records: [record], serial: 1, children: [pane(1, run: "agent", children: [pane(2, run: "bash")])]),
-        ["kind": "window", "id": "@3", "window": "@3", "name": "Group", "children": [pane(3, children: [pane(5, run: "agent")]), pane(4, window: 3)]],
+private func tree(instance: Int = 12345, sessions: [Int] = [0, 1]) -> Snapshot {
+    makeSnapshot([
+        pane(0, records: [record("task", .working, progress: 10, title: "Task", msg: "step")], serial: 1,
+             children: [pane(1, run: "agent", children: [pane(2, run: "bash")])]),
+        group(3, name: "Group", [pane(3, children: [pane(5, run: "agent")]), pane(4, window: 3)]),
         pane(6),
-    ]
-    var object = snapshotObject(nodes, sessions: sessions)
-    object["server_instance"] = ["started_at": 1780000000, "pid": instance]
-    return try decode(object)
-}
-
-@Test func reorderRequestsAndReplies() throws {
-    let requests: [(RPCRequest, String)] = [
-        (.reorder(.session(SessionID(number: 3), relativeTo: SessionID(number: 1), .before)),
-         #"{"id":51,"reorder-session":{"session":"$3","relative-to":"$1","placement":"before"}}"#),
-        (.reorder(.window(SessionID(number: 3), w(12), relativeTo: w(9), .after)),
-         #"{"id":51,"reorder-window":{"session":"$3","window":"@12","relative-to":"@9","placement":"after"}}"#),
-    ]
-    for (request, json) in requests {
-        #expect(try JSONSerialization.jsonObject(with: request.data(id: 51)) as? NSDictionary == JSONSerialization.jsonObject(with: Data(json.utf8)) as? NSDictionary)
-        #expect(try request.data(id: 51).last == 10)
-    }
-    let reply = try JSONDecoder().decode(RPCEvent.Reply.self, from: Data(#"{"id":51,"reordered":true}"#.utf8))
-    #expect(reply.id == 51)
-    #expect(requests[0].0.accepts(reply.value))
-    #expect(!RPCRequest.releaseSideFocus.accepts(reply.value))
-    let released = try JSONDecoder().decode(RPCEvent.Reply.self, from: Data(#"{"id":51,"released":true}"#.utf8))
-    #expect(!requests[1].0.accepts(released.value))
-    let failed = try JSONDecoder().decode(RPCEvent.Reply.self, from: Data(#"{"id":51,"error":"no such window"}"#.utf8))
-    #expect(requests[1].0.accepts(failed.value))
-    for json in [#"{"id":51,"reordered":false}"#, #"{"id":51,"reordered":true,"released":true}"#] {
-        #expect(throws: DecodingError.self) { try JSONDecoder().decode(RPCEvent.Reply.self, from: Data(json.utf8)) }
-    }
+    ], sessions: sessions, instance: "\(instance)/1780000000")
 }
 
 @Test func placingRelativeToRemainingSiblings() {
@@ -54,7 +27,7 @@ private func tree(instance: Int = 12345, sessions: [Int] = [0, 1]) throws -> Sna
 }
 
 @Test func rootMovesWithItsWholeSubtree() throws {
-    let snapshot = try tree()
+    let snapshot = tree()
     let rows = sidebarRows(snapshot).filter { $0.id.session == s0 }
     let moved = try #require(snapshot.reordered(.window(s0, w(0), relativeTo: w(6), .after)))
     let after = sidebarRows(moved).filter { $0.id.session == s0 }
@@ -74,7 +47,7 @@ private func tree(instance: Int = 12345, sessions: [Int] = [0, 1]) throws -> Sna
 }
 
 @Test func staleMovesDoNotApply() throws {
-    let snapshot = try tree()
+    let snapshot = tree()
     for move in [ReorderMove.window(s0, w(1), relativeTo: w(6), .after), .window(s0, w(0), relativeTo: w(5), .before),
                  .window(s0, w(9), relativeTo: w(6), .after), .window(SessionID(number: 7), w(0), relativeTo: w(6), .after),
                  .window(s0, w(6), relativeTo: w(6), .after), .session(s0, relativeTo: SessionID(number: 7), .before)] {
@@ -83,7 +56,7 @@ private func tree(instance: Int = 12345, sessions: [Int] = [0, 1]) throws -> Sna
 }
 
 @Test func successBeforeSnapshot() throws {
-    let snapshot = try tree()
+    let snapshot = tree()
     let move = ReorderMove.window(s0, w(6), relativeTo: w(0), .before)
     let applied = try #require(snapshot.reordered(move))
     var state = ReorderState()
@@ -98,11 +71,10 @@ private func tree(instance: Int = 12345, sessions: [Int] = [0, 1]) throws -> Sna
     state.observe(applied)
     #expect(state.pending == nil)
     #expect(state.project(snapshot) == snapshot)
-    #expect(state.expire(token) == nil, "a settled drop never times out")
 }
 
 @Test func snapshotBeforeSuccess() throws {
-    let snapshot = try tree()
+    let snapshot = tree()
     let move = ReorderMove.session(s1, relativeTo: s0, .before)
     let applied = try #require(snapshot.reordered(move))
     var state = ReorderState()
@@ -112,12 +84,12 @@ private func tree(instance: Int = 12345, sessions: [Int] = [0, 1]) throws -> Sna
     #expect(state.pending != nil, "still waiting for the reply")
     #expect(state.project(snapshot) == snapshot, "the server's order is authoritative once it matches")
     #expect(state.submit(move, to: snapshot) == nil)
-    #expect(state.expire(token) == nil, "the order arrived, so a missing reply is not an error")
+    #expect(state.complete(token, error: nil) == nil)
     #expect(state.pending == nil)
 }
 
-@Test func failureTimeoutAndResetRevert() throws {
-    let snapshot = try tree()
+@Test func failureSettleAndResetRevert() throws {
+    let snapshot = tree()
     let move = ReorderMove.window(s0, w(0), relativeTo: w(6), .after)
     var state = ReorderState()
     var token = state.submit(move, to: snapshot) ?? -1
@@ -129,24 +101,21 @@ private func tree(instance: Int = 12345, sessions: [Int] = [0, 1]) throws -> Sna
 
     token = state.submit(move, to: snapshot) ?? -1
     #expect(token > 0)
-    #expect(state.expire(token) == "The server did not answer the reorder request")
-    #expect(state.project(snapshot) == snapshot)
-    #expect(state.complete(token, error: nil) == nil, "a late reply changes nothing")
-    #expect(state.pending == nil)
-
-    token = state.submit(move, to: snapshot) ?? -1
-    #expect(token > 0)
+    state.settled()
+    #expect(state.pending != nil, "an edit without its reply keeps the optimistic order")
     #expect(state.complete(token, error: nil) == nil)
-    #expect(state.expire(token) == "The server did not apply the new order")
+    state.settled()
+    #expect(state.pending == nil, "the layout of the accepted edit ends it, in the order the server made")
+    #expect(state.project(snapshot) == snapshot)
 
     #expect(state.submit(move, to: snapshot) != nil)
-    let restarted = try tree(instance: 999)
+    let restarted = tree(instance: 999)
     #expect(state.project(restarted) == restarted, "ids from another server instance are not projected")
     state.observe(restarted)
     #expect(state.pending == nil)
 
     #expect(state.submit(move, to: snapshot) != nil)
-    let reparented = try decode(snapshotObject([pane(6, children: [pane(0)])], sessions: [0, 1]), as: Snapshot.self)
+    let reparented = makeSnapshot([pane(6, children: [pane(0)])], sessions: [0, 1])
     state.observe(reparented)
     #expect(state.project(reparented) == reparented, "a source that is no longer a root cancels the projection")
     #expect(state.pending != nil)
@@ -157,7 +126,7 @@ private func tree(instance: Int = 12345, sessions: [Int] = [0, 1]) throws -> Sna
 }
 
 @Test func navigationFollowsSnapshotRoots() throws {
-    let snapshot = try tree()
+    let snapshot = tree()
     let projection = sidebarWindows(snapshot, session: s0, surviving: Set(([0, 1, 2, 3, 6, 8] as [UInt32]).map(w)))
     #expect(projection.order == [w(0), w(3), w(6)])
     let orphan = sidebarWindows(snapshot, session: s0, surviving: [w(1), w(6)])
@@ -165,4 +134,16 @@ private func tree(instance: Int = 12345, sessions: [Int] = [0, 1]) throws -> Sna
     #expect(arranged([w(6), w(8), w(3), w(0)], by: projection.order, \.self) == [w(0), w(8), w(3), w(6)],
             "a window the snapshot has not reported keeps its inventory slot")
     #expect(arranged([w(1), w(2)], by: [WindowID](), \.self) == [w(1), w(2)])
+}
+
+@Test func aReorderIsTheEditOfTheMovedTopLevelOrder() throws {
+    let snapshot = tree()
+    let sessions = snapshot.sessions.map(\.id)
+    guard case .reorderSessions(let edit)? = snapshot.reorderEdit(.session(sessions[1], relativeTo: sessions[0], .before)) else { Issue.record("no session edit"); return }
+    #expect(edit.order == [sessions[1], sessions[0]] + sessions.dropFirst(2))
+    let session = sessions[0], windows = snapshot.sessions[0].nodes.map(\.window)
+    guard case .reorderWindows(let windowEdit)? = snapshot.reorderEdit(.window(session, windows[0], relativeTo: windows[1], .after)) else { Issue.record("no window edit"); return }
+    #expect(windowEdit.session == session)
+    #expect(windowEdit.order == [windows[1], windows[0]] + windows.dropFirst(2))
+    #expect(snapshot.reorderEdit(.window(session, windows[0], relativeTo: windows[0], .after)) == nil, "no move, no edit")
 }

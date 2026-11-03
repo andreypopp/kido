@@ -9,6 +9,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 use ko_client::api;
+use ko_client::edit::Edit;
 use ko_client::launch::{self, PATIENCE};
 use ko_client::layout::Document;
 use ko_client::remote::Remote;
@@ -61,7 +62,11 @@ enum Command {
     ///
     /// The command needs no running server. The WebSocket endpoints are GET operations with a 101
     /// response and the x-ko-websocket extension, which names the schemas of their messages.
-    ApiSchema,
+    ApiSchema {
+        /// Print the schema of the client core's model and edit documents instead.
+        #[arg(long)]
+        client: bool,
+    },
     /// Send one HTTP request to the ko server and print the response.
     ///
     /// Sends PATH, which starts with /, to the ko server and prints the response body. Query
@@ -144,6 +149,17 @@ enum LayoutCommand {
         /// The file with the document.
         #[arg(value_name = "FILE")]
         file: PathBuf,
+    },
+    /// Apply one edit to the layout, as Kido.app does for a gesture.
+    ///
+    /// EDIT is the JSON of one Edit of share/ko/client-model.json, such as
+    /// {"type":"split","pane":"pane_1","axis":"h","new":{}}. When the layout changed meanwhile, the
+    /// edit is applied again to the newer document. It prints the normalized document and what the
+    /// edit made.
+    Edit {
+        /// The edit.
+        #[arg(value_name = "EDIT")]
+        edit: String,
     },
 }
 
@@ -524,16 +540,20 @@ fn panes(args: PanesArgs) -> ExitCode {
 }
 
 fn layout(args: LayoutArgs) -> ExitCode {
-    let Some(LayoutCommand::Put { file }) = args.command else {
-        return match get("layout", args.server, &Route::GetLayout {}) {
-            Ok(body) => {
-                let mut out = io::stdout().lock();
-                let _ = out.write_all(&body);
-                let _ = writeln!(out);
-                ExitCode::SUCCESS
-            }
-            Err(code) => code,
-        };
+    let file = match args.command {
+        None => {
+            return match get("layout", args.server, &Route::GetLayout {}) {
+                Ok(body) => {
+                    let mut out = io::stdout().lock();
+                    let _ = out.write_all(&body);
+                    let _ = writeln!(out);
+                    ExitCode::SUCCESS
+                }
+                Err(code) => code,
+            };
+        }
+        Some(LayoutCommand::Edit { edit }) => return layout_edit(args.server, &edit),
+        Some(LayoutCommand::Put { file }) => file,
     };
     let dir = client_dir(args.server);
     let document = read_input(&file)
@@ -549,6 +569,21 @@ fn layout(args: LayoutArgs) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(failure) => server_failure("layout put", &dir, failure),
+    }
+}
+
+fn layout_edit(server: Option<PathBuf>, edit: &str) -> ExitCode {
+    let edit = match protocol::decode::<Edit>(edit.as_bytes()) {
+        Ok(edit) => edit,
+        Err(error) => return fail("layout edit", error),
+    };
+    let dir = client_dir(server);
+    match api::edit_layout(&dir, &edit) {
+        Ok(edited) => {
+            let _ = writeln!(io::stdout().lock(), "{}", protocol::json(&edited));
+            ExitCode::SUCCESS
+        }
+        Err(failure) => server_failure("layout edit", &dir, failure),
     }
 }
 
@@ -595,10 +630,17 @@ fn main() -> ExitCode {
             let _ = writeln!(out, "{}", protocol::json(&protocol::version()));
             ExitCode::SUCCESS
         }
-        Command::ApiSchema => {
+        Command::ApiSchema { client: false } => {
             let _ = writeln!(io::stdout().lock(), "{}", schema::openapi());
             ExitCode::SUCCESS
         }
+        Command::ApiSchema { client: true } => match ko_client::schema::client_model() {
+            Ok(document) => {
+                let _ = writeln!(io::stdout().lock(), "{document}");
+                ExitCode::SUCCESS
+            }
+            Err(message) => fail("api-schema", message),
+        },
         Command::Api(args) => api(args),
         Command::Shell { command } => fail("shell", shell::exec(&command, &invoked())),
         Command::Ssh { args } => ssh(&args),

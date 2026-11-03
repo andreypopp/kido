@@ -4,6 +4,7 @@ mod agents;
 mod client;
 mod clients;
 mod config;
+mod edits;
 mod harness;
 mod hostile;
 mod idle;

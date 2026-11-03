@@ -1,4 +1,6 @@
 import AppKit
+import KoClient
+import KoModel
 import TmuxControl
 import SidebarFeed
 
@@ -53,10 +55,10 @@ private class AlertEscape: NSView {
 
 @MainActor final class WindowOwner: NSObject, NSWindowDelegate {
     #if KIDO_VISUAL
-    static var reorderTimeout: TimeInterval = 2
+    static var welcomeTimeout: TimeInterval = 20
     static var visualPreparedUploads = 0
     #else
-    static let reorderTimeout: TimeInterval = 2
+    static let welcomeTimeout: TimeInterval = 20
     #endif
     let runtime: GhosttyRuntime
     let host: Host
@@ -65,7 +67,6 @@ private class AlertEscape: NSView {
     var feedFresh = true
     enum DialCause {
         case launch, newWindow, newSession, reopen, remoteRequest, reconnect, serverRestart
-        case redial(String)
         var label: String {
             switch self {
             case .launch: "launch"
@@ -75,7 +76,6 @@ private class AlertEscape: NSView {
             case .remoteRequest: "remote request"
             case .reconnect: "reconnect"
             case .serverRestart: "server restart"
-            case .redial(let reason): "redial after \(reason)"
             }
         }
     }
@@ -96,21 +96,23 @@ private class AlertEscape: NSView {
     private var link = Link.down { didSet { sidebar.tabs.needsDisplay = true } }
     let sidebar = Sidebar()
     let reorder = Reorder()
-    private var feed: Feed?
-    private var controlModel = SessionModel()
-    private struct Hold {
-        let token: Int, intent: Int, generation: Int, instance: ServerInstance, session: SessionID, window: WindowID
+    // What `receive` makes of the core's model, set in one place.
+    private struct Received {
+        var ko: KoModel?
+        var model = SessionModel()
+        var snapshot: Snapshot?
     }
-    private var held: Hold?
-    private var model: SessionModel {
-        var model = controlModel
-        if let held, holds(held) { model.window = held.window }
-        return model
-    }
-    private(set) var snapshot: Snapshot?
+    private var received = Received()
+    private var model: SessionModel { received.model }
+    private var koModel: KoModel? { received.ko }
+    var snapshot: Snapshot? { received.snapshot }
+    private var editor: LayoutEditor?
+    private var welcomed = false
+    private var selectedFirst = false
+    private var receiving = false
     var canNavigate: Bool {
         if case .mismatch = link { return false }
-        return alive && snapshot != nil && snapshot?.error == nil
+        return alive && snapshot != nil
     }
     private var pendingNewSession = false
     private var navigationModel = SessionModel()
@@ -118,18 +120,10 @@ private class AlertEscape: NSView {
     private var focusTarget: Target?
     private var intent = 0
     private var activating: Int?
-    private var completing = false
-    var request: RPCRequestHandler = Feed.unavailable
+    private var awaitingSelect = false
     private(set) var preparedAlert: (alert: NSAlert, respond: (NSApplication.ModalResponse) -> Void)?
 
     private static let localServerRestarted = Notification.Name("KidoLocalServerRestarted")
-    private static let seenChanged = Notification.Name("KidoSeenChanged")
-    private static var seenByHost: [Host: SeenRecord] = [:]
-    private(set) lazy var seen: SeenRecord = {
-        let record = Self.seenByHost[host] ?? SeenRecord()
-        Self.seenByHost[host] = record
-        return record
-    }()
 
     var attended: Bool {
         var attended = NSApp.isActive && window.isKeyWindow && !window.isMiniaturized && window.occlusionState.contains(.visible)
@@ -139,49 +133,52 @@ private class AlertEscape: NSView {
         return attended
     }
 
-    private func observeSeen() -> Bool {
-        guard let snapshot else { return false }
-        var next = seen.value
-        next.observe(snapshot, attended: attended)
-        guard next != seen.value else { return false }
-        seen.value = next
-        NotificationCenter.default.post(name: Self.seenChanged, object: seen, userInfo: ["by": self])
-        return true
+    var shownPanes: [PaneID] {
+        (session?.windows.values.first { !$0.isHidden }?.panes ?? []).filter { !$0.isHidden }.map(\.pane)
+    }
+
+    private var presentedPanes: [PaneID] = []
+    private var observed: Notifier.Seen?
+
+    // The server's focus: the window is key in the active app and a pane of the shown window has
+    // the keyboard. The sidebar, a palette and a sheet take it away.
+    private var reportedFocus: Bool?
+    private func reportFocus() {
+        guard case .connected(let client) = link else { return }
+        let pane = window.firstResponder.flatMap(PaneView.owner)
+        let focused = NSApp.isActive && window.isKeyWindow && window.attachedSheet == nil
+            && pane.map { view in session?.windows.values.contains { !$0.isHidden && view.isDescendant(of: $0) } == true } == true
+        guard focused != reportedFocus else { return }
+        reportedFocus = focused
+        try? client.focus(focused)
     }
 
     @objc private func attend() {
-        if observeSeen() { refreshSeen() }
+        reportFocus()
+        Notifier.shared.observeSeen(host: host)
         Notifier.shared.update(host: host)
     }
 
-    @objc private func seenChanged(_ notification: Notification) {
-        if notification.userInfo?["by"] as? WindowOwner !== self { refreshSeen() }
-    }
-
-    private func refreshSeen() {
-        sidebar.list.refresh()
-        updateTabs()
+    // Tells the core what the attended windows of the host show, when that changed.
+    func observeSeen() {
+        guard case .connected(let client) = link else { return }
+        let seen = Notifier.shared.seen(host: host)
+        guard seen != observed else { return }
+        observed = seen
+        try? client.observe(seen.shown, attending: seen.attending)
     }
 
     @objc private func localServerRestarted(_ notification: Notification) {
-        guard alive, host == .local, case .mismatch(let endpoint) = link,
-              notification.object as? String == endpoint.server.socket else { return }
+        guard alive, host == .local, case .mismatch = link, notification.object as? String == serverDir else { return }
         begin(.serverRestart)
-    }
-
-    private enum Attempt {
-        case discover
-        case attach(Endpoint)
-        case check(Endpoint)
     }
 
     private enum Link {
         case down
-        case locating(Attempt, TimeInterval)
-        case mismatch(Endpoint)
+        case starting
+        case mismatch(code: ko_code, server: KoVersion, own: KoVersion)
         case changed
-        case connected(Connection, Endpoint, TimeInterval)
-        case redialing(DispatchWorkItem, Attempt, TimeInterval)
+        case connected(KoClient)
     }
 
     private let openBrowser: (URL) -> Void
@@ -208,9 +205,8 @@ private class AlertEscape: NSView {
         self.runtime = runtime
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(localServerRestarted(_:)), name: Self.localServerRestarted, object: nil)
-        sidebar.list.seen = seen
-        NotificationCenter.default.addObserver(self, selector: #selector(seenChanged(_:)), name: Self.seenChanged, object: seen)
         NotificationCenter.default.addObserver(self, selector: #selector(attend), name: NSApplication.didBecomeActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(attend), name: NSApplication.didResignActiveNotification, object: nil)
         window = AppWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -243,19 +239,12 @@ private class AlertEscape: NSView {
         sidebar.splitView.setPosition(max(200, min(360, width)), ofDividerAt: 0)
         if !background { sidebar.isCollapsed = UserDefaults.standard.bool(forKey: "sidebarCollapsed") }
         sidebar.changed = { [weak self] in self?.menuChanged() }
-        request = { [weak self] request, done in
-            guard let feed = self?.feed else { return done(.failure(.terminal(Feed.notReady))) }
-            feed.request(request, completed: done)
-        }
         sidebar.list.navigate = { [weak self] in self?.perform($0) }
         sidebar.list.onIntent = { [weak self] in self?.supersedeIntent() }
         sidebar.list.newSession = { [weak self] in self?.newSession() }
-        sidebar.list.newWindow = { [weak self] session in
-            guard let self, let window = model.sessions.first(where: { $0.id == session })?.window else { return }
-            perform(.newWindow(window))
-        }
+        sidebar.list.newWindow = { [weak self] session in self?.newWindow(in: session) }
         sidebar.list.renameSession = { [weak self] id, name, done in
-            guard let self else { return done("The control client is not ready.") }
+            guard let self else { return done("The client is not ready.") }
             renameSession(id, name, done: done)
         }
         sidebar.list.reorder = reorder
@@ -264,10 +253,7 @@ private class AlertEscape: NSView {
         sidebar.tabs.move = sidebar.list.move
         sidebar.tabs.select = { [weak self] in self?.selectWindow($0) }
         sidebar.tabs.close = { [weak self] tab in self?.confirmClose(.window(tab.id), name: tab.name) }
-        sidebar.tabs.addWindow.invoke = { [weak self] in
-            guard let self, let window = model.window else { return }
-            perform(.newWindow(window))
-        }
+        sidebar.tabs.addWindow.invoke = { [weak self] in self?.newWindow() }
         sidebar.list.closePane = { [weak self] row in
             guard let pane = row.target?.pane else { return }
             self?.confirmClose(.pane(pane), name: row.title)
@@ -277,6 +263,7 @@ private class AlertEscape: NSView {
             guard let self else { return }
             sidebar.updateFocusEdge()
             session?.windows.values.filter { !$0.isHidden }.forEach { $0.updateFocusTreatment() }
+            reportFocus()
             if old === next { return }
             if let pane = next as? PaneView, model.window.flatMap({ session?.windows[$0]?.active }) == pane.pane,
                old == nil || old is PaneView || old === window { return }
@@ -316,15 +303,6 @@ private class AlertEscape: NSView {
     func windowDidEnterFullScreen(_ notification: Notification) { updateAppearance() }
     func windowDidExitFullScreen(_ notification: Notification) { updateAppearance() }
 
-    func send(_ commands: [Command], then done: (@MainActor @Sendable ([Reply]?) -> Void)? = nil) {
-        guard case .connected(let connection, _, _) = link else { return done?(nil) ?? () }
-        let generation = generation
-        connection.send(commands) { [weak self] replies in
-            guard let self, accepts(generation) else { return }
-            done?(replies)
-        }
-    }
-
     func down(_ title: String, _ detail: String, button: String?) {
         guard alive else { return }
         sidebar.list.leave()
@@ -332,93 +310,67 @@ private class AlertEscape: NSView {
         sidebar.list.offline(title)
     }
 
-    @objc func start() { begin(.reconnect) }
+    @objc func start() {
+        guard case .connected = link else { return begin(.reconnect) }
+        if koModel?.layout.layout.sessions.isEmpty == true { return newSession() }
+        let generation = generation
+        down("Starting the ko server…", "", button: nil)
+        task = Task {
+            do throws(Failure) { _ = try await KoServer.launch(dir: serverDir) } catch {
+                guard accepts(generation) else { return }
+                down("Could not start the ko server", error.message, button: "Start")
+            }
+        }
+    }
+
+    private var serverDir: String {
+        #if KIDO_VISUAL || KIDO_STRESS
+        if let testServerDir { return testServerDir }
+        #endif
+        return tools.serverDir
+    }
 
     private func begin(_ cause: DialCause) {
         guard alive else { return }
         switch link {
-        case .locating, .connected, .changed: return
-        case .mismatch: break
-        case .redialing(let item, _, _): item.cancel()
-        case .down: break
+        case .starting, .connected, .changed: return
+        case .mismatch, .down: break
         }
-        let closeCause: Connection.CloseCause = if case .serverRestart = cause { .serverRestart } else { .reconnect }
-        if case .mismatch = link { invalidate(cause: closeCause, keepingSnapshot: true) }
-        else { invalidate(cause: closeCause) }
-        connect(.discover, backoff: 0.1, cause: cause)
+        invalidate(keepingSnapshot: { if case .mismatch = link { true } else { false } }())
+        connect(cause: cause)
     }
 
-    private func connect(_ attempt: Attempt, backoff: TimeInterval, cause: DialCause) {
-        let generation = generation, drain = Drain()
-        self.drain = drain
-        ended.enter()
-        drain.ended.notify(queue: .global()) { @Sendable [ended] in ended.leave() }
-        link = .locating(attempt, backoff)
+    private func connect(cause: DialCause) {
+        guard host == .local else {
+            link = .down
+            return down("Remote hosts return with the ko remote transport", host.label, button: nil)
+        }
+        let generation = generation
+        link = .starting
         down("Connecting to \(host.label)…", "", button: nil)
         task = Task { [self] in
-            guard accepts(generation) else { return }
             do throws(Failure) {
-                try await openTransport(generation)
+                let socket = try await KoServer.launch(dir: serverDir)
                 guard accepts(generation) else { return }
-                let endpoint: Endpoint
-                switch attempt {
-                case .attach(let remembered): return dial(remembered, backoff: backoff, cause: cause)
-                case .check(let remembered): endpoint = remembered
-                case .discover:
-                    #if KIDO_VISUAL || KIDO_STRESS
-                    if let testEndpoint { endpoint = testEndpoint }
-                    else { endpoint = try await Server.locate(prepare: ssh.map { transport in { transport.launch($0) } }, drain: drain) }
-                    #else
-                    endpoint = try await Server.locate(prepare: ssh.map { transport in { transport.launch($0) } }, drain: drain)
-                    #endif
-                }
+                dial(socket, cause: cause)
+            } catch {
                 guard accepts(generation) else { return }
-                if !endpoint.server.compatible { return protocolMismatch(endpoint) }
-                dial(endpoint, backoff: backoff, cause: cause)
-            } catch { failed(generation, error) }
-        }
-    }
-
-    private func failed(_ token: Int, _ error: Failure, cause: Connection.CloseCause? = nil) {
-        guard alive, generation == token else { return }
-        let attempt: Attempt, backoff: TimeInterval
-        switch link {
-        case .locating(let pending, let delay), .redialing(_, let pending, let delay): attempt = pending; backoff = delay
-        case .connected(_, let endpoint, let delay): attempt = .attach(endpoint); backoff = initial == nil ? 0.05 : delay
-        case .mismatch(let endpoint): attempt = .check(endpoint); backoff = 0.1
-        case .down, .changed: return
-        }
-        invalidate(cause: cause ?? .failure(error.message))
-        switch error {
-        case .terminal:
-            link = .down
-            down("Kido could not reach \(host.label)", error.message, button: "Reconnect")
-        case .transport:
-            let next = min(backoff * 2, 2), generation = generation
-            down("Disconnected from \(host.label)", error.message + "\nReconnecting…", button: "Reconnect")
-            let item = DispatchWorkItem { [weak self] in
-                guard let self, accepts(generation) else { return }
-                connect(attempt, backoff: next, cause: .redial(cause?.label ?? error.message))
+                link = .down
+                down("Kido could not start the ko server", error.message, button: "Start")
             }
-            link = .redialing(item, attempt, next)
-            DispatchQueue.main.asyncAfter(deadline: .now() + next, execute: item)
         }
     }
 
-    static func mismatchAlert(host: Host, server: ServerStamp?, binary: RPCVersion) -> NSAlert {
+    static func mismatchAlert(host: Host, code: ko_code, server: KoVersion, own: KoVersion) -> NSAlert {
         let alert = NSAlert()
         let local = host == .local
-        if !binary.compatible {
-            let newer = binary.major > RPCVersion.required.major || binary.major == RPCVersion.required.major && binary.minor > RPCVersion.required.minor
-            alert.messageText = newer ? (local ? "This server needs a newer Kido.app" : "Update Kido.app to connect") : (local ? "Update Kido.app" : "Update kido on \(host.label)")
-            alert.informativeText = "This app needs kido RPC \(RPCVersion.required). \(local ? "The bundled kido" : "kido on " + host.label) speaks \(binary)."
-            alert.informativeText += newer ? " Update Kido.app, then reconnect." : (local ? " Reinstall or update Kido.app." : " Upgrade kido there, then reconnect.")
-        } else {
-            alert.messageText = local ? "Restart the local kido server" : "Restart kido on \(host.label)"
-            alert.informativeText = "This server was started by a different kido build or config\(server == nil ? " (or is unstamped)" : ""). Restart it, then reconnect."
-        }
+        let detail = code == KO_ERR_PROTOCOL_MISMATCH
+            ? "This app speaks ko protocol \(own.protocolVersion). The server speaks \(server.protocolVersion)."
+            : "This app runs terminal revision \(own.vt.prefix(9)). The server runs \(server.vt.prefix(9))."
+        alert.messageText = local ? "Restart the local ko server" : "Restart ko on \(host.label)"
+        alert.informativeText = "\(detail) The server is build \(server.build); this app is build \(own.build). Restart the server, then reconnect."
         if local {
-            alert.informativeText += "\n\nRestarting ends all sessions and panes on this local kido-app server. Running commands and agents will stop. Other clients attached to this server will disconnect."
+            alert.informativeText += "\n\nRestarting ends all sessions and panes on this local ko server. Running commands and agents will stop. Other clients attached to this server will disconnect."
         }
         alert.addButton(withTitle: local ? "Restart" : "Reconnect").hasDestructiveAction = local
         alert.addButton(withTitle: "Close").keyEquivalent = "\u{1b}"
@@ -433,33 +385,28 @@ private class AlertEscape: NSView {
         return alert
     }
 
-    private func protocolMismatch(_ endpoint: Endpoint) {
-        invalidate(cause: .protocolMismatch, keepingSnapshot: true)
-        link = .mismatch(endpoint)
+    private func protocolMismatch(code: ko_code, server: KoVersion, own: KoVersion) {
+        invalidate(keepingSnapshot: true)
+        link = .mismatch(code: code, server: server, own: own)
         down("Disconnected from \(host.label)", "", button: "Reconnect")
-        mismatchSheet(endpoint)
-    }
-
-    private func mismatchSheet(_ endpoint: Endpoint) {
-        let alert = Self.mismatchAlert(host: host, server: endpoint.server.stamp, binary: endpoint.server.binaryProtocol)
+        let alert = Self.mismatchAlert(host: host, code: code, server: server, own: own)
         let generation = generation
         prepareAlert(alert) { [weak self] response in
             guard let self, accepts(generation) else { return }
             guard response == .alertFirstButtonReturn else { banner.isHidden = false; return }
             if host != .local { return start() }
-            link = .locating(.check(endpoint), 0.1)
+            link = .starting
             task = Task {
-                guard accepts(generation) else { return }
                 do throws(Failure) {
-                    try await endpoint.server.restart(drain: drain)
+                    try await KoServer.stop(dir: serverDir)
                     guard accepts(generation) else { return }
-                    NotificationCenter.default.post(name: Self.localServerRestarted, object: endpoint.server.socket)
+                    NotificationCenter.default.post(name: Self.localServerRestarted, object: serverDir)
                     link = .down
                     begin(.serverRestart)
                 } catch {
                     guard accepts(generation) else { return }
                     link = .down
-                    down("Could not restart the app server", error.message, button: "Reconnect")
+                    down("Could not restart the ko server", error.message, button: "Reconnect")
                 }
             }
         }
@@ -524,7 +471,7 @@ private class AlertEscape: NSView {
         #if KIDO_VISUAL || KIDO_STRESS
         if let testUploadBase { return testUploadBase }
         #endif
-        if case .connected(_, let endpoint, _) = link { return endpoint.directory }
+        if case .connected = link { return serverDir }
         return nil
     }
 
@@ -561,29 +508,26 @@ private class AlertEscape: NSView {
 
     private func uploadOverSSH(_ plan: Upload, _ destination: String, to pane: PaneView, confirmed: [String]? = nil) {
         guard admitsUpload() else { return }
-        let id = UUID().uuidString.lowercased(), instance = snapshot?.serverInstance
-        uploads[id] = (pane, Task {})
-        send([Command("show-options", "-p", "-v", "-t", pane.pane, "@kido_ssh_args")]) { [weak self, weak pane] replies in
-            guard let self, let pane, uploads.removeValue(forKey: id) != nil else { return }
-            guard case .success(let lines)? = replies?.first, let recorded = try? JSONDecoder().decode([String].self, from: Data(lines.joined(separator: "\n").utf8)),
-                  let target = recorded.last, sshDestination(pane) == destination, snapshot?.serverInstance == instance else {
-                return notice("Kido did not upload", confirmed == nil ? "Kido can't tell where this ssh session connects; nothing was uploaded."
-                              : "The ssh session in this pane changed after you confirmed; nothing was uploaded.")
-            }
-            guard let confirmed else {
-                return askUpload(plan, to: target, "The program in this pane runs over ssh on \(target) (\(destination)). Nested ssh sessions are not detected.",
-                                 ["Upload", "Cancel"]) { [weak self, weak pane] response in
-                    guard let self, response == .alertFirstButtonReturn, let pane else { return }
-                    uploadOverSSH(plan, destination, to: pane, confirmed: recorded)
-                }
-            }
-            guard recorded == confirmed else { return notice("Kido did not upload", "The ssh session in this pane changed after you confirmed; nothing was uploaded.") }
-            var base = ""
-            #if KIDO_VISUAL || KIDO_STRESS
-            base = testUploadBase ?? ""
-            #endif
-            transfer(plan, base: base, to: pane, over: recorded)
+        let refusal = confirmed == nil ? "Kido can't tell where this ssh session connects; nothing was uploaded."
+            : "The ssh session in this pane changed after you confirmed; nothing was uploaded."
+        guard case .array(let values)? = koModel?.pane(pane.pane)?.vars["ssh.args"] else {
+            return notice("Kido did not upload", refusal)
         }
+        let recorded: [String] = values.compactMap { if case .string(let text) = $0 { text } else { nil } }
+        guard let target = recorded.last, sshDestination(pane) == destination else { return notice("Kido did not upload", refusal) }
+        guard let confirmed else {
+            return askUpload(plan, to: target, "The program in this pane runs over ssh on \(target) (\(destination)). Nested ssh sessions are not detected.",
+                             ["Upload", "Cancel"]) { [weak self, weak pane] response in
+                guard let self, response == .alertFirstButtonReturn, let pane else { return }
+                uploadOverSSH(plan, destination, to: pane, confirmed: recorded)
+            }
+        }
+        guard recorded == confirmed else { return notice("Kido did not upload", refusal) }
+        var base = ""
+        #if KIDO_VISUAL || KIDO_STRESS
+        base = testUploadBase ?? ""
+        #endif
+        transfer(plan, base: base, to: pane, over: recorded)
     }
 
     private func askUpload(_ plan: Upload, to label: String, _ detail: String, _ buttons: [String], then answered: @escaping (NSApplication.ModalResponse) -> Void) {
@@ -719,18 +663,67 @@ private class AlertEscape: NSView {
 
     func bundleChanged(_ error: Failure) {
         guard alive else { return }
-        invalidate(cause: .bundleChanged)
+        invalidate()
         link = .changed
         down("Relaunch Kido.app", error.message, button: nil)
     }
 
-    private func dial(_ endpoint: Endpoint, backoff: TimeInterval, cause: DialCause) {
-        let server = endpoint.server, generation = generation
+    private func dial(_ socket: String, cause: DialCause) {
+        let generation = generation
         do throws(Failure) { try tools.validate() } catch { return bundleChanged(error) }
-        note("dialing \(server.socket) (\(cause.label.replacingOccurrences(of: "\n", with: "; "))) [owner \(ownerID)]")
+        note("dialing \(socket) (\(cause.label.replacingOccurrences(of: "\n", with: "; "))) [owner \(ownerID)]")
+        let view = makeSessionView()
+        do {
+            let hello = KoHello(name: ownerID, sizesWindows: true)
+            let client = try KoClient(socket: socket, hello: hello) { [weak self] event in
+                guard let self, accepts(generation) else { return }
+                handle(event)
+            }
+            link = .connected(client)
+            reportedFocus = nil
+            view.client = client
+            makeEditor { try client.edit($0) }
+            observed = nil
+            Notifier.shared.connected()
+            session?.close()
+            session = view
+            welcomed = false
+            selectedFirst = false
+            feedFresh = true
+            let timeout = DispatchWorkItem { [weak self] in
+                guard let self, accepts(generation) else { return }
+                failed("The ko server did not welcome the app within \(Int(Self.welcomeTimeout)) seconds")
+            }
+            initial = timeout
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.welcomeTimeout, execute: timeout)
+        } catch {
+            note("could not connect to \(socket): \(error)")
+            link = .down
+            down("Kido could not reach \(host.label)", "\(error)", button: "Start")
+        }
+    }
+
+    private func makeSessionView() -> SessionView {
+        let generation = generation
         let view = SessionView(runtime: runtime)
+        if case .connected(let client) = link { view.client = client }
         view.sidebarFocused = { [weak sidebar] in sidebar?.list.containsFocus == true }
         view.reorder = reorder
+        view.edit = { [weak self] edit, key in self?.editor?.submit(edit, key: key) }
+        view.editing = { [weak self] in self?.editor?.holding == true }
+        view.selectPane = { [weak self] pane in
+            guard let self, accepts(generation), case .connected(let client) = link else { return }
+            try? client.select(KO_SELECT_PANE, pane)
+        }
+        view.paneCommand = { [weak self] command, pane in
+            guard let self, accepts(generation) else { return }
+            paneCommand(command, pane)
+        }
+        view.sizeClient = { [weak self, weak view] cols, rows in
+            guard let self, accepts(generation), case .connected(let client) = link else { return }
+            debug("client-size-send \(cols)x\(rows)")
+            try? client.size(cols: cols, rows: rows, cell: view?.cellPixels ?? (0, 0))
+        }
         view.canPrompt = { [weak self] in self?.canPrompt == true }
         view.onPrompt = { [weak self] pane, quote in
             guard let self else { return }
@@ -743,93 +736,140 @@ private class AlertEscape: NSView {
         }
         view.frame = sidebar.content.bounds
         view.autoresizingMask = [.width, .height]
-        do {
-            let connection = try Connection(
-                server: server, view: view, transport: ssh.map { ssh in { launch in
-                    ssh.launch([launch.path] + launch.arguments, control: launch.path == server.tmux ? endpoint : nil)
-                } }, host: host, drain: drain, ownerID: ownerID,
-                onChange: { [weak self] model in guard let self, accepts(generation) else { return }; changed(view, model) },
-                onDiagnostic: { [weak self] message in guard let self, accepts(generation) else { return }; banner.show(message, "", button: nil) },
-                onClose: { [weak self] exit, cause in guard let self, alive, self.generation == generation else { return }; closed(view, exit, cause: cause) })
-            connection.userFocus = { [weak self] in self?.supersedeIntent() }
-            connection.closePane = { [weak self] pane in
-                guard let self, accepts(generation) else { return }
-                let name = sidebarRows(snapshot).first { $0.target?.pane == pane }?.title ?? pane.description
-                confirmClose(.pane(pane), name: name)
+        return view
+    }
+
+    private func failed(_ message: String) {
+        guard alive else { return }
+        invalidate()
+        link = .down
+        down("Kido could not reach \(host.label)", message, button: "Start")
+    }
+
+    private func handle(_ event: KoEvent) {
+        guard case .connected = link else { return }
+        switch event {
+        case .welcome(let id, let fresh):
+            #if KIDO_STRESS
+            note("stress client \(id)")
+            #endif
+            initial?.cancel()
+            initial = nil
+            if fresh {
+                feedFresh = true
+                selectedFirst = false
+                // The new server's revisions start again, so an edit held for the old one never settles.
+                if let editor { makeEditor(editor.perform) }
+                reorder.state.reset()
+                if welcomed { resetSession() }
             }
-            connection.navigate = { [weak self] command in
-                guard let self, accepts(generation) else { return }
-                switch command {
-                case .newWindow: if let window = model.window { perform(.newWindow(window)) }
-                case .window(let step): selectWindow(step)
-                default: break
-                }
+            welcomed = true
+            observeSeen()
+        case .layout(let revision):
+            receiveSoon()
+            editor?.layoutChanged(revision: Int(revision))
+        case .model:
+            receiveSoon()
+        case .selected(let session, let window, let pane):
+            receiveSoon()
+            guard awaitingSelect else { return }
+            awaitingSelect = false
+            if let session, let window {
+                focusTarget = pane.map { .pane(.init(session: session, window: window, pane: $0)) } ?? .window(session, window)
+                activating = nil
+                sidebar.list.leave()
             }
-            connection.onURL = { [weak self] text in
-                guard let self, accepts(generation) else { return }
-                openLink(text)
-            }
-            link = .connected(connection, endpoint, backoff)
-            Notifier.shared.connected()
-            session?.close()
-            session = view
-            feedFresh = true
-            feed = Feed(
-                serverDir: endpoint.directory, locate: connection.locateFeed, drain: drain,
-                prepare: { [transport = ssh] args in transport?.launch([endpoint.kido] + args) ?? Launch(endpoint.kido, args, environment: tools.environment) },
-                onChange: { [weak self] status in
-                    guard let self, accepts(generation) else { return }
-                    if case .invalidBundle(let error) = status { return self.bundleChanged(error) }
-                    if case .protocolMismatch(let stamp, let expected, let binary) = status {
-                        return self.protocolMismatch(Endpoint(server: Server(tmux: server.tmux, socket: server.socket, stamp: stamp, expected: expected ?? server.expected, binaryProtocol: binary), kido: endpoint.kido))
-                    }
-                    self.received(status)
-                })
-            let timeout = DispatchWorkItem { [weak self] in
-                guard let self, accepts(generation) else { return }
-                closed(view, .ended("Control topology and sidebar snapshot did not arrive within 20 seconds"), cause: .readinessTimeout)
-            }
-            initial = timeout
-            DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: timeout)
-        } catch {
-            note("could not run \(server.tmux): \(error.localizedDescription)")
-            failed(generation, .transport(error.localizedDescription))
+        case .failed(let code, let message):
+            let detail = code == KO_ERR_NO_SERVER ? "No ko server is running." : message
+            down("Disconnected from \(host.label)", detail + "\nReconnecting…", button: "Start")
+        case .mismatch(let code, let server, let own):
+            protocolMismatch(code: code, server: server, own: own)
         }
     }
 
-    private func received(_ status: Feed.Status) {
-        switch status {
-        case .starting, .restarting: feedFresh = true
-        case .running(let snapshot):
-            self.snapshot = snapshot
-            reorder.state.observe(snapshot)
-            endHold()
-            _ = observeSeen()
-            Notifier.shared.update(host: host, snapshotOwner: self)
-            if pendingNewSession, snapshot.error == nil {
-                pendingNewSession = false
-                newSession()
-            }
-        default: break
+    private func makeEditor(_ perform: @escaping @Sendable (KoSchema.Edit) throws -> KoSchema.Edited) {
+        let editor = LayoutEditor(perform: perform)
+        editor.onFailure = { [weak self] in self?.sidebar.list.failed($0) }
+        editor.onSettled = { [weak self] in
+            self?.session?.editsSettled()
+            self?.settleOrder { $0.settled(); return nil }
         }
-        if case .running(let snapshot) = status {
-            let projected = reorder.state.project(snapshot)
-            sidebar.list.update(.running(projected))
-            updateTabs(projected)
-        } else { sidebar.list.update(status) }
-        ready()
-        if case .running = status { menuChanged(); snapshotReceived() }
+        self.editor = editor
+    }
+
+    private func resetSession() {
+        let view = makeSessionView()
+        session?.close()
+        session = view
+        received = Received()
+        sidebar.list.offline("Connecting…")
+        present(view)
+    }
+
+    // The model is read once a main-queue turn, after the events of that turn.
+    private func receiveSoon() {
+        guard !receiving else { return }
+        receiving = true
+        let generation = generation
+        DispatchQueue.main.async { [weak self] in
+            guard let self, receiving else { return }
+            receiving = false
+            guard accepts(generation), case .connected(let client) = link else { return }
+            receive(client)
+        }
+    }
+
+    private func receive(_ client: KoClient) {
+        let ko: KoModel
+        do { ko = try client.model() } catch {
+            return note("unreadable model: \(error)")
+        }
+        if ko.selection.session == nil, !selectedFirst, let first = ko.layout.layout.sessions.first {
+            selectedFirst = true
+            try? client.select(KO_SELECT_SESSION, first.id)
+        }
+        let model = SessionModel(ko)
+        received = Received(ko: ko, model: model, snapshot: Snapshot(model: ko))
+        if pendingNewSession {
+            pendingNewSession = false
+            newSession()
+        }
+        session?.update(model.session.flatMap { ko.layout.layout.session($0) }?.windows ?? [],
+                        alive: Set(ko.layout.layout.windows.map(\.id)), selected: ko.selection.pane)
+        guard let snapshot else {
+            sidebar.list.offline("No sessions")
+            if let session { present(session) } else { updateTabs() }
+            return down("No sessions", "", button: "Start")
+        }
+        adopt(snapshot)
+    }
+
+    private func adopt(_ snapshot: Snapshot) {
+        reorder.state.observe(snapshot)
+        // The core reads a pane's status after its listing: a live pane without one is not known yet,
+        // and the notification baseline waits for it.
+        if koModel?.panes.contains(where: { $0.dead == nil && $0.status == nil }) != true {
+            Notifier.shared.update(host: host, snapshotOwner: self)
+        }
+        let projected = reorder.state.project(snapshot)
+        sidebar.list.update(projected)
+        if let session { present(session, projected: projected) } else { updateTabs(projected) }
+        menuChanged()
+        snapshotReceived()
     }
 
     #if KIDO_VISUAL || KIDO_STRESS
-    var stressState: (SessionModel, SessionModel, SessionView?, Connection?, Snapshot?) {
-        if case .connected(let connection, _, _) = link { return (model, navigationModel, session, connection, snapshot) }
-        return (model, navigationModel, session, nil, snapshot)
+    var stressState: (SessionModel, SessionModel, SessionView?, Snapshot?) { (model, navigationModel, session, snapshot) }
+    var stressModel: KoModel? { koModel }
+    func stressEdit(_ edit: KoSchema.Edit) { editor?.submit(edit) }
+    func stressDelete(_ pane: PaneID) {
+        guard case .connected(let client) = link else { return }
+        DispatchQueue.global(qos: .utility).async { try? client.delete(KO_DELETE_PANE, pane) }
     }
     #endif
 
     private func updateTabs(_ projected: Snapshot?? = nil) {
-        let next = model.navigation(projected ?? snapshot.map(reorder.state.project), activePanes: session?.windows.compactMapValues(\.active) ?? [:], seen: seen.value)
+        let next = model.navigation(projected ?? snapshot.map(reorder.state.project), activePanes: session?.windows.compactMapValues(\.active) ?? [:])
         if sidebar.tabs.entries != next.tabs { sidebar.tabs.entries = next.tabs }
         sidebar.tabs.scope = next.model.session.map { .init(session: $0, generation: generation, instance: snapshot?.serverInstance) }
         if navigationModel != next.model {
@@ -838,17 +878,10 @@ private class AlertEscape: NSView {
         }
     }
 
-    private func changed(_ view: SessionView, _ model: SessionModel) {
-        controlModel = model
-        present(view)
-    }
-
-    private func present(_ view: SessionView) {
-        if let held, !holds(held) { self.held = nil }
-        let model = model
+    private func present(_ view: SessionView, projected: Snapshot?? = nil) {
         window.title = host == .local ? model.title : "\(identity ?? host.label) / \(model.title)"
-        if model.session == nil { snapshot = nil }
-        updateTabs()
+        if model.session == nil { received.snapshot = nil }
+        updateTabs(projected)
         if view.superview == nil {
             session?.removeFromSuperview()
             session = view
@@ -857,18 +890,12 @@ private class AlertEscape: NSView {
         }
         view.show(model.window)
         if focusTarget != nil { focusSelected() }
-        ready()
-    }
-
-    private func closed(_ view: SessionView, _ exit: Exit, cause: Connection.CloseCause? = nil) {
-        guard view === session else { return }
-        switch exit {
-        case .detached(let detached):
-            invalidate(cause: nil)
-            link = .down
-            down("Detached from the kido server", detached, button: "Reconnect")
-        case .ended(let reason): failed(generation, .transport(reason ?? "Control connection ended"), cause: cause)
+        let shown = shownPanes
+        if shown != presentedPanes {
+            presentedPanes = shown
+            DispatchQueue.main.async { [weak self] in self.map { Notifier.shared.observeSeen(host: $0.host) } }
         }
+        ready()
     }
 
     var canPrompt: Bool {
@@ -902,69 +929,127 @@ private class AlertEscape: NSView {
         if let session = currentSession { confirmClose(.session(session.id), name: session.name) }
     }
 
-    private func sessionCommand(_ command: Command, done: @escaping (String?) -> Void, then: @escaping ([String]) -> Void) {
-        send([command]) { replies in
-            guard let reply = replies?.first else { return done("The control client is not ready.") }
-            switch reply {
-            case .failure(let lines): done(lines.joined(separator: "\n"))
-            case .success(let lines): then(lines)
+    // An edit that makes a session or a window selects it.
+    private func create(_ edit: KoSchema.Edit, done: ((String?) -> Void)? = nil) {
+        guard let editor, case .connected(let client) = link else {
+            done?("\(host.label) is not connected.")
+            return sidebar.list.failed("\(host.label) is not connected.")
+        }
+        let generation = generation
+        editor.submit(edit) { [weak self] result in
+            guard let self, accepts(generation) else { return }
+            switch result {
+            case .success(let edited):
+                done?(nil)
+                try? client.select(made: edited.created)
+            case .failure(let error): done?("\(error)")
             }
         }
     }
 
     func renameSession(_ id: SessionID, _ name: String, done: @escaping (String?) -> Void) {
-        sessionCommand(Command("rename-session", "-t", id, "--", name), done: done) { _ in done(nil) }
+        create(.renameSession(KoSchema.EditRenameSession(name: name, session: id)), done: done)
     }
 
     func createSession(_ name: String, done: @escaping (String?) -> Void) {
-        guard let session = currentSession else { return done("no such session") }
-        sessionCommand(Command("display-message", "-p", "-t", "\(session.id):", "#{pane_current_path}"), done: done) { [weak self] lines in
-            guard let self else { return done("The control client is not ready.") }
-            let cwd = lines.joined(separator: "\n")
-            guard !cwd.isEmpty else { return done("no such session") }
-            sessionCommand(Command("new-session", "-d", "-P", "-F", "#{session_id}", "-s", name, "-c", cwd), done: done) { [weak self] lines in
-                guard let self else { return done("The control client is not ready.") }
-                guard let id = lines.first.flatMap(SessionID.init) else { return done("The server did not return a session id.") }
-                perform(.selectSession(id))
-                done(nil)
-            }
+        guard let koModel else { return create(.addSession(.init(name: name, new: .init(cwd: NSHomeDirectory()))), done: done) }
+        create(koModel.newSession(name), done: done)
+    }
+
+    @objc func newSession() {
+        let names = Set(koModel?.layout.layout.sessions.map(\.name) ?? [])
+        let name = (1...).lazy.map { $0 == 1 ? "session" : "session \($0)" }.first { !names.contains($0) }!
+        createSession(name) { [weak self] error in if let error { self?.sidebar.list.failed(error) } }
+    }
+
+    func newWindow(in target: SessionID? = nil) {
+        guard let id = target ?? model.session, let edit = koModel?.newWindow(in: id, after: model.window) else { return }
+        create(edit)
+    }
+
+    enum PromptRequest: Equatable {
+        case resolve(from: PaneID)
+        case send(from: PaneID, to: PaneID, text: String)
+    }
+    enum PromptReply: Equatable {
+        case candidates([KoSchema.Candidate])
+        case sent
+    }
+
+    // A prompt call of the core, off the main queue; the result arrives on main while this
+    // connection lasts.
+    func prompt(_ request: PromptRequest, done: @escaping @MainActor (Result<PromptReply, Error>) -> Void) {
+        #if KIDO_VISUAL
+        if let testPrompt { return testPrompt(request, done) }
+        #endif
+        guard case .connected(let client) = link else { return done(.failure(KoError(code: KO_ERR_NO_SERVER, detail: "\(host.label) is not connected"))) }
+        let generation = generation
+        Task {
+            let result = await Task.detached { () -> Result<PromptReply, Error> in
+                Result {
+                    switch request {
+                    case .resolve(let caller): return PromptReply.candidates(try client.promptCandidates(from: caller))
+                    case .send(let caller, let target, let text):
+                        try client.prompt(from: caller, to: target, text)
+                        return PromptReply.sent
+                    }
+                }
+            }.value
+            if accepts(generation) { done(result) }
         }
     }
 
-    @objc func newSession() { perform(.newSession) }
+    private func paneCommand(_ command: PaneCommand, _ pane: PaneID) {
+        switch command {
+        case .close:
+            let name = sidebarRows(snapshot).first { $0.target?.pane == pane }?.title ?? pane.description
+            return confirmClose(.pane(pane), name: name)
+        case .window(let step): return selectWindow(step)
+        case .newWindow: return newWindow()
+        default: break
+        }
+        guard let window = koModel?.layout.layout.locate(pane)?.window,
+              let action = command.action(pane, in: window, cwd: koModel?.pane(pane)?.cwd, cell: session?.cell ?? .zero) else { return }
+        switch action {
+        case .edit(let edit):
+            editor?.submit(edit) { [weak self] result in
+                guard case .success(let edited) = result, let pane = selectedPane(by: edit, edited) else { return }
+                self?.session?.selectPane(pane)
+            }
+        case .select(let target): session?.selectPane(target)
+        }
+    }
 
     func selectWindow(_ step: WindowStep) {
-        if let request = navigationModel.select(step) { perform(request) }
+        if let navigation = navigationModel.select(step) { perform(navigation) }
     }
 
     func supersedeIntent() {
-        guard !completing else { return }
         intent += 1
         focusTarget = nil
-        endHold()
+        awaitingSelect = false
     }
 
     func confirmClose(_ target: CloseTarget, name: String) {
         guard preparedAlert == nil, window.attachedSheet == nil else { return }
         supersedeIntent()
         let generation = generation
-        let command: Command = switch target {
-        case .pane(let id): Command("kill-pane", "-t", id)
-        case .window(let id): Command("kill-window", "-t", id)
-        case .session(let id): Command("kill-session", "-t", id)
-        }
         let scope = closeScope(snapshot, target: target)
-        let commands = scope.descendants.map { Command("kill-window", "-t", $0) } + [command]
         let close = { [weak self] in
-            guard let self, accepts(generation) else { return }
-            send(commands) { [weak self] replies in
-                guard let failure = replies?.compactMap({ reply -> String? in
-                    if case .failure(let lines) = reply { return lines.joined(separator: "\n") }; return nil
-                }).first, let self else { return }
-                let alert = NSAlert()
-                alert.messageText = "Pane command failed"
-                alert.informativeText = failure
-                prepareAlert(alert) { _ in }
+            guard let self, accepts(generation), case .connected(let client) = link else { return }
+            let delete: @Sendable () throws -> Void = switch target {
+            case .pane(let id): { try client.delete(KO_DELETE_PANE, id) }
+            case .window(let id): { try client.delete(KO_DELETE_WINDOW, id) }
+            case .session(let id): { try client.delete(KO_DELETE_SESSION, id) }
+            }
+            Task { [weak self] in
+                do { try await Task.detached { try delete() }.value } catch {
+                    guard let self else { return }
+                    let alert = NSAlert()
+                    alert.messageText = "Pane command failed"
+                    alert.informativeText = "\(error)"
+                    prepareAlert(alert) { _ in }
+                }
             }
         }
         guard scope.running else { close(); return }
@@ -988,74 +1073,67 @@ private class AlertEscape: NSView {
         window.makeKeyAndOrderFront(nil)
     }
 
-    func perform(_ request: RPCRequest) {
-        if case .jump(let target) = request {
+    // Every window of every session in the sidebar's order, nested windows included.
+    private func adjacentWindow(next: Bool) -> WindowID? {
+        guard let snapshot, let koModel, let current = model.window else { return nil }
+        let windows = koModel.layout.layout.sessions.flatMap { session in
+            sidebarWindows(snapshot, session: session.id, surviving: Set(session.windows.map(\.id))).tree
+        }
+        guard windows.count > 1, let at = windows.firstIndex(of: current) else { return nil }
+        return windows[(at + (next ? 1 : windows.count - 1)) % windows.count]
+    }
+
+    func perform(_ navigation: Navigation) {
+        if case .jump(let target) = navigation {
             guard activating != intent else { return }
             sidebar.list.select(target)
         }
         supersedeIntent()
-        let revision = intent
-        if case .jump = request { activating = revision }
         sidebar.list.failed(nil)
-        let done: @MainActor @Sendable (Result<RPCEvent.Reply.Value, Failure>) -> Void = { [weak self] result in
-            guard let self else { return }
-            if activating == revision { activating = nil }
-            guard intent == revision else { return }
-            completing = true
-            defer { completing = false }
-            switch result {
-            case .failure(let error): sidebar.list.failed(error.message)
-            case .success(.jumped(let target)), .success(.selected(let target)), .success(.created(let target)):
-                focusTarget = .pane(target)
-                sidebar.list.leave()
-            case .success(.switched(let target)):
-                guard let target else { return }
-                focusTarget = .window(target.session, target.window)
-                sidebar.list.leave()
-            case .success(.released): sidebar.list.leave()
-            default: break
+        if case .releaseSideFocus = navigation { return sidebar.list.leave() }
+        guard case .connected(let client) = link else { return sidebar.list.failed("\(host.label) is not connected.") }
+        do {
+            switch navigation {
+            case .jump(let target):
+                activating = intent
+                awaitingSelect = true
+                // A pane that the zoom hides is shown: the jump ends the zoom.
+                if let window = koModel?.layout.layout.window(target.window),
+                   let zoom = window.zoom, zoom != target.pane {
+                    editor?.submit(.zoom(KoSchema.EditZoom(pane: nil, window: window.id)))
+                }
+                try client.select(KO_SELECT_PANE, target.pane)
+            case .selectWindow(_, let window):
+                awaitingSelect = true
+                try client.select(KO_SELECT_WINDOW, window)
+            case .selectSession(let session):
+                awaitingSelect = true
+                try client.select(KO_SELECT_SESSION, session)
+            case .switchSession(let next):
+                awaitingSelect = true
+                try client.switchOver(KO_OVER_SESSION, next ? KO_DIRECTION_NEXT : KO_DIRECTION_PREVIOUS)
+            case .switchWindow(let next):
+                guard let window = adjacentWindow(next: next) else { return }
+                awaitingSelect = true
+                try client.select(KO_SELECT_WINDOW, window)
+            case .releaseSideFocus: break
             }
+        } catch {
+            awaitingSelect = false
+            activating = nil
+            sidebar.list.failed("\(error)")
         }
-        self.request(request, done)
     }
 
     private func submit(_ move: ReorderMove) {
-        guard let snapshot, let token = reorder.state.submit(move, to: snapshot) else {
-            let reason = snapshot == nil ? "no snapshot" : reorder.state.pending != nil ? "another reorder is pending"
-                : snapshot?.reordered(move) == nil ? "stale ids" : "no change"
-            return debug("reorder \(move) not sent: \(reason)")
-        }
-        debug("reorder \(move) sent")
+        guard let snapshot, let editor, let edit = snapshot.reorderEdit(move), let token = reorder.state.submit(move, to: snapshot) else { return }
         supersedeIntent()
-        if case .window(let session, _, _, _) = move, session == model.session, let current = model.window {
-            held = Hold(token: token, intent: intent, generation: generation, instance: snapshot.serverInstance, session: session, window: current)
-        }
         sidebar.list.failed(nil)
         showOrder()
-        DispatchQueue.main.asyncAfter(deadline: .now() + (host == .local ? Self.reorderTimeout : 5)) { [weak self] in
-            self?.endHold(token)
-            if self?.reorder.state.pending?.token == token { debug("reorder \(move) timed out") }
-            self?.settleOrder { $0.expire(token) }
-        }
-        request(.reorder(move)) { [weak self] result in
-            // The reply travels on the feed; the move's own window-change notifications travel on the control
-            // stream. A control round trip after the reply proves those notifications were consumed.
-            if let self, let held, held.token == token, holds(held) { send([Command("display-message", "-p", "")]) { [weak self] _ in self?.endHold(token) } }
-            let error: String? = if case .failure(let error) = result { error.message } else { nil }
-            debug("reorder \(move) reply \(error ?? "reordered")")
+        editor.submit(edit) { [weak self] result in
+            let error: String? = if case .failure(let error) = result { failureText(error) } else { nil }
             self?.settleOrder { $0.complete(token, error: error) }
         }
-    }
-
-    private func holds(_ held: Hold) -> Bool {
-        held.intent == intent && held.generation == generation && held.instance == snapshot?.serverInstance
-            && controlModel.session == held.session && controlModel.windows.contains { $0.id == held.window }
-    }
-
-    private func endHold(_ token: Int? = nil) {
-        guard let held, held.token == token || !holds(held) else { return }
-        self.held = nil
-        if let session { present(session) }
     }
 
     private func settleOrder(_ change: (inout ReorderState) -> String?) {
@@ -1087,39 +1165,18 @@ private class AlertEscape: NSView {
     }
 
 
-    private func openTransport(_ token: Int) async throws(Failure) {
-        guard case .remote(let destination) = host else { return }
-        let transport = try SSH(destination)
-        ssh = transport
-        ended.enter()
-        transport.ended.notify(queue: .global()) { @Sendable [ended] in ended.leave() }
-        #if KIDO_VISUAL || KIDO_STRESS
-        if let testRemoteEnvironment { transport.testEnvironment(testRemoteEnvironment) }
-        transport.testConfiguration = testSSHConfiguration
-        #endif
-        let resolved = try await transport.start(drain: drain) { [weak self] error in self?.failed(token, error) }
-        guard accepts(token) else { return }
-        identity = resolved
-    }
-
     private func ready() {
-        guard initial != nil, model.session != nil, case .running? = feed?.status else { return }
-        initial?.cancel()
-        initial = nil
+        guard welcomed, model.session != nil, case .connected = link else { return }
         banner.isHidden = true
     }
 
     func accepts(_ token: Int) -> Bool {
-        guard alive, generation == token else { return false }
-        switch link {
-        case .connected:
-            return host == .local || ssh?.master?.process.isRunning == true
-        default: return true
-        }
+        alive && generation == token
     }
 
-    private func invalidate(cause: Connection.CloseCause?, keepingSnapshot: Bool = false) {
+    private func invalidate(keepingSnapshot: Bool = false) {
         focusTarget = nil
+        awaitingSelect = false
         generation += 1
         clipboardPermission = [:]
         uploadPermission = .ask
@@ -1133,11 +1190,9 @@ private class AlertEscape: NSView {
         task = nil
         initial?.cancel()
         initial = nil
-        if case .redialing(let work, _, _) = link { work.cancel() }
         reorder.state.reset()
-        feed?.stop()
-        feed = nil
-        if case .connected(let connection, _, _) = link { connection.close(cause: cause, keepingView: keepingSnapshot) }
+        editor = nil
+        if case .connected(let client) = link { client.close() }
         if !keepingSnapshot {
             session?.close()
             session = nil
@@ -1148,25 +1203,21 @@ private class AlertEscape: NSView {
         ssh?.stop(after: closing)
         ssh = nil
         if !keepingSnapshot {
-            controlModel = SessionModel()
-            snapshot = nil
+            received = Received()
             updateTabs()
         }
         window.title = host == .local ? "Local" : identity ?? host.label
     }
 
-    func close(cause: Connection.CloseCause = .windowClosed) {
-        if alive {
-            if case .connected(let connection, _, _) = link { connection.recordCloseCause(cause) }
-            window.close()
-        }
+    func close() {
+        if alive { window.close() }
     }
 
     func windowWillClose(_ notification: Notification) {
         guard alive else { return }
         alive = false
         Notifier.shared.forget(self)
-        invalidate(cause: .windowClosed)
+        invalidate()
         link = .down
         sidebar.dismissFloating()
         window.delegate = nil
@@ -1182,15 +1233,24 @@ private class AlertEscape: NSView {
     var navigation: SessionModel { navigationModel }
 
     #if KIDO_VISUAL || KIDO_STRESS
-    var testRemoteEnvironment: [String: String]?
-    var testSSHConfiguration: String?
-    var testIdentity: String { identity ?? host.label }
-    var testEndpoint: Endpoint?
+    var testServerDir: String?
     var testUploadBase: String?
     var testBanner: Banner { banner }
     var testSession: SessionView? { session }
-    var testConnection: Connection? { if case .connected(let connection, _, _) = link { connection } else { nil } }
+    var testModel: KoModel? { koModel }
+    var testPrompt: ((PromptRequest, @escaping @MainActor (Result<PromptReply, Error>) -> Void) -> Void)?
+    // An editor whose answers the test gives, for an owner without a server.
+    func testEditor(_ perform: @escaping @Sendable (KoSchema.Edit) throws -> KoSchema.Edited) { makeEditor(perform) }
+    var testEditing: Bool { editor?.holding == true }
+    var testClient: KoClient? { if case .connected(let client) = link { client } else { nil } }
     var testAttended: Bool? { didSet { attend() } }
-    func testReceive(_ snapshot: Snapshot) { received(.running(snapshot)) }
+    func testReceive(_ snapshot: Snapshot) {
+        if receiving, case .connected(let client) = link {
+            receiving = false
+            receive(client)
+        }
+        received.snapshot = snapshot
+        adopt(snapshot)
+    }
     #endif
 }

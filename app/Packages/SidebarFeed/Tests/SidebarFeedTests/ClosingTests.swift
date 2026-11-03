@@ -1,11 +1,11 @@
 import Foundation
 import Testing
-import TmuxControl
+import KoModel
 @testable import SidebarFeed
 
 @Test(arguments: [false, true]) func closingPaneIncludesDescendants(_ waitingState: Bool) throws {
-    let child = pane(2, lifecycle: agent(waitingState ? waiting() : working()))
-    let snapshot: Snapshot = try decode(snapshotObject([pane(0, children: [pane(1, children: [child])]), pane(3)]))
+    let child = pane(2, lifecycle: agent(waitingState ? waiting() : working()), mark: waitingState ? .waiting : .running)
+    let snapshot: Snapshot = makeSnapshot([pane(0, children: [pane(1, children: [child])]), pane(3)])
     #expect(closeScope(snapshot, target: .pane(PaneID(number: 0))).running)
     #expect(closeScope(snapshot, target: .pane(PaneID(number: 1))).running)
     #expect(!closeScope(snapshot, target: .pane(PaneID(number: 3))).running)
@@ -13,9 +13,8 @@ import TmuxControl
 }
 
 @Test func closingWindowIncludesEveryPaneAndDescendants() throws {
-    let group: [String: Any] = ["kind": "window", "id": "@0", "window": "@0", "name": "group", "children":
-        [pane(0), pane(1, window: 0, children: [pane(2, lifecycle: agent(waiting()))])]]
-    let snapshot: Snapshot = try decode(snapshotObject([group, pane(3)]))
+    let window = group(0, [pane(0), pane(1, window: 0, children: [pane(2, lifecycle: agent(waiting()), mark: .waiting)])])
+    let snapshot = makeSnapshot([window, pane(3)])
     #expect(closeScope(snapshot, target: .window(WindowID(number: 0))).running)
     #expect(!closeScope(snapshot, target: .pane(PaneID(number: 0))).running)
     #expect(!closeScope(snapshot, target: .window(WindowID(number: 3))).running)
@@ -23,11 +22,10 @@ import TmuxControl
 }
 
 @Test func closingIncludesProgramRecordsAndQuietOutcomes() throws {
-    for state in ["working", "blocked", "done", "error", "idle"] {
-        let record: [String: Any] = ["id": "child", "app": "pi", "state": state]
-        let snapshot: Snapshot = try decode(snapshotObject([pane(0, records: [record])]))
-        #expect(closeScope(snapshot, target: .pane(PaneID(number: 0))).running == ["working", "blocked"].contains(state))
-        #expect(closeScope(snapshot, target: .window(WindowID(number: 0))).running == ["working", "blocked"].contains(state))
+    for state in [ProgramStatus.Record.State.working, .blocked, .done, .error, .idle] {
+        let snapshot = makeSnapshot([pane(0, records: [record("child", state, app: "pi")])])
+        #expect(closeScope(snapshot, target: .pane(PaneID(number: 0))).running == [.working, .blocked].contains(state))
+        #expect(closeScope(snapshot, target: .window(WindowID(number: 0))).running == [.working, .blocked].contains(state))
     }
     #expect(!closeScope(nil, target: .pane(PaneID(number: 0))).running)
 }

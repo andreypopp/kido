@@ -1,57 +1,47 @@
 #!/usr/bin/env python3
+"""An off-screen Kido connected to a private ko server quits on SIGTERM and leaves no child behind."""
+import json
 import os
 import pathlib
-import shlex
 import signal
 import subprocess
 import sys
 import tempfile
 import time
 
-def read_pids(path):
-    return [int(pid) for pid in path.read_text().split()] if path.exists() else []
-
-
 bundle = pathlib.Path(sys.argv[1]).resolve()
-kido = bundle / "Contents/Resources/kido/bin/kido"
-tmux = bundle / "Contents/Resources/kido/bin/kido-tmux"
-with tempfile.TemporaryDirectory(prefix="kido-quit-", dir="/tmp") as scratch:
+ko = bundle / "Contents/Resources/ko/bin/ko"
+with tempfile.TemporaryDirectory(prefix="ko-quit-", dir="/tmp") as scratch:
     root = pathlib.Path(scratch)
-    env = {k: v for k, v in os.environ.items() if not k.startswith("KIDO_") and k not in ("TMUX", "TMUX_PANE")}
+    server = root / "server"
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("KIDO_", "KO_")) and k not in ("TMUX", "TMUX_PANE")}
     for name in ("home", "xdg", "config"):
         (root / name).mkdir(mode=0o700)
-    env.update(HOME=str(root / "home"), XDG_STATE_HOME=str(root / "xdg"), XDG_CONFIG_HOME=str(root / "config"), KIDO_APP_BACKGROUND="1", KIDO_APP_SERVER=str(root / "server"), KIDO_APP_QUIT_VERIFY="1")
-    control = root / "control"
-    feed = root / "feed"
-    control.write_text(f'#!/bin/sh\necho $$ >> {shlex.quote(str(root / "control.pid"))}\nexec {shlex.quote(str(tmux))} "$@"\n')
-    feed.write_text('#!/usr/bin/python3\nimport os, signal, sys, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
-                    + f'open({str(root / "feed.pid")!r}, "w").write(str(os.getpid()))\n'
-                    + 'print(\'{"hello":{"protocol":"6.2"}}\', flush=True)\n'
-                    + 'print(\'{"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"server_instance":{"started_at":1780000000,"pid":4242},"sessions":[]}\', flush=True)\n'
-                    + 'while True: time.sleep(60)\n')
-    control.chmod(0o700)
-    feed.chmod(0o700)
-    env.update(KIDO_APP_TMUX=str(control), KIDO_APP_FEED=str(feed), KIDO_APP_QUIT_CHILDREN="|".join(str(root / (name + ".pid")) for name in ("control", "feed")))
-    subprocess.run([str(kido), "server", "--server", str(root / "server")], env=env, timeout=15, capture_output=True, check=True)
-    helpers = []
+    env.update(HOME=str(root / "home"), XDG_STATE_HOME=str(root / "xdg"), XDG_CONFIG_HOME=str(root / "config"),
+               KIDO_APP_BACKGROUND="1", KIDO_APP_SERVER=str(server), KIDO_APP_QUIT_VERIFY="1")
+
+    def api(*arguments):
+        return subprocess.run([str(ko), "api", *arguments, "--server", str(server)], env=env, timeout=10, capture_output=True, text=True)
+
+    started = subprocess.Popen([str(ko), "server", "--server", str(server)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     log = root / "stderr"
-    with log.open("w") as output:
-        process = subprocess.Popen([str(bundle / "Contents/MacOS/Kido")], env=env, stdout=output, stderr=output)
-        try:
+    process = None
+    try:
+        deadline = time.monotonic() + 15
+        while api("/version").returncode:
+            if time.monotonic() > deadline or started.poll() is not None:
+                raise RuntimeError("the private ko server did not start")
+            time.sleep(0.05)
+        (root / "layout.json").write_text(json.dumps({"revision": 0, "layout": {"sessions": [{"name": "main", "windows": [{"name": "w", "tree": {"pane": {"new": {}}}}]}]}}))
+        if api("-X", "PUT", "--input", str(root / "layout.json"), "/layout").returncode:
+            raise RuntimeError("the private ko server refused the layout")
+        with log.open("w") as output:
+            process = subprocess.Popen([str(bundle / "Contents/MacOS/Kido")], env=env, stdout=output, stderr=output)
             deadline = time.monotonic() + 20
-            while time.monotonic() < deadline and process.poll() is None:
-                if ("quit verification ready, offscreen=true" in log.read_text()
-                        and len(read_pids(root / "control.pid")) == 2 and len(read_pids(root / "feed.pid")) == 1):
-                    break
+            while "quit verification ready, offscreen=true" not in log.read_text():
+                if time.monotonic() > deadline or process.poll() is not None:
+                    raise RuntimeError("the off-screen app did not connect: " + log.read_text())
                 time.sleep(0.05)
-            else:
-                raise RuntimeError("offscreen quit check did not connect both control clients and feed: " + log.read_text())
-            helpers = read_pids(root / "control.pid") + read_pids(root / "feed.pid")
-            for pid in helpers:
-                os.kill(pid, signal.SIGSTOP)
-            states = subprocess.check_output(["/bin/ps", "-p", ",".join(map(str, helpers)), "-o", "stat="], text=True).splitlines()
-            if len(states) != len(helpers) or not all(state.strip().startswith("T") for state in states):
-                raise RuntimeError(f"helpers did not reach SIGSTOP: {states}")
             process.send_signal(signal.SIGTERM)
             try:
                 status = process.wait(timeout=8)
@@ -60,27 +50,12 @@ with tempfile.TemporaryDirectory(prefix="kido-quit-", dir="/tmp") as scratch:
                 raise RuntimeError("quit hung after the main-dispatch signal handler:\n" + sample.stdout + sample.stderr)
             if status != 0:
                 raise RuntimeError(f"quit exit {status}: " + log.read_text())
-            alive = []
-            for pid in helpers:
-                try:
-                    os.kill(pid, 0)
-                    alive.append(pid)
-                except ProcessLookupError:
-                    pass
-            if alive or "quit drain completed, unreaped=[]" not in log.read_text():
-                raise RuntimeError(f"quit replied before reaping SIGSTOP'd control/feed children: {alive}; " + log.read_text())
-            print("PASS: offscreen connected-owner quit reaps both SIGSTOP'd control clients and the feed child")
-        finally:
-            if not helpers:
-                helpers = [pid for path in root.glob("*.pid") for pid in read_pids(path)]
-            if process.poll() is None:
-                process.kill()
-                process.wait(timeout=5)
-            for pid in helpers:
-                command = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True, timeout=3).stdout
-                if str(root) in command:
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-            subprocess.run([str(tmux), "-u", "-S", str(root / "server/socket"), "kill-session", "-t", "main"], env=env, timeout=10, capture_output=True)
+            if "quit drain completed, children=[]" not in log.read_text():
+                raise RuntimeError("quit left a child process: " + log.read_text())
+            print("PASS: an off-screen connected owner quits and leaves no child process")
+    finally:
+        if process and process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        subprocess.run([str(ko), "kill-server", "--server", str(server)], env=env, timeout=10, capture_output=True)
+        started.wait(timeout=10)

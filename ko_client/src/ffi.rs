@@ -1,11 +1,15 @@
 #![allow(unsafe_code)]
 
+mod calls;
 mod engine;
 mod view;
 
+pub use calls::*;
+
 use std::cell::Cell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::num::NonZeroU16;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -13,20 +17,15 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 
 use ko_pane_wire::frame::{self, History};
-use ko_server::api::Route;
-use ko_server::ids::{ClientId, PaneId, VarName, WindowId};
+use ko_server::ids::{ClientId, PaneId, WindowId};
 use ko_server::protocol::{
-    self, ClientRequest, Direction, Hello, Input, Over, Paste, Revision, Row, RunEvent, Selection,
-    SendPrompt, Show, Snapshot, Switch, Text,
+    self, ClientRequest, Direction, ErrorKind, Hello, Input, Over, Paste, Selection, Switch, Text,
+    Version,
 };
 use ko_sys::event::Wake;
-use serde::Serialize;
-use serde_json::Value;
 
-use crate::layout::{self, Document};
-use crate::model::{Fetched, Item, Model, Notice};
-use crate::status::{self, Mark};
-use crate::wire;
+use crate::launch::{self, PATIENCE};
+use crate::model::{Fetched, Model, Notice};
 use view::{Restored, View};
 
 unsafe extern "C" {
@@ -53,6 +52,28 @@ pub enum Code {
     Protocol = 4,
     Closed = 5,
     Conflict = 6,
+    NotFound = 7,
+    Invalid = 8,
+    Refused = 9,
+    Gone = 10,
+    Unknown = 11,
+    ProtocolMismatch = 12,
+    VtMismatch = 13,
+}
+
+impl Code {
+    fn of(kind: &ErrorKind) -> Code {
+        match kind {
+            ErrorKind::Invalid => Code::Invalid,
+            ErrorKind::Refused => Code::Refused,
+            ErrorKind::Gone => Code::Gone,
+            ErrorKind::Io => Code::Io,
+            ErrorKind::PreconditionFailed => Code::Conflict,
+            ErrorKind::Missing => Code::NotFound,
+            ErrorKind::ProtocolMismatch(_) => Code::ProtocolMismatch,
+            ErrorKind::VtMismatch(_) => Code::VtMismatch,
+        }
+    }
 }
 
 #[repr(C)]
@@ -99,6 +120,22 @@ pub struct Alert {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
+pub struct VersionInfo {
+    pub protocol: *const c_char,
+    pub vt: *const c_char,
+    pub build: *const c_char,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Mismatch {
+    pub code: Code,
+    pub server: VersionInfo,
+    pub own: VersionInfo,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct ViewRestored {
     pub view: *mut c_void,
     pub generation: u64,
@@ -121,6 +158,7 @@ const EVENT_SELECTED: c_int = 5;
 const EVENT_ALERT: c_int = 6;
 const EVENT_VIEW_RESTORED: c_int = 7;
 const EVENT_VIEW_CLOSED: c_int = 8;
+const EVENT_MISMATCH: c_int = 9;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -132,6 +170,7 @@ pub union Body {
     pub alert: Alert,
     pub view_restored: ViewRestored,
     pub view_closed: ViewClosed,
+    pub mismatch: Mismatch,
 }
 
 #[repr(C)]
@@ -164,6 +203,7 @@ pub struct HelloIn {
     pub rows: u16,
     pub focused: bool,
     pub sizes_windows: bool,
+    pub name: *const c_char,
 }
 
 #[repr(C)]
@@ -247,6 +287,7 @@ enum Posted {
     Selected(Selection),
     Alert(Notice),
     Failed(Code, CString),
+    Mismatch(Code, Version),
     View(Arc<View>, ViewEvent),
 }
 
@@ -453,6 +494,22 @@ extern "C" fn deliver(context: *mut c_void) {
                 },
             },
         }),
+        Posted::Mismatch(code, server) => {
+            let (server, own) = (
+                VersionTexts::of(server),
+                VersionTexts::of(&protocol::version()),
+            );
+            call(Event {
+                kind: EVENT_MISMATCH,
+                body: Body {
+                    mismatch: Mismatch {
+                        code: *code,
+                        server: server.info(),
+                        own: own.info(),
+                    },
+                },
+            });
+        }
         Posted::View(view, feed) => {
             if view.closed.load(Ordering::SeqCst) {
                 return;
@@ -482,51 +539,6 @@ extern "C" fn deliver(context: *mut c_void) {
             }
         }
     }
-}
-
-#[derive(Serialize)]
-struct PaneJson<'a> {
-    id: PaneId,
-    label: String,
-    mark: Mark,
-    #[serde(flatten)]
-    row: &'a Row,
-    vars: &'a BTreeMap<VarName, Value>,
-}
-
-#[derive(Serialize)]
-struct ModelJson<'a> {
-    client: String,
-    instance: String,
-    now: u64,
-    selection: &'a Selection,
-    layout: &'a Snapshot,
-    panes: Vec<PaneJson<'a>>,
-    runs: Vec<&'a RunEvent>,
-    outline: Vec<Item>,
-}
-
-fn model_json(model: &Model) -> Result<Vec<u8>, serde_json::Error> {
-    serde_json::to_vec(&ModelJson {
-        client: model.client.to_string(),
-        instance: model.instance.to_string(),
-        now: model.server_now(),
-        selection: &model.selection,
-        layout: &model.layout,
-        panes: model
-            .panes
-            .iter()
-            .map(|pane| PaneJson {
-                id: pane.row.id,
-                label: status::title(pane),
-                mark: model.mark(pane),
-                row: &pane.row,
-                vars: &pane.vars,
-            })
-            .collect(),
-        runs: model.runs().collect(),
-        outline: model.outline(),
-    })
 }
 
 fn count(length: usize) -> u32 {
@@ -599,44 +611,6 @@ fn bytes_of<'a>(data: *const u8, len: usize) -> Option<&'a [u8]> {
 
 // Runs a request on the calling thread. Close sets the cancel wake, which ends
 // the request at once, and then waits for the call to leave.
-fn call(
-    client: &Client,
-    out: *mut Buffer,
-    work: impl FnOnce(&Path, Option<ClientId>, &Wake) -> Result<Vec<u8>, (Code, Vec<u8>)>,
-) -> Code {
-    empty(out);
-    let shared = Arc::clone(&client.shared);
-    {
-        let mut calls = locked(&shared.calls);
-        if shared.cancel.is_set() {
-            return Code::Closed;
-        }
-        *calls += 1;
-    }
-    let id = *locked(&shared.client);
-    let result = work(&shared.socket, id, &shared.cancel);
-    *locked(&shared.calls) -= 1;
-    shared.idle.notify_all();
-    match result {
-        Ok(bytes) => {
-            hand_over(out, bytes);
-            Code::Ok
-        }
-        Err((code, bytes)) => {
-            hand_over(out, bytes);
-            if shared.cancel.is_set() {
-                Code::Closed
-            } else {
-                code
-            }
-        }
-    }
-}
-
-fn io_failure(message: String) -> (Code, Vec<u8>) {
-    (Code::Io, message.into_bytes())
-}
-
 fn request(client: &Client, request: ClientRequest) -> Code {
     if !client.shared.up.load(Ordering::SeqCst) {
         return Code::Closed;
@@ -680,10 +654,19 @@ pub unsafe extern "C" fn ko_client_connect(
         rows: 24,
         focused: false,
         sizes_windows: false,
+        name: std::ptr::null(),
     });
     let (Some(cols), Some(rows)) = (frame::Dim::new(hello.cols), frame::Dim::new(hello.rows))
     else {
         return Code::Argument;
+    };
+    let name = if hello.name.is_null() {
+        "app".to_owned()
+    } else {
+        let Some(name) = text_of(hello.name) else {
+            return Code::Argument;
+        };
+        name.to_owned()
     };
     let (Ok(cancel), Ok(wake)) = (Wake::new(), Wake::new()) else {
         return Code::Io;
@@ -700,7 +683,7 @@ pub unsafe extern "C" fn ko_client_connect(
         commands: Mutex::new(VecDeque::new()),
         hello: Mutex::new(Hello {
             kind: protocol::ClientKind::App,
-            name: "ko_client".to_owned(),
+            name,
             selection: Selection::default(),
             focused: hello.focused,
             size: protocol::Size(frame::Size {
@@ -730,6 +713,93 @@ pub unsafe extern "C" fn ko_client_connect(
     };
     // SAFETY: out is non-null and writable by contract.
     unsafe { *out = Box::into_raw(Box::new(Client { shared, worker })) };
+    Code::Ok
+}
+
+/// # Safety
+///
+/// `dir` and `executable` are NUL-terminated strings. `socket` is writable for
+/// one `ko_buffer`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ko_client_launch(
+    dir: *const c_char,
+    executable: *const c_char,
+    socket: *mut Buffer,
+) -> Code {
+    let (Some(dir), Some(executable)) = (text_of(dir), text_of(executable)) else {
+        return Code::Argument;
+    };
+    if socket.is_null() {
+        return Code::Argument;
+    }
+    match launch::attach(Path::new(dir), Path::new(executable), PATIENCE) {
+        Ok((path, _stream)) => {
+            hand_over(socket, path.as_os_str().as_bytes().to_vec());
+            Code::Ok
+        }
+        Err(message) => {
+            hand_over(socket, message.into_bytes());
+            Code::Io
+        }
+    }
+}
+
+/// # Safety
+///
+/// `dir` is a NUL-terminated string. `error` is null or writable for one
+/// `ko_buffer`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ko_client_stop_server(dir: *const c_char, error: *mut Buffer) -> Code {
+    let Some(dir) = text_of(dir) else {
+        return Code::Argument;
+    };
+    empty(error);
+    match launch::stop(Path::new(dir), PATIENCE) {
+        Ok(()) => Code::Ok,
+        Err(message) => {
+            hand_over(error, message.into_bytes());
+            Code::Io
+        }
+    }
+}
+
+struct VersionTexts {
+    protocol: CString,
+    vt: CString,
+    build: CString,
+}
+
+impl VersionTexts {
+    fn of(version: &Version) -> VersionTexts {
+        VersionTexts {
+            protocol: string(&version.protocol),
+            vt: string(&version.vt),
+            build: string(&version.build),
+        }
+    }
+
+    // Valid while `self` lives.
+    fn info(&self) -> VersionInfo {
+        VersionInfo {
+            protocol: self.protocol.as_ptr(),
+            vt: self.vt.as_ptr(),
+            build: self.build.as_ptr(),
+        }
+    }
+}
+
+/// # Safety
+///
+/// `out` is null or writable for one `ko_version`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ko_client_version(out: *mut VersionInfo) -> Code {
+    static OWN: std::sync::OnceLock<VersionTexts> = std::sync::OnceLock::new();
+    if out.is_null() {
+        return Code::Argument;
+    }
+    let own = OWN.get_or_init(|| VersionTexts::of(&protocol::version()));
+    // SAFETY: out is non-null and writable by contract.
+    unsafe { *out = own.info() };
     Code::Ok
 }
 
@@ -775,7 +845,7 @@ pub unsafe extern "C" fn ko_client_model(client_: *const Client, out: *mut Buffe
     let Some(model) = model.as_ref() else {
         return Code::Closed;
     };
-    match model_json(model) {
+    match serde_json::to_vec(&model.json()) {
         Ok(json) => {
             hand_over(out, json);
             Code::Ok
@@ -818,6 +888,15 @@ pub unsafe extern "C" fn ko_client_select(
     let Some(selection) = selection else {
         return Code::Argument;
     };
+    if let Some(pane) = selection.pane {
+        let known = match locked(&client.shared.model).as_ref() {
+            Some(model) => model.layout.layout.locate(pane).is_some(),
+            None => return Code::Closed,
+        };
+        if !known {
+            return Code::NotFound;
+        }
+    }
     locked(&client.shared.hello).selection = selection;
     request(client, ClientRequest::Select(selection))
 }
@@ -848,7 +927,13 @@ pub unsafe extern "C" fn ko_client_switch(
 ///
 /// `client` is a live handle.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ko_client_size(client_: *const Client, cols: u16, rows: u16) -> Code {
+pub unsafe extern "C" fn ko_client_size(
+    client_: *const Client,
+    cols: u16,
+    rows: u16,
+    cell_width: u16,
+    cell_height: u16,
+) -> Code {
     let (Some(client), Some(cols), Some(rows)) = (
         client(client_),
         frame::Dim::new(cols),
@@ -856,10 +941,15 @@ pub unsafe extern "C" fn ko_client_size(client_: *const Client, cols: u16, rows:
     ) else {
         return Code::Argument;
     };
+    let cell_px = match (NonZeroU16::new(cell_width), NonZeroU16::new(cell_height)) {
+        (Some(width), Some(height)) => Some(frame::CellPx { width, height }),
+        (None, None) => None,
+        _ => return Code::Argument,
+    };
     let size = frame::Size {
         cols,
         rows,
-        cell_px: None,
+        cell_px,
     };
     locked(&client.shared.hello).size = protocol::Size(size);
     request(client, ClientRequest::Size(protocol::Size(size)))
@@ -904,112 +994,14 @@ pub unsafe extern "C" fn ko_client_observe(
     let Some(ids) = ids else {
         return Code::Argument;
     };
-    match locked(&client.shared.model).as_mut() {
-        Some(model) => {
-            model.observe(&ids, attending);
-            Code::Ok
-        }
-        None => Code::Closed,
+    let changed = match locked(&client.shared.model).as_mut() {
+        Some(model) => model.observe(&ids, attending),
+        None => return Code::Closed,
+    };
+    if changed && !client.shared.model_pending.swap(true, Ordering::SeqCst) {
+        post(&client.shared, Posted::Model);
     }
-}
-
-/// # Safety
-///
-/// `client` is a live handle. `document` is readable for `len` bytes. `out`
-/// is writable for one `ko_buffer`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ko_client_put_layout(
-    client_: *const Client,
-    document: *const u8,
-    len: usize,
-    out: *mut Buffer,
-) -> Code {
-    let (Some(client), Some(bytes)) = (client(client_), bytes_of(document, len)) else {
-        return Code::Argument;
-    };
-    if out.is_null() {
-        return Code::Argument;
-    }
-    let document = match protocol::decode::<Document>(bytes) {
-        Ok(document) if document.revision.is_some() => document,
-        _ => {
-            empty(out);
-            return Code::Argument;
-        }
-    };
-    call(client, out, |socket, id, cancel| {
-        let revision = document.revision.unwrap_or(Revision::FIRST);
-        match layout::send(socket, id, revision, document.layout, Some(cancel)) {
-            Ok(Ok(snapshot)) => Ok(protocol::json(&snapshot).into_bytes()),
-            Ok(Err(newer)) => Err((Code::Conflict, protocol::json(&newer).into_bytes())),
-            Err(message) => Err(io_failure(message)),
-        }
-    })
-}
-
-/// # Safety
-///
-/// `client` is a live handle. `out` is writable for one `ko_buffer`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ko_client_runs(
-    client_: *const Client,
-    show: c_int,
-    out: *mut Buffer,
-) -> Code {
-    let Some(client) = client(client_).filter(|_| !out.is_null()) else {
-        return Code::Argument;
-    };
-    let show = match show {
-        1 => Show::Live,
-        2 => Show::Present,
-        3 => Show::All,
-        _ => return Code::Argument,
-    };
-    call(client, out, |socket, id, cancel| {
-        wire::request(
-            socket,
-            id,
-            &Route::ListRuns { show, parent: None },
-            b"",
-            Some(cancel),
-        )
-        .map_err(io_failure)
-    })
-}
-
-/// # Safety
-///
-/// `client` is a live handle. `target` is a NUL-terminated string. `text` is
-/// readable for `len` bytes. `out` is writable for one `ko_buffer`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ko_client_prompt(
-    client_: *const Client,
-    target: *const c_char,
-    text: *const u8,
-    len: usize,
-    out: *mut Buffer,
-) -> Code {
-    let (Some(client), Some(target), Some(text)) = (
-        client(client_).filter(|_| !out.is_null()),
-        text_of(target).and_then(|target| target.parse().ok()),
-        bytes_of(text, len).and_then(|text| std::str::from_utf8(text).ok()),
-    ) else {
-        return Code::Argument;
-    };
-    let body = protocol::json(&SendPrompt {
-        target,
-        text: text.to_owned(),
-    });
-    call(client, out, |socket, id, cancel| {
-        wire::request(
-            socket,
-            id,
-            &Route::SendPrompt {},
-            body.as_bytes(),
-            Some(cancel),
-        )
-        .map_err(io_failure)
-    })
+    Code::Ok
 }
 
 /// # Safety
@@ -1209,6 +1201,13 @@ pub extern "C" fn ko_code_message(code: c_int) -> *const c_char {
         c if c == Code::Conflict as c_int => {
             c"the layout changed: the buffer holds the newer document"
         }
+        c if c == Code::NotFound as c_int => c"not found",
+        c if c == Code::Invalid as c_int => c"the server refused the request as invalid",
+        c if c == Code::Refused as c_int => c"the server refused the request",
+        c if c == Code::Gone as c_int => c"the target is gone",
+        c if c == Code::Unknown as c_int => c"the server answered with an unknown error",
+        c if c == Code::ProtocolMismatch as c_int => c"the server speaks another protocol major",
+        c if c == Code::VtMismatch as c_int => c"the server has another terminal revision",
         _ => c"unknown code",
     };
     message.as_ptr()
@@ -1224,9 +1223,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use ko_server::protocol::{
-        CommandExit, Listing, Live, PaneStatus, Phase, ProgramStatus, Shell,
+        CommandExit, Listing, Live, PaneStatus, Phase, ProgramStatus, Row, Shell,
     };
-    use serde_json::json;
+    use serde_json::{Value, json};
     use tungstenite::Message;
     use tungstenite::handshake::derive_accept_key;
     use tungstenite::protocol::{Role, WebSocket};
@@ -1274,6 +1273,7 @@ mod tests {
         Selected(Option<String>, Option<String>, Option<String>),
         Alert(c_int, String, Option<String>, Option<String>),
         Failed(Code, String),
+        Mismatch(Code, String, String),
         Restored(u64, Restored),
         Closed(Code, String),
     }
@@ -1341,6 +1341,14 @@ mod tests {
                         owned(alert.pane),
                         optional(alert.title),
                         optional(alert.body),
+                    )
+                }
+                EVENT_MISMATCH => {
+                    let mismatch = event.body.mismatch;
+                    Seen::Mismatch(
+                        mismatch.code,
+                        owned(mismatch.server.build),
+                        owned(mismatch.own.build),
                     )
                 }
                 EVENT_VIEW_RESTORED => {
@@ -1548,6 +1556,14 @@ mod tests {
                 .collect()
         }
 
+        fn heads(&self, method: &str, target: &str) -> Vec<String> {
+            locked(&self.requests)
+                .iter()
+                .filter(|request| request.method == method && request.target == target)
+                .map(|request| request.head.clone())
+                .collect()
+        }
+
         fn bodies(&self, method: &str, target: &str) -> Vec<String> {
             locked(&self.requests)
                 .iter()
@@ -1658,6 +1674,7 @@ mod tests {
             script(&mut socket, hello);
         } else {
             match plain(&request) {
+                Some((0, _)) => {}
                 Some((status, body)) => {
                     let _ = write!(
                         stream,
@@ -1990,7 +2007,7 @@ mod tests {
         assert_eq!(
             hello,
             json!({
-                "type": "hello", "kind": "app", "name": "ko_client", "focused": false,
+                "type": "hello", "kind": "app", "name": "app", "focused": false,
                 "size": {"cols": 80, "rows": 24}, "ignore_size": true
             }),
             "a client without a hello struct neither sizes windows nor has focus"
@@ -2575,11 +2592,10 @@ mod tests {
             model["outline"],
             json!([
                 {"type": "session", "id": "session_1", "name": "s"},
-                {"type": "pane", "id": "pane_1", "depth": 0},
-                {"type": "pane", "id": "pane_2", "depth": 0},
+                {"type": "pane", "id": "pane_1", "window": "window_1", "depth": 0},
+                {"type": "pane", "id": "pane_2", "window": "window_1", "depth": 0},
             ])
         );
-        assert_eq!(model["client"], "client_7");
         assert_eq!(
             model["layout"]["layout"]["sessions"][0]["windows"][0]["cols"],
             80
@@ -2598,7 +2614,13 @@ mod tests {
             "failed",
             "a pane that is not shown stays unseen"
         );
+        assert!(fixture.quiet().is_empty(), "no mark changed");
         assert_eq!(observe(&[c"pane_1", c"pane_2"], true), Code::Ok);
+        assert_eq!(
+            fixture.quiet(),
+            [Seen::Model],
+            "a changed mark is a model event"
+        );
         assert_eq!(marks(client).0[0].2, "none");
         assert_eq!(observe(&[c"nonsense"], true), Code::Argument);
         // SAFETY: the client is live; a null list with count 0 is allowed.
@@ -2671,6 +2693,7 @@ mod tests {
                 rows: 28,
                 focused: false,
                 sizes_windows: true,
+                name: c"window_7".as_ptr(),
             }),
         );
         let hello: Value = serde_json::from_str(&hellos.recv_timeout(WAIT).unwrap()).unwrap();
@@ -2678,6 +2701,7 @@ mod tests {
             (
                 &hello["type"],
                 &hello["kind"],
+                &hello["name"],
                 &hello["focused"],
                 &hello["ignore_size"],
                 &hello["size"]
@@ -2685,6 +2709,7 @@ mod tests {
             (
                 &json!("hello"),
                 &json!("app"),
+                &json!("window_7"),
                 &json!(false),
                 &json!(false),
                 &json!({"cols": 90, "rows": 28})
@@ -2707,7 +2732,7 @@ mod tests {
                 Code::Ok
             );
             assert_eq!(ko_client_switch(client, 2, 1), Code::Ok);
-            assert_eq!(ko_client_size(client, 100, 30), Code::Ok);
+            assert_eq!(ko_client_size(client, 100, 30, 9, 18), Code::Ok);
             assert_eq!(ko_client_focus(client, true), Code::Ok);
             assert_eq!(
                 ko_client_select(client, SELECT_PANE, c"nonsense".as_ptr()),
@@ -2718,7 +2743,12 @@ mod tests {
                 Code::Argument
             );
             assert_eq!(ko_client_switch(client, 3, 1), Code::Argument);
-            assert_eq!(ko_client_size(client, 0, 30), Code::Argument);
+            assert_eq!(ko_client_size(client, 0, 30, 0, 0), Code::Argument);
+            assert_eq!(ko_client_size(client, 100, 30, 9, 0), Code::Argument);
+            assert_eq!(
+                ko_client_select(client, SELECT_PANE, c"pane_9".as_ptr()),
+                Code::NotFound
+            );
         }
         let received: Vec<String> = (0..6)
             .map(|_| requests.recv_timeout(WAIT).unwrap())
@@ -2730,7 +2760,7 @@ mod tests {
                 r#"{"type":"select","window":"window_1"}"#,
                 r#"{"type":"select","session":"session_1"}"#,
                 r#"{"type":"switch","over":"window","direction":"next"}"#,
-                r#"{"type":"size","cols":100,"rows":30}"#,
+                r#"{"type":"size","cols":100,"rows":30,"cell_px":{"width":9,"height":18}}"#,
                 r#"{"type":"focused","focused":true}"#,
             ]
         );
@@ -2747,7 +2777,7 @@ mod tests {
                 json!("session_1"),
                 json!(true),
                 json!(false),
-                json!({"cols": 100, "rows": 30})
+                json!({"cols": 100, "rows": 30, "cell_px": {"width": 9, "height": 18}})
             )
         );
         close(client);
@@ -2755,6 +2785,81 @@ mod tests {
 
     fn snapshot_json(revision: u64) -> String {
         format!(r#"{{"revision":{revision},"layout":{{"sessions":[]}}}}"#)
+    }
+
+    #[test]
+    fn an_edit_is_applied_in_the_core_and_applied_again_to_the_newer_document_after_a_conflict() {
+        let newer = r#"{"revision":5,"layout":{"sessions":[{"id":"session_1","name":"s","vars":{},"windows":[{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"focus":"pane_1","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"pane":"pane_2","cols":39,"rows":24}]},"floats":[]},{"id":"window_7","name":"added","vars":{},"cols":80,"rows":24,"focus":"pane_8","tree":{"pane":"pane_8","cols":80,"rows":24},"floats":[]}]}]}}"#;
+        let server = serve(
+            "edit",
+            client_script(|socket, _| {
+                welcomed(socket);
+                wait_for_hangup(socket);
+            })
+            .plain(move |request| {
+                if request.method != "PUT" {
+                    return answer_empty(request);
+                }
+                let body = String::from_utf8_lossy(&request.body).into_owned();
+                if body.contains(r#""name":"boom""#) {
+                    Some((400, r#"{"kind":"invalid","message":"no"}"#.to_owned()))
+                } else if body.starts_with(r#"{"revision":5,"#) {
+                    Some((200, snapshot_json(6)))
+                } else {
+                    Some((409, newer.to_owned()))
+                }
+            }),
+        );
+        let fixture = Fixture::new();
+        let client = fixture.connect(&server);
+        assert!(matches!(fixture.next(), Seen::Welcome(..)));
+        assert!(matches!(fixture.next(), Seen::Layout(0, ..)));
+        let edit = |text: &str| {
+            let mut out = empty_buffer();
+            // SAFETY: the client is live, the edit is readable and out is writable.
+            let code = unsafe { ko_client_edit(client, text.as_ptr(), text.len(), &mut out) };
+            (code, out)
+        };
+
+        let (code, mut out) =
+            edit(r#"{"type":"rename_window","window":"window_1","name":"edited"}"#);
+        assert_eq!(code, Code::Ok);
+        assert_eq!(
+            serde_json::from_str::<Value>(&contents(&out)).unwrap(),
+            json!({"snapshot": {"revision": 6, "layout": {"sessions": []}}})
+        );
+        freed_once(&mut out);
+        let bodies = server.bodies("PUT", "/layout");
+        assert_eq!(bodies.len(), 2, "one conflict, one converged put");
+        assert!(bodies[0].starts_with(r#"{"revision":0,"#) && !bodies[0].contains("added"));
+        assert!(bodies[1].starts_with(r#"{"revision":5,"#) && bodies[1].contains("added"));
+        assert!(
+            bodies
+                .iter()
+                .all(|body| body.contains(r#""name":"edited""#))
+        );
+
+        let (code, mut out) = edit(r#"{"type":"rename_window","window":"window_9","name":"x"}"#);
+        assert_eq!(
+            (code, contents(&out).as_str()),
+            (Code::NotFound, "window_9")
+        );
+        freed_once(&mut out);
+        let (code, mut out) =
+            edit(r#"{"type":"dock","pane":"pane_1","target":"pane_1","edge":"left"}"#);
+        assert_eq!(code, Code::Invalid);
+        freed_once(&mut out);
+        let (code, mut out) = edit(r#"{"type":"rename_window","window":"window_1","name":"boom"}"#);
+        assert_eq!((code, contents(&out).as_str()), (Code::Invalid, "no"));
+        freed_once(&mut out);
+        let (code, _) = edit(r#"{"type":"nonsense"}"#);
+        assert_eq!(code, Code::Argument);
+        assert_eq!(
+            server.bodies("PUT", "/layout").len(),
+            3,
+            "only the boom edit was sent"
+        );
+        close(client);
     }
 
     #[test]
@@ -2837,8 +2942,7 @@ mod tests {
         );
 
         let (code, mut out) = put(&edit(9));
-        assert_eq!(code, Code::Io);
-        assert!(contents(&out).contains("400"), "{}", contents(&out));
+        assert_eq!((code, contents(&out).as_str()), (Code::Invalid, "no"));
         freed_once(&mut out);
         let (code, out) = put(r#"{"layout":{"sessions":[]}}"#);
         assert_eq!(
@@ -2871,10 +2975,24 @@ mod tests {
             .plain(move |request| match request.target.as_str() {
                 "/runs?show=present" if !listing.load(Ordering::SeqCst) => answer_empty(request),
                 "/prompt" if request.body.windows(5).any(|window| window == b"boom!") => Some((
-                    502,
-                    r#"{"kind":"unknown","message":"maybe sent"}"#.to_owned(),
+                    500,
+                    r#"{"kind":"io","message":"the paste was not written"}"#.to_owned(),
+                )),
+                "/prompt" if request.body.windows(5).any(|window| window == b"lost!") => {
+                    Some((0, String::new()))
+                }
+                "/prompt" if request.body.windows(5).any(|window| window == b"nope!") => Some((
+                    409,
+                    r#"{"kind":"refused","message":"the agent is busy"}"#.to_owned(),
+                )),
+                "/prompt" if request.body.windows(5).any(|window| window == b"nada!") => Some((
+                    400,
+                    r#"{"kind":"invalid","message":"pane_3 is not a candidate"}"#.to_owned(),
                 )),
                 "/prompt" => Some((200, r#"{"via":"paste"}"#.to_owned())),
+                target if target.starts_with("/prompt/resolve") => {
+                    Some((200, format!(r#"[{{"asked":"{target}"}}]"#)))
+                }
                 target if target.starts_with("/runs") => {
                     Some((200, format!(r#"[{{"shown":"{target}"}}]"#)))
                 }
@@ -2901,10 +3019,37 @@ mod tests {
             let mut out = empty_buffer();
             // SAFETY: the client is live, the strings are valid and out is writable.
             let code = unsafe {
-                ko_client_prompt(client, target.as_ptr(), text.as_ptr(), text.len(), &mut out)
+                ko_client_prompt(
+                    client,
+                    c"pane_1".as_ptr(),
+                    target.as_ptr(),
+                    text.as_ptr(),
+                    text.len(),
+                    &mut out,
+                )
             };
             (code, out)
         };
+        for (window_only, expected) in [
+            (false, "/prompt/resolve"),
+            (true, "/prompt/resolve?window=true"),
+        ] {
+            let mut out = empty_buffer();
+            // SAFETY: the client is live, the caller is NUL-terminated and out is writable.
+            let code = unsafe {
+                ko_client_prompt_resolve(client, c"pane_1".as_ptr(), window_only, &mut out)
+            };
+            assert_eq!(
+                (code, contents(&out)),
+                (Code::Ok, format!(r#"[{{"asked":"{expected}"}}]"#))
+            );
+            freed_once(&mut out);
+        }
+        // SAFETY: the client is live; the caller is no pane id.
+        let code = unsafe {
+            ko_client_prompt_resolve(client, c"window_1".as_ptr(), false, &mut empty_buffer())
+        };
+        assert_eq!(code, Code::Argument);
         let (code, mut out) = prompt(c"pane_3", "hi\nthere \u{e9}".as_bytes());
         assert_eq!(
             (code, contents(&out).as_str()),
@@ -2915,16 +3060,161 @@ mod tests {
             server.bodies("POST", "/prompt"),
             [r#"{"target":"pane_3","text":"hi\nthere é"}"#]
         );
+        assert!(
+            server
+                .heads("POST", "/prompt")
+                .iter()
+                .chain(&server.heads("GET", "/prompt/resolve"))
+                .all(|head| head.contains("Ko-Pane: pane_1")),
+            "the prompt routes name their caller"
+        );
         let (code, mut out) = prompt(c"pane_3", b"boom!");
-        assert_eq!(code, Code::Io);
-        assert!(contents(&out).contains("502") && contents(&out).contains("maybe sent"));
+        assert_eq!(
+            (code, contents(&out).as_str()),
+            (Code::Unknown, "the paste was not written"),
+            "a send that failed partway may have reached the agent"
+        );
         freed_once(&mut out);
+        let (code, mut out) = prompt(c"pane_3", b"lost!");
+        assert_eq!(
+            code,
+            Code::Unknown,
+            "a send with no answer may have reached the agent"
+        );
+        freed_once(&mut out);
+        for (text, expected, message) in [
+            (&b"nope!"[..], Code::Refused, "the agent is busy"),
+            (&b"nada!"[..], Code::Invalid, "pane_3 is not a candidate"),
+        ] {
+            let (code, mut out) = prompt(c"pane_3", text);
+            assert_eq!((code, contents(&out).as_str()), (expected, message));
+            freed_once(&mut out);
+        }
         assert_eq!(prompt(c"pane_3", &[0xff, 0xfe]).0, Code::Argument);
         assert_eq!(prompt(c"nonsense", b"x").0, Code::Argument);
         // SAFETY: the client is live; the show value is refused.
         let code = unsafe { ko_client_runs(client, 4, &mut empty_buffer()) };
         assert_eq!(code, Code::Argument);
+        for (kind, id, expected) in [
+            (1, c"pane_4", Code::Ok),
+            (2, c"window_2", Code::Ok),
+            (3, c"session_9", Code::Ok),
+            (1, c"window_2", Code::Argument),
+            (4, c"pane_4", Code::Argument),
+        ] {
+            let mut out = empty_buffer();
+            // SAFETY: the client is live, the string is valid and out is writable.
+            let code = unsafe { ko_client_delete(client, kind, id.as_ptr(), &mut out) };
+            assert_eq!(code, expected);
+            if expected == Code::Ok {
+                freed_once(&mut out);
+            }
+        }
+        assert_eq!(
+            server.targets("DELETE"),
+            ["/panes/pane_4", "/windows/window_2", "/sessions/session_9"]
+        );
         close(client);
+    }
+
+    #[test]
+    fn another_protocol_or_terminal_revision_reports_one_mismatch_and_no_retry() {
+        let ours = protocol::version();
+        let versions = [
+            (
+                Code::ProtocolMismatch,
+                format!("2.0\",\"vt\":\"{}", ours.vt),
+            ),
+            (
+                Code::VtMismatch,
+                format!("{}\",\"vt\":\"abc", ours.protocol),
+            ),
+        ];
+        for (code, protocol_and_vt) in versions {
+            let body = format!(r#"{{"protocol":"{protocol_and_vt}","build":"theirs"}}"#);
+            let server = serve(
+                "version-mismatch",
+                Routes {
+                    clients: Vec::new(),
+                    views: Vec::new(),
+                    plain: Arc::new(move |request| match request.target.as_str() {
+                        "/version" => Some((200, body.clone())),
+                        _ => Some((426, String::new())),
+                    }),
+                    stall: None,
+                },
+            );
+            let fixture = Fixture::new();
+            let client = fixture.connect(&server);
+            assert_eq!(
+                fixture.next(),
+                Seen::Mismatch(code, "theirs".to_owned(), ours.build.clone())
+            );
+            assert_eq!(fixture.quiet_for(Duration::from_millis(500)), []);
+            assert_eq!(
+                server
+                    .targets("GET")
+                    .iter()
+                    .filter(|target| *target == "/version")
+                    .count(),
+                1
+            );
+            let mut out = empty_buffer();
+            // SAFETY: the client is live and out is writable.
+            assert_eq!(unsafe { ko_client_model(client, &mut out) }, Code::Closed);
+            close(client);
+        }
+    }
+
+    #[test]
+    fn the_core_launches_stops_and_names_its_version() {
+        let dir = PathBuf::from(format!("/tmp/ko-ffi-launch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let c_dir = CString::new(dir.as_os_str().as_bytes()).unwrap();
+        let mut socket = empty_buffer();
+        // SAFETY: the strings are valid and socket is writable.
+        let code =
+            unsafe { ko_client_launch(c_dir.as_ptr(), c"/nonexistent/ko".as_ptr(), &mut socket) };
+        assert_eq!(code, Code::Io, "no executable, no server");
+        assert!(!contents(&socket).is_empty());
+        freed_once(&mut socket);
+
+        let listener = UnixListener::bind(dir.join("socket")).unwrap();
+        // SAFETY: as above.
+        let code =
+            unsafe { ko_client_launch(c_dir.as_ptr(), c"/nonexistent/ko".as_ptr(), &mut socket) };
+        assert_eq!(
+            (code, contents(&socket)),
+            (Code::Ok, dir.join("socket").display().to_string()),
+            "a live server is reused"
+        );
+        freed_once(&mut socket);
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut error = empty_buffer();
+        // SAFETY: the string is valid and error is writable.
+        let code = unsafe { ko_client_stop_server(c_dir.as_ptr(), &mut error) };
+        assert_eq!(code, Code::Io, "no directory, no server");
+        assert!(!contents(&error).is_empty());
+        freed_once(&mut error);
+
+        let mut version = VersionInfo {
+            protocol: std::ptr::null(),
+            vt: std::ptr::null(),
+            build: std::ptr::null(),
+        };
+        // SAFETY: version is writable.
+        assert_eq!(unsafe { ko_client_version(&mut version) }, Code::Ok);
+        let ours = protocol::version();
+        assert_eq!(
+            (
+                owned(version.protocol),
+                owned(version.vt),
+                owned(version.build)
+            ),
+            (ours.protocol, ours.vt, ours.build)
+        );
     }
 
     #[test]
@@ -2962,6 +3252,7 @@ mod tests {
             rows: 24,
             focused: false,
             sizes_windows: false,
+            name: std::ptr::null(),
         };
         // SAFETY: the socket, the queue and the hello are valid, and out is writable.
         let code = unsafe {
@@ -2987,7 +3278,7 @@ mod tests {
                 Code::Argument
             );
             assert_eq!(ko_client_switch(std::ptr::null(), 1, 1), Code::Argument);
-            assert_eq!(ko_client_size(std::ptr::null(), 1, 1), Code::Argument);
+            assert_eq!(ko_client_size(std::ptr::null(), 1, 1, 0, 0), Code::Argument);
             assert_eq!(ko_client_focus(std::ptr::null(), true), Code::Argument);
             assert_eq!(
                 ko_client_observe(std::ptr::null(), std::ptr::null(), 0, true),
@@ -3002,9 +3293,19 @@ mod tests {
                 Code::Argument
             );
             assert_eq!(
+                ko_client_prompt_resolve(
+                    std::ptr::null(),
+                    c"pane_1".as_ptr(),
+                    false,
+                    &mut empty_buffer()
+                ),
+                Code::Argument
+            );
+            assert_eq!(
                 ko_client_prompt(
                     std::ptr::null(),
                     c"pane_1".as_ptr(),
+                    c"pane_2".as_ptr(),
                     b"x".as_ptr(),
                     1,
                     &mut empty_buffer()
@@ -3095,7 +3396,7 @@ mod tests {
 
     #[test]
     fn every_code_has_its_own_static_message() {
-        let messages: Vec<String> = (0..=7)
+        let messages: Vec<String> = (0..=14)
             .map(|code| {
                 // SAFETY: the function returns a static NUL-terminated string.
                 unsafe { CStr::from_ptr(ko_code_message(code)) }
@@ -3106,7 +3407,7 @@ mod tests {
         let mut unique = messages.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((unique.len(), messages[7].as_str()), (8, "unknown code"));
+        assert_eq!((unique.len(), messages[14].as_str()), (15, "unknown code"));
     }
 
     fn logged(log: &Arc<Mutex<Vec<String>>>, line: impl Into<String>) {
@@ -3853,6 +4154,7 @@ mod tests {
                 ko_client_prompt(
                     blocked.0,
                     c"pane_1".as_ptr(),
+                    c"pane_2".as_ptr(),
                     text.as_ptr(),
                     text.len(),
                     &mut out,

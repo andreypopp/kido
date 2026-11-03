@@ -1,5 +1,6 @@
 import AppKit
 import TmuxControl
+import KoModel
 
 final class FocusEdge: NSView {
     var floating = false { didSet { if floating != oldValue { needsDisplay = true } } }

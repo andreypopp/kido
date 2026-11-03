@@ -452,7 +452,13 @@ routes! {
         errors: { 412 },
     }
     /// Starts a run in a new window.
-    StartRun { method: POST, path: /runs, body: StartRun, reply: Started }
+    StartRun {
+        method: POST,
+        path: /runs,
+        body: StartRun,
+        caller: optional,
+        reply: Started,
+    }
     /// The runs of the server.
     ListRuns {
         method: GET,
@@ -490,10 +496,17 @@ routes! {
         method: GET,
         path: /prompt/resolve,
         query: { window: Option<WindowOnly> },
+        caller: required,
         reply: Vec<Candidate>,
     }
     /// Sends a prompt to an agent.
-    SendPrompt { method: POST, path: /prompt, body: SendPrompt, reply: Sent }
+    SendPrompt {
+        method: POST,
+        path: /prompt,
+        body: SendPrompt,
+        caller: required,
+        reply: Sent,
+    }
 }
 
 #[cfg(test)]

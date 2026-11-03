@@ -1,4 +1,5 @@
 import AppKit
+import KoModel
 import TmuxControl
 
 private extension NSCursor.FrameResizePosition {
@@ -23,7 +24,6 @@ final class WindowView: NSView {
     #else
     static let toolbarFadeDuration: TimeInterval = 0.15
     #endif
-    private weak var connection: Connection?
     private let runtime: GhosttyRuntime
     var windowID: WindowID?
     var name = ""
@@ -37,13 +37,13 @@ final class WindowView: NSView {
             if active != oldValue, let session, !session.updating { session.onPaneChange() }
         }
     }
-    var stale = false
     private var needsReconcile = true
     private var dividers: [NSBox] = []
     private var backings: [PaneID: NSBox] = [:]
     private var freeFrames: [PaneID: CGRect] = [:]
     private var placed: PaneLayout?
-    private enum FloatFrame { case dragging(PaneID, CGRect), settling(PaneID, CGRect) }
+    // A float's frame from the drag, held after the release until the layout shows the edit.
+    private enum FloatFrame { case dragging(PaneID, CGRect), held(PaneID, CGRect) }
     private var liveFrame: FloatFrame?
     private let floatingRadius: CGFloat = 10
     private var toolbar: PaneToolbar?
@@ -54,9 +54,8 @@ final class WindowView: NSView {
         }
     }
 
-    init(runtime: GhosttyRuntime, connection: Connection?) {
+    init(runtime: GhosttyRuntime) {
         self.runtime = runtime
-        self.connection = connection
         super.init(frame: .zero)
         autoresizingMask = [.width, .height]
         wantsLayer = true
@@ -93,7 +92,7 @@ final class WindowView: NSView {
             let chrome = subviews.compactMap { $0 as? PaneChrome }.first { $0.pane == pane.pane }
             let grid = CGRect(x: pane.frame.minX, y: pane.frame.minY + pane.renderInsets.top,
                               width: pane.frame.width, height: pane.frame.height - pane.renderInsets.top - pane.renderInsets.bottom)
-            lines.append("pane \(pane.pane) tmux=\(geometry.map { String(describing: $0.geometry) } ?? "-") layer=\(geometry.map { String(describing: $0.layer) } ?? "-") grid=\(rect(grid)) content=\(rect(pane.frame)) chrome=\(chrome.map { rect($0.frame) } ?? "-") \(pane.visualState)")
+            lines.append("\(pane.pane) cells=\(geometry.map { String(describing: $0.geometry) } ?? "-") layer=\(geometry.map { String(describing: $0.layer) } ?? "-") grid=\(rect(grid)) content=\(rect(pane.frame)) chrome=\(chrome.map { rect($0.frame) } ?? "-") \(pane.visualState)")
         }
         lines += dividers.map { "divider=\(rect($0.frame))" }.sorted()
         lines += backings.filter { pair in shown?.visible.root.panes.contains { $0.id == pair.key && $0.layer != .tiled } == true }
@@ -106,12 +105,8 @@ final class WindowView: NSView {
 
     var hot: Bool { !panes.isEmpty }
 
-    private var dividerDrain: UUID?
     var defersRestore: Bool {
-        if dividerDrain != nil { return true }
-        if paneDrag != nil || drag != nil || liveFrame != nil { return true }
-        if case .sending = delivery { return true }
-        return window?.inLiveResize == true
+        paneDrag != nil || drag != nil || liveFrame != nil || session?.editing() == true || window?.inLiveResize == true
     }
 
     func updateBackground() {
@@ -152,7 +147,10 @@ final class WindowView: NSView {
         }
         if let placement { validateFrames(placement) }
         else { freeFrames = [:] }
-        active = visible.root.panes.first { $0.focus == .active }?.id ?? active
+        // Hiding the focused pane gives the focus to the next key view, so read it before the relayout.
+        let paneFocused = (window?.firstResponder as? PaneView).map { focused in panes.contains { $0 === focused } } == true
+        let previous = active
+        active = visible.root.panes.first { $0.active }?.id ?? active
         guard hot else { return }
         let known = panes.contains { $0.pane == active }
         if changed {
@@ -160,25 +158,20 @@ final class WindowView: NSView {
                 installGrids(panes)
             } else { relayout() }
         }
-        if !known { focusActive(force: false) }
+        if paneFocused && active != previous { focusActive(force: true) }
+        else if !known { focusActive(force: false) }
     }
 
-    func present(_ synced: DispatchGroup) -> (created: Int, resynced: Int) {
+    func present() -> Int {
         let created = !hot
-        relayout(created ? synced : nil)
+        relayout()
         sizeClient()
-        let resync = !created ? panes.filter { stale || $0.resizeDirty } : []
-        stale = false
-        for pane in resync {
-            synced.enter()
-            connection?.sync(pane.pane) { synced.leave() }
-        }
-        return (created ? panes.count : 0, resync.count)
+        return created ? panes.count : 0
     }
 
     func evict() {
         endDrag()
-        panes.forEach { $0.dispose(); connection?.detach($0) }
+        panes.forEach { $0.dispose() }
         toolbar?.removeFromSuperview()
         toolbar = nil
         dividers = []
@@ -209,7 +202,7 @@ final class WindowView: NSView {
         removeFromSuperview()
     }
 
-    private func relayout(_ synced: DispatchGroup? = nil) {
+    private func relayout() {
         guard let shown else { return }
         guard !isHidden else { return }
         if !needsReconcile { place(resizeGrids: true); return }
@@ -219,13 +212,16 @@ final class WindowView: NSView {
         for pane in layoutPanes {
             views[pane.id] = existing[pane.id] ?? makePane(pane.id)
         }
-        for (id, gone) in existing where views[id] == nil { gone.dispose(); connection?.detach(gone) }
+        for (id, gone) in existing where views[id] == nil { gone.dispose() }
         let cell = session?.cell ?? views.values.lazy.map(\.cell).first { $0.width > 0 && $0.height > 0 } ?? .zero
         guard cell.width > 0, cell.height > 0 else { return }
         let placement = PaneLayout(root: shown.visible.root, bounds: bounds, cell: cell, pixel: pixel)
         validateFrames(placement)
         let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
         installGrids(Array(views.values))
+        if let client = session?.client {
+            for view in views.values where existing[view.pane] == nil { view.attach(client) }
+        }
         let overlays = Dictionary(uniqueKeysWithValues: subviews.compactMap { $0 as? PaneChrome }.map { ($0.pane, $0) })
         var tiled: [NSView] = [], floating: [(z: Int, views: [NSView])] = []
         backings = [:]
@@ -271,12 +267,8 @@ final class WindowView: NSView {
         }
         preview.frame = bounds
         preview.autoresizingMask = [.width, .height]
-        subviews = dividers + tiled + floating.sorted { $0.z > $1.z }.flatMap(\.views) + [preview]
+        subviews = dividers + tiled + floating.sorted { $0.z < $1.z }.flatMap(\.views) + [preview]
         updateFocusTreatment()
-        for view in views.values where existing[view.pane] == nil {
-            synced?.enter()
-            connection?.attach(view) { synced?.leave() }
-        }
         invalidateCursorRects()
         needsReconcile = false
     }
@@ -441,38 +433,22 @@ final class WindowView: NSView {
     }
 
     private func makePane(_ id: PaneID) -> PaneView? {
-        guard let view = PaneView(
-            runtime: runtime, pane: id, font: session?.font ?? 0, host: connection?.host ?? .local,
-            onInput: { [weak connection] in connection?.sendKeys(id, $0) })
-        else { return nil }
-        view.onURL = { [weak connection] in connection?.openURL($0) }
+        guard let view = PaneView(runtime: runtime, pane: id, font: session?.font ?? 0) else { return nil }
         view.canPrompt = { [weak self] in self?.session?.canPrompt() == true }
         view.onPrompt = { [weak self] pane, quote in self?.session?.onPrompt(pane, quote) }
         view.onSelect = { [weak self] in
             guard let self else { return }
-            connection?.userFocus()
-            var commands = [Command("select-pane", "-t", id)]
-            if case .floating(let z) = self.shown?.visible.root.panes.first(where: { $0.id == id })?.layer, z > 0 {
-                commands.append(Command("move-pane", "-t", id, "-z", 0))
+            session?.selectPane(id)
+            let floats = shown?.visible.root.panes.filter { $0.layer != .tiled } ?? []
+            if case .floating(let z) = floats.first(where: { $0.id == id })?.layer, z < floats.count - 1 {
+                session?.edit(.float(KoSchema.EditFloat(pane: id, z: floats.count)), nil)
             }
-            self.sendPane(commands)
         }
-        view.onCommand = { [weak self] command in
-            guard let connection = self?.connection else { return }
-            switch command {
-            case .close: return connection.closePane(id)
-            case .window, .newWindow: return connection.navigate(command)
-            default: break
-            }
-            guard let tmux = command.command(id, cell: self?.session?.cell ?? .zero) else { return }
-            self?.sendPane([tmux])
-        }
+        view.onCommand = { [weak self] command in self?.session?.paneCommand(command, id) }
         view.onAlternateChange = { [weak self] in self?.place() }
         view.onFindChange = { [weak self] in self?.place(); self?.invalidateCursorRects() }
         view.onCellChange = { [weak self] in self?.session?.cellChanged() }
         view.onFontChange = { [weak self] in self?.session?.fontChanged($0) }
-        view.onResync = { [weak connection] in connection?.syncResize(id) ?? false }
-        view.onGridFailure = { [weak connection] in connection?.gridFailed() }
         return view
     }
 
@@ -509,25 +485,22 @@ final class WindowView: NSView {
         }
     }
     #endif
-    private enum Delivery { case idle, sending(pending: [Command]?) }
-    private var delivery = Delivery.idle
-    private var lastFloatCommand: [Command]?
+    private var lastFloatEdit: KoSchema.Edit?
 
     private func floatFrame(_ id: PaneID, _ geometry: Geometry, _ placement: PaneLayout) -> CGRect {
         if let liveFrame {
             switch liveFrame {
-            case .dragging(let pane, let frame), .settling(let pane, let frame):
+            case .dragging(let pane, let frame), .held(let pane, let frame):
                 if pane == id { return placement.clamp(frame) }
             }
         }
         if let frame = freeFrames[id], placement.geometry(frame) == geometry { return frame }
         freeFrames[id] = nil
-        return placement.frame(geometry)
+        return placement.clamp(placement.frame(geometry))
     }
 
     private func validateFrames(_ placement: PaneLayout) {
         if let placed, placed != placement {
-            if case .sending = delivery { delivery = .sending(pending: nil) }
             liveFrame = nil
             endDrag()
         }
@@ -543,28 +516,26 @@ final class WindowView: NSView {
         }
     }
 
-    private func settleFloat() {
-        guard case .settling(let id, let frame) = liveFrame else { return }
-        connection?.send([Command("display-message", "-p", "")]) { [weak self] _ in
-            guard let self, case .settling(let current, let rect) = self.liveFrame, current == id, rect == frame else { return }
-            self.liveFrame = nil
-            if !self.zoomed, let placement = self.placement,
-               let pane = self.shown?.visible.root.panes.first(where: { $0.id == id && $0.layer != .tiled }),
-               placement.geometry(frame) == pane.geometry {
-                self.freeFrames[id] = frame
-                #if KIDO_STRESS
-                self.stressEvent("free-frame-kept", id.description)
-                #endif
-            }
-            if let placement = self.placement { self.placeFloat(id, placement) }
-            self.panes.forEach { $0.endResizeIntent() }
+    // The layout shows every edit that was sent: a held float frame becomes the free frame of the
+    // float if the server kept its geometry.
+    func editsSettled() {
+        defer { if !defersRestore { panes.forEach { $0.endResizeIntent() } } }
+        guard case .held(let id, let frame) = liveFrame else { return }
+        liveFrame = nil
+        if !zoomed, let placement, let pane = shown?.visible.root.panes.first(where: { $0.id == id && $0.layer != .tiled }),
+           placement.geometry(frame) == pane.geometry {
+            freeFrames[id] = frame
+            #if KIDO_STRESS
+            stressEvent("free-frame-kept", id.description)
+            #endif
         }
+        if let placement { placeFloat(id, placement) }
     }
 
     private func floatEdge(_ point: NSPoint) -> (Pane, NSCursor.FrameResizePosition)? {
         guard !zoomed, let placement else { return nil }
         for pane in (shown?.visible.root.panes ?? []).filter({ $0.layer != .tiled }).sorted(by: {
-            guard case .floating(let a) = $0.layer, case .floating(let b) = $1.layer else { return false }; return a < b
+            guard case .floating(let a) = $0.layer, case .floating(let b) = $1.layer else { return false }; return a > b
         }) {
             let frame = floatFrame(pane.id, pane.geometry, placement)
             guard frame.contains(point) else { continue }
@@ -586,39 +557,10 @@ final class WindowView: NSView {
         ]
     }
 
-    private func sendPane(_ commands: [Command], userInitiated: Bool = true, done: (@MainActor @Sendable () -> Void)? = nil) {
-        connection?.send(commands) { [weak self] replies in
-            if userInitiated, let failure = replies?.compactMap({ reply -> String? in
-                if case .failure(let lines) = reply { return lines.joined(separator: "\n") }; return nil
-            }).first, let window = self?.window {
-                #if KIDO_STRESS
-                self?.stressEvent("pane-command-failed-command", commands.map(\.line).joined(separator: "; "))
-                self?.stressEvent("pane-command-failed", failure)
-                #else
-                let alert = NSAlert()
-                alert.messageText = "Pane command failed"
-                alert.informativeText = failure
-                alert.beginSheetModal(for: window)
-                #endif
-            }
-            done?()
-        }
-    }
-
-    private func sendFloat(_ commands: [Command]) {
-        guard commands != lastFloatCommand else { return }
-        lastFloatCommand = commands
-        if case .sending = delivery { delivery = .sending(pending: commands); return }
-        delivery = .sending(pending: nil)
-        sendPane(commands, userInitiated: false) { [weak self] in
-            guard let self, case .sending(let pending) = self.delivery else { return }
-            self.delivery = .idle
-            if let pending { self.lastFloatCommand = nil; self.sendFloat(pending) }
-            else {
-                self.settleFloat()
-                if self.liveFrame == nil { self.panes.forEach { $0.endResizeIntent() } }
-            }
-        }
+    private func sendFloat(_ edit: KoSchema.Edit, _ pane: PaneID) {
+        guard edit != lastFloatEdit else { return }
+        lastFloatEdit = edit
+        session?.edit(edit, .float(pane))
     }
 
     private func beginDrag(_ pane: PaneID, _ event: NSEvent) {
@@ -643,7 +585,6 @@ final class WindowView: NSView {
 
     @objc func cancelDrag() {
         guard paneDrag != nil || drag != nil else { return }
-        if case .sending = delivery { delivery = .sending(pending: nil) }
         liveFrame = nil
         place(); endDrag(); focusActive(force: true)
     }
@@ -671,7 +612,7 @@ final class WindowView: NSView {
         if case .dragging = liveFrame { liveFrame = nil }
         paneDrag = nil
         finishDividerDrag()
-        lastFloatCommand = nil
+        lastFloatEdit = nil
         preview.rect = nil
         target?.invalidateCursorRects(for: self)
         if !defersRestore { panes.forEach { $0.endResizeIntent() } }
@@ -684,7 +625,7 @@ final class WindowView: NSView {
             guard let cell = session?.cell, let placement else { return }
             let dx = event.locationInWindow.x - origin.x
             let dy = origin.y - event.locationInWindow.y
-            if edge == nil, lastFloatCommand == nil, hypot(dx, dy) < 4 {
+            if edge == nil, lastFloatEdit == nil, hypot(dx, dy) < 4 {
                 if event.type == .leftMouseUp { endDrag(); focusActive(force: true) }
                 return
             }
@@ -708,25 +649,17 @@ final class WindowView: NSView {
             liveFrame = .dragging(pane.id, frame)
             placeFloat(pane.id, placement)
             let geometry = placement.geometry(frame)
-            let x = geometry.x, y = geometry.y, width = geometry.width, height = geometry.height
-            if dx != 0 || dy != 0 || lastFloatCommand != nil {
-                var commands: [Command] = []
-                if edge != nil {
-                    commands.append(Command("if-shell", "-F", "-t", pane.id, "#{==:#{pane-border-lines},none}",
-                        Command("resize-pane", "-t", pane.id, "-x", width, "-y", height).line,
-                        Command("resize-pane", "-t", pane.id, "-x", width + 2, "-y", height + 2).line))
-                }
-                if edge == nil || edge?.left == true || edge?.top == true {
-                    commands.append(Command("move-pane", "-t", pane.id,
-                        "-X", "#{?#{==:#{pane-border-lines},none},\(x),\(x - 1)}",
-                        "-Y", "#{?#{==:#{pane-border-lines},none},\(y),\(y - 1)}"))
-                }
-                sendFloat(commands)
+            if dx != 0 || dy != 0 || lastFloatEdit != nil {
+                let moves = edge == nil || edge?.left == true || edge?.top == true
+                sendFloat(.float(KoSchema.EditFloat(
+                    cols: edge == nil ? nil : geometry.width, pane: pane.id, rows: edge == nil ? nil : geometry.height,
+                    x: moves ? max(0, geometry.x) : nil, y: moves ? max(0, geometry.y) : nil)), pane.id)
             }
             if event.type == .leftMouseUp {
-                liveFrame = .settling(pane.id, frame)
+                let sent = lastFloatEdit != nil
+                liveFrame = sent ? .held(pane.id, frame) : nil
                 endDrag()
-                if case .idle = delivery { settleFloat() }
+                if sent, session?.editing() != true { editsSettled() }
                 focusActive(force: true)
             }
             return
@@ -782,27 +715,19 @@ final class WindowView: NSView {
         }
         endDrag()
         focusActive(force: true)
-        guard let (zone, _) = drop else { return }
-        let command: Command
-        switch zone {
-        case .centre(let target): command = Command("swap-pane", "-s", source, "-t", target)
-        case .pane(let target, let edge), .window(let target, let edge):
-            let axis = edge == .left || edge == .right ? "-h" : "-v"
-            switch zone {
-            case .window where edge == .left || edge == .top:
-                command = Command("move-pane", "-s", source, "-t", target, "-f", axis, "-b")
-            case .window:
-                command = Command("move-pane", "-s", source, "-t", target, "-f", axis)
-            default:
-                command = edge == .left || edge == .top
-                    ? Command("move-pane", "-s", source, "-t", target, axis, "-b")
-                    : Command("move-pane", "-s", source, "-t", target, axis)
-            }
+        guard let (zone, _) = drop, let windowID else { return }
+        func edge(_ edge: Edge) -> KoSchema.Edge {
+            switch edge { case .left: .left; case .right: .right; case .top: .top; case .bottom: .bottom }
+        }
+        let edit: KoSchema.Edit = switch zone {
+        case .centre(let target): .swap(KoSchema.EditSwap(other: target, pane: source))
+        case .pane(let target, let side): .dock(KoSchema.EditDock(edge: edge(side), pane: source, target: target))
+        case .window(_, let side): .dockWindow(KoSchema.EditDockWindow(edge: edge(side), pane: source, window: windowID))
         }
         #if KIDO_STRESS
-        stressEvent("drag-completed", command.line)
+        stressEvent("drag-completed", "\(edit)")
         #endif
-        sendPane([command])
+        session?.edit(edit, nil)
     }
 
     private var drag: (divider: Divider, origin: NSPoint, position: Int)?
@@ -850,9 +775,9 @@ final class WindowView: NSView {
         let position = drag.divider.direction == .leftRight
             ? drag.divider.geometry.x + Int(((point.x - drag.origin.x) / cell.width).rounded())
             : drag.divider.geometry.y + Int(((point.y - drag.origin.y) / cell.height).rounded())
-        guard position != drag.position, let command = drag.divider.resize(to: position) else { return }
+        guard position != drag.position, let edit = drag.divider.resize(to: position) else { return }
         self.drag = (drag.divider, drag.origin, position)
-        connection?.send([command])
+        session?.edit(edit, .divider(drag.divider.first))
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -862,14 +787,8 @@ final class WindowView: NSView {
 
     private func finishDividerDrag() {
         guard drag != nil else { return }
-        let token = UUID()
-        dividerDrain = token
         drag = nil
-        connection?.send([Command("display-message", "-p", "")]) { [weak self] _ in
-            guard let self, self.dividerDrain == token else { return }
-            self.dividerDrain = nil
-            if !self.defersRestore { self.panes.forEach { $0.endResizeIntent() } }
-        }
+        if !defersRestore { panes.forEach { $0.endResizeIntent() } }
     }
 
     override var acceptsFirstResponder: Bool { true }
@@ -901,7 +820,7 @@ final class WindowView: NSView {
         }
         if !zoomed {
             for pane in (shown?.visible.root.panes ?? []).filter({ $0.layer != .tiled }).sorted(by: {
-                guard case .floating(let a) = $0.layer, case .floating(let b) = $1.layer else { return false }; return a < b
+                guard case .floating(let a) = $0.layer, case .floating(let b) = $1.layer else { return false }; return a > b
             }) {
                 let r = floatFrame(pane.id, pane.geometry, placement)
                 defer { covered.append(r) }
@@ -935,8 +854,8 @@ final class WindowView: NSView {
         guard debugging else { return }
         let sizes = Dictionary(uniqueKeysWithValues: (shown?.visible.root.panes ?? []).map { ($0.id, $0.geometry) })
         for view in panes where !view.isHidden && (pane == nil || pane == view.pane) {
-            let tmux = sizes[view.pane].map { "\($0.width)x\($0.height)" } ?? "none"
-            debug("resize t=\(ProcessInfo.processInfo.systemUptime) \(reason()) pane=\(view.pane) tmux=\(tmux) \(view.resizeDebug)")
+            let cells = sizes[view.pane].map { "\($0.width)x\($0.height)" } ?? "none"
+            debug("resize t=\(ProcessInfo.processInfo.systemUptime) \(reason()) pane=\(view.pane) cells=\(cells) \(view.resizeDebug)")
         }
     }
 
@@ -948,12 +867,11 @@ final class WindowView: NSView {
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         debugResize("live-end")
-        connection?.flushSize()
     }
 
     private func sizeClient() {
         guard !isHidden, let placement else { return }
-        connection?.resize(cols: Int(placement.client.width), rows: Int(placement.client.height))
+        session?.requestSize(cols: Int(placement.client.width), rows: Int(placement.client.height))
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -986,6 +904,6 @@ final class WindowView: NSView {
 
     @objc private func didBecomeKey() {
         guard !isHidden, let pane = window?.firstResponder as? PaneView, pane.pane != active else { return }
-        connection?.send([Command("select-pane", "-t", pane.pane)])
+        session?.selectPane(pane.pane)
     }
 }

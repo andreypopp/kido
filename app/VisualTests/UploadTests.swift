@@ -4,6 +4,7 @@ import ImageIO
 import TmuxControl
 import UniformTypeIdentifiers
 import XCTest
+import KoModel
 @testable import Kido
 
 @MainActor final class SyntheticDrag: NSObject, @preconcurrency NSDraggingInfo {
@@ -92,7 +93,6 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
         owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         owner.window.orderFront(nil)
         pane.resize(cols: 80, rows: 24)
-        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         addTeardownBlock { @MainActor in
             pane.dispose()
             owner.close()

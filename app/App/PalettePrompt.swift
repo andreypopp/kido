@@ -1,4 +1,6 @@
 import AppKit
+import KoClient
+import KoModel
 import SidebarFeed
 import TmuxControl
 import PromptMarkdown
@@ -30,6 +32,20 @@ struct PromptSource: Equatable {
 
     static func == (a: Self, b: Self) -> Bool {
         a.owner === b.owner && a.instance == b.instance && a.pane == b.pane
+    }
+}
+
+struct PromptCandidate: Equatable {
+    let pane: PaneID
+    let session: SessionID
+    let window: WindowID
+    let title: String
+
+    init(_ candidate: KoSchema.Candidate) {
+        pane = candidate.pane
+        session = candidate.session
+        window = candidate.window
+        title = candidate.title
     }
 }
 
@@ -220,17 +236,19 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
         }
         resolveTimer = timeout
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.resolveTimeout, execute: timeout)
-        source.owner.request(.prompt(pane: source.pane, text: nil, target: nil)) { [weak self] result in
+        source.owner.prompt(.resolve(from: source.pane)) { [weak self] result in
             guard let self, resolving == id else { return }
             resolving = nil
             resolveTimer?.cancel()
-            if case .success(.prompt(.candidates(let list))) = result {
+            switch result {
+            case .success(.candidates(let found)):
+                let list = found.map(PromptCandidate.init)
                 candidates = list
                 target = list.first { $0.pane == source.preselect } ?? list.first { $0.pane == source.pane } ?? list.first { $0.window == source.window } ?? list.first
                 restoreTarget(key.flatMap(load), selection: source.quote)
                 apply(list.isEmpty ? .noAgent : .ready)
-            } else {
-                apply(failureState(result, sending: false) ?? .failed("Unexpected prompt reply"))
+            case .success(.sent): apply(.failed("Unexpected prompt reply"))
+            case .failure(let error): apply(.failed(failureText(error)))
             }
             resolved()
         }
@@ -242,15 +260,12 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
         apply(state)
     }
 
-    private func failureState(_ result: Result<RPCEvent.Reply.Value, Failure>, sending: Bool) -> State? {
-        switch result {
-        case .success(.promptError(let message, let kind)):
-            guard sending else { return .failed(message) }
-            return kind == .refused ? .refused(message) : kind == .unknown ? .unknown(message) : .invalid(message)
-        case .failure(let error):
-            guard sending else { return .failed(error.message) }
-            return error.message == Feed.notReady ? .invalid(error.message) : .unknown(error.message)
-        default: return nil
+    // A refusal leaves the prompt with the agent; an unknown result may have reached it.
+    private static func sendFailure(_ error: Error) -> State {
+        switch (error as? KoError)?.code {
+        case KO_ERR_REFUSED: .refused(failureText(error))
+        case KO_ERR_UNKNOWN: .unknown(failureText(error))
+        default: .invalid(failureText(error))
         }
     }
 
@@ -381,13 +396,16 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
         guard let target, hasPrompt else { return }
         switch state { case .ready, .refused: break; default: return }
         apply(.sending)
-        source.owner.request(.prompt(pane: sourceGone ? target.pane : source.pane, text: textView.string, target: target.pane)) { [weak self] result in
+        source.owner.prompt(.send(from: sourceGone ? target.pane : source.pane, to: target.pane, text: textView.string)) { [weak self] result in
             guard let self, active() else { return }
-            if case .success(.prompt(.delivered)) = result {
+            switch result {
+            case .success(.sent):
                 if let key { save(key, nil) }
                 textView.string = ""
                 delivered()
-            } else { apply(failureState(result, sending: true) ?? .invalid("Unexpected prompt reply")) }
+            case .success(.candidates): apply(.invalid("Unexpected prompt reply"))
+            case .failure(let error): apply(Self.sendFailure(error))
+            }
         }
     }
     @objc private func retryAction() {

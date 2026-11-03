@@ -1,6 +1,7 @@
 import AppKit
 import SidebarFeed
 import TmuxControl
+import KoModel
 
 final class WindowTabs: NSView {
     private final class HeaderBackground: NSView {

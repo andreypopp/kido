@@ -3,7 +3,7 @@ import TmuxControl
 import SidebarFeed
 
 final class SessionMenus: NSObject, NSMenuItemValidation {
-    var send: (RPCRequest) -> Void = { _ in }
+    var send: (Navigation) -> Void = { _ in }
     var canSend: () -> Bool = { true }
     var rename: () -> Void = {}
     var close: () -> Void = {}
@@ -40,7 +40,7 @@ final class SessionMenus: NSObject, NSMenuItemValidation {
     @objc func closeItem() { close() }
 
     private func item(
-        _ title: String, _ key: String, _ command: RPCRequest?, _ modifiers: NSEvent.ModifierFlags = .command
+        _ title: String, _ key: String, _ command: Navigation?, _ modifiers: NSEvent.ModifierFlags = .command
     ) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: #selector(run(_:)), keyEquivalent: key)
         item.keyEquivalentModifierMask = modifiers
@@ -52,7 +52,7 @@ final class SessionMenus: NSObject, NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool { canSend() }
 
     @objc private func run(_ sender: NSMenuItem) {
-        guard let command = sender.representedObject as? RPCRequest else { return }
+        guard let command = sender.representedObject as? Navigation else { return }
         send(command)
     }
 }

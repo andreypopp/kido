@@ -3,6 +3,7 @@ import GhosttyKit
 import SidebarFeed
 import TmuxControl
 import XCTest
+import KoModel
 @testable import Kido
 
 @MainActor final class ClosingUXTests: VisualTestCase {
@@ -71,13 +72,12 @@ import XCTest
         XCTAssertEqual(tabs.addWindow.frame.maxX, tabs.bounds.maxX)
         XCTAssertEqual(tabs.addWindow.frame.width, 28)
 
-        let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data("""
-        {"v":2,"client":{"session":"$0","window":"@7","pane":"%4"},"server_instance":{"started_at":1791000000,"pid":4242},"sessions":[{"id":"$0","name":"s","current":true,"nodes":[{"kind":"pane","id":"%4","pane":"%4","window":"@7","title":"shell","lifecycle":["Live",["Terminal",{"phase":["Unknown"],"report":null}]],"program_status":{"serial":0,"records":[{"id":"child","state":"working"}]},"run":null,"started":null,"children":[]}]}]}
-        """.utf8))
+        let snapshot = fixtureSnapshot(window: 7, pane: 4, [("s", [.item(fixtureItem(4, window: 7, "shell", shellLifecycle(.unknown),
+                                                                                       records: [programRecord("child", .working)]))])])
         let list = SidebarView()
         list.frame = NSRect(x: 0, y: 0, width: 300, height: 110)
         window.contentView!.addSubview(list)
-        list.update(.running(snapshot))
+        list.update(snapshot)
         list.layoutSubtreeIfNeeded()
         let index = try XCTUnwrap(list.visualRows.firstIndex { $0.target != nil })
         let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
@@ -108,21 +108,14 @@ import XCTest
     }
 
     func testKillTargetsConfirmationCmdWAndNewWindowFocus() async throws {
-        let dir = "/tmp/kux-" + UUID().uuidString.prefix(8)
-        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: serverEnvironment)
-        XCTAssertEqual(result.status, 0, result.err)
-        let server = try JSONDecoder().decode(Server.self, from: Data(result.out.utf8))
+        let dir = try await koLaunched()
         let board = NSPasteboard(name: .init("kux-" + UUID().uuidString))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
-        owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
-        addTeardownBlock { @MainActor in
-            owner.close(); board.releaseGlobally()
-            _ = try? await Child.run(server.tmux, ["-u", "-S", server.socket, "kill-session", "-t", "main"], env: tools.environment)
-            try? FileManager.default.removeItem(atPath: dir)
-        }
+        owner.testServerDir = dir
+        addTeardownBlock { @MainActor in owner.close(); board.releaseGlobally() }
         owner.start()
-        try await wait("private owner ready") { owner.testConnection != nil && owner.stressState.4 != nil && owner.testSession?.windows.values.first?.panes.first != nil }
+        try await wait("private owner ready") { owner.testClient != nil && owner.snapshot != nil && owner.testSession?.windows.values.first?.panes.first != nil }
         let original = try XCTUnwrap(owner.stressState.0.window)
         owner.window.display()
         try click(owner.sidebar.tabs.addWindow)
@@ -130,16 +123,13 @@ import XCTest
         let created = try XCTUnwrap(owner.stressState.0.window)
         let pane = try XCTUnwrap(owner.testSession?.windows[created]?.panes.first)
         try await wait("new window receives terminal focus") { owner.window.firstResponder === pane }
-        func status(_ running: Bool, pane: PaneView, created: WindowID) throws {
-            let model = owner.stressState.0
-            let session = try XCTUnwrap(model.session)
-            let phase = running ? "[\"Running\",{\"origin\":[\"Command\",{\"command\":\"sleep 60\",\"started_at\":1791000000}],\"fullscreen\":false}]" : "[\"Unknown\"]"
-            let json = """
-            {"v":2,"client":{"session":"\(session)","window":"\(created)","pane":"\(pane.pane)"},"server_instance":{"started_at":1791000000,"pid":4242},"sessions":[{"id":"\(session)","name":"s","current":true,"nodes":[{"kind":"pane","id":"\(pane.pane)","pane":"\(pane.pane)","window":"\(created)","title":"job","lifecycle":["Live",["Terminal",{"phase":\(phase),"report":null}]],"program_status":{"serial":0,"records":[]},"run":null,"started":null,"children":[]}]}]}
-            """
-            owner.testReceive(try JSONDecoder().decode(Snapshot.self, from: Data(json.utf8)))
+        // The pane runs a command, or shows no status, until the server's next model.
+        func status(_ running: Bool, pane: PaneView, created: WindowID) async throws {
+            try await wait("the snapshot has the pane") { sidebarRows(owner.snapshot).contains { $0.target?.pane == pane.pane } }
+            let phase: ShellStatus.Phase = running ? .running(.init(command: "sleep 60", startedAt: Date()), fullscreen: false) : .unknown
+            owner.testReceive(withLifecycle(try XCTUnwrap(owner.snapshot), pane: pane.pane, .live(.terminal(ShellStatus(phase: phase, report: nil))), mark: running ? .running : .none_))
         }
-        try status(true, pane: pane, created: created)
+        try await status(true, pane: pane, created: created)
         let tabs = owner.sidebar.tabs
         let tabIndex = try XCTUnwrap(tabs.entries.firstIndex { $0.id == created })
         let tabPoint = tabs.convert(NSPoint(x: tabs.labelRect(tabIndex).minX - 11, y: 18), to: nil)
@@ -149,7 +139,7 @@ import XCTest
         XCTAssertEqual(owner.preparedAlert?.alert.informativeText, "Processes are still running in this window. Closing the window will end them.")
         owner.respondToAlert(.alertSecondButtonReturn)
         try await wait("window confirmation dismissed") { owner.window.attachedSheet == nil }
-        try status(true, pane: pane, created: created)
+        try await status(true, pane: pane, created: created)
         let list = owner.sidebar.list
         let row = try XCTUnwrap(list.visualRows.firstIndex { $0.target?.pane == pane.pane })
         let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: row, makeIfNecessary: true) as? SidebarCell)
@@ -160,7 +150,7 @@ import XCTest
         XCTAssertEqual(owner.preparedAlert?.alert.informativeText, "A process is still running in this pane. Closing the pane will end it.")
         owner.respondToAlert(.alertSecondButtonReturn)
         try await wait("pane confirmation dismissed") { owner.window.attachedSheet == nil }
-        try status(true, pane: pane, created: created)
+        try await status(true, pane: pane, created: created)
         owner.window.makeFirstResponder(pane)
         // A hidden owner cannot be NSApp's main window: its global Close menu
         // would consume Cmd-W without a target. Exercise Ghostty's pane binding.
@@ -176,7 +166,7 @@ import XCTest
         owner.respondToAlert(.alertSecondButtonReturn)
         XCTAssertNil(owner.preparedAlert)
         try await wait("Cmd-W confirmation dismissed") { owner.window.attachedSheet == nil }
-        try status(false, pane: pane, created: created)
+        try await status(false, pane: pane, created: created)
         XCTAssertTrue(pane.performKeyEquivalent(with: cmdW))
         try await drain(runtime)
         XCTAssertNil(owner.preparedAlert)
@@ -186,7 +176,7 @@ import XCTest
         try await wait("another close target created") { owner.stressState.0.windows.count == 2 && owner.stressState.0.window != original && owner.stressState.0.window.flatMap { owner.testSession?.windows[$0]?.panes.first } != nil }
         let tab = try XCTUnwrap(owner.sidebar.tabs.entries.first { $0.id != original })
         let nextPane = try XCTUnwrap(owner.testSession?.windows[tab.id]?.panes.first)
-        try status(false, pane: nextPane, created: tab.id)
+        try await status(false, pane: nextPane, created: tab.id)
         let nextIndex = try XCTUnwrap(tabs.entries.firstIndex { $0.id == tab.id })
         tabs.mouseEntered(with: mouse(.mouseEntered, at: tabs.convert(NSPoint(x: tabs.labelRect(nextIndex).minX - 11, y: 18), to: nil), in: owner.window))
         tabs.layoutSubtreeIfNeeded()
@@ -197,7 +187,7 @@ import XCTest
         try await wait("quiet row target created") { owner.stressState.0.windows.count == 2 && owner.stressState.0.window != original && owner.stressState.0.window.flatMap { owner.testSession?.windows[$0]?.panes.first } != nil }
         let rowWindow = try XCTUnwrap(owner.stressState.0.window)
         let rowPane = try XCTUnwrap(owner.testSession?.windows[rowWindow]?.panes.first)
-        try status(false, pane: rowPane, created: rowWindow)
+        try await status(false, pane: rowPane, created: rowWindow)
         let quietRow = try XCTUnwrap(list.visualRows.firstIndex { $0.target?.pane == rowPane.pane })
         let quietCell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: quietRow, makeIfNecessary: true) as? SidebarCell)
         quietCell.layoutSubtreeIfNeeded()
@@ -211,7 +201,7 @@ import XCTest
         try await wait("confirmed window target created") { owner.stressState.0.windows.count == 2 && owner.stressState.0.window != original && owner.stressState.0.window.flatMap { owner.testSession?.windows[$0]?.panes.first } != nil }
         let confirmedWindow = try XCTUnwrap(owner.stressState.0.window)
         let confirmedPane = try XCTUnwrap(owner.testSession?.windows[confirmedWindow]?.panes.first)
-        try status(true, pane: confirmedPane, created: confirmedWindow)
+        try await status(true, pane: confirmedPane, created: confirmedWindow)
         let confirmedIndex = try XCTUnwrap(tabs.entries.firstIndex { $0.id == confirmedWindow })
         tabs.mouseEntered(with: mouse(.mouseEntered, at: tabs.convert(NSPoint(x: tabs.labelRect(confirmedIndex).minX - 11, y: 18), to: nil), in: owner.window))
         tabs.layoutSubtreeIfNeeded()

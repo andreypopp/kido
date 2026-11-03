@@ -1,4 +1,4 @@
-import TmuxControl
+import KoModel
 
 public enum ReorderPlacement: String, Sendable { case before, after }
 
@@ -42,6 +42,19 @@ extension Snapshot {
     }
 }
 
+extension Snapshot {
+    // The edit that makes the server's order the moved one; the core keeps unlisted windows after the listed.
+    public func reorderEdit(_ move: ReorderMove) -> KoSchema.Edit? {
+        guard let moved = reordered(move) else { return nil }
+        switch move {
+        case .session: return .reorderSessions(KoSchema.EditReorderSessions(order: moved.sessions.map(\.id)))
+        case .window(let session, _, _, _):
+            guard let nodes = moved.sessions.first(where: { $0.id == session })?.nodes else { return nil }
+            return .reorderWindows(KoSchema.EditReorderWindows(order: nodes.map(\.window), session: session))
+        }
+    }
+}
+
 public func arranged<T, ID: Hashable>(_ items: [T], by order: [ID], _ key: (T) -> ID) -> [T] {
     let rank = Dictionary(order.enumerated().map { ($1, $0) }) { first, _ in first }
     var known = items.filter { rank[key($0)] != nil }.sorted { rank[key($0)]! < rank[key($1)]! }.makeIterator()
@@ -53,7 +66,7 @@ public struct ReorderState: Equatable, Sendable {
         public let move: ReorderMove
         public let token: Int
         let instance: ServerInstance
-        var replied = false
+        public internal(set) var replied = false
         var projecting = true
     }
     public private(set) var pending: Pending?
@@ -88,11 +101,9 @@ public struct ReorderState: Equatable, Sendable {
         return nil
     }
 
-    public mutating func expire(_ token: Int) -> String? {
-        guard let pending, pending.token == token else { return nil }
-        reset()
-        guard pending.projecting else { return nil }
-        return pending.replied ? "The server did not apply the new order" : "The server did not answer the reorder request"
+    // The layout shows the revision of the accepted reorder: what it shows is the order.
+    public mutating func settled() {
+        if pending?.replied == true { pending = nil }
     }
 
     public mutating func reset() { pending = nil }

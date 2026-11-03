@@ -1,35 +1,5 @@
 # Correctness gaps
 
-## Resync loses the pen, charset and pending wrap
-
-A pane can show wrong colours, links or `qqqq` instead of box lines after
-resize, window switching or reconnect. `app/Packages/TmuxControl/Sources/TmuxControl/PaneSync.swift:59-67`
-replays tmux's cells exactly, then positions the cursor without restoring
-the program's current pen, G0/G1 designation, SI/SO selection or
-pending-wrap latch.
-The pen (fg/bg/attr/us/link) and charset live in tmux's private
-`input_ctx.cell` (`third_party/tmux/input.c:79`); no requested format exposes them.
-The `-r` replay describes cells, not the current pen or charset; `-P -C`
-returns unfinished parser bytes, not that state.
-This is display-only and pane-local, chiefly for incremental curses output
-(htop, vim, mc). It heals when the program restates the missing state;
-another resync is not a guaranteed cure. Resize often prompts a full redraw.
-An app-only wrap repair can use `cursor_x == pane_width` and reprint the last
-glyph in its captured style, starting earlier for wide glyphs (small change).
-Fork formats `pane_pen` using `grid_string_cells_code` (roughly 40–60 LOC)
-and `pane_charset` (roughly 25 LOC), plus app replay, would restore the rest;
-the tmux fork belongs to the CLI side. Status: parked until a visible glitch.
-
-## Alternate-screen option disagrees with raw output
-
-With tmux's `alternate-screen` option off, raw 1049 sequences still reach
-Ghostty and switch its screen. Live output is replayed without filtering;
-see [Panes](design-app.md#panes).
-Only programs using those sequences under that option hit this pane-local
-display mismatch; an exit sequence or authoritative resync can heal it.
-Filtering needs a stateful stream parser, or an embedding mode that mirrors
-tmux's option (medium change). Status: parked, low priority.
-
 ## Main can still wait on renderer mailboxes
 
 A full renderer mailbox can block main; this is not a reproduced universal
@@ -54,26 +24,37 @@ successful initialization are not examined. These inherited error-path leaks
 are outside the renderer-thread ownership fix. Status: parked by decision; not
 fixed or covered.
 
+## Restored images are blank until K6
+
+A restore brings back the text under a kitty image, not its pixels: the
+view's snapshot carries no image data until ko K6. Live images draw. An
+image that was on screen before a reconnect, a copy-mode resync or a
+size-mismatch resync shows as the text under it. Status: planned (K6).
+
+## A size-mismatch restore can wait for the next layout
+
+When a restore reports a size mismatch, the pane asks for one new
+snapshot. If that snapshot also misses the layout size, the pane waits for
+a changed layout size before it asks again, and shows its old content
+until then (`PaneView.viewEvent`). Status: accepted until a case is seen.
+
 # Unverified
 
 ## Late GPU completion after resize
 
 An older GPU frame might overwrite a newer resized frame. Presentation tokens
-reject stale acknowledgements, but do not prove Metal completion ordering;
-see [Stress harness](design-app.md#stress-harness).
+reject stale acknowledgements, but do not prove Metal completion ordering.
 There is no reproduction or proof of this pane-local visual race, nor a
 confirmed healing bound. A bounded GPU-order probe is medium work; fixing
 ordering/fencing depends on its result. Status: unverified.
 
 ## Stale row after pi /reload
 
-After `/reload` in pi, a pane showed a stale "Reloading keybindings…"
-row above "Reloaded". tmux's own grid held both rows, so the row came from
-pi's output, not from the app or a restore. A likely cause is pi-plain
-patches that survive `/reload` with stale closures. pi's standard renderer,
-replayed through 18 tmux and 180 Ghostty paths, leaves only "Reloaded".
-The next step is to record real pi with pi-plain through `pipe-pane`
-during `/reload` (small investigation). Status: parked by the user.
+Before step 4, after `/reload` in pi, a tmux-backed pane showed a stale
+"Reloading keybindings…" row above "Reloaded". tmux's own grid held both
+rows, so the row came from pi's output, not from the app or a restore. A
+likely cause is pi-plain patches that survive `/reload` with stale
+closures. It is not checked on a ko server. Status: parked by the user.
 
 ## Never-focused pane frame rate
 
@@ -96,7 +77,7 @@ investigation). Status: unverified.
 ## Stale tiled-content clip on screen
 
 A stale-root shrink could expose terminal pixels above the titlebar separator.
-`app/App/WindowView.swift:330-334` installs a tiled-content mask for this case.
+`app/App/WindowView.swift` installs a tiled-content mask for this case.
 Visual tests cover settled resize and a top float, not a deliberately held
 stale-root shrink; they do not establish the on-screen clipping result.
 The suspected glitch is local to a resize transition and should end with the
@@ -115,27 +96,6 @@ Internal URL parsing and queued-cold/warm routing are off-screen tested;
 actual URL-launch notification/event ordering still needs the user's on-screen
 retest. No timer guesses are used. Status: URL OS-delivery unverified.
 
-## Remote clipboard, URL and authentication matrix
-
-Private real localhost SSH tests cover control/feed/navigation, two remote plus
-Local windows, quoting, missing kido, server-stamp refusal and rediscovery, master SIGKILL/recovery,
-detach, generation rejection and cancellation. They use the existing prepared
-account and trusted host keys, not an isolated sshd or changed account settings.
-
-| Behavior | Current evidence / remaining check |
-|---|---|
-| Mac copy/paste and unsafe paste | Existing surface path retained; disposal denies pending confirmation once. Real remote unsafe-paste/clipboard end-to-end remains untested. |
-| OSC52 write/query | Named-pasteboard tests cover raw control transport, consent, selector replies and restore suppression locally. The complete remote/provider matrix remains unverified. |
-| HTTP/HTTPS | Remote action routes to the Mac opener, without forwarding. User-clicked browser launch/localhost-port semantics unverified off screen. |
-| file: / other schemes | Remote opener refuses them with a diagnostic instead of selecting same-named Mac files. Real Ghostty click/action delivery remains unverified. |
-| Unknown/changed host keys | StrictHostKeyChecking=yes, UpdateHostKeys=no; isolated-key refusal matrix not run. |
-| Locked keys/password/challenge | BatchMode and actionable Terminal instructions; locked/unavailable key and keyboard-interactive cases not run. |
-| Aliases/ProxyJump/inherited config | OpenSSH settings preserved with transport overrides; config matrix and other login-shell families not certified. |
-| WAN interruption/latency | Local master loss covered; 50/150/300ms RTT, throttled bandwidth and WAN smoothness not measured. |
-
-These are phase-2 checks, not evidence that SSH transparency fixes clipboard or
-URL semantics. Status: unverified; prepared-host MVP only.
-
 # Test coverage gaps
 
 ## Liquid Glass is absent from visual coverage
@@ -151,7 +111,7 @@ compositor capture harness (medium). Status: untested.
 Neither visual snapshots nor off-screen stress establishes smoothness, frame
 rate, real AppKit wheel routing or display-link rendering. Stress calls the
 wheel entry point directly; see [Stress harness](design-app.md#stress-harness).
-A cancelled momentum phase is mapped in `app/App/PaneView.swift:1144`, but
+A cancelled momentum phase is mapped in `PaneView.scrollWheel`, but
 cannot be synthesized by the harness; state assertions are not event coverage.
 The app harnesses also do not establish GhosttyKit's internal correctness;
 targeted Zig tests cover selected internals, not the whole embedding boundary.
@@ -193,6 +153,21 @@ This affects developers, not shipped pane content; re-recording and reviewing
 references repairs the mismatch. Re-record after OS/scale changes (small), or
 pin the runner environment (medium). Status: accepted coverage limitation.
 
+## The display-link test needs an active display
+
+`RendererTests.testWindowDisplayIDReachesNativeLink` times out in a
+session without an active display: Ghostty logs `error creating display
+link … CreationFailed`, because `CVDisplayLinkCreateWithActiveCGDisplays`
+fails. The test is unchanged by step 4. Status: environment limit.
+
+## A priority-inversion warning in one test is unexplained
+
+XCTest reports "waiting on a lower QoS thread" now and then at
+`app.renameSession()` in `testCloseSessionConfirmsAndKills`, and it was
+seen once in two other tests. A user-interactive decoder thread did not
+remove it. The cause is not found; it is probably in AppKit. Status:
+open.
+
 # Accepted limitations
 
 ## Full-screen header colour coverage
@@ -203,18 +178,6 @@ captures. `make visual` covers a transferred-host stand-in, not AppKit's
 The dark-theme negative control can differ by no more than the 2/255
 pixel tolerance, so it cannot reliably detect a missing background cover.
 Status: accepted coverage limitation.
-
-## Early-wrapped wide glyph under a coloured background
-
-When a wide glyph does not fit in the last column, the terminal wraps it
-early and leaves that column empty. tmux and Ghostty fill that cell
-differently. For `one\r\ntwo\r\nESC[48;2;223;231;236mabcd界Z` at width 5,
-tmux keeps the default background at column 4 of row 1 and columns 3-4
-of row 2. Live Ghostty paints them blue-grey: it fills the spacer head
-with the current background (background colour erase). A restore
-reproduces tmux's cells, so a live pane and a restored pane differ there.
-This is an emulator difference, not a capture defect. Width 1, where no
-wide glyph fits, is out of scope. Status: accepted.
 
 ## Transparent paper changes glyph edges
 
@@ -229,44 +192,18 @@ needs a fork change (medium). Status: accepted limitation.
 ## OSC 52 clipboard scope and permission
 
 Clipboard guarantees cover displayed panes only. Hidden hot panes are best
-effort; evicted panes and output discarded by tmux pause-after cannot recover
-completed OSC operations from captures. Hidden unapproved reads are denied,
-not deferred until the pane becomes visible.
+effort; output that a frozen or evicted pane does not parse cannot perform
+its OSC operations later. Hidden unapproved reads are denied, not deferred
+until the pane becomes visible.
 
-Only one clipboard-enabled app may consume a pane. Two attached apps can both
-answer raw OSC reads; there is no responder election. While Kido.app is attached, tmux can forward an OSC 52 read to a terminal showing the window while the app also answers, or replies empty for a pane it is not showing. Terminal paste can return empty, or a second reply can arrive as input. The fix is deferred: tmux skips forwarding while a self-answering control client is attached, and the app stops replying empty for panes it does not show.
+Only one clipboard-enabled app may consume a pane. Two attached apps can
+both answer raw OSC reads; there is no responder election.
 
 Always allow is per exact configured host key, including Local. Edit → Reset Clipboard Permissions revokes all grants and connection answers. Retargeting an SSH alias does not revoke its stored grant;
 SSH host-key policy remains OpenSSH's. Local grants also cover applications
 reached through SSH inside its panes because OSC carries no authenticated
-remote identity. Use a remote window for a separate host grant.
-
-Nested tty-mode tmux can expire clipboard requests after 500ms: first-time
-human consent is too slow. Grant Always allow beforehand, or let the first
-request fail and retry after granting. Empty replies may time out through
-versions that discard them. The app's 8s deadline cannot detect an application's
-earlier cancellation; a reply granted before that deadline may still be late
-for a nested application. Arbitrary nested versions/providers remain untested.
-Status: accepted scope.
-
-## Reflow row counts can disagree
-
-During resize, Ghostty's provisional rows need not equal tmux's `history_size`:
-tmux counts physical rows at its own width. Total greater than loaded alone
-is not evidence of missing content; see [Panes](design-app.md#panes).
-Resize users can see transient count differences; authoritative replay repairs
-the content. Comparing logical coverage rather than raw counts would require
-medium work where a decision needs it. Status: accepted.
-
-## History metadata is sampled
-
-History-limit trimming can leave metadata stale until restore, Load more,
-find or the next wheel/scroller request reaching the loaded top. There is
-no history poll. A sampled shrink or clear repairs content through restore.
-The scroller thumb uses loaded Ghostty geometry, not the tmux total.
-The visible effect is chiefly stale Load more availability until refresh;
-hidden panes refresh on show. An exact content invalidation protocol is
-fork-level work. Status: accepted.
+remote identity. The app's 8s deadline cannot detect an application's
+earlier cancellation. Status: accepted scope.
 
 ## Sub-row wheel remainder can cross program changes
 
@@ -275,14 +212,6 @@ a different owner. If mouse reporting toggles or one alternate-screen program
 replaces another without a wheel packet between them, a carried half-row can
 make the next small scroll emit one report or key early. This matches upstream.
 Status: accepted.
-
-## Tmux prefix bindings do not fire
-
-App input is pane input, not tmux client key-table input;
-see [Panes](design-app.md#panes).
-Prefix users must use app menus/actions or another client. This is permanent,
-not a transient failure. Add explicit key-table integration (large) or keep
-the current actions. Status: accepted.
 
 ## Edit items can take a custom Ghostty binding
 
@@ -297,23 +226,6 @@ Ghostty. Likewise, a user binding that moves ⌘A, ⌘C
 or ⌘V to another action is replaced by the fixed action of the menu item.
 Status: accepted.
 
-## Resize anchors cover only the newest capture
-
-A resize preserves position only inside the newest 10k physical history rows
-and actual retained budget; older anchors fall to the live bottom.
-See [Panes](design-app.md#panes).
-Deep-history readers lose their position, with no automatic return.
-Capture around an old anchor or reload its coverage (medium-to-large).
-Status: accepted.
-
-## Extra loaded history is dropped on resize
-
-History loaded by the pill or find is outside the common reset-and-replay
-capture and is discarded; see [Panes](design-app.md#panes).
-Deep readers must load it again; find does not automatically restore a
-cancelled coverage goal. Preserve/reload extra coverage (medium-to-large),
-or keep the bounded restore. Status: accepted.
-
 ## Top floats leave a sub-cell gap
 
 A top float can leave background between its whole-cell frame and the
@@ -322,18 +234,18 @@ See [Panes](design-app.md#panes).
 This is cosmetic and persists at that geometry. Extending float chrome or
 changing its coordinate contract is small-to-medium work. Status: accepted.
 
-## Selecting a dying pane can show an error sheet
+## Closing a dying pane can show an error sheet
 
-A click can race pane removal: the command fails before topology catches up,
-and `app/App/WindowView.swift:520` reports it as “Pane command failed”.
-Users hitting that narrow race must dismiss the sheet; subsequent topology
-removes the pane. Suppress only confirmed gone-pane errors (small change),
-without hiding real failures. Status: accepted.
+A close can race pane removal: the delete fails before the layout catches
+up, and `WindowOwner.confirmClose` reports it as “Pane command failed”.
+Users hitting that narrow race must dismiss the sheet; the next layout
+removes the pane. A pane click is a select and shows no sheet. Status:
+accepted.
 
 ## Scroller strip overlaps terminal content
 
 The 12pt scroller hit strip sits inside pane chrome
-(`app/App/WindowView.swift:339`); non-rightmost panes lack the outer margin
+(`app/App/WindowView.swift`); non-rightmost panes lack the outer margin
 that can absorb it, so it overlaps the last terminal column.
 Hover/drag users can hit the strip instead of terminal content; last-column
 drag selection is untested. Reserve space or narrow/condition hit testing
@@ -346,28 +258,17 @@ Shift-press tests send synthesized events through `NSWindow.sendEvent`, not
 through the window server. Real AppKit delivery of clicks, drags, autoscroll
 and the context menu, on screen, is untested. The beep for ⌘O, `p` and
 Prompt with Selection… without an agent is not asserted. A user `right-click-action` other than `context-menu` consumes
-the right-click in Ghostty outside copy mode, and no menu opens. The `prompt`
-RPC is tested only against a fake `kido rpc`. Status: untested.
-
-## Feed restart can lose or re-arm outcomes
-
-The app's seen record survives a feed restart, but kido's outcome tracking
-does not. A restart re-derives final records under the current pane serial,
-so an acknowledged agent or report outcome can reappear red; a retained
-outcome whose record already went idle, or a command exit held only in the
-old feed's memory, is lost. Concurrent feeds of one host can assign different
-serials to one outcome, and whole-second command times can collide. These are
-the protocol's accepted identity losses
-(see [the RPC contract](../share/rpc/contract.md)). Seen is not persisted
-across app launches. Status: accepted.
+the right-click in Ghostty outside copy mode, and no menu opens. The prompt path
+is tested against a private ko server (`OwnerModelTests`) and through the
+visual-only `testPrompt` hook (`PaletteTests`). Status: untested.
 
 ## Notifications can repeat across windows
 
 Notification entries are per window, not per host. Two Kido.app windows on
 one server each post for a pane that waits or fails out of sight, so one
 event can arrive twice, once per window; withdrawal and the badge count
-follow each entry. Sharing entries would need one primary feed per host and
-reconciling cross-feed serials. Status: accepted.
+follow each entry. Sharing entries would need one notifier entry per host
+pane across owners. Status: accepted.
 
 ## Dev builds re-prompt for notification permission
 
@@ -384,118 +285,29 @@ Center, so a real banner, a click from Notification Center (including a
 click that launches the app) and the Dock badge are checked only by the
 user on screen before a release. Status: accepted.
 
-## Shared remote-session selection and geometry
+## Windows on one server share pane grids
 
-Each native window owns its own transport/client/feed/surfaces, but tmux has one
-current window per session and one grid per pane. Two viewers of the same
-server/session are coupled: navigation affects both, and size follows tmux's
-latest elected client. Smaller viewers clip authoritative external layouts;
-there are no grouped sessions or independent per-view terminal grids. Client-local
-find, scroll and surface budgets remain independent. Status: accepted.
-
-## Every live batch reads the screen before parsing
-
-Each admitted live batch, in every pane and also outside copy mode, calls
-`ghostty_surface_is_alternate_screen` on the scroll worker before parsing,
-which takes the renderer mutex. The return-to-primary repair then uses the
-screen that the batch started from, because a SCROLLBAR action can update
-the alternate flag on main first (`testEntryKeepsAScreenSwitchParsedBeforeTheReply`).
-The cost is one short mutex hold per batch. Status: accepted cost.
-
-## Passthrough images are not shown
-
-An image that a program wraps in tmux passthrough (`DCS tmux;`) reaches
-Ghostty still wrapped, and tmux does not store it. Kido.app neither
-shows nor restores it. Programs that query (tmux answers `a=q`) and
-send direct APC work. Status: by design.
-
-## Image pixels share the ssh connection with text
-
-On a remote window the image client has its own ssh channel, but all
-channels share the master's one TCP connection. On a lossy network a
-lost packet delays text and images together. A second master only for
-image fetches would separate them. Status: accepted until a
-lossy-network test shows a problem.
-
-## Image cell size is read once by the program
-
-pi and most image programs read the cell size (`CSI 16t`) once at
-start. After a font-size change in Kido.app, a running program keeps
-the old size for its `c=`/`r=` until it restarts. A tty client with a
-larger cell that attaches later changes tmux's window value in the same
-way. Status: accepted.
-
-## An image above the restored history is not shown
-
-A placement is written by the replay range that holds its first row
-(`share/rpc/contract.md`, "Pane text replay"). When a placement starts
-just above the oldest restored row, or on the partial line that a restore
-omits, no range of the restore writes it. Its visible part in the
-retained history then shows the text under it, without the image, until
-Load more reaches its first row. Status: accepted.
-
-## The oldest restored line can be partial on the alternate screen
-
-While the alternate screen is on, a `-r` history range counts the rows
-that tmux reflows to the current width, but `history_size` and the plain
-`-F -L -T` metadata count the stored rows. After a resize the two
-numberings differ, so the restore cannot check that its range starts at
-a line start ([Panes](design-app.md#panes)). The oldest restored line can
-then start mid-line. Exact boundaries need metadata in the `-r` numbering
-from the fork. Status: accepted.
-
-## Image fetch rows can drift
-
-The app names `-K` rows from its own stream position. Output that tmux
-has already processed but the app has not yet received shifts them by
-a few rows, and a paged fetch can skip images that moved before its
-continuation. The one-screen margin and the retry for rows with held
-placements cover the usual cases. An image upload that is still in
-flight at a restore is replayed by `-G` only up to 8 MiB; a larger one
-shows after the next restore. Status: accepted.
-
-## A shared-memory image shows later writes
-
-For a local `t=s` image in `f=32` whose offset and row pitch meet
-Metal's alignment, Ghostty draws straight from the program's
-shared-memory pages. A program that writes into an object
-after it has sent it therefore changes the image on screen, possibly
-mid-frame (tearing). The kitty spec expects a new object per frame,
-and on macOS an object cannot shrink, so this cannot crash. Status:
-accepted; it is the program's contract.
-
-## Restore latency
-
-Measured in October 2026 (Release, 10,000 hard rows, median of 10): the
-restore batch takes about 7.2 ms to capture plain rows and 9.7 ms for
-coloured rows, against 10.1 ms and 10.6 ms with the earlier `-e -J`
-capture. Encoding takes about 0.2 ms and the Ghostty feed 0.8-1.3 ms.
-The snapshot is about 350 KB plain and 570 KB coloured, against about
-310 KB before: `-r` writes each row's full SGR state
-(`app/Packages/TmuxControl/Sources/TmuxControl/PaneSync.swift:28`). A
-pane whose oldest captured row continues a wrapped line pays one more
-batch. Switching or repairing panes can expose latency; it ends when
-replay completes. Status: accepted cost.
+Each native window is its own ko client with its own selection, but the
+server has one grid per pane. Two windows that show the same window share
+its size, which follows the server's rule for clients that size windows.
+Client-local find, scroll and surface budgets remain independent. Status:
+accepted.
 
 # Dev/tooling
 
-## Control clients cannot display tmux popups
+## make -j can race on the xcframework
 
-`third_party/tmux/cmd-display-menu.c:425` makes `display-popup` a no-op for
-control clients. Floating terminals must be real tmux panes instead;
-the app harness creates them with `new-pane`.
-Popup-dependent workflows need a different action; there is no automatic
-native popup. App-owned popup rendering would be large work.
-Status: accepted.
+`make` writes `app/build/ko_client.xcframework` in place. No target starts
+two builds at once, but `make -j` with several targets can run two of them
+on the same xcframework. Status: accepted; run targets one at a time.
 
 ## Xcode output can be misleading
 
 Reported successful visual runs can print xcodebuild “failed with exit code 0”,
 and Xcode can emit “IDERunDestination: Supported platforms … is empty”.
-The visual recipe invokes xcodebuild directly (`app/Makefile:41`); code alone
+The recipes invoke xcodebuild directly (`app/Makefile`); code alone
 cannot reproduce these diagnostics or prove the latter cannot be silenced.
 These affect developer logs, not app output; check exit status and test results.
-Investigate settings or narrowly filter verified noise (small work).
 Status: unverified diagnostics, not evidence of a failing visual suite.
 
 ## Embedding fork rebases carry risk

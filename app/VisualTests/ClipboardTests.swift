@@ -2,6 +2,7 @@ import AppKit
 import GhosttyKit
 import TmuxControl
 import XCTest
+import KoModel
 @testable import Kido
 
 @MainActor final class ClipboardTests: VisualTestCase {
@@ -26,7 +27,6 @@ import XCTest
         owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         owner.window.orderFront(nil)
         pane.resize(cols: 80, rows: 24)
-        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         addTeardownBlock { @MainActor in pane.dispose(); owner.close(); board.releaseGlobally() }
         return (board, runtime, owner, pane, replies)
     }
@@ -147,7 +147,7 @@ import XCTest
         XCTAssertEqual(replies.text, "\u{1b}]5522;type=write:status=EINVAL\u{1b}\\")
         XCTAssertEqual(board.changeCount, changes)
         replies.data = []
-        XCTAssertTrue(pane.feed(write([("image/png", png)]), kind: .snapshot))
+        pane.visualRestore(write([("image/png", png)]))
         try await drain(runtime)
         XCTAssertEqual(replies.text, "", "a replayed transaction writes nothing")
         XCTAssertEqual(board.changeCount, changes)
@@ -186,7 +186,6 @@ import XCTest
         owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         owner.window.orderFront(nil)
         pane.resize(cols: 80, rows: 24)
-        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         defer { pane.dispose(); owner.close(); board.releaseGlobally() }
         func query(_ selector: String = "c") { XCTAssertTrue(pane.feed(Data("\u{1b}]52;\(selector);?\u{7}".utf8))) }
         func expected(_ selector: String, _ text: String) -> Data { Data("\u{1b}]52;\(selector);\(Data(text.utf8).base64EncodedString())\u{1b}\\".utf8) }
@@ -294,7 +293,6 @@ import XCTest
         }
         for pane in [pa, pb] {
             pane.resize(cols: 80, rows: 24)
-            XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         }
         defer { pa.dispose(); pb.dispose(); a.close(); b.close(); board.releaseGlobally() }
         func query(_ pane: PaneView, _ owner: WindowOwner) async throws {
@@ -357,7 +355,6 @@ import XCTest
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, host: owner.host) { replies.append($0) })
         owner.window.contentView = pane
         pane.resize(cols: 80, rows: 24)
-        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         defer { pane.dispose(); owner.close(); board.releaseGlobally() }
         pane.feed(Data("\u{1b}]52;c;?\u{7}".utf8))
         try await wait("refused read replies empty") { replies == [Data("\u{1b}]52;c;\u{1b}\\".utf8)] }
@@ -366,7 +363,6 @@ import XCTest
         XCTAssertEqual(replies, [Data("\u{1b}]52;c;\u{1b}\\".utf8)])
         owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         owner.window.orderFront(nil)
-        XCTAssertTrue(pane.commitSnapshot(epoch: pane.historyEpoch))
         PaneView.clipboardTimeout = 0.5
         XCTAssertTrue(pane.feed(Data("\u{1b}]52;c;?\u{7}".utf8)))
         try await drain(runtime)
@@ -390,7 +386,6 @@ import XCTest
         let reused = try XCTUnwrap(PaneView(runtime: runtime, pane: pane.pane, font: 13, host: owner.host) { replies.append($0) })
         owner.window.contentView = reused
         reused.resize(cols: 80, rows: 24)
-        XCTAssertTrue(reused.commitSnapshot(epoch: reused.historyEpoch))
         defer { reused.dispose() }
         reused.feed(Data("\u{1b}]52;p;?\u{7}".utf8))
         try await drain(runtime)

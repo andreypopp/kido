@@ -4,11 +4,13 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use ko_server::config::{self, Dir};
 use ko_sys::event::Wake;
-use ko_sys::pid::Waited;
+use ko_sys::pid::Pid;
 use ko_sys::signal::Signal;
 
 pub const PATIENCE: Patience = Patience {
@@ -70,6 +72,35 @@ pub(crate) fn connect(
         }
     }
 }
+// The servers that this process started. A server is this process's child, so a thread waits for
+// it, or it stays a zombie that looks alive; after that wait its pid may name another process, so
+// the thread marks it ended.
+static STARTED: Mutex<Vec<(Pid, Arc<AtomicBool>)>> = Mutex::new(Vec::new());
+
+fn reap(child: Pid) -> Arc<AtomicBool> {
+    let ended = Arc::new(AtomicBool::new(false));
+    STARTED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push((child, Arc::clone(&ended)));
+    let mark = Arc::clone(&ended);
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        mark.store(true, Ordering::SeqCst);
+    });
+    ended
+}
+
+fn started(pid: Pid) -> Option<Arc<AtomicBool>> {
+    STARTED
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .rev()
+        .find(|(child, _)| *child == pid)
+        .map(|(_, ended)| Arc::clone(ended))
+}
+
 fn lock(dir: &Path, patience: Patience) -> io::Result<File> {
     let lock = OpenOptions::new()
         .read(true)
@@ -129,6 +160,7 @@ pub fn attach(
     let args = ["server", "--server", &dir.to_string_lossy()];
     let child = ko_sys::spawn::detached(executable, &args, output.as_fd()).map_err(message)?;
     drop(held);
+    let ended = reap(child);
     let deadline = Instant::now() + patience.deadline;
     loop {
         match connect(&socket, patience, None) {
@@ -136,7 +168,7 @@ pub fn attach(
             Err(error) if absent(&error) => {}
             Err(error) => return Err(message(error)),
         }
-        if !matches!(child.try_wait(), Ok(Waited::Running)) {
+        if ended.load(Ordering::SeqCst) {
             return Err(format!("server exited; see {}", log.display()));
         }
         if Instant::now() >= deadline {
@@ -162,8 +194,13 @@ pub fn stop(dir: &Path, patience: Patience) -> Result<(), String> {
         .ok_or("invalid server pid")?;
     pid.signal(Signal::Term).map_err(message)?;
     drop(stream);
+    let ended = started(pid);
+    let alive = || match &ended {
+        Some(ended) => !ended.load(Ordering::SeqCst),
+        None => pid.alive(),
+    };
     let deadline = Instant::now() + patience.deadline;
-    while socket.exists() || pid.alive() {
+    while socket.exists() || alive() {
         if Instant::now() >= deadline {
             return Err(format!(
                 "server did not stop within {} s",
@@ -197,8 +234,24 @@ mod tests {
         assert_eq!(seen, [100, 200, 400, 800, 1600, 2000, 2000]);
     }
 
+    // A child forked while the bind test drops its listener holds that socket open until it
+    // execs, so a connect reaches it.
+    static FORKING: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn a_server_that_exits_at_once_is_reported_as_an_exit_and_not_a_timeout() {
+        let _forking = FORKING.lock().unwrap_or_else(PoisonError::into_inner);
+        let dir = scratch("exit");
+        std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .unwrap();
+        let error = attach(&dir, Path::new("/usr/bin/false"), PATIENCE).unwrap_err();
+        assert!(error.starts_with("server exited"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn a_stale_socket_is_replaced_and_a_live_one_is_refused() {
+        let _forking = FORKING.lock().unwrap_or_else(PoisonError::into_inner);
         let dir = scratch("bind");
         let socket = dir.join("socket");
         drop(UnixListener::bind(&socket).unwrap());

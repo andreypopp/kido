@@ -2,6 +2,7 @@ import AppKit
 import GhosttyKit
 import SidebarFeed
 import SnapshotTesting
+import KoModel
 import TmuxControl
 import XCTest
 @testable import Kido
@@ -15,24 +16,18 @@ import XCTest
         cell.mouseDown(with: event)
     }
 
-    func testRenameOnPrivateControlClient() async throws {
-        let dir = "/tmp/kr-" + UUID().uuidString.prefix(8)
-        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: serverEnvironment)
-        XCTAssertEqual(result.status, 0, result.err)
-        let server = try JSONDecoder().decode(Server.self, from: Data(result.out.utf8))
+    func testRenameOnAPrivateServer() async throws {
+        let dir = try koServerDir()
         let board = NSPasteboard(name: .init("kr-" + UUID().uuidString))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
-        owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
-        addTeardownBlock { @MainActor in
-            owner.close(); board.releaseGlobally()
-            for id in ["$0", "$1"] {
-                _ = try? await Child.run(server.tmux, ["-u", "-S", server.socket, "kill-session", "-t", id], env: tools.environment)
-            }
-            try? FileManager.default.removeItem(atPath: dir)
-        }
+        owner.testServerDir = dir
+        addTeardownBlock { @MainActor in owner.close(); board.releaseGlobally() }
         owner.start()
-        try await wait("rename owner ready") { owner.testConnection != nil && owner.stressState.4 != nil }
+        try await wait("the empty server") { owner.testBanner.testText.title == "No sessions" }
+        try await koMain(dir)
+        try await wait("rename owner ready") { owner.testClient != nil && owner.snapshot != nil }
+        let client = try XCTUnwrap(owner.testClient)
         let list = owner.sidebar.list
         owner.window.display()
         list.layoutSubtreeIfNeeded()
@@ -60,8 +55,8 @@ import XCTest
         try startEditing(cell)
         cell.finishRename(true)
         XCTAssertTrue(sent.isEmpty)
-        owner.send([Command("new-session", "-d", "-s", "work")])
-        try await wait("duplicate session visible") { owner.stressState.4?.sessions.contains { $0.name == "work" } == true }
+        _ = try await Task.detached { try client.edit(.addSession(KoSchema.EditAddSession(name: "work", new: KoSchema.CreatePane()))) }.value
+        try await wait("duplicate session visible") { owner.snapshot?.sessions.contains { $0.name == "work" } == true }
         cell = try XCTUnwrap(table.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SidebarCell)
         cell.layoutSubtreeIfNeeded()
         try startEditing(cell)
@@ -86,10 +81,9 @@ import XCTest
         XCTAssertTrue(cell.renameError.isHidden)
         let selection = NSRange(location: 2, length: 3)
         (cell.nameField.currentEditor() as? NSTextView)?.setSelectedRange(selection)
-        let snapshot = try XCTUnwrap(owner.stressState.4)
-        let data = try await Child.run(server.tmux, ["-u", "-S", server.socket, "new-window", "-d", "-t", "$0", "-n", "changed"], env: tools.environment)
-        XCTAssertEqual(data.status, 0)
-        try await wait("snapshot changes mid edit") { owner.stressState.4 != snapshot }
+        let snapshot = try XCTUnwrap(owner.snapshot)
+        _ = try await Task.detached { try client.edit(.addWindow(KoSchema.EditAddWindow(after: WindowID(number: 1), new: KoSchema.CreatePane(), session: SessionID(number: 1)))) }.value
+        try await wait("snapshot changes mid edit") { owner.snapshot != snapshot }
         XCTAssertTrue(table.view(atColumn: 0, row: 0, makeIfNecessary: true) === cell)
         XCTAssertEqual(cell.nameField.stringValue, "changed text")
         XCTAssertEqual((cell.nameField.currentEditor() as? NSTextView)?.selectedRange(), selection)
@@ -97,7 +91,7 @@ import XCTest
         let enterEditor = try XCTUnwrap(cell.nameField.currentEditor() as? NSTextView)
         XCTAssertTrue(cell.control(cell.nameField, textView: enterEditor, doCommandBy: #selector(NSResponder.insertNewline(_:))))
         cell.finishRename(true)
-        try await wait("snapshot names renamed session") { owner.stressState.4?.sessions.contains { $0.id == snapshot.sessions.first?.id && $0.name == "renamed 'quoted' name" } == true }
+        try await wait("snapshot names renamed session") { owner.snapshot?.sessions.contains { $0.id == snapshot.sessions.first?.id && $0.name == "renamed 'quoted' name" } == true }
         XCTAssertEqual(sent.count, 1)
         XCTAssertEqual(sent.first?.0, snapshot.sessions.first?.id)
         XCTAssertTrue(cell.nameField.isHidden)
@@ -108,12 +102,12 @@ import XCTest
         owner.window.makeFirstResponder(previousFocus)
         try await wait("focus leaving commits unchanged text") { renamedCell.nameField.isHidden }
         XCTAssertEqual(sent.count, 1)
-        list.renameSession = { _, _, done in done("tmux refusal") }
+        list.renameSession = { _, _, done in done("server refusal") }
         try startEditing(renamedCell)
         renamedCell.nameField.stringValue = "another name"
         renamedCell.finishRename(true)
         XCTAssertFalse(renamedCell.nameField.isHidden)
-        XCTAssertEqual(renamedCell.renameError.stringValue, "tmux refusal")
+        XCTAssertEqual(renamedCell.renameError.stringValue, "server refusal")
         XCTAssertEqual((renamedCell.nameField.currentEditor() as? NSTextView)?.selectedRange(), NSRange(location: 0, length: 12))
         renamedCell.finishRename(false)
     }
@@ -124,10 +118,8 @@ import XCTest
         defer { window.close() }
         let list = SidebarView()
         window.contentView = list
-        let snapshot = try JSONDecoder().decode(Snapshot.self, from: Data("""
-        {"v":2,"client":{"session":"$0","window":"@0","pane":"%0"},"server_instance":{"started_at":1791000000,"pid":4242},"sessions":[{"id":"$0","name":"main","current":true,"nodes":[]},{"id":"$1","name":"work","current":false,"nodes":[]}]}
-        """.utf8))
-        list.update(.running(snapshot))
+        let snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", []), ("work", [])])
+        list.update(snapshot)
         window.layoutIfNeeded()
         list.layoutSubtreeIfNeeded()
         let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SidebarCell)

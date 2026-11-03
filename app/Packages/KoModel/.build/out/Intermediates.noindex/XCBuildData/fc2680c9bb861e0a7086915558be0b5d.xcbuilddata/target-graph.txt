@@ -1,0 +1,11 @@
+Target dependency graph (4 targets)
+Target 'AllIncludingTests' in project 'Aggregate'
+➜ Explicit dependency on target 'KoModelTests-product' in project 'KoModel'
+➜ Dependency on target 'KoModelTests-product' in project 'KoModel' via transitive dependency through 'KoModelTests-test-runner'
+➜ Explicit dependency on target 'KoModel-product' in project 'KoModel'
+➜ Explicit dependency on target 'KoModel' in project 'KoModel'
+Target 'KoModel-product' in project 'KoModel'
+➜ Explicit dependency on target 'KoModel' in project 'KoModel'
+Target 'KoModelTests-product' in project 'KoModel'
+➜ Explicit dependency on target 'KoModel' in project 'KoModel'
+Target 'KoModel' in project 'KoModel' (no dependencies)

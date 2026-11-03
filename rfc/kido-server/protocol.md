@@ -186,9 +186,10 @@ that a client focused most recently in that window; a client that
 enters a window where it has no current pane gets that pane
 (section 7). When a `switch`, another
 connection's select or a removal moves a client, the client gets a
-`selected` event. A client also gets `selected` when its own hello
-or `select` names only a session or a window, because the server
-chose the pane; it gets none when it named the pane.
+`selected` event. A client gets `selected` for each of its own
+`select` requests, also for one that names its current pane, and
+for a hello that names only a session or a window, because the
+server chose the pane; a hello that names the pane gets none.
 
 A client's selection names a session, a window or a pane; a pane
 implies its window and session, a window implies its session, and a

@@ -805,14 +805,22 @@ specification, with the shared core of 4.10 in place of a Swift
    `focus` pane, and selecting the window lands on that pane; tabs
    show the server's default window name until a rename; an empty
    document shows the app's banner and its start flow opens a new
-   session (the server keeps running).
-5. `PaneView` from a view feed into the surface; find over the full
-   mirror; no capture, no Load more, no anchors.
-6. Delete `TmuxControl`, `PaneSync`, `HistoryCapture`, `SearchCapture`,
-   `ScrollAnchor`, the image client, the `-G`/`-K` fill, the marker
-   hack, pause recovery, the `kido rpc` subprocess, the stamp
-   discovery; from the fork, the authoritative grids, held
-   placements, fill images, `restore_output`, the reply suppression
+   session (the server keeps running). Step 4 also includes a minimal
+   content bridge: `PaneView` gets its bytes and snapshots from a
+   view and sends input as `KO_INPUT_TEXT`. Step 4 deletes the tmux
+   pieces and does not keep them compiled: the control client with
+   its marker hack, the `kido rpc` subprocess, the stamp discovery,
+   pause recovery, the image client, the `-G`/`-K` fill, `PaneSync`,
+   `HistoryCapture`, `SearchCapture`, `ScrollAnchor`, and the tmux
+   paths of `PaneView` (Load more, chunk search, anchors, the replay
+   fence, the `verify` probes). Find uses the Ghostty search over the
+   mirror.
+5. The design of `PaneView` on the view feed: the scroller from the
+   mirror, find over the full mirror, and `KO_INPUT_TEXT` against
+   `KO_INPUT_KEY` with a measurement of the kitty keyboard cases.
+6. `TmuxControl` keeps only the geometry and becomes `PaneGeometry`.
+   Delete from the fork the authoritative grids, held placements,
+   fill images, `restore_output`, the reply suppression
    and the prepend-history atomics.
 
 The estimate falls from 20 to 30 because the transport, the protocol

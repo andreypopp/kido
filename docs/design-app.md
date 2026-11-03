@@ -2,16 +2,18 @@
 
 Open gaps and accepted limits are tracked in [Known issues](known-issues-app.md).
 
-Kido.app (`app/`) is a native macOS view of the kido server: a tmux
-control-mode client that renders every pane with libghostty, beside a
-native sidebar fed by `kido rpc`. Sessions, windows and panes
-live in tmux; the app holds none of them. tmux is always the source of
-truth for pane content, including history and its line wrapping, and
-for geometry. Ghostty's reflow during a resize is provisional, replaced
-by a tmux capture once the gesture ends. The app never retains
-Ghostty-derived content that disagrees with tmux. Purely client/UI state
-(scroll position, selection, find, sidebar UI, gestures, fonts and themes)
-belongs to Kido.app, not tmux.
+Kido.app (`app/`) is a native macOS client of a ko server. It renders
+every pane with libghostty, beside a native sidebar. The app talks to
+the server only through `ko_client`, ko's Rust client core, which it
+links as a static library and calls through its C ABI
+(`ko_client/include/ko_client.h`, wrapped by `app/App/Ko/KoClient.swift`).
+Sessions, windows, panes, layout, history and status live in the server;
+the app holds none of them. The core owns the connection, the reconnect,
+the client model, seen marks, layout-edit convergence and each pane's
+view feed. A Ghostty surface is a mirror that its view feeds: its grid is
+the server's pane size, and its content is the server's snapshot plus the
+bytes after it. Purely client/UI state (scroll position, selection, find,
+sidebar UI, gestures, fonts and themes) belongs to Kido.app.
 
 ## Release signing
 
@@ -41,53 +43,76 @@ instructions. Debug, test, visual and stress builds stay ad-hoc. Demo builds
 explicitly stay ad-hoc even in Release; direct `all CONFIG=Release` builds use
 the same team signing as the release script.
 
-## One control client
+## One ko client
 
-Each native window attaches one control client (`kido-tmux -u -S <socket>
--N -T hyperlinks -C attach-session -f pause-after=N,new-layouts,no-detach-on-destroy`)
-and behaves like a normal client: all sidebar and tab navigation and shell
-creation use correlated `kido rpc` requests, and the app follows tmux's
-notifications. The control client owns terminal I/O and pane mechanics. So the client's current session, window and pane are
-always the ones shown, which kido's `watched`, done-until-visited and
-reaping rules depend on. A client per session would mark every session
-attached. When its session is destroyed, `no-detach-on-destroy` moves
-the client to another session where `detach-on-destroy` would detach
-it, and the app follows as it follows any switch.
+Each `WindowOwner` has one `KoClient`. `WindowOwner.dial` calls
+`ko_client_connect` with a hello (`KoHello`: the owner id as the client
+name, `sizes_windows`), and the core posts its events on the main queue:
+welcome, layout, model, selected, failed and mismatch (`KoEvent`); the
+app ignores the core's alert event.
+The model is a snapshot: a layout, model or selected event marks it
+stale, and once per main-queue turn the owner reads it again with
+`ko_client_model`, decodes it into `KoModel` and derives the session view,
+the sidebar `Snapshot` and the tabs from it. The owner keeps only that
+model; the layout editor still gets every layout revision. The owner's link is
+`down`, `starting`, `mismatch`, `changed` (the bundle changed on disk) or
+`connected`. There is no second connection and no image client.
 
-`-N` keeps a redial from starting a server behind the user's back: a
-server is started only by `kido server --server DIR`, on explicit connection
-or the banner's Start button.
-The directory is `$XDG_STATE_HOME/kido-app`, else `~/.local/state/kido-app`;
-the JSON endpoint supplies its `DIR/socket` path. Helpers never set
-`KIDO_STATE_DIR`: panes resolve the server directory from `$TMUX`. A
-`%exit detached ...` is a deliberate detach and is not redialed; any
-other ending is. A reconnect is a full reset, since ids mean something
-only to the server that issued them. Every connection close, redial
-and quit is one line on stderr, with its reason or trigger.
-Build identity is checked only at discovery and explicit restart; automatic
-redial only re-attaches, so a different kido manually started in that directory
-is rejected at the next discovery.
+The server directory is `$XDG_STATE_HOME/ko-app`, else
+`~/.local/state/ko-app`, so an old kido-app tmux socket is never opened as
+a ko socket. `KIDO_APP_SERVER` overrides it, in VISUAL and STRESS builds
+only. A server starts only on an explicit connection or the banner's Start
+button: `KoServer.launch` runs `ko_client_launch(dir, bundled ko)` on a
+detached task. It starts a server unless one runs there and returns the
+socket; then the owner dials. `ko_client_launch` starts the server with
+the app's own environment, so `BundledTools` removes `TMUX`,
+`TMUX_PANE`, `KO_PANE`, `KO_SERVER` and `KIDO_AGENT_*` from it and sets a
+UTF-8 `LANG` when none is set. The core reaps the server process that it
+started. Every dial is one stderr line, `dialing SOCKET (cause) [owner]`.
 
-Each connection also attaches a second control client that is used only
-for image pixels (`capture-pane -K`, see [Images](#images)):
-`env -u TMUX kido-tmux -u -S <socket> -C attach-session -E -f
-no-output,ignore-size,no-detach-on-destroy -t <session id>`, on a remote
-window through the same ssh launch as the main client. On a local
-window both clients add `image-shm` to their `-f` flags (see
-[Images](#images)); a remote window's clients never do. It gets no pane
-output and is never sized: the app sends `refresh-client -C` only on
-the main client, so the image client does not change the window size or
-the `CSI 14t`/`16t` answers. It is never attached with `-d`, which would
-detach the main client. The app ignores its notifications and moves it
-with `switch-client -c` when the main client changes session, so it
-never keeps another session attached. kido commands that take a client
-name always get the main client's name. It starts at the connection's
-first session listing, fetches once its name is known, and closes with
-the connection; its loss closes the connection, and the redial is
-the usual full reset. A large pixel transfer thus never holds back pane
-text, locally or on its own ssh channel.
+The first welcome must arrive within 20 s (`WindowOwner.welcomeTimeout`),
+else the banner reads "Kido could not reach …" with Start. After that the
+core reconnects by itself; a `failed` event shows "Disconnected from HOST …
+Reconnecting…". A welcome with `fresh` (another server instance) resets the
+session view and the model, because ids mean something only to the server
+that issued them, the owner makes a new `LayoutEditor` (a held edit's
+revision belongs to the old server) and selects the first session again. A welcome
+of the same instance keeps the selection: the core sends the client's
+selection again in every hello. `invalidate()` advances the owner's
+generation and closes the client on a utility queue, because the close
+waits for the worker, every decoder and the calls in flight; the client
+stays alive until it returns. `KoClient` counts its calls in flight under
+a lock: a call after the close returns `KO_ERR_CLOSED` without touching
+the handle. Late callbacks check the generation.
 
+The owner reports focus with `ko_client_focus` while its window is key in
+the active app, has no sheet and a pane of the shown window is first
+responder. `SessionView.requestSize` sends the window size with
+`ko_client_size`, at most once per main-queue turn and only when it
+changed. The size carries the cell size in pixels from a shown pane, so
+the server answers `CSI 14t`/`16t` with real values; 0 and 0 mean unknown.
+A floating sidebar changes no size.
+
+**Version mismatch.** A server of another protocol or terminal revision
+gets one `KO_EVENT_MISMATCH` with the code and both `ko_version`s
+(protocol, vt, build), and the core does not retry. The owner keeps its
+last snapshot read-only, shows "Disconnected" with Reconnect and opens a
+native alert sheet. For a local server the sheet is "Restart the local ko
+server", with the warning that sessions, panes, commands and agents end and
+other clients disconnect. Restart is destructive and has no key
+equivalent; Close is the default and Escape action. Restart stops the
+server with `ko_client_stop_server`, then posts a notification with the
+server directory, and every local owner in the mismatch state on that
+directory dials again. A failed restart is a banner, "Could not restart
+the ko server", with Reconnect. The bundle's `Resources/ko/BUILD-ID` is
+read at launch; a different value at a later connection means that the app
+was replaced on disk and requires a relaunch.
 ## Remote hosts
+
+Remote windows do not connect until ko has its remote transport: a remote
+owner shows "Remote hosts return with the ko remote transport" with the
+host label and no button. The entry points below stay, so routing and the
+recent list keep working.
 
 On macOS Tahoe, the Shortcuts action **Connect to Remote Host in Kido**
 has a required Host string in its parameter summary. It works only in
@@ -130,22 +155,20 @@ it with resolved `user@host / `. The original dialing alias is the window
 content's tooltip. Offline titles drop the session/window name.
 
 `AppDelegate` owns shared Ghostty configuration, app lifecycle and menus.
-Each `WindowOwner` owns its immutable Host, generation, transport, Connection,
-Feed, model and SessionView/surface cache. Main menu actions target the key
-owner; source-pane actions stay with that pane's owner. Configuration changes
-broadcast to live owners. Late discovery, command, feed and control callbacks
-check liveness/generation; dead-master callbacks cannot publish channel results.
-Surface disposal cancels find/gestures, denies pending paste exactly once,
-rejects deferred actions/input, and retains parser-quiescent main-thread freeing.
-Closing a native window stops only its channels/master, never a pane or a
-remote session, so it never asks for confirmation; reopening redials. Closed
-owners stay retained until their transport cleanup completes; quit replies
-after asynchronous process-reaping completion, including retiring transports.
-The terminate-later reply is a common-mode main RunLoop block, not a main
-DispatchQueue block: AppKit's nested termination event loop cannot re-enter a
-main-dispatch callback that called terminate. A bounded off-screen quit probe
-reproduced that wait in `NSApplication._shouldTerminate` before the reply fix.
-Closing the last window leaves the app available for another intent.
+Each `WindowOwner` owns its immutable Host, generation, link, `KoClient`,
+`LayoutEditor`, model, snapshot and SessionView/surface cache. Main menu
+actions target the key owner; source-pane actions stay with that pane's
+owner. Configuration changes broadcast to live owners. Late callbacks
+check liveness and generation. Surface disposal cancels find/gestures,
+denies pending paste exactly once and rejects deferred actions and input.
+Closing a native window closes only its client, never a pane, so it never
+asks for confirmation; reopening dials again. Quit closes every owner and
+replies after that. The terminate-later reply is a common-mode main RunLoop
+block, not a main DispatchQueue block: AppKit's nested termination event
+loop cannot re-enter a main-dispatch callback that called terminate. A
+bounded off-screen quit probe reproduced that wait in
+`NSApplication._shouldTerminate` before the reply fix. Closing the last
+window leaves the app available for another intent.
 
 Launch bootstrap initializes shared resources and drains queued Host requests;
 it does not open Local. Ordinary AppKit untitled/reopen delivery opens Local
@@ -163,163 +186,17 @@ This uses the same gate without timers, whether URL delivery precedes or
 follows launch completion. Actual URL-launch notification/event ordering is
 not measured by off-screen routing tests; the user retests it on screen.
 
-### Transport and discovery
-
-System `/usr/bin/ssh` supplies one retained foreground `-M -N -T` master per
-native remote window. Its unique `/tmp/ka-…/c` ControlPath directory is 0700.
-Bounded `-O check` readiness precedes discovery. BatchMode, strict pretrusted
-host keys, ConnectTimeout=10, one attempt and keepalive=15×3 apply to all
-channels. X11/inherited port forwarding, tty, RemoteCommand, ControlPersist,
-fork-after-authentication, null stdin, LocalCommand, SendEnv and host-key
-updates are disabled. User/account/port/identity/ProxyJump and configured
-known_hosts remain OpenSSH's responsibility. The master and control session
-honor per-host ForwardAgent from the user's SSH config, including socket paths
-and IdentityAgent selection; helpers force forwarding off and scrub incoming
-remote SSH_AUTH_SOCK. Authentication/trust failures stop automatic setup and
-ask the user to establish trust/unlock keys with ordinary ssh in Terminal.
-No passwords, credentials, interactive shell sourcing or automatic installation.
-
-Remote servers start with SSH_AUTH_SOCK pointing to their state directory's
-stable `agent.sock`. Before attaching, the control session validates that directory
-as user-owned and 0700, atomically publishes a symlink to its forwarded socket
-when available, and supplies the stable path to both tmux's global environment
-and the attaching client. Across windows and Macs, the last successful publication
-wins; an attach without forwarding leaves the link alone, and a dead winner
-leaves a dangling link with no fallback.
-
-Discovery runs a fixed `/bin/sh` probe remotely: absolute `command -v kido`
-and `${XDG_STATE_HOME:-$HOME/.local/state}/kido-app`. Missing kido gives an
-install/noninteractive-PATH banner; there are no guessed installation locations.
-Relative/control-containing paths or noisy/malformed stdout are errors. Explicit
-Connect may call that kido's `server --server DIR`; JSON tmux/socket paths are
-opaque remote values, not local files. The returned socket must end in `/socket`;
-its parent is retained for feed/navigation. Local retains bundled-tmux validation.
-Discovery requires the binary's RPC protocol to be exactly 6.0, as does
-RPC hello; both major and minor must match. Server compatibility is separate:
-the opaque server stamp must equal the expected stamp from the same binary's
-discovery JSON. A null stamp is incompatible. The app has no stamp constant.
-Mismatches block the affected window with a native alert sheet; Close leaves
-a disconnected, read-only view with Reconnect to check again. For every local mismatch, the sheet includes the warning
-that sessions, panes, commands and agents end and other clients disconnect.
-Its destructive Restart acts immediately; Close is the default and Escape action.
-There is no second confirmation or Cancel-back flow. Newer-local title and guidance
-are retained with the same destructive Restart/Close controls. A successful local restart notifies owners on the same socket:
-their mismatch sheets close and they repeat discovery and connect to the new server,
-without another user action. Restart failures remain banners.
-Remote sheets offer Reconnect, advise updating the app for a newer major or minor,
-and read discovery's binary protocol before recommending an upgrade: an
-already-compatible binary only needs its server restarted when its stamp
-differs. RPC hello retains the binary protocol and server/expected stamps for
-later mismatches. Stamp mismatch copy describes a different build or config;
-protocol mismatch copy names the required and actual RPC versions. No server is restarted automatically.
-Reconnect repeats discovery after the user fixes the mismatch.
-There is no compatibility waiver or remote restart. The bundle's captured
-BUILD-ID detects an app replaced on disk and requires relaunch independently
-of the server stamp and RPC protocol.
-
-Control attach and duplex RPC (including switch-window and switch-session) share the owned master,
-with `ControlMaster=no`. One audited POSIX single-quote function quotes every
-remote argv element after `exec`; Host is never interpolated into shell text.
-Remote HOME/PATH/XDG are resolved there, not forwarded from the Mac. Only
-VISUAL/STRESS test injection supplies private remote HOME/XDG/PATH. The tested
-login shell is zsh; the fixed probe uses /bin/sh. Protocol stdout and bounded
-16KiB stderr are separate. One-shots have deadlines and cancellation; channels
-terminate then escalate to SIGKILL rather than relying on stdin EOF. Channels
-are stopped before the master (1.5s grace), which is reaped before removing
-its private directory. Initial topology plus a valid v2 feed snapshot must
-arrive within 20s of attach to dismiss the connection banner.
-
-Unexpected control loss redials with capped backoff and a full surface/model
-reset. It recreates the master and attaches the **remembered** socket using
-`-N`, never running start-capable discovery. A missing server leaves the explicit
-**Start remote server** action. Deliberate `%exit detached` stays down. Feed-only
-failure restarts the feed on healthy control; master loss invalidates both and
-cancels commands together. OpenSSH can fall back to a direct connection after
-a master dies: launches refuse a known-dead/stopped master, and the owner rejects
-old-generation/dead-master completions rather than accepting fallback as recovery.
-
-Two native windows on the same server/session share tmux's current window and
-pane grid, sized by its latest elected client. This coupling is accepted; there
-are no grouped sessions. Models, client names, feeds, surface caches, find and
-scroll state remain disjoint even when both endpoints issue `$0/@0/%0`.
-Authoritative external layouts are clipped, not resized into independent grids.
-OSC 8 links from local panes and all links from remote panes share one app
-handler: HTTP/HTTPS opens on the Mac through NSWorkspace; file paths and other
-schemes are refused with the same diagnostic and alert. Local non-OSC 8 links,
-including regex-detected URLs, retain Ghostty's own OS opener and scheme policy.
-Ghostty's fallback OSC 8 safety guard stays enabled but is not reached. Both
-control transports advertise hyperlinks with `-T hyperlinks`, so tmux preserves
-OSC 8 links. No implicit port forwarding/file transfer.
-Mac clipboard/paste and unsafe-paste sheets remain local. OSC 52 uses the same
-raw control output and pane-input path over SSH; the wider remote/auth/URL
-matrix remains in known issues.
-
-### Prepared localhost and manual entry-point check
-
-The user may add this **only for noninteractive SSH** to `~/.zshenv` (no startup
-stdout); it does not shadow Homebrew kido in ordinary terminals or interactive SSH:
-
-```zsh
-if [[ -n ${SSH_CONNECTION-} && ! -o interactive ]]; then
-  path=("$HOME/Workspace/kido-app/app/build/xcode.noindex/derived-remote/Build/Products/Release/Kido.app/Contents/Resources/kido/bin" $path)
-fi
-```
-
-Check `ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes localhost
-'command -v kido; kido --version'`. Keep the bundle's bin directory together so
-its kido finds its matching sibling fork/resources. The app connects to the
-account's kido-app server, not the normal Homebrew kido server. Tests do not
-change startup/SSH files and always inject private `/tmp` HOME/XDG and explicit
-server/socket paths over localhost.
-
-Before shipping, the user/parent must prepare a **distinct app identity**, not
-register the default derived Kido.app over the running installed app:
-
-```sh
-make -C app all CONFIG=Release DERIVED=build/xcode.noindex/derived-remote XCODE_SETTINGS='PRODUCT_BUNDLE_IDENTIFIER=com.andreypopp.kido.remote-test INFOPLIST_KEY_CFBundleDisplayName=KidoRemoteTest'
-```
-
-The output is `app/build/xcode.noindex/derived-remote/Build/Products/Release/Kido.app`,
-displayed as KidoRemoteTest. Xcode defaults live under `app/build/xcode.noindex/`
-to keep built apps out of Spotlight; private builds should use
-`DERIVED=build/xcode.noindex/derived-<name>`. Explicit DERIVED paths are honored.
-Non-app caches such as GhosttyKit remain outside that directory.
-Check its Metadata.appintents and `codesign --verify --deep --strict` before
-registration; use a clean build if an incremental metadata addition invalidates
-the signature. Register only that absolute bundle path with
-`/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f`.
-A distinct bundle ID isolates **app routing, not server state**: these user-driven
-checks attach the account's real kido-app server. They require deliberate user
-approval for that attachment, must never Restart/kill it, and are not agent-run
-private-state tests. Shell-exported HOME/XDG around lsregister does not prove
-Spotlight inherits them.
-
-Quit only KidoRemoteTest, then run a saved Shortcuts workflow containing that
-team-signed test app's **Connect to Remote Host in Kido** action and Host=localhost.
-Stop if the action's identity is ambiguous. Verify exactly one remote native
-window and **no Local window** on cold launch. Repeat while running: another
-remote window must appear, not replace the first. This cold-launch check passed
-on screen; Spotlight does not list the action directly. Also retest the URL
-recipe above cold and warm; it works with ad-hoc builds too.
-Separately quit only the test app and plain-open it with
-`open -b com.andreypopp.kido.remote-test`: one Local window must appear. Warm
-intent delivery then adds remote without replacing Local; reopening with a live
-remote window must not create Local. Finally quit only the test app, unregister
-only its absolute bundle path with lsregister `-u`, and remove only the user's
-test workflow. If URL ordering fails, record the lifecycle. OS-delivery steps
-are user-run, never part of the off-screen implementation checks.
-
 ## Panes
 
 A pane is drawn by a Ghostty surface in manual-IO mode
-(`MANUAL_MIRROR`): `%output` is fed in, typed bytes come back out as
-`send-keys -H`, and the emulator's own query replies are suppressed
-because tmux answers them. tmux prefix bindings therefore do not fire
-from the app; its menus and Ghostty's split and tab actions stand in.
-In linefeed mode (LNM), Ghostty's termio write path turns each typed `\r`
-into `\r\n` once, with the same routine for the manual and pty backends;
-the app and tmux do not convert again.
-
+(`MANUAL_MIRROR`). Its view feeds it (see [Content](#content)), and typed
+bytes leave through Ghostty's write callback as `ko_view_input` with
+`KO_INPUT_TEXT`. The emulator's own query replies are suppressed, because
+the server answers them. The app's menus and Ghostty's split and tab
+actions are the only pane commands. In linefeed mode (LNM), Ghostty's
+termio write path turns each typed `\r` into `\r\n` once, with the same
+routine for the manual and pty backends; the app and the server do not
+convert again.
 Ghostty's configuration is `kido-app.conf` beside `kido.conf`
 (`$XDG_CONFIG_HOME/kido/`, else `~/.config/kido/`), in Ghostty's syntax,
 and Ghostty's own config files are not read; `config-file =
@@ -346,7 +223,7 @@ The defaults are `theme = light:kido-light,dark:kido-dark`, by bare name.
 before Ghostty starts, and Ghostty searches a bare theme name in
 `$XDG_CONFIG_HOME/ghostty/themes` (else `~/.config/ghostty/themes`), then in
 `<resources dir>/themes`. Thus, a name in the user's file still resolves
-after the app moves or in a dev build. Spawned tmux and shells inherit the
+after the app moves or in a dev build. The spawned server and shells inherit the
 variable; Ghostty never starts a shell in Kido, so it has no effect there.
 `project.yml` ships `app/Resources/ghostty` whole as a folder resource. Its
 `themes` folder holds `kido-light` and `kido-dark`, and also `ahrefs-light` and `ahrefs-dark`
@@ -393,8 +270,8 @@ written theme with no flash.
 
 The built-in defaults unbind Ghostty's `super+k`. The app has no Clear
 command, and Ghostty binds Command-K to `clear_screen` by default. That
-action clears only the Ghostty surface. Under `MANUAL_MIRROR` the surface
-then no longer agrees with tmux's grid, so the key does nothing.
+action clears only the Ghostty surface, which the server owns, so the key
+does nothing.
 
 The sidebar list's background is a shade of the terminal background.
 The shade mixes the terminal background toward black on a light
@@ -445,124 +322,55 @@ file and its includes again.
 Launch and reload build the config in the same way, and a reload prints
 its diagnostics to stderr as at launch. If Ghostty's part of the config
 is different, a reload applies the new config to each live pane inside
-`PaneView.reflow`, so that a font change
-resizes the pane and its tmux grid. A change to only the shade does not
-reflow the panes, so it does not end copy mode or resync a pane. The
-app gets the config without surface propagation. `PaneView.reflow` can
-delay its change while a pane replays, so the delayed change reads the
-current config of the app. The chrome of every window then follows the new
-background and appearance.
+`PaneView.reflow`. A font change changes the cell, not the grid: the new
+pixel size reaches the server as the window size, and the grid comes back
+from the server. A change to only the shade does not reflow the panes, so
+it does not end copy mode. The app gets the config without surface
+propagation. The chrome of every window then follows the new background
+and appearance.
 
-tmux has one grid, so every pane has one font size. ⌘+, ⌘− and ⌘0 change
-it on one surface, and `SessionView.fontChanged` gives that size to every
-pane with Ghostty's `set_font_size:` action. Ghostty keeps a size set in
-this way when the config reloads. Thus a reload that changes `font-size`
-gives the new value to every pane of every window, hidden panes included,
-after the pane gets the new config. The runtime compares the new
+The server has one grid per pane, so every pane has one font size. ⌘+, ⌘−
+and ⌘0 change it on one surface, and `SessionView.fontChanged` gives that
+size to every pane with Ghostty's `set_font_size:` action. Ghostty keeps a
+size set in this way when the config reloads. Thus a reload that changes
+`font-size` gives the new value to every pane of every window, hidden panes
+included, after the pane gets the new config. The runtime compares the new
 `font-size` with the one that it loaded last. A new pane starts at the
 current size with the same action, so Ghostty also keeps its size. Thus a
 reload that does not change `font-size` keeps one adjusted size in all
 panes.
 
-A pane is synced by one command line: its captures, pending parser
-bytes and mode state. tmux queues `%output` ahead of the reply, so
-output before the reply is wiped by the restore and output after it is
-fed live. The same resync follows a `%pause`.
+### Content
 
-Every restore captures the newest 10,000 physical history rows plus
-screen, pending parser bytes and mode state in one command batch, then
-resets and replays the surface. Initial sync, reconnect, resize and showing
-a content-dirty pane share that path. History, screen and the saved main
-screen (`-a`) come from `capture-pane -p -r -G`, tmux's replay stream
-(`share/rpc/contract.md`, "Pane text replay"). The app writes the stream
-unchanged: tmux writes every row separator, so history and screen
-concatenate, and no pen, link or wrap is rebuilt in the app. A stream
-assumes the default pen at its start and ends every row at the default
-pen, so the app writes no `ESC[m` around it: `ESC c` resets the pen
-before the history, and the saved main screen ends at the default pen
-before `ESC[?1049h`.
+`WindowView` gives each `PaneView` its grid from the layout before the
+pane opens its view. `PaneView.attach` then calls `ko_view_open` with
+`history: true` for the pane's surface. The core runs the view's restore
+and feed callbacks on the view's own decoder thread, in the server's
+order, so the surface never takes bytes of an older snapshot after a
+newer restore. A restore is `ghostty_surface_restore_snapshot` with the
+server's snapshot and its continuation limit for long APC sequences. The
+feed gives bytes to `ghostty_surface_process_output` and a
+`KO_FEED_RESIZE` to `ghostty_surface_set_grid_size`. After the attach, only
+the server sizes the grid; a later layout only records the layout size.
 
-Each history range starts at a logical line start, so the soft wrap into
-its first row is never lost. Plain `-F -L -T -N` metadata, one row wider
-than the range at its top, tells whether the first row continues a
-wrapped row. A restore or Load more batch is sent with the fixed start.
-Only when that start falls mid-line and tmux has more rows than the
-chunk is the whole batch sent again, once, starting at the next line
-start. The second result is accepted as it is, even if output moved the
-start mid-line again. The oldest partial logical line is thus omitted.
-A line spanning the entire interval is omitted rather than expanding the
-restore. Extra history loaded earlier is deliberately dropped.
+A restore that reports a size mismatch asks for one new snapshot
+(`ko_view_resync`). If that snapshot also misses the same layout size,
+the pane waits for a changed layout size, then asks again. A pane is ready
+for a visual test only when its surface grid is the layout size. A closed
+view logs `view of PANE closed: …`. `PaneView.detach` runs `ko_view_close`
+on a utility queue, because the close waits for a running restore or feed;
+the pane, and its surface, stay alive until the close returns.
 
-While the alternate screen is on, `-r` history ranges and `-a` read a
-copy of the main screen that tmux reflows to the pane's current width,
-as it does when the alternate screen ends. Thus every stream replays at
-the surface's width. The saved main command is `-r -G -a -q -S -10000`:
-one range over the reflowed history and main screen, equal to the
-capture of the same range after the exit; outside the alternate screen
-it is empty. Under the alternate screen the restore writes it instead of
-the history reply, then `ESC[?1049h` and the live alternate screen. Its
-`-S` counts reflowed rows, but `history_size` and the plain metadata
-count the stored rows, so the restore skips the line-start check there
-and accepts the range as it is.
-
-Wheel and thumb cover only Ghostty's retained rows. They never capture
-history or expose unloaded blank space. One native Load more pill appears
-near the loaded top when tmux has older rows. A click loads the next
-10,000-row chunk, aligned to whole logical lines, through the shared
-loader. The chunk ends above the loaded top, so tmux ends its stream
-with a row separator. The app drops that final `CR LF` before the
-prepend, so the scratch terminal has no extra empty row and a full last
-row keeps its pending wrap. Explicit loads can expand a chunk for a long line, bounded by
-tmux's total. Empty or malformed captures stop without pretending to be
-memory pressure. A refused nonempty insertion leaves the same pill;
-another click raises that surface's byte budget and retries. Refusal
-survives metadata refreshes. There is no idle trim.
-
-`ghostty_surface_prepend_history` snapshots the primary grid and page
-identity under the renderer mutex, parses a scratch terminal outside it,
-then validates and clones the pages under the mutex. Existing pins and
-selections stay attached to their content. The chunk is accepted whole
-or not at all, without evicting newer rows. Kido defaults to a 512 MiB
-scrollback budget; configuration can override it. Raised limits survive
-appearance/config updates but not surface destruction or reconnect.
-Ghostty's normal byte-budget eviction and the app's surface LRU remain.
-
-Connection keeps tmux's sampled history total separate from retained
-Ghostty rows. Output invalidates metadata/exhaustion but never loads
-older history. Restore/load/search requests read metadata; wheel and
-scroller requests reaching the loaded top also refresh it without loading
-history. Hidden panes refresh on show. There is no history timer, and
-renderer notifications do not query tmux. A fresh shrink/clear invalidates navigation and repairs content
-through the common restore, joining an active gesture's final repair.
-tmux has no universal history-content generation: arbitrary same-sized
-external replacement between samples is not immediately observable.
-
-A resize captures the viewport's logical count and text once at its first
-intent. Intermediate accepted grids are installed and confirmed inline;
-Ghostty's local reflow is provisional. Capture waits for gesture end and
-the final client-size or floating-command/layout drain. A newer gesture
-invalidates an in-flight snapshot even if its dimensions end unchanged.
-There is at most one snapshot in flight and one coalesced successor;
-already-sent obsolete transactions drain without publishing. Move-only
-or unchanged-cell gestures need no new content capture unless a prior
-restore obligation or content invalidation remains.
-
-The anchor resolves only inside that snapshot, with nearest matching text
-within ±32 logical lines, ties toward newer rows, and an in-range count
-fallback. An anchor outside the capture or actual budget-shortened
-retention goes to the live bottom. It never pages or clamps to the oldest
-loaded row. Scrolling, typing, paste and find cancel the old viewport
-intent without canceling required content repair.
-
-Retained hidden panes install accepted grid changes too, so subsequent
-output is parsed at tmux's width. Dirty epochs survive A→B→A and equal
-dimensions; only a current authoritative restore clears them. Showing a
-dirty pane repairs it. Possible font/scale/config reflow follows the same
-invalidation and confirmed-grid path; color-only changes remain local.
+History is what the server's snapshot holds. The app loads no history of
+its own and has no Load more. Copy mode freezes the content: entry moves
+the feed state to entering, then frozen, and a frozen feed drops its bytes
+and marks the pane dirty. Leaving copy mode asks for a new snapshot only
+when the pane is dirty. Copy entry fails after `PaneView.copyEntryTimeout`
+(2 s).
 
 Each pane draws one thin overlay scroller, shown during scrolling or
 hovering and fading afterwards. The scroller track spans the expanded content while its thumb and targets count whole grid rows. Ghostty's own scrollbar is disabled. The
-thumb uses the loaded history rows plus the screen, with a native-style
+thumb uses the mirror's history rows plus the screen, with a native-style
 minimum knob size. The knob is one CALayer: a step moves it, and the scroller
 never redraws a backing store. A hidden or faded scroller, or one in an
 invisible window, does not move the knob, because each move commits a CA
@@ -598,65 +406,41 @@ changes and focus loss also snap and suppress momentum. Main publishes only the 
 geometry to the thumb and presentation, not the requested target.
 If all three revision attempts fail, presentation stays at the last success
 and the target waits for another event or geometry update, with no idle retry.
-Capture publication
-updates loaded geometry and requests presentation, never moving the viewport
-itself; unchanged geometry and memory-limit state do not request another
-apply. Snapshot replay invalidates applied viewport revisions at both its
-start and end, then asynchronously reapplies the latest preserved target even
-when capture metadata is unchanged. Replay cannot complete a final render;
-revision validation and acknowledgement commit share the scroll-intent lock.
-Main snaps and resets stamp the revision captured before their apply, so replay
-cannot make an older apply appear current. Replay never enters live-output
-pin-delta accounting.
+A restore ends with a scroller refresh and one apply of the latest
+target. Main snaps and resets stamp the revision captured before their
+apply, so an older apply never appears current.
 Live output shares the serial worker and pins a scrolled viewport,
 adjusting its distance from the bottom; a zero target follows the bottom.
 Hidden and occluded panes retain their renderer rules and do no idle
 scrolling work.
 `KIDO_APP_DEBUG=1` logs wheel timestamps, phases and deltas, and each applied
 target's row and fractional pixel offset.
-The thumb's range and size use loaded geometry. Colours resolve in the current
+The thumb's range and size use the mirror's geometry. Colours resolve in the current
 effective appearance when drawn.
 
-Command-F opens a pane's native find bar. Each query scans tmux's history
-and screen in 5000-row, whole-logical-line chunks on a worker queue,
-retaining only match distances from the screen and discarding captured
-text. Matching is plain substring, ASCII case-insensitive like Ghostty.
-Search uses one `-F -L -T -N` capture per chunk, joining bodies on wrap
-flags without trimming their whitespace. Query edits and closing the bar
-cancel the scan. Output immediately invalidates results and cancels chunks;
-stale results cannot navigate. A new scan starts after 300 ms of quiet,
-or at most every two seconds during continuous output. Connection owns
-this lifetime: resync invalidates immediately and restarts only after a
-successful restore. Alternate screens search only their screen. Next and previous wrap through the newest-first
-match list. An unloaded match submits a tokened coverage goal to the same
-10k loader as the pill, automatically raising the surface budget on
-refusal. Later navigation replaces that goal, including cancellation when
-a loaded match is selected. Query changes, output and resize cancel it;
-a post-restore scan does not automatically reload a canceled old goal. Ghostty
-search supplies the highlights and loaded-match selection; it is restarted
-after prepending history. Ghostty rescans its viewport matches only when the
-render state's rows change (row moves, overscan, prepended history, output,
-selection); a pixel-scroll step within the same rows does not rescan. Each restart ends the previous Ghostty lifetime.
-Ghostty tags totals and selected indices with that lifetime's immutable
-generation and rejects queued events after it ends. The surface's delivery
-epoch advances on each new search and both public stop operations, including
-stops with no active search. Nonempty edits in a live search keep its epoch.
-The runtime captures the main-only epoch getter when accepting an action,
-then checks it again inside the weak, asynchronous PaneView delivery.
-Clearing or invalidating without restarting therefore rejects already accepted
-actions too. A replaced search cannot
-inherit an old count or selection. End-search also captures the find-view
-identity on main, so its queued close cannot close an empty reopened bar,
-which has not issued a new Ghostty lifetime yet. Nonempty needle changes without stopping remain in one lifetime;
-these generations are not per-query tokens for arbitrary Ghostty clients.
-Budget retries and chunk expansion are bounded; genuine resource or capture
-failure reports a failed search without evicting newer rows. Command-G and Shift-Command-G (also Return
-and Shift-Return) navigate; Escape closes the bar and clears highlights.
+Command-F opens a pane's native find bar. Find runs Ghostty's own search
+over the mirror, which holds the whole history of the server's snapshot,
+through the binding actions `search:<text>`, `navigate_search:next` and
+`navigate_search:previous`, and `end_search`. Ghostty supplies the
+highlights, the count and the selected match. The bar reads "i of N"
+outside copy mode and "N matches" in copy mode. Each restart ends the
+previous Ghostty lifetime. Ghostty tags totals and selected indices with
+that lifetime's immutable generation and rejects queued events after it
+ends. The surface's delivery epoch advances on each new search and both
+public stop operations, including stops with no active search. Nonempty
+edits in a live search keep its epoch. The runtime captures the main-only
+epoch getter when accepting an action, then checks it again inside the
+weak, asynchronous PaneView delivery. Clearing or invalidating without
+restarting therefore rejects already accepted actions too. A replaced
+search cannot inherit an old count or selection. End-search also captures
+the find-view identity on main, so its queued close cannot close an empty
+reopened bar, which has not issued a new Ghostty lifetime yet. Command-G
+and Shift-Command-G (also Return and Shift-Return) navigate; Escape closes
+the bar and clears highlights.
 
 In copy mode, Command-F, `/` and `?` open or focus the same bar without leaving
-copy mode. The bar searches only what Ghostty has loaded: no tmux scan, no history
-load, and no restart on output, because the pane is frozen. The count reads
-“N matches (loaded)”. `?` searches toward older text and `/` toward newer text;
+copy mode. The bar searches the frozen mirror, with no restart on output. The count
+reads “N matches”. `?` searches toward older text and `/` toward newer text;
 `n` repeats that direction and `N` reverses it. The first result is the newest
 match. Each selected-match event carries the match's first cell, and the copy
 cursor (or the end of a `v` or `V` selection) moves there. Search never selects
@@ -675,8 +459,7 @@ alternate-screen programs. Mouse and keyboard share the copy cursor and the
 selects a word and a triple-click selects the wrapped line (`V`). A drag after
 a double or triple click extends by word or line. A Shift-click extends the
 selection in its mode. A drag past the top or bottom edge scrolls every 50 ms
-through the same scroll path as the keys, only within loaded rows. It never
-loads history.
+through the same scroll path as the keys, within the mirror's rows.
 
 Outside copy mode, a left press with Shift as its only modifier enters copy
 mode and starts a selection at the pressed cell. As a plain click does, the
@@ -709,172 +492,23 @@ a Ghostty selection, and "Prompt…" otherwise. It enters the palette's Prompt
 mode ([Command palette](#command-palette)), with the selection appended as a
 markdown quote, or with no quote. ⌘O does nothing while copy mode is still entering. The title
 follows the focused pane when the Edit menu opens. The item is disabled with no
-focused pane, and when the pane's tmux session has no agent that kido's
-`prompt` can reach: no sidebar row of that session is an agent outside a run
+focused pane, and when the pane's session has no agent that a prompt
+can reach: no sidebar row of that session is an agent outside a run
 window. Then ⌘O beeps and opens nothing, also in copy mode. In copy mode, `p`
 enters Prompt mode only with a selection, and beeps without one. While copy
 mode is still entering, mouse clicks are ignored, except that a held
 Shift-press gesture continues. The wheel still scrolls.
 
-The `Feed` has no timeout for a request. Thus, a `prompt` send that blocks
-kido's RPC loop until the inbox times out does not restart the helper.
-
 ### Images
 
-Panes show kitty-graphics images. tmux (the fork, built with images)
-stores them as it stores text, and it is the one authority for them. The
-live path does not change: `%output` carries a program's APC unchanged
-and Ghostty draws it. Programs must send direct APC: an image wrapped in
-tmux passthrough (`DCS tmux;`) is not shown and not restored, by design.
-tmux answers `a=q` itself, and `MANUAL_MIRROR` suppresses Ghostty's
-answers, so a program gets exactly tmux's replies (`ImageTests`,
-`testImagesParserReplies`).
-
-The main client's every size send is `refresh-client -C WxHxXPxYP`,
-with the cell size in pixels from a shown pane's `ghostty_surface_size`.
-No size is sent before a pane has real metrics and the view has
-bounds; until the first layout, a query in that moment gets another
-client's cell size or tmux's 16x32 default. A font-size or scale change changes the
-pixel fields, so the size is sent again even when the columns and
-rows stay the same. tmux then answers
-`CSI 14t`/`16t` and places images with the real cell size instead of
-its 16x32 default.
-
-A restore has two phases. The text phase is the usual capture batch
-with `-G`: each placement is an `a=p,i=,p=,c=,r=,x=,y=,w=,h=,C=1`
-written inline at its cell, in the history chunk, the screen and the
-saved main screen, so it lands on its row when the row is replayed.
-Ghostty holds a placement whose image it does not have yet: under
-`restoring`, an `a=p` for an unknown id adds a pending image
-(`addPendingImage`) and the placement. A held placement draws nothing;
-the row shows the text that tmux captured under it. Its size follows
-kitty's rule once the image is complete, exactly as for a complete
-image: with neither `c=` nor `r=` it is drawn at the image's own size,
-with one of them the other axis is proportional, with both it is
-stretched. So a `-G` key of 0 (an axis at the image's own size, from
-the contract) and a live `a=p` without `c=`/`r=` (notcurses, termpdf)
-both size correctly after the fill. A placement on a held image never
-moves the cursor. `-G` also carries `z=` and the `X=`/`Y=` offsets, and
-an image that was sent without `i=` comes back with an id in
-`0x80000000`-`0xffffffff` (`share/rpc/contract.md`, "Pane images"); the
-app passes all of it to Ghostty unparsed. The pixel phase
-then fetches with `capture-pane -K` on the image client. Ghostty's
-held placements are the whole record of what is missing: every loaded
-row got its placements from `-G`, so a row needs pixels exactly when
-`ghostty_surface_pending_image_rows` reports a held placement on it
-(it resolves the rows through Ghostty's render-state placement list,
-fixed, relative and virtual placements alike, in a pending mode that
-does not consume the renderer's dirty flags; for an image whose size
-is still unknown, the size comes from the placement's crop extent
-under the normal kitty size rule). On the restore and on every viewport publish of a shown pane
-(wheel, thumb, find, copy mode, the snap after Load more) the app asks
-that query for the visible rows plus one screen height above and below
-and fetches the first range that holds pending rows. The app keeps no
-fetched-row set; Load more needs no bookkeeping. One `-K` per pane is
-in flight; the next one is computed from the viewport when the reply
-arrives. A hidden pane asks for nothing. A range that stays pending
-after a complete reply (tmux could not supply it) is asked for again
-only after new pane output or a new wanted range, never in a loop.
-The fetch never loads history text, never moves the viewport and never changes
-the surface budget. In the alternate screen, `-K -a` also fills the
-saved main screen. The fill names its target screen when the fetch
-starts, so a screen switch before the reply cannot fill the wrong
-screen.
-
-`-K` is paged: a reply holds at most 8 MiB, and an image can stop
-mid-transmission with `m=1`; a final line `more <token>` asks for the
-same range again with `-k <token>`. The error `image changed` resets
-the fill and starts the range again without a token, once per fetch.
-Every reply goes to `ghostty_surface_fill_images`, never to the live
-stream: it parses in its own scratch terminal (own APC parser and
-chunk assembly), kept from one page to the next of one fetch.
-`ghostty_surface_fill_images_reset` starts a new fill generation and
-returns it; each fetch carries its generation into every fill call,
-and Ghostty checks it again under the renderer lock before it moves
-anything to the screen, so a page of a cancelled fetch, even one
-whose decode starts late, changes nothing. A reset happens on a new
-fetch, a cancel and every pane epoch change. An image moves from the
-scratch to the screen when its own part of the reply is complete
-(its root, its frames and its `a=a` line: when the next image starts
-or on the last page), so images appear as they arrive and no partial
-animation is ever shown. `restore_output` resets the
-live parser, and a `-K` reply arrives out of order with `%output`,
-possibly in the middle of a live APC or upload. The rule: **a fill
-transmit only completes a pending image; it never creates or
-replaces one.** A live replace that arrives first leaves the image
-complete, and a live delete leaves it unknown; either way the stale
-transmit is dropped, so a deleted image never comes back.
-
-A fetch belongs to one connection generation and one pane epoch.
-A restore, resize, dirty content, copy-mode entry or connection close
-drops its replies; after a redial both phases run again.
-
-**Animation and frame edits.** tmux stores frames and the playback
-state and computes the current frame at each capture; it has no timer.
-For an image with frames, `-K` writes the root, then each further
-frame as a composed `a=f,f=32,X=1,z=<gap>` append, then an
-`a=a,c=K,s=,v=` line with the current frame and state. The fill
-takes, when the sequence starts, the ids of the screen's pending
-images with their transmission stamp; only those images are assembled
-(root, `a=f` frames, `a=a`) in the scratch terminal and moved to the
-screen, and only while each is still pending with that stamp. The
-frames are Ghostty's own pending animation frames, reserved while they
-load and completed by `completeFrame`, and an animation with pending
-frames does not play. Any
-other `a=f`/`a=a` is dropped like a stale transmit. So a restart after `image changed` (the
-token's frame was edited, deleted or renumbered) or a cancel cannot
-append frames twice: an image already moved to the screen is complete,
-and the new sequence drops its root and frames. Ghostty animates the
-restored image from frame K. After an edit of frame 1, `-K` sends that
-frame's pixels as `f=32`.
-
-**Shared memory and the media policy.** Ghostty's accepted media are
-set per surface (`kitty_image_media` in the surface config, Ghostty's
-own load limits) and kept across config reloads; the fill's scratch
-terminal inherits them. A local window accepts `t=d` and `t=s`; a
-remote window accepts `t=d` only, so a remote program cannot make the
-app open, unlink or read a local shared-memory object or file. `t=f`
-and `t=t` are never accepted: tmux never acts on them, so a restore
-could not bring such an image back. A refused medium creates no image,
-no placement and no cursor move. Both local clients attach with
-`image-shm`: tmux then forwards a live `t=s` raw without a `t=d` copy,
-and `-K` answers with one `t=s` line per image, naming an object that
-tmux created for that reply. Ghostty opens a name exactly as received
-(`/name` and `name` are different objects on macOS) and unlinks it at
-once, as the kitty spec asks. For uncompressed `f=32`, the mapping of
-the object's page-aligned `O=`/`S=` region is the stored image:
-refcounted, unmapped on eviction, delete or replace by the last
-reference; the renderer takes a reference instead of a copy and wraps
-the pages in a Metal buffer without a copy (`newBufferWithBytesNoCopy`)
-with a linear texture over it. When the offset or row pitch misses
-Metal's linear-texture alignment, the upload falls back to the normal
-copying texture upload. The command buffer keeps the buffer,
-and so the mapping, until the GPU has read it, so a same-id stream
-never unmaps pages in use. Other formats still decode to a copy.
-Measured through tmux (Release, GPU completion): a 4K frame 13.4 ms →
-4.4 ms, 720p 2.1 ms → 1.4 ms; a 120 Hz paced stream presents 120 of
-120 frames at a median of 3.1 ms (4K) and 1.1 ms (720p).
-
-tmux unlinks a live object 1 s after the block has left every flagged
-client, and a `-K` object after its own guard. An app more than that
-behind (or a `%pause` drop) finds the object gone. Such a live
-transmit is not lost: an allowed medium that cannot be read leaves the
-image held (Ghostty's `unread` state) with its placement and no cursor
-move, while bad data (an invalid size or PNG) is an ordinary error.
-After each live batch, `ghostty_surface_take_unread_images` tells the
-app what to do: for images with an id, fetch their rows through `-K`
-as for a restore; for an image without an id, whose restore id only
-tmux knows, one normal pane restore, coalesced through the existing
-dirty-pane request. A restore's own held placements never trigger it,
-and a hidden pane only marks itself dirty.
-
-`prepend_history` moves the scratch terminal's images and placements,
-held or not, into the target screen with their rows; an id that the
-target already has keeps the target's image.
-
-Memory is bounded by Ghostty's `image-storage-limit` (the user's
-setting; the app sets none) and by tmux's image limits, which stay at
-upstream's defaults.
+Live kitty-graphics images from the view's feed reach Ghostty through
+`process_output`, and Ghostty draws them. Restored images are blank until
+ko K6: a snapshot restores the text under an image, not its pixels. Each
+surface keeps its accepted media (`kitty_image_media` in the surface
+config): a local window accepts `t=d` and `t=s`, a remote window `t=d`
+only, so a remote program cannot make the app open, unlink or read a local
+shared-memory object or file. Memory is bounded by Ghostty's
+`image-storage-limit` (the user's setting; the app sets none).
 
 ### Focus treatment
 
@@ -970,7 +604,7 @@ One click on a pane in a window that is not key, or in an inactive app,
 activates the window and focuses that pane, as in Ghostty's own app
 (`SurfaceView_AppKit.swift`, `localEventLeftMouseDown`). A local
 left-mouse-down monitor on each pane makes the pane first responder and
-selects it in tmux. The pane does not accept first mouse, so the click
+selects it on the server. The pane does not accept first mouse, so the click
 itself reaches no program: no mouse report, no selection. A window with a
 sheet or an open command palette does not take this focus. A click on a
 pane in a key window goes to the terminal as before. The pane hover
@@ -980,8 +614,8 @@ the grip, zoom, split or close button only activates the window.
 ### Clipboard
 
 Live OSC 52 writes copy text to the Mac general pasteboard. Reads use Ghostty's
-asynchronous completion through the original pane's `send-keys -H` input path,
-not tmux clipboard commands. `c`, `p` and `s` share that text pasteboard; replies
+asynchronous completion through the original pane's input path
+(`ko_view_input`). `c`, `p` and `s` share that text pasteboard; replies
 retain the requested selector. Empty clipboard text gets an empty reply. Text
 is capped at 1 MiB; NUL-containing writes are ignored and reads refused with an
 empty reply. Clipboard contents are not logged.
@@ -1006,17 +640,14 @@ completes with an empty reply; an overdue sheet answer does the same. Pane remov
 retirement cancel the opaque Ghostty state without input, before freeing its
 surface. Late sheet responses and retired-surface input are ignored.
 
-Snapshot restore explicitly resets Ghostty's parser before replay, including
-when its old state was mid-OSC. Restore mode suppresses clipboard operations at
-the parser boundary, before surface messages are queued. Pending `capture-pane
--P` bytes retain parser state: only a subsequent live terminator may perform
-one operation. For ST, ESC is the dispatching byte: a captured sequence already
-ending in ESC is historical, and the live backslash does not re-fire it. Already
-queued live operations remain live across ordinary resync. MANUAL_MIRROR still suppresses every other parser reply.
+Snapshot restore explicitly resets Ghostty's parser before it writes the
+snapshot, including when its old state was mid-OSC. Restore mode
+suppresses clipboard operations at the parser boundary, before surface
+messages are queued. Already queued live operations remain live across a
+resync. MANUAL_MIRROR still suppresses every other parser reply.
 
-Guarantees cover displayed panes only, with one clipboard-enabled app per pane.
-Hidden/evicted output and pause-after losses are best effort. The app leaves the server's `get-clipboard` setting alone.
-Nested tty-mode tmux needs OSC forwarding and preauthorization; see known issues.
+Guarantees cover displayed panes only, with one clipboard-enabled app per
+pane. Output that a frozen or evicted pane does not parse is best effort.
 
 Cmd-V and unsafe paste are separate from application reads. An unsafe paste is
 asked about in a sheet showing its text, and completed exactly once: pasted,
@@ -1055,27 +686,26 @@ rules still apply. Text and web links without files or promises are refused.
 Surfaces are kept per window, for the most recently shown windows of
 any session while their panes total at most 32; the rest have none. A
 window gains its surfaces when shown. Showing another window evicts the
-least recent past the budget, never the shown one, off the switch path;
-surfaces are freed one per main-queue turn and at least a second after
-they were created, since a young one takes hundreds of milliseconds to
-free. A hidden surface is occluded and its renderer released. Shown surfaces
-follow the app window's occlusion during resize too. Provisional Ghostty reflow
-remains visible while the authoritative capture is in flight. After replay and
-the successful restored viewport apply, an asynchronous tokened render fences
-completion, not visibility. Its acknowledgement must match the pane's epoch,
-backing dimensions, inset and viewport revision/target. Superseded requests
-coalesce. Ghostty discards a tokened presentation when the layer's pixel size
-changes between the draw and the main-queue commit, when a newer surface
-generation commits first, or when the surface is unrealized or zero-sized; a
-current discarded request gets one asynchronous retry. Backend
-failure remains incomplete and diagnostic, without a visibility hold. tmux sends no `%output` for panes outside the client's session,
-so a window that left it is synced again when next shown. Surfaces of closed windows and sessions are freed.
+least recent past the budget, never the shown one, off the switch path.
+A surface is freed in `PaneView.deinit`, after the utility-queue
+`ko_view_close` returned. A hidden surface is occluded and its renderer
+released, but its view still feeds it; an evicted window opens its views
+again when it is shown. Shown surfaces follow the app window's occlusion
+during resize too. A visual test's presented-frame fence is an
+asynchronous tokened render: its acknowledgement must match the pane's
+backing dimensions, inset and viewport revision and target. Ghostty
+discards a tokened presentation when the layer's pixel size changes
+between the draw and the main-queue commit, when a newer surface
+generation commits first, or when the surface is unrealized or zero-sized;
+a current discarded request gets one asynchronous retry.
 
-tmux's layout is authoritative: every Ghostty surface is exactly its
+The ko layout document is authoritative: `Layout(window, visible:active:)`
+builds the tree from the model's window (a zoomed window shows only its
+zoomed pane, as the active one), every Ghostty surface is exactly its
 pane's grid, and `PaneLayout` maps cells to points. On each axis a
 pane's two inner paddings sum to one cell minus one device pixel, split
 floor/ceil in physical pixels so surfaces and dividers stay on the pixel
-grid. tmux's border cell between two panes is then exactly their
+grid. The border cell between two panes is then exactly their
 paddings plus the one-pixel divider, so any tree, however asymmetric,
 lines up with no surplus. Around the whole terminal area only, the
 horizontal remainder is balanced over a 4pt minimum. Client rows are
@@ -1123,20 +753,18 @@ pane. It splits, zooms and closes through the same commands as the menus.
 The toolbar's grip drags a tiled pane: the target's outer quarters dock
 left, right, above or below; its centre swaps. A 22pt
 band inside the tiled area's outer edges takes precedence, docking across the whole
-window with `move-pane -f`. Window edges preview the resulting half-window;
+window. Window edges preview the resulting half-window;
 centre drops preview the whole target for a swap. Pane edges show a 4pt
-insertion bar, not a predicted size: tmux splits the target before removing
-the source and redistributes its space (`third_party/tmux/cmd-join-pane.c`,
-`cmd_join_pane_exec`), so predicting that size would duplicate its layout code.
-Window-edge drops let
-tmux handle already-spanning panes; one tiled pane has no drop targets.
+insertion bar, not a predicted size: the server computes the sizes, and a
+prediction would duplicate its layout code. Window-edge drops let the
+server handle already-spanning panes; one tiled pane has no drop targets.
 The accent highlight follows
-the effective appearance. A drop sends one `move-pane` or `swap-pane`, and
-only tmux's layout notification moves the views. A click, Escape, a drop
+the effective appearance. A drop sends one `swap`, `dock` or `dock_window` edit, and
+only the next layout moves the views. A click, Escape, a drop
 on the source or a floating pane cancels. Dragging is disabled while zoomed.
 Floating grips and padding share one move gesture, starting after 4pt of
 movement; resize edges follow the pointer immediately. A press without movement
-raises a covered float with `move-pane -z 0`. Draggable padding is inside the
+raises a covered float with a `float` edit of its stacking order. Draggable padding is inside the
 drawn frame but outside the Ghostty grid, including the fractional right/bottom
 remainder. The 5pt resize edges and corners, toolbar and scroller strip take
 precedence; terminal clicks remain Ghostty's. Padding cursor rects show an open
@@ -1147,16 +775,12 @@ Placement requests no cursor invalidation during that gesture; release enables
 and invalidates the acquired window's rects once, so overlapping floats use their
 current frames immediately. Tiled padding
 still only selects. WindowView keeps a view-only free frame
-per float after release. Coalesced, one-in-flight command batches send its
-rounded cell geometry to tmux with the border-dependent position and size
-semantics. Nested command batches finish at a private marker on a separate
-input line: tmux gives nested replies the same control flag as direct ones,
-and a failed batch drops the remainder of its line. Ordinary command batches
-still pair by count, with no marker or extra round trip. PaneLayout owns the point-to-cell inverse and floating bounds.
+per float after release, and sends its rounded cell geometry as a `float`
+edit. PaneLayout owns the point-to-cell inverse and floating bounds.
 Layout installs and placement validate free frames against that same conversion;
 presentation validates hidden windows too. A changed placement cancels an active
-gesture and drains only the already-sent commands. Zoom, removal, layer changes
-and reconnect also clear free frames. Nothing is persisted. Ghostty remains exactly tmux's whole-cell grid,
+gesture. Zoom, removal, layer changes and reconnect also clear free frames.
+Nothing is persisted. Ghostty remains exactly the server's whole-cell grid,
 with the fractional size remainder in the right and bottom padding. Chrome,
 mask, shadow and hit areas use the drawn frame; pixel clamping keeps it inside
 the window grid. Resizing clamps only the dragged edges, preserving their
@@ -1164,14 +788,42 @@ opposite edges; a right or bottom resize never moves the origin. Each pointer
 update places only that float, its backing and toolbar, and unchanged clamped
 frames do no placement or cursor invalidation. Full placement assigns each
 pane's final frame once. Placement skips unchanged backing, toolbar and scroller
-frames and retains an installed mask rather than assigning it again. In-flight gestures retain their pixel frame until a follow-up
-command reply has drained the final batch's layout notifications, then keep it
-only if it matches tmux. Escape stops further commands,
-not changes tmux has already applied. Pane command errors appear in a sheet.
-Sidebar drops are not supported.
+frames and retains an installed mask rather than assigning it again. A float keeps its pixel frame after release until the layout shows its
+last edit. Escape stops further edits, not edits that the server already
+applied. Pane command errors appear in a sheet. Sidebar drops are not
+supported.
+
+Every gesture is one typed `Edit` (`KoSchema.Edit`) through the window's
+`LayoutEditor` (`App/Ko/LayoutEditor.swift`). One edit is in flight, on
+the editor's serial utility queue, because `ko_client_edit` waits for the
+server; the core applies the edit to the newest layout and sends it again
+after a conflict. A waiting edit with the same key (a divider or a float)
+is replaced by a later one, so a drag sends only its latest step. The
+editor holds the gesture's optimistic state while an edit is in flight and
+until a layout event shows the revision of the last accepted edit; then
+it reports the gestures settled. A failure ends the hold and shows the
+core's message. A divider drag is a `resize_pair` edit, a float move or
+resize a `float` edit, a grip drop a `swap`, `dock` or `dock_window` edit.
+The pane commands map to `split`, `resize_by`, `toggle_zoom` and
+`equalize` edits. The core evaluates `resize_by {pane, edge, delta}` and
+`toggle_zoom` against the newest layout, as tmux's `resize-pane` did, so
+two presses inside one round trip are two steps: the divider on the
+`edge` side of the pane moves toward that edge (for the last pane of a
+split, the divider before it), and a resize while zoomed unzooms first.
+`ko_client_edit` returns the id of what an edit created with the new
+layout;
+a directional pane select is `ko_client_select`, not an edit. After a
+split the new pane is selected, and after a zoom the zoomed pane. When
+the active pane changes while a pane of the window has focus, the focus
+follows it. Session and window creation, session rename and reorders are
+edits too (`add_session`, `add_window`, `rename_session`,
+`reorder_sessions`, `reorder_windows`); a reorder keeps its order on
+screen until the layout shows it. `App/Ko/LayoutEditor.swift` builds these
+edits; `ko layout edit EDIT-JSON` sends the same typed edit from the
+command line.
 
 Frame changes place only the shown window; membership and stacking are
-reconciled only when tmux’s topology changes. Hidden windows are placed
+reconciled only when the layout's topology changes. Hidden windows are placed
 when shown. Terminal focus survives resizing and sidebar collapse;
 showing another window or creating the active pane’s view can move focus.
 
@@ -1182,32 +834,29 @@ so the terminal never moves vertically when the sidebar collapses.
 
 ## Threads
 
-Client callbacks run on the client's reader queue, and the pane map is
-touched only there. Output is fed synchronously on the pane's scroll queue,
-serializing live output with asynchronous viewport applies. Main must never
-wait for that queue: parsing can fill Ghostty's app mailbox, whose surface
-messages are drained by `ghostty_app_tick` on main. Ghostty's stream handler
-releases the renderer mutex before waiting for mailbox capacity, so main can
-still take that mutex through the thread-safe pixel-scroll API to snap before
-handling input. The viewport lock serializes snaps with worker applies, but
-is never held across output parsing. Its cumulative snap adjustment removes
+Client events arrive on the main queue (`ko_client_connect` with the main
+queue), and the owner reads the model on main. Every ABI call that waits
+for the server runs off main: `ko_client_edit` on the `LayoutEditor`'s
+utility queue, `ko_client_delete`, `ko_client_prompt_resolve`,
+`ko_client_prompt`, `ko_client_launch` and `ko_client_stop_server` on
+detached tasks, and `ko_view_close` on a utility queue. A close of the
+client ends a waiting call with `KO_ERR_CLOSED`. Each view has a
+decoder thread in the core, which runs the restore and the feed in the
+server's order. The feed hands bytes to the pane's serial scroll queue
+(user-interactive), which serializes live output with asynchronous
+viewport applies. Main must never wait for that queue: parsing can fill
+Ghostty's app mailbox, whose surface messages are drained by
+`ghostty_app_tick` on main. Ghostty's stream handler releases the renderer
+mutex before waiting for mailbox capacity, so main can still take that
+mutex through the thread-safe pixel-scroll API to snap before handling
+input. The viewport lock serializes snaps with worker applies, but is never
+held across output parsing. Its cumulative snap adjustment removes
 snap-induced offset changes from feed's before/after output-pinning delta:
-`D1 - D0 - sum(snap movements)`. The ledger is cumulative across feed intervals
-and is not reset while one can be active. It distinguishes multiple snaps
-from concurrent output, even when history grows between a read and an apply.
-A zero target still follows the bottom. Lock order is viewport then target
-or renderer, with neither held while waiting for viewport. MANUAL_MIRROR
-applies grid resizes inline in Termio, not on a debounced IO-thread callback;
-grid confirmation reads the actual grid under the renderer mutex.
-Only feed synchronizes with the scroll queue, from the client queue, never
-main or a Ghostty callback. Snapshot/prepend admission validates the content
-epoch under a short app lock, which is released before parsing. While a
-mutation is admitted, main coalesces the latest accepted grid/reflow rather
-than waiting for the worker. Completion installs and confirms that grid.
-If output was dropped while a grid was unconfirmed, incremental feed stays
-suspended until a current reset-and-replay commits; a provisional parse
-cannot clear a newer dirty epoch. Renderer
-callbacks publish asynchronously to main; runtime wakeups coalesce main ticks.
+`D1 - D0 - sum(snap movements)`. A zero target still follows the bottom.
+Lock order is viewport then target or renderer, with neither held while
+waiting for viewport. A `KO_FEED_RESIZE` sets the grid on the decoder
+thread. Renderer callbacks publish asynchronously to main; runtime wakeups
+coalesce main ticks.
 Ghostty paces rendering with one CVDisplayLink for each surface, as
 upstream does. The pane gives its surface the window's screen number
 (`ghostty_surface_set_display_id`) each time it presents, so the link follows
@@ -1254,39 +903,30 @@ for search-input capacity, including navigation bursts while search is waiting
 for main's app mailbox. Pending growth under an indefinite producer is the
 tradeoff for preserving command order. Other main-to-renderer blocking sends
 are not removed by this change.
-A pane leaving the layout is held on main until the queue has
-dropped it, so its
-surface is freed on main. A layout reaches main synchronously. Unless a
-parser/prepend mutation is admitted, its grid is installed and verified through
-Ghostty's mutex-protected actual metrics before layout installation returns.
-During an admitted mutation the latest desired layout is recorded instead;
-unconfirmed geometry suspends feed until installation/readback and a current
-authoritative restore. A failed setter or mismatched
-grid rejects feed and prepend, logs a diagnostic and closes the control
-client through its ordinary redial lifecycle; failure is never confirmation. Main never waits on the
-reader queue.
 
 ## Sidebar
 
-The sidebar runs the bundled `kido rpc --server DIR --client NAME` with
-the app's own client name, so kido's rules follow what the app shows. The
-in-repo [RPC contract](../share/rpc/contract.md) is authoritative. The first line
-must be a compatible hello; a server mismatch stops the feed and uses the same
-banner as discovery, without automatic retry. Window and session navigation
-use numbered RPC requests. Replies can interleave with
-snapshots and arrive out of order; pending callbacks live on the feed reader
-queue and complete once, including failure when the connection ends or restarts.
-The app decodes v2 snapshots of protocol 6.0 only. Pane items carry a plain
-`title`, a typed `lifecycle` (Live pane kind with its agent or shell status,
-or Ended with a run result) and the raw `program_status`; their variants,
-null rules and percentages are enforced, and a malformed snapshot restarts
-the feed. Only the raw-record enums and the Ended result decode unknown values
-as unknown; kido never sends an unknown result. An item's `run` is the opaque
-run id of the pane, or null; the app never reads a run's kind. Every snapshot carries the tmux `server_instance`;
-sessions are source-list sections,
-window groups contain panes, and pane items can contain arbitrarily deep
-hoisted child windows. A node's identity is scoped to its session; linked
-windows may appear in several sections.
+The sidebar tree is a projection of the core's model:
+`Snapshot(model:)` in `SidebarFeed/Projection.swift`. Sessions are
+source-list sections. A window with one pane is a pane item, a window with
+more panes is a group, and a run window is nested under the pane of its
+run's parent, at any depth. The order and the parent edges are the core's
+`outline` (each item carries its window); the app only groups it by
+window, so a split inside a run window puts its other pane at the top
+level. A pane item's title is the core's label, its
+lifecycle comes from the pane's status, `run` is its run id, `started` is
+the run's start while it is live, `mark` is the core's seen mark and
+`inbox` tells whether the pane has a `pi.inbox` variable. The snapshot's
+`ServerInstance` is the model's instance string. The Swift types of the
+model are generated from the schemas (see [Testing](#testing)), so the app
+has no hand-written decoder and no unknown values. Ko ids (`pane_N`,
+`window_N`, `session_N`) decode straight into `PaneID`, `WindowID` and
+`SessionID` (`KoModel/ID.swift`), which the generator uses for the id
+schemas; their string form is the ko id. `KoModel` also holds the session,
+window and pane lookups and `KoModel.current`, the one rule for the
+current session, window and pane: the selection, else the first
+session. A node's identity is scoped
+to its session.
 
 `Sidebar` is an `NSSplitViewController` with a sidebar item, which
 supplies the floating glass, collapse animation and saved width (236pt,
@@ -1325,16 +965,12 @@ modes; the sidebar shadows are the app's own ([Focus treatment](#focus-treatment
 WindowTabs paints no background of its own.
 
 Tabs project the current session's top-level windows from the
-feed; descendant windows activate their ancestor tab. The control client's
-window list is filtered by the feed: with a snapshot, an unlisted window
-gets a tab only if it is the session's current window, so a new detached run
-window does not flash as a top-level tab before the snapshot nests it under
-its parent. With no snapshot, every window shows. Each title
-is the composed label of that window's active pane, falling back to the
-tmux window name until its feed label arrives. A tab whose active pane is an
+snapshot; descendant windows activate their ancestor tab. Each title is
+the composed label of that window's focus pane, or of the client's active
+pane in the shown window. A tab whose active pane is an
 agent is drawn like its sidebar row: semibold, with the display-only
 @ prefix when that row has one; other tabs are regular with no @. WindowView's active
-pane, read from tmux layouts and `%window-pane-changed`, is shared with terminal
+pane, from the layout and the client's selection, is shared with terminal
 focus. Each tab combines its window and descendants into one status mark,
 ranked error (including unseen failed outcomes, command exits
 too) > waiting > running > done (unseen) > quiet. With the sidebar collapsed
@@ -1375,23 +1011,21 @@ descendant windows, is running or waiting, a stock `.warning` NSAlert sheet
 asks `Close “name”?` with "A process is still running in this pane. Closing the
 pane will end it." or "Processes are still running in this window. Closing the
 window will end them."; its Close (Return) and Cancel (Escape) buttons sit
-side by side. A quiet target closes at once. The close kills descendant windows
-before the target, and a failed kill reports "Pane command failed" in another
-sheet. Only one alert is prepared at a time.
+side by side. A quiet target closes at once. Only one alert is prepared at a time.
 
 File → Close Window and Session → Close Session have no shortcut. They
-use the same confirmation. Close Window kills the key window's current tmux
+use the same confirmation. Close Window deletes the key window's current
 window. On a session's last window this also ends the session, with no
 extra warning. Close Session checks every pane of every window of the
 session, and asks with "Processes are still running in this session.
-Closing the session will end them." It then sends `kill-session`. The
-control client is attached with `no-detach-on-destroy`. Thus, tmux moves it to
-another session, and the window follows that switch as it follows any switch.
-If the session was the last one, the server exits, and the window stays open
-with the no-server banner and its Start button. The native window's close
-button still only disconnects ([Remote hosts](#remote-hosts)). With no window,
-the Window and Session menus and Close Window are disabled.
-
+Closing the session will end them." Every close is one `ko_client_delete`
+of the pane, window or session, on a detached task; the server deletes
+the target with its descendants. A failed delete reports "Pane command
+failed" in another sheet. When no session remains, the window shows the
+"No sessions" banner, and its Start creates one session in the home
+directory. The native window's close button still only disconnects
+([Remote hosts](#remote-hosts)). With no window, the Window and Session
+menus and Close Window are disabled.
 Captions use a display-only 200ms debounce per row. New text must remain
 stable for 200ms; empty text must persist for 200ms before the old caption
 is hidden. The first snapshot after launch or reconnect shows captions
@@ -1433,7 +1067,7 @@ cannot be messaged, so they keep the semibold title without the @. Idle local sh
 `Terminal`; an Unknown phase, full-screen programs, SSH, and run items keep their labels. Both display
 rules leave raw pane labels and tab/window titles unchanged.
 
-The app composes what kido no longer sends. The label is the wire title,
+The app composes the row from the core's label. The label is the core's title,
 except that a local shell without a program report and not in a run shows a
 non-empty running non-fullscreen command, and a remote terminal shows
 `ssh user@host`, adding `: command` only for an interactive, report-free,
@@ -1441,12 +1075,10 @@ non-fullscreen running command. The caption is the agent's or report's `msg`
 and progress percentage, joined by a space; Ended rows show their result
 except completed or unknown, which show none: the green check alone marks
 completion, while accessibility still reads "gone, completed". A run's
-start metadata drives the clock even when a caption is shown. The indicator comes from the agent state
-(running, waiting, idle with an outcome), else for shells: a live
-run without a report is running, a report wins over the phase (fullscreen
-included), otherwise fullscreen has none, Unknown has none, Running is running and Idle shows its last command
-exit. Ended completed is done, failed and died are errors, stopped and
-unknown are quiet. The indicator sits in the leading slot, centered at
+start metadata drives the clock even when a caption is shown. A live pane's indicator is its core `mark`
+(running, waiting, done, failed, or none, which is quiet); the app adds
+only the Ended and run cases. Ended completed is done, failed and died are
+errors, stopped and unknown are quiet. The indicator sits in the leading slot, centered at
 x=20pt plus 15pt per nesting level and vertically on the title line; the
 header plus center is 15pt from the right edge. Indicators are 6pt dots:
 idle and quiet gray (secondaryLabelColor at 45%), running/compacting green,
@@ -1471,62 +1103,62 @@ falling back to pixels only if that row disappears.
 The single-line, truncating diagnostic sits above the table; the full
 diagnostic is available in its tooltip. The sidebar has no filter. Jump
 failures leave focus intact; a successful jump returns focus to the pane.
-External tmux switches update selection without taking keyboard focus.
+Selection changes from other clients update the selection without taking
+keyboard focus.
 
 The toolbar and Shift-Command-S toggle the sidebar; the View menu's
 Show/Hide title follows its collapsed state. Focus Sidebar uses
 Command-S. Control-Command-F enters full screen.
-Command-{/} and Ghostty previous/next tab use RPC switch-window; there are
-no Control-Command-J/K shortcuts. Nested windows step among direct siblings,
-prev from the first child selects its parent, and next from the last child
-steps from its top-level ancestor. Top-level steps skip run windows and wrap
-across sessions; a sole eligible window can select itself and null is a no-op.
-Option-Command-]/[ switches sessions in the
-sidebar session order, with wraparound and a single-session no-op.
-Session navigation uses RPC switch-session and selects the returned current window.
-Command-N and toolbar plus create a session via new-session. File → New
-Session with no key window uses an open local window that is not key, or opens
-a local window. The window that it opens has the dial cause `newSession`: it
-makes a session on its first error-free snapshot, once. The intent belongs to
-that window. Closing it before its snapshot drops the intent, and a later
-ordinary open does not make a session. Each session
-header plus creates a window after that session's current window via new-window.
-Command-T sends new-window with the current window id; the server inserts
-immediately after it using its active pane's cwd. Numbered and last tabs use
-select-window; absolute sessions use select-session. In the table, arrows and j/k
-move pane-only selection, Return activates with exactly one
-RPC jump, and Escape releases side focus via RPC and returns to the pane.
-Left/Right do nothing; headers do not activate or fold. Only correlated success
-returns focus when the authoritative pane view is current; failures preserve
-focus. One monotonic UI-intent revision advances on selection/focus changes
-and navigation. Each request captures it; only a still-current completion
-leaves the sidebar or installs deferred focus. Any new intent
-cancels deferred focus, which is consumed on pane changes as well as window
-topology. Pending requests fail once on disconnect and are never replayed.
-Replies do not synthesize topology.
+Command-{/} and Ghostty previous/next tab step through every window of
+every session in sidebar tree order, nested run windows after their
+parent, with wraparound, and select it with `ko_client_select`. There are
+no Control-Command-J/K shortcuts. Option-Command-]/[ switches sessions
+with `ko_client_switch`, in the server's session order, with wraparound
+and a single-session no-op. Numbered and last tabs, absolute sessions and
+the sidebar jump use `ko_client_select`. A jump to a pane that a zoom
+hides first sends a zoom edit that ends the zoom. The server sends a
+selected event for every select, also for the pane that is already
+current, so the selection is only the server's; the core refuses an
+unknown pane with `KO_ERR_NOT_FOUND` before it sends. Command-{/} keep
+their own walk because the server's window switch follows document order,
+and the sidebar puts a run window after its parent pane.
+Command-N and toolbar plus create a session ([Command palette](#command-palette),
+New session). File → New Session with no key window uses an open local
+window that is not key, or opens a local window. The window that it opens
+has the dial cause `newSession`: it makes a session on its first model,
+once, also on an empty server. The intent belongs to that window. Closing
+it before its model drops the intent, and a later ordinary open does not
+make a session. Each session header plus and Command-T add a window after
+that session's current window, in the cwd of its focus pane, with an
+`add_window` edit, and select it from the resulting layout. In the table,
+arrows and j/k move pane-only selection, Return activates with exactly one
+select, and Escape releases side focus and returns to the pane, also
+without a connection. Left/Right do nothing; headers do not activate or
+fold. Only the first selected event after a request installs deferred
+focus; failures preserve focus. One monotonic UI-intent revision advances
+on selection/focus changes and navigation. Each request captures it; only
+a still-current completion leaves the sidebar or installs deferred focus.
+Any new intent cancels deferred focus, which is consumed on pane changes
+as well as window topology. Pending requests fail once on disconnect and
+are never replayed.
 
-Pane indicators come from the typed lifecycle, never
+Pane indicators come from the typed lifecycle and the core's mark, never
 re-derived from raw program records. A tab's mark summarizes its window and
 descendants' row statuses in error > waiting > running > unseen done > quiet
 order; docked tabs show only error and waiting marks.
 
-Kido does not acknowledge anything: the app owns seen. One app-wide record,
-keyed by host, holds per pane and outcome source (agent, program report,
-shell command) the identity of the last outcome shown: the pane serial for
-agent and report outcomes, the command's start and end seconds for an exit.
-An outcome whose identity matches is seen and drawn quiet; an unseen success
-draws a checkmark and an unseen failure red until then. A window is attended
-while the app is active and the window is key, not minimized and visible;
-on every snapshot and whenever it becomes attended, its client's active pane's
-current outcomes are marked seen. Every window of the host redraws its rows
-and tab dots from the shared record. A changed `server_instance` drops the
-host's entries; a successful snapshot prunes absent panes, while an error
-snapshot neither prunes nor marks. Outcomes already finished when a host's record
-first observes an error-free snapshot count as seen. Seen is not persisted across launches. Control-mode
-%program-status lines remain unrecognized and unused; Ghostty is unchanged.
-The sidebar is visible by default; it does not automatically collapse
-at narrow widths.
-
+The core owns seen. When the union of the panes that the attended
+windows of the host show, or `attending`, changes, the owner calls
+`ko_client_observe` with it. A window is attended while the app is active
+and the window is key, not minimized and visible. `Notifier.seen(host:)`
+computes the union. The core acknowledges on every change and posts a
+model event when a mark changes, so no owner reads its model only to push
+observe. Each pane's `mark` (none, running, waiting, done or failed) is
+the core's, and a report wins over a full-screen program; an unseen
+success draws a checkmark and an unseen failure red. A program record's
+done or error outcome becomes quiet when its pane's outcome is seen
+(the core's `records_seen`). Seen is not persisted across launches. The sidebar is visible by
+default; it does not automatically collapse at narrow widths.
 ## Command palette
 
 Command-P (View → Command Palette…) opens the palette and closes it.
@@ -1571,10 +1203,10 @@ The root list is built from live state, in this order:
   never jumps to another owner: not from Local to a remote host, not between
   hosts, and not to another window of the same host. With no anchor, there are
   no pane rows. A top-level pane is a sidebar pane row at indent 0
-  (`SidebarRow.topLevel`, which the sidebar's drag source also uses): a child window that the feed hoists under a pane (a subagent or a
+  (`SidebarRow.topLevel`, which the sidebar's drag source also uses): a child window that the snapshot nests under a pane (a subagent or a
   run) is not in the list, and neither is an OSC 7501 program record row.
   There are no session rows; the session commands below stay. A pane row has
-  its status mark and jumps through one RPC, as a sidebar row does. The
+  its status mark and jumps through one `ko_client_select`, as a sidebar row does. The
   anchor's window comes to the front first. The detail is the session name,
   after the host for a remote owner. An anchor that is offline or
   reconnecting adds no rows.
@@ -1638,32 +1270,28 @@ the field and the list; an edit clears it.
   the field, selected. Return commits through `SessionName`, the rules of the
   sidebar's inline rename: an empty or unchanged name closes the palette with
   no change; a name with `:` or `.` or a duplicate name shows the rule's message
-  and selects the text again; a tmux refusal shows tmux's message. The sidebar's
-  inline rename and this mode call the same `WindowOwner.renameSession`.
+  and selects the text again; a refused edit shows the core's message. The
+  sidebar's inline rename and this mode call the same
+  `WindowOwner.renameSession`, which sends a `rename_session` edit.
 - **New session** (`plus`, "Session name", foot "↩ create"). The anchored root
   row "New Session…" enters it. With no anchor, the row is "New Session" and
   runs the menu action. When the anchor has no snapshot yet, the row is "New
   Session…" and shows "Not available now". File → New Session and Command-N do
-  not enter the mode: they create an unnamed session through kido's
-  `new-session` RPC. The mode has the same field, Return and error behaviour as
-  Rename session, with an empty field. `SessionName` checks the name with the
-  same rules, except that an empty name shows "Enter a session name." When the
-  anchor window closed, is not navigable or its `server_instance` changed, the
-  mode shows "That window is gone". `WindowOwner.createSession` copies kido's
-  RPC `new-session` (lib/sidebar.ml), with a name added, because that RPC takes
-  no name. It reads `#{pane_current_path}` of the anchor's current session,
-  creates the session with one control command `new-session -d -P -F
-  '#{session_id}' -s NAME -c DIR`, and then switches the anchor's window
-  through the `select-session` RPC. A tmux refusal creates nothing. It shows
-  tmux's message and the mode stays open. Success closes the palette when the
-  session exists. A failure of the switch after that does not show in the
-  palette.
-- **Prompt** (`bubble.left`). It sends a prompt to an agent through kido's
-  `prompt` RPC ([Prompting an agent](design-rpc.md#prompting-an-agent)). It
-  replaces the list with its own view, `PalettePrompt`, described below.
-- **Theme** (`paintpalette`, "Search themes"). View → Theme… (no shortcut)
-  and its root row enter it, also with no window. It is described below.
-
+  not enter the mode: they create a session with the first unused name of
+  "session", "session 2", …. The mode has the same field, Return and error
+  behaviour as Rename session, with an empty field. `SessionName` checks the
+  name with the same rules, except that an empty name shows "Enter a session
+  name." When the anchor window closed, is not navigable or its
+  `server_instance` changed, the mode shows "That window is gone".
+  `WindowOwner.createSession` sends one `add_session` edit with the name and
+  one pane in the cwd of the anchor's focus pane, else the home directory,
+  and selects the new session from the resulting layout. A refused edit
+  creates nothing; it shows the core's message and the mode stays open.
+  Success closes the palette.
+- **Prompt** (`bubble.left`). It sends a prompt to an agent through the core:
+  `ko_client_prompt_resolve` and `ko_client_prompt`, with the source pane as
+  the caller. It replaces the list with its own view, `PalettePrompt`,
+  described below.
 ### Prompt mode
 
 Prompt mode shows one prompt at a time. Its source is a `PromptSource`: the
@@ -1685,7 +1313,7 @@ optional preselected agent pane. The entry points are:
 
 The pane entries first check for an agent in the source pane's session, from
 the snapshot that the sidebar draws. Agents in a run window do not count,
-because kido's `prompt` excludes every pane of a run window. Without one, a
+because a prompt excludes every pane of a run window. Without one, a
 key entry beeps and opens nothing, the context-menu item and the Edit item are
 disabled, and the root list has no Prompt… row. Root ⌘O on an agent row needs
 no other check, because the row is the agent. Thus, no entry opens Prompt mode
@@ -1734,15 +1362,15 @@ The foot names the keys, "↩ send
 when a draft came back, and has Send at the right: 26pt, 8pt radius,
 `controlAccentColor`, or the label colour at 14% when disabled.
 
-An entry first sends a `prompt` resolve request for the source pane. Nothing
+An entry first resolves the candidates for the source pane with
+`ko_client_prompt_resolve`, off main. Nothing
 changes on screen until the reply: a closed palette stays closed, and the root
 list stays as it is. Then the palette opens or enters Prompt mode with the
 target, its draft and the appended quote at the final height. Thus, no field
 accepts text before its target is known: a reply that arrives after the user
 started to type would replace that text. A second entry while a resolve is
-pending starts no other request. If no reply arrives in 5 s, the prompt opens
-failed with "kido did not reply" and Retry, because the feed's requests have no
-time limit. A palette close, a mode change, an owner close, a changed server
+pending starts no other request. If no reply arrives in 5 s (`PalettePrompt.resolveTimeout`), the prompt
+opens failed with "kido did not reply" and Retry. A palette close, a mode change, an owner close, a changed server
 instance or a source pane that is gone cancels the pending open. A reply after
 the cancel or the time limit does nothing. The chosen agent is the
 preselected pane if it is a candidate, else the source pane itself if it is
@@ -1778,14 +1406,16 @@ included. States:
 - Delivered: the draft is removed, and the palette closes and restores the
   focus. Then, if the source pane still exists, its selection clears and copy
   mode exits.
-- `refused`: a red triangle, kido's message, and Retry, which sends again. An
+- `refused` (`KO_ERR_REFUSED`): a red triangle, the core's message, and Retry, which sends again. An
   edit returns to ready.
-- `unknown`, or a feed failure after the send was written: kido's message with
+- `unknown` (`KO_ERR_UNKNOWN`: the server reported an `io` failure, which
+  can be a partial delivery, or the request was written and no answer
+  came): the core's message with
   " It may have arrived; not resent." and Copy Prompt, which puts the composed
   text on the pasteboard. The field is read-only and muted: all its text,
 markers included, is in the secondary label colour. Send is hidden, and
   the palette never sends again by itself. The draft stays.
-- `invalid`, `Feed.notReady` or an error with no `kind`: the message in red.
+- `invalid` (every other error, also no connection): the message in red.
   The picker stays enabled. An edit or another target returns to ready.
 
 A late reply after the mode changed or the palette closed does nothing.
@@ -1796,7 +1426,7 @@ chosen agent is in the source window, the picker reads "in window <name> (pane
 closed)" with the window name captured at open. In the ready state, the status
 reads "Source pane closed; agents resolved earlier stay available."; the other
 states keep their own status. The candidates stay, and the palette does not resolve again. A
-send to a target that is gone fails as `invalid` from kido.
+send to a target that is gone fails as `invalid`.
 
 **Drafts.** `AppDelegate.promptDrafts` holds one draft per target agent, in
 memory only. The key is the host, the server instance and the agent's pane.
@@ -1936,33 +1566,29 @@ preview, so one place serves them all.
 ## Notifications
 
 Kido.app posts a native notification when a pane starts waiting on the
-user or fails out of sight, and withdraws it when the reason is gone. kido
-reports status and retained outcomes; the app decides what the user has
-seen and what deserves a banner. `SidebarFeed/Notifications.swift` is the
+user or fails out of sight, and withdraws it when the reason is gone. The
+server reports status and outcomes and the core keeps the seen marks; the
+app decides what deserves a banner. `SidebarFeed/Notifications.swift` is the
 pure step; `App/Notifications.swift` holds the two posters and the
 app-wide `Notifier`; `main.swift` installs the delegate and routes clicks.
 
 **Eligibility.** A pane wants a notification when its lifecycle is Live,
 it is not a run nested under another item (the parent agent gets the notice;
 a run at the top level of the tree, even inside its window's group, has no
-parent and notifies), and `Item.indicator(seen)` shows waiting (an agent
-or a shell program report, in any phase) or an unseen error. The
-indicator keeps the sidebar's precedence, so a quiet report masks a
-command exit for the banner exactly as for the row. Waiting is one plain
-reason: a changed kind while still waiting does not repost. A
-failure's reason is its outcome source and identity, so a new failure
-reposts. Done, finished runs, successes, running, Ended rows and
-a command exit of 130 never notify.
+parent and notifies), and its core `mark` is waiting or failed. The reason
+is the mark: a changed waiting kind does not repost, and a second failure
+while the mark is still failed posts nothing. Done, finished runs,
+successes, running, Ended rows and a command exit of 130 never notify.
 
 **One notifier, entries per window.** Every `WindowOwner` has its own
-entries, keyed by owner and pane; there is no primary feed per host, and
+entries, keyed by owner and pane; there is no primary window per host, and
 two windows on one server may repeat a notification. Attendance is
-shared: `shown` is the set of tmux windows currently displayed by the
+shared: `shown` is the set of windows currently displayed by the
 host's attended windows (app active, key, not miniaturized, visible).
 Per entry the states are absent, posted(reason) and acknowledged(reason).
 On every error-free snapshot of an owner, for each wanting pane:
 
-- a baseline snapshot, a pane whose tmux window is shown, or a reason
+- a baseline snapshot, a pane whose window is shown, or a reason
   that starts or changes while Kido.app is active, acknowledges it,
   withdrawing any earlier post: it is on screen, or the user is present
   and what starts meanwhile counts as noticed;
@@ -1976,15 +1602,11 @@ its entries; quit withdraws everything, so Notification Center never
 offers a jump that cannot be honoured. Attendance changes (key, active,
 miniaturize, occlusion) re-step the host.
 
-**Baseline.** The first error-free snapshot of a new or restarted feed,
-and the first after a changed `server_instance`, records what wants a
-notification as acknowledged and posts nothing. At launch the seen
-baseline has already quieted finished outcomes, so this covers waiting
-panes; after a feed restart on the same server an outcome re-derived
-under a new serial shows red but does not post; a changed server
-instance clears the sidebar's seen entries without a baseline (rows red)
-and the notifier's entries with one (no banners). That asymmetry is
-deliberate.
+**Baseline.** The first model of a connection in which every live pane
+has a status, and the first after a changed `server_instance`, records
+what wants a notification as acknowledged and posts nothing. The server
+sets a pane's status on its first tick, so an earlier model would set the
+baseline too early.
 
 **Content.** Title is the sidebar row's title. Subtitle is the session
 name; for a remote window `user@host · session`, using the resolved
@@ -2008,8 +1630,8 @@ picks a live owner of that host: one whose snapshot has the same server
 instance and contains the pane, preferring a client already in the
 target session, then the key window; else any window of the host, key
 first. It activates the app, deminiaturizes and orders the window front
-(not in background builds), and performs the existing RPC jump, which
-moves that window's client; the pane becomes active in an attended
+(not in background builds), and performs the jump, a `ko_client_select`
+that moves that window's client; the pane becomes active in an attended
 window, is seen, and the notification withdraws on its own. With no
 window for the host, the click opens it through `WindowRoutes.connect`
 (Local as a new-window cause) and keeps a pending jump for 30s, consumed
@@ -2028,7 +1650,8 @@ and authorization calls and never touches Notification Center.
 `NotificationsTests` in SidebarFeed cover the step: attendance,
 baselines, suppression and acknowledgement, reposts, every withdrawal,
 exclusions, precedence and content; the hosted `NotificationTests` drive
-two owners, feed restart and `route` against the recording poster.
+two owners and `route` on a private ko server against the recording
+poster.
 
 ## Testing
 
@@ -2044,13 +1667,16 @@ PromptMarkdown's lock. Xcode 27.1 rejects `-packageResolvedPath`. When a remote
 package version in `project.yml` changes, the next build updates the project
 lock. Commit the lock with that change.
 
-`make visual` runs hosted SnapshotTesting tests against a private tmux
-socket, never activating a window. Clipboard sheets use visible windows placed
+`make visual` runs hosted SnapshotTesting tests against private ko
+servers (`VisualTestCase.koServerDir()`, a `mkdtemp` directory under
+`/tmp`, stopped and removed at teardown), never activating a window. Clipboard sheets use visible windows placed
 far off screen, as do native-button local-mismatch tests;
 the other fixtures keep their windows unordered. Menlo 13 and the built-in
 light/dark themes isolate terminal-area image and compact layout references:
 single panes at three heights, splits, floats, zoom, fractional history,
-alternate screen, settled resize and the Load more pill. A test-only
+alternate screen and settled resize. The shared visual runtime's Ghostty
+config is its own `$TMPDIR/kido-visual-PID.conf`, removed in the class
+teardown. A test-only
 `KIDO_VISUAL` build condition exposes an occlusion bypass through
 `@testable`; normal builds retain their occlusion policy. Each image waits
 for a tokened Ghostty presented-frame callback, not a timed delay. The fence
@@ -2084,9 +1710,8 @@ built app's bundled theme file and restores its bytes in a `defer`.
 `ThemeConfTests` tests the conf text functions and the writer.
 `palette.light-window-root.png` records the card over a real two-pane window
 at the mockup's 1100x740pt, with the panes' cursors hollow. The fixture
-clears the panes' tmux history after fixed output, because `respawn-pane -k`
-keeps history. It lays the window out completely before the presented-frame
-fences, and it checks the pane frames against the tmux layout: a layout pass
+runs on a private ko server. It lays the window out completely before the
+presented-frame fences, and it checks the pane frames against the layout: a layout pass
 after the fences resizes the panes and the sidebar shadow after the captured
 frames. The background
 test app has the `.prohibited` activation policy, so AppKit does not make
@@ -2097,19 +1722,50 @@ events through the panel's `performKeyEquivalent`, the call that
 `sendEvent`.
 
 
+`make ko-test` runs the `Ko` scheme (`app/KoTests/`): the client, view,
+content bridge, layout editor, layout gesture, owner and owner-model
+tests, each against its own private server in a `mktemp` directory under
+`/tmp` that its teardown stops, also when the test fails. The make target
+gives the host app a private `KIDO_APP_SERVER` and stops it afterwards.
+`make ko-fixtures` records, from a private server,
+`SidebarFeedTests/Fixtures/ko-tree.json` and
+`TmuxControlTests/Fixtures/ko-layout.json`; the recorder tests skip
+unless `KO_RECORD_FIXTURES` is set. Other tests build snapshots in Swift
+(`SidebarFeedTests/Fixtures.swift`, `VisualTests/SidebarFixture.swift`).
+
+The Swift model types (`Packages/KoModel/Sources/KoModel/KoSchema.swift`)
+are generated by `make ko-model` (`scripts/gen-ko-model.py`) from
+`share/ko/openapi.json` and `share/ko/client-model.json`, which
+`ko api-schema` and `ko api-schema --client` write. `scripts/lint.sh`
+checks both schemas, and `KoSchemaTests` checks that the committed Swift
+file is the generator's output. The generator refuses a schema shape that
+it does not support; it does not check integer bounds.
+
+The build phase "Build ko_client" runs `make -C $KO_CHECKOUT
+ko-client-xcframework` (`KO_CHECKOUT` defaults to the repository root) and
+links `-lko_client_private` from the `macos-arm64` slice. `bundle-ko.py`
+puts `ko` and `ko-pane` with their `BUILD-ID` into `Resources/ko`. No make
+target starts two builds at once; `make -j` with several targets would
+race on `build/ko_client.xcframework`.
+
+Test steps print one line per test case. Every build or test run that can
+take more than 10 s runs under `quiet-limit 60`, which stops it after 60 s
+without output. In step 4 the longest silence was 10.6 s (`make visual`),
+so no app step needs a longer limit.
+
 `make tsan` and `make asan` build Debug with ReleaseSafe GhosttyKit into
 `build/xcode.noindex/derived-{tsan,asan}`. ASan defaults to `use_sigaltstack=0` because Zig
 threads replace its alternate signal stack with thread-local storage.
 
 The Main Thread Checker needs no rebuild: launch a Debug build with
 `DYLD_INSERT_LIBRARIES=$DEVELOPER_DIR/usr/lib/libMainThreadChecker.dylib`
-and `MTC_RESET_INSERT_LIBRARIES=1`, which keeps it out of the feed and
-tmux. Leaks are checked with `MallocStackLogging=1` and `leaks`,
+and `MTC_RESET_INSERT_LIBRARIES=1`, which keeps it out of the ko server
+that `ko_client_launch` starts. Leaks are checked with `MallocStackLogging=1` and `leaks`,
 `footprint` and `heap` on the pid, compared after attaching, after
 switching past the surface budget, and after closing all but one window.
 
-`KIDO_APP_SERVER` (a private 0700 directory) and `KIDO_APP_TMUX` point the app at a private
-server; `KIDO_APP_FEED` names a stand-in feed. `KIDO_APP_BACKGROUND=1`
+`KIDO_APP_SERVER` (a private 0700 directory) points a VISUAL or STRESS
+build at a private server. `KIDO_APP_BACKGROUND=1`
 keeps a test launch off screen: it never activates, never takes focus
 and keeps no preferences. The launch sets the activation policy
 `.prohibited`: macOS retries the deferred launch activation of an
@@ -2154,7 +1810,8 @@ result bundle:
 - A product deadline is not waited out. Under `KIDO_VISUAL`,
   `PaneView.pasteEventTimeout` (30 s), `PaneView.clipboardTimeout` (8 s),
   `PaneView.copyEntryTimeout` (2 s), `PaneScroller.fadeDelay` (1 s),
-  `WindowOwner.reorderTimeout` (2 s, local host), `Upload.promiseTimeout` and `WindowView.toolbarFadeDuration` (0.15 s)
+  `WindowOwner.welcomeTimeout` (20 s), `PalettePrompt.resolveTimeout` (5 s),
+  `Upload.promiseTimeout` (30 s) and `WindowView.toolbarFadeDuration` (0.15 s)
   are settable. Production builds keep them constant.
   A test sets a short value only around the step that tests expiry, and waits
   for the expiry event.
@@ -2166,7 +1823,7 @@ result bundle:
   whatever the outcome.
 - `drain` ticks Ghostty and fences the main queue. It ends after three rounds
   with no new `GhosttyRuntime.visualWakeups`, not after a fixed time.
-  It does not wait for tmux replies or child processes, so it is not a quiet
+  It does not wait for server replies or child processes, so it is not a quiet
   window: an absence check uses a fixed, bounded wait.
   `RendererTests` keeps its own fixed 200 ms `drainAnimation`, because its
   idle-CPU windows depend on that settle.
@@ -2176,28 +1833,37 @@ result bundle:
 ### Stress harness
 
 `make stress SEED=N DURATION=S [FIND=0]` builds the app with the
-`KIDO_STRESS` compilation condition into `build/xcode.noindex/derived-stress` and runs it
-for S seconds against a private tmux server; `make tsan-stress` and
-`make asan-stress` do the same with the sanitizers (own derived dirs). The
-condition is set only by these targets: `App/Stress.swift` holds only a typealias in every
-other build and `main.swift` has one `#if KIDO_STRESS` call site.
+`KIDO_STRESS` compilation condition into `build/xcode.noindex/derived-stress`
+and runs it for S seconds against a private ko server; `make tsan-stress`
+and `make asan-stress` do the same with the sanitizers (own derived dirs).
+The condition is set only by these targets: `App/Stress.swift` holds only a
+typealias in every other build and `main.swift` has one `#if KIDO_STRESS`
+call site.
 
-`scripts/stress.py` (stdlib Python) builds the demo-like layout, including
-1M- and 100k-line history panes, with `scrollback-limit = 8 MiB`, and every 0.4s
-applies a tmux action chosen from `SEED` (switches, splits, kills, zoom,
-resizes, move-pane, client resizes, feed kills, server restarts at 40% and
-80%). In the app `Stress` does the same on the main queue, also seeded: wheel,
-scroller drags, scroll requests, find and next, resync, window resize
-bursts, load-more, pane grip drags (some killed mid-drag), edge resizes,
-detach and reconnect, appearance. It writes one JSON line per action to
-stderr (`build/stress/<target>-<seed>/stderr.log`; `actions.jsonl` is the tmux
-side; `summary.json` the counts). `FIND=0` swaps the find actions for scroll
-requests. A run fails, exits 1 and prints its replay command on a sanitizer
-report, panic, non-zero exit, an app that did not finish, a new
-`Kido*.ips`, or a step that saw the window visible, key, main or active.
-A seed is a best-effort reproduction: choices also depend on the observed
-tmux topology, and timing against live output is not reproducible.
-`actions.jsonl` records the tmux actions actually taken.
+`scripts/stress.py` (stdlib Python) starts `ko server` in a private
+directory and puts a demo-like layout with `ko api`: four sessions of
+windows with three panes, including 1M- and 100k-line history panes and a
+float, with `scrollback-limit = 8 MiB`. Every 0.4 s it applies a server
+action chosen from `SEED`: a client select, layout edits (split, zoom, add
+or move a float, add or drop a session, add a window, rename, swap
+windows) with `ko layout edit`; pane and window deletes; text input; `clear_history`; `ko run`
+in a pane; and server restarts at 40% and 80%. The stress build logs the
+client id of each welcome, and the script reads it from the app's stderr
+log to select for the app's client. Stress also resizes while a window is
+hidden (`hidden-resize`). In the app `Stress` does the same on the main
+queue, also seeded: wheel, scroller drags, scroll requests, find and next,
+window resize bursts, pane grip drags (some deleted mid-drag), edge
+resizes, layout edits through the `LayoutEditor`, appearance, tabs and
+sidebar jumps. After a sidebar jump it waits up to 5 s until the model
+selects the row's pane (`jump-selects`). It writes one JSON line per action
+to stderr (`build/stress/<target>-<seed>/stderr.log`; `actions.jsonl` is the
+server side; `summary.json` the counts). `FIND=0` swaps the find actions
+for scroll requests. A run fails, exits 1 and prints its replay command on
+a sanitizer report, panic, non-zero exit, an app that did not finish, a new
+`Kido*.ips`, a UI action that was never delivered, or a step that saw the
+window visible, key, main or active. A seed is a best-effort reproduction:
+choices also depend on the observed topology, and timing against live
+output is not reproducible.
 
 Off-screen rule: the window is never ordered in (`KIDO_APP_BACKGROUND=1`),
 is a `StressWindow` that refuses key and main, and input is only
@@ -2212,54 +1878,16 @@ expose the chosen chrome's toolbar through `mouseMoved`, then invoke that
 enabled grip's existing `press` closure for down, drag, up and Escape.
 Scroller drags and floating edge resizes call their own mouse entry points:
 off-screen `sendEvent` does not reliably reach them. This covers the drag
-logic, not AppKit event delivery or hover. Stress pane-command failures are
-logged instead of opening an error sheet. Only a “can't find pane” error for
-a pane tmux reported gone or either harness side logged as killed is expected
-(`killed_race`); every other
-pane-command error fails the run.
-
-`KIDO_ALT_VERIFY=1` on a stress build runs a bounded deterministic mailbox
-pressure probe instead of random actions. It seeds numbered history, applies
-a fractional viewport and immediately double-clicks through PaneView to check
-the selected row after snapping. A background feed then enters/exits alternate
-screen around 20000 title changes and output rows. Main holds mailbox draining until 65 app wakeups from the parser thread
-establish pressure against the 64-entry app mailbox, then snaps during that
-feed; both main and worker must complete. Renderer-thread wakeups do not count.
-`KIDO_INPUT_VERIFY=1` uses that same barrier, waits for the search sender at the
-full app mailbox, and submits 256 alternating navigation commands plus needle
-changes before stopping without a main drain. `KIDO_SNAP_VERIFY=1` rendezvouses
-output between main's snap preparation and apply, checking one and two snaps,
-bottom following, a rejected revision followed by success, and pinned numbered
-rows after the pending worker apply. `KIDO_FIND_VERIFY=1` checks deferred stale
-actions, real current navigation/selection, history prepend, and close/reopen.
-The Zig counterpart checks that current selection enqueues a renderer highlight;
-together these are two halves, not an end-to-end rendered-highlight observation.
-`scripts/concurrency-probes.py <absolute-app-path> <KIDO_*_VERIFY> <log-name>`
-launches each off screen against its own private socket with a 25-second process
-deadline, killing only that launched pid on timeout. Every probe records the
-same invisibility/focus checks as random stress. No Swift Task spins a run loop.
-`KIDO_RESIZE_VERIFY=1` enables rendering only for unordered test surfaces,
-checks a rejected unrealized final frame, compares stopped-output IOSurface
-pixels against a fresh replay with identical geometry and a 19px inset,
-asserts red/blue fixture content, and checks stability and failed-grid feed
-rejection. `KIDO_GRID_VERIFY=1` isolates the failed-setter assertion.
-`KIDO_REPLAY_VERIFY=1` establishes a new scroll target's successful apply before
-snapshot replay, then checks its restored viewport, reference pixels and final
-acknowledgement with unchanged metadata. `KIDO_REPLAY_FENCE_VERIFY=1` adds an
-app-validator fixtures: a replay reset between a snap's apply and publication
-must invalidate that apply, and a synthetic old presentation callback delivered
-during barrier-held replay must not acknowledge it. Normal replay completion must then
-produce the current viewport, pixels and real render acknowledgement.
-`KIDO_VIEWPORT_VERIFY=1`
-rejects a final frame when a same-target viewport revision failed all three
-apply attempts. These
-probes do not establish Metal's late GPU-completion ordering; the bounded
-same-queue handler gate probe could not advance past its older handler.
+logic, not AppKit event delivery or hover.
 Set `KIDO_MTC_VERIFY=1` with `DEVELOPER_DIR` for Main Thread Checker: the runner
 injects it only into Kido and verifies its mapped image in that PID. Injecting
 it into the Python launcher with `MTC_RESET_INSERT_LIBRARIES=1` removes the
 injection variable before Kido starts, so does not check Kido.
 
+`scripts/quit-check.py` starts a private ko server with one pane, launches
+the visual app off screen with `KIDO_APP_QUIT_VERIFY=1`, sends SIGTERM and
+expects exit 0 within 8 s with `quit drain completed, children=[]`.
+
 To cover a new feature, add a case to `Stress.Action` and its weighted array,
-and an exhaustive branch in `Stress.perform` driving existing internal API; add tmux
-actions in `scripts/stress.py` if the feature reacts to server state.
+and an exhaustive branch in `Stress.perform` driving existing internal API; add
+server actions in `scripts/stress.py` if the feature reacts to server state.

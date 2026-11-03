@@ -265,6 +265,13 @@ fn select_switch_and_the_server_selecting_move_one_client_and_focus_reports_foll
     logs(&s, ["I", "", ""]);
 
     c.send(&json!({"type": "select", "pane": "pane_2"}));
+    assert_eq!(c.event("selected")["pane"], json!("pane_2"));
+    c.send(&json!({"type": "select", "pane": "pane_2"}));
+    assert_eq!(
+        c.event("selected")["pane"],
+        json!("pane_2"),
+        "a select is announced also for the pane that is current"
+    );
     logs(&s, ["IO", "I", ""]);
     c.send(&json!({"type": "switch", "over": "window", "direction": "next"}));
     assert_eq!(

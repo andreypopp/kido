@@ -1,4 +1,4 @@
-import TmuxControl
+import KoModel
 
 public enum CloseTarget: Equatable, Sendable {
     case pane(PaneID), window(WindowID), session(SessionID)
@@ -22,7 +22,7 @@ public func closeScope(_ snapshot: Snapshot?, target: CloseTarget) -> (running: 
     var running = false, descendants: [WindowID] = []
     func collect(_ node: Node, rootWindow: WindowID) {
         if case .item(let item) = node {
-            let status = item.indicator(SidebarSeen()).status
+            let status = item.indicator.status
             running = running || status == .running || status == .waiting
                 || item.program_status.records.contains { $0.state == .working || $0.state == .blocked }
         }
@@ -44,10 +44,12 @@ public struct WindowProjection: Equatable, Sendable {
     public var statuses: [WindowID: SidebarRow.Status] = [:]
     public var labels: [WindowID: Label] = [:]
     public var order: [WindowID] = []
+    // Every window of the session in the order of the sidebar's tree, nested windows after their parent pane.
+    public var tree: [WindowID] = []
     public init() {}
 }
 
-public func sidebarWindows(_ snapshot: Snapshot?, session: SessionID?, surviving: Set<WindowID>, activePanes: [WindowID: PaneID] = [:], seen: SidebarSeen = SidebarSeen()) -> WindowProjection {
+public func sidebarWindows(_ snapshot: Snapshot?, session: SessionID?, surviving: Set<WindowID>, activePanes: [WindowID: PaneID] = [:]) -> WindowProjection {
     var result = WindowProjection()
     func collect(_ node: Node, ancestor: WindowID?) {
         let window = node.window
@@ -55,12 +57,13 @@ public func sidebarWindows(_ snapshot: Snapshot?, session: SessionID?, surviving
             result.labels[window] = .init(title: item.label, agent: item.isAgent, messageable: item.isMessageable)
         }
         let root = ancestor ?? (surviving.contains(window) ? window : nil)
+        if root != nil, !result.tree.contains(window) { result.tree.append(window) }
         if ancestor == nil, root != nil { result.order.append(window) }
         if let root {
             result.ancestors[window] = root
             let previous = result.statuses[root] ?? .quiet
             if previous != .error {
-                let status: SidebarRow.Status = if case .item(let item) = node { item.indicator(seen).status } else { .quiet }
+                let status: SidebarRow.Status = if case .item(let item) = node { item.indicator.status } else { .quiet }
                 result.statuses[root] = previous.mergingTabStatus(status)
             }
         }

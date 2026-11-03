@@ -9,19 +9,14 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
     private let previousButton = IconButton("chevron.up", "Previous match", size: 15)
     private let nextButton = IconButton("chevron.down", "Next match", size: 15)
     private let done = IconButton("xmark", "Done", size: 15)
-    private enum Status: Equatable { case none, searching, matches(Int), at(Int, of: Int), failed, loaded(Int) }
+    // Ghostty searches the pane's mirror, which holds the whole history.
+    private enum Status: Equatable { case none, matches(Int), at(Int, of: Int) }
     private var status = Status.none { didSet { showStatus() } }
-    private var token = UUID()
-    private var matches: [Int] = []
-    private var index = 0
     private var selected: Int?
     private var start: (x: Int, y: Int)?
     private var total = 0
-    private var target: Int?
     private var navigating = false
-    private var searchedHistory = 0
     private var autoNavigate = true
-    private var loaded: Bool { pane?.copyMode != nil }
 
     init(_ pane: PaneView, runtime: GhosttyRuntime) {
         super.init(runtime: runtime, radius: 12, separators: 2)
@@ -68,14 +63,11 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
         let compact = bounds.width < 300
         let (text, navigable) = switch status {
         case .none: ("", false)
-        case .searching: (compact ? "…" : "Searching…", false)
         case .matches(0): (compact ? "0" : "No matches", false)
-        case .matches(let total): (compact ? "\(total)" : "\(total) matches", total > 0)
+        case .matches(let total): (compact ? "\(total)" : "\(total) matches", true)
         case .at(let index, let total): (compact ? "\(index)/\(total)" : "\(index) of \(total)", true)
-        case .failed: (compact ? "Failed" : "Search failed", false)
-        case .loaded(let total): (compact ? "\(total) (loaded)" : total > 0 ? "\(total) matches (loaded)" : "No matches (loaded)", total > 0)
         }
-        count.textColor = status == .failed ? Chrome.errorText : Chrome.inkSecondary
+        count.textColor = Chrome.inkSecondary
         previousButton.isEnabled = navigable
         nextButton.isEnabled = navigable
         guard count.stringValue != text else { return }
@@ -96,7 +88,7 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
         count.frame = NSRect(x: width - 105 - label.width, y: (bounds.height - label.height) / 2, width: label.width, height: label.height)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        spinner.isHidden = status != .searching
+        spinner.isHidden = true
         spinner.frame = CGRect(x: count.frame.minX - 12, y: 11.5, width: 9, height: 9)
         CATransaction.commit()
         let left = spinner.isHidden ? count.frame.minX - 2 : spinner.frame.minX - 4
@@ -110,70 +102,27 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
 
     func search(navigate: Bool = true) {
         autoNavigate = navigate
-        token = UUID()
-        matches = []
-        index = 0
-        target = nil
-        status = field.stringValue.isEmpty || loaded ? .none : .searching
         restartGhostty()
-        pane?.onSearch(loaded ? "" : field.stringValue, token)
-    }
-
-    func invalidate() {
-        guard !loaded else { return }
-        token = UUID()
-        matches = []
-        target = nil
-        navigating = false
-        status = field.stringValue.isEmpty ? .none : .searching
-        action("search:")
-    }
-
-    func finished(_ matches: [Int], token: UUID) {
-        guard token == self.token else { return }
-        self.matches = matches
-        if autoNavigate, !matches.isEmpty { land() } else { status = .matches(matches.count) }
-    }
-
-    func failed(_ token: UUID) {
-        if token == self.token { status = .failed }
     }
 
     @objc func next() { move(1) }
     @objc func previous() { move(-1) }
 
     private func move(_ delta: Int) {
-        if loaded {
-            guard total > 0 else { return }
-            if total == 1, let start { pane?.copyMove("", to: start); return }
-            pane?.resetScroll()
-            return action(delta > 0 || selected == nil ? "navigate_search:next" : "navigate_search:previous")
-        }
-        guard !matches.isEmpty else { return }
-        index = (index + delta + matches.count) % matches.count
-        land()
+        guard total > 0 else { return }
+        if total == 1, let start, pane?.copyMode != nil { pane?.copyMove("", to: start); return }
+        pane?.resetScroll()
+        action(delta > 0 || selected == nil ? "navigate_search:next" : "navigate_search:previous")
     }
 
-    private func land() {
-        guard let pane else { return }
-        status = .at(index + 1, of: matches.count)
-        target = index
-        pane.onFindCoverage(matches[index], token)
-        if matches[index] <= pane.scrollPosition().retainedHistoryRows { navigate() }
-    }
-
-    func loaded(_ position: PaneView.ScrollPosition) {
-        guard matches.indices.contains(index) else { return }
-        if position.retainedHistoryRows != searchedHistory && matches[index] <= position.retainedHistoryRows { restartGhostty() }
-        guard target != nil else { return }
-        if matches[index] <= position.retainedHistoryRows { pane?.resetScroll(); navigate() }
-
+    // Copy mode moves its cursor to a match and shows the count; outside it the selected match shows.
+    private func showMatches() {
+        status = field.stringValue.isEmpty ? .none : pane?.copyMode != nil ? .matches(total) : selected.map { .at($0 + 1, of: total) } ?? .matches(total)
     }
 
     func ghosttyTotal(_ total: Int) {
         self.total = max(0, total)
-        guard loaded else { return navigate() }
-        status = .loaded(total)
+        showMatches()
         guard autoNavigate, total > 0, selected == nil, !navigating else { return }
         navigating = true
         pane?.resetScroll()
@@ -184,24 +133,8 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
         self.selected = selected >= 0 ? selected : nil
         self.start = self.selected == nil ? nil : start
         navigating = false
-        guard loaded else { return navigate() }
-        if let start = self.start { pane?.copyMove("", to: start) }
-    }
-
-    private func navigate() {
-        guard !navigating, let target, total > target, let pane, matches.indices.contains(index),
-              matches[index] <= pane.scrollPosition().retainedHistoryRows else { return }
-        if selected == target {
-            self.target = nil
-            let position = pane.scrollPosition(), row = position.retainedHistoryRows - matches[index]
-            if row < position.offset + 2 { pane.scroll(to: max(0, position.offset - 2)) }
-            return
-        }
-        let forward = selected.map { (target - $0 + total) % total } ?? (target + 1)
-        let backward = selected.map { ($0 - target + total) % total } ?? (total - target)
-        navigating = true
-        pane.resetScroll()
-        action(forward <= backward ? "navigate_search:next" : "navigate_search:previous")
+        showMatches()
+        if pane?.copyMode != nil, let start = self.start { pane?.copyMove("", to: start) }
     }
 
     private func restartGhostty() {
@@ -209,7 +142,7 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
         start = nil
         total = 0
         navigating = false
-        searchedHistory = pane?.scrollPosition().retainedHistoryRows ?? 0
+        showMatches()
         action("search:")
         if case .entering = pane?.copyMode { return }
         action("search:\(field.stringValue)")
@@ -218,7 +151,6 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
     #if KIDO_STRESS
     private var navigationCount = 0
     var stressState: (selected: Int?, total: Int, navigationCount: Int) { (selected, total, navigationCount) }
-    func stressMatches(_ matches: [Int]) { finished(matches, token: token) }
     #endif
 
     private func action(_ name: String) {
@@ -230,10 +162,8 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
     }
 
     @objc func close() {
-        token = UUID()
-        pane?.onSearch("", token)
         action("end_search")
-        if loaded, !field.stringValue.isEmpty { pane?.copyFind.query = field.stringValue }
+        if pane?.copyMode != nil, !field.stringValue.isEmpty { pane?.copyFind.query = field.stringValue }
         if (window?.firstResponder as? NSView)?.isDescendant(of: self) == true { window?.makeFirstResponder(pane) }
         let pane = pane
         removeFromSuperview()
@@ -244,7 +174,7 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
         switch selector {
         case #selector(NSResponder.cancelOperation(_:)): close()
         case #selector(NSResponder.insertNewline(_:)):
-            if loaded { window?.makeFirstResponder(pane) }
+            if pane?.copyMode != nil { window?.makeFirstResponder(pane) }
             else if NSApp.currentEvent?.modifierFlags.contains(.shift) == true { previous() } else { next() }
         default: return false
         }

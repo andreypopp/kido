@@ -1,5 +1,6 @@
 import AppKit
 import SidebarFeed
+import KoModel
 import TmuxControl
 import XCTest
 @testable import Kido
@@ -10,42 +11,39 @@ import XCTest
         let poster = try XCTUnwrap(Notifier.shared.poster as? RecordedNotifications)
         let authorizationBefore = poster.authorizeCalls
         let postsBefore = poster.posts.count
-        let dir = "/tmp/ka-visual-notice-" + UUID().uuidString.prefix(8)
-        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: serverEnvironment)
-        XCTAssertEqual(result.status, 0, result.err)
-        let server = try JSONDecoder().decode(Server.self, from: Data(result.out.utf8))
-        let created = try await Child.run(server.tmux, ["-u", "-S", server.socket, "new-window", "-d", "-t", "$0", "-n", "notice", "-P", "-F", "#{pane_id}\t#{pane_tty}", "printf '\\033]2;Builder\\007\\033]7501;state=blocked:app=builder:msg=QXBwcm92ZQ==\\007'; exec sleep 300"], env: tools.environment)
-        XCTAssertEqual(created.status, 0, created.err)
-        let fields = created.out.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "\t")
-        XCTAssertEqual(fields.count, 2)
-        let pane = try XCTUnwrap(PaneID(String(fields[0])))
-        let tty = try FileHandle(forWritingTo: URL(fileURLWithPath: String(fields[1])))
+        let dir = try koServerDir()
+        let feed = dir + "/feed"
+        FileManager.default.createFile(atPath: feed, contents: nil)
+        let tty = try FileHandle(forWritingTo: URL(fileURLWithPath: feed))
         let board = NSPasteboard(name: .init("kn-" + UUID().uuidString))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let app = AppDelegate(runtime: runtime)
         let owner = try XCTUnwrap(app.open(.local, start: false))
         owner.testAttended = false
-        owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
+        owner.testServerDir = dir
         addTeardownBlock { @MainActor in
             owner.close()
             try? tty.close()
             board.releaseGlobally()
-            _ = try? await Child.run(server.tmux, ["-u", "-S", server.socket, "kill-session", "-t", "$0"], env: tools.environment)
-            try? FileManager.default.removeItem(atPath: dir)
         }
+        _ = try await KoServer.launch(dir: dir)
+        let blocked = koPane("printf '\\033]2;Builder\\007\\033]7501;state=blocked:app=builder:msg=QXBwcm92ZQ==\\007'; exec tail -f " + SSH.quote(feed))
+        try await koPut(dir, #"[{"name":"main","windows":[{"name":"w","tree":\#(koPane())},{"name":"notice","tree":\#(blocked)}]}]"#)
+        let pane = PaneID(number: 2)
+        try await koUntil(dir, "/panes", contains: "blocked")
         owner.start()
-        try await wait("notification baseline") { !owner.feedFresh && sidebarRows(owner.stressState.4).contains { $0.target?.pane == pane && $0.status == .waiting } }
+        try await wait("notification baseline") { !owner.feedFresh && sidebarRows(owner.snapshot).contains { $0.target?.pane == pane && $0.status == .waiting } }
         XCTAssertEqual(poster.posts.count, postsBefore)
         XCTAssertEqual(poster.authorizeCalls, max(1, authorizationBefore))
         Notifier.shared.connected()
         XCTAssertEqual(poster.authorizeCalls, max(1, authorizationBefore))
 
         try tty.write(contentsOf: Data("\u{1b}]7501;state=working:app=builder\u{7}".utf8))
-        try await wait("waiting left") { sidebarRows(owner.stressState.4).contains { $0.target?.pane == pane && $0.status == .running } }
+        try await wait("waiting left") { sidebarRows(owner.snapshot).contains { $0.target?.pane == pane && $0.status == .running } }
         try tty.write(contentsOf: Data("\u{1b}]7501;state=blocked:app=builder:msg=QXBwcm92ZQ==\u{7}".utf8))
         try await wait("waiting posts") { poster.posts.count == postsBefore + 1 }
         let notice = try XCTUnwrap(poster.posts.last)
-        XCTAssertEqual(notice.title, "builder")
+        XCTAssertEqual(notice.title, "Builder", "the pane's own title, verbatim")
         XCTAssertEqual(notice.subtitle, owner.snapshot?.sessions.first?.name)
         XCTAssertEqual(notice.body, "Waiting: Approve")
         XCTAssertEqual(notice.kind, .waiting)
@@ -91,14 +89,7 @@ import XCTest
 
     func testRoutingAndPendingJumps() async throws {
         XCTAssertTrue(background)
-        let dir = "/tmp/ka-visual-route-" + UUID().uuidString.prefix(8)
-        let result = try await Child.run(tools.kido, ["server", "--server", dir], env: serverEnvironment)
-        XCTAssertEqual(result.status, 0, result.err)
-        let server = try JSONDecoder().decode(Server.self, from: Data(result.out.utf8))
-        let created = try await Child.run(server.tmux, ["-u", "-S", server.socket, "new-session", "-d", "-s", "target", "-P", "-F", "#{session_id} #{window_id} #{pane_id}", "exec sleep 300"], env: tools.environment)
-        XCTAssertEqual(created.status, 0, created.err)
-        let ids = created.out.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: " ").map(String.init)
-        XCTAssertEqual(ids.count, 3)
+        let dir = try koServerDir()
         let board = NSPasteboard(name: .init("route-" + UUID().uuidString))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let app = AppDelegate(runtime: runtime)
@@ -107,26 +98,25 @@ import XCTest
         addTeardownBlock { @MainActor in
             apps.flatMap(\.owners).forEach { $0.close() }
             board.releaseGlobally()
-            for session in ["$0", ids[0]] {
-                _ = try? await Child.run(server.tmux, ["-u", "-S", server.socket, "kill-session", "-t", session], env: tools.environment)
-            }
-            try? FileManager.default.removeItem(atPath: dir)
         }
         let first = try XCTUnwrap(app.open(.local, start: false))
-        first.testEndpoint = Endpoint(server: server, kido: tools.kido)
+        first.testServerDir = dir
         first.start()
-        try await wait("first owner snapshot") { first.snapshot?.error == nil && first.snapshot != nil }
+        try await wait("the empty server") { first.testBanner.testText.title == "No sessions" }
+        try await koPut(dir, #"[{"name":"main","windows":[{"name":"w","tree":\#(koPane())}]},{"name":"target","windows":[{"name":"t","tree":\#(koPane())}]}]"#)
+        let ids = ["session_2", "window_2", "pane_2"]
+        try await wait("first owner snapshot") { first.snapshot != nil }
         let instance = try XCTUnwrap(first.snapshot?.serverInstance)
-        let data = try JSONSerialization.data(withJSONObject: ["host": "local", "instance": ["started_at": instance.startedAt, "pid": instance.pid], "position": ["session": ids[0], "window": ids[1], "pane": ids[2]]])
+        let data = try JSONSerialization.data(withJSONObject: ["host": "local", "instance": instance.description, "position": ["session": ids[0], "window": ids[1], "pane": ids[2]]])
         let target = try JSONDecoder().decode(NoticeTarget.self, from: data)
-        first.perform(.jump(try XCTUnwrap(sidebarRows(first.snapshot).first { $0.target?.session.description == "$0" }?.target)))
-        try await wait("first stays in original session") { first.snapshot?.client.session.description == "$0" }
+        first.perform(.jump(try XCTUnwrap(sidebarRows(first.snapshot).first { $0.target?.session == SessionID(number: 1) }?.target)))
+        try await wait("first stays in original session") { first.snapshot?.client.session == SessionID(number: 1) }
         let second = try XCTUnwrap(app.open(.local, start: false))
-        second.testEndpoint = Endpoint(server: server, kido: tools.kido)
+        second.testServerDir = dir
         second.start()
-        try await wait("second snapshot") { second.snapshot != nil && second.snapshot?.error == nil }
-        let other = try await Child.run(server.tmux, ["-u", "-S", server.socket, "new-window", "-d", "-t", ids[0], "exec sleep 300"], env: tools.environment)
-        XCTAssertEqual(other.status, 0, other.err)
+        try await wait("second snapshot") { second.snapshot != nil }
+        let client = try XCTUnwrap(second.testClient)
+        _ = try await Task.detached { try client.edit(.addWindow(KoSchema.EditAddWindow(after: WindowID(number: 2), new: KoSchema.CreatePane(), session: SessionID(number: 2)))) }.value
         try await wait("other target-session window observed") {
             sidebarRows(second.snapshot).contains { $0.target?.session == target.position.session && $0.target?.pane != target.position.pane }
         }
@@ -135,22 +125,20 @@ import XCTest
         try await wait("second in target session") { second.snapshot?.client.pane == otherPosition.pane }
         app.route(target)
         try await wait("target owner selected") { second.snapshot?.client.pane == target.position.pane }
-        XCTAssertEqual(first.snapshot?.client.session.description, "$0")
+        XCTAssertEqual(first.snapshot?.client.session, SessionID(number: 1))
 
         for (mode, cold) in zip(["matching", "mismatched", "expired"], coldApps) {
-            let selected = try await Child.run(server.tmux, ["-u", "-S", server.socket, "select-window", "-t", otherPosition.window.description], env: tools.environment)
-            XCTAssertEqual(selected.status, 0, selected.err)
             let pending: NoticeTarget
             if mode == "mismatched" {
                 var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-                object["instance"] = ["started_at": instance.startedAt, "pid": instance.pid + 1]
+                object["instance"] = instance.description + "x"
                 pending = try JSONDecoder().decode(NoticeTarget.self, from: JSONSerialization.data(withJSONObject: object))
             } else { pending = target }
             cold.route(pending, now: mode == "expired" ? Date().addingTimeInterval(-31) : Date())
             XCTAssertTrue(cold.owners.isEmpty)
             cold.routes.ready(isDefaultLaunch: false) { host, cause in
                 let owner = cold.open(host, start: false, cause: cause)!
-                owner.testEndpoint = Endpoint(server: server, kido: tools.kido)
+                owner.testServerDir = dir
                 owner.start()
             }
             let owner = try XCTUnwrap(cold.owners.first)

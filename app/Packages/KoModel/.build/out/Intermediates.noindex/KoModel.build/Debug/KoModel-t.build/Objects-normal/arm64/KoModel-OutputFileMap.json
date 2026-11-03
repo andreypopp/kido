@@ -1,0 +1,39 @@
+{
+  "" : {
+    "diagnostics" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoModel-primary.dia",
+    "emit-module-dependencies" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoModel-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoModel-primary-emit-module.dia",
+    "pch" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoModel-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoModel-primary.swiftdeps"
+  },
+  "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/Sources/KoModel/ID.swift" : {
+    "const-values" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/ID.swiftconstvalues",
+    "dependencies" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/ID.d",
+    "diagnostics" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/ID.dia",
+    "index-unit-output-path" : "/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/ID.o",
+    "llvm-bc" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/ID.bc",
+    "object" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/ID.o",
+    "swift-dependencies" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/ID.swiftdeps",
+    "swiftmodule" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/ID~partial.swiftmodule"
+  },
+  "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/Sources/KoModel/KoModel.swift" : {
+    "const-values" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoModel.swiftconstvalues",
+    "dependencies" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoModel.d",
+    "diagnostics" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoModel.dia",
+    "index-unit-output-path" : "/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoModel.o",
+    "llvm-bc" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoModel.bc",
+    "object" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoModel.o",
+    "swift-dependencies" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoModel.swiftdeps",
+    "swiftmodule" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoModel~partial.swiftmodule"
+  },
+  "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/Sources/KoModel/KoSchema.swift" : {
+    "const-values" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoSchema.swiftconstvalues",
+    "dependencies" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoSchema.d",
+    "diagnostics" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoSchema.dia",
+    "index-unit-output-path" : "/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoSchema.o",
+    "llvm-bc" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoSchema.bc",
+    "object" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoSchema.o",
+    "swift-dependencies" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoSchema.swiftdeps",
+    "swiftmodule" : "/Users/andrepopp/Workspace/kido-app-ko-s4/app/Packages/KoModel/.build/out/Intermediates.noindex/KoModel.build/Debug/KoModel-t.build/Objects-normal/arm64/KoSchema~partial.swiftmodule"
+  }
+}

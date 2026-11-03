@@ -120,7 +120,7 @@ fn open(
 
 pub(crate) fn exchange(
     socket: &Path,
-    who: (Option<ClientId>, Option<PaneId>),
+    who: Who,
     target: (&str, &str),
     body: &[u8],
     within: Duration,
@@ -134,24 +134,57 @@ pub(crate) fn exchange(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rejected {
+    Status {
+        status: u16,
+        reason: String,
+        body: Vec<u8>,
+    },
+    Io(String),
+    // The request was written and no answer was read: the server may have acted on it.
+    Unanswered(String),
+}
+
+impl From<io::Error> for Rejected {
+    fn from(error: io::Error) -> Rejected {
+        Rejected::Io(text(error))
+    }
+}
+
+impl Display for Rejected {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Rejected::Status {
+                status,
+                reason,
+                body,
+            } => write!(
+                formatter,
+                "{status} {reason}: {}",
+                String::from_utf8_lossy(body)
+            ),
+            Rejected::Io(message) | Rejected::Unanswered(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl From<Rejected> for String {
+    fn from(rejected: Rejected) -> String {
+        rejected.to_string()
+    }
+}
+
 fn fetch(
     socket: &Path,
-    client: Option<ClientId>,
+    who: Who,
     route: &Route,
     body: &[u8],
     (cancel, within): (Option<&Wake>, Duration),
     mut sink: impl FnMut(&[u8]) -> io::Result<()>,
-) -> Result<(), String> {
+) -> Result<(), Rejected> {
     let (method, target) = route.to_request();
-    let stream = open(
-        socket,
-        (client, None),
-        (method, &target),
-        body,
-        within,
-        cancel,
-    )
-    .map_err(text)?;
+    let stream = open(socket, who, (method, &target), body, within, cancel)?;
     let mut failure = Vec::new();
     let mut reader = Interruptible {
         stream: &stream,
@@ -166,38 +199,39 @@ fn fetch(
             Ok(())
         }
     })
-    .map_err(text)?;
+    .map_err(|error| Rejected::Unanswered(text(error)))?;
     if response.status == 200 {
         Ok(())
     } else {
-        Err(format!(
-            "{} {}: {}",
-            response.status,
-            response.reason,
-            String::from_utf8_lossy(&failure)
-        ))
+        Err(Rejected::Status {
+            status: response.status,
+            reason: response.reason,
+            body: failure,
+        })
     }
 }
 
+pub type Who = (Option<ClientId>, Option<PaneId>);
+
 pub fn request(
     socket: &Path,
-    client: Option<ClientId>,
+    who: Who,
     route: &Route,
     body: &[u8],
     cancel: Option<&Wake>,
-) -> Result<Vec<u8>, String> {
-    request_within(socket, client, route, body, (cancel, READ_TIMEOUT))
+) -> Result<Vec<u8>, Rejected> {
+    request_within(socket, who, route, body, (cancel, READ_TIMEOUT))
 }
 
 pub fn request_within(
     socket: &Path,
-    client: Option<ClientId>,
+    who: Who,
     route: &Route,
     body: &[u8],
     limits: (Option<&Wake>, Duration),
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, Rejected> {
     let mut answer = Vec::new();
-    fetch(socket, client, route, body, limits, |piece| {
+    fetch(socket, who, route, body, limits, |piece| {
         answer.extend_from_slice(piece);
         Ok(())
     })?;
@@ -212,12 +246,13 @@ pub fn download(
 ) -> Result<(), String> {
     fetch(
         socket,
-        Some(client),
+        (Some(client), None),
         route,
         b"",
         (None, READ_TIMEOUT),
         |piece| file.write_all(piece),
     )
+    .map_err(String::from)
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

@@ -46,8 +46,8 @@ extern "C" {
  * bytes of an older snapshot never follow a newer restore. The surface may
  * be fed from that thread only; the caller's queue plays no part in it. The
  * calls that return a ko_buffer (ko_client_put_layout, ko_client_runs,
- * ko_client_prompt) block until the server answered: call them off the main
- * queue.
+ * ko_client_prompt, ko_client_prompt_resolve, ko_client_delete, ko_client_edit) and ko_client_launch and ko_client_stop_server block
+ * until the server answered: call them off the main queue.
  *
  * Close. After ko_client_close or ko_view_close returns, no callback of that
  * handle starts, and a callback on another thread has ended. Events that were
@@ -61,7 +61,7 @@ extern "C" {
  * inside a ko_restore_fn.
  *
  * Reconnect. The core connects again by itself after the connection ended,
- * with a delay that grows to two seconds. KO_EVENT_FAILED reports the first
+ * with a delay that grows to two seconds, except after KO_EVENT_MISMATCH. KO_EVENT_FAILED reports the first
  * failure of an outage only. A new KO_EVENT_WELCOME ends the outage. Its
  * `fresh` is true when the server is another process than the one before
  * (another `instance`): every view is then closed with KO_EVENT_VIEW_CLOSED,
@@ -86,6 +86,14 @@ typedef enum ko_code {
     KO_ERR_PROTOCOL = 4,
     KO_ERR_CLOSED = 5,
     KO_ERR_CONFLICT = 6,
+    KO_ERR_NOT_FOUND = 7,
+    KO_ERR_INVALID = 8,
+    KO_ERR_REFUSED = 9,
+    KO_ERR_GONE = 10,
+    KO_ERR_UNKNOWN = 11, /* the outcome is not known: an error that the core does not know, or a
+                          * ko_client_prompt that may have reached its agent */
+    KO_ERR_PROTOCOL_MISMATCH = 12,
+    KO_ERR_VT_MISMATCH = 13,
 } ko_code;
 
 /* The result of a restore. The values equal ghostty_snapshot_restore_result_e. */
@@ -105,6 +113,7 @@ enum {
     KO_EVENT_ALERT = 6,
     KO_EVENT_VIEW_RESTORED = 7,
     KO_EVENT_VIEW_CLOSED = 8,
+    KO_EVENT_MISMATCH = 9,
 };
 
 typedef struct ko_welcome {
@@ -146,6 +155,25 @@ typedef struct ko_alert {
     const char *body;  /* NULL for a bell */
 } ko_alert;
 
+/* The protocol version, the terminal revision and the build of a ko binary. */
+typedef struct ko_version {
+    const char *protocol;
+    const char *vt;
+    const char *build;
+} ko_version;
+
+/*
+ * The server answers with another protocol major (`code` is
+ * KO_ERR_PROTOCOL_MISMATCH) or another terminal revision (KO_ERR_VT_MISMATCH).
+ * The core stops: it does not connect again, and no KO_EVENT_FAILED follows.
+ * Close the client and start a matching server.
+ */
+typedef struct ko_mismatch {
+    ko_code code;
+    ko_version server;
+    ko_version own;
+} ko_mismatch;
+
 /*
  * The members below carry the `user` pointer that the caller gave to
  * ko_view_open in `view`.
@@ -178,6 +206,7 @@ typedef struct ko_event {
         ko_alert alert;
         ko_view_restored view_restored;
         ko_view_closed view_closed;
+        ko_mismatch mismatch;
     };
 } ko_event;
 
@@ -240,13 +269,15 @@ typedef int (*ko_restore_fn)(void *user, const ko_snapshot *snapshot);
  * What the client tells the server in its hello. `sizes_windows` says that its
  * window takes part in sizing: the windows that it shows get its size. The core
  * sends the latest size and focus again in every later hello, but this flag
- * stays.
+ * stays. `name` is NUL-terminated and tells the server's log which client
+ * this is; NULL means "app".
  */
 typedef struct ko_hello {
     uint16_t cols;
     uint16_t rows;
     bool focused;
     bool sizes_windows;
+    const char *name;
 } ko_hello;
 
 /*
@@ -293,12 +324,33 @@ ko_code ko_client_connect(const char *socket,
 ko_code ko_client_close(ko_client *client);
 
 /*
+ * Starts the ko server of the state directory `dir` with the executable `executable`
+ * (`ko server --server dir`), unless one runs there, and returns the path of its unix
+ * socket in `socket`. It waits up to five seconds. On a code other than KO_OK `socket`
+ * holds the text of the error. It blocks: call it off the main queue. ko_client_connect
+ * never starts a server.
+ */
+ko_code ko_client_launch(const char *dir, const char *executable, ko_buffer *socket);
+
+/*
+ * Stops the server of the state directory `dir` and waits until it has ended. On a
+ * code other than KO_OK `error` (which may be NULL) holds the text of the error. It
+ * blocks: call it off the main queue.
+ */
+ko_code ko_client_stop_server(const char *dir, ko_buffer *error);
+
+/* The protocol, terminal revision and build of this core; the strings are static. */
+ko_code ko_client_version(ko_version *out);
+
+/*
  * The model as one JSON document in a buffer: the client and instance ids, the
  * selection, the layout document (as GET /layout gives it), every pane with
  * its label (the title to show), its seen mark ("none", "running", "waiting", "done" or "failed"),
  * its row (status, variables of the server, progress) and its variables, the
  * runs, and the outline (sessions and panes in tree order with depth). It is a
  * snapshot: a later change needs a later call.
+ * share/ko/client-model.json is the schema of the document (ModelJson); its
+ * references name the components of share/ko/openapi.json.
  */
 ko_code ko_client_model(const ko_client *client, ko_buffer *out);
 
@@ -308,7 +360,11 @@ enum {
     KO_SELECT_PANE = 3,
 };
 
-/* Moves this client to the session, window or pane named by `id`, such as "pane_3". */
+/*
+ * Moves this client to the session, window or pane named by `id`, such as "pane_3". The server
+ * answers each select with KO_EVENT_SELECTED; KO_ERR_NOT_FOUND is a pane that the model's layout
+ * does not have.
+ */
 ko_code ko_client_select(const ko_client *client, int kind, const char *id);
 
 enum {
@@ -320,15 +376,20 @@ enum {
 
 ko_code ko_client_switch(const ko_client *client, int over, int direction);
 
-/* The size of the window. It counts only for a client that said `sizes_windows`. */
-ko_code ko_client_size(const ko_client *client, uint16_t cols, uint16_t rows);
+/*
+ * The size of the window, and the pixel size of a cell for a program's size queries (0 and 0 when
+ * unknown). It counts only for a client that said `sizes_windows`.
+ */
+ko_code ko_client_size(const ko_client *client, uint16_t cols, uint16_t rows, uint16_t cell_width, uint16_t cell_height);
 
 ko_code ko_client_focus(const ko_client *client, bool focused);
 
 /*
  * The seen record: the panes that the window shows now, and whether the user
  * attends to it (the window is key and the app active). When `attending`
- * is false nothing becomes seen.
+ * is false nothing becomes seen. The core keeps them until the next call and
+ * marks each later outcome of a shown pane seen as it arrives; call it when
+ * they change. A mark that the call changes posts KO_EVENT_MODEL.
  */
 ko_code ko_client_observe(const ko_client *client,
                           const char *const *panes,
@@ -349,6 +410,21 @@ ko_code ko_client_put_layout(const ko_client *client,
                              size_t len,
                              ko_buffer *out);
 
+/*
+ * Applies one edit to the layout and sends it, in the core: `edit` is the JSON of one `Edit` of
+ * share/ko/client-model.json. The core starts from the layout of its model; when the layout has
+ * changed, it applies the edit again to the newer document, up to eight times, so no
+ * KO_ERR_CONFLICT reaches the caller except when the layout keeps changing. On KO_OK `out` holds the
+ * JSON of `Edited`: the new normalized document and the session, window or pane that the edit made.
+ * KO_ERR_NOT_FOUND names in `out` an id that the edit needs and the
+ * layout no longer has; KO_ERR_INVALID gives the reason; KO_ERR_ARGUMENT is an edit that does not
+ * decode. It blocks until the server answered: call it off the main queue.
+ */
+ko_code ko_client_edit(const ko_client *client,
+                       const uint8_t *edit,
+                       size_t len,
+                       ko_buffer *out);
+
 enum {
     KO_RUNS_LIVE = 1,
     KO_RUNS_PRESENT = 2,
@@ -358,12 +434,40 @@ enum {
 /* The runs as the JSON array of GET /runs. */
 ko_code ko_client_runs(const ko_client *client, int show, ko_buffer *out);
 
-/* Sends `text` to the agent pane `target`; `out` holds the JSON answer ({"via": ...}). */
+/*
+ * The agents that a prompt from the pane `caller` can reach: `out` holds the JSON array of
+ * Candidate. Those of the caller's window come alone when it has any, or always with
+ * `window_only`; else those of its session.
+ */
+ko_code ko_client_prompt_resolve(const ko_client *client,
+                                 const char *caller,
+                                 bool window_only,
+                                 ko_buffer *out);
+
+/*
+ * Sends `text` from the pane `caller` to the agent pane `target`, which must be one of its
+ * candidates; `out` holds the JSON answer ({"via": ...}). KO_ERR_UNKNOWN: the send failed
+ * partway, or no answer came after the request was written, so the text may have arrived.
+ */
 ko_code ko_client_prompt(const ko_client *client,
+                         const char *caller,
                          const char *target,
                          const uint8_t *text,
                          size_t len,
                          ko_buffer *out);
+
+enum {
+    KO_DELETE_PANE = 1,
+    KO_DELETE_WINDOW = 2,
+    KO_DELETE_SESSION = 3,
+};
+
+/*
+ * Closes the pane, window or session named by `id`, such as "window_2". The server
+ * ends the processes in it. It blocks until the server answered: call it off the main
+ * queue. On a code other than KO_OK, `out` holds the text of the error.
+ */
+ko_code ko_client_delete(const ko_client *client, int kind, const char *id, ko_buffer *out);
 
 /*
  * Opens a view of the pane named by `pane` ("pane_3") and returns at once. The

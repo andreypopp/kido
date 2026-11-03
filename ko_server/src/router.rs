@@ -1026,7 +1026,13 @@ mod tests {
         );
         a.events(&mut server);
         a.send(&mut server, r#"{"type":"select","pane":"pane_2"}"#);
-        assert!(kinds(&a.events(&mut server)).is_empty());
+        assert_eq!(kinds(&a.events(&mut server)), ["selected pane_2"]);
+        a.send(&mut server, r#"{"type":"select","pane":"pane_2"}"#);
+        assert_eq!(
+            kinds(&a.events(&mut server)),
+            ["selected pane_2"],
+            "also for the pane that is current"
+        );
         a.send(&mut server, r#"{"type":"select","session":"session_1"}"#);
         assert_eq!(kinds(&a.events(&mut server)), ["selected pane_2"]);
         a.send(&mut server, r#"{"type":"select","window":"window_9"}"#);
