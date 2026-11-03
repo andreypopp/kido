@@ -742,6 +742,10 @@ the app engine's fetch thread.
   (`Vars`) and `GET /panes/{id}/vars/{name}` (`Var`) are removed. The
   writes (`SetVar`, `DeleteVar`, the conditional `DeleteVars`) stay.
 - If the run events leave a gap, the runs come into the same message.
+- `POST /runs/reap`, `ko reap` and their client call are removed: the
+  server sweeps by itself on each event that can end a run. The reap
+  e2e tests wait for the sweep's effect (the outcome event or the pane's
+  removal) with a short grace from the server's environment.
 
 ### K4. Linux measurements (1 to 2 agent-days, after RL)
 
