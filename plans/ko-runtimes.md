@@ -27,6 +27,13 @@ views and no `/client` on a runtime socket; the idle time is 600 s;
 the container e2e runs locally behind `KO_E2E_CONTAINER=1`. The
 podman-machine transport of macOS is out of scope.
 
+Decided on 2026-11-04: an agent that `spawn_agent(runtime)` starts
+runs its pi on the host and routes its tools into the runtime (the
+**routed** mode, section 6.2). pi runs inside a runtime (the **inside**
+mode) only when the runtime's configuration says that pi is installed
+there; ko never copies pi. The primitive for the routed mode is the
+exec session of section 6.1.
+
 ## 1. Prototype findings
 
 Every measurement ran on 2026-11-03 on this Mac (macOS 27.0.1). The
@@ -177,6 +184,14 @@ Fields common to every kind:
   static Linux ko that ko installs beside itself (section 4.3),
   mounted read-only at `/opt/ko`; or `"path"`, the image's own.
   `{ "mount": DIR }` mounts another installed layout the same way.
+- `pi`: where an agent's pi runs when a spawner names this runtime:
+  `"host"` (the default; the routed mode of 6.2: pi on the host, its
+  tools in the runtime) or `"runtime"` (the inside mode: the runtime
+  has `pi` on the PATH of the primed shell, and the `ko-pi` shim of
+  its ko installation starts it). ko never installs pi; a `"runtime"`
+  entry whose runtime has no pi gives a child pane that dies with
+  `pi: command not found` on its screen, which the spawner gets as the
+  `ended` message. `GET /runtimes/{name}` reports the value.
 
 `Ssh`:
 
@@ -479,8 +494,17 @@ For a runtime caller `c` of runtime `R`, this plan narrows them:
 | `GET /panes/{t}`, `/panes/{t}/vars` reads | `t ∈ visible(c)` |
 | `GET /panes/{t}/screen`, `/clear_history`, `POST /panes/{t}/input`, resources | `t` is in `R` or a descendant of `c` |
 | `GET /panes/{t}/output`, `/panes/{t}/messages`, `/stop`, vars writes, `POST /panes`, `POST /runs` | the agents plan's table (2.8), unchanged |
+| `GET /runtimes/{name}/exec` (6.1) | never: a process inside a runtime has a shell of its own |
 
     visible(c) = panes of R ∪ scope(c)   (scope as in ko-agents.md 2.8)
+
+**Who may exec.** On the host origin, the user and every pane
+identity may open an exec session in any runtime: a host pane may
+already create a pane in any runtime through `POST /panes`, so an
+exec grants it nothing more, and no pane field is needed to permit
+it. On a runtime origin the route is `refused`. The exec session is
+the host's way into a runtime; it is never a runtime's way into
+another.
 
 A hidden pane is `refused`, not `missing`: the document already names
 its id. Thus a host agent with a child in a container exchanges
@@ -504,17 +528,23 @@ runtime; a runtime pane cannot parent a pane outside its runtime,
 because it cannot create one.
 
 **Interface with the agents plan.** `spawn_agent` gains `runtime?:
-string`, passed as the `runtime` field of `POST /panes`; the server
-refuses it for a runtime caller, so ko-pi needs no check beyond
-wording. `resume_from` and `fork` name files of the caller's own
-filesystem, so they work only within one runtime; ko-pi refuses a
-spawn with `runtime` and either. `KO_AGENT_TRUSTED_CWD`
-(ko-agents.md 5.11) is a path of the child's filesystem: a host
-spawner into a runtime passes the mapped cwd (section 7).
-`list_agents` rows gain `runtime` from the row. Everything else of the
-agents plan holds unchanged, because nothing crosses a filesystem.
+string`. In the routed mode (6.2, the default) the child is a host
+pane whose ko-pi runs with `--runtime R`; `POST /panes` carries no
+`runtime`, and the child's session file, `resume_from` and `fork`
+are host files, so both work with `runtime`. In the inside mode
+(`pi: "runtime"`) `runtime` is the `runtime` field of `POST /panes`;
+the server refuses it for a runtime caller, so ko-pi needs no check
+beyond wording, and `resume_from` and `fork` are refused with
+`runtime`, because a saved session is a file of the spawner's
+filesystem. `KO_AGENT_TRUSTED_CWD` (ko-agents.md 5.11) is a path of
+the child pi's own filesystem: the host cwd for a routed child, the
+mapped cwd (section 7) for an inside child. `list_agents` rows gain
+`runtime` from the row's `runtime` field or from the trusted
+`pi.runtime` variable (6.2). Everything else of the agents plan holds
+unchanged, because nothing crosses a filesystem that a routed pi does
+not cross through the exec session.
 
-## 6. How a pane starts in a runtime
+## 6. How a pane starts in a runtime, and how a command runs in one
 
 `ko-pane` runs on the host and spawns the transport's client on the
 pane's pty. The server builds the argv from the kind, the pane's
@@ -602,6 +632,127 @@ hidden from `ko --help` (clap's `hide`), named in docs only as the
 contract between the server and the runtime, and never typed by a
 user.
 
+### 6.1 The exec session: `GET /runtimes/{name}/exec`
+
+A WebSocket that runs one command inside the runtime without a pane:
+no pty, separate stdout and stderr, an exit status, and stdin from
+the client. It is what a routed pi's tools call (6.2), and it is the
+dedicated-connection session of the bridge (section 10) as an API.
+Text messages, JSON, so `ko api --stream` carries it: each stdin line
+of `ko api --stream` is one client message, each server message one
+stdout line (ko-agents.md 2.6).
+
+Client to server, the first message is `exec`; nothing else is read
+before it:
+
+    { type: "exec", argv: [String], cwd?: String, env?: {K: V}, stdin: bool }
+    { type: "stdin", data: base64 }
+    { type: "eof" }
+    { type: "signal", signal: term | kill | int }
+
+Server to client:
+
+    { type: "stdout", data: base64 }
+    { type: "stderr", data: base64 }
+    { type: "exit", status: N } | { type: "exit", signal: NAME }
+    { type: "error", message }
+
+`cwd` is a runtime path and passes unchanged; absent means the
+runtime's `cwd`, else the transport's default directory. `env` is
+applied after the runtime's `env` and before the forced `KO_*`
+variables, as section 7 says for a pane; a request names only what it
+means to set, and nothing of the caller's environment crosses on its
+own. `argv` is executed without a shell; a caller that wants a shell
+names one (`["sh", "-lc", CMD]`). A `data` payload is at most 64 KiB
+before encoding, so a message stays under the 1 MiB WebSocket limit.
+After `exit` the server closes with 1000. `error` (the runtime is
+`Failed`, the transport could not start, a message that does not
+parse) closes with 1011 and is the one way a session ends without
+`exit`. An `exec` into a runtime that is `Down` or `Failed` starts the
+link as a first pane does (section 4) and waits for `Up` as a waiter
+of the loop; an ssh runtime whose master needs the user cannot start
+from an exec, because an exec has no pty: the session ends with
+`error` "runtime NAME needs a pane to log in", and the spawner's own
+pane is where the login happens.
+
+**How it runs.** The server starts the kind's helper process as a
+child with three pipes, non-blocking, on the loop
+(`ko_server/src/runtime/exec.rs`; reaped on `SIGCHLD` like every
+helper): for ssh a passenger over the master, `ssh -S <ctl> -T -o
+BatchMode=yes <destination> -- cd DIR && exec ARGV...` with the remote
+words quoted as section 6 quotes them, and the runtime's `env` plus
+the request's as `K=V` words before `exec`, because sshd accepts no
+other variables; for container, `container exec -i [-u U] --cwd DIR
+-e K=V... ko-<name> ARGV...`; for `command`, `<prefix> ARGV...` on the
+host with `cwd` as its directory. The helper's exit is the command's:
+ssh returns the remote status (255 is ssh's own failure, reported as
+`error`), `container exec` the process's (to measure in U3). A signal
+ends as `exit { signal }` where the transport reports one; ssh
+reports a remote signal as 255 with text, which the server maps to
+`error`.
+
+**Backpressure, both ways.** The server reads the WebSocket only
+while the child's stdin pipe takes bytes, and it writes a `stdout` or
+`stderr` record only while the connection's queue is below the cap;
+otherwise it stops reading that pipe, and the command blocks on its
+write as it does behind a full shell pipe. Nothing is dropped and
+nothing spills. A WebSocket that closes first ends the session: the
+server closes the child's stdin, sends `SIGTERM` to the helper, and
+`SIGKILL` after `KO_STOP_ESCALATION_MS`; the remote command ends as a
+closed ssh channel or a stopped `exec` ends it, best effort, which is
+what a tool's abort or timeout wants.
+
+**No file routes.** Read, write, list and search inside a runtime
+are commands of its shell: `cat`, `test`, `mkdir -p`, `ls -1Ap`,
+`find` or `fd`, `grep` or `rg`, which every image with a shell has.
+A file route would need a file server inside the runtime, which the
+ssh kind's installed ko could offer and the bridge's static ko could
+too, but the exec session reaches the same files with less code and
+no second protocol; a slow case (a large tree search) is slow inside
+the runtime, not in ko.
+
+**Limits.** One runtime has at most 32 exec sessions at once; a
+request past that waits as a waiter of the loop until one ends, in
+order, and `error`s after `KO_RUNTIME_EXEC_WAIT_MS` (30 s). The cap
+exists for the ssh kind, whose master carries panes, passengers and
+exec sessions as channels of one connection, which sshd's
+`MaxSessions` (10 by default) bounds (decision 3 of 15a); the other
+kinds inherit the cap for one behaviour.
+
+### 6.2 Agents in a runtime: the routed mode and the inside mode
+
+`spawn_agent(runtime: R)` starts, by the runtime's `pi` (section 3):
+
+- **routed** (`pi: "host"`, the default): a host pane, `POST /panes`
+  without `runtime`, whose command is `ko shell -- ko-pi --runtime R
+  ...`. pi, its session file, its extensions, skills and provider
+  credentials are the host's; its built-in tools and `!` commands run
+  in R through exec sessions. The pane is a host pane in every row
+  field: `runtime` absent, `cwd` the host shell's. ko-pi marks it with
+  the pane variable `pi.runtime: { name: R, cwd: DIR }`, the runtime
+  and the directory inside it that the agent works in, trusted as
+  `pi.session` is (AGENTS.md, "Native agent status"); the variable is
+  the fifth of the `pi.*` family and goes with pi's exit. Clients show
+  it as they show the `runtime` field (section 8). The harness side is
+  ko-agents.md 5.13.
+- **inside** (`pi: "runtime"`): a runtime pane, `POST /panes` with
+  `runtime: R`, whose command `ko shell -- ko-pi ...` runs inside
+  through `ko enter`; the pane's `runtime` is R and every row field is
+  the inner shell's. ko-pi sees `KO_RUNTIME` in its environment and
+  routes nothing. This is the mode of the plan before 2026-11-04 and
+  it stays as designed: the runtime socket, the identity rule and the
+  visibility rule of section 5 are for it.
+
+A routed pi is a host caller: it spawns through the host socket, its
+children are routed by default in the same runtime (ko-pi passes
+`--runtime R`), `spawn_agent(runtime: X)` from it is any host
+spawner's, and the user's `ko-pi --runtime R` in a host shell pane is
+the same thing by hand. A routed pi's `async_bash` is `POST /runs`
+with `runtime: R` (a run pane inside the runtime, whose screen is
+the output, ko-agents.md 5.12); `ko run-child` has no runtime flag by
+decision 8, and `ko api` carries the body. The two modes do not mix
+in one agent: a routed pi has no runtime socket and needs none.
+
 **The row.** `Row.foreground` is the transport's process (`ssh`,
 `container`), which says nothing about the inner program. The status
 model (`ko_server/src/pane_kind.rs`) treats a runtime pane by its OSC
@@ -633,9 +784,11 @@ maps. `SSH_AUTH_SOCK` follows the kind's `agent` or `ssh_agent`.
 ## 8. Clients and the CLI
 
 - Routes: `GET /runtimes` lists `{ name, kind, state, panes, socket,
-  paths }` (`paths` is the effective host-to-runtime prefix list of
-  section 7, which a spawner uses to map a path); `GET
-  /runtimes/{name}` one; `GET /runtimes/{name}/wait?timeout_ms=`
+  paths, cwd, pi }` (`paths` is the effective host-to-runtime prefix
+  list of section 7, which a spawner uses to map a path; `cwd` the
+  configured default directory; `pi` the agent mode of section 3);
+  `GET /runtimes/{name}` one; `GET /runtimes/{name}/exec`, the exec
+  session of 6.1; `GET /runtimes/{name}/wait?timeout_ms=`
   (a long poll for `Up` or `Failed`, answering `{ state, lead }`;
   `lead` is true for the one waiter that runs an interactive step,
   with the ssh master's arguments in `master_argv`; the server
@@ -652,11 +805,15 @@ maps. `SSH_AUTH_SOCK` follows the kind's `agent` or `ssh_agent`.
   (`POST /panes` or `POST /runs` with `runtime`), and `ko panes` shows
   a `RUNTIME` column.
 - The terminal client: a pane row of a runtime shows the runtime name
-  after the title, dimmed; `Ctrl+Shift+N` adds a window in the shown
-  pane's runtime (the host for a host pane). It has no chooser; the
-  CLI and Kido.app have.
+  after the title, dimmed, from the row's `runtime` field, else from
+  a trusted `pi.runtime` variable (6.2), with one style for both,
+  because the user's question is "where does this agent work";
+  `Ctrl+Shift+N` adds a window in the shown pane's `runtime` field
+  (the host for a host pane, a routed pi's included). It has no
+  chooser; the CLI and Kido.app have.
 - Kido.app: the row shows the runtime name as a dimmed suffix of the
-  title, one style for every runtime. The command palette gains one
+  title, one style for every runtime, by the same rule as the
+  terminal client. The command palette gains one
   entry for each runtime of the `Welcome`, "Runtime: NAME", whose
   detail is the kind and the state (`ssh · up`); a `Failed` runtime
   shows its message there. When the focused pane is in a runtime, a
@@ -719,14 +876,17 @@ vsock connection) that carries frames:
 
 | frame | direction | carries |
 |---|---|---|
-| `exec` | host to guest | argv, env, cwd, size |
-| `data` | both | bytes |
+| `exec` | host to guest | argv, env, cwd, and a pty size or none |
+| `data` | both | bytes, tagged `stdin`, `stdout` or `stderr` when the session has no pty |
 | `resize` | host to guest | rows, cols |
 | `exit` | guest to host | the status or the signal |
 | `open`, `close`, `credit` | both | a stream id; only on a shared channel |
 
 Over a dedicated connection a session is `exec`, `data`, `resize`,
-`exit`. Over one shared channel the bridge adds `open`, `close` and
+`exit`. The exec session of 6.1 is this session as a WebSocket: its
+messages are these frames with a base64 payload, and a bridge kind
+serves `GET /runtimes/{name}/exec` by sending them on its channel
+instead of starting a helper process. Over one shared channel the bridge adds `open`, `close` and
 `credit` and multiplexes streams; the host side then creates a
 `socketpair` for each `open` that is an API stream, keeps one end as
 the stream's pump and hands the other end to `State::accept` as a
@@ -851,6 +1011,9 @@ layer hold for each, with the facts measured or read on 2026-11-03.
 | a stale remote socket or token file after a crash | `ko enter --prepare` removes them at the next link start |
 | an image pull takes longer than 120 s | the request fails with "still starting"; the link continues and the next request may find it `Up` |
 | a link is down while a parent messages a child inside | the message waits in the server's queue (ko-agents.md 2.6) until the child's stream reader reconnects, or the child's pane dies and the parent gets `ended` |
+| an exec session into a runtime that is `Down` | the session waits for the link as a first pane does; an ssh runtime that needs the user ends it with `error` "runtime NAME needs a pane to log in" |
+| the link dies during an exec session | the helper exits; the session ends with `error` (ssh 255) or the transport's status; a routed pi's tool call fails with that text, and the next call starts the link again |
+| a routed pi's `--runtime R` names no runtime, or one whose kind cannot start | ko-pi refuses every routed tool with the server's message and notifies the user at `session_start`; the pi itself runs |
 
 ## 13. Units and estimates
 
@@ -858,46 +1021,60 @@ In order; U2 and U3 run in parallel after U1. U1 depends on the
 agents plan's U1a (the token and `POST /panes`), because the identity
 rule of section 5 needs both.
 
-- **U1 runtime core** (sections 2 to 5, 6's `command` kind, 7, 8's
-  routes and CLI): the configuration file and its schema, the
-  registry and link state machine, the per-runtime listener and
-  `Origin`, the identity and visibility rules, `runtime` on the pane
-  record and row, inheritance and the `runtime` body field, the
-  `/runtimes` routes with `wait` and the leader election, `ko enter`
-  and `ko runtime-exec`, the `RUNTIME` column of `ko panes`, the
-  test-only `command` kind behind its knob, e2e on it (a new
-  `runtime.rs`:
+- **U1 runtime core** (sections 2 to 5, 6's `command` kind, the exec
+  route of 6.1, 7, 8's routes and CLI): the configuration file and its schema (with
+  `pi`), the registry and link state machine, the per-runtime
+  listener and `Origin`, the identity and visibility rules, `runtime`
+  on the pane record and row, inheritance and the `runtime` body
+  field, the `/runtimes` routes with `wait` and the leader election,
+  the exec session with its helper child, both backpressures, the
+  close path and the session cap, `ko enter` and `ko runtime-exec`,
+  the `RUNTIME` column of `ko panes`, the test-only `command` kind
+  behind its knob with its exec, e2e on it (a new `runtime.rs`:
   inheritance, refusals, hidden rows, the first pane's wait and
-  failure text, concurrent first panes, down with live panes, idle).
-  About 3 agent-days.
-- **U2 ssh kind** (4.1, 6): the leader's master on the pane's pty,
-  the `master` report, `-O check` adoption, `ko enter --prepare`, the
-  token passenger, the forward, the pane argv with quoting, cleanup;
-  e2e under
-  `KO_E2E_HOST_SSH=1` against the private sshd of `remote.rs`, which
-  already has a test that refuses forwarding, plus one test with a
-  key that needs a passphrase, typed into the leader pane. About 2.5
+  failure text, concurrent first panes, down with live panes, idle;
+  exec with stdin, stderr, a status, a signal, a close before exit, a
+  slow reader, the cap, and the refusal on a runtime origin). About
+  4.5 agent-days, of which the exec session is about 1.5.
+- **U2 ssh kind** (4.1, 6, 6.1): the leader's master on the pane's
+  pty, the `master` report, `-O check` adoption, `ko enter
+  --prepare`, the token passenger, the forward, the pane argv with
+  quoting, the exec passenger with its `env` words and status
+  mapping, cleanup; e2e under `KO_E2E_HOST_SSH=1` against the private
+  sshd of `remote.rs`, which already has a test that refuses
+  forwarding, plus one test with a key that needs a passphrase, typed
+  into the leader pane, and one exec round trip. About 2.75
   agent-days.
-- **U3 container kind and the static Linux ko** (4.2, 4.3, 6): `make
-  build-ko-linux` for the two musl targets with zig as the linker,
-  the layout under `share/ko/linux/<arch>`, the static check in
-  verify, the formula's build of the host's architecture only (the
+- **U3 container kind and the static Linux ko** (4.2, 4.3, 6, 6.1):
+  `make build-ko-linux` for the two musl targets with zig as the
+  linker, the layout under `share/ko/linux/<arch>`, the static check
+  in verify, the formula's build of the host's architecture only (the
   x86_64 target joins the formula when ssh starts copying ko, with
-  the bridge); the container lifecycle, the socket-file
-  volume, the `/opt/ko` mount, volumes, `--ssh`, the system check,
-  `DELETE`; e2e only behind `KO_E2E_CONTAINER=1` on a Mac where
-  `container system status` succeeds, with a small image that the
-  test pulls once. About 3.5 agent-days, of which the static build is
-  about 1.5.
+  the bridge); the container lifecycle, the socket-file volume, the
+  `/opt/ko` mount, volumes, `--ssh`, the system check, `DELETE`, the
+  exec through `container exec -i` with its status measured; e2e only
+  behind `KO_E2E_CONTAINER=1` on a Mac where `container system
+  status` succeeds, with a small image that the test pulls once.
+  About 3.75 agent-days, of which the static build is about 1.5.
 - **U4 clients** (section 8): `ko_client` model, the terminal
-  client's suffix and `Ctrl+Shift+N` inheritance, Kido.app's palette
-  entries and runtime step (with Host), row suffix and inheritance on
-  split, visual snapshot tests for each palette state (the root
-  entries, the step with and without a focused pane, a failed
-  runtime, Host). About 2.5 agent-days.
-- **U5 ko-pi** (section 5's interface): `runtime` on `spawn_agent`,
-  `runtime` in `list_agents` rows, the refusals' wording, the prompt
-  snapshot. About half an agent-day, after the agents plan's U3.
+  client's suffix from the field or the trusted `pi.runtime` and
+  `Ctrl+Shift+N` inheritance, Kido.app's palette entries and runtime
+  step (with Host), row suffix and inheritance on split, visual
+  snapshot tests for each palette state (the root entries, the step
+  with and without a focused pane, a failed runtime, Host) and one
+  for a routed pi's row. About 2.75 agent-days.
+- **U5 ko-pi in a runtime** (6.2, and ko-agents.md 5.13): the routed
+  mode, which is the larger part: `--runtime`, the mode choice from
+  `GET /runtimes/{name}`, the exec client over `ko api --stream`, the
+  seven routed tools with grep rebuilt, `!` through `user_bash`, the
+  runtime cwd and the prompt sections, the context files read from
+  the runtime, `pi.runtime`, `async_bash` through `POST /runs` with
+  `runtime`, the notice about host-side tools; the inside mode's
+  refusals and trusted cwd mapping; `runtime` on `spawn_agent` and in
+  `list_agents` rows; the fake ko's exec and runtimes; the TypeScript
+  suite and the prompt snapshot. About 3.5 agent-days, after the
+  agents plan's U3 and this plan's U1, with the fake ko before U2 and
+  U3.
 - **Later** (section 11, not scheduled): the podman kind, about 2
   agent-days; the bridge codec and `ko guest` with a Firecracker kind,
   about 7 agent-days.
@@ -953,6 +1130,23 @@ rule of section 5 needs both.
 - **A static musl ko is a new build target**: zig as the linker for
   Rust, two more Rust targets in the pinned toolchain, and libghostty
   built for musl; the first unit may find a zig or wuffs issue.
+- **sshd's `MaxSessions`** bounds the channels of one master: panes,
+  passengers and exec sessions together. A routed pi with parallel
+  tool calls beside several panes can hit 10; the cap of 6.1 queues
+  rather than fails, but a host whose sshd sets a low `MaxSessions`
+  still refuses a channel, which the exec reports as `error` and the
+  tool call as a failure (15a, decision 3).
+- **A routed pi is two filesystems.** Its session, extensions, skills,
+  prompt templates, project `.pi/` resources and `@` completion are
+  the host's; its tools, `!` and cwd line are the runtime's. A
+  mounted project (container volumes) sees the same files on both
+  sides; an ssh project sees them only through the tools, and pi's
+  own loaders find nothing of it on the host. ko-agents.md 5.13 names
+  what the harness reads from the runtime instead.
+- **The helper's exit status is the transport's word.** ssh folds a
+  remote signal into 255 and container's `exec` status is not yet
+  measured; a tool that reads the status gets `error` text in those
+  cases, not a number.
 
 ## 15. Decisions of 2026-11-03
 
@@ -982,74 +1176,66 @@ apply them. For the record:
 10. `starting runtime NAME` is the whole text of a waiting pane
     (section 4).
 
-No open question remains.
+## 15a. Decisions of 2026-11-04
 
-## 16. Changes to ko-agents.md
+The user decided these; the sections above apply them. No open
+question remains.
 
-The agents plan, [ko-agents.md](ko-agents.md),
-needs these changes for the runtimes; they are written here, not
-applied there.
+1. An agent in a runtime is routed by default (6.2); the inside mode
+   exists only for a runtime whose configuration says `pi:
+   "runtime"`; ko never copies pi.
+2. **The exec session is a WebSocket** (6.1), not a run: a run would
+   give every tool call a pane, a pty that merges stderr and rewrites
+   bytes, a window in the layout and a sweep; the tools need bytes, a
+   status and stdin. The route is part of U1 (section 13).
+3. **The ssh channel budget has no configuration field.** The cap is
+   32 sessions for each runtime, which queue past it. sshd's default
+   `MaxSessions` is 10, below the cap, and the two do not contradict:
+   the cap bounds what ko admits to the loop, and sshd's limit is met
+   on the retry path. An ssh `exec` that fails to open a channel (ssh
+   exits 255 with "open failed" before any output) is retried once
+   after the next session of that runtime ends, then reported as
+   `error`. A host that shows the need can get a `max_sessions`
+   field later.
+4. **The exec session carries no caller environment.** pi's bash tool
+   offers the host's environment to its operations; ko-pi passes none
+   of it (ko-agents.md 5.13), and the runtime's login environment plus
+   its `env` map apply. This is the credential boundary that pi's
+   containerization doc says Gondolin does not give.
+5. **`@` completion in a routed pi** lists host files, accepted for
+   U5: a mounted project is the same tree, and an ssh project has no
+   host tree to confuse. A later change can wrap the provider with
+   `ctx.ui.addAutocompleteProvider` over an exec of `fd` or `find`,
+   at a round trip for each keystroke.
+6. **Other extensions' tools in a routed pi run on the host**, allowed
+   with a prompt sentence and a notice (ko-agents.md 5.13): the
+   harness cannot know which of them touch files, a refusal would
+   break the user's setup, and pi documents the same for Gondolin.
 
-1. **2.3 `POST /panes`.** Add to the body: `runtime?: RuntimeName`.
-   Add the paragraph: "A pane's runtime is the caller's connection's
-   runtime when the caller is a runtime pane, else `runtime` when
-   given, else the host. A runtime caller that names a `runtime` other
-   than its own is `refused`. A `parent` in another runtime is
-   permitted only for a host caller. The request returns when the pane
-   exists; a runtime that is not yet up starts in the pane
-   (ko-runtimes.md, section 4)." The same field and rule apply to
-   `POST /runs` and to a new pane of `PUT /layout`.
-2. **2.1 The pane fields.** Add `runtime: Option<RuntimeName>`,
-   immutable, absent for the host, to `CreatePane` and `Row`, beside
-   `parent` and `close`; the layout event that adds the pane carries
-   it (2.9).
-3. **2.8 Identity.** Replace "A runtime's socket (section 9) never
-   grants user identity: a connection from runtime R must carry a
-   valid pane identity of a pane of R, else it is `refused`" with: "A
-   connection carries an `Origin`, `Host` or `Runtime(name)`, from the
-   listener that accepted it. On `Origin::Runtime(R)` a request must
-   carry a valid pane identity of a pane whose `runtime` is `R`, else
-   it is `refused`; the user identity does not exist there, and
-   `/client`, views and search are `refused` there. The token is
-   checked the same way on both origins."
-4. **2.8 The scope table.** Add, after the table: "On a runtime
-   connection, reads are narrowed: rows and `/panes/{t}` only for
-   panes of the caller's runtime and `scope(c)`; `/screen`,
-   `/clear_history`, `/input` and resources only for panes of the
-   caller's runtime or descendants of `c`; a hidden pane is
-   `refused`. The table's rows for `/output`, `/messages`, `/stop`,
-   vars writes, `POST /panes` and `POST /runs` apply unchanged, so a
-   parent and a child in different runtimes exchange messages,
-   endings and stops as local ones do." Replace "Reads (...) stay
-   open" with "Reads stay open for a host caller".
-5. **2.6 `from`.** Add `runtime?` to `from: { pane, session?, name?
-   }`, the sender pane's runtime, so a receiver's header can say `(in
-   runtime dev)`. Nothing else in 2.6 changes: the queue, the
-   idempotent ids and the acks are the server's and hold across
-   runtimes; a child whose link is down finds its queue when its
-   reader reconnects.
-6. **4 `spawn_agent`.** Add `runtime?: string`, passed as `POST
-   /panes`'s `runtime`; refused together with `resume_from` or `fork`
-   ("a saved session is a file of this filesystem"). Add `runtime` to
-   the `list_agents` row, from the pane row. The result line gains
-   `in runtime NAME` when set.
-7. **5.2 Spawn.** The `command` of `POST /panes` is unchanged (`ko
-   shell -- ko-pi ...`): the server wraps it in `ko runtime-exec` and
-   the runtime's transport, and `ko enter` runs it inside. `cwd` for
-   a spawn into a runtime from the host is a host path that the server
-   maps (ko-runtimes.md, section 7). `KO_AGENT_TRUSTED_CWD` must be
-   the mapped path and is in `env` at creation, so ko-pi maps it
-   itself before the spawn: `GET /runtimes/{name}` reports the
-   runtime's effective `paths`, ko-pi applies the longest matching
-   prefix to the trusted cwd, and a cwd with no mapping gets no
-   variable, so the child asks the trust question as a pi without the
-   variable does. Add this sentence to 5.11.
-8. **5.9 The parent watch.** "reads its own row's `parent` pane" needs
-   the parent to be visible on a runtime connection; it is, because an
-   ancestor is in `scope(c)` (change 4).
-9. **9 Where runtimes fit.** Replace the section with a pointer to
-   ko-runtimes.md and keep its last line: "`ko ssh` and the remote
-   attach are not runtimes and do not change."
-10. **12 Units.** U1a gains the `runtime` field and `Origin` plumbing
-    only if the runtime unit lands first; otherwise ko-runtimes.md's
-    U1 adds them. Name the dependency in both plans.
+## 16. Where the agents plan carries the runtimes
+
+[ko-agents.md](ko-agents.md) applies the runtime changes; this list
+is the index of them. On 2026-11-04 it gained the routed mode (its
+section 4, 5.2, 5.11, 5.12 and 5.13) and the fixes that U1a's code
+needs (its 2.5, 2.7 and 2.8).
+
+1. **2.1 and 2.3.** `runtime: Option<RuntimeName>` on `CreatePane`
+   and `Row`; the `runtime` body field of `POST /panes`, `POST /runs`
+   and a new pane of `PUT /layout`, with the inheritance and refusal
+   rules of section 5.
+2. **2.6.** `from.runtime`, the sender pane's runtime, for the
+   receiver's header. For a routed sender, ko-pi adds the runtime of
+   its `pi.runtime` to the header itself.
+3. **2.8.** The `Origin` of a connection, the identity rule on a
+   runtime origin and the narrowed reads of section 5.
+4. **Section 4 and 5.2.** `spawn_agent`'s `runtime`, the two modes,
+   `async_bash` through `POST /runs` with `runtime` for a routed pi,
+   and the `runtime` column of `list_agents`.
+5. **5.9.** The parent watch reads the parent's row, which the
+   visibility rule shows to a runtime child.
+6. **5.11.** `KO_AGENT_TRUSTED_CWD` is the host cwd for a routed
+   child and the mapped cwd for an inside child.
+7. **5.13.** The routed mode in the harness: the exec client, the
+   tools, `!`, the cwd and context files, `pi.runtime`, the notices.
+8. **12.** U1a landed first without `runtime` and `Origin`; this
+   plan's U1 adds them. U5 here follows the agents plan's U3.
