@@ -725,6 +725,11 @@ the app engine's fetch thread.
   that this revision adds; a removed pane is one that the layout no
   longer names. Changes to existing panes keep their own events, and
   every row field that can change has one.
+- The revision moves only when the layout itself changes (a pane added
+  or removed, a split, a move, a resize, a name). A change to a pane's
+  row (title, cwd, status, death) or a variable write never moves it,
+  so it never makes a concurrent layout PUT stale (409); those changes
+  travel in their own events.
 - The layout event with a pane's row comes before the first other event
   of that pane (a test checks it).
 - Server-to-client WebSocket messages get a much larger limit than the
