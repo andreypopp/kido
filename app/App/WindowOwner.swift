@@ -1175,16 +1175,6 @@ private class AlertEscape: NSView {
         window.makeKeyAndOrderFront(nil)
     }
 
-    // Every window of every session in the sidebar's order, nested windows included.
-    private func adjacentWindow(next: Bool) -> WindowID? {
-        guard let snapshot, let koModel, let current = model.window else { return nil }
-        let windows = koModel.layout.layout.sessions.flatMap { session in
-            sidebarWindows(snapshot, session: session.id, surviving: Set(session.windows.map(\.id))).tree
-        }
-        guard windows.count > 1, let at = windows.firstIndex(of: current) else { return nil }
-        return windows[(at + (next ? 1 : windows.count - 1)) % windows.count]
-    }
-
     func perform(_ navigation: Navigation) {
         if case .jump(let target) = navigation {
             guard activating != intent else { return }
@@ -1215,7 +1205,8 @@ private class AlertEscape: NSView {
                 awaitingSelect = true
                 try client.switchOver(KO_OVER_SESSION, next ? KO_DIRECTION_NEXT : KO_DIRECTION_PREVIOUS)
             case .switchWindow(let next):
-                guard let window = adjacentWindow(next: next) else { return }
+                guard let current = model.window, let layout = koModel?.layout.layout,
+                      let window = adjacentWindow(snapshot.map(reorder.state.project), surviving: layout.survivingWindows, from: current, next: next) else { return }
                 awaitingSelect = true
                 try client.select(KO_SELECT_WINDOW, window)
             case .releaseSideFocus: break

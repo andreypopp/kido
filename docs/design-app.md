@@ -1144,6 +1144,19 @@ border. With the sidebar collapsed, the whole band is themed. No additional glas
 modes; the sidebar shadows are the app's own ([Focus treatment](#focus-treatment)).
 WindowTabs paints no background of its own.
 
+Next Window and Previous Window (Command-} and Command-{, the menu, the
+palette and Ghostty's tab actions) keep the tmux-era rule of
+`kido switch-window` ([design.md](design.md#the-sidebar-tree)). One pure
+function, `adjacentWindow` in `SidebarFeed/Windows.swift`, computes the
+step. It reads the displayed order, so a pending reorder counts. From a
+top-level window, a step goes to the adjacent top-level window. It never
+goes into child windows, and it wraps across sessions in both directions.
+A run window that has no parent is a top-level window. From a child
+window, a step goes to its adjacent sibling. Previous from the first
+sibling selects the parent. Next from the last sibling selects the
+top-level window after its top-level ancestor. When the target is the
+current window (one top-level window), the app selects nothing.
+
 Tabs project the current session's top-level windows from the
 snapshot; descendant windows activate their ancestor tab. Each title is
 the composed label of that window's focus pane, or of the client's active

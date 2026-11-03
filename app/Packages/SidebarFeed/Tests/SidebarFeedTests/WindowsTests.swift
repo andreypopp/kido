@@ -100,10 +100,82 @@ private func windowsFixture(_ state: Report.State = waiting(), mark: KoSchema.Ma
     #expect(sidebarWindows(markedSeen(snapshot), session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == .quiet)
 }
 
-// Window switching walks every window in the sidebar's order: a nested run window follows its parent.
-@Test func theTreeOrderHasNestedWindowsAfterTheirParent() throws {
-    let snapshot: Snapshot = makeSnapshot([pane(0, children: [pane(1, run: "r-1")]), pane(2)])
-    let projection = sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0), WindowID(number: 1), WindowID(number: 2)])
-    #expect(projection.order == [WindowID(number: 0), WindowID(number: 2)])
-    #expect(projection.tree == [WindowID(number: 0), WindowID(number: 1), WindowID(number: 2)])
+private struct Step: Sendable, CustomTestStringConvertible {
+    let name: String, sessions: [[Node]], from: UInt32, next: Bool, expected: UInt32?
+    var surviving: [[UInt32]]? = nil
+    var testDescription: String { name }
+}
+
+private func adjacent(_ step: Step) -> UInt32? {
+    let snapshot = Snapshot(client: .init(session: SessionID(number: 0), window: WindowID(number: 0), pane: PaneID(number: 0)), serverInstance: ServerInstance("12345/1780000000"),
+                            sessions: step.sessions.enumerated().map { SessionNodes(id: SessionID(number: UInt32($0.offset)), name: "s", current: $0.offset == 0, nodes: $0.element) })
+    let surviving = Dictionary(uniqueKeysWithValues: step.sessions.indices.map { index in
+        (SessionID(number: UInt32(index)), Set((step.surviving?[index] ?? step.sessions[index].map(\.window.number)).map(WindowID.init(number:))))
+    })
+    return adjacentWindow(snapshot, surviving: surviving, from: WindowID(number: step.from), next: step.next)?.number
+}
+
+private let flat = [pane(0), pane(1), pane(2)]
+private let twoSessions = [[pane(0), pane(1)], [pane(2), pane(3)]]
+private let mixed = [pane(0, children: [pane(1, run: "r-1")]), pane(2, run: "r-2"), pane(3)]
+private let siblings = [pane(0, children: [pane(1, run: "r-1"), pane(2, run: "r-2"), pane(3, run: "r-3")]), pane(4)]
+private let grand = [pane(0, children: [pane(1, run: "r-1", children: [pane(2, run: "r-2")]), pane(3, run: "r-3")]), pane(4)]
+private let twoPanes = [group(0, [pane(0, children: [pane(1, run: "r-1")]), pane(5, window: 0, children: [pane(2, run: "r-2")])]), pane(3)]
+private let appearsTwice = [pane(0, children: [pane(1, run: "r-1")]), pane(5, window: 0, children: [pane(1, run: "r-1")]), pane(3)]
+private let hiddenRoot = [pane(0, children: [pane(1, run: "r-1")]), pane(2)]
+private let chain = [pane(0, children: [pane(1, run: "r-1", children: [pane(2, run: "r-2")])]), pane(3)]
+
+@Test(arguments: [
+    Step(name: "next in a session", sessions: [flat], from: 0, next: true, expected: 1),
+    Step(name: "previous in a session", sessions: [flat], from: 1, next: false, expected: 0),
+    Step(name: "next wraps", sessions: [flat], from: 2, next: true, expected: 0),
+    Step(name: "previous wraps", sessions: [flat], from: 0, next: false, expected: 2),
+    Step(name: "next across sessions", sessions: twoSessions, from: 1, next: true, expected: 2),
+    Step(name: "previous across sessions", sessions: twoSessions, from: 2, next: false, expected: 1),
+    Step(name: "next wraps to the first session", sessions: twoSessions, from: 3, next: true, expected: 0),
+    Step(name: "previous wraps to the last session", sessions: twoSessions, from: 0, next: false, expected: 3),
+    Step(name: "top-level next skips a child", sessions: [mixed], from: 0, next: true, expected: 2),
+    Step(name: "an orphan run window is visited", sessions: [mixed], from: 2, next: true, expected: 3),
+    Step(name: "previous visits the orphan run window", sessions: [mixed], from: 3, next: false, expected: 2),
+    Step(name: "previous skips a child", sessions: [mixed], from: 2, next: false, expected: 0),
+    Step(name: "a sole root next", sessions: [[pane(0)]], from: 0, next: true, expected: nil),
+    Step(name: "a sole root previous", sessions: [[pane(0)]], from: 0, next: false, expected: nil),
+    Step(name: "a sole surviving root", sessions: [[pane(0), pane(1)]], from: 0, next: true, expected: nil, surviving: [[0]]),
+    Step(name: "an unknown window", sessions: [[pane(0), pane(1)]], from: 9, next: true, expected: nil),
+    Step(name: "a window that does not survive", sessions: [[pane(0), pane(1)]], from: 1, next: true, expected: nil, surviving: [[0]]),
+    Step(name: "child next", sessions: [siblings], from: 1, next: true, expected: 2),
+    Step(name: "child previous", sessions: [siblings], from: 3, next: false, expected: 2),
+    Step(name: "previous from the first child", sessions: [siblings], from: 1, next: false, expected: 0),
+    Step(name: "next from the last child", sessions: [siblings], from: 3, next: true, expected: 4),
+    Step(name: "next from the last child wraps", sessions: [[pane(4), pane(0, children: [pane(1, run: "r-1")])]], from: 1, next: true, expected: 4),
+    Step(name: "next from the last child, in the next session", sessions: [[pane(0, children: [pane(1, run: "r-1")])], [pane(2)]], from: 1, next: true, expected: 2),
+    Step(name: "previous from the first grandchild", sessions: [grand], from: 2, next: false, expected: 1),
+    Step(name: "next from the last grandchild", sessions: [grand], from: 2, next: true, expected: 4),
+    Step(name: "next from a child with a grandchild", sessions: [grand], from: 1, next: true, expected: 3),
+    Step(name: "siblings under two panes, forward", sessions: [twoPanes], from: 1, next: true, expected: 2),
+    Step(name: "siblings under two panes, backward", sessions: [twoPanes], from: 2, next: false, expected: 1),
+    Step(name: "previous from the first sibling under two panes", sessions: [twoPanes], from: 1, next: false, expected: 0),
+    Step(name: "a window under two panes keeps its first place", sessions: [appearsTwice], from: 1, next: true, expected: 3),
+    Step(name: "a window under two panes has its first parent", sessions: [appearsTwice], from: 1, next: false, expected: 0),
+    Step(name: "a surviving descendant of a hidden root is a root", sessions: [hiddenRoot], from: 1, next: true, expected: 2, surviving: [[1, 2]]),
+    Step(name: "a hidden root's descendant steps back to the last root", sessions: [hiddenRoot], from: 1, next: false, expected: 2, surviving: [[1, 2]]),
+    Step(name: "a nested window whose parent is not listed", sessions: [chain], from: 2, next: false, expected: 1, surviving: [[0, 2, 3]]),
+]) private func adjacentWindows(_ step: Step) {
+    #expect(adjacent(step) == step.expected)
+}
+
+@Test func navigationFollowsAPendingReorder() {
+    let snapshot = Snapshot(client: .init(session: SessionID(number: 0), window: WindowID(number: 0), pane: PaneID(number: 0)), serverInstance: ServerInstance("12345/1780000000"),
+                            sessions: [SessionNodes(id: SessionID(number: 0), name: "a", current: true, nodes: [pane(0), pane(1), pane(2)]),
+                                       SessionNodes(id: SessionID(number: 1), name: "b", current: false, nodes: [pane(3), pane(4)])])
+    let surviving: [SessionID: Set<WindowID>] = [SessionID(number: 0): [WindowID(number: 0), WindowID(number: 1), WindowID(number: 2)],
+                                                 SessionID(number: 1): [WindowID(number: 3), WindowID(number: 4)]]
+    var windows = ReorderState()
+    _ = windows.submit(.window(SessionID(number: 0), WindowID(number: 2), relativeTo: WindowID(number: 0), .before), to: snapshot)
+    #expect(adjacentWindow(windows.project(snapshot), surviving: surviving, from: WindowID(number: 2), next: true)?.number == 0)
+    #expect(adjacentWindow(snapshot, surviving: surviving, from: WindowID(number: 2), next: true)?.number == 3)
+    var sessions = ReorderState()
+    _ = sessions.submit(.session(SessionID(number: 1), relativeTo: SessionID(number: 0), .before), to: snapshot)
+    #expect(adjacentWindow(sessions.project(snapshot), surviving: surviving, from: WindowID(number: 4), next: true)?.number == 0)
+    #expect(adjacentWindow(sessions.project(snapshot), surviving: surviving, from: WindowID(number: 2), next: true)?.number == 3)
 }
