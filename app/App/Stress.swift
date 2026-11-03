@@ -283,21 +283,32 @@ typealias AppWindow = StressWindow
         let lock = env["STRESS_UI_LOCK"] ?? ""
         let ownsLock = !FileManager.default.fileExists(atPath: lock)
         if ownsLock { _ = FileManager.default.createFile(atPath: lock, contents: Data()) }
-        let deadline = DispatchTime.now() + 5
-        func poll() {
-            let selected = owner.stressModel?.selection.pane == pane
-            guard selected || DispatchTime.now() > deadline else {
-                let next = DispatchWorkItem { poll() }
-                waiting = next
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: next)
-                return
-            }
-            waiting = nil
+        var finish: ((_ selected: Bool) -> Void)?
+        let timeout = DispatchWorkItem { finish?(false) }
+        waiting = timeout
+        finish = { selected in
+            timeout.cancel()
+            self.owner.stressModelReceived = nil
+            self.waiting = nil
             if ownsLock { try? FileManager.default.removeItem(atPath: lock) }
-            check(verification, selected)
-            verifyUI()
+            self.check(verification, selected)
+            self.verifyUI()
         }
-        poll()
+        let evaluate = {
+            guard let model = self.owner.stressModel else { return }
+            if model.selection.pane == pane { finish?(true) }
+            else if !model.panes.contains(where: { $0.id == pane }) {
+                // The target was deleted before the select reached the core: no selection can follow.
+                self.counts["jump-target-gone", default: 0] += 1
+                timeout.cancel()
+                self.owner.stressModelReceived = nil
+                self.waiting = nil
+                if ownsLock { try? FileManager.default.removeItem(atPath: lock) }
+            }
+        }
+        owner.stressModelReceived = evaluate
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: timeout)
+        evaluate()
     }
 
     private func performUI(_ action: Action) {

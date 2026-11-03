@@ -842,6 +842,9 @@ private class AlertEscape: NSView {
             return down("No sessions", "", button: "Start")
         }
         adopt(snapshot)
+        #if KIDO_STRESS
+        stressModelReceived?()
+        #endif
     }
 
     private func adopt(_ snapshot: Snapshot) {
@@ -861,6 +864,7 @@ private class AlertEscape: NSView {
     #if KIDO_VISUAL || KIDO_STRESS
     var stressState: (SessionModel, SessionModel, SessionView?, Snapshot?) { (model, navigationModel, session, snapshot) }
     var stressModel: KoModel? { koModel }
+    var stressModelReceived: (() -> Void)?
     func stressEdit(_ edit: KoSchema.Edit) { editor?.submit(edit) }
     func stressDelete(_ pane: PaneID) {
         guard case .connected(let client) = link else { return }
