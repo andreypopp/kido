@@ -1,5 +1,5 @@
 {
-  "name": "kido-pi-tests",
+  "name": "ko-pi-tests",
   "private": true,
   "type": "module",
   "devDependencies": {

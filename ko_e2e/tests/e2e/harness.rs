@@ -97,7 +97,7 @@ pub(crate) fn poll(what: &str, mut check: impl FnMut() -> bool) {
     let deadline = Instant::now() + DEADLINE;
     while !check() {
         assert!(Instant::now() < deadline, "wait for {what}");
-        // A poll tick for a condition that has no descriptor to wait on: the Go suite's ticker.
+        // A poll tick for a condition that has no descriptor to wait on: an event-less condition.
         thread::park_timeout(Duration::from_millis(10));
     }
 }
@@ -147,7 +147,7 @@ pub(crate) fn test_env(dir: &Path) -> Vec<Vec<u8>> {
     let mut env: Vec<Vec<u8>> = std::env::vars_os()
         .filter_map(|(name, value)| {
             let name = name.to_string_lossy().into_owned();
-            let scrubbed = ["XDG_", "KO_", "KIDO_", "TMUX", "BASH_FUNC_"]
+            let scrubbed = ["XDG_", "KO_", "BASH_FUNC_"]
                 .iter()
                 .any(|prefix| name.starts_with(prefix))
                 || [

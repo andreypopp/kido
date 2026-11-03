@@ -45,9 +45,9 @@ ordering/fencing depends on its result. Status: unverified.
 
 ## Stale row after pi /reload
 
-Before step 4, after `/reload` in pi, a tmux-backed pane showed a stale
-"Reloading keybindings…" row above "Reloaded". tmux's own grid held both
-rows, so the row came from pi's output, not from the app or a restore. A
+Before step 4, after `/reload` in pi, a pane of the first implementation
+showed a stale "Reloading keybindings…" row above "Reloaded". The
+multiplexer's own grid held both rows, so the row came from pi's output, not from the app or a restore. A
 likely cause is pi-plain patches that survive `/reload` with stale
 closures. It is not checked on a ko server. Status: parked by the user.
 
@@ -328,7 +328,9 @@ HOST" with the text. `ko HOST` has the same limit. Status: accepted.
 ## Upload drops keep the kido-app name
 
 Uploads go to `${XDG_STATE_HOME:-~/.local/state}/kido-app/drops` on both
-hosts. The rename of the app's paths to ko names is K8 work. Status: open.
+hosts. The app's own paths and knobs keep the Kido name: the server and
+its code are `ko`, the app is Kido.app (docs/design-ko.md, "Decisions",
+2026-11-03). Status: accepted.
 
 ## The remote restore and echo are not measured yet
 

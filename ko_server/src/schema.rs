@@ -77,7 +77,7 @@ fn without_null(property: &mut Value) {
     }
 }
 
-const BINARY_STREAM: &str = "The pane's terminal byte stream: one application/octet-stream message, framed as in rfc/kido-server/protocol.md section 4.";
+const BINARY_STREAM: &str = "The pane's terminal byte stream: one application/octet-stream message, framed as in docs/protocol.md section 4.";
 
 fn parameter(
     generator: &mut SchemaGenerator,

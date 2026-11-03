@@ -27,9 +27,9 @@ pub enum Edit {
         before: bool,
         new: CreatePane,
     },
-    // tmux's resize-pane -L/-R/-U/-D: the divider beside the pane on the axis of `edge` moves
-    // `delta` cells toward that edge; the divider after the pane, or before the last pane. It
-    // unzooms the window, as tmux does. A float grows toward right and bottom, else shrinks.
+    // The divider beside the pane on the axis of `edge` moves `delta` cells toward that edge;
+    // the divider after the pane, or before the last pane. It unzooms the window. A float grows
+    // toward right and bottom, else shrinks.
     ResizeBy {
         pane: PaneId,
         edge: Edge,
@@ -48,7 +48,7 @@ pub enum Edit {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pane: Option<PaneId>,
     },
-    // tmux's resize-pane -Z: unzooms a zoomed window of the pane, else zooms the pane.
+    // Unzooms a zoomed window of the pane, else zooms the pane.
     ToggleZoom {
         pane: PaneId,
     },

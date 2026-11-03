@@ -258,7 +258,7 @@ def app_descendants(pid):
         owned.update(children)
 
 
-env = {k: v for k, v in os.environ.items() if not k.startswith('KIDO_AGENT_') and k not in ('TMUX', 'TMUX_PANE', 'KIDO_STATE_DIR', 'KO_PANE', 'KO_SERVER')}
+env = {k: v for k, v in os.environ.items() if not k.startswith('KO_')}
 os.makedirs(out + '/home', exist_ok=True)
 env.update(HOME=out + '/home', XDG_STATE_HOME=out + '/state', KIDO_APP_BACKGROUND='1', KIDO_APP_SERVER=server,
            KIDO_APP_DEBUG='1', STRESS_UI_LOCK=out + '/ui.lock', XDG_CONFIG_HOME=out + '/config',

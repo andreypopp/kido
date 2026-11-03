@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -uo pipefail
 cd "$(dirname "$0")/.."
-unset KIDO_AGENT_PARENT_SESSION KIDO_AGENT_DIR KIDO_RUN_ID KIDO_RUN_OUTPUT TMUX_PANE TMUX
+unset KO_STATE_DIR KO_PANE KO_SOCKET KO_RUN_ID KO_RUN_OUTPUT "${!KO_AGENT_@}"
 IFS=: read -r -a entries <<< "$PATH"
 PATH=
 for entry in ${entries[@]+"${entries[@]}"}; do
-  [[ ${entry%/} == *share/kido/bin ]] || PATH+="${PATH:+:}$entry"
+  [[ ${entry%/} == *share/ko/bin ]] || PATH+="${PATH:+:}$entry"
 done
-export PATH KIDO_E2E_REQUIRED=1 KIDO_TS_TEST_REQUIRED=1
+export PATH KO_TS_TEST_REQUIRED=1
 status=0
 now() {
   perl -MTime::HiRes=time -e 'printf "%.6f", time'
@@ -27,9 +27,6 @@ stage() {
   elapsed=$(perl -e 'printf "%.1f", $ARGV[1] - $ARGV[0]' "$start" "$end")
   echo "$result: $name (${elapsed}s)"
 }
-e2e() {
-  make e2e KIDO_TMUX= COUNT="${COUNT:-1}" E2E="${E2E:-.}"
-}
 # make verus prints SKIP: and succeeds when the Verus archive cannot be fetched.
 verus() {
   local log rc
@@ -40,34 +37,16 @@ verus() {
   rm -f "$log"
   return "$rc"
 }
-ko_suite() {
-  make e2e-ko E2E_KO="${E2E_KO:-}"
-}
-case ${1:-verify} in
-  ko-suite) ko_suite || status=1 ;;
-  flake)
-    [[ -n ${RUN:-} && ${COUNT:-20} =~ ^[1-9][0-9]*$ ]] || { echo 'flake requires RUN and a positive COUNT' >&2; exit 1; }
-    E2E=$RUN COUNT=${COUNT:-20} stage e2e e2e
-    ;;
-  verify|verify-ko)
-    default='build unit e2e ts build-ko unit-ko e2e-ko lint-rs verus'
-    [[ ${1:-} == verify-ko ]] && default='build-ko unit-ko e2e-ko lint verus'
-    for name in ${STAGES:-$default}; do
-      case $name in
-        build) stage build dune build ;;
-        build-ko) stage build-ko make build-ko ;;
-        unit) stage unit dune test --force ;;
-        e2e) stage e2e e2e ;;
-        unit-ko) stage unit-ko make test-ko ;;
-        lint) stage lint make lint-ko ;;
-        lint-rs) stage lint-rs make lint-rs ;;
-        verus) stage verus verus ;;
-        e2e-ko) stage e2e-ko ko_suite ;;
-        ts) stage ts ./scripts/test-ts.sh ;;
-        *) echo "Unknown stage: $name" >&2; status=1 ;;
-      esac
-    done
-    ;;
-  *) exit 1 ;;
-esac
+for name in ${STAGES:-build-ko lint unit-ko e2e-ko ts verus}; do
+  case $name in
+    build-ko) stage build-ko make build-ko ;;
+    unit-ko) stage unit-ko make test-ko ;;
+    e2e-ko) stage e2e-ko make e2e-ko E2E_KO="${E2E_KO:-}" ;;
+    lint) stage lint make lint ;;
+    lint-rs) stage lint-rs make lint-rs ;;
+    ts) stage ts ./scripts/test-ts.sh ;;
+    verus) stage verus verus ;;
+    *) echo "Unknown stage: $name" >&2; status=1 ;;
+  esac
+done
 exit "$status"

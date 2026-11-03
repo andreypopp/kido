@@ -5,7 +5,7 @@
 set -e
 D=${KIDO_DEMO_DIR:?}
 export XDG_STATE_HOME=$D/state
-unset TMUX TMUX_PANE KO_PANE KO_SOCKET KO_SERVER
+unset KO_PANE KO_SOCKET
 APP=${2:-$1}
 KO=$(cd "$(dirname "$APP")/../Resources/ko/bin" && pwd)/ko
 # The app's server directory: a Release build always uses $XDG_STATE_HOME/ko-app.

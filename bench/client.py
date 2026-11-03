@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""usage: KIDO_TMUX=path/to/kido-tmux [KO_BIN=build/ko/bin/ko] bench/client.py [latency] [yes] [attach] [resize] [memory] [scroll] [busy] [idle]
+"""usage: [KO_BIN=build/ko/bin/ko] bench/client.py [latency] [yes] [attach] [resize] [memory] [scroll] [busy] [idle]
        [KO_BIN=...] bench/client.py rtt --rtt MS --bw MBIT --variant local|none|ssh-c|deflate --out FILE [--rows attach,plain,mixed,echo] [--runs N]
        bench/client.py rtt-table FILE...   (a Markdown table of the rtt records; bench/rtt.sh runs both)
 
@@ -55,7 +55,7 @@ CSI = rb"\x1b\[[0-?]*[ -/]*[@-~]"
 
 
 def scrubbed(**extra):
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("KO_", "KIDO_", "TMUX", "XDG_", "BASH_FUNC_")) and k not in ("HOME", "ENV", "BASH_ENV", "ZDOTDIR")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("KO_", "XDG_", "BASH_FUNC_")) and k not in ("HOME", "ENV", "BASH_ENV", "ZDOTDIR")}
     env.update(extra)
     return env
 
@@ -391,43 +391,6 @@ class Ko:
         subprocess.run(["rm", "-rf", self.dir])
 
 
-class Tmux:
-    def __init__(self):
-        self.exe = os.environ["KIDO_TMUX"]
-        self.dir = tempfile.mkdtemp(prefix="p13-tmux-", dir="/tmp")
-        self.sock = self.dir + "/socket"
-        with open(self.dir + "/conf", "w") as f:
-            f.write("set -g status off\nset -g history-limit 200000\nset -g mouse on\nset -g escape-time 0\n")
-        self.env = scrubbed(TERM="xterm-256color", SHELL="/bin/sh")
-        self.clients = []
-
-    def run(self, *args):
-        return subprocess.run([self.exe, "-S", self.sock, "-f", self.dir + "/conf", *args], env=self.env, capture_output=True, text=True, check=True).stdout
-
-    def pane(self, command):
-        self.run("new-session", "-d", "-x", str(PANE_COLS), "-y", str(ROWS), "/bin/sh", "-c", command)
-
-    def screen(self, pane):
-        return self.run("capture-pane", "-p")
-
-    def claim(self, pane):
-        pass
-
-    def attach(self):
-        c = Outer([self.exe, "-S", self.sock, "-f", self.dir + "/conf", "attach"], self.env, ROWS, PANE_COLS)
-        self.clients.append(c)
-        return c
-
-    def pids(self):
-        return int(self.run("display", "-p", "#{pid}")), []
-
-    def close(self):
-        for c in self.clients:
-            c.close()
-        subprocess.run([self.exe, "-S", self.sock, "kill-server"], capture_output=True)
-        subprocess.run(["rm", "-rf", self.dir])
-
-
 def wait_screen(target, pane, needle, timeout=30):
     end = time.monotonic() + timeout
     while needle not in target.screen(pane):
@@ -476,35 +439,33 @@ def latency(count=500):
     print(f"== keystroke echo, quiet pane, {count} samples 10 ms apart ({load()})", flush=True)
     raw = raw_latency(count)
     print(f"raw pty (python round trip): {stats(raw)}", flush=True)
-    for name, make in (("tmux client", Tmux), ("ko client", Ko)):
-        target = make()
-        try:
-            target.pane("exec python3 -c " + shlex.quote(ECHO))
-            c = target.attach()
-            c.wait(rb"BENCH-READY")
-            samples = []
-            for n in range(1, count + 1):
-                time.sleep(0.01)
-                began = time.monotonic()
-                os.write(c.fd, b"x")
-                samples.append((c.wait(rb"<%04d>" % n, 2) - began) * 1000)
-            print(f"{name}, key to frame: {stats(samples)}; added over raw p50 {pct(samples, 50) - pct(raw, 50):.2f} / p99 {pct(samples, 99) - pct(raw, 99):.2f} ms", flush=True)
-            if isinstance(target, Ko):
-                view = WebSocket(target.dir, target.vt, "/panes/pane_1/view?history=none")
-                view.snapshot()
-                hop = []
-                for n in range(count + 1, 2 * count + 1):
-                    time.sleep(0.01)
-                    began = time.monotonic()
-                    view.send({"type": "input", "input": {"type": "text", "data": base64.b64encode(b"x").decode()}})
-                    while True:
-                        opcode, data = view.receive()
-                        if opcode == 2 and data[0] == 1 and b"<%04d>" % n in data[9:]:
-                            break
-                    hop.append((time.monotonic() - began) * 1000)
-                print(f"ko view, no client (input event to output record): {stats(hop)}; added over raw p50 {pct(hop, 50) - pct(raw, 50):.2f} / p99 {pct(hop, 99) - pct(raw, 99):.2f} ms", flush=True)
-        finally:
-            target.close()
+    target = Ko()
+    try:
+        target.pane("exec python3 -c " + shlex.quote(ECHO))
+        c = target.attach()
+        c.wait(rb"BENCH-READY")
+        samples = []
+        for n in range(1, count + 1):
+            time.sleep(0.01)
+            began = time.monotonic()
+            os.write(c.fd, b"x")
+            samples.append((c.wait(rb"<%04d>" % n, 2) - began) * 1000)
+        print(f"ko client, key to frame: {stats(samples)}; added over raw p50 {pct(samples, 50) - pct(raw, 50):.2f} / p99 {pct(samples, 99) - pct(raw, 99):.2f} ms", flush=True)
+        view = WebSocket(target.dir, target.vt, "/panes/pane_1/view?history=none")
+        view.snapshot()
+        hop = []
+        for n in range(count + 1, 2 * count + 1):
+            time.sleep(0.01)
+            began = time.monotonic()
+            view.send({"type": "input", "input": {"type": "text", "data": base64.b64encode(b"x").decode()}})
+            while True:
+                opcode, data = view.receive()
+                if opcode == 2 and data[0] == 1 and b"<%04d>" % n in data[9:]:
+                    break
+            hop.append((time.monotonic() - began) * 1000)
+        print(f"ko view, no client (input event to output record): {stats(hop)}; added over raw p50 {pct(hop, 50) - pct(raw, 50):.2f} / p99 {pct(hop, 99) - pct(raw, 99):.2f} ms", flush=True)
+    finally:
+        target.close()
 
 
 def busy_row(count=300):
@@ -536,37 +497,25 @@ def busy_row(count=300):
 
 def yes_row():
     print(f"== yes for 5 s in a shown pane ({load()})", flush=True)
-    for name, make in (("tmux", Tmux), ("ko", Ko)):
-        target = make()
-        try:
-            target.pane("exec yes")
-            c = target.attach()
-            c.wait(b"y")
-            server, kids = target.pids()
-            pids = [server, c.pid, *kids]
-            before = [cpu(p) for p in pids]
-            memory_before, frames, began = rss(server), c.frames, time.monotonic()
-            c.collect(5)
-            span = time.monotonic() - began
-            used = cores(pids, before, span)
-            print(f"{name}: CPU {used} cores ({'server, client' + (', ko-pane' if kids else '')}); frames {(c.frames - frames) / span:.0f}/s; server RSS {memory_before:.1f} to {rss(server):.1f} MiB", flush=True)
-        finally:
-            target.close()
+    target = Ko()
+    try:
+        target.pane("exec yes")
+        c = target.attach()
+        c.wait(b"y")
+        server, kids = target.pids()
+        pids = [server, c.pid, *kids]
+        before = [cpu(p) for p in pids]
+        memory_before, frames, began = rss(server), c.frames, time.monotonic()
+        c.collect(5)
+        span = time.monotonic() - began
+        used = cores(pids, before, span)
+        print(f"ko: CPU {used} cores (server, client, ko-pane); frames {(c.frames - frames) / span:.0f}/s; server RSS {memory_before:.1f} to {rss(server):.1f} MiB", flush=True)
+    finally:
+        target.close()
 
 
 def attach_row():
     print(f"== attach to a pane with 100k lines, warm server, new client process ({load()})", flush=True)
-    tmux = Tmux()
-    try:
-        history_pane(tmux)
-        began = time.monotonic()
-        c = tmux.attach()
-        shown = c.wait(rb"line 100000") - began
-        began = time.monotonic()
-        out = tmux.run("capture-pane", "-p", "-S", "-")
-        print(f"tmux: attach, screen visible {shown * 1000:.0f} ms; then capture-pane -S - ({len(out) / 1e6:.1f} MB) {(time.monotonic() - began) * 1000:.0f} ms", flush=True)
-    finally:
-        tmux.close()
     ko = Ko()
     try:
         pane = history_pane(ko)
@@ -586,33 +535,6 @@ def attach_row():
 
 def resize_row():
     print(f"== resize a pane with 100k lines, 95 and 60 columns alternately ({load()})", flush=True)
-    tmux = Tmux()
-    try:
-        history_pane(tmux)
-        tmux.run("set", "-g", "window-size", "manual")
-        base = []
-        for _ in range(20):
-            began = time.monotonic()
-            tmux.run("display", "-p", "x")
-            base.append((time.monotonic() - began) * 1000)
-        samples = []
-        for n in range(20):
-            began = time.monotonic()
-            tmux.run("resize-window", "-x", str(60 if n % 2 == 0 else PANE_COLS), "-y", str(ROWS))
-            samples.append((time.monotonic() - began) * 1000)
-        print(f"tmux resize-window: command wall {stats(samples)}, empty command p50 {pct(base, 50):.1f} ms", flush=True)
-    finally:
-        tmux.close()
-    tmux = Tmux()
-    try:
-        history_pane(tmux)
-        c = tmux.attach()
-        c.wait(rb"line 100000")
-        c.quiet()
-        shown = [c.settle(ROWS, PANE_COLS - 35 if n % 2 == 0 else PANE_COLS) for n in range(20)]
-        print(f"tmux client: outer pty resize to the last output: {stats(shown)}", flush=True)
-    finally:
-        tmux.close()
     ko = Ko()
     try:
         pane = history_pane(ko)
@@ -669,16 +591,6 @@ def memory_row():
         memory("ko client, 100k-line mirror, 3 s idle", c.pid)
     finally:
         ko.close()
-    tmux = Tmux()
-    try:
-        history_pane(tmux)
-        memory("tmux server, 100k-line pane", tmux.pids()[0])
-        c = tmux.attach()
-        c.wait(rb"line 100000")
-        c.quiet()
-        memory("tmux client", c.pid)
-    finally:
-        tmux.close()
 
 
 IDLE_SECONDS = 10
@@ -714,41 +626,39 @@ def idle_row():
 
 def scroll_row():
     print(f"== wheel scrolling through 100k lines ({load()})", flush=True)
-    for name, make in (("tmux copy-mode", Tmux), ("ko", Ko)):
-        target = make()
-        try:
-            history_pane(target)
-            c = target.attach()
-            c.wait(rb"line 100000")
-            if name == "ko":
-                c.open_history()
-            c.quiet(0.2)
-            single = []
-            for _ in range(60):
-                began = time.monotonic()
+    target = Ko()
+    try:
+        history_pane(target)
+        c = target.attach()
+        c.wait(rb"line 100000")
+        c.open_history()
+        c.quiet(0.2)
+        single = []
+        for _ in range(60):
+            began = time.monotonic()
+            os.write(c.fd, WHEEL_UP)
+            chunks = c.collect(0.05)
+            if chunks:
+                single.append((chunks[0][0] - began) * 1000)
+            c.quiet(0.03)
+        server, kids = target.pids()
+        pids = [server, c.pid, *kids]
+        rate, duration = 240, 4
+        before, frames, chunks, sent, began = [cpu(p) for p in pids], c.frames, [], 0, time.monotonic()
+        while time.monotonic() - began < duration:
+            due = int((time.monotonic() - began) * rate) + 1
+            while sent < due:
                 os.write(c.fd, WHEEL_UP)
-                chunks = c.collect(0.05)
-                if chunks:
-                    single.append((chunks[0][0] - began) * 1000)
-                c.quiet(0.03)
-            server, kids = target.pids()
-            pids = [server, c.pid, *kids]
-            rate, duration = 240, 4
-            before, frames, chunks, sent, began = [cpu(p) for p in pids], c.frames, [], 0, time.monotonic()
-            while time.monotonic() - began < duration:
-                due = int((time.monotonic() - began) * rate) + 1
-                while sent < due:
-                    os.write(c.fd, WHEEL_UP)
-                    sent += 1
-                if readable(c.fd, 0.002):
-                    chunks.append((time.monotonic(), c.feed()))
-            span = time.monotonic() - began
-            used = cores(pids, before, span)
-            gaps = [(b[0] - a[0]) * 1000 for a, b in zip(chunks, chunks[1:])]
-            print(f"{name}: one notch, first output after the event {stats(single)}", flush=True)
-            print(f"{name}: {sent} notches in {span:.1f} s ({rate}/s): output chunks {len(chunks) / span:.0f}/s, gap between chunks {stats(gaps)}; CPU {used} cores ({'server, client' + (', ko-pane' if kids else '')}); sync frames {(c.frames - frames) / span:.0f}/s", flush=True)
-        finally:
-            target.close()
+                sent += 1
+            if readable(c.fd, 0.002):
+                chunks.append((time.monotonic(), c.feed()))
+        span = time.monotonic() - began
+        used = cores(pids, before, span)
+        gaps = [(b[0] - a[0]) * 1000 for a, b in zip(chunks, chunks[1:])]
+        print(f"ko: one notch, first output after the event {stats(single)}", flush=True)
+        print(f"ko: {sent} notches in {span:.1f} s ({rate}/s): output chunks {len(chunks) / span:.0f}/s, gap between chunks {stats(gaps)}; CPU {used} cores (server, client, ko-pane); sync frames {(c.frames - frames) / span:.0f}/s", flush=True)
+    finally:
+        target.close()
 
 
 HOST = "koremote"

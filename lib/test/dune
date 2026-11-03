@@ -1,9 +1,0 @@
-(library
- (name kido_test)
- (flags
-  (:standard -open Containers))
- (libraries kido containers unix yojson)
- (inline_tests
-  (deps ../../bin/main.exe))
- (preprocess
-  (pps ppx_expect)))

@@ -12,7 +12,7 @@ struct BundledTools: Sendable {
         ko = prefix + "/bin/ko"
         build = try? String(contentsOfFile: prefix + "/BUILD-ID", encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         // ko_client_launch starts the server with the environment of this process.
-        for key in environment.keys where key == "TMUX" || key == "TMUX_PANE" || key == "KO_PANE" || key == "KO_SERVER" || key.hasPrefix("KIDO_AGENT_") {
+        for key in environment.keys where key == "KO_PANE" || key.hasPrefix("KO_AGENT_") {
             unsetenv(key)
         }
         if !["LC_ALL", "LC_CTYPE", "LANG"].contains(where: { environment[$0]?.uppercased().contains("UTF-8") == true || environment[$0]?.uppercased().contains("UTF8") == true }) {

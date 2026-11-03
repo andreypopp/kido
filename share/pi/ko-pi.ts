@@ -583,8 +583,8 @@ function utf8Prefix(text: string, max: number): string {
   return out;
 }
 
-// Go-style %q: OCaml's %S would escape non-ASCII
-// agent names ko deliberately keeps readable.
+// Go-style %q: escapes quotes, backslashes and control characters but keeps
+// non-ASCII agent names readable.
 function quote(s: string): string {
   let out = '"';
   for (const ch of s) {

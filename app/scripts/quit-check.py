@@ -14,7 +14,7 @@ ko = bundle / "Contents/Resources/ko/bin/ko"
 with tempfile.TemporaryDirectory(prefix="ko-quit-", dir="/tmp") as scratch:
     root = pathlib.Path(scratch)
     server = root / "server"
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("KIDO_", "KO_")) and k not in ("TMUX", "TMUX_PANE")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("KIDO_", "KO_"))}
     for name in ("home", "xdg", "config"):
         (root / name).mkdir(mode=0o700)
     env.update(HOME=str(root / "home"), XDG_STATE_HOME=str(root / "xdg"), XDG_CONFIG_HOME=str(root / "config"),

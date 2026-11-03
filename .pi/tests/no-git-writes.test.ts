@@ -40,13 +40,11 @@ test("top-level: every blocked command is allowed with no parent session", () =>
 });
 test("empty parent session is top-level", () => assert.equal(blocksGitWrite("git stash", ""), false));
 
-for (const name of ["KIDO_AGENT_PARENT_SESSION", "KO_AGENT_PARENT_SESSION"]) {
-  test(`${name} makes a spawned agent: git writes are blocked`, () => {
-    const session = parentSession({ [name]: "parent" });
-    assert.equal(blocksGitWrite("git add .", session), true);
-    assert.equal(blocksGitWrite("git status", session), false);
-  });
-}
+test("KO_AGENT_PARENT_SESSION makes a spawned agent: git writes are blocked", () => {
+  const session = parentSession({ KO_AGENT_PARENT_SESSION: "parent" });
+  assert.equal(blocksGitWrite("git add .", session), true);
+  assert.equal(blocksGitWrite("git status", session), false);
+});
 const root = realpathSync(mkdtempSync("/var/tmp/no-git-writes-"));
 const tmpRoot = mkdtempSync("/tmp/no-git-writes-");
 const home = `${root}/home`;

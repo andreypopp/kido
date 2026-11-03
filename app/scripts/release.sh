@@ -11,10 +11,10 @@ action() {
   printf '+'; printf ' %q' "$@"; printf '\n'
   if ! $dry; then "$@"; fi
 }
-[[ $(git branch --show-current) == kido-app && -z $(git status --porcelain) ]] || { echo 'Repository must be clean and on kido-app' >&2; exit 1; }
-echo '+ git fetch origin kido-app'
-git fetch origin kido-app
-[[ $(git rev-parse HEAD) == $(git rev-parse origin/kido-app) ]] || { echo 'HEAD must equal origin/kido-app' >&2; exit 1; }
+[[ $(git branch --show-current) == main && -z $(git status --porcelain) ]] || { echo 'Repository must be clean and on main' >&2; exit 1; }
+echo '+ git fetch origin main'
+git fetch origin main
+[[ $(git rev-parse HEAD) == $(git rev-parse origin/main) ]] || { echo 'HEAD must equal origin/main' >&2; exit 1; }
 remote_tag=$(git ls-remote --tags origin "refs/tags/$tag")
 if [[ -n $remote_tag ]]; then
   echo "Tag $tag already exists on origin" >&2; exit 1
@@ -46,7 +46,7 @@ echo "SHA256: $sha"
 if [[ -z $local_tag ]]; then action git tag "$tag"; fi
 action git push origin "refs/tags/$tag"
 action gh release create "$tag" "$zip" --repo andreypopp/kido --title "Kido.app $version" \
-  --notes "Native macOS client for kido. Apple Silicon and macOS 26 or later required. Apple Development (Personal Team) signed; not notarized. Install with brew install --cask andreypopp/tap/kido-app." --prerelease
+  --notes "Native macOS client for the ko terminal server. Apple Silicon and macOS 26 or later required. Apple Development (Personal Team) signed; not notarized. Install with brew install --cask andreypopp/tap/kido-app." --prerelease
 action git -C "$tap" pull --ff-only origin main
 cask="$tap/Casks/kido-app.rb"
 echo "+ write $cask"

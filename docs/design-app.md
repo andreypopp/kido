@@ -60,15 +60,15 @@ model; the layout editor still gets every layout revision. The owner's link is
 (`ko_client_image`) is one request on its own short connection.
 
 The server directory is `$XDG_STATE_HOME/ko-app`, else
-`~/.local/state/ko-app`, so an old kido-app tmux socket is never opened as
-a ko socket. `KIDO_APP_SERVER` overrides it, in VISUAL and STRESS builds
+`~/.local/state/ko-app`, so a socket of an older Kido.app is never opened
+as a ko socket. `KIDO_APP_SERVER` overrides it, in VISUAL and STRESS builds
 only. A server starts only on an explicit connection or the banner's Start
 button: `KoServer.launch` runs `ko_client_launch(dir, bundled ko)` on a
 detached task. It starts a server unless one runs there and returns the
 socket; then the owner dials. `ko_client_launch` starts the server with
-the app's own environment, so `BundledTools` removes `TMUX`,
-`TMUX_PANE`, `KO_PANE`, `KO_SERVER` and `KIDO_AGENT_*` from it and sets a
-UTF-8 `LANG` when none is set. The core reaps the server process that it
+the app's own environment, so `app/App/Server.swift` removes `KO_PANE`
+and `KO_AGENT_*` from it and sets a UTF-8 `LANG` when none
+is set. The core reaps the server process that it
 started. Every dial is one stderr line, `dialing SOCKET (cause) [owner]`.
 
 The first welcome must arrive within 20 s (`WindowOwner.welcomeTimeout`),
@@ -91,7 +91,9 @@ the active app, has no sheet and a pane of the shown window is first
 responder. `SessionView.requestSize` sends the window size with
 `ko_client_size`, at most once per main-queue turn and only when it
 changed; `present` sends it at once. The size carries the cell size in pixels from a shown pane, so
-the server answers `CSI 14t`/`16t` with real values; 0 and 0 mean unknown.
+the server answers `CSI 14t`/`16t` and `TIOCGWINSZ` with real values; 0 and 0 mean unknown.
+The cell's pixels are part of the size that is compared: a font or
+backing-scale change (a display move) that keeps the grid still sends a size.
 A floating sidebar changes no size.
 
 **Version mismatch.** A server of another protocol or terminal revision
@@ -145,7 +147,7 @@ Each failure is a banner with Reconnect (`RemoteFailure.banner`). The
 title is the app's; the detail is the core's text, so `ko HOST` and the
 app name a failure alike.
 The no-server banner has no button that starts a server: `ko server` runs
-in the foreground, and K7's scope starts it only on an explicit command.
+in the foreground, and a remote server starts only on an explicit command (docs/design-ko.md, "Remote").
 
 **Outage.** A `failed` event from the core shows "Disconnected from HOST"
 with "The connection to HOST is down." for an absent socket and the
@@ -617,7 +619,7 @@ would race the pane, and a program can never make the app open, unlink or
 read a shared-memory object or file. Every frame that the mirror cannot
 fill (a refused `t=s`, a restored image, an edit of such a frame) is
 pending with a stamp, and `PaneImages` completes it from the server's
-frame resource (rfc/kido-server/protocol.md, section 5).
+frame resource (protocol.md, section 5).
 
 After each restore and each feed of bytes, the decoder thread reads the
 surface's pending generation; only when it moved does it list the pending
@@ -753,7 +755,7 @@ the grip, zoom, split or close button only activates the window.
 
 A program's clipboard access (OSC 52 and the kitty protocol, OSC 5522)
 reaches the app as server events, never through the mirror
-(rfc/kido-server/protocol.md, section 9). The surfaces get
+(protocol.md, section 9). The surfaces get
 `clipboard-read = deny`, `clipboard-write = deny` and
 `kitty_clipboard = false`, so a mirror neither touches the pasteboard nor
 writes a reply toward the pane; `ko-pane`'s terminal encodes every reply.
@@ -967,7 +969,7 @@ core's message. A divider drag is a `resize_pair` edit, a float move or
 resize a `float` edit, a grip drop a `swap`, `dock` or `dock_window` edit.
 The pane commands map to `split`, `resize_by`, `toggle_zoom` and
 `equalize` edits. The core evaluates `resize_by {pane, edge, delta}` and
-`toggle_zoom` against the newest layout, as tmux's `resize-pane` did, so
+`toggle_zoom` against the newest layout, as the first implementation did, so
 two presses inside one round trip are two steps: the divider on the
 `edge` side of the pane moves toward that edge (for the last pane of a
 split, the divider before it), and a resize while zoomed unzooms first.
@@ -1145,8 +1147,8 @@ modes; the sidebar shadows are the app's own ([Focus treatment](#focus-treatment
 WindowTabs paints no background of its own.
 
 Next Window and Previous Window (Command-} and Command-{, the menu, the
-palette and Ghostty's tab actions) keep the tmux-era rule of
-`kido switch-window` ([design.md](design.md#the-sidebar-tree)). One pure
+palette and Ghostty's tab actions) keep the first implementation's
+window-cycling rule ([design.md](design.md#the-sidebar-tree)). One pure
 function, `adjacentWindow` in `SidebarFeed/Windows.swift`, computes the
 step. It reads the displayed order, so a pending reorder counts. From a
 top-level window, a step goes to the adjacent top-level window. It never
@@ -1228,7 +1230,7 @@ timer serves the next pending deadline; removed rows lose their state.
 All pane and program rows are 32pt single-line or 48pt with a caption, with
 7pt vertical padding. Titles are 13pt regular on an 18pt line; captions are
 11pt on a 15pt line, 1pt below the title. Titles of panes whose lifecycle is a
-live agent (Pi_agent, Some_agent or a remote agent) and all program-record
+live agent (a pi agent, another agent or a remote agent) and all program-record
 rows are semibold; every other pane title, Ended and Terminal runs included,
 is regular. Rows have
 a 12pt leading inset, a 16pt leading slot holding the status indicator, and an
@@ -1251,8 +1253,8 @@ Geometry is derived in the row model as per-row guide segments, not
 maintained in a separate view tree.
 The display-only @
 prefix, never doubled, marks an agent that can be messaged, which is exactly
-a live Pi_agent pane. A run pane gets no @ while it is a Terminal or Ended: its
-inbox is not up yet or is gone. A native agent pane (Some_agent, such as
+a live pi agent pane. A run pane gets no @ while it is a Terminal or Ended: its
+inbox is not up yet or is gone. A native agent pane (such as
 Claude Code) and an agent over SSH (an Ssh pane with a remote agent, out of
 reach of message_agent, which only reaches pi sessions on the same server)
 cannot be messaged, so they keep the semibold title without the @. Idle local shell panes
@@ -1803,7 +1805,7 @@ baseline too early.
 
 **Content.** Title is the sidebar row's title. Subtitle is the session
 name; for a remote window `user@host · session`, using the resolved
-identity the window title shows; for a `kido ssh` remote agent in a Local
+identity the window title shows; for a `ko ssh` remote agent in a Local
 window, `session · destination`. Body: `Waiting` or
 `Waiting: <caption>`, else `Exit <code>: <command>` for a command, else
 `Failed` or `Failed: <caption>`. Nothing is truncated by the app.

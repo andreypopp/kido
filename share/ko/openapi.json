@@ -3871,7 +3871,7 @@
               },
               {
                 "contentMediaType": "application/octet-stream",
-                "description": "The pane's terminal byte stream: one application/octet-stream message, framed as in rfc/kido-server/protocol.md section 4."
+                "description": "The pane's terminal byte stream: one application/octet-stream message, framed as in docs/protocol.md section 4."
               }
             ]
           },

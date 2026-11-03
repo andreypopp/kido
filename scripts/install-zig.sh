@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install the pinned zig release into the given prefix, as <prefix>/zig.
-# ko_vt's dune rules build libghostty-vt with it, so dune needs it on PATH.
+# ko_vt_sys/build.rs builds libghostty-vt with it, so it must be on PATH.
 # The pin is the exact release that third_party/ghostty/build.zig.zon names
 # as .minimum_zig_version; lint checks that they agree.
 #
