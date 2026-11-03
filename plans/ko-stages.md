@@ -1201,8 +1201,11 @@ separate `kido-app` branch ends: Kido.app builds and releases from
   `make preview-pi` targets `ko-pi.ts`.
 - Docs: migration.md section 8; `rfc/kido-server/` moves into `docs/`
   as ko's design; the plans and RFCs are deleted as plans.
-- The website describes ko. Kido.app's release follows with the ko
-  client as its only transport.
+- Naming (decided 2026-11-03): the server, the CLI and the code are
+  `ko`; the product brand stays Kido, and the app stays Kido.app. The
+  rename above covers identifiers, paths and variables, not the brand.
+- The website describes Kido, with `ko` as its server and CLI. Kido.app's
+  release follows with the ko client as its only transport.
 
 Tests that close it: `make verify` with no tmux and no dune on PATH;
 `scripts/lint.sh` on the new docs; the TypeScript suite; a fresh
