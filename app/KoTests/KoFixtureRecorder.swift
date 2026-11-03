@@ -5,14 +5,6 @@ import XCTest
 // Records the model documents that SidebarFeedTests and TmuxControlTests decode, from a private ko server:
 // make ko-fixtures. Without KO_RECORD_FIXTURES the test is skipped.
 @MainActor final class KoFixtureRecorder: KoTestCase {
-    private func output(_ arguments: [String], dir: String) throws -> String {
-        let process = try ko(arguments, dir: dir, output: true)
-        let data = (process.standardOutput as! Pipe).fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        XCTAssertEqual(process.terminationStatus, 0, arguments.joined(separator: " "))
-        return String(decoding: data, as: UTF8.self)
-    }
-
     // The model as the app decodes it, written with sorted keys.
     private func write(_ model: KoModel, _ path: String) throws {
         let encoder = JSONEncoder()

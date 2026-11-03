@@ -40,6 +40,19 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     #expect(shape(snapshot.sessions[1].nodes) == ["6"])
 }
 
+@Test func theTwoPanesOfARunWindowAreOneGroupUnderTheParentPane() throws {
+    var model = try recorded()
+    let moved: Set<PaneID> = [.init(number: 3), .init(number: 4)]
+    model.outline = model.outline.filter { entry in
+        if case .pane(let pane) = entry { return !moved.contains(pane.id) }
+        return true
+    }
+    let parent = try #require(model.outline.firstIndex { if case .pane(let pane) = $0 { pane.id == .init(number: 5) } else { false } })
+    model.outline.insert(contentsOf: [3, 4].map { .pane(.init(depth: 1, id: .init(number: $0), window: .init(number: 2))) }, at: parent + 1)
+    let snapshot = try #require(Snapshot(model: model))
+    #expect(shape(snapshot.sessions[0].nodes) == ["build[1,2]", "5>running[3,4],7>8", "9"])
+}
+
 @Test func statusesRunsAndEndedPanesKeepTheirMeaning() throws {
     let found = items(try #require(Snapshot(model: recorded())))
     func item(_ number: UInt32) throws -> Item { try #require(found[.init(number: number)]) }

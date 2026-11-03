@@ -94,6 +94,19 @@ class Generator:
             return '[String: JSONValue]' if extra is True else f'[String: {self.type_of(extra, where)}]'
         fail(f'{where}: cannot express {json.dumps(schema)[:200]}')
 
+    def bounds(self, schema, where):
+        """The (minimum, maximum) of an integer field through $ref and nullability; None for an unbounded one."""
+        inner = self.nullable(schema)
+        resolved = self.resolve(schema if inner is None else inner)
+        if resolved.get('type') == 'array' and self.bounds(resolved['items'], where) is not None:
+            fail(f'{where}: bounded array items cannot be checked')
+        if resolved.get('type') != 'integer':
+            return None
+        if 'exclusiveMinimum' in resolved or 'exclusiveMaximum' in resolved:
+            fail(f'{where}: exclusive integer bounds cannot be checked')
+        low, high = resolved.get('minimum'), resolved.get('maximum')
+        return None if low is None and high is None else (low, high)
+
     def fields(self, schema, where, skip=()):
         """The properties of an object schema, with those of its allOf references."""
         properties, required = {}, set()
@@ -110,12 +123,13 @@ class Generator:
     def struct(self, name, schema, skip=()):
         properties, required = self.fields(schema, name, skip)
         lines = [f'    public struct {name}: Codable, Equatable, Sendable {{']
-        members, parameters, keys = [], [], []
+        members, parameters, keys, kinds = [], [], [], {}
         for key in sorted(properties):
             swift = ident(key)
             kind = self.type_of(properties[key], f'{name}.{key}')
             if key not in required and not kind.endswith('?'):
                 kind += '?'
+            kinds[key] = kind
             members.append(f'        public var {swift}: {kind}')
             parameters.append(f'{swift}: {kind}' + (' = nil' if kind.endswith('?') else ''))
             keys.append(key)
@@ -123,7 +137,29 @@ class Generator:
         lines.append(f'        public init({", ".join(parameters)}) {{')
         lines += [f'            self.{ident(key)} = {ident(key)}' for key in keys]
         lines.append('        }')
-        if any(camel(key) != key for key in keys):
+        bounded = {key: self.bounds(properties[key], f'{name}.{key}') for key in keys}
+        bounded = {key: bound for key, bound in bounded.items() if bound is not None}
+        if bounded:
+            lines += ['        public init(from decoder: Decoder) throws {',
+                      '            let container = try decoder.container(keyedBy: CodingKeys.self)']
+            for key in keys:
+                kind = kinds[key]
+                optional = kind.endswith('?')
+                lines.append(f'            self.{ident(key)} = try container.{"decodeIfPresent" if optional else "decode"}({kind.removesuffix("?")}.self, forKey: .{ident(key)})')
+            for key, (low, high) in bounded.items():
+                field, optional = ident(key), kinds[key].endswith('?')
+                value = 'value' if optional else f'self.{field}'
+                checks = ([f'{low} <= {value}'] if low is not None else []) + ([f'{value} <= {high}'] if high is not None else [])
+                wanted = f'{low}...{high}' if low is not None and high is not None else (f'at least {low}' if low is not None else f'at most {high}')
+                refuse = (f'throw DecodingError.dataCorruptedError(forKey: .{field}, in: container, '
+                          f'debugDescription: "{key} is {wanted}, not \\({value})")')
+                if optional:
+                    lines += [f'            if let value = self.{field} {{',
+                              f'                guard {", ".join(checks)} else {{ {refuse} }}', '            }']
+                else:
+                    lines.append(f'            guard {", ".join(checks)} else {{ {refuse} }}')
+            lines.append('        }')
+        if bounded or any(camel(key) != key for key in keys):
             lines.append('        private enum CodingKeys: String, CodingKey {')
             lines += [f'            case {ident(key)}' + (f' = "{key}"' if camel(key) != key else '') for key in keys]
             lines.append('        }')

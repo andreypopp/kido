@@ -43,6 +43,18 @@ public enum KoSchema {
             self.since = since
             self.state = state
         }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
+            self.since = try container.decode(Int.self, forKey: .since)
+            self.state = try container.decode(AgentState.self, forKey: .state)
+            guard 0 <= self.since else { throw DecodingError.dataCorruptedError(forKey: .since, in: container, debugDescription: "since is at least 0, not \(self.since)") }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case msg
+            case since
+            case state
+        }
     }
 
     public enum AgentState: Codable, Equatable, Sendable {
@@ -87,6 +99,16 @@ public enum KoSchema {
         public init(progress: Int? = nil) {
             self.progress = progress
         }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.progress = try container.decodeIfPresent(Int.self, forKey: .progress)
+            if let value = self.progress {
+                guard 0 <= value, value <= 255 else { throw DecodingError.dataCorruptedError(forKey: .progress, in: container, debugDescription: "progress is 0...255, not \(value)") }
+            }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case progress
+        }
     }
 
     public struct AgentStateWaiting: Codable, Equatable, Sendable {
@@ -95,6 +117,18 @@ public enum KoSchema {
         public init(kind: ProgramKind? = nil, progress: Int? = nil) {
             self.kind = kind
             self.progress = progress
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.kind = try container.decodeIfPresent(ProgramKind.self, forKey: .kind)
+            self.progress = try container.decodeIfPresent(Int.self, forKey: .progress)
+            if let value = self.progress {
+                guard 0 <= value, value <= 255 else { throw DecodingError.dataCorruptedError(forKey: .progress, in: container, debugDescription: "progress is 0...255, not \(value)") }
+            }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case kind
+            case progress
         }
     }
 
@@ -174,6 +208,17 @@ public enum KoSchema {
             self.height = height
             self.width = width
         }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.height = try container.decode(Int.self, forKey: .height)
+            self.width = try container.decode(Int.self, forKey: .width)
+            guard 1 <= self.height, self.height <= 65535 else { throw DecodingError.dataCorruptedError(forKey: .height, in: container, debugDescription: "height is 1...65535, not \(self.height)") }
+            guard 1 <= self.width, self.width <= 65535 else { throw DecodingError.dataCorruptedError(forKey: .width, in: container, debugDescription: "width is 1...65535, not \(self.width)") }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case height
+            case width
+        }
     }
 
     public typealias Cells = Int
@@ -220,6 +265,15 @@ public enum KoSchema {
             self.command = command
             self.endedAt = endedAt
             self.startedAt = startedAt
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.code = try container.decode(Int.self, forKey: .code)
+            self.command = try container.decode(String.self, forKey: .command)
+            self.endedAt = try container.decode(Int.self, forKey: .endedAt)
+            self.startedAt = try container.decode(Int.self, forKey: .startedAt)
+            guard 0 <= self.endedAt else { throw DecodingError.dataCorruptedError(forKey: .endedAt, in: container, debugDescription: "ended_at is at least 0, not \(self.endedAt)") }
+            guard 0 <= self.startedAt else { throw DecodingError.dataCorruptedError(forKey: .startedAt, in: container, debugDescription: "started_at is at least 0, not \(self.startedAt)") }
         }
         private enum CodingKeys: String, CodingKey {
             case code
@@ -306,6 +360,16 @@ public enum KoSchema {
         public init(at: Int, cause: Cause) {
             self.at = at
             self.cause = cause
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.at = try container.decode(Int.self, forKey: .at)
+            self.cause = try container.decode(Cause.self, forKey: .cause)
+            guard 0 <= self.at else { throw DecodingError.dataCorruptedError(forKey: .at, in: container, debugDescription: "at is at least 0, not \(self.at)") }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case at
+            case cause
         }
     }
 
@@ -484,6 +548,42 @@ public enum KoSchema {
             self.y = y
             self.z = z
         }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.border = try container.decodeIfPresent(Bool.self, forKey: .border)
+            self.cols = try container.decodeIfPresent(Cells.self, forKey: .cols)
+            self.pane = try container.decode(PaneId.self, forKey: .pane)
+            self.rows = try container.decodeIfPresent(Cells.self, forKey: .rows)
+            self.title = try container.decodeIfPresent(String.self, forKey: .title)
+            self.x = try container.decodeIfPresent(Int.self, forKey: .x)
+            self.y = try container.decodeIfPresent(Int.self, forKey: .y)
+            self.z = try container.decodeIfPresent(Int.self, forKey: .z)
+            if let value = self.cols {
+                guard 1 <= value, value <= 4096 else { throw DecodingError.dataCorruptedError(forKey: .cols, in: container, debugDescription: "cols is 1...4096, not \(value)") }
+            }
+            if let value = self.rows {
+                guard 1 <= value, value <= 4096 else { throw DecodingError.dataCorruptedError(forKey: .rows, in: container, debugDescription: "rows is 1...4096, not \(value)") }
+            }
+            if let value = self.x {
+                guard 0 <= value, value <= 65535 else { throw DecodingError.dataCorruptedError(forKey: .x, in: container, debugDescription: "x is 0...65535, not \(value)") }
+            }
+            if let value = self.y {
+                guard 0 <= value, value <= 65535 else { throw DecodingError.dataCorruptedError(forKey: .y, in: container, debugDescription: "y is 0...65535, not \(value)") }
+            }
+            if let value = self.z {
+                guard 0 <= value else { throw DecodingError.dataCorruptedError(forKey: .z, in: container, debugDescription: "z is at least 0, not \(value)") }
+            }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case border
+            case cols
+            case pane
+            case rows
+            case title
+            case x
+            case y
+            case z
+        }
     }
 
     public struct EditRenameSession: Codable, Equatable, Sendable {
@@ -529,6 +629,18 @@ public enum KoSchema {
             self.edge = edge
             self.pane = pane
         }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.delta = try container.decode(Cells.self, forKey: .delta)
+            self.edge = try container.decode(Edge.self, forKey: .edge)
+            self.pane = try container.decode(PaneId.self, forKey: .pane)
+            guard 1 <= self.delta, self.delta <= 4096 else { throw DecodingError.dataCorruptedError(forKey: .delta, in: container, debugDescription: "delta is 1...4096, not \(self.delta)") }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case delta
+            case edge
+            case pane
+        }
     }
 
     public struct EditResizePair: Codable, Equatable, Sendable {
@@ -539,6 +651,13 @@ public enum KoSchema {
             self.first = first
             self.firstSize = firstSize
             self.second = second
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.first = try container.decode(PaneId.self, forKey: .first)
+            self.firstSize = try container.decode(Cells.self, forKey: .firstSize)
+            self.second = try container.decode(PaneId.self, forKey: .second)
+            guard 1 <= self.firstSize, self.firstSize <= 4096 else { throw DecodingError.dataCorruptedError(forKey: .firstSize, in: container, debugDescription: "first_size is 1...4096, not \(self.firstSize)") }
         }
         private enum CodingKeys: String, CodingKey {
             case first
@@ -624,6 +743,32 @@ public enum KoSchema {
             self.y = y
             self.z = z
         }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.border = try container.decode(Bool.self, forKey: .border)
+            self.cols = try container.decode(Cells.self, forKey: .cols)
+            self.pane = try container.decode(PaneId.self, forKey: .pane)
+            self.rows = try container.decode(Cells.self, forKey: .rows)
+            self.title = try container.decode(String.self, forKey: .title)
+            self.x = try container.decode(Int.self, forKey: .x)
+            self.y = try container.decode(Int.self, forKey: .y)
+            self.z = try container.decode(Int.self, forKey: .z)
+            guard 1 <= self.cols, self.cols <= 4096 else { throw DecodingError.dataCorruptedError(forKey: .cols, in: container, debugDescription: "cols is 1...4096, not \(self.cols)") }
+            guard 1 <= self.rows, self.rows <= 4096 else { throw DecodingError.dataCorruptedError(forKey: .rows, in: container, debugDescription: "rows is 1...4096, not \(self.rows)") }
+            guard 0 <= self.x, self.x <= 65535 else { throw DecodingError.dataCorruptedError(forKey: .x, in: container, debugDescription: "x is 0...65535, not \(self.x)") }
+            guard 0 <= self.y, self.y <= 65535 else { throw DecodingError.dataCorruptedError(forKey: .y, in: container, debugDescription: "y is 0...65535, not \(self.y)") }
+            guard 0 <= self.z else { throw DecodingError.dataCorruptedError(forKey: .z, in: container, debugDescription: "z is at least 0, not \(self.z)") }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case border
+            case cols
+            case pane
+            case rows
+            case title
+            case x
+            case y
+            case z
+        }
     }
 
     public struct Foreground: Codable, Equatable, Sendable {
@@ -632,6 +777,16 @@ public enum KoSchema {
         public init(name: String, pid: Int) {
             self.name = name
             self.pid = pid
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.name = try container.decode(String.self, forKey: .name)
+            self.pid = try container.decode(Int.self, forKey: .pid)
+            guard 0 <= self.pid else { throw DecodingError.dataCorruptedError(forKey: .pid, in: container, debugDescription: "pid is at least 0, not \(self.pid)") }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case name
+            case pid
         }
     }
 
@@ -669,6 +824,18 @@ public enum KoSchema {
             self.id = id
             self.window = window
         }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.depth = try container.decode(Int.self, forKey: .depth)
+            self.id = try container.decode(PaneId.self, forKey: .id)
+            self.window = try container.decode(WindowId.self, forKey: .window)
+            guard 0 <= self.depth else { throw DecodingError.dataCorruptedError(forKey: .depth, in: container, debugDescription: "depth is at least 0, not \(self.depth)") }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case depth
+            case id
+            case window
+        }
     }
 
     public struct ItemSession: Codable, Equatable, Sendable {
@@ -695,6 +862,19 @@ public enum KoSchema {
             self.cols = cols
             self.pane = pane
             self.rows = rows
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.cols = try container.decode(Cells.self, forKey: .cols)
+            self.pane = try container.decode(PaneId.self, forKey: .pane)
+            self.rows = try container.decode(Cells.self, forKey: .rows)
+            guard 1 <= self.cols, self.cols <= 4096 else { throw DecodingError.dataCorruptedError(forKey: .cols, in: container, debugDescription: "cols is 1...4096, not \(self.cols)") }
+            guard 1 <= self.rows, self.rows <= 4096 else { throw DecodingError.dataCorruptedError(forKey: .rows, in: container, debugDescription: "rows is 1...4096, not \(self.rows)") }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case cols
+            case pane
+            case rows
         }
     }
 
@@ -842,6 +1022,12 @@ public enum KoSchema {
             self.command = command
             self.startedAt = startedAt
         }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.command = try container.decode(String.self, forKey: .command)
+            self.startedAt = try container.decode(Int.self, forKey: .startedAt)
+            guard 0 <= self.startedAt else { throw DecodingError.dataCorruptedError(forKey: .startedAt, in: container, debugDescription: "started_at is at least 0, not \(self.startedAt)") }
+        }
         private enum CodingKeys: String, CodingKey {
             case command
             case startedAt = "started_at"
@@ -854,6 +1040,16 @@ public enum KoSchema {
         public init(result: OutcomeResult, serial: Int) {
             self.result = result
             self.serial = serial
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.result = try container.decode(OutcomeResult.self, forKey: .result)
+            self.serial = try container.decode(Int.self, forKey: .serial)
+            guard 0 <= self.serial else { throw DecodingError.dataCorruptedError(forKey: .serial, in: container, debugDescription: "serial is at least 0, not \(self.serial)") }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case result
+            case serial
         }
     }
 
@@ -924,6 +1120,19 @@ public enum KoSchema {
             self.progress = progress
             self.since = since
             self.title = title
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.kind = try container.decode(Live.self, forKey: .kind)
+            self.message = try container.decodeIfPresent(String.self, forKey: .message)
+            self.programStatus = try container.decode(ProgramStatus.self, forKey: .programStatus)
+            self.progress = try container.decodeIfPresent(Int.self, forKey: .progress)
+            self.since = try container.decode(Int.self, forKey: .since)
+            self.title = try container.decode(String.self, forKey: .title)
+            if let value = self.progress {
+                guard 0 <= value, value <= 255 else { throw DecodingError.dataCorruptedError(forKey: .progress, in: container, debugDescription: "progress is 0...255, not \(value)") }
+            }
+            guard 0 <= self.since else { throw DecodingError.dataCorruptedError(forKey: .since, in: container, debugDescription: "since is at least 0, not \(self.since)") }
         }
         private enum CodingKeys: String, CodingKey {
             case kind
@@ -1042,6 +1251,26 @@ public enum KoSchema {
             self.progress = progress
             self.title = title
         }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.app = try container.decodeIfPresent(String.self, forKey: .app)
+            self.id = try container.decode(String.self, forKey: .id)
+            self.kind = try container.decodeIfPresent(ProgramKind.self, forKey: .kind)
+            self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
+            self.progress = try container.decodeIfPresent(Int.self, forKey: .progress)
+            self.title = try container.decodeIfPresent(String.self, forKey: .title)
+            if let value = self.progress {
+                guard 0 <= value, value <= 255 else { throw DecodingError.dataCorruptedError(forKey: .progress, in: container, debugDescription: "progress is 0...255, not \(value)") }
+            }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case app
+            case id
+            case kind
+            case msg
+            case progress
+            case title
+        }
     }
 
     public struct ProgramRecordDone: Codable, Equatable, Sendable {
@@ -1096,6 +1325,24 @@ public enum KoSchema {
             self.progress = progress
             self.title = title
         }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.app = try container.decodeIfPresent(String.self, forKey: .app)
+            self.id = try container.decode(String.self, forKey: .id)
+            self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
+            self.progress = try container.decodeIfPresent(Int.self, forKey: .progress)
+            self.title = try container.decodeIfPresent(String.self, forKey: .title)
+            if let value = self.progress {
+                guard 0 <= value, value <= 255 else { throw DecodingError.dataCorruptedError(forKey: .progress, in: container, debugDescription: "progress is 0...255, not \(value)") }
+            }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case app
+            case id
+            case msg
+            case progress
+            case title
+        }
     }
 
     public struct ProgramStatus: Codable, Equatable, Sendable {
@@ -1105,6 +1352,16 @@ public enum KoSchema {
             self.records = records
             self.serial = serial
         }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.records = try container.decode([ProgramRecord].self, forKey: .records)
+            self.serial = try container.decode(Int.self, forKey: .serial)
+            guard 0 <= self.serial else { throw DecodingError.dataCorruptedError(forKey: .serial, in: container, debugDescription: "serial is at least 0, not \(self.serial)") }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case records
+            case serial
+        }
     }
 
     public struct Progress: Codable, Equatable, Sendable {
@@ -1113,6 +1370,18 @@ public enum KoSchema {
         public init(progress: Int? = nil, state: ProgressState) {
             self.progress = progress
             self.state = state
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.progress = try container.decodeIfPresent(Int.self, forKey: .progress)
+            self.state = try container.decode(ProgressState.self, forKey: .state)
+            if let value = self.progress {
+                guard 0 <= value, value <= 255 else { throw DecodingError.dataCorruptedError(forKey: .progress, in: container, debugDescription: "progress is 0...255, not \(value)") }
+            }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case progress
+            case state
         }
     }
 
@@ -1247,6 +1516,16 @@ public enum KoSchema {
             self.layout = layout
             self.revision = revision
         }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.layout = try container.decode(Layout.self, forKey: .layout)
+            self.revision = try container.decode(Int.self, forKey: .revision)
+            guard 0 <= self.revision else { throw DecodingError.dataCorruptedError(forKey: .revision, in: container, debugDescription: "revision is at least 0, not \(self.revision)") }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case layout
+            case revision
+        }
     }
 
     public typealias Timestamp = String
@@ -1282,6 +1561,21 @@ public enum KoSchema {
             self.tree = tree
             self.vars = vars
             self.zoom = zoom
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.cellPx = try container.decodeIfPresent(CellPixels.self, forKey: .cellPx)
+            self.cols = try container.decode(Cells.self, forKey: .cols)
+            self.floats = try container.decode([Float].self, forKey: .floats)
+            self.focus = try container.decode(PaneId.self, forKey: .focus)
+            self.id = try container.decode(WindowId.self, forKey: .id)
+            self.name = try container.decode(Name.self, forKey: .name)
+            self.rows = try container.decode(Cells.self, forKey: .rows)
+            self.tree = try container.decode(LeafNode.self, forKey: .tree)
+            self.vars = try container.decode([String: JSONValue].self, forKey: .vars)
+            self.zoom = try container.decodeIfPresent(PaneId.self, forKey: .zoom)
+            guard 1 <= self.cols, self.cols <= 4096 else { throw DecodingError.dataCorruptedError(forKey: .cols, in: container, debugDescription: "cols is 1...4096, not \(self.cols)") }
+            guard 1 <= self.rows, self.rows <= 4096 else { throw DecodingError.dataCorruptedError(forKey: .rows, in: container, debugDescription: "rows is 1...4096, not \(self.rows)") }
         }
         private enum CodingKeys: String, CodingKey {
             case cellPx = "cell_px"

@@ -156,6 +156,12 @@ extension PaneView {
         visualInput = input
     }
 
+    // The grid of a pane that no server view feeds.
+    func resize(cols: Int, rows: Int) {
+        XCTAssertTrue(ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil))
+        refreshScroller()
+    }
+
     // What a snapshot restore gives the surface: the bytes as replayed state, not as live output.
     func visualRestore(_ data: Data) {
         data.withUnsafeBytes { buffer in

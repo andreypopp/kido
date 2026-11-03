@@ -23,16 +23,14 @@ const QUEUED_LIMIT: usize = 4 << 20;
 pub enum Restored {
     Ok = 0,
     Rejected = 1,
-    SizeMismatch = 2,
-    HistoryIncomplete = 3,
+    HistoryIncomplete = 2,
 }
 
 impl Restored {
     fn of(code: c_int) -> Restored {
         match code {
             0 => Restored::Ok,
-            2 => Restored::SizeMismatch,
-            3 => Restored::HistoryIncomplete,
+            2 => Restored::HistoryIncomplete,
             _ => Restored::Rejected,
         }
     }

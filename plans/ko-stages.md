@@ -870,6 +870,20 @@ specification, with the shared core of 4.10 in place of a Swift
 5. The design of `PaneView` on the view feed: the scroller from the
    mirror, find over the full mirror, and `KO_INPUT_TEXT` against
    `KO_INPUT_KEY` with a measurement of the kitty keyboard cases.
+   Done: the app keeps Ghostty's encoding, and `ko_view_input` takes
+   bytes; the key, mouse and paste kinds left the ABI and stay in the
+   protocol. The two encoders agree on the measured kitty cases under
+   flags 0, 1 and 3, the SGR click, release events and the flag stack
+   across a copy-mode resync; they differ on Shift+Space, where the
+   app is right, and only the app can send SGR pixel mouse. The
+   server's size wins: a restore adopts the snapshot's size in the
+   app's Ghostty fork, `SIZE_MISMATCH` is gone from `ghostty.h` and
+   `ko_client.h`, only the decoder thread sizes a grid, and the
+   terminal draws at the grid's size while the frame differs. The
+   core nests a run window's split under the run's parent. The
+   stress harness reaps its servers, so `kill-server` stops in time.
+   The priority-inversion warning is not in ko_client or Ghostty
+   (known-issues-app.md).
 6. `TmuxControl` keeps only the geometry and becomes `PaneGeometry`.
    Delete from the fork the authoritative grids, held placements,
    fill images, `restore_output`, the reply suppression

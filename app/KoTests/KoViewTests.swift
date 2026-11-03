@@ -102,26 +102,23 @@ final class Decoded: @unchecked Sendable {
         view.close()
     }
 
-    func testTheServersSizeWinsAndAWrongSizedSurfaceIsRejectedUntilItIsSized() throws {
+    func testASurfaceOfAnotherSizeTakesTheSnapshotsSizeAtTheRestoreAndShowsTheServersScreen() throws {
         let dir = try serverWithPane(#"printf 'hello'; exec sleep 60"#)
         let recorder = Recorder()
         let connection = try connect(dir, recorder)
         let pane = try leaf(connection)
-        let surface = KoSurface(cols: pane.cols + 20, rows: pane.rows + 6)
+        let surface = KoSurface(cols: 20, rows: 5)
+        XCTAssertNotEqual(surface.grid.cols, pane.cols)
         let decoded = Decoded()
         let view = try connection.openView(pane: pane.pane, surface: surface.surface, hooks: decoded.hooks) { recorder.view.append($0) }
-        wait("the rejected restore") { !recorder.restored.isEmpty }
-        XCTAssertEqual(recorder.restored.map(\.1), [GHOSTTY_SNAPSHOT_RESTORE_SIZE_MISMATCH])
-        XCTAssertEqual(surface.text, "", "the surface keeps its terminal")
-        XCTAssertEqual(surface.grid.cols, pane.cols + 20)
-
-        surface.resize(cols: pane.cols, rows: pane.rows)
-        try view.resync()
-        wait("the restore of the second snapshot") { recorder.restored.count == 2 }
-        XCTAssertEqual(recorder.restored.map(\.0), [1, 2])
-        XCTAssertEqual(recorder.restored.last?.1, GHOSTTY_SNAPSHOT_RESTORE_OK)
+        wait("the restore") { !recorder.restored.isEmpty }
+        XCTAssertEqual(recorder.restored.map(\.1), [GHOSTTY_SNAPSHOT_RESTORE_OK], "one snapshot is enough")
+        XCTAssertEqual(surface.grid.cols, pane.cols)
+        XCTAssertEqual(surface.grid.rows, pane.rows)
+        let screen = try output(["api", "/panes/\(pane.pane)/screen"], dir: dir)
+        XCTAssertEqual(surface.text.trimmingCharacters(in: .whitespacesAndNewlines), screen.trimmingCharacters(in: .whitespacesAndNewlines))
         XCTAssertEqual(surface.text, "hello")
-        XCTAssertEqual(decoded.all.map(\.thread), ["ko-view-decoder", "ko-view-decoder"])
+        XCTAssertEqual(decoded.all.map(\.thread), ["ko-view-decoder"])
         view.close()
     }
 

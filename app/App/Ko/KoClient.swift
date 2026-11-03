@@ -36,6 +36,25 @@ struct KoHello {
     var sizesWindows = false
 }
 
+// The core's restore results and Ghostty's, matched by name. ko_restore_result is a closed C enum,
+// so a new case stops the compile here; Ghostty's is an open one, so a new case traps.
+private func koResult(_ result: ghostty_snapshot_restore_result_e) -> Int32 {
+    switch result {
+    case GHOSTTY_SNAPSHOT_RESTORE_OK: Int32(ko_restore_result.KO_RESTORE_OK.rawValue)
+    case GHOSTTY_SNAPSHOT_RESTORE_REJECTED: Int32(ko_restore_result.KO_RESTORE_REJECTED.rawValue)
+    case GHOSTTY_SNAPSHOT_RESTORE_HISTORY_INCOMPLETE: Int32(ko_restore_result.KO_RESTORE_HISTORY_INCOMPLETE.rawValue)
+    default: preconditionFailure("unknown restore result \(result.rawValue)")
+    }
+}
+
+private func ghosttyResult(_ result: ko_restore_result) -> ghostty_snapshot_restore_result_e {
+    switch result {
+    case .KO_RESTORE_OK: GHOSTTY_SNAPSHOT_RESTORE_OK
+    case .KO_RESTORE_REJECTED: GHOSTTY_SNAPSHOT_RESTORE_REJECTED
+    case .KO_RESTORE_HISTORY_INCOMPLETE: GHOSTTY_SNAPSHOT_RESTORE_HISTORY_INCOMPLETE
+    }
+}
+
 enum KoViewEvent: Equatable {
     case restored(generation: UInt64, result: ghostty_snapshot_restore_result_e)
     case closed(code: ko_code, message: String)
@@ -178,7 +197,7 @@ private final class ClientHandle: @unchecked Sendable {
             sink(.mismatch(code: mismatch.code, server: KoVersion(mismatch.server), own: KoVersion(mismatch.own)))
         case KO_EVENT_VIEW_RESTORED:
             let restored = event.view_restored
-            KoView.of(restored.view).sink(.restored(generation: restored.generation, result: ghostty_snapshot_restore_result_e(UInt32(restored.result.rawValue))))
+            KoView.of(restored.view).sink(.restored(generation: restored.generation, result: ghosttyResult(restored.result)))
         case KO_EVENT_VIEW_CLOSED:
             let closed = event.view_closed
             KoView.of(closed.view).sink(.closed(code: closed.code, message: String(cString: closed.message)))
@@ -278,15 +297,15 @@ private final class ClientHandle: @unchecked Sendable {
 }
 
 // The closures run on the decoder thread: `bytes` takes the pty output in place of the surface's
-// process_output; the others run before the restore and after each feed. In test builds,
-// continuationOverride replaces the server's limit and afterRestore sees each result.
+// process_output; `afterFeed` runs after each feed and `afterRestore` after each restore. In test builds,
+// continuationOverride replaces the server's limit and beforeRestore sees each snapshot.
 struct KoViewHooks: Sendable {
     var bytes: (@Sendable (UnsafeRawBufferPointer) -> Void)?
-    var beforeRestore: (@Sendable (ko_snapshot) -> Void)?
     var afterFeed: (@Sendable (ko_feed) -> Void)?
-    #if KIDO_VISUAL || KIDO_STRESS
-    var continuationOverride: Int?
     var afterRestore: (@Sendable (Int32) -> Void)?
+    #if KIDO_VISUAL || KIDO_STRESS
+    var beforeRestore: (@Sendable (ko_snapshot) -> Void)?
+    var continuationOverride: Int?
     #endif
 }
 
@@ -320,15 +339,13 @@ final class KoView: @unchecked Sendable {
     }
 
     fileprivate func restore(_ snapshot: ko_snapshot) -> Int32 {
-        hooks.beforeRestore?(snapshot)
         var limit = snapshot.continuation_max_bytes
         #if KIDO_VISUAL || KIDO_STRESS
+        hooks.beforeRestore?(snapshot)
         limit = hooks.continuationOverride ?? limit
         #endif
-        let result = Int32(ghostty_surface_restore_snapshot(surface, snapshot.read, snapshot.reader, snapshot.history, limit).rawValue)
-        #if KIDO_VISUAL || KIDO_STRESS
+        let result = koResult(ghostty_surface_restore_snapshot(surface, snapshot.read, snapshot.reader, snapshot.history, limit))
         hooks.afterRestore?(result)
-        #endif
         return result
     }
 
@@ -347,13 +364,7 @@ final class KoView: @unchecked Sendable {
     }
 
     func text(_ data: Data) throws {
-        var input = ko_input()
-        input.kind = Int32(KO_INPUT_TEXT)
-        let code = data.withUnsafeBytes { raw -> ko_code in
-            input.text = ko_text_input(data: raw.bindMemory(to: UInt8.self).baseAddress, len: raw.count)
-            return ko_view_input(handle, &input)
-        }
-        try check(code)
+        try check(data.withUnsafeBytes { ko_view_input(handle, $0.bindMemory(to: UInt8.self).baseAddress, $0.count) })
     }
 
     func resync(history: Bool = true) throws {

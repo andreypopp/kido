@@ -106,7 +106,7 @@ demo-stop:
 	$(DEMO) scripts/demo.sh stop $(DERIVED)/Build/Products/Release/KidoDev.app/Contents/MacOS/KidoDev
 
 test:
-	scripts/lint-colors.sh
+	scripts/lint.sh
 	$(MAKE) all
 	@set -eo pipefail; for package in KoModel TmuxControl SidebarFeed PromptMarkdown; do \
 		(cd Packages/$$package && swift test 2>&1 | $(SWIFT_PROGRESS)); \

@@ -301,8 +301,7 @@ impl Model {
         self.runs.retain(|_, run| in_layout.contains(&run.pane));
     }
 
-    fn parent_of(&self, pane: PaneId) -> Option<PaneId> {
-        let run = self.runs.values().find(|run| run.pane == pane)?;
+    fn parent_of_run(&self, run: &RunEvent) -> Option<PaneId> {
         match run.parent.as_ref()? {
             Parent::Pane(parent) => Some(*parent),
             Parent::Run(id) => self.runs.get(id).map(|parent| parent.pane),
@@ -453,10 +452,26 @@ impl Model {
                 .iter()
                 .flat_map(|window| window.panes().into_iter().map(|pane| (pane, window.id)))
                 .collect();
+            let window_of: BTreeMap<PaneId, WindowId> = panes.iter().copied().collect();
+            let mut by_pane = BTreeMap::new();
+            let mut by_window = BTreeMap::new();
+            for run in self.runs.values() {
+                by_pane.entry(run.pane).or_insert(run);
+                if let Some(window) = window_of.get(&run.pane) {
+                    by_window.entry(*window).or_insert(run);
+                }
+            }
             items.extend(
-                tree::order(panes, |(pane, _)| *pane, |(pane, _)| self.parent_of(*pane))
-                    .into_iter()
-                    .map(|((id, window), depth)| Item::Pane { id, window, depth }),
+                tree::order(
+                    panes,
+                    |(pane, _)| *pane,
+                    |(pane, window)| {
+                        let run = by_pane.get(pane).or_else(|| by_window.get(window))?;
+                        self.parent_of_run(run)
+                    },
+                )
+                .into_iter()
+                .map(|((id, window), depth)| Item::Pane { id, window, depth }),
             );
         }
         items
@@ -821,6 +836,24 @@ mod tests {
             model.runs.len(),
             2,
             "a run event for a pane the layout lacks changes nothing"
+        );
+    }
+
+    #[test]
+    fn every_pane_of_a_run_window_follows_the_runs_parent() {
+        let windows = vec![
+            (Shape::Leaf, 0),
+            (Shape::Split(true, vec![Shape::Leaf, Shape::Leaf]), 0),
+        ];
+        let mut model = model(layout_of(&[windows]));
+        assert_eq!(
+            model.apply(ClientEvent::Run(run(1, 3, Some(Parent::Pane(pane(1)))))),
+            Ok(Applied::State)
+        );
+        assert_eq!(
+            outline_of(&model),
+            ["0pane_1", "1pane_2", "1pane_3"],
+            "the split beside the run pane nests under the same parent"
         );
     }
 

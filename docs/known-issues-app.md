@@ -12,6 +12,16 @@ the consumer drains. Audit main-callable sends and use ordered nonblocking
 queues/coalescing where appropriate (large cross-cutting change).
 Status: parked; a blanket no-mailbox-waits guarantee is unverified.
 
+## Main still writes a surface's size on a font or scale change
+
+The decoder thread sizes the grid, but a font, backing-scale or inset
+change on main still runs Ghostty's own resize of the surface
+(`setCellSize`, then the size update) while the decoder can resize it
+from a restore or a `KO_FEED_RESIZE`. The two writes of the surface's
+size are not serialized. The server's next resize marker brings the grid
+back to the server's size. Status: open; step 6 (`PaneGeometry`, the
+fork's cleanup) owns the surface's geometry.
+
 ## Inherited Ghostty constructor cleanup leaks
 
 Failed surface construction can retain the renderer's background image: the
@@ -28,17 +38,19 @@ fixed or covered.
 
 A restore brings back the text under a kitty image, not its pixels: the
 view's snapshot carries no image data until ko K6. Live images draw. An
-image that was on screen before a reconnect, a copy-mode resync or a
-size-mismatch resync shows as the text under it. Status: planned (K6).
-
-## A size-mismatch restore can wait for the next layout
-
-When a restore reports a size mismatch, the pane asks for one new
-snapshot. If that snapshot also misses the layout size, the pane waits for
-a changed layout size before it asks again, and shows its old content
-until then (`PaneView.viewEvent`). Status: accepted until a case is seen.
+image that was on screen before a reconnect or a copy-mode resync shows
+as the text under it. Status: planned (K6).
 
 # Unverified
+
+## A stress jump can miss its selection deadline
+
+One `make stress` run on 2026-11-03 failed the `jump-selects` check: the
+sidebar jump's selection did not reach the model within the 5 s of
+`afterSelection`, 15.7 s into the run, before any mid-run server restart.
+The same seed passed on the rerun, and the failed run's logs were
+overwritten. Probable cause: the `selected` event waits on a main queue
+that the output flood keeps busy. Status: seen once.
 
 ## Late GPU completion after resize
 
@@ -164,9 +176,13 @@ fails. The test is unchanged by step 4. Status: environment limit.
 
 XCTest reports "waiting on a lower QoS thread" now and then at
 `app.renameSession()` in `testCloseSessionConfirmsAndKills`, and it was
-seen once in two other tests. A user-interactive decoder thread did not
-remove it. The cause is not found; it is probably in AppKit. Status:
-open.
+seen once in two other tests. It fires in 9 of 9 fresh-process runs.
+It still fires in 9 of 9 runs in each of these cases: ko_client's I/O,
+fetch and decoder threads at user-initiated QoS; no main-thread
+`ghostty_surface_set_focus`; no pane view attached, so no decoder thread
+and no feed. Thus the waiting thread is on the rename panel's AppKit path,
+not on ko_client or Ghostty. The xcresult holds no stacks. Status: open,
+probably AppKit.
 
 # Accepted limitations
 
@@ -300,6 +316,18 @@ accepted.
 `make` writes `app/build/ko_client.xcframework` in place. No target starts
 two builds at once, but `make -j` with several targets can run two of them
 on the same xcframework. Status: accepted; run targets one at a time.
+
+## AppKit warns about the sidebar's theme-frame overlays
+
+`make visual` prints "adding an unknown subview: Kido.FocusEdge" once
+for each window. The sidebar's `viewDidLayout` adds the focus edge, the
+separator and the shadow to the window's theme frame
+(`contentView.superview`), so they draw over the toolbar region, and
+AppKit warns on every subview of the theme frame that it does not know.
+Moving them into the `contentView` (the window has
+`.fullSizeContentView`) puts them under the titlebar container and
+changed 56 snapshots; `addSubview(_:positioned:relativeTo:)` keeps the
+warning. The warning has no other effect. Status: accepted.
 
 ## Xcode output can be misleading
 

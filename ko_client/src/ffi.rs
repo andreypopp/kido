@@ -19,8 +19,7 @@ use std::thread::JoinHandle;
 use ko_pane_wire::frame::{self, History};
 use ko_server::ids::{ClientId, PaneId, WindowId};
 use ko_server::protocol::{
-    self, ClientRequest, Direction, ErrorKind, Hello, Input, Over, Paste, Selection, Switch, Text,
-    Version,
+    self, ClientRequest, Direction, ErrorKind, Hello, Input, Over, Selection, Switch, Text, Version,
 };
 use ko_sys::event::Wake;
 
@@ -212,60 +211,6 @@ pub struct Buffer {
     pub data: *mut u8,
     pub len: usize,
     pub cap: usize,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct KeyInput {
-    pub action: c_int,
-    pub key: u16,
-    pub mods: u16,
-    pub unshifted: u32,
-    pub text: *const c_char,
-    pub composing: bool,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct MouseInput {
-    pub action: c_int,
-    pub button: c_int,
-    pub col: u16,
-    pub row: u16,
-    pub mods: u16,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct PasteInput {
-    pub text: *const u8,
-    pub len: usize,
-    pub check_safe: bool,
-    pub has_id: bool,
-    pub id: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct TextInput {
-    pub data: *const u8,
-    pub len: usize,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub union InputBody {
-    pub key: KeyInput,
-    pub mouse: MouseInput,
-    pub paste: PasteInput,
-    pub text: TextInput,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct InputEvent {
-    pub kind: c_int,
-    pub body: InputBody,
 }
 
 #[derive(Debug)]
@@ -1119,74 +1064,28 @@ pub unsafe extern "C" fn ko_view_resync(view: *const ViewHandle, history: bool) 
     Code::Ok
 }
 
-const INPUT_KEY: c_int = 1;
-const INPUT_MOUSE: c_int = 2;
-const INPUT_PASTE: c_int = 3;
-const INPUT_TEXT: c_int = 4;
-
-fn input_of(event: &InputEvent) -> Option<Input> {
-    // SAFETY: each arm reads the union member that kind names.
-    unsafe {
-        match event.kind {
-            INPUT_KEY => {
-                let key = event.body.key;
-                Some(Input::Key(protocol::Key(frame::Key {
-                    action: frame::KeyAction::try_from(u8::try_from(key.action).ok()?).ok()?,
-                    key: frame::KeyCode::new(key.key)?,
-                    mods: key.mods,
-                    unshifted: char::from_u32(key.unshifted)?,
-                    text: text_of(key.text)?.to_owned(),
-                    composing: key.composing,
-                })))
-            }
-            INPUT_MOUSE => {
-                let mouse = event.body.mouse;
-                Some(Input::Mouse(protocol::Mouse(frame::Mouse {
-                    action: frame::MouseAction::try_from(u8::try_from(mouse.action).ok()?).ok()?,
-                    button: frame::MouseButton::try_from(u8::try_from(mouse.button).ok()?).ok()?,
-                    col: mouse.col,
-                    row: mouse.row,
-                    mods: mouse.mods,
-                })))
-            }
-            INPUT_PASTE => {
-                let paste = event.body.paste;
-                Some(Input::Paste(Paste {
-                    text: std::str::from_utf8(bytes_of(paste.text, paste.len)?)
-                        .ok()?
-                        .to_owned(),
-                    check_safe: paste.check_safe,
-                    id: paste.has_id.then_some(paste.id),
-                }))
-            }
-            INPUT_TEXT => {
-                let text = event.body.text;
-                Some(Input::Text {
-                    data: Text(bytes_of(text.data, text.len)?.to_vec()),
-                })
-            }
-            _ => None,
-        }
-    }
-}
-
 /// # Safety
 ///
-/// `view` is a live handle. `input` is null or points to a `ko_input` whose
-/// pointers are valid for the call.
+/// `view` is a live handle. `data` is null with `len` 0, or readable for `len` bytes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn ko_view_input(view: *const ViewHandle, input: *const InputEvent) -> Code {
-    // SAFETY: view and input are null or valid by contract.
-    let (Some(handle), Some(input)) = (unsafe { view.as_ref() }, unsafe { input.as_ref() }) else {
-        return Code::Argument;
-    };
-    let Some(input) = input_of(input) else {
+pub unsafe extern "C" fn ko_view_input(
+    view: *const ViewHandle,
+    data: *const u8,
+    len: usize,
+) -> Code {
+    // SAFETY: view is null or valid by contract.
+    let (Some(handle), Some(data)) = (unsafe { view.as_ref() }, bytes_of(data, len)) else {
         return Code::Argument;
     };
     if !handle.view.up.load(Ordering::SeqCst) {
         return Code::Closed;
     }
-    handle.shared.command(Command::Input(handle.view.id, input));
+    handle.shared.command(Command::Input(
+        handle.view.id,
+        Input::Text {
+            data: Text(data.to_vec()),
+        },
+    ));
     Code::Ok
 }
 
@@ -2475,17 +2374,9 @@ mod tests {
             fixture.next(),
             Seen::Closed(Code::Closed, "the server restarted".to_owned())
         );
-        let input = InputEvent {
-            kind: INPUT_TEXT,
-            body: InputBody {
-                text: TextInput {
-                    data: b"x".as_ptr(),
-                    len: 1,
-                },
-            },
-        };
         // SAFETY: the handle is live and the input's pointer is valid for the call.
-        assert_eq!(unsafe { ko_view_input(view, &input) }, Code::Closed);
+        let code = unsafe { ko_view_input(view, b"x".as_ptr(), 1) };
+        assert_eq!(code, Code::Closed);
         assert_eq!(
             server
                 .targets("GET")
@@ -3316,7 +3207,7 @@ mod tests {
             assert_eq!(ko_view_close(std::ptr::null_mut()), Code::Argument);
             assert_eq!(ko_view_resync(std::ptr::null(), true), Code::Argument);
             assert_eq!(
-                ko_view_input(std::ptr::null(), std::ptr::null()),
+                ko_view_input(std::ptr::null(), std::ptr::null(), 0),
                 Code::Argument
             );
         }
@@ -3771,17 +3662,9 @@ mod tests {
             blocked.ended.load(Ordering::SeqCst),
             "close returned before the restore ended"
         );
-        let input = InputEvent {
-            kind: INPUT_TEXT,
-            body: InputBody {
-                text: TextInput {
-                    data: b"x".as_ptr(),
-                    len: 1,
-                },
-            },
-        };
         // SAFETY: the view handle is live; its client is closed.
-        assert_eq!(unsafe { ko_view_input(blocked.view, &input) }, Code::Closed);
+        let code = unsafe { ko_view_input(blocked.view, b"x".as_ptr(), 1) };
+        assert_eq!(code, Code::Closed);
         // SAFETY: as above.
         assert_eq!(unsafe { ko_view_resync(blocked.view, true) }, Code::Closed);
         close_view(blocked.view);
@@ -3882,55 +3765,6 @@ mod tests {
     }
 
     #[test]
-    fn a_size_mismatch_is_reported_without_a_resync_and_the_apps_resync_is_the_next_request() {
-        let (asked, resync) = channel::<String>();
-        let routes = client_script(|socket, _| {
-            welcomed(socket);
-            wait_for_hangup(socket);
-        })
-        .view(move |socket, _| {
-            send_binary(socket, slice_record(10, true, true, true, b"wide"));
-            send_binary(socket, output_record(10, b"lost"));
-            let _ = asked.send(text_messages(socket, 1).concat());
-            send_binary(socket, slice_record(60, true, true, true, b"fit"));
-            send_binary(socket, output_record(60, b"later"));
-            wait_for_hangup(socket);
-        });
-        let server = serve("mismatch", routes);
-        let fixture = Fixture::new();
-        let client = fixture.connect(&server);
-        assert!(matches!(fixture.next(), Seen::Welcome(..)));
-        assert!(matches!(fixture.next(), Seen::Layout(0, ..)));
-        let mut calls = 0;
-        let decoder = Decoder::new(move |snapshot| {
-            calls += 1;
-            pull(snapshot, usize::MAX, 64).unwrap();
-            if calls == 1 {
-                Restored::SizeMismatch
-            } else {
-                Restored::Ok
-            }
-        });
-        let view = open_view(client, decoder, true);
-        assert_eq!(fixture.next(), Seen::Restored(1, Restored::SizeMismatch));
-        // SAFETY: the view is live.
-        assert_eq!(unsafe { ko_view_resync(view, true) }, Code::Ok);
-        assert_eq!(
-            resync.recv_timeout(WAIT).unwrap(),
-            r#"{"type":"resync","history":"all","images":"none"}"#,
-            "the first request is the app's: the core asked for nothing"
-        );
-        assert_eq!(fixture.next(), Seen::Restored(2, Restored::Ok));
-        assert_eq!(
-            decoder.next_feed(),
-            Fed::Bytes(60, b"later".to_vec()),
-            "the bytes of the rejected snapshot were dropped"
-        );
-        close_view(view);
-        close(client);
-    }
-
-    #[test]
     fn the_continuation_limit_in_each_snapshot_is_the_one_the_server_announced() {
         let limits = Arc::new(Mutex::new(Vec::new()));
         for (name, limit, full) in [("limit-a", 3_000_000, true), ("limit-b", 7_000_000, false)] {
@@ -4003,7 +3837,7 @@ mod tests {
     }
 
     #[test]
-    fn every_kind_of_input_reaches_the_pane_as_the_protocol_writes_it_and_bad_input_is_refused() {
+    fn input_bytes_reach_the_pane_as_text_and_a_null_pointer_with_a_length_is_refused() {
         let (got, received) = channel();
         let routes = client_script(|socket, _| {
             welcomed(socket);
@@ -4011,7 +3845,7 @@ mod tests {
         })
         .view(move |socket, _| {
             send_binary(socket, slice_record(10, true, true, true, b"s"));
-            for message in text_messages(socket, 4) {
+            for message in text_messages(socket, 1) {
                 let _ = got.send(message);
             }
             wait_for_hangup(socket);
@@ -4027,106 +3861,15 @@ mod tests {
         });
         let view = open_view(client, decoder, true);
         assert_eq!(fixture.next(), Seen::Restored(1, Restored::Ok));
-        let input = |input: InputEvent| {
-            // SAFETY: the view is live and the input's pointers outlive the call.
-            unsafe { ko_view_input(view, &input) }
-        };
-        let key = |key: u16, text: &CStr| InputEvent {
-            kind: INPUT_KEY,
-            body: InputBody {
-                key: KeyInput {
-                    action: 1,
-                    key,
-                    mods: 2,
-                    unshifted: 97,
-                    text: text.as_ptr(),
-                    composing: false,
-                },
-            },
-        };
-        assert_eq!(input(key(4, c"a")), Code::Ok);
+        // SAFETY: the view is live and the bytes outlive the call.
+        assert_eq!(unsafe { ko_view_input(view, b"hi".as_ptr(), 2) }, Code::Ok);
         assert_eq!(
-            input(InputEvent {
-                kind: INPUT_MOUSE,
-                body: InputBody {
-                    mouse: MouseInput {
-                        action: 0,
-                        button: 1,
-                        col: 3,
-                        row: 4,
-                        mods: 0
-                    }
-                },
-            }),
-            Code::Ok
+            received.recv_timeout(WAIT).unwrap(),
+            r#"{"type":"input","input":{"type":"text","data":"aGk="}}"#
         );
-        assert_eq!(
-            input(InputEvent {
-                kind: INPUT_PASTE,
-                body: InputBody {
-                    paste: PasteInput {
-                        text: b"a\nb".as_ptr(),
-                        len: 3,
-                        check_safe: true,
-                        has_id: true,
-                        id: 7
-                    }
-                },
-            }),
-            Code::Ok
-        );
-        assert_eq!(
-            input(InputEvent {
-                kind: INPUT_TEXT,
-                body: InputBody {
-                    text: TextInput {
-                        data: b"hi".as_ptr(),
-                        len: 2
-                    }
-                },
-            }),
-            Code::Ok
-        );
-        let sent: Vec<String> = (0..4)
-            .map(|_| received.recv_timeout(WAIT).unwrap())
-            .collect();
-        assert_eq!(
-            sent,
-            [
-                r#"{"type":"input","input":{"type":"key","action":"press","key":4,"mods":2,"unshifted_codepoint":97,"text":"a","composing":false}}"#,
-                r#"{"type":"input","input":{"type":"mouse","action":"press","button":"left","col":3,"row":4,"mods":0}}"#,
-                r#"{"type":"input","input":{"type":"paste","text":"a\nb","check_safe":true,"id":7}}"#,
-                r#"{"type":"input","input":{"type":"text","data":"aGk="}}"#,
-            ]
-        );
-        assert_eq!(input(key(u16::MAX, c"a")), Code::Argument);
-        assert_eq!(
-            input(InputEvent {
-                kind: INPUT_PASTE,
-                body: InputBody {
-                    paste: PasteInput {
-                        text: [0xff].as_ptr(),
-                        len: 1,
-                        check_safe: false,
-                        has_id: false,
-                        id: 0
-                    }
-                },
-            }),
-            Code::Argument
-        );
-        assert_eq!(
-            input(InputEvent {
-                kind: 99,
-                body: InputBody {
-                    text: TextInput {
-                        data: std::ptr::null(),
-                        len: 0
-                    }
-                }
-            }),
-            Code::Argument
-        );
+        // SAFETY: the view is live; the pointer is null.
+        let code = unsafe { ko_view_input(view, std::ptr::null(), 2) };
+        assert_eq!(code, Code::Argument);
         close_view(view);
         close(client);
     }

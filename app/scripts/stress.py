@@ -3,7 +3,7 @@
 
 The window stays off screen (KIDO_APP_BACKGROUND=1); see docs/design-app.md, "Stress harness".
 """
-import argparse, base64, collections, glob, json, os, random, re, signal, subprocess, sys, tempfile, time
+import argparse, base64, collections, glob, json, os, random, re, signal, subprocess, sys, tempfile, threading, time
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--app', required=True)
@@ -89,8 +89,29 @@ def leaves(tree):
     return [tree['pane']] if 'pane' in tree else [p for c in tree['children'] for p in leaves(c)]
 
 
+server_process = None
+server_problems = []
+
+
+def stop_server():
+    """kill-server while this script reaps the server: it is our child, and a zombie looks alive to kill-server."""
+    log.write(json.dumps(dict(event='ko', command=['kill-server'], uptime=time.monotonic())) + '\n')
+    reaper = threading.Thread(target=server_process.wait, daemon=True)
+    reaper.start()
+    stopper = subprocess.Popen([args.ko, 'kill-server', '--server', server], env=helper_env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    try:
+        _, stderr = stopper.communicate(timeout=15)
+    except subprocess.TimeoutExpired:
+        stopper.kill()
+        _, stderr = stopper.communicate()
+    reaper.join(timeout=10)
+    if stopper.returncode != 0 or reaper.is_alive():
+        server_problems.append('kill-server did not stop the server: ' + stderr.strip())
+
+
 def setup(full):
-    started = subprocess.Popen([args.ko, 'server', '--server', server], env=helper_env, stdout=subprocess.DEVNULL, stderr=open(out + '/server.log', 'a'))
+    global server_process
+    server_process = started = subprocess.Popen([args.ko, 'server', '--server', server], env=helper_env, stdout=subprocess.DEVNULL, stderr=open(out + '/server.log', 'a'))
     deadline = time.monotonic() + 20
     while api('GET', '/version') is None:
         if time.monotonic() > deadline or started.poll() is not None:
@@ -170,7 +191,7 @@ before = reports()
 try:
     setup(True)
 except Exception:
-    ko('kill-server')
+    stop_server()
     subprocess.run(['rm', '-rf', server], timeout=10)
     raise
 errlog = open(out + '/stderr.log', 'w')
@@ -209,7 +230,7 @@ try:
         counts[a] += 1
         log.write(json.dumps(dict(i=i, elapsed=time.time() - start, uptime=time.monotonic(), action=a, pane=target)) + '\n')
         if i in (steps * 2 // 5, steps * 4 // 5):
-            ko('kill-server')
+            stop_server()
             log.write(json.dumps(dict(event='panes-killed', panes=sorted(current))) + '\n')
             setup(False)
             counts['server-restarted'] += 1
@@ -292,7 +313,7 @@ finally:
             os.kill(pid, signal.SIGKILL)
     if unreaped_helpers:
         log.write(json.dumps(dict(event='helpers-survived-app', pids=unreaped_helpers, app_exit=p.returncode)) + '\n')
-    ko('kill-server')
+    stop_server()
     subprocess.run(['rm', '-rf', server], timeout=10)
 
 lines = open(out + '/stderr.log', errors='replace').read().splitlines()
@@ -308,7 +329,7 @@ bad = [l for l in lines if any(w in l for w in ('Sanitizer', 'SUMMARY:', 'panic'
 shown = [l for l in steps_logged if l['visible'] or l['key'] or l['main'] or l['active'] or l['onScreenWindows']]
 new = sorted(path for path in reports() - before
              if report_matches(open(path).read(), p.pid))
-problems = []
+problems = list(server_problems)
 if not mtc_mapped:
     problems.append('Main Thread Checker not mapped in app pid ' + str(p.pid))
 floating = False

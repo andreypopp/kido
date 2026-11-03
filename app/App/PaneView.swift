@@ -399,7 +399,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     override func layout() {
         super.layout()
-        terminal.frame = bounds
+        let drawn = convertFromBacking(NSSize(width: Int(grid.width_px), height: Int(grid.height_px)))
+        let height = drawn.height + renderInsets.top + renderInsets.bottom
+        terminal.frame = NSRect(x: 0, y: bounds.height - height, width: drawn.width, height: height)
         rowHeight = cell.height
         presentScroll()
         guard let chrome = copyLabel.superview?.bounds else { return }
@@ -415,18 +417,16 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     // thread, after the view that feeds it closed.
     nonisolated(unsafe) private(set) var surface: ghostty_surface_t!
 
+    // The surface's size as its decoder thread last set it, handed over on main: layout never reads the
+    // surface's size while the decoder may write it.
+    private(set) var grid = ghostty_surface_size_s()
+
     // The pane's view on the server: its decoder thread is the only writer of the surface's terminal.
     private(set) var koView: KoView?
     private(set) var restoring = false
     // Copy mode freezes the surface: the feed that arrives meanwhile is dropped and asks for a
     // new snapshot when copy mode ends. `parsing` counts the feeds that run.
     nonisolated private let content = OSAllocatedUnfairLock(initialState: (freeze: Freeze.off, parsing: 0, dirty: false))
-    // The pane's size in the latest layout: the decoder gives a snapshot this grid before it restores it.
-    nonisolated private let layoutGrid = OSAllocatedUnfairLock<(cols: UInt16, rows: UInt16)?>(initialState: nil)
-    // A snapshot of another size than the layout's asks for a new snapshot once; when that one does not
-    // fit either, the next layout's size asks again.
-    private var mismatchedGrid: (cols: UInt16, rows: UInt16)?
-    private var awaitingLayout = false
 
     private var installedSurface: IOSurfaceRef? {
         for layer in [terminal.layer].compactMap({ $0 }) + (terminal.layer?.sublayers ?? []) {
@@ -489,9 +489,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     private var visualFrames: [UInt64: (ghostty_render_presentation_status_e) -> Void] = [:]
     var visualInstalledPixels: CGSize? { installedPixels }
     var visualResizeIntent: Bool { resizeIntent }
+    var visualTerminalFrame: CGRect { terminal.frame }
+    var visualScrollerRows: Int { scrollGeometry.position.retainedHistoryRows }
     var visualReady: Bool {
-        let size = ghostty_surface_size(surface)
-        return !restoring && scrollPending == nil && layoutGrid.withLock { $0.map { $0 == (size.columns, size.rows) } ?? true }
+        !restoring && scrollPending == nil
     }
     var visualState: String {
         "insets=\(renderInsets.top),\(renderInsets.bottom) find=\(find != nil) alternate=\(alternate) scroll=\(String(describing: scrollDistance))"
@@ -585,6 +586,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         }
         guard let surface = ghostty_surface_new(runtime.app, &config) else { return nil }
         self.surface = surface
+        grid = ghostty_surface_size(surface)
         // Ghostty does not mark config.font_size as adjusted; a reload replaces it.
         if font > 0 { setFontSize(font) }
         syncFocus()
@@ -617,7 +619,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         ghostty_surface_set_color_scheme(surface, runtime.colorScheme)
         // The callback must not reenter the surface (ghostty.h).
         _ = ghostty_surface_set_font_size_action_callback(surface, { userdata, _, _, points, _, _ in
-            PaneView.onMain(userdata) { pane in pane.reflow { pane.onFontChange(points) } }
+            PaneView.onMain(userdata) { pane in
+                pane.reflow { pane.onFontChange(points) }
+                pane.refreshGrid()
+            }
         }, this)
         updateTrackingAreas()
         registerForDraggedTypes([.fileURL] + NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) })
@@ -651,6 +656,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     deinit {
+        dispatchPrecondition(condition: .onQueue(.main))
         MainActor.assumeIsolated {
             if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
             guard let surface else { return }
@@ -662,23 +668,27 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         }
     }
 
-    // The view feeds the surface from its decoder thread. Opened after the grid has the pane's size
-    // in the layout, which the server's snapshot has.
+    // The view feeds the surface from its decoder thread, which gives the grid the snapshot's size
+    // and then the server's resizes.
     func attach(_ client: KoClient) {
         guard koView == nil, !disposed else { return }
         restoring = true
         // The server's resize sets the grid on the decoder thread; copy mode does not outlive it.
         nonisolated(unsafe) let surface = surface!
-        let grid = layoutGrid
-        let hooks = KoViewHooks(bytes: { [weak self] bytes in self?.feed(bytes) }, beforeRestore: { _ in
-            guard let size = grid.withLock({ $0 }) else { return }
-            let current = ghostty_surface_size(surface)
-            if (current.columns, current.rows) != size { _ = ghostty_surface_set_grid_size(surface, size.cols, size.rows, nil) }
-        }, afterFeed: { [weak self] item in
+        let hooks = KoViewHooks(bytes: { [weak self] bytes in self?.feed(bytes) }, afterFeed: { [weak self] item in
             guard item.kind == Int32(KO_FEED_RESIZE) else { return }
+            let size = ghostty_surface_size(surface)
             DispatchQueue.main.async {
+                self?.grid = size
                 self?.endCopy()
                 self?.refreshScroller()
+                self?.needsLayout = true
+            }
+        }, afterRestore: { [weak self] _ in
+            let size = ghostty_surface_size(surface)
+            DispatchQueue.main.async {
+                self?.grid = size
+                self?.needsLayout = true
             }
         })
         do {
@@ -708,19 +718,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             visualRestores += 1
             #endif
             restoring = false
-            if result == GHOSTTY_SNAPSHOT_RESTORE_SIZE_MISMATCH, let grid = layoutGrid.withLock({ $0 }) {
-                restoring = true
-                note("restore of \(pane): the snapshot is not \(grid.cols)x\(grid.rows), the layout's size")
-                if mismatchedGrid.map({ $0 == grid }) == true { awaitingLayout = true; return }
-                mismatchedGrid = grid
-                try? koView?.resync()
-                return
-            }
-            mismatchedGrid = nil
             if result != GHOSTTY_SNAPSHOT_RESTORE_OK { note("restore of \(pane) ended with \(result.rawValue)") }
             refreshScroller()
             queueScroll()
             completeEntry()
+            needsLayout = true
         case .closed(let code, let message):
             detach()
             if code != KO_OK { note("view of \(pane) closed: \(message)") }
@@ -783,29 +785,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         return convertFromBacking(NSSize(width: Int(size.cell_width_px), height: Int(size.cell_height_px)))
     }
 
-    // The size of a surface that no view feeds yet: the grid of the pane in the layout, which
-    // the view's first snapshot has. Afterwards only the view's decoder sets the grid.
-    func resize(cols: Int, rows: Int) {
-        let wanted = (UInt16(clamping: cols), UInt16(clamping: rows))
-        let changed = layoutGrid.withLock { grid in
-            defer { grid = wanted }
-            return grid.map { $0 != wanted } ?? true
-        }
-        guard koView == nil, !disposed else {
-            if changed, awaitingLayout {
-                awaitingLayout = false
-                try? koView?.resync()
-            }
-            return
-        }
-        let size = ghostty_surface_size(surface)
-        guard (Int(size.columns), Int(size.rows)) != (cols, rows) else { return }
-        guard ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil) else {
-            return note("grid failed pane=\(pane) requested=\(cols)x\(rows)")
-        }
-        refreshScroller()
-    }
-
     func beginResizeIntent(gesture: Bool = true) {
         endCopy()
         if gesture { resizeIntent = true }
@@ -855,6 +834,13 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     func reflow(_ change: @escaping @MainActor () -> Void) {
         beginResizeIntent(gesture: false)
         change()
+        refreshGrid()
+    }
+
+    // The surface's size after a change that main made; the decoder hands over its own changes.
+    private func refreshGrid() {
+        grid = ghostty_surface_size(surface)
+        needsLayout = true
     }
 
     // MARK: - Copy mode

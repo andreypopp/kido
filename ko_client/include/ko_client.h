@@ -96,12 +96,11 @@ typedef enum ko_code {
     KO_ERR_VT_MISMATCH = 13,
 } ko_code;
 
-/* The result of a restore. The values equal ghostty_snapshot_restore_result_e. */
-typedef enum ko_restore_result {
+/* The result of a restore. */
+typedef enum __attribute__((enum_extensibility(closed))) ko_restore_result {
     KO_RESTORE_OK = 0,
     KO_RESTORE_REJECTED = 1,
-    KO_RESTORE_SIZE_MISMATCH = 2,
-    KO_RESTORE_HISTORY_INCOMPLETE = 3,
+    KO_RESTORE_HISTORY_INCOMPLETE = 2,
 } ko_restore_result;
 
 enum {
@@ -255,11 +254,10 @@ typedef struct ko_snapshot {
 /*
  * Decodes the snapshot into the view's surface and returns a ko_restore_result.
  * It runs on the decoder thread, never concurrently with itself for one view,
- * and never after ko_view_close returned. The terminal size must equal the
- * snapshot's: the server's size is authoritative, so the caller sizes the
- * surface from the model (the pane's cols and rows in the layout) before it
- * opens the view, and a snapshot of another size returns
- * KO_RESTORE_SIZE_MISMATCH. KO_RESTORE_HISTORY_INCOMPLETE makes the core ask
+ * and never after ko_view_close returned. The server's size is authoritative:
+ * the surface takes the snapshot's size, and the KO_FEED_RESIZE items that
+ * follow bring it forward; the caller never sizes the surface from the model.
+ * KO_RESTORE_HISTORY_INCOMPLETE makes the core ask
  * the server for a new full snapshot by itself. The core drops the result of a
  * restore whose snapshot a newer one replaced.
  */
@@ -489,66 +487,11 @@ ko_code ko_view_close(ko_view *view);
 /* Asks for a new snapshot. KO_ERR_CLOSED when the view's connection is not up. */
 ko_code ko_view_resync(const ko_view *view, bool history);
 
-enum {
-    KO_INPUT_KEY = 1,
-    KO_INPUT_MOUSE = 2,
-    KO_INPUT_PASTE = 3,
-    KO_INPUT_TEXT = 4,
-};
-
-enum {
-    KO_KEY_RELEASE = 0,
-    KO_KEY_PRESS = 1,
-    KO_KEY_REPEAT = 2,
-    KO_MOUSE_PRESS = 0,
-    KO_MOUSE_RELEASE = 1,
-    KO_MOUSE_MOTION = 2,
-};
-
-/* Ghostty's key code and modifier values, as the surface produces them. */
-typedef struct ko_key_input {
-    int action;
-    uint16_t key;
-    uint16_t mods;
-    uint32_t unshifted; /* the codepoint of the key without Shift; 0 if none */
-    const char *text;   /* NUL-terminated; "" if none */
-    bool composing;
-} ko_key_input;
-
-/* button: 0 unknown, 1 left, 2 right, 3 middle, 4 to 11 the others. */
-typedef struct ko_mouse_input {
-    int action;
-    int button;
-    uint16_t col;
-    uint16_t row;
-    uint16_t mods;
-} ko_mouse_input;
-
-typedef struct ko_paste_input {
-    const uint8_t *text; /* UTF-8 */
-    size_t len;
-    bool check_safe;
-    bool has_id;
-    uint64_t id;
-} ko_paste_input;
-
-typedef struct ko_text_input {
-    const uint8_t *data; /* already encoded text for the pty */
-    size_t len;
-} ko_text_input;
-
-typedef struct ko_input {
-    int kind;
-    union {
-        ko_key_input key;
-        ko_mouse_input mouse;
-        ko_paste_input paste;
-        ko_text_input text;
-    };
-} ko_input;
-
-/* Sends one input event on the view. KO_ERR_CLOSED when the view's connection is not up. */
-ko_code ko_view_input(const ko_view *view, const ko_input *input);
+/*
+ * Sends bytes to the pane's program, as the surface encoded them (its io_write_cb).
+ * KO_ERR_CLOSED when the view's connection is not up.
+ */
+ko_code ko_view_input(const ko_view *view, const uint8_t *data, size_t len);
 
 const char *ko_code_message(int code);
 

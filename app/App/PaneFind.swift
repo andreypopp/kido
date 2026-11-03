@@ -86,12 +86,7 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
         separatorX = [width - 96.5, width - 34.5]
         let label = count.fittingSize
         count.frame = NSRect(x: width - 105 - label.width, y: (bounds.height - label.height) / 2, width: label.width, height: label.height)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        spinner.isHidden = true
-        spinner.frame = CGRect(x: count.frame.minX - 12, y: 11.5, width: 9, height: 9)
-        CATransaction.commit()
-        let left = spinner.isHidden ? count.frame.minX - 2 : spinner.frame.minX - 4
+        let left = count.frame.minX - 2
         magnifier.frame = NSRect(x: 3, y: 3, width: 22, height: 26)
         let height = field.fittingSize.height
         field.frame = NSRect(x: 25, y: (bounds.height - height) / 2, width: max(0, left - 25), height: height)

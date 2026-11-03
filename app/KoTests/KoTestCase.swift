@@ -24,6 +24,15 @@ final class Recorder {
         return process
     }
 
+    // The standard output of a ko command that ended with status 0.
+    func output(_ arguments: [String], dir: String) throws -> String {
+        let process = try ko(arguments, dir: dir, output: true)
+        let data = (process.standardOutput as! Pipe).fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0, arguments.joined(separator: " "))
+        return String(decoding: data, as: UTF8.self)
+    }
+
     func run(_ arguments: [String], dir: String) throws {
         let process = try ko(arguments, dir: dir)
         process.waitUntilExit()

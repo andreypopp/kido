@@ -89,7 +89,7 @@ The owner reports focus with `ko_client_focus` while its window is key in
 the active app, has no sheet and a pane of the shown window is first
 responder. `SessionView.requestSize` sends the window size with
 `ko_client_size`, at most once per main-queue turn and only when it
-changed. The size carries the cell size in pixels from a shown pane, so
+changed; `present` sends it at once. The size carries the cell size in pixels from a shown pane, so
 the server answers `CSI 14t`/`16t` with real values; 0 and 0 mean unknown.
 A floating sidebar changes no size.
 
@@ -190,9 +190,21 @@ not measured by off-screen routing tests; the user retests it on screen.
 
 A pane is drawn by a Ghostty surface in manual-IO mode
 (`MANUAL_MIRROR`). Its view feeds it (see [Content](#content)), and typed
-bytes leave through Ghostty's write callback as `ko_view_input` with
-`KO_INPUT_TEXT`. The emulator's own query replies are suppressed, because
-the server answers them. The app's menus and Ghostty's split and tab
+bytes leave through Ghostty's write callback as the bytes of
+`ko_view_input`. The emulator's own query replies are suppressed, because
+the server answers them.
+
+The app encodes keys, mouse and paste with Ghostty, not the server. The
+encoder reads the mirror's modes and kitty keyboard stack, which the
+snapshot restores and the feed keeps current, so both encoders see the
+same modes. The client knows more: the modifiers that AppKit consumed,
+IME and dead keys, the user's option-as-alt and the pixel position that
+SGR pixel mouse (1016) needs. `KeyBytesTests` measured both encoders on
+the same keys under kitty flags 0, 1 and 3: they agree in every case but
+Shift+Space, where the server's heuristic does not consume Shift and
+sends `CSI 32;2u` and the app sends a space. Thus the ABI's input is bytes
+only; the protocol keeps its key, mouse and paste kinds for `ko` and
+`POST /panes/{id}/input`. The app's menus and Ghostty's split and tab
 actions are the only pane commands. In linefeed mode (LNM), Ghostty's
 termio write path turns each typed `\r` into `\r\n` once, with the same
 routine for the manual and pty backends; the app and the server do not
@@ -210,7 +222,7 @@ Every other chrome colour, alpha and shadow is a named role in
 `app/App/Chrome.swift`: system colours, the macOS accent, fixed values,
 and the constants that are mixed with theme colours. A role is named for
 its use, not for its value, so two roles can have the same value.
-`app/scripts/lint-colors.sh` runs first in `make test`. It refuses colour
+`app/scripts/lint.sh` runs first in `make test`. It refuses colour
 constructors, system colour names, `withAlphaComponent` and literal
 shadow values in `app/App` and `app/Packages/*/Sources` outside
 `Chrome.swift`. A line with a trailing `// chrome-allow: <reason>` is
@@ -342,22 +354,33 @@ panes.
 
 ### Content
 
-`WindowView` gives each `PaneView` its grid from the layout before the
-pane opens its view. `PaneView.attach` then calls `ko_view_open` with
-`history: true` for the pane's surface. The core runs the view's restore
+`PaneView.attach` calls `ko_view_open` with `history: true` for the
+pane's surface. The core runs the view's restore
 and feed callbacks on the view's own decoder thread, in the server's
 order, so the surface never takes bytes of an older snapshot after a
 newer restore. A restore is `ghostty_surface_restore_snapshot` with the
 server's snapshot and its continuation limit for long APC sequences. The
 feed gives bytes to `ghostty_surface_process_output` and a
-`KO_FEED_RESIZE` to `ghostty_surface_set_grid_size`. After the attach, only
-the server sizes the grid; a later layout only records the layout size.
+`KO_FEED_RESIZE` to `ghostty_surface_set_grid_size`.
 
-A restore that reports a size mismatch asks for one new snapshot
-(`ko_view_resync`). If that snapshot also misses the same layout size,
-the pane waits for a changed layout size, then asks again. A pane is ready
-for a visual test only when its surface grid is the layout size. A closed
-view logs `view of PANE closed: …`. `PaneView.detach` runs `ko_view_close`
+The server's size wins. The app never sizes a grid: only the decoder
+thread does, at a restore and at a resize marker. A snapshot of another
+size than the surface is swapped in at its own size, and then the
+fork's `GridAdopter` gives the surface that size, off the renderer lock;
+the old terminal is freed, not reflowed, and no second snapshot is
+needed. The layout event on `/client` and the resize marker
+on the view arrive in either order, so for one round trip a pane's frame
+and its grid can differ. `PaneView.layout` draws the terminal at the
+grid's size, anchored at the top left. That size is `PaneView.grid`, which
+the decoder thread reads after each restore and resize marker and hands
+to main, so main never reads a size that the decoder writes; the
+pane's paper fills the rest, and the pane's mask clips a larger grid.
+`WindowView.present` sends the window's size at once, before it opens
+the views. The `/client` link and the view links have no order on the
+server, so a view can still take its snapshot at the old size; the
+adoption and the resize markers that follow handle either case. A window
+is ready for a visual test only when every shown surface grid is its
+pane's size in the layout. A closed view logs `view of PANE closed: …`. `PaneView.detach` runs `ko_view_close`
 on a utility queue, because the close waits for a running restore or feed;
 the pane, and its surface, stay alive until the close returns.
 
@@ -854,8 +877,12 @@ held across output parsing. Its cumulative snap adjustment removes
 snap-induced offset changes from feed's before/after output-pinning delta:
 `D1 - D0 - sum(snap movements)`. A zero target still follows the bottom.
 Lock order is viewport then target or renderer, with neither held while
-waiting for viewport. A `KO_FEED_RESIZE` sets the grid on the decoder
-thread. Renderer callbacks publish asynchronously to main; runtime wakeups
+waiting for viewport. The decoder thread is the only writer of a surface's
+terminal state: the restore, the grid and the parse run only from the view's
+callbacks. `app/scripts/lint.sh` refuses a `restore_snapshot` or
+`set_grid_size` call outside `app/App/Ko/KoClient.swift`, and a
+`process_output` call outside it and `app/App/PaneView.swift`. A `PaneView` is freed on main
+(`dispatchPrecondition` in its `deinit`). Renderer callbacks publish asynchronously to main; runtime wakeups
 coalesce main ticks.
 Ghostty paces rendering with one CVDisplayLink for each surface, as
 upstream does. The pane gives its surface the window's screen number
@@ -912,8 +939,8 @@ source-list sections. A window with one pane is a pane item, a window with
 more panes is a group, and a run window is nested under the pane of its
 run's parent, at any depth. The order and the parent edges are the core's
 `outline` (each item carries its window); the app only groups it by
-window, so a split inside a run window puts its other pane at the top
-level. A pane item's title is the core's label, its
+window. The core nests every pane of a run window under the run's
+parent, so a user's split inside a run window stays in the run's group. A pane item's title is the core's label, its
 lifecycle comes from the pane's status, `run` is its run id, `started` is
 the run's start while it is live, `mark` is the core's seen mark and
 `inbox` tells whether the pane has a `pi.inbox` variable. The snapshot's
@@ -1739,7 +1766,9 @@ are generated by `make ko-model` (`scripts/gen-ko-model.py`) from
 `ko api-schema` and `ko api-schema --client` write. `scripts/lint.sh`
 checks both schemas, and `KoSchemaTests` checks that the committed Swift
 file is the generator's output. The generator refuses a schema shape that
-it does not support; it does not check integer bounds.
+it does not support. A struct with a bounded integer field (through its
+`$ref`) gets an `init(from:)` that refuses a value out of the schema's
+range with `DecodingError.dataCorrupted`; the typealiases stay `Int`.
 
 The build phase "Build ko_client" runs `make -C $KO_CHECKOUT
 ko-client-xcframework` (`KO_CHECKOUT` defaults to the repository root) and

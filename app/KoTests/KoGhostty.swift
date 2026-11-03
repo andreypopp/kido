@@ -45,14 +45,10 @@ nonisolated(unsafe) private var tickedApp: ghostty_app_t?
         config.io_mode = GHOSTTY_SURFACE_IO_MANUAL_MIRROR
         config.io_write_cb = { _, _, _ in }
         surface = ghostty_surface_new(KoGhostty.shared.app, &config)!
-        resize(cols: cols, rows: rows)
+        XCTAssertTrue(ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil))
     }
 
     deinit { ghostty_surface_free(surface) }
-
-    func resize(cols: Int, rows: Int) {
-        XCTAssertTrue(ghostty_surface_set_grid_size(surface, UInt16(cols), UInt16(rows), nil))
-    }
 
     var grid: (cols: Int, rows: Int) {
         var metrics = ghostty_surface_grid_metrics_s()

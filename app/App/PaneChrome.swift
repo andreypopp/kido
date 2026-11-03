@@ -121,7 +121,6 @@ final class PaneDropPreview: NSView {
 
 class PaneCapsule: NSView {
     weak var pane: PaneView?
-    let spinner = CAShapeLayer()
     let runtime: GhosttyRuntime
     private let radius: CGFloat
     private let surface: (fillMix: Double, edgeAlpha: CGFloat)
@@ -154,19 +153,9 @@ class PaneCapsule: NSView {
         highlight.fillRule = .evenOdd
         highlight.cornerRadius = radius
         highlight.masksToBounds = true
-        spinner.lineWidth = 1.5
-        spinner.fillColor = nil
-        spinner.path = CGPath(ellipseIn: CGRect(x: 1, y: 1, width: 9, height: 9), transform: nil)
-        spinner.strokeEnd = 0.75
-        spinner.isHidden = true
-        let spin = CABasicAnimation(keyPath: "transform.rotation.z")
-        spin.toValue = -2 * Double.pi
-        spin.duration = 1
-        spin.repeatCount = .infinity
-        spinner.add(spin, forKey: "spin")
         ring.borderWidth = 3
         ring.cornerRadius = radius + 3
-        for sublayer in [edge, highlight] + self.separators + [spinner, ring] { layer?.addSublayer(sublayer) }
+        for sublayer in [edge, highlight] + self.separators + [ring] { layer?.addSublayer(sublayer) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override var wantsUpdateLayer: Bool { true }
@@ -185,7 +174,6 @@ class PaneCapsule: NSView {
         edge.borderColor = Chrome.capsuleEdge(foreground, alpha: surface.edgeAlpha).cgColor
         effectiveAppearance.performAsCurrentDrawingAppearance {
             for separator in separators { separator.backgroundColor = Chrome.hairline.cgColor }
-            spinner.strokeColor = Chrome.inkSecondary.cgColor
             ring.borderColor = Chrome.capsuleRing.cgColor
         }
     }

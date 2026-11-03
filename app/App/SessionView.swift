@@ -15,17 +15,20 @@ final class SessionView: NSView {
     private var sentSize: (cols: Int, rows: Int)?
 
     // The size for the server, sent at most once a frame and only when it changed.
-    func requestSize(cols: Int, rows: Int) {
+    func requestSize(cols: Int, rows: Int, immediately: Bool = false) {
         let queued = requestedSize != nil
         requestedSize = (cols, rows)
+        if immediately { return sendRequestedSize() }
         guard !queued else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let size = requestedSize else { return }
-            requestedSize = nil
-            guard sentSize.map({ $0 != size }) ?? true else { return }
-            sentSize = size
-            sizeClient(size.cols, size.rows)
-        }
+        DispatchQueue.main.async { [weak self] in self?.sendRequestedSize() }
+    }
+
+    private func sendRequestedSize() {
+        guard let size = requestedSize else { return }
+        requestedSize = nil
+        guard sentSize.map({ $0 != size }) ?? true else { return }
+        sentSize = size
+        sizeClient(size.cols, size.rows)
     }
     #if KIDO_VISUAL
     var visualShown: (WindowID) -> Void = { _ in }
@@ -126,7 +129,7 @@ final class SessionView: NSView {
 
     private func evict() {
         var hot = 0
-        for id in recent {
+        for id in recent where hotSurfaces > Self.budget {
             guard let view = windows[id] ?? others[id], view.hot else { continue }
             hot += view.panes.count
             guard hot > Self.budget, view !== shown else { continue }
@@ -136,6 +139,11 @@ final class SessionView: NSView {
         }
         recent.removeAll { windows[$0]?.hot != true && others[$0] == nil }
     }
+
+    private var hotSurfaces: Int { (Array(windows.values) + Array(others.values)).filter(\.hot).reduce(0) { $0 + $1.panes.count } }
+    #if KIDO_VISUAL
+    var visualHotSurfaces: Int { hotSurfaces }
+    #endif
 
     func invalidateClipboard() {
         forEachPane { $0.invalidateClipboard() }

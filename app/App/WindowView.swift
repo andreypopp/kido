@@ -1,4 +1,5 @@
 import AppKit
+import GhosttyKit
 import KoModel
 import TmuxControl
 
@@ -77,7 +78,12 @@ final class WindowView: NSView {
         case .pane(let p): p.geometry
         case .split(_, let g, _): g
         }
-        return geometry.width == Int(placement.client.width) && geometry.height == Int(placement.client.height)
+        let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
+        let fitted = panes.allSatisfy { view in
+            guard !view.isHidden, let pane = seen[view.pane] else { return true }
+            return (Int(view.grid.columns), Int(view.grid.rows)) == (pane.geometry.width, pane.geometry.height)
+        }
+        return fitted && geometry.width == Int(placement.client.width) && geometry.height == Int(placement.client.height)
     }
     var visualLayout: String {
         func rect(_ r: CGRect) -> String {
@@ -153,19 +159,15 @@ final class WindowView: NSView {
         active = visible.root.panes.first { $0.active }?.id ?? active
         guard hot else { return }
         let known = panes.contains { $0.pane == active }
-        if changed {
-            if isHidden {
-                installGrids(panes)
-            } else { relayout() }
-        }
+        if changed, !isHidden { relayout() }
         if paneFocused && active != previous { focusActive(force: true) }
         else if !known { focusActive(force: false) }
     }
 
     func present() -> Int {
         let created = !hot
+        sizeClient(immediately: true)
         relayout()
-        sizeClient()
         return created ? panes.count : 0
     }
 
@@ -205,7 +207,7 @@ final class WindowView: NSView {
     private func relayout() {
         guard let shown else { return }
         guard !isHidden else { return }
-        if !needsReconcile { place(resizeGrids: true); return }
+        if !needsReconcile { place(); return }
         let layoutPanes = shown.layout.root.panes
         let existing = Dictionary(uniqueKeysWithValues: panes.map { ($0.pane, $0) })
         var views: [PaneID: PaneView] = [:]
@@ -218,7 +220,6 @@ final class WindowView: NSView {
         let placement = PaneLayout(root: shown.visible.root, bounds: bounds, cell: cell, pixel: pixel)
         validateFrames(placement)
         let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
-        installGrids(Array(views.values))
         if let client = session?.client {
             for view in views.values where existing[view.pane] == nil { view.attach(client) }
         }
@@ -273,17 +274,7 @@ final class WindowView: NSView {
         needsReconcile = false
     }
 
-    private func installGrids(_ views: [PaneView]) {
-        guard let shown else { return }
-        let visible = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
-        let layout = Dictionary(uniqueKeysWithValues: shown.layout.root.panes.map { ($0.id, $0) })
-        for view in views {
-            guard let pane = visible[view.pane] ?? layout[view.pane] else { continue }
-            view.resize(cols: pane.geometry.width, rows: pane.geometry.height)
-        }
-    }
-
-    private func place(resizeGrids: Bool = false) {
+    private func place() {
         guard !isHidden, let shown, let placement else { return }
         validateFrames(placement)
         #if KIDO_STRESS
@@ -291,7 +282,6 @@ final class WindowView: NSView {
         #endif
         let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
         let views = Dictionary(uniqueKeysWithValues: panes.map { ($0.pane, $0) })
-        if resizeGrids { installGrids(panes) }
         var changed = false
         for chrome in subviews.compactMap({ $0 as? PaneChrome }) where !chrome.isHidden {
             guard let pane = seen[chrome.pane], let view = views[chrome.pane] else { continue }
@@ -428,7 +418,7 @@ final class WindowView: NSView {
 
     func cellChanged() {
         guard hot, !isHidden else { return }
-        place(resizeGrids: true)
+        place()
         sizeClient()
     }
 
@@ -869,9 +859,9 @@ final class WindowView: NSView {
         debugResize("live-end")
     }
 
-    private func sizeClient() {
+    private func sizeClient(immediately: Bool = false) {
         guard !isHidden, let placement else { return }
-        session?.requestSize(cols: Int(placement.client.width), rows: Int(placement.client.height))
+        session?.requestSize(cols: Int(placement.client.width), rows: Int(placement.client.height), immediately: immediately)
     }
 
     override func setFrameSize(_ newSize: NSSize) {
