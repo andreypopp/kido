@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use ko_sys::pid::{Pid, signal_descendant};
 use ko_sys::signal::Signal;
 
-use crate::harness::{Dir, Server, quote, run_ko, start, text_of};
+use crate::harness::{DEADLINE, Dir, Server, quote, run_ko, start, text_of};
 use crate::outer::{
     CHORD_DOWN, CHORD_UP, DOWN_PRESS_RELEASE, FOCUS_IN, FOCUS_OUT, Keys, Outer, UP,
 };
@@ -295,8 +295,6 @@ fn client_history_and_alternate_screen() {
     o.attach(pager);
     o.contains("PID");
     o.detach();
-    // With job control the shell takes the tty back from the stopped client.
-    o.line("set +m");
     o.attach(pager);
     o.contains("PID");
     o.raw("q");
@@ -345,7 +343,18 @@ fn client_history_and_alternate_screen() {
     });
     signal_descendant(shell, client, Signal::Cont).unwrap();
     resume.client_stopped = false;
-    o.contains("FLOOD-DONE");
+    let flooded = o.within(DEADLINE, || o.screen().contains("FLOOD-DONE"));
+    assert!(
+        flooded,
+        "wait for FLOOD-DONE; outer screen:\n{}\npane screen:\n{}",
+        o.screen(),
+        s.request(
+            "GET",
+            &format!("/panes/{alt_pane}/screen?format=plain"),
+            None,
+            200
+        )
+    );
     o.wheel_up(40, 5);
     o.contains("H19970");
 
