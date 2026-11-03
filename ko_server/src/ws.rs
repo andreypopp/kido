@@ -4,6 +4,7 @@ use std::io::{self, Cursor, Read, Write};
 use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
+use ko_pane_wire::ring::{SLICE_HEADER, SLICE_MAX};
 use ko_sys::event::{Poll, PollRead, Reads, Token};
 use tungstenite::protocol::frame::FrameHeader;
 use tungstenite::protocol::frame::coding::{CloseCode, Data, OpCode};
@@ -11,6 +12,7 @@ use tungstenite::protocol::{CloseFrame, Role as Side, WebSocketConfig, WebSocket
 use tungstenite::{Error, Message, Utf8Bytes};
 
 use crate::conn::{Output, Queue};
+use crate::deflate::{self, Deflate};
 use crate::http::{self, Head, MAX_HEAD, Status};
 use crate::ids::ClientId;
 
@@ -23,7 +25,7 @@ const PONG: Duration = Duration::from_secs(10);
 pub(crate) const FIRST_PING: Duration = IDLE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Record {
+pub(crate) enum Record {
     Output,
     Snapshot,
 }
@@ -32,9 +34,25 @@ pub enum Record {
 pub enum BadRecord {
     Short,
     Kind(u8),
+    Inflate,
 }
 
-pub fn parse_record(payload: &[u8]) -> Result<(Record, u64, &[u8]), BadRecord> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Parsed<'a> {
+    Output { offset: u64, data: &'a [u8] },
+    Snapshot { offset: u64, slice: Vec<u8> },
+}
+
+pub(crate) fn with_packed_slice<R>(
+    deflate: &mut Deflate,
+    payload: &[u8],
+    send: impl FnOnce(&[u8]) -> R,
+) -> Option<R> {
+    let (header, body) = payload.split_at_checked(SLICE_HEADER)?;
+    Some(deflate.with_deflated(header, body, send))
+}
+
+pub fn parse_record(payload: &[u8]) -> Result<Parsed<'_>, BadRecord> {
     let (Some(&kind), Some(offset), Some(body)) = (
         payload.first(),
         payload
@@ -46,8 +64,14 @@ pub fn parse_record(payload: &[u8]) -> Result<(Record, u64, &[u8]), BadRecord> {
         return Err(BadRecord::Short);
     };
     match kind {
-        1 => Ok((Record::Output, offset, body)),
-        2 => Ok((Record::Snapshot, offset, body)),
+        1 => Ok(Parsed::Output { offset, data: body }),
+        2 => {
+            let (header, packed) = body
+                .split_at_checked(SLICE_HEADER)
+                .ok_or(BadRecord::Short)?;
+            let slice = deflate::inflate(header, packed, SLICE_MAX).ok_or(BadRecord::Inflate)?;
+            Ok(Parsed::Snapshot { offset, slice })
+        }
         other => Err(BadRecord::Kind(other)),
     }
 }
@@ -367,6 +391,64 @@ mod tests {
 
     fn text(text: &str) -> Vec<u8> {
         masked(1, true, text.as_bytes(), [1, 2, 3, 4], 0)
+    }
+
+    fn snapshot_record(packed: &[u8]) -> Vec<u8> {
+        [&[2][..], &7u64.to_le_bytes(), packed].concat()
+    }
+
+    fn packed(slice: &[u8]) -> Vec<u8> {
+        with_packed_slice(&mut Deflate::new(), slice, |packed| packed.to_vec()).unwrap()
+    }
+
+    #[test]
+    fn a_snapshot_slice_keeps_its_header_raw_and_inflates_to_the_ring_payload() {
+        let slice = [&[3, 1][..], &b"\x1b[31mred\x1b[m ".repeat(500)].concat();
+        let record = snapshot_record(&packed(&slice));
+        assert_eq!(record.get(9..11), Some(&[3, 1][..]));
+        assert!(record.len() < slice.len() / 4);
+        assert_eq!(
+            parse_record(&record).unwrap(),
+            Parsed::Snapshot { offset: 7, slice }
+        );
+    }
+
+    #[test]
+    fn a_slice_that_inflates_past_the_ring_is_refused() {
+        let at_limit = [&[0, 0][..], &vec![0; SLICE_MAX]].concat();
+        assert!(parse_record(&snapshot_record(&packed(&at_limit))).is_ok());
+        let over = [&[0, 0][..], &vec![0; SLICE_MAX + 1]].concat();
+        assert_eq!(
+            parse_record(&snapshot_record(&packed(&over))).unwrap_err(),
+            BadRecord::Inflate
+        );
+    }
+
+    #[test]
+    fn a_truncated_or_corrupt_or_padded_slice_is_refused() {
+        let whole = packed(&[&[0, 0][..], &b"abcdefgh".repeat(1000)].concat());
+        let truncated = snapshot_record(&whole[..whole.len() - 3]);
+        let padded = snapshot_record(&[&whole[..], b"x"].concat());
+        let mut corrupt = whole.clone();
+        corrupt[2] = 0xff;
+        let corrupt = snapshot_record(&corrupt);
+        let bare_header = snapshot_record(&whole[..2]);
+        for record in [truncated, padded, corrupt, bare_header] {
+            assert_eq!(parse_record(&record).unwrap_err(), BadRecord::Inflate);
+        }
+        assert_eq!(
+            parse_record(&snapshot_record(&[0])).unwrap_err(),
+            BadRecord::Short
+        );
+    }
+
+    #[test]
+    fn a_slice_cannot_copy_from_its_own_header() {
+        let copies_the_extent_byte = snapshot_record(&[0, 0, 0x03, 0x02, 0x00]);
+        assert_eq!(
+            parse_record(&copies_the_extent_byte).unwrap_err(),
+            BadRecord::Inflate
+        );
     }
 
     #[test]

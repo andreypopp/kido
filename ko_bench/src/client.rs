@@ -9,7 +9,7 @@ use ko_server::ids::PaneId;
 use ko_server::protocol::{
     self, Command, CreatePane, Images, Input, Marker, Row, Text, ViewEvent, json,
 };
-use ko_server::ws::{Record, accepted, masked, parse_frame, parse_record, upgrade_request};
+use ko_server::ws::{Parsed, accepted, masked, parse_frame, parse_record, upgrade_request};
 use ko_sys::clock::Mono;
 
 fn send(stream: &mut UnixStream, route: &Route, body: &[u8]) -> io::Result<()> {
@@ -171,7 +171,7 @@ impl Socket {
 
 pub(crate) fn output<'a>(message: &Message<'a>) -> Option<(u64, &'a [u8])> {
     match parse_record(message.payload) {
-        Ok((Record::Output, offset, data)) if message.opcode == 2 => Some((offset, data)),
+        Ok(Parsed::Output { offset, data }) if message.opcode == 2 => Some((offset, data)),
         _ => None,
     }
 }

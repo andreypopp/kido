@@ -12,6 +12,7 @@ use crate::client::{self, Change, Client, Current};
 use crate::clipboard;
 use crate::config::Config;
 use crate::conn::{Conn, Phase};
+use crate::deflate::Deflate;
 use crate::delivery::{Delivery, Handle};
 use crate::http::lossy;
 use crate::ids::{ClientId, Instance, Name, PaneId, RunId, SessionId, VarName, WindowId};
@@ -86,6 +87,7 @@ pub(crate) struct State {
     sizers: BTreeMap<WindowId, ClientId>,
     pub(crate) conns: Vec<Conn>,
     owners: BTreeMap<(PaneId, Req), Owner>,
+    deflate: Deflate,
     next_client: u64,
     ticker: Timer,
     tick: Duration,
@@ -164,12 +166,13 @@ fn find(conns: &mut [Conn], token: Token) -> Option<&mut Conn> {
 fn deliver(
     conns: &mut [Conn],
     owners: &BTreeMap<(PaneId, Req), Owner>,
+    deflate: &mut Deflate,
     pane: PaneId,
     handle: Handle<'_>,
 ) {
     if let Some(Owner::Snapshot(token)) = owners.get(&(pane, handle.req()))
         && let Some((Role::View(view), mut wire)) = find(conns, *token).and_then(Conn::role_mut)
-        && view.on_slice(wire.out, handle).is_err()
+        && view.on_slice(wire.out, deflate, handle).is_err()
     {
         view.reject(&mut wire);
     }
@@ -194,6 +197,7 @@ impl State {
             sizers: BTreeMap::new(),
             conns: Vec::new(),
             owners: BTreeMap::new(),
+            deflate: Deflate::new(),
             next_client: 1,
             ticker: poll.timer(),
             tick,
@@ -228,6 +232,7 @@ impl State {
             panes,
             conns,
             owners,
+            deflate,
             spare,
             ..
         } = self;
@@ -236,7 +241,7 @@ impl State {
             spare.push(events);
             return None;
         };
-        let mut sink = |handle: Handle<'_>| deliver(conns, owners, id, handle);
+        let mut sink = |handle: Handle<'_>| deliver(conns, owners, deflate, id, handle);
         let result = f(
             pane,
             &mut Io {
@@ -506,13 +511,14 @@ impl State {
                 panes,
                 conns,
                 owners,
+                deflate,
                 spare,
                 ..
             } = self;
             let mut events = spare.pop().unwrap_or_default();
             for pane in panes.iter_mut() {
                 let id = pane.id();
-                let mut sink = |handle: Handle<'_>| deliver(conns, owners, id, handle);
+                let mut sink = |handle: Handle<'_>| deliver(conns, owners, deflate, id, handle);
                 visit(
                     pane,
                     &mut Io {

@@ -4,6 +4,7 @@ mod client;
 mod clipboard;
 pub mod config;
 mod conn;
+mod deflate;
 mod delivery;
 #[cfg(any(test, feature = "fuzz"))]
 pub mod fuzz;

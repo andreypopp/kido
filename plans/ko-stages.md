@@ -244,15 +244,10 @@ pieces, a small change in `conn.rs` outside its verified `Batch`.
 
 Keep. `ko HOST` is `ssh -M -N -T` with a private `ControlPath`, then
 `ssh -O forward -L <local>:<dir>/socket`, then the local attach path.
-The change: there is no compression crate. `tungstenite` has no
-`permessage-deflate`, and `Content-Encoding: deflate` needs an
-inflater and deflater. The candidates are `miniz_oxide` (pure Rust,
-no dependencies) or `flate2` over it. Recommendation: K7 ships
-without compression and measures attach, 100k-line restore and echo
-at 50, 150 and 300 ms RTT. A snapshot's READY prefix is about 20 KiB
-for a screen and 6 MB for 100k lines; the history row decides. The
-crate is a user decision with the measurement in hand (section 7,
-question 2).
+Compression: `tungstenite` has no `permessage-deflate`. After K7's
+RTT table, the user chose `miniz_oxide` (pure Rust, its one
+dependency `adler2`) at level 1 for snapshot slices only (section 7,
+question 2; protocol.md section 4).
 
 Linux moves onto the remote path: Kido.app's remote hosts are Linux
 servers, so RL is a dependency of K7's acceptance, not an optional
@@ -1236,7 +1231,31 @@ the fixed ~2.2 s of ssh setup decides the result. The decision is the
 user's (section 7, question 2). The scratch patch and the raw runs are
 kept outside the tree.
 
-Open: the app part, and the decision on question 2 of section 7.
+Decided 2026-11-03 (question 2 of section 7): the server deflates
+every snapshot slice with `miniz_oxide` at level 1, with no
+negotiation; live output stays raw (protocol.md section 4). The
+cell measured again on the shipped build (150 ms, 100 Mbit/s, mixed,
+medians of 3, 1-minute load 1.8 to 2.6):
+
+| 150 ms, 100 Mbit/s, mixed | none | shipped l1 |
+|---|---|---|
+| history loaded | 8.69 s | 4.90 s |
+| transfer | 6.19 s | 2.38 s |
+| wire bytes down | 77.4 MB | 29.7 MB |
+| local floor, history loaded | 0.33 s | 0.59 s |
+| local floor, server CPU | 0.01 s | 0.26 s |
+
+The `none` column is 20cc9449 with its per-view queue raised to
+1 GiB: unchanged, it times out on all 3 runs, because the 77 MB
+uncompressed snapshot is over the 64 MiB queue cap and the server
+closes the view. The shipped build keeps the 64 MiB cap; its 29.7 MB
+fit, but a history whose compressed snapshot is over 64 MiB still
+loses its view until the queue drains in pieces (4.5).
+The coordinator's one thread deflates each view's slices: N views
+that attach at once cost N times the deflate (about 0.26 s for each
+77 MB history).
+
+Open: the app part.
 
 ### K8. The cut-over (6 to 9 agent-days)
 
@@ -1332,7 +1351,8 @@ Decided:
 2. **Compression on the remote path.** K7 ships without a
    compression crate, measures the RTT table with and without a
    scratch build of `miniz_oxide`, and the crate is decided on the
-   measurement. Decided: yes.
+   measurement. Decided: yes. Decided 2026-11-03 on the table:
+   `miniz_oxide` level 1 on snapshot slices (K7).
 4. **Animation delivery.** Done properly from the start, no fallback:
    K6 adds the two calls to the Ghostty fork first (read frame `n`
    with its generation; attach fetched pixels to a pending frame `n`

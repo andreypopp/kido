@@ -13,5 +13,8 @@ ko_vt = { path = "../ko_vt" }
 tungstenite.workspace = true
 vte.workspace = true
 
+[dev-dependencies]
+miniz_oxide.workspace = true
+
 [lints]
 workspace = true

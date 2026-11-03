@@ -11,7 +11,7 @@ use ko_pane_wire::frame::{
     self, FromPane, History, ImageKey, Init, Key, MAX_FRAME_BYTES, Malformed, Mouse, Oversize, Req,
     ScreenFormat, ScreenRows, ServedBuf, Size, ToPane,
 };
-use ko_pane_wire::ring::Pos;
+use ko_pane_wire::ring::{Pos, SLICE_MAX};
 use ko_sys::clock::Mono;
 use ko_sys::event::{Interest, Poll, Read, Reads, Ready, Token};
 use ko_sys::fd::Queue;
@@ -29,7 +29,7 @@ use crate::protocol::{
 };
 use crate::telemetry::Prompt;
 
-const RING_CAPACITY: u64 = 1 << 20;
+const RING_CAPACITY: u64 = SLICE_MAX as u64;
 const INPUT: usize = 65536;
 const MAX_INPUT: usize = MAX_FRAME_BYTES;
 

@@ -1617,6 +1617,7 @@ pub enum Marker {
 }
 
 pub const SLICE_HEADER: usize = 2;
+pub const SLICE_MAX: usize = 1 << 20;
 pub const RESIZE_LEN: usize = 9;
 pub const DEAD_LEN: usize = 17;
 

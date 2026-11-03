@@ -23,7 +23,7 @@ use crate::link::Role;
 use crate::pane_proc::{Cause, Life};
 use crate::protocol::{self, Images, Marker, ViewEvent, ViewOptions, ViewRequest, version_headers};
 use crate::server::Verified;
-use crate::ws::{BadRecord, Frame, Record, masked, parse_frame, parse_record};
+use crate::ws::{BadRecord, Frame, Parsed, masked, parse_frame, parse_record};
 
 #[derive(Debug, Clone, Copy)]
 enum Source {
@@ -401,13 +401,14 @@ impl Mirror {
     }
 
     fn record(&mut self, recorder: Option<&mut Mirror>, payload: &[u8]) -> Checked {
-        let (kind, offset, body) = match parse_record(payload) {
+        let parsed = match parse_record(payload) {
             Ok(parsed) => parsed,
             Err(BadRecord::Short) => return bug("record shorter than its header".to_owned()),
             Err(BadRecord::Kind(kind)) => return bug(format!("record kind {kind}")),
+            Err(BadRecord::Inflate) => return bug("snapshot slice does not inflate".to_owned()),
         };
-        match kind {
-            Record::Output => {
+        match parsed {
+            Parsed::Output { offset, data: body } => {
                 if self.skipped || self.snapshot.is_some() {
                     return bug("output between a skip and its snapshot".to_owned());
                 }
@@ -425,7 +426,7 @@ impl Mirror {
                     _ => bug("output before a snapshot".to_owned()),
                 }
             }
-            Record::Snapshot => self.slice(recorder, offset, body),
+            Parsed::Snapshot { offset, slice } => self.slice(recorder, offset, &slice),
         }
     }
     fn slice(&mut self, recorder: Option<&mut Mirror>, offset: u64, body: &[u8]) -> Checked {

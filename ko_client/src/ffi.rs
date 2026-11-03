@@ -1899,12 +1899,17 @@ mod tests {
     }
 
     fn slice_record(offset: u64, first: bool, last: bool, full: bool, body: &[u8]) -> Vec<u8> {
-        let flags = u8::from(first) | u8::from(last) << 1;
+        let header = ko_pane_wire::ring::Slice {
+            first,
+            last,
+            screen: !full,
+        }
+        .encode();
         [
             &[2][..],
             &offset.to_le_bytes(),
-            &[flags, u8::from(!full)],
-            body,
+            &header,
+            &miniz_oxide::deflate::compress_to_vec(body, 1),
         ]
         .concat()
     }
