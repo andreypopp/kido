@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import KoModel
 import Testing
-@testable import TmuxControl
+@testable import PaneGeometry
 
 @Test(arguments: [CGFloat(1), CGFloat(0.5)])
 func floatingGeometry(pixel: CGFloat) {

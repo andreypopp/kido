@@ -1,7 +1,7 @@
 import Foundation
 import KoModel
 import Testing
-@testable import TmuxControl
+@testable import PaneGeometry
 
 private func windows() throws -> [KoSchema.Window] {
     let url = try #require(Bundle.module.url(forResource: "ko-layout", withExtension: "json", subdirectory: "Fixtures"))

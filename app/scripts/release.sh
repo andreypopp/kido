@@ -57,7 +57,7 @@ cask "kido-app" do
   sha256 "$sha"
   url "https://github.com/andreypopp/kido/releases/download/kido-app%2F#{version}/Kido-#{version}.zip"
   name "Kido"
-  desc "Native macOS client for the kido tmux agent multiplexer"
+  desc "Native macOS client for the ko agent terminal server"
   homepage "https://github.com/andreypopp/kido"
   depends_on arch: :arm64
   depends_on macos: :tahoe

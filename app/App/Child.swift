@@ -1,5 +1,5 @@
 import Foundation
-import TmuxControl
+import PaneGeometry
 
 enum Failure: Error {
     case terminal(String)

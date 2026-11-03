@@ -27,8 +27,8 @@ packages:
   SnapshotTesting:
     url: https://github.com/pointfreeco/swift-snapshot-testing
     exactVersion: 1.18.7
-  TmuxControl:
-    path: Packages/TmuxControl
+  PaneGeometry:
+    path: Packages/PaneGeometry
   SidebarFeed:
     path: Packages/SidebarFeed
   PromptMarkdown:
@@ -85,7 +85,7 @@ targets:
         script: python3 "$SRCROOT/scripts/bundle-ko.py"
         basedOnDependencyAnalysis: false
     dependencies:
-      - package: TmuxControl
+      - package: PaneGeometry
       - package: SidebarFeed
       - package: PromptMarkdown
       - package: KoModel
@@ -112,7 +112,7 @@ targets:
       - target: Kido
       - sdk: Carbon.framework
       - package: SnapshotTesting
-      - package: TmuxControl
+      - package: PaneGeometry
       - package: SidebarFeed
       - package: KoModel
       - package: PromptMarkdown

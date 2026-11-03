@@ -1,7 +1,7 @@
 import AppKit
 import GhosttyKit
 import KoModel
-import TmuxControl
+import PaneGeometry
 
 private extension NSCursor.FrameResizePosition {
     var layoutEdge: PaneLayout.ResizeEdge {
@@ -81,7 +81,7 @@ final class WindowView: NSView {
         let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
         let fitted = panes.allSatisfy { view in
             guard !view.isHidden, let pane = seen[view.pane] else { return true }
-            return (Int(view.grid.columns), Int(view.grid.rows)) == (pane.geometry.width, pane.geometry.height)
+            return (Int(view.geometry.columns), Int(view.geometry.rows)) == (pane.geometry.width, pane.geometry.height)
         }
         return fitted && geometry.width == Int(placement.client.width) && geometry.height == Int(placement.client.height)
     }

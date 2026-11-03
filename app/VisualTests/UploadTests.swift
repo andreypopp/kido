@@ -1,7 +1,7 @@
 import AppKit
 import GhosttyKit
 import ImageIO
-import TmuxControl
+import PaneGeometry
 import UniformTypeIdentifiers
 import XCTest
 import KoModel

@@ -1,7 +1,7 @@
 import AppKit
 import GhosttyKit
 import SidebarFeed
-import TmuxControl
+import PaneGeometry
 import XCTest
 import KoModel
 @testable import Kido

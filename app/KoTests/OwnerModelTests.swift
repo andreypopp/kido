@@ -2,7 +2,7 @@ import AppKit
 import KoClient
 import KoModel
 import SidebarFeed
-import TmuxControl
+import PaneGeometry
 import XCTest
 @testable import Kido
 

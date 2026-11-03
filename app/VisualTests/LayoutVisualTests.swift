@@ -1,7 +1,7 @@
 import AppKit
 import KoModel
 import SnapshotTesting
-import TmuxControl
+import PaneGeometry
 import XCTest
 @testable import Kido
 
@@ -18,7 +18,7 @@ import XCTest
         dir = String(cString: try XCTUnwrap(mkdtemp(&template)))
         PaneView.renderOffscreen = true
         let board = NSPasteboard(name: .init("ko-layout-" + UUID().uuidString))
-        // The font of the tmux-era snapshots, so that only the layout differs.
+        // The font of the recorded snapshots, so that only the layout differs.
         let config = dir + "/ghostty.conf"
         try "\(ThemeConf.line(.init()))\nfont-family = Menlo\nfont-size = 13\ncursor-style-blink = false\n".write(toFile: config, atomically: true, encoding: .utf8)
         let owner = WindowOwner(host: .local, runtime: try XCTUnwrap(GhosttyRuntime(configFile: config, pasteboard: board)), start: false)
@@ -32,7 +32,7 @@ import XCTest
         }
         owner.start()
         try await wait("the empty server", within: 5) { owner.testBanner.testText.title == "No sessions" }
-        // The terminal area of the tmux-era snapshots: a 700x560 session view.
+        // The terminal area of the recorded snapshots: a 700x560 session view.
         let content = try XCTUnwrap(owner.window.contentView)
         content.layoutSubtreeIfNeeded()
         let area = owner.sidebar.content.bounds.size

@@ -4,7 +4,7 @@ import GhosttyKit
 import IOSurface
 import SnapshotTesting
 import Synchronization
-import TmuxControl
+import PaneGeometry
 import XCTest
 import KoModel
 @testable import Kido

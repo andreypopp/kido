@@ -4,7 +4,7 @@ import KoModel
 import XCTest
 import os
 import SidebarFeed
-import TmuxControl
+import PaneGeometry
 @testable import Kido
 
 @MainActor private final class Drop: NSObject, @MainActor NSDraggingInfo {

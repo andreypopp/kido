@@ -2,7 +2,7 @@ import AppKit
 import KoClient
 import KoModel
 import SidebarFeed
-import TmuxControl
+import PaneGeometry
 import PromptMarkdown
 
 @MainActor private let baseAttributes = PromptMarkdown.baseAttributes(ink: Chrome.ink)

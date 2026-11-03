@@ -901,10 +901,14 @@ specification, with the shared core of 4.10 in place of a Swift
    stress harness reaps its servers, so `kill-server` stops in time.
    The priority-inversion warning is not in ko_client or Ghostty
    (known-issues-app.md).
-6. `TmuxControl` keeps only the geometry and becomes `PaneGeometry`.
-   Delete from the fork the authoritative grids, held placements,
-   fill images, `restore_output`, the reply suppression
-   and the prepend-history atomics.
+6. Done: `PaneGeometry`, and `SurfaceGeometry` in `PaneView`. The
+   fork lost prepend history, the scrollback raise, the viewport
+   anchor, `restore_output`, the image fill, its recovery enum and
+   `take_unread_images`. Manual IO, `set_grid_size` and the reply
+   suppression stay: the decoder sizes the grid through them, and a
+   mirror must not answer a query a second time. The pending-image
+   state stays for the frame API. A cell change under manual IO keeps
+   the grid, and one size lock orders main and the decoder.
 
 The estimate falls from 20 to 30 because the transport, the protocol
 types, the event stream, the reconnect and the model exist once in
@@ -953,8 +957,8 @@ reply, and does not write the OSC 52 bytes itself. The minimum change
 is a protocol field (OSC 52 or kitty) in the request, so that
 `ko-pane` can refuse OSC 5522 reads.
 
-**First task: the Ghostty fork** (built; one fork commit on
-`1972e7a1a`). The header is `include/ghostty/vt/kitty_graphics.h`
+**First task: the Ghostty fork** (built; the fork commit "Read and
+complete Kitty image frames through the C API"). The header is `include/ghostty/vt/kitty_graphics.h`
 (`ghostty_kitty_graphics_frame_get`, `_frame_attach`,
 `_frame_adopt`, `_screen_image`, the animation keys of `image_get`)
 and the terminal key `KITTY_PENDING_GENERATION`; the app's surface
@@ -983,8 +987,11 @@ read and the copying attach. Decisions that the code does not state
   at that serial then gets the pane's composed pixels. This closes the
   race in which a mirror attaches post-edit pixels under the old
   serial and then composes the edit a second time.
-- A live transmission on a held image replaces it with a new serial;
-  only restore input fills a held image in place (`1972e7a1a`).
+- A live transmission with the id of a pending image replaces it, as
+  upstream's `loadAndAddImage` replaces any image: its placements go,
+  and the frame API's commit gives the new image a new serial, so an
+  attach at the old serial is refused. Nothing fills a pending image
+  in place except an attach or an adopt.
 - An animation with a pending frame does not play; the last attach
   restarts its frame timer.
 - Adopt takes the mapping that `mmap` returned (`map_len` is the mmap
@@ -993,7 +1000,7 @@ read and the copying attach. Decisions that the code does not state
 - The vt calls take no lock. The surface wrappers take the renderer
   lock and wake the renderer; they are the app's apprt and stay in the
   fork. The vt calls and the snapshot fields are candidates for
-  upstream Ghostty. `ghostty_surface_fill_images` stays until K8.
+  upstream Ghostty.
 - The snapshot bytes changed (the payload record and the storage
   record), so the app's decoder and ko's must come from the same pin.
 

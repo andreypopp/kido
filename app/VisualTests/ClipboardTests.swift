@@ -1,6 +1,6 @@
 import AppKit
 import GhosttyKit
-import TmuxControl
+import PaneGeometry
 import XCTest
 import KoModel
 @testable import Kido
@@ -147,10 +147,6 @@ import KoModel
         XCTAssertEqual(replies.text, "\u{1b}]5522;type=write:status=EINVAL\u{1b}\\")
         XCTAssertEqual(board.changeCount, changes)
         replies.data = []
-        pane.visualRestore(write([("image/png", png)]))
-        try await drain(runtime)
-        XCTAssertEqual(replies.text, "", "a replayed transaction writes nothing")
-        XCTAssertEqual(board.changeCount, changes)
         let split = write([("image/png", png), ("text/plain", Data("caption".utf8))])
         let cut = split.count - 40
         XCTAssertTrue(pane.feed(split.prefix(cut)))

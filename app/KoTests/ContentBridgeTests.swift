@@ -2,7 +2,7 @@ import AppKit
 import GhosttyKit
 import KoClient
 import KoModel
-import TmuxControl
+import PaneGeometry
 import XCTest
 @testable import Kido
 
@@ -68,6 +68,50 @@ import XCTest
         owner.window.contentView?.layoutSubtreeIfNeeded()
         wait("the server took the wider window") { (leaf()?.0 ?? 0) > before.0 }
         wait("the view's resize set the grid") { leaf().map { $0 == grid() } == true }
+    }
+
+    func testAFontChangeKeepsTheServersGridAndChangesOnlyTheCell() throws {
+        let (owner, pane) = try shown("stty raw -echo; exec cat")
+        let surface = { () -> [Int] in let size = ghostty_surface_size(pane.surface); return [Int(size.columns), Int(size.rows)] }
+        let leaf = { () -> [Int]? in
+            guard let window = owner.testModel.map(\.layout.layout.windows)?.first, case .leaf(let leaf) = window.tree else { return nil }
+            return [leaf.cols, leaf.rows]
+        }
+        wait("the grid has the leaf's size") { leaf() == surface() }
+        // Every size the server sent, and every grid the surface and the view held.
+        var sent: Set<[Int]> = [], held: Set<[Int]> = []
+        func record() {
+            if let size = leaf() { sent.insert(size) }
+            held.insert(surface())
+            held.insert([Int(pane.geometry.columns), Int(pane.geometry.rows)])
+        }
+        func change(_ what: String, _ action: () -> Void) {
+            record()
+            let before = leaf()
+            action()
+            record()
+            wait("the server took \(what)") { record(); return leaf() != before }
+            wait("the grid is the server's again") { record(); return leaf() == surface() }
+        }
+        // The surface answers synchronously, before the server can: the grid stays, the cell moves.
+        func fontChange(_ what: String, _ points: Float) {
+            let was = ghostty_surface_size(pane.surface)
+            change(what) {
+                pane.setFontSize(points)
+                let now = ghostty_surface_size(pane.surface)
+                XCTAssertEqual([Int(now.columns), Int(now.rows)], [Int(was.columns), Int(was.rows)], "\(what) keeps the grid")
+                XCTAssertNotEqual(now.cell_height_px, was.cell_height_px, "\(what) changes the cell")
+            }
+        }
+        let wider = NSSize(width: owner.window.frame.width + 200, height: owner.window.frame.height)
+        let narrower = NSSize(width: owner.window.frame.width - 60, height: owner.window.frame.height)
+        fontChange("the larger font", 22)
+        change("the wider window") { owner.window.setContentSize(wider) }
+        fontChange("the smaller font", 9)
+        change("the narrower window") { owner.window.setContentSize(narrower) }
+        fontChange("the middle font", 16)
+        XCTAssertTrue(held.isSubset(of: sent), "the grids \(held.subtracting(sent)) were never sent by the server")
+        XCTAssertEqual(surface(), leaf())
     }
 
     func testCopyModeHoldsTheScreenAndCatchesUpWhenItEnds() throws {

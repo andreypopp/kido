@@ -3,7 +3,7 @@ import os
 import GhosttyKit
 import IOSurface
 import KoClient
-import TmuxControl
+import PaneGeometry
 import KoModel
 
 private final class TerminalView: NSView {
@@ -12,6 +12,33 @@ private final class TerminalView: NSView {
 
 private final class Overlay: PaneCapsule {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+// The surface's size. The grid belongs to the view's decoder thread, which hands it over when it
+// applies a resize or a restore. The cell and the pixels belong to main: a font, scale or config change
+// refreshes them, and the fork keeps the surface's grid where the server put it.
+struct SurfaceGeometry {
+    private(set) var columns: UInt16
+    private(set) var rows: UInt16
+    private(set) var pixels: (width: UInt32, height: UInt32)
+    private(set) var cell: (width: UInt32, height: UInt32)
+
+    init(_ size: ghostty_surface_size_s) {
+        columns = size.columns
+        rows = size.rows
+        pixels = (size.width_px, size.height_px)
+        cell = (size.cell_width_px, size.cell_height_px)
+    }
+
+    mutating func handOver(columns: UInt16, rows: UInt16) {
+        self.columns = columns
+        self.rows = rows
+    }
+
+    mutating func refreshCell(_ size: ghostty_surface_size_s) {
+        pixels = (size.width_px, size.height_px)
+        cell = (size.cell_width_px, size.cell_height_px)
+    }
 }
 
 final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValidation {
@@ -399,7 +426,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     override func layout() {
         super.layout()
-        let drawn = convertFromBacking(NSSize(width: Int(grid.width_px), height: Int(grid.height_px)))
+        let drawn = convertFromBacking(NSSize(width: Int(geometry.pixels.width), height: Int(geometry.pixels.height)))
         let height = drawn.height + renderInsets.top + renderInsets.bottom
         terminal.frame = NSRect(x: 0, y: bounds.height - height, width: drawn.width, height: height)
         rowHeight = cell.height
@@ -417,9 +444,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     // thread, after the view that feeds it closed.
     nonisolated(unsafe) private(set) var surface: ghostty_surface_t!
 
-    // The surface's size as its decoder thread last set it, handed over on main: layout never reads the
-    // surface's size while the decoder may write it.
-    private(set) var grid = ghostty_surface_size_s()
+    // The surface's size as main knows it: layout never reads the surface while the decoder may write it.
+    private(set) var geometry = SurfaceGeometry(ghostty_surface_size_s())
 
     // The pane's view on the server: its decoder thread is the only writer of the surface's terminal.
     private(set) var koView: KoView?
@@ -586,7 +612,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         }
         guard let surface = ghostty_surface_new(runtime.app, &config) else { return nil }
         self.surface = surface
-        grid = ghostty_surface_size(surface)
+        geometry = SurfaceGeometry(ghostty_surface_size(surface))
         // Ghostty does not mark config.font_size as adjusted; a reload replaces it.
         if font > 0 { setFontSize(font) }
         syncFocus()
@@ -621,7 +647,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         _ = ghostty_surface_set_font_size_action_callback(surface, { userdata, _, _, points, _, _ in
             PaneView.onMain(userdata) { pane in
                 pane.reflow { pane.onFontChange(points) }
-                pane.refreshGrid()
             }
         }, this)
         updateTrackingAreas()
@@ -679,16 +704,16 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             guard item.kind == Int32(KO_FEED_RESIZE) else { return }
             let size = ghostty_surface_size(surface)
             DispatchQueue.main.async {
-                self?.grid = size
+                self?.geometry.handOver(columns: size.columns, rows: size.rows)
+                self?.refreshCell()
                 self?.endCopy()
                 self?.refreshScroller()
-                self?.needsLayout = true
             }
         }, afterRestore: { [weak self] _ in
             let size = ghostty_surface_size(surface)
             DispatchQueue.main.async {
-                self?.grid = size
-                self?.needsLayout = true
+                self?.geometry.handOver(columns: size.columns, rows: size.rows)
+                self?.refreshCell()
             }
         })
         do {
@@ -829,17 +854,17 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         }
     }
 
-    // A font change changes the cell, not the grid: the new pixel size reaches the server as the
-    // window's size, and the grid comes back from it.
+    // A font change changes the cell, not the grid: the surface keeps the server's grid, and the new
+    // pixel size reaches the server as the window's size.
     func reflow(_ change: @escaping @MainActor () -> Void) {
         beginResizeIntent(gesture: false)
         change()
-        refreshGrid()
+        refreshCell()
     }
 
-    // The surface's size after a change that main made; the decoder hands over its own changes.
-    private func refreshGrid() {
-        grid = ghostty_surface_size(surface)
+    // The surface's cell after a change that main made; the decoder hands over every grid.
+    private func refreshCell() {
+        geometry.refreshCell(ghostty_surface_size(surface))
         needsLayout = true
     }
 

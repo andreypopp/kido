@@ -334,9 +334,10 @@ file and its includes again.
 Launch and reload build the config in the same way, and a reload prints
 its diagnostics to stderr as at launch. If Ghostty's part of the config
 is different, a reload applies the new config to each live pane inside
-`PaneView.reflow`. A font change changes the cell, not the grid: the new
-pixel size reaches the server as the window size, and the grid comes back
-from the server. A change to only the shade does not reflow the panes, so
+`PaneView.reflow`. A font change changes the cell, not the grid: the
+surface keeps the server's grid at the new cell, the new pixel size
+reaches the server as the window size, and the grid comes back from the
+server. A change to only the shade does not reflow the panes, so
 it does not end copy mode. The app gets the config without surface
 propagation. The chrome of every window then follows the new background
 and appearance.
@@ -371,10 +372,12 @@ the old terminal is freed, not reflowed, and no second snapshot is
 needed. The layout event on `/client` and the resize marker
 on the view arrive in either order, so for one round trip a pane's frame
 and its grid can differ. `PaneView.layout` draws the terminal at the
-grid's size, anchored at the top left. That size is `PaneView.grid`, which
-the decoder thread reads after each restore and resize marker and hands
-to main, so main never reads a size that the decoder writes; the
-pane's paper fills the rest, and the pane's mask clips a larger grid.
+grid's size, anchored at the top left. That size is the columns and rows
+of `PaneView.geometry` (`SurfaceGeometry`), which the decoder thread
+reads after each restore and resize marker and hands to main, so main
+never reads a grid that the decoder writes. Main refreshes only the cell
+after a font, scale or config change. The pane's paper fills the rest,
+and the pane's mask clips a larger grid.
 `WindowView.present` sends the window's size at once, before it opens
 the views. The `/client` link and the view links have no order on the
 server, so a view can still take its snapshot at the old size; the
@@ -877,7 +880,11 @@ held across output parsing. Its cumulative snap adjustment removes
 snap-induced offset changes from feed's before/after output-pinning delta:
 `D1 - D0 - sum(snap movements)`. A zero target still follows the bottom.
 Lock order is viewport then target or renderer, with neither held while
-waiting for viewport. The decoder thread is the only writer of a surface's
+waiting for viewport. Only the decoder moves a surface's grid; main
+changes its cell, scale and insets, and the fork keeps the grid at a
+cell change. The fork's `Surface.size_mutex` orders the two, so no
+callback that runs under the renderer lock may call
+`ghostty_surface_size` or `grid_metrics`. The decoder thread is the only writer of a surface's
 terminal state: the restore, the grid and the parse run only from the view's
 callbacks. `app/scripts/lint.sh` refuses a `restore_snapshot` or
 `set_grid_size` call outside `app/App/Ko/KoClient.swift`, and a
@@ -1756,7 +1763,7 @@ tests, each against its own private server in a `mktemp` directory under
 gives the host app a private `KIDO_APP_SERVER` and stops it afterwards.
 `make ko-fixtures` records, from a private server,
 `SidebarFeedTests/Fixtures/ko-tree.json` and
-`TmuxControlTests/Fixtures/ko-layout.json`; the recorder tests skip
+`PaneGeometryTests/Fixtures/ko-layout.json`; the recorder tests skip
 unless `KO_RECORD_FIXTURES` is set. Other tests build snapshots in Swift
 (`SidebarFeedTests/Fixtures.swift`, `VisualTests/SidebarFixture.swift`).
 

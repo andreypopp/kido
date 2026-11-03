@@ -1,7 +1,7 @@
 import Foundation
 import KoModel
 @testable import SidebarFeed
-import TmuxControl
+import PaneGeometry
 
 // The sidebar tree of a live session list: five sessions, nested runs, window groups.
 

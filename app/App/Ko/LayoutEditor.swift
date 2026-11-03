@@ -1,7 +1,7 @@
 import Foundation
 import KoClient
 import KoModel
-import TmuxControl
+import PaneGeometry
 
 // Sends the layout edits of the user's gestures, one at a time. The edit in flight runs on `queue`
 // because the core blocks until the server answered; the successor waits. A waiting edit with the
@@ -86,7 +86,7 @@ enum PaneAction: Equatable {
     case select(PaneID)
 }
 
-// The pane that a gesture's edit selects, as tmux did: a split selects the pane it made, a zoom the pane it zooms.
+// The pane that a gesture's edit selects: a split selects the pane it made, a zoom the pane it zooms.
 func selectedPane(by edit: KoSchema.Edit, _ edited: KoSchema.Edited) -> PaneID? {
     switch (edit, edited.created) {
     case (.split, .pane(let created)?): created.pane

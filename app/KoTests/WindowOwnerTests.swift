@@ -1,6 +1,6 @@
 import AppKit
 import KoClient
-import TmuxControl
+import PaneGeometry
 import XCTest
 import KoModel
 @testable import Kido

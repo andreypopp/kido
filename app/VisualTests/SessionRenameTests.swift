@@ -3,7 +3,7 @@ import GhosttyKit
 import SidebarFeed
 import SnapshotTesting
 import KoModel
-import TmuxControl
+import PaneGeometry
 import XCTest
 @testable import Kido
 

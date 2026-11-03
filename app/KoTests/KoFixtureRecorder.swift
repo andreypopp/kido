@@ -2,7 +2,7 @@ import KoModel
 import XCTest
 @testable import Kido
 
-// Records the model documents that SidebarFeedTests and TmuxControlTests decode, from a private ko server:
+// Records the model documents that SidebarFeedTests and PaneGeometryTests decode, from a private ko server:
 // make ko-fixtures. Without KO_RECORD_FIXTURES the test is skipped.
 @MainActor final class KoFixtureRecorder: KoTestCase {
     // The model as the app decodes it, written with sorted keys.
@@ -62,6 +62,6 @@ import XCTest
         _ = try client.edit(.toggleZoom(KoSchema.EditToggleZoom(pane: zoomed)))
         wait("the zoom") { (try? client.model())?.layout.layout.windows.last?.zoom == zoomed }
         wait("every pane has its status") { (try? client.model())?.panes.allSatisfy { $0.status != nil } == true }
-        try write(client.model(), destination + "/TmuxControl/Tests/TmuxControlTests/Fixtures/ko-layout.json")
+        try write(client.model(), destination + "/PaneGeometry/Tests/PaneGeometryTests/Fixtures/ko-layout.json")
     }
 }

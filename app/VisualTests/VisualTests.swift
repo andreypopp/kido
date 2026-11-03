@@ -4,7 +4,7 @@ import KoClient
 import KoModel
 import SnapshotTesting
 import SidebarFeed
-import TmuxControl
+import PaneGeometry
 import XCTest
 @testable import Kido
 
@@ -1288,7 +1288,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         pane!.needsLayout = true
         pane!.layout()
         XCTAssertGreaterThan(pane!.wheelRowHeight, 1)
-        pane!.visualRestore(Data("\u{1b}c".utf8))
+        pane!.visualFeed(Data("\u{1b}c".utf8))
         try await settle()
         pane!.refreshScroller()
         XCTAssertEqual(pane!.scrollPosition().retainedHistoryRows, 0)
@@ -1624,17 +1624,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let board = runtime.pasteboard
         board.clearContents()
         board.setString("before", forType: .string)
-        let replay = Data("\u{1b}]52;c;\(copy)\u{7}\u{1b}]52;c;?\u{1b}\\".utf8)
-        pane.visualRestore(replay)
-        try await settle()
-        XCTAssertEqual(board.string(forType: .string), "before", "a restored write does not reach the clipboard")
-        XCTAssertNil(owner.preparedAlert)
-        pane.visualRestore(Data("\u{1b}]52;c;\(copy)".utf8))
-        pane.feed(Data([7]))
-        try await wait("partial captured OSC completed live") { board.string(forType: .string) == "copied ✓" }
-        pane.visualRestore(replay)
-        try await settle()
-        XCTAssertNil(owner.preparedAlert)
         board.clearContents()
         board.setString("before-live", forType: .string)
         try Data().write(to: go)

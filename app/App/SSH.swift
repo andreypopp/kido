@@ -1,5 +1,5 @@
 import Foundation
-import TmuxControl
+import PaneGeometry
 
 @MainActor final class SSH {
     let destination: String

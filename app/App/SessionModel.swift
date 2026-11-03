@@ -1,6 +1,6 @@
 import KoModel
 import SidebarFeed
-import TmuxControl
+import PaneGeometry
 
 // A move of the sidebar and the tabs, as SessionModel.select and the sidebar ask for it.
 enum Navigation: Equatable {

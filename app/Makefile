@@ -108,7 +108,7 @@ demo-stop:
 test:
 	scripts/lint.sh
 	$(MAKE) all
-	@set -eo pipefail; for package in KoModel TmuxControl SidebarFeed PromptMarkdown; do \
+	@set -eo pipefail; for package in KoModel PaneGeometry SidebarFeed PromptMarkdown; do \
 		(cd Packages/$$package && swift test 2>&1 | $(SWIFT_PROGRESS)); \
 	done
 

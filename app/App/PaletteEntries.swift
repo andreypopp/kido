@@ -1,6 +1,6 @@
 import AppKit
 import SidebarFeed
-import TmuxControl
+import PaneGeometry
 
 struct PaletteEntry {
     enum ID: Equatable {

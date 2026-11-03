@@ -1,7 +1,7 @@
 import AppKit
 import GhosttyKit
 import KoModel
-import TmuxControl
+import PaneGeometry
 
 final class SessionView: NSView {
     // The client whose views feed the panes.

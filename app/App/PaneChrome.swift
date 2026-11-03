@@ -1,5 +1,5 @@
 import AppKit
-import TmuxControl
+import PaneGeometry
 import KoModel
 
 final class FocusEdge: NSView {

@@ -1,6 +1,6 @@
 import AppKit
 import XCTest
-import TmuxControl
+import PaneGeometry
 import SidebarFeed
 @testable import Kido
 

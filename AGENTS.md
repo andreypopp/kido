@@ -704,7 +704,15 @@ Conventions:
   (`app/scripts/build-ghosttykit.sh`). A pin bump moves both, so it
   passes ko's verification and the app's build and tests. The
   top-level session moves a submodule pin, because the guard refuses
-  `checkout` and `add` for agents.
+  `checkout` and `add` for agents. The stack is linear on upstream,
+  with one commit for each feature and each fix folded into its
+  feature. Before a force-push, its previous head is pushed as a dated
+  branch `kido-upstream-YYYY-MM-DD`. A folded commit keeps the
+  `Co-authored-by` and `Based on` trailers of every commit in it. The
+  stack keeps only what the app or ko calls: the mirrored surface
+  (manual IO, the decoder's grid, suppressed replies, the size lock),
+  the embedder APIs, the pending kitty images and their frame API, and
+  the snapshot restore. An API whose last caller goes leaves the stack.
 - **libghostty-vt.** `ko_vt_sys/build.rs` builds it with zig from
   PATH. Every cargo profile and target directory shares one zig cache,
   so libghostty-vt compiles once for release, test and clippy. The

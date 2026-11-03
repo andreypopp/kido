@@ -1,6 +1,6 @@
 import AppKit
 import SidebarFeed
-import TmuxControl
+import PaneGeometry
 import KoModel
 
 extension NSPasteboard.PasteboardType {

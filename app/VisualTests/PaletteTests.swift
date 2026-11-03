@@ -6,7 +6,7 @@ import PromptMarkdown
 import XCTest
 import SnapshotTesting
 import SidebarFeed
-import TmuxControl
+import PaneGeometry
 @testable import Kido
 
 @MainActor final class PaletteTests: VisualTestCase {

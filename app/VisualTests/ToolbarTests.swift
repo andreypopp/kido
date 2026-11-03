@@ -4,7 +4,7 @@ import XCTest
 import SnapshotTesting
 import KoModel
 import SidebarFeed
-import TmuxControl
+import PaneGeometry
 @testable import Kido
 
 let headerPaperRGB: [String: [Double]] = [

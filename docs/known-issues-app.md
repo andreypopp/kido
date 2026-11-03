@@ -12,16 +12,6 @@ the consumer drains. Audit main-callable sends and use ordered nonblocking
 queues/coalescing where appropriate (large cross-cutting change).
 Status: parked; a blanket no-mailbox-waits guarantee is unverified.
 
-## Main still writes a surface's size on a font or scale change
-
-The decoder thread sizes the grid, but a font, backing-scale or inset
-change on main still runs Ghostty's own resize of the surface
-(`setCellSize`, then the size update) while the decoder can resize it
-from a restore or a `KO_FEED_RESIZE`. The two writes of the surface's
-size are not serialized. The server's next resize marker brings the grid
-back to the server's size. Status: open; step 6 (`PaneGeometry`, the
-fork's cleanup) owns the surface's geometry.
-
 ## Inherited Ghostty constructor cleanup leaks
 
 Failed surface construction can retain the renderer's background image: the

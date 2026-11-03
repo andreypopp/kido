@@ -4,7 +4,7 @@ import KoClient
 import KoModel
 import SidebarFeed
 import SnapshotTesting
-import TmuxControl
+import PaneGeometry
 import UniformTypeIdentifiers
 import XCTest
 @testable import Kido

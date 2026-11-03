@@ -1,5 +1,5 @@
 import AppKit
-import TmuxControl
+import PaneGeometry
 import SidebarFeed
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {

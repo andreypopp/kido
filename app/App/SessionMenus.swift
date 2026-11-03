@@ -1,5 +1,5 @@
 import AppKit
-import TmuxControl
+import PaneGeometry
 import SidebarFeed
 
 final class SessionMenus: NSObject, NSMenuItemValidation {

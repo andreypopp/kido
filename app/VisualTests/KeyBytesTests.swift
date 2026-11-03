@@ -3,7 +3,7 @@ import Carbon
 import GhosttyKit
 import KoClient
 import KoModel
-import TmuxControl
+import PaneGeometry
 import XCTest
 @testable import Kido
 

@@ -2,7 +2,7 @@ import AppKit
 import GhosttyKit
 import KoModel
 import SidebarFeed
-import TmuxControl
+import PaneGeometry
 import XCTest
 @testable import Kido
 
@@ -162,11 +162,11 @@ extension PaneView {
         refreshScroller()
     }
 
-    // What a snapshot restore gives the surface: the bytes as replayed state, not as live output.
-    func visualRestore(_ data: Data) {
+    // The bytes of a pane that no server view feeds, written to its surface.
+    func visualFeed(_ data: Data) {
         data.withUnsafeBytes { buffer in
             guard let base = buffer.baseAddress else { return }
-            ghostty_surface_restore_output(surface, base.assumingMemoryBound(to: CChar.self), buffer.count)
+            ghostty_surface_process_output(surface, base.assumingMemoryBound(to: CChar.self), UInt(buffer.count))
         }
     }
 }

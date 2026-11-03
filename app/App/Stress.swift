@@ -3,7 +3,7 @@ import GhosttyKit
 import KoClient
 import KoModel
 import SidebarFeed
-import TmuxControl
+import PaneGeometry
 
 #if KIDO_STRESS
 
