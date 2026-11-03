@@ -440,6 +440,12 @@ no fallback: the Ghostty fork reads frame `n` and attaches fetched
 pixels to a pending frame outside the snapshot decoder
 (`ko_vt/src/frames.rs`).
 
+The pane's terminal decodes PNG (`f=100`) to RGBA frames with wuffs.
+Upstream's lib-vt artifact leaves the decoder out; the fork keeps it
+when kitty graphics is on (`third_party/ghostty/src/terminal/sys.zig`),
+because a PNG that the pane refuses lives only in a shown mirror's
+live bytes, so a restore or a later view has nothing to show.
+
 ### 4.13 Lifecycle and the command line
 
 `ko server --server DIR` runs in the foreground and listens on
