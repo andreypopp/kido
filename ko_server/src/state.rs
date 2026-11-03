@@ -117,13 +117,21 @@ pub(crate) enum Wake {
 pub(crate) fn client_of(conn: &Conn) -> Option<&Client> {
     match conn.role()? {
         Role::Client(client) => Some(client),
-        Role::View(_) | Role::Search(_) => None,
+        Role::View(_) | Role::Tail(_) | Role::Search(_) => None,
     }
 }
 
 fn view_of(conn: &Conn) -> Option<&View> {
     match conn.role()? {
         Role::View(view) => Some(view),
+        Role::Client(_) | Role::Tail(_) | Role::Search(_) => None,
+    }
+}
+
+fn streamed_pane(conn: &Conn) -> Option<PaneId> {
+    match conn.role()? {
+        Role::View(view) => Some(view.pane),
+        Role::Tail(tail) => Some(tail.pane),
         Role::Client(_) | Role::Search(_) => None,
     }
 }
@@ -850,6 +858,7 @@ impl State {
                 }
             }
             Event::Dead(death) => {
+                self.pump_views(poll, id);
                 if let Some(pane) = self.panes.find_mut(id) {
                     pane.telemetry_mut().records.clear();
                     self.model.mark(poll, pane);
@@ -1083,24 +1092,43 @@ impl State {
 
     pub(crate) fn close_views(&mut self, pane: PaneId) {
         for conn in &mut self.conns {
-            if let Some((Role::View(view), wire)) = conn.role_mut()
-                && view.pane == pane
-            {
-                view.close(wire.out);
+            match conn.role_mut() {
+                Some((Role::View(view), wire)) if view.pane == pane => view.close(wire.out),
+                Some((Role::Tail(tail), mut wire)) if tail.pane == pane => tail.remove(&mut wire),
+                _ => {}
             }
         }
     }
 
     fn pump_views(&mut self, poll: &mut Poll, pane: PaneId) {
         for index in 0..self.conns.len() {
-            if self
-                .conns
-                .get(index)
-                .and_then(view_of)
-                .is_some_and(|view| view.pane == pane)
-            {
-                self.pump_view(poll, index);
+            if self.conns.get(index).and_then(streamed_pane) == Some(pane) {
+                self.pump_link(poll, index);
             }
+        }
+    }
+
+    fn pump_link(&mut self, poll: &mut Poll, index: usize) {
+        match self.conns.get(index).and_then(Conn::role) {
+            Some(Role::Tail(_)) => self.pump_tail(index),
+            _ => self.pump_view(poll, index),
+        }
+    }
+
+    pub(crate) fn pump_tail(&mut self, index: usize) {
+        let State { panes, conns, .. } = self;
+        let Some((Role::Tail(tail), mut wire)) = conns.get_mut(index).and_then(Conn::role_mut)
+        else {
+            return;
+        };
+        let Some((dead, Some(delivery))) = panes
+            .find_mut(tail.pane)
+            .map(|pane| pane.proc_mut().dead_and_delivery())
+        else {
+            return tail.remove(&mut wire);
+        };
+        if tail.pump(&mut wire, delivery, dead).is_err() {
+            tail.close(wire.out);
         }
     }
 
@@ -1285,7 +1313,7 @@ impl State {
                     conn.phase = Phase::Head;
                     self.serve(poll, index);
                 }
-                self.pump_view(poll, index);
+                self.pump_link(poll, index);
             }
         }
         if ready.read {
@@ -1334,7 +1362,7 @@ impl State {
             match link.role {
                 Role::Client(_) => self.client_text(poll, index, text.as_bytes()),
                 Role::View(_) => self.view_text(poll, index, text.as_bytes()),
-                Role::Search(_) => link.ws.reject(out, "invalid"),
+                Role::Tail(_) | Role::Search(_) => link.ws.reject(out, "invalid"),
             }
         }
     }
@@ -1492,7 +1520,7 @@ impl State {
         let mut produced = false;
         self.each_pane(poll, |pane, io| produced |= pane.proc_mut().scan(io));
         for index in 0..self.conns.len() {
-            self.pump_view(poll, index);
+            self.pump_link(poll, index);
         }
         let waiting = self
             .conns
@@ -1545,7 +1573,7 @@ impl State {
                         self.clipboard_forget(poll, |read| read.client == client.id);
                     }
                     Role::Search(search) => self.cancel_search(poll, search),
-                    Role::View(_) => {}
+                    Role::View(_) | Role::Tail(_) => {}
                 }
             }
         }

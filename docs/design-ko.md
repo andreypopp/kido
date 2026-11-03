@@ -140,7 +140,8 @@ clients (`client.rs`), the layout document (`layout.rs`) and the
 waiters; `state/pane_ops.rs` holds `POST /panes`, the pane stop with
 its escalation and what a pane identity may do (`router.rs` checks
 the identity itself), and `state/run_ops.rs` the
-runs, the sweep and the screen capture. `view.rs` and `delivery.rs` are the verified stream path
+runs, the sweep and the screen capture. `view.rs`, `tail.rs` (the raw
+output stream) and `delivery.rs` are the verified stream path
 (AGENTS.md, "Verus"); `conn.rs`, `ws.rs`, `http.rs` and `deflate.rs`
 the connection, the framing and the slice codec; `api.rs`, `route.rs`,
 `router.rs`, `protocol.rs` and `schema.rs` the routes, the wire types
@@ -323,6 +324,17 @@ only the backlog after a blocked write, never every record.
 Snapshot slices are deflated (`miniz_oxide`, level 1) and live bytes
 are raw (protocol.md, section 4). The reason is in "Remote" below.
 
+The raw output stream (protocol.md, section 4, "The output stream") is
+the second consumer of a pane's `Delivery`. Its `Tail` keeps a cursor
+in the ring, as a view does, and never holds the tail of the ring: a
+reader that falls behind gets a `skip`, not a snapshot, and continues
+from the oldest byte. A tail writes only while its connection's queue
+is empty, so it has no threshold and no spill. A pane's death is the
+pane process's state, not the ring's death marker, because a failed
+`ko-pane` writes no marker; the tail sends `dead` only after it has
+sent every byte up to the ring's head, and the server pumps the tails
+of a pane when it dies, before it removes the pane.
+
 ### 4.7 Input
 
 A client sends typed events (protocol.md, section 8). The coordinator
@@ -471,7 +483,9 @@ waits 5 s. `SIGTERM`, `SIGINT` and `SIGHUP` stop the server: it hangs
 up every pane, waits 500 ms, kills the survivors and exits.
 
 `ko api` sends one HTTP request, as `gh api` does, and never starts a
-server. `ko panes`, `ko layout` and `ko layout put` or `edit` are
+server. With `--stream`, it upgrades a WebSocket route and prints each
+text message as one line, for a script or a harness that reads the
+output stream. `ko panes`, `ko layout` and `ko layout put` or `edit` are
 readers and writers of the document from the shell. The signal rules
 of AGENTS.md ("Signals") apply to every kill.
 

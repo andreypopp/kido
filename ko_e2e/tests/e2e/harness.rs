@@ -799,6 +799,21 @@ impl Server {
         headers
     }
 
+    pub(crate) fn headers_with(&self, extra: &[(&str, &str)]) -> Headers {
+        let mut headers = self.headers();
+        headers.extend(
+            extra
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+        );
+        headers
+    }
+
+    pub(crate) fn as_pane(&self, pane: &str) -> Headers {
+        let token = self.token(pane).expect("the pane printed its token");
+        self.headers_with(&[("Ko-Pane", pane), ("Ko-Pane-Token", &token)])
+    }
+
     pub(crate) fn client_headers(&self, client: &str) -> Headers {
         let mut headers = self.headers();
         headers.push(("Ko-Client".to_owned(), client.to_owned()));

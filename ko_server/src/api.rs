@@ -10,9 +10,9 @@ use serde_json::Value;
 use crate::ids::{ClientId, PaneId, RunId, SessionId, VarName, WindowId};
 use crate::protocol::{
     Candidate, ClientEvent, ClientRequest, DeleteVars, Empty, HistoryDef, Images, Info, Input,
-    InputResult, LayoutPanes, Listing, NewWindow, Placement, PutLayout, ReportOutcome, SearchEvent,
-    SendPrompt, Sent, ServerVersion, Show, Snapshot, StartRun, Started, StopPane, StopRun,
-    VarValue, ViewEvent, ViewRequest, Waited,
+    InputResult, LayoutPanes, Listing, NewWindow, OutputEvent, Placement, PutLayout, ReportOutcome,
+    SearchEvent, SendPrompt, Sent, ServerVersion, Show, Snapshot, StartRun, Started, StopPane,
+    StopRun, VarValue, ViewEvent, ViewRequest, Waited,
 };
 use crate::route::{Invalid, Param, binary, pixels, routes, text};
 
@@ -629,6 +629,21 @@ routes! {
         send: ViewRequest,
         recv: ViewEvent | binary,
     }
+    /// The raw output of a pane: the bytes of its pty, from the ring, as text messages. Without
+    /// offset the stream starts at the end of the output so far. An offset older than the
+    /// oldest byte of the ring starts the stream with a skip record, and the bytes follow from
+    /// the oldest one. An offset past the end is invalid. When the pane died and the stream sent every
+    /// byte, a dead record ends the stream, and the server closes the socket. The server
+    /// writes only to a connection that has drained: a reader that is too slow gets a skip
+    /// record, never a snapshot. The caller is the user, the pane itself or its parent.
+    Output {
+        method: WS,
+        path: /panes/{id: PaneId}/output,
+        query: { offset: Option<Offset> },
+        caller: optional,
+        send: Empty,
+        recv: OutputEvent,
+    }
     /// One frame of an image of a pane. Frame 1 is the image itself. The reply is the pixels as
     /// an application/octet-stream body, with their format, size and timing in the ko-image-*
     /// headers. With the header Ko-Accept-Shm: 1 the reply is instead a JSON body that names a
@@ -890,6 +905,10 @@ mod tests {
                 history: History::None,
                 images: Images::None,
                 offset: None,
+            },
+            Route::Output {
+                id,
+                offset: Offset::new(9),
             },
         ] {
             let (method, target) = route.to_request();

@@ -375,6 +375,15 @@ pub fn read_response_with(
         eof: false,
     };
     let response = incoming.head()?;
+    read_body(&mut incoming, &response, &mut sink)?;
+    Ok(response)
+}
+
+fn read_body<R: Read>(
+    incoming: &mut Incoming<'_, R>,
+    response: &Response,
+    mut sink: impl FnMut(&Response, &[u8]) -> io::Result<()>,
+) -> io::Result<()> {
     if response.header("transfer-encoding") == Some("chunked") {
         loop {
             let (start, size) = loop {
@@ -392,20 +401,20 @@ pub fn read_response_with(
             if size == 0 {
                 break;
             }
-            incoming.pour(size, &response, &mut sink)?;
+            incoming.pour(size, response, &mut sink)?;
             if incoming.take(2)? != b"\r\n" {
                 return Err(invalid("invalid HTTP chunk"));
             }
         }
     } else if let Some(length) = response.header("content-length") {
         let length = length.parse().map_err(|_| invalid("invalid HTTP status"))?;
-        incoming.pour(length, &response, &mut sink)?;
+        incoming.pour(length, response, &mut sink)?;
     } else {
         loop {
             let count = incoming.buffered().len().min(PIECE);
             if count > 0 {
                 sink(
-                    &response,
+                    response,
                     incoming.buffered().get(..count).unwrap_or_default(),
                 )?;
                 incoming.start = incoming.start.saturating_add(count);
@@ -416,7 +425,7 @@ pub fn read_response_with(
             }
         }
     }
-    Ok(response)
+    Ok(())
 }
 
 pub fn read_response(stream: &mut impl Read) -> io::Result<Response> {
@@ -429,15 +438,30 @@ pub fn read_response(stream: &mut impl Read) -> io::Result<Response> {
     Ok(response)
 }
 
-pub fn read_upgrade(stream: &mut impl Read) -> io::Result<(Response, Vec<u8>)> {
+#[derive(Debug)]
+pub enum Upgrade {
+    Accepted(Response, Vec<u8>),
+    Refused(Response),
+}
+
+pub fn read_upgrade(stream: &mut impl Read) -> io::Result<Upgrade> {
     let mut incoming = Incoming {
         stream,
         buffer: Vec::new(),
         start: 0,
         eof: false,
     };
-    let response = incoming.head()?;
-    Ok((response, incoming.buffered().to_vec()))
+    let mut response = incoming.head()?;
+    if response.status == 101 {
+        return Ok(Upgrade::Accepted(response, incoming.buffered().to_vec()));
+    }
+    let mut body = Vec::new();
+    read_body(&mut incoming, &response, |_, piece| {
+        body.extend_from_slice(piece);
+        Ok(())
+    })?;
+    response.body = body;
+    Ok(Upgrade::Refused(response))
 }
 
 #[cfg(test)]

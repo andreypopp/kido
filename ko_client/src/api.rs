@@ -9,7 +9,7 @@ use ko_server::protocol::Snapshot;
 use crate::edit::Edit;
 use crate::launch;
 use crate::layout::{self, Document, Edited};
-use crate::wire::{self, Caller};
+use crate::wire::{self, Caller, Link};
 
 #[derive(Debug)]
 pub enum Failure {
@@ -20,6 +20,7 @@ pub enum Failure {
 #[derive(Debug)]
 pub enum Error {
     Websocket,
+    NotWebsocket,
     Server(Failure),
 }
 
@@ -48,13 +49,15 @@ pub(crate) fn exchange(
         within,
         None,
     )
-    .map_err(|error| {
-        if launch::absent(&error) {
-            Failure::NoServer
-        } else {
-            Failure::Failed(error.to_string())
-        }
-    })
+    .map_err(failure)
+}
+
+fn failure(error: std::io::Error) -> Failure {
+    if launch::absent(&error) {
+        Failure::NoServer
+    } else {
+        Failure::Failed(error.to_string())
+    }
 }
 
 pub fn request(
@@ -80,6 +83,22 @@ pub fn request_within(
         return Err(Error::Websocket);
     }
     exchange(dir, caller, (method, path), body, within).map_err(Error::Server)
+}
+
+pub fn stream(
+    dir: &Path,
+    caller: Option<Caller>,
+    path: &str,
+) -> Result<Result<Link, Response>, Error> {
+    let route = Route::of_request("GET", path)
+        .ok()
+        .filter(Route::websocket)
+        .ok_or(Error::NotWebsocket)?;
+    let stream = socket(dir)
+        .and_then(|socket| launch::connect(&socket, launch::PATIENCE, None).map_err(failure))
+        .map_err(Error::Server)?;
+    Link::handshake(stream, (None, caller), &route, None, wire::READ_TIMEOUT)
+        .map_err(|error| Error::Server(failure(error)))
 }
 
 pub fn get(dir: &Path, caller: Option<Caller>, route: &Route) -> Result<Response, Failure> {

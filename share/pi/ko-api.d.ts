@@ -126,6 +126,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/panes/{id}/output": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The raw output of a pane: the bytes of its pty, from the ring, as text messages. Without offset the stream starts at the end of the output so far. An offset older than the oldest byte of the ring starts the stream with a skip record, and the bytes follow from the oldest one. An offset past the end is invalid. When the pane died and the stream sent every byte, a dead record ends the stream, and the server closes the socket. The server writes only to a connection that has drained: a reader that is too slow gets a skip record, never a snapshot. The caller is the user, the pane itself or its parent. */
+        get: operations["Output"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/panes/{id}/screen": {
         parameters: {
             query?: never;
@@ -901,6 +918,24 @@ export interface components {
         };
         /** @enum {string} */
         OutcomeResult: "success" | "failure";
+        /**
+         * @description One message of the raw output stream of a pane. Offsets count the pane's output bytes from the
+         *     start of the pane. Consecutive bytes records have consecutive offsets.
+         */
+        OutputEvent: {
+            data: components["schemas"]["Base64"];
+            offset: number;
+            /** @constant */
+            type: "bytes";
+        } | {
+            from: number;
+            to: number;
+            /** @constant */
+            type: "skip";
+        } | ({
+            /** @constant */
+            type: "dead";
+        } & components["schemas"]["Dead"]);
         /** @enum {string} */
         Over: "session" | "window";
         PaneDead: {
@@ -1562,6 +1597,44 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["InputResult"];
                 };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    Output: {
+        parameters: {
+            query?: {
+                /** @example 0 */
+                offset?: components["schemas"]["Offset"];
+            };
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Switching Protocols */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description The common error body. */
             default: {

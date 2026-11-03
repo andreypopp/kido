@@ -41,21 +41,6 @@ fn refused(run: Run, status: u16, kind: &str, why: &str) {
     assert!(body["message"].as_str().unwrap().contains(why), "{body}");
 }
 
-fn headers(s: &Server, extra: &[(&str, &str)]) -> Headers {
-    let mut headers = s.headers();
-    headers.extend(
-        extra
-            .iter()
-            .map(|(n, v)| ((*n).to_owned(), (*v).to_owned())),
-    );
-    headers
-}
-
-fn as_pane(s: &Server, pane: &str) -> Headers {
-    let token = s.token(pane).expect("the pane printed its token");
-    headers(s, &[("Ko-Pane", pane), ("Ko-Pane-Token", &token)])
-}
-
 fn raw(s: &Server, method: &str, path: &str, headers: &Headers, body: &Value) -> (u16, Value) {
     let body = if body.is_null() {
         String::new()
@@ -463,7 +448,7 @@ fn identity(s: &Server) {
     let p = caller(s);
     let q = s.token_pane("exec cat");
     let r = token_pane_in_new_session(s, "elsewhere");
-    let (by_p, by_q) = (as_pane(s, &p), as_pane(s, &q));
+    let (by_p, by_q) = (s.as_pane(&p), s.as_pane(&q));
     let token_p = s.token(&p).unwrap();
     let forged = "0123456789abcdef0123456789abcdef";
     let put = |headers: &Headers, pane: &str| {
@@ -486,43 +471,43 @@ fn identity(s: &Server) {
 
     refuses(
         put(
-            &headers(s, &[("Ko-Pane", &p), ("Ko-Pane-Token", forged)]),
+            &s.headers_with(&[("Ko-Pane", &p), ("Ko-Pane-Token", forged)]),
             &p,
         ),
         "does not match",
     );
     refuses(
-        put(&headers(s, &[("Ko-Pane", &p)]), &p),
+        put(&s.headers_with(&[("Ko-Pane", &p)]), &p),
         "needs Ko-Pane-Token",
     );
     refuses(
-        put(&headers(s, &[("Ko-Pane-Token", &token_p)]), &p),
+        put(&s.headers_with(&[("Ko-Pane-Token", &token_p)]), &p),
         "needs Ko-Pane",
     );
     refuses(
         put(
-            &headers(s, &[("Ko-Pane", &q), ("Ko-Pane-Token", &token_p)]),
+            &s.headers_with(&[("Ko-Pane", &q), ("Ko-Pane-Token", &token_p)]),
             &p,
         ),
         "does not match",
     );
     refuses(
         put(
-            &headers(s, &[("Ko-Pane", "pane_999"), ("Ko-Pane-Token", &token_p)]),
+            &s.headers_with(&[("Ko-Pane", "pane_999"), ("Ko-Pane-Token", &token_p)]),
             &p,
         ),
         "does not match",
     );
     refuses(
         put(
-            &headers(s, &[("Ko-Pane", &p), ("Ko-Pane-Token", "short")]),
+            &s.headers_with(&[("Ko-Pane", &p), ("Ko-Pane-Token", "short")]),
             &p,
         ),
         "does not match",
     );
     let ended = s.token_pane("exit 0");
     poll("the pane to die", || s.row(&ended)["dead"].is_object());
-    refuses(put(&as_pane(s, &ended), &ended), "does not match");
+    refuses(put(&s.as_pane(&ended), &ended), "does not match");
 
     assert_eq!(put(&by_p, &p).0, 200, "a pane sets its own variable");
     refuses(put(&by_p, &q), "only its own variables");

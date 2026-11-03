@@ -79,6 +79,20 @@ impl State {
         }
     }
 
+    pub(crate) fn may_read_output(
+        &self,
+        caller: Option<PaneId>,
+        target: PaneId,
+    ) -> Result<(), Error> {
+        match caller {
+            Some(caller) if !panes::reads_output(&self.edges(), caller, target) => Err(Error::new(
+                ErrorKind::Refused,
+                format!("{caller} may read the output of itself and its children, not of {target}"),
+            )),
+            _ => Ok(()),
+        }
+    }
+
     pub(super) fn admit_parent(&self, caller: Option<PaneId>, parent: PaneId) -> Result<(), Error> {
         match panes::standing(&self.seen(), parent) {
             Standing::Live => acts_as(caller, parent, "name only itself as a parent"),

@@ -116,14 +116,20 @@ fn record_header(out: &mut [u8; MAX_HEADER], record: Record, offset: u64, len: u
     usize::try_from(cursor.position()).unwrap_or(MAX_HEADER)
 }
 
-pub fn upgrade_request(method: &str, target: &str, client: Option<ClientId>) -> (Vec<u8>, String) {
+pub fn upgrade_request(
+    method: &str,
+    target: &str,
+    client: Option<ClientId>,
+    headers: &[(&str, &str)],
+) -> (Vec<u8>, String) {
     let key = tungstenite::handshake::client::generate_key();
-    let extra = [
+    let mut extra = vec![
         ("Upgrade", "websocket"),
         ("Connection", "Upgrade"),
         ("Sec-WebSocket-Version", "13"),
         ("Sec-WebSocket-Key", key.as_str()),
     ];
+    extra.extend_from_slice(headers);
     (http::call(method, target, client, &extra, b""), key)
 }
 
@@ -132,11 +138,15 @@ pub fn accepted(response: &http::Response, key: &str) -> io::Result<()> {
     if response.status == 101 && response.header("sec-websocket-accept") == Some(&accept) {
         Ok(())
     } else {
-        Err(io::Error::other(format!(
-            "WebSocket upgrade failed: {} {}",
-            response.status, response.reason
-        )))
+        Err(refused(response))
     }
+}
+
+pub fn refused(response: &http::Response) -> io::Error {
+    io::Error::other(format!(
+        "WebSocket upgrade failed: {} {}",
+        response.status, response.reason
+    ))
 }
 
 pub(crate) fn handshake(head: &Head) -> Option<Vec<u8>> {
@@ -310,6 +320,11 @@ impl Ws {
         let send = out.available();
         self.close_with(out, CloseCode::Policy, kind, send);
         out.close();
+    }
+
+    pub(crate) fn abort(&mut self, out: &mut Output, reason: &'static str) {
+        let send = out.is_open();
+        self.close_with(out, CloseCode::Error, reason, send);
     }
 
     pub(crate) fn finish(&mut self, out: &mut Output) {

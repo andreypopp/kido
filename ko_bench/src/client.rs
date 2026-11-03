@@ -4,7 +4,7 @@ use std::path::Path;
 
 use ko_pane_wire::frame::History;
 use ko_server::api::Route;
-use ko_server::http::{Response, call, read_response, read_upgrade};
+use ko_server::http::{Response, Upgrade, call, read_response, read_upgrade};
 use ko_server::ids::PaneId;
 use ko_server::protocol::{
     self, Command, CreatePane, Images, Input, Marker, Row, Text, ViewEvent, json,
@@ -101,9 +101,11 @@ pub(crate) struct Socket {
 pub(crate) fn upgrade(socket: &Path, route: &Route) -> io::Result<Socket> {
     let mut stream = UnixStream::connect(socket)?;
     let (method, target) = route.to_request();
-    let (request, key) = upgrade_request(method, &target, None);
+    let (request, key) = upgrade_request(method, &target, None, &[]);
     stream.write_all(&request)?;
-    let (response, rest) = read_upgrade(&mut stream)?;
+    let Upgrade::Accepted(response, rest) = read_upgrade(&mut stream)? else {
+        return Err(io::Error::other("WebSocket upgrade refused"));
+    };
     accepted(&response, &key)?;
     let mut buffer = vec![0; 1 << 21];
     if buffer.len() < rest.len() {

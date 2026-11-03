@@ -1969,6 +1969,74 @@
         ],
         "type": "string"
       },
+      "OutputEvent": {
+        "description": "One message of the raw output stream of a pane. Offsets count the pane's output bytes from the\nstart of the pane. Consecutive bytes records have consecutive offsets.",
+        "oneOf": [
+          {
+            "description": "The bytes that start at the offset.",
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/Base64"
+              },
+              "offset": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "bytes",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "offset",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The ring overran the reader: the bytes from `from` up to `to` are lost. The next bytes\nrecord starts at `to`.",
+            "properties": {
+              "from": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "to": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "skip",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "from",
+              "to"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Dead"
+              }
+            ],
+            "description": "The pane died, and the stream sent every byte of it. The close follows.",
+            "properties": {
+              "type": {
+                "const": "dead",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "Over": {
         "enum": [
           "session",
@@ -3678,6 +3746,73 @@
               }
             },
             "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/panes/{id}/output": {
+      "get": {
+        "description": "The raw output of a pane: the bytes of its pty, from the ring, as text messages. Without offset the stream starts at the end of the output so far. An offset older than the oldest byte of the ring starts the stream with a skip record, and the bytes follow from the oldest one. An offset past the end is invalid. When the pane died and the stream sent every byte, a dead record ends the stream, and the server closes the socket. The server writes only to a connection that has drained: a reader that is too slow gets a skip record, never a snapshot. The caller is the user, the pane itself or its parent.",
+        "operationId": "Output",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/Offset"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        },
+        "x-ko-websocket": {
+          "recv": {
+            "$ref": "#/components/schemas/OutputEvent"
+          },
+          "send": {
+            "$ref": "#/components/schemas/Empty"
           }
         }
       }

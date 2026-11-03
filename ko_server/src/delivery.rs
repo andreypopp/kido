@@ -11,8 +11,8 @@ use ko_pane_wire::frame::low32;
 use ko_pane_wire::ring::{Invalid, Mark, Offset, Pos, Reader, RecordKind};
 #[cfg(verus_only)]
 use ko_pane_wire::ring::{
-    Log, boundary, log_le, log_le_boundary, log_le_head, log_le_trans, log_wf, off_at, resumes,
-    retain_of, wf_rec,
+    Log, boundary, cursor_ok, log_le, log_le_boundary, log_le_head, log_le_trans, log_wf, off_at,
+    resume_cursor, resumes, retain_of, wf_rec,
 };
 #[cfg(verus_only)]
 use vstd::arithmetic::div_mod::{lemma_mod_equivalence, lemma_small_mod};
@@ -675,6 +675,53 @@ impl Delivery {
             self.regrown(old);
         }
         r
+    }
+
+
+
+    pub(crate) fn seek(&mut self, want: u64) -> (r: Result<Option<(Pos, u64)>, Invalid>)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).grew(*old(self)),
+            r is Ok && r->Ok_0 is Some ==> {
+                &&& cursor_ok(final(self).log(), r->Ok_0->Some_0.0.v() as nat, r->Ok_0->Some_0.1 as nat)
+                &&& want <= r->Ok_0->Some_0.1
+                &&& final(self).tl() <= r->Ok_0->Some_0.0.v()
+            },
+    {
+        proof {
+            self.facts();
+        }
+        let ghost d0 = *self;
+        let oldest = self.oldest_offset()?.get();
+        proof {
+            self.facts();
+        }
+        let ghost d1 = *self;
+        let end = self.end_offset()?.get();
+        let ghost d2 = *self;
+        proof {
+            Delivery::grew_trans(d0, d1, d2);
+        }
+        let to = if want < oldest {
+            oldest
+        } else {
+            want
+        };
+        if to > end {
+            return Ok(None);
+        }
+        let p = self.resume(Offset::new(to))?;
+        proof {
+            Delivery::grew_trans(d0, d2, *self);
+            Delivery::grew_trans(d1, d2, *self);
+            self.facts();
+            log_le_boundary(self.cap(), d1.log(), self.log(), self.tl());
+            log_le_head(d2.log(), self.log());
+            resume_cursor(self.cap(), self.log(), self.tl(), to as nat, p.v() as nat);
+        }
+        Ok(Some((p, to)))
     }
 
     // Assumes: the sink uses the handle during the call only.

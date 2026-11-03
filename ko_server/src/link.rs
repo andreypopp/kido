@@ -3,6 +3,7 @@ use ko_pane_wire::frame::Req;
 use crate::client::Client;
 use crate::conn::Output;
 use crate::ids::PaneId;
+use crate::tail::Tail;
 use crate::view::View;
 use crate::ws::Ws;
 use vstd::prelude::*;
@@ -11,6 +12,7 @@ use vstd::prelude::*;
 pub(crate) enum Role {
     Client(Client),
     View(View),
+    Tail(Tail),
     Search(Searching),
 }
 

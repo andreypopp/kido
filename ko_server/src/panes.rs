@@ -362,6 +362,20 @@ pub(crate) struct Edge {
     pub(crate) session: SessionId,
 }
 
+fn children<'a>(edges: &'a [Edge], me: &'a Edge) -> impl Iterator<Item = &'a Edge> {
+    edges
+        .iter()
+        .filter(move |edge| edge.session == me.session && edge.parent == Some(me.pane))
+}
+
+pub(crate) fn reads_output(edges: &[Edge], caller: PaneId, target: PaneId) -> bool {
+    caller == target
+        || edges
+            .iter()
+            .find(|edge| edge.pane == caller)
+            .is_some_and(|me| children(edges, me).any(|edge| edge.pane == target))
+}
+
 pub(crate) fn scope(edges: &[Edge], caller: PaneId) -> BTreeSet<PaneId> {
     let Some(me) = edges.iter().find(|edge| edge.pane == caller) else {
         return BTreeSet::new();
@@ -374,9 +388,7 @@ pub(crate) fn scope(edges: &[Edge], caller: PaneId) -> BTreeSet<PaneId> {
             .map(|edge| edge.pane)
             .collect::<Vec<_>>()
     };
-    let mut reach: BTreeSet<PaneId> = edges
-        .iter()
-        .filter(|edge| edge.session == me.session && edge.parent == Some(caller))
+    let mut reach: BTreeSet<PaneId> = children(edges, me)
         .map(|edge| edge.pane)
         .chain(siblings(me))
         .collect();

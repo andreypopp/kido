@@ -31,6 +31,7 @@ pub mod server;
 mod shm;
 mod spill;
 mod state;
+mod tail;
 mod telemetry;
 pub mod timestamp;
 pub mod vars;

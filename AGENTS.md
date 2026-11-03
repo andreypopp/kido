@@ -373,7 +373,7 @@ Conventions:
   `fence(SeqCst)` beside each one (its comment has the issue). The
   acquire/release twin of the wakeup model is `#[should_panic]`.
 - **Verus.** `ko_pane_wire::ring`, `ko_pane_wire::frame::Req`,
-  `ko_server::delivery`, `ko_server::view` and `conn.rs`'s `Batch` are
+  `ko_server::delivery`, `ko_server::view`, `ko_server::tail` and `conn.rs`'s `Batch` are
   verified with Verus (`make verus`, `scripts/verus.sh`, the pinned
   release archive in `build/verus/<release>/`). A verified crate has
   `[package.metadata.verus] verify = true` and builds with plain
@@ -384,7 +384,7 @@ Conventions:
   `ring/backend.rs` (the trusted base). `cfg(verus_only)` guards only
   `use` statements. `#[verifier::external_body]` and
   `external_fn_specification` occur only in `ring/backend.rs`,
-  `delivery.rs`, `view.rs` and `conn.rs`. In `ring/backend.rs`: the
+  `delivery.rs`, `view.rs`, `tail.rs` and `conn.rs`. In `ring/backend.rs`: the
   constructor of each role (`Backend::mint_reader`,
   `Backend::mint_writer`), the mapping's creation
   (`create_handle`, with no `ensures`), the capacity getter, the
@@ -401,6 +401,8 @@ Conventions:
   never wrap. In `view.rs`: the
   WebSocket sends (`reject_ws`, `emit_marked`, `emit_dead`,
   `emit_skipped`, `write_slice`) and the marker decode (`resize_marker`). In
+  `tail.rs`: the output stream's sends (`emit_bytes`, `emit_skip`,
+  `emit_dead`) and the opaque type `Death`. In
   `conn.rs`: `Output`'s `waiting`, `available`, `close` and
   `send_batch` over the opaque `closed` and `waits`, and
   `Header::new` (the record header). Each has an `// Assumes:` comment that
@@ -429,7 +431,13 @@ Conventions:
   request's serial and slice count, and a `Mark` of the log. `open`
   and `pump` compare the stamp at run time; `on_slice` and `on_done`
   compare the stamp and the serial. The `View`'s `wf` holds through
-  every `pub(crate)` method, because its fields are private. `delivery.rs` denies
+  every `pub(crate)` method, because its fields are private. A `Tail`
+  (the output stream) is the second consumer of the same `Delivery`:
+  it keeps the stamp and a `Mark` as a `View` does, its `wf` keeps its
+  cursor at a boundary of the log with its offset inside the next
+  record, and it never requests a snapshot. Both place a cursor
+  through `Delivery::seek`, and the cursor lemmas are facts of the log
+  in `ring/spec.rs`. `delivery.rs` denies
   `clippy::arithmetic_side_effects` but not `indexing_slicing`:
   vstd specifies only `VecDeque::len` and its index, and Verus proves
   each index in bounds. The `verus`
@@ -657,7 +665,9 @@ Conventions:
   `Mapping` is heap memory (`ko_sys/src/mapping/heap.rs`), so the
   ring's writer and reader run on it.
 - **Allocation.** The coordinator allocates nothing on the heap for
-  each ring record in steady state. `ko-bench` counts the server
+  each ring record in steady state. The output stream is the exception:
+  its JSON text records cost one buffer for each record, which becomes
+  the message, written straight from the ring slice. `ko-bench` counts the server
   thread's allocations with its global allocator and prints
   `allocations/record`.
 

@@ -25,7 +25,7 @@ use crate::api::Route;
 use crate::config::DEFAULT_LIMITS;
 use crate::conn::Conn;
 use crate::delivery::{Delivery, mint_stamps};
-use crate::http::{MAX_HEAD, Parsed, parse_head, read_response, read_upgrade, request};
+use crate::http::{MAX_HEAD, Parsed, Upgrade, parse_head, read_response, read_upgrade, request};
 use crate::ids::Instance;
 #[cfg(test)]
 use crate::ids::PaneId;
@@ -169,7 +169,11 @@ fn summary<T: Debug>(result: io::Result<T>) -> String {
 }
 
 fn upgraded(mut source: impl Read) -> String {
-    summary(read_upgrade(&mut source).and_then(|(response, mut rest)| {
+    summary(read_upgrade(&mut source).and_then(|upgrade| {
+        let (response, mut rest) = match upgrade {
+            Upgrade::Accepted(response, rest) => (response, rest),
+            Upgrade::Refused(response) => (response, Vec::new()),
+        };
         source.read_to_end(&mut rest)?;
         Ok((response, rest))
     }))

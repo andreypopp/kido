@@ -369,6 +369,49 @@ snapshot that was larger than the cap, again after each reconnect
 (`format` plain or ansi, `history` rows), for the CLI's `runs` screen
 capture and for tests.
 
+### The output stream
+
+`GET /panes/pane_N/output` upgrades to the raw output stream of a
+pane, for a reader without a terminal decoder (an agent harness that
+reads the output of a command). Server to client, every message is a
+text message with one `OutputEvent` (`ko_server/src/protocol.rs`):
+pty bytes from an offset, a range of lost bytes, or the pane's death.
+The stream has no markers, no snapshots and no images. The client
+sends nothing; a text message from it closes the stream as invalid.
+
+Consecutive bytes records have consecutive offsets, and a skip
+continues them at its end. Without `offset`, the stream begins at the
+pane's current end. With an `offset` inside the ring, it begins at
+that byte exactly, also in the middle of a record of the ring: this is
+the resume path of a reader that reopens with the offset after its
+last byte. An `offset` older than the ring begins with a skip to the
+oldest byte that the ring holds. An `offset` past the end is refused
+before the upgrade (`400`, `invalid`).
+
+Backpressure: the server writes a record only while the connection's
+queue is empty, and a record has a bounded size
+(`ko_server/src/tail.rs`). When a write would block, the stream stops.
+When the connection drains, it continues from the ring at the
+reader's offset, or, when the ring moved past that offset, it sends a
+skip and continues from the oldest byte. Thus, the memory of an
+output stream is the ring and at most one record: it never spills and
+never gets a snapshot. This is the difference from a view, whose
+backpressure path sends snapshots that only a terminal decoder can
+apply.
+
+When the pane is dead and the stream has sent every byte up to the
+end of the ring, it sends the death and closes with code 1000. A
+stream opened on a dead pane sends the bytes from its offset first.
+When the pane is removed before its stream sent the death (a failed
+`ko-pane` whose reader was behind, or a pane closed alive), the stream
+closes with code 1011, so the reader knows that it did not get the
+whole output.
+
+The caller must be the user, the pane itself or the pane's parent
+(section 1); any other pane identity is `refused`. `ko api --stream
+PATH` reads such a stream from the shell and prints each text message
+as one line; it exits 0 only after a close with code 1000.
+
 ## 5. Images
 
 Placements, image metadata, animation frames and the playback state

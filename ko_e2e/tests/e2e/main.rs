@@ -13,6 +13,7 @@ mod idle;
 mod images;
 mod layout;
 mod outer;
+mod output;
 mod panes;
 mod prompt;
 mod protocol;

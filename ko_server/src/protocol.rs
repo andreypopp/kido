@@ -68,6 +68,12 @@ pub fn json(value: &impl Serialize) -> String {
     serde_json::to_string(value).unwrap_or_default()
 }
 
+pub(crate) fn json_sized(value: &impl Serialize, capacity: usize) -> String {
+    let mut buffer = Vec::with_capacity(capacity);
+    let _ = serde_json::to_writer(&mut buffer, value);
+    String::from_utf8(buffer).unwrap_or_default()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Version {
     pub protocol: String,
@@ -1899,6 +1905,35 @@ pub enum ViewEvent {
     Pasted(PasteResult),
 }
 
+/// One message of the raw output stream of a pane. Offsets count the pane's output bytes from the
+/// start of the pane. Consecutive bytes records have consecutive offsets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OutputEvent {
+    /// The bytes that start at the offset.
+    Bytes { offset: u64, data: Text },
+    /// The ring overran the reader: the bytes from `from` up to `to` are lost. The next bytes
+    /// record starts at `to`.
+    Skip { from: u64, to: u64 },
+    /// The pane died, and the stream sent every byte of it. The close follows.
+    Dead(Dead),
+}
+
+/// The bytes record of `OutputEvent`, serialized from a borrowed slice without a copy.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum OutputBytes<'a> {
+    Bytes {
+        offset: u64,
+        #[serde(serialize_with = "base64_text")]
+        data: &'a [u8],
+    },
+}
+
+fn base64_text<S: serde::Serializer>(data: &&[u8], serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(&ko_pane_wire::base64::Encoded(data))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum InputResult {
@@ -2095,6 +2130,34 @@ mod tests {
             r#"{"type":"pasted","id":77,"pasted":true,"unsafe":false}"#,
         ] {
             same::<ViewEvent>(json);
+        }
+        for json in [
+            r#"{"type":"bytes","offset":4096,"data":"aGk="}"#,
+            r#"{"type":"skip","from":10,"to":20}"#,
+            r#"{"type":"dead","at":123456789012345,"cause":{"type":"exited","code":7}}"#,
+            r#"{"type":"dead","at":5,"cause":{"type":"failed","message":"io"}}"#,
+        ] {
+            same::<OutputEvent>(json);
+        }
+    }
+
+    #[test]
+    fn the_borrowed_bytes_record_has_the_json_of_the_schema_record() {
+        for data in [
+            &[][..],
+            &[1],
+            &[1, 2],
+            &[1, 2, 3],
+            &[1, 2, 3, 4],
+            &[0xff, 0xfe, 0x80],
+        ] {
+            let borrowed = json(&OutputBytes::Bytes { offset: 7, data });
+            let owned = OutputEvent::Bytes {
+                offset: 7,
+                data: Text(data.to_vec()),
+            };
+            assert_eq!(borrowed, json(&owned));
+            assert_eq!(decode::<OutputEvent>(borrowed.as_bytes()).ok(), Some(owned));
         }
     }
 

@@ -954,4 +954,114 @@ pub proof fn off_mono(cap: nat, l: Log, p: nat, q: nat)
     }
 }
 
+
+pub open spec fn cursor_ok(l: Log, cp: nat, co: nat) -> bool {
+    &&& cp <= l.head
+    &&& boundary(l, cp)
+    &&& off_at(l, cp) <= co
+    &&& co <= off_at(l, next_bnd(l, cp))
+}
+
+pub proof fn cursor_grows(cap: nat, a: Log, b: Log, cp: nat, co: nat)
+    requires
+        wf(cap, a),
+        wf(cap, b),
+        log_le(a, b),
+        cursor_ok(a, cp, co),
+    ensures
+        cursor_ok(b, cp, co),
+{
+    log_le_head(a, b);
+    log_le_boundary(cap, a, b, cp);
+    if a.m.contains_key(cp) {
+        wf_rec(cap, a, cp);
+        log_le_same(a, b, cp);
+        log_le_boundary(cap, a, b, next_bnd(a, cp));
+    } else {
+        assert(cp == a.head);
+        if b.m.contains_key(cp) {
+            wf_rec(cap, b, cp);
+        }
+    }
+}
+
+pub proof fn sent_cursor(cap: nat, l: Log, next: nat, end: nat)
+    requires
+        wf(cap, l),
+        boundary(l, next),
+        next <= l.head,
+        end == off_at(l, next),
+    ensures
+        cursor_ok(l, next, end),
+{
+    if l.m.contains_key(next) {
+        wf_rec(cap, l, next);
+        off_mono(cap, l, next, next_bnd(l, next));
+    }
+}
+
+pub proof fn reach_cursor(cap: nat, l: Log, tl: nat, cp: nat, co: nat, p: nat)
+    requires
+        wf(cap, l),
+        boundary(l, tl),
+        tl <= l.head,
+        cursor_ok(l, cp, co),
+        !lost(l, tl, cp),
+        p == if cp < tl { tl } else { cp },
+    ensures
+        cursor_ok(l, p, co),
+{
+    if cp < tl {
+        wf_head(cap, l);
+        assert(l.m.contains_key(cp));
+        wf_rec(cap, l, cp);
+        let next = cp + size(l.m[cp]);
+        assert(!is_data(l.m[cp])) by {
+            if is_data(l.m[cp]) {
+                assert(lost_at(l, cp, cp));
+            }
+        }
+        assert(next <= tl) by {
+            if tl < next {
+                assert(!l.m.contains_key(tl));
+                assert(tl == l.head);
+            }
+        }
+        off_mono(cap, l, cp, next);
+        if l.m.contains_key(tl) {
+            wf_rec(cap, l, tl);
+        }
+        off_mono(cap, l, tl, next_bnd(l, tl));
+        assert(quiet(l, cp, tl)) by {
+            assert forall|q: nat| cp <= q < tl && #[trigger] l.m.contains_key(q) implies !is_data(l.m[q]) by {
+                if is_data(l.m[q]) {
+                    wf_rec(cap, l, q);
+                    assert(lost_at(l, cp, q));
+                }
+            }
+        }
+        off_mono(cap, l, cp, tl);
+    }
+}
+
+pub proof fn resume_cursor(cap: nat, l: Log, tl: nat, value: nat, p: nat)
+    requires
+        wf(cap, l),
+        resumes(tl, l, value, p),
+        off_at(l, tl) <= value,
+        value <= l.head_offset,
+    ensures
+        cursor_ok(l, p, value),
+{
+    if p < l.head {
+        assert(l.m.contains_key(p));
+        wf_rec(cap, l, p);
+        assert(!before(l.m[p], value));
+        off_mono(cap, l, p, next_bnd(l, p));
+    } else {
+        wf_head(cap, l);
+        assert(p == l.head);
+    }
+}
+
 } // verus!

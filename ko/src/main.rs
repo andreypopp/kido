@@ -13,7 +13,7 @@ use ko_client::edit::Edit;
 use ko_client::launch::{self, PATIENCE};
 use ko_client::layout::Document;
 use ko_client::remote::Remote;
-use ko_client::wire::Caller;
+use ko_client::wire::{Caller, Next};
 use ko_pane_wire::frame::Scrollback;
 use ko_server::agent;
 use ko_server::api::Route;
@@ -75,6 +75,13 @@ enum Command {
     /// strings pass through. The command never starts a server. It exits 0 on a 2xx status. On
     /// any other status it still prints the body, writes "ko api: HTTP" and the status to stderr
     /// and exits 1. It refuses a WebSocket endpoint (/client and /panes/ID/view) and exits 2.
+    ///
+    /// With --stream, the command upgrades a WebSocket endpoint instead and prints each text
+    /// message as one line. It exits 0 when the server closes the socket with the normal close
+    /// code 1000. It exits 1 on any other end (another close code, no close frame, a lost
+    /// connection, a binary message) and writes "ko api: closed:" and the code and reason for a
+    /// close. On a refused upgrade it prints the error body and exits 1, as for a status that is
+    /// not 2xx.
     Api(ApiArgs),
     /// Exec the primed login shell, or run a command through an interactive login shell.
     ///
@@ -262,6 +269,10 @@ struct ApiArgs {
     /// Print the status line and headers before the body.
     #[arg(long, short = 'i')]
     include: bool,
+    /// Upgrade a WebSocket endpoint and print each text message as one line, until the server
+    /// closes the socket.
+    #[arg(long, conflicts_with_all = ["method", "input", "include"])]
+    stream: bool,
     /// The request path, with its query string.
     #[arg(value_name = "PATH")]
     path: String,
@@ -432,13 +443,50 @@ fn api(args: ApiArgs) -> ExitCode {
         },
         None => target(args.server),
     };
-    match api::request(&dir, caller, &method, &args.path, &body) {
+    let response = if args.stream {
+        match api::stream(&dir, caller, &args.path) {
+            Ok(Ok(mut link)) => {
+                let mut out = io::stdout().lock();
+                return loop {
+                    match link.receive() {
+                        Ok(Next::Text(text)) => {
+                            if let Err(error) =
+                                writeln!(out, "{}", text.as_str()).and_then(|()| out.flush())
+                            {
+                                break fail("api", error);
+                            }
+                        }
+                        Ok(Next::Closed) => {
+                            break match link.close_frame() {
+                                Some((1000, _)) => ExitCode::SUCCESS,
+                                Some((code, reason)) => {
+                                    fail("api", format!("closed: {code} {reason}"))
+                                }
+                                None => fail("api", "closed: no close frame"),
+                            };
+                        }
+                        Ok(Next::Binary(_)) => break fail("api", "binary message"),
+                        Ok(Next::Wait) => {}
+                        Err(error) => break fail("api", error),
+                    }
+                };
+            }
+            Ok(Err(response)) => Ok(response),
+            Err(error) => Err(error),
+        }
+    } else {
+        api::request(&dir, caller, &method, &args.path, &body)
+    };
+    match response {
         Err(api::Error::Websocket) => {
             complain(format_args!(
                 "ko api: {} is a WebSocket endpoint; ko api sends one request and prints one response",
                 args.path
             ));
             ExitCode::from(2)
+        }
+        Err(api::Error::NotWebsocket) => {
+            fail("api", format!("{} is not a WebSocket endpoint", args.path))
         }
         Err(api::Error::Server(failure)) => match &remote {
             Some((remote, _)) => fail(remote.host(), remote.unreachable()),

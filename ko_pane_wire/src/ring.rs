@@ -32,9 +32,10 @@ pub(crate) use spec::HEADER;
 use spec::*;
 #[cfg(verus_only)]
 pub use spec::{
-    Log, before, boundary, is_data, log_le, log_le_boundary, log_le_head, log_le_same,
-    log_le_trans, lost, lost_at, next_bnd, off_at, off_mono, quiet, rec_bounds, resumes, retain_of,
-    size, wf as log_wf, wf_head, wf_rec,
+    Log, before, boundary, cursor_grows, cursor_ok, is_data, log_le, log_le_boundary, log_le_head,
+    log_le_same, log_le_trans, lost, lost_at, next_bnd, off_at, off_mono, quiet, reach_cursor,
+    rec_bounds, resume_cursor, resumes, retain_of, sent_cursor, size, wf as log_wf, wf_head,
+    wf_rec,
 };
 #[cfg(verus_only)]
 use vstd::tokens::InstanceId;

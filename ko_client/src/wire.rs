@@ -7,9 +7,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ko_server::api::Route;
-use ko_server::http::{self, Response, call};
+use ko_server::http::{self, Response, Upgrade, call};
 use ko_server::ids::{ClientId, PaneId, PaneToken};
-use ko_server::ws::{accepted, upgrade_request};
+use ko_server::ws::{accepted, refused, upgrade_request};
 use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token, Wake};
 use ko_sys::fd::{self, Queue, Waited, Want};
 use tungstenite::protocol::{Role, WebSocketConfig, WebSocketContext};
@@ -110,6 +110,24 @@ impl Caller {
     }
 }
 
+fn identity(caller: Option<&Caller>) -> Vec<(&'static str, String)> {
+    match caller {
+        None => Vec::new(),
+        Some(Caller::Named(pane)) => vec![("Ko-Pane", pane.to_string())],
+        Some(Caller::Pane { pane, token }) => vec![
+            ("Ko-Pane", pane.to_string()),
+            ("Ko-Pane-Token", token.to_string()),
+        ],
+    }
+}
+
+fn borrowed<'a>(headers: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a str)> {
+    headers
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect()
+}
+
 fn open(
     socket: &Path,
     (client, caller): Who,
@@ -122,19 +140,10 @@ fn open(
     let mut stream = launch::connect(socket, PATIENCE, cancel)?;
     stream.set_read_timeout(Some(within))?;
     stream.set_write_timeout(Some(within))?;
-    let (pane, token) = match caller {
-        None => (None, None),
-        Some(Caller::Named(pane)) => (Some(pane.to_string()), None),
-        Some(Caller::Pane { pane, token }) => (Some(pane.to_string()), Some(token.to_string())),
-    };
+    let identity = identity(caller.as_ref());
     let mut extra = vec![("Connection", "keep-alive")];
     extra.extend_from_slice(headers);
-    if let Some(pane) = &pane {
-        extra.push(("Ko-Pane", pane));
-    }
-    if let Some(token) = &token {
-        extra.push(("Ko-Pane-Token", token));
-    }
+    extra.extend(borrowed(&identity));
     write_until(
         &mut stream,
         &call(method, target, client, &extra, body),
@@ -341,6 +350,7 @@ pub struct Link {
     reads: Reads,
     token: Option<Token>,
     received: Instant,
+    closing: Option<(u16, String)>,
     cancel: Option<Arc<Wake>>,
 }
 
@@ -397,26 +407,41 @@ impl Link {
     }
 
     pub fn upgrade_within(
-        mut stream: UnixStream,
+        stream: UnixStream,
         client: Option<ClientId>,
         route: &Route,
         cancel: Option<Arc<Wake>>,
         within: Duration,
     ) -> io::Result<Link> {
+        Link::handshake(stream, (client, None), route, cancel, within)?
+            .map_err(|response| refused(&response))
+    }
+
+    pub(crate) fn handshake(
+        mut stream: UnixStream,
+        (client, caller): Who,
+        route: &Route,
+        cancel: Option<Arc<Wake>>,
+        within: Duration,
+    ) -> io::Result<Result<Link, Response>> {
         stream.set_read_timeout(Some(within))?;
         ko_sys::sock::set_receive_buffer(stream.as_fd(), RECEIVE_BUFFER)?;
         let (method, target) = route.to_request();
-        let (request, key) = upgrade_request(method, &target, client);
+        let identity = identity(caller.as_ref());
+        let (request, key) = upgrade_request(method, &target, client, &borrowed(&identity));
         write_until(&mut stream, &request, cancel.as_deref(), within)?;
-        let (response, rest) = http::read_upgrade(&mut Interruptible {
+        let (response, rest) = match http::read_upgrade(&mut Interruptible {
             stream: &stream,
             cancel: cancel.as_deref(),
             within,
-        })?;
+        })? {
+            Upgrade::Accepted(response, rest) => (response, rest),
+            Upgrade::Refused(response) => return Ok(Err(response)),
+        };
         accepted(&response, &key)?;
         let mut link = Link::of(stream, rest);
         link.cancel = cancel;
-        Ok(link)
+        Ok(Ok(link))
     }
 
     pub fn of(stream: UnixStream, rest: Vec<u8>) -> Link {
@@ -432,6 +457,7 @@ impl Link {
             reads: Reads::new(),
             token: None,
             received: Instant::now(),
+            closing: None,
             cancel: None,
         }
     }
@@ -472,6 +498,10 @@ impl Link {
         }
     }
 
+    pub fn close_frame(&self) -> Option<&(u16, String)> {
+        self.closing.as_ref()
+    }
+
     pub fn received(&self) -> Instant {
         self.received
     }
@@ -494,13 +524,14 @@ impl Link {
                 cancel: None,
             },
             &mut self.received,
+            &mut self.closing,
             now,
         )?;
         self.settle(poll)?;
         Ok(next)
     }
 
-    pub(crate) fn receive(&mut self) -> io::Result<Next> {
+    pub fn receive(&mut self) -> io::Result<Next> {
         let next = Link::pump(
             &mut self.ctx,
             &mut Io {
@@ -510,6 +541,7 @@ impl Link {
                 cancel: self.cancel.as_deref(),
             },
             &mut self.received,
+            &mut self.closing,
             Instant::now(),
         )?;
         self.flush_blocking()?;
@@ -520,6 +552,7 @@ impl Link {
         ctx: &mut WebSocketContext,
         io: &mut Io<'_>,
         received: &mut Instant,
+        closing: &mut Option<(u16, String)>,
         now: Instant,
     ) -> io::Result<Next> {
         let next = loop {
@@ -535,7 +568,10 @@ impl Link {
             match message {
                 Message::Text(body) => break Next::Text(body),
                 Message::Binary(body) => break Next::Binary(body),
-                Message::Close(_) => break Next::Closed,
+                Message::Close(frame) => {
+                    *closing = frame.map(|frame| (u16::from(frame.code), frame.reason.to_string()));
+                    break Next::Closed;
+                }
                 Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
             }
         };

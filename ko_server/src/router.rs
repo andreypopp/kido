@@ -19,6 +19,7 @@ use crate::protocol::{
 };
 use crate::route::{self, Alt, Caller, Endpoint, Invalid};
 use crate::state::{Owner, PutFailure, State};
+use crate::tail::Tail;
 use crate::view::View;
 use crate::ws::{self, Ws};
 use ko_pane_wire::frame::ImageKey;
@@ -399,6 +400,43 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                     Refusal::Ended.to_string(),
                 ),
             }
+        }
+        Request::Output { id, offset } => {
+            if let Err(Error { kind, message }) = state.may_read_output(caller, id) {
+                return error(&mut state.conns[index], kind, message);
+            }
+            let opened = state
+                .panes
+                .find_mut(id)
+                .and_then(|pane| pane.proc_mut().delivery_mut())
+                .map(|delivery| Tail::new(id, delivery, offset.map(Offset::get)));
+            let tail = match opened {
+                Some(Ok(Some(tail))) => tail,
+                Some(Ok(None)) => {
+                    return error(
+                        &mut state.conns[index],
+                        ErrorKind::Invalid,
+                        "offset is past the end of the output",
+                    );
+                }
+                Some(Err(_)) | None => {
+                    return error(
+                        &mut state.conns[index],
+                        ErrorKind::Io,
+                        Refusal::Ended.to_string(),
+                    );
+                }
+            };
+            let Some(response) = ws::handshake(&head) else {
+                return error(
+                    &mut state.conns[index],
+                    ErrorKind::Invalid,
+                    "Didn't pass scrutiny",
+                );
+            };
+            upgrade(state, poll, index, response, Role::Tail(tail));
+            state.pump_tail(index);
+            state.read_ws(poll, index);
         }
         Request::View {
             id,
