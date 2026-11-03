@@ -1,10 +1,15 @@
 use std::io;
 
+// libc binds getentropy for glibc and macOS but not for musl, so ko declares it for every target.
+unsafe extern "C" {
+    fn getentropy(buffer: *mut libc::c_void, length: libc::size_t) -> libc::c_int;
+}
+
 pub fn bytes() -> io::Result<[u8; 16]> {
     let mut bytes = [0; 16];
     // SAFETY: the pointer and the length come from one live array, and getentropy accepts up to
     // 256 bytes.
-    let result = unsafe { libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len()) };
+    let result = unsafe { getentropy(bytes.as_mut_ptr().cast(), bytes.len()) };
     if result == 0 {
         Ok(bytes)
     } else {

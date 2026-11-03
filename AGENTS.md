@@ -188,7 +188,15 @@ These requirements are fixed:
   committed. zig comes from PATH, at the release that
   `scripts/install-zig.sh` pins; it must equal the
   `.minimum_zig_version` of `third_party/ghostty/build.zig.zon`, and
-  `scripts/lint.sh` checks that. Nightly exists only for cargo-fuzz
+  `scripts/lint.sh` checks that. `rust-toolchain.toml` also lists the
+  targets `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl`
+  of the static Linux ko ("Layout" below), so `rustup toolchain
+  install` adds them. For them, `.cargo/config.toml` names the linker
+  wrappers `scripts/zig-cc-<arch>-linux-musl` (`zig cc -target
+  <arch>-linux-musl`) and sets `-C link-self-contained=no`: with
+  rustc's own `crt1.o`, `_start` is defined twice. The aarch64 wrapper
+  drops `-Wl,--fix-cortex-a53-843419`, which zig's linker refuses.
+  Nightly exists only for cargo-fuzz
   and Miri: `scripts/nightly.sh` pins it, and `scripts/fuzz.sh`,
   `scripts/miri.sh` and `.github/workflows/ko-nightly.yml` source it.
   The two scripts run the nightly cargo through `make nightly-cargo
@@ -196,11 +204,14 @@ These requirements are fixed:
   `miri` component, the two scripts print SKIP and exit 0. Agents do
   not install it.
 - **Platforms.** ko builds and is verified on macOS and Linux (glibc
-  2.34 or newer, for `posix_spawn_file_actions_addclosefrom_np`).
+  2.34 or newer, for `posix_spawn_file_actions_addclosefrom_np`; the
+  static Linux ko uses musl).
   Each OS call that differs has its two halves in `ko_sys`, behind
-  `cfg(target_os)`. Outside `ko_sys`, only the C++ runtime that
-  `ko_vt_sys/build.rs` and `build-bench` link (`c++` on macOS,
-  `stdc++` on Linux), `ko_client::ffi` (code that only the ffi uses
+  `cfg(target_os)`. The static Linux ko builds against musl, which
+  has no `addclosefrom_np`: `ko_sys::spawn` adds a close for each
+  entry of `/proc/self/fd` there, behind `cfg(target_env)`. Outside
+  `ko_sys`, only the C++ runtime that `ko_vt_sys/build.rs` and
+  `build-bench` link (`c++` on macOS and musl, `stdc++` on glibc), `ko_client::ffi` (code that only the ffi uses
   lives in it; an item that needs another module's private fields,
   as `Model::json`, carries `cfg(target_vendor = "apple")` on itself
   and on the imports that only it uses, never an
@@ -306,7 +317,14 @@ Conventions:
   forwarding, and an `ssh` wrapper on the client's PATH that adds
   `-F`. They never read the user's `~/.ssh`. CI sets the variable on
   both runners; its step "Set up localhost SSH" starts sshd and
-  authorizes a key for localhost. The suite drives `build/ko/bin/ko`,
+  authorizes a key for localhost. The container test (`container.rs`)
+  runs only with `KO_E2E_CONTAINER=1`, on a Mac where Apple's
+  `container system status` succeeds and the image `debian:trixie`
+  is present: it runs the aarch64 static ko of
+  `build/ko/share/ko/linux/aarch64` in a container and compares its
+  `ko version` with the host's. It needs `make build-ko-linux` first;
+  with the variable set, a missing layout is a failure. CI does not
+  set it. The suite drives `build/ko/bin/ko`,
   which `make e2e-ko` builds first; a test never runs make or cargo.
   A test reads like command-line use: a step that a `ko` command can
   do (`ko api`, `ko kill-server`, `ko version`) runs that command
@@ -676,7 +694,9 @@ maps the coordinator's modules.
                         registers; main-watch.sh, CI for each observed main
                         head; ci-website-watch.sh; ci-like.sh and
                         ci-like/Dockerfile, the Linux reproduction;
-                        install-zig.sh, the zig pin; verus.sh, nightly.sh,
+                        install-zig.sh, the zig pin; zig-cc-musl, the musl
+                        linker wrapper of .cargo/config.toml, under its
+                        names zig-cc-<arch>-linux-musl; verus.sh, nightly.sh,
                         fuzz.sh, miri.sh, bindgen.sh; quiet-limit
     third_party/ghostty the Ghostty fork, a git submodule ("One Ghostty")
     website/            the kido.tools site
@@ -688,6 +708,23 @@ binary with a new file, because macOS kills a process whose executable
 was overwritten in place after an earlier run (`Killed: 9`). `make
 install PREFIX=<prefix>` copies that layout under `<prefix>/bin` and
 `<prefix>/share/ko` (default `~/.local`), Homebrew's `pkgshare` layout.
+
+`make build-ko-linux` builds the static Linux ko for each architecture
+of `LINUX_ARCHS` (`aarch64`, `x86_64`; by default the host's alone)
+into
+`build/ko/share/ko/linux/<arch>/`: `bin/ko` and `share/ko` with the
+shims, `shim.sh`, the pi extension and the terminfo. It has no
+`ko-pane`, because no server runs inside. zig is the C compiler and the
+linker, and `ko_vt_sys/build.rs` builds libghostty-vt with
+`-Dtarget=<arch>-linux-musl`, so libghostty-vt, zig's static libc++ and
+musl link into one static executable; `make check-static` checks it.
+`make install` builds and copies the same architectures, so the
+Homebrew formula builds the host's alone, and `make verify` and each
+CI runner build and check theirs: the two runners cover both.
+`LINUX_ARCHS="aarch64 x86_64"` builds both. The aarch64 build lacks
+the Cortex-A53 erratum 843419 workaround, because zig's linker
+refuses the flag: it is correct on Apple Silicon, not on an affected
+Cortex-A53.
 `ko version` prints the JSON of `protocol::version()`, with the build id
 from `git describe` at build time in `.build`.
 
@@ -806,9 +843,10 @@ acquire/release and none under `seq_cst`. The loom models of
 
 ## Tests
 
-    make verify  the one verification, in this order: a scrubbed make build-ko, fmt, clippy and scripts/lint.sh (lint; lint-rs is the stage without lint.sh), ko's cargo tests (unit-ko), ko's e2e (e2e-ko), the TypeScript suite (ts), and make verus
+    make verify  the one verification, in this order: a scrubbed make build-ko, make build-ko-linux check-static (build-ko-linux), fmt, clippy and scripts/lint.sh (lint; lint-rs is the stage without lint.sh), ko's cargo tests (unit-ko), ko's e2e (e2e-ko), the TypeScript suite (ts), and make verus
     make verus   cargo verus verify on ko_pane_wire and ko_server with the pinned Verus release, downloaded once into build/verus/
     make build-ko  the installed layout under build/ko/; the default goal
+    make build-ko-linux  the static Linux ko under build/ko/share/ko/linux/<arch>/ (LINUX_ARCHS, default the host's); check-static checks it
     make test-ko  ko's cargo tests and the loom models, without the e2e suite
     make e2e-ko E2E_KO=name  the e2e suite against build/ko/bin/ko
     make cargo ARGS='test -p ko_server'  one cargo command, with --locked added after the subcommand, for iterating on one package

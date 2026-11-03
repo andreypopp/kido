@@ -37,9 +37,10 @@ verus() {
   rm -f "$log"
   return "$rc"
 }
-for name in ${STAGES:-build-ko lint unit-ko e2e-ko ts verus}; do
+for name in ${STAGES:-build-ko build-ko-linux lint unit-ko e2e-ko ts verus}; do
   case $name in
     build-ko) stage build-ko make build-ko ;;
+    build-ko-linux) stage build-ko-linux make build-ko-linux check-static ;;
     unit-ko) stage unit-ko make test-ko ;;
     e2e-ko) stage e2e-ko make e2e-ko E2E_KO="${E2E_KO:-}" ;;
     lint) stage lint make lint ;;

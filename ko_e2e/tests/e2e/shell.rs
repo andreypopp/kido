@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use crate::harness::{
-    DEADLINE, Dir, Server, host_ssh_enabled, ko, run_ko, run_program, start_with, test_env, which,
+    DEADLINE, Dir, Server, enabled, ko, run_ko, run_program, start_with, test_env, which,
 };
 use crate::status::{Flavour, dotfiles, shell_of};
 
@@ -379,7 +379,7 @@ fn login_command() {
 // dotfiles, whatever HOME the test sets. They run only with KO_E2E_HOST_SSH=1; then a failed ssh
 // probe or a missing zsh is a failure, not a skip.
 fn host_ssh() -> Option<Server> {
-    if !host_ssh_enabled() {
+    if !enabled("KO_E2E_HOST_SSH") {
         return None;
     }
     let ssh = which("ssh").expect("ssh is not on PATH");

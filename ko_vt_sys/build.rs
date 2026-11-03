@@ -13,8 +13,14 @@ fn main() {
     }
     println!("cargo:rerun-if-env-changed=KO_ZIG_CACHE");
     let cache = PathBuf::from(env::var_os("KO_ZIG_CACHE").expect("KO_ZIG_CACHE"));
-    let status = Command::new("zig")
-        .arg("build")
+    let musl = env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|env| env == "musl");
+    let mut zig = Command::new("zig");
+    zig.arg("build");
+    if musl {
+        let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("CARGO_CFG_TARGET_ARCH");
+        zig.arg(format!("-Dtarget={arch}-linux-musl"));
+    }
+    let status = zig
         .arg("--build-file")
         .arg(ghostty.join("build.zig"))
         .args([
@@ -35,7 +41,7 @@ fn main() {
         out.join("zig-out/lib").display()
     );
     println!("cargo:rustc-link-lib=static=ghostty-vt");
-    let cxx = if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos") {
+    let cxx = if musl || env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos") {
         "c++"
     } else {
         "stdc++"

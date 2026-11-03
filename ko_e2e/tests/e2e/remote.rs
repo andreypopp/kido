@@ -10,8 +10,8 @@ use ko_sys::pid::{Exit, Pid, signal_descendant};
 use ko_sys::signal::Signal;
 
 use crate::harness::{
-    Child, DEADLINE, Dir, Server, history_lines, host_ssh_enabled, ko, poll, quote, run_ko,
-    run_program, start, start_with, test_env, text_of, which,
+    Child, DEADLINE, Dir, Server, enabled, history_lines, ko, poll, quote, run_ko, run_program,
+    start, start_with, test_env, text_of, which,
 };
 use crate::outer::{CHORD_UP, Keys, Outer};
 
@@ -269,7 +269,7 @@ fn attach(remote: &Remote, state: &Path) -> Outer {
 
 #[test]
 fn remote_forward_attach_reconnect_and_cleanup() {
-    if !host_ssh_enabled() {
+    if !enabled("KO_E2E_HOST_SSH") {
         return;
     }
     let s = start(&[]);
@@ -358,7 +358,7 @@ fn remote_forward_attach_reconnect_and_cleanup() {
 
 #[test]
 fn remote_a_reconnected_client_selects_its_pane_again_so_the_pane_follows_its_size() {
-    if !host_ssh_enabled() {
+    if !enabled("KO_E2E_HOST_SSH") {
         return;
     }
     let s = start(&[]);
@@ -382,7 +382,7 @@ fn remote_a_reconnected_client_selects_its_pane_again_so_the_pane_follows_its_si
 
 #[test]
 fn remote_a_restarted_server_starts_a_fresh_model_and_a_signal_cleans_up() {
-    if !host_ssh_enabled() {
+    if !enabled("KO_E2E_HOST_SSH") {
         return;
     }
     let mut s = start(&[]);
@@ -411,7 +411,7 @@ fn remote_a_restarted_server_starts_a_fresh_model_and_a_signal_cleans_up() {
 
 #[test]
 fn remote_api_uses_a_forward_and_a_stopped_server_names_the_command_that_starts_one() {
-    if !host_ssh_enabled() {
+    if !enabled("KO_E2E_HOST_SSH") {
         return;
     }
     let mut s = start(&[]);
@@ -438,7 +438,7 @@ fn remote_api_uses_a_forward_and_a_stopped_server_names_the_command_that_starts_
 
 #[test]
 fn remote_refused_forwarding_is_one_clear_error_and_leaves_nothing() {
-    if !host_ssh_enabled() {
+    if !enabled("KO_E2E_HOST_SSH") {
         return;
     }
     let s = start(&[]);
@@ -458,7 +458,7 @@ fn remote_refused_forwarding_is_one_clear_error_and_leaves_nothing() {
 
 #[test]
 fn remote_without_ko_on_the_host_is_a_clear_error() {
-    if !host_ssh_enabled() {
+    if !enabled("KO_E2E_HOST_SSH") {
         return;
     }
     let empty = Dir::new("ko-empty-");

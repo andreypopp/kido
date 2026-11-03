@@ -1,2 +1,10 @@
 [env]
 KO_ZIG_CACHE = { value = "target/zig-cache", relative = true }
+
+[target.aarch64-unknown-linux-musl]
+linker = "scripts/zig-cc-aarch64-linux-musl"
+rustflags = ["-C", "link-self-contained=no"]
+
+[target.x86_64-unknown-linux-musl]
+linker = "scripts/zig-cc-x86_64-linux-musl"
+rustflags = ["-C", "link-self-contained=no"]

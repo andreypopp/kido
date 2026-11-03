@@ -122,12 +122,34 @@ fn confine(actions: &mut Actions, targets: &[(BorrowedFd<'_>, u8)]) -> io::Resul
     let targets: Vec<u8> = targets.iter().map(|(_, target)| *target).collect();
     let (below, first) = closed_below(&targets);
     for fd in below {
-        // SAFETY: the actions are initialized; glibc ignores a close of a descriptor that is not open.
+        // SAFETY: the actions are initialized; glibc and musl ignore a close of a descriptor that is not open.
         check_code(unsafe { libc::posix_spawn_file_actions_addclose(&mut actions.0, fd) })?;
     }
-    // SAFETY: the actions are initialized.
-    check_code(unsafe { libc::posix_spawn_file_actions_addclosefrom_np(&mut actions.0, first) })?;
+    close_from(actions, first)?;
     Ok(0)
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn close_from(actions: &mut Actions, first: libc::c_int) -> io::Result<()> {
+    // SAFETY: the actions are initialized.
+    check_code(unsafe { libc::posix_spawn_file_actions_addclosefrom_np(&mut actions.0, first) })
+}
+
+// musl has no addclosefrom_np; its spawn ignores the error of a close of a descriptor that is
+// not open, so the listing's own directory descriptor is harmless.
+#[cfg(all(target_os = "linux", target_env = "musl"))]
+fn close_from(actions: &mut Actions, first: libc::c_int) -> io::Result<()> {
+    for entry in std::fs::read_dir("/proc/self/fd")? {
+        let fd = entry?
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<libc::c_int>().ok());
+        if let Some(fd) = fd.filter(|fd| *fd >= first) {
+            // SAFETY: the actions are initialized.
+            check_code(unsafe { libc::posix_spawn_file_actions_addclose(&mut actions.0, fd) })?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]

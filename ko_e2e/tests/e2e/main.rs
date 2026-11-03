@@ -5,6 +5,7 @@ mod client;
 mod clients;
 mod clipboard;
 mod config;
+mod container;
 mod edits;
 mod harness;
 mod hostile;

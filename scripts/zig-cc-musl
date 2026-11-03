@@ -1,0 +1,11 @@
+#!/bin/sh
+# The target comes from the name of the symlink that cargo runs: zig-cc-<arch>-linux-musl.
+# zig's linker refuses --fix-cortex-a53-843419, which rustc passes for aarch64 targets
+# (error: unsupported linker arg). Without it, the binary lacks the Cortex-A53 erratum 843419
+# workaround: fine for Apple Silicon, not for affected Cortex-A53 hardware.
+target=${0##*/zig-cc-}
+for arg in "$@"; do
+  shift
+  [ "$arg" = -Wl,--fix-cortex-a53-843419 ] || set -- "$@" "$arg"
+done
+exec zig cc -target "$target" "$@"

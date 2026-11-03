@@ -10,14 +10,19 @@ export PATH := $(if $(RUSTUP_BIN),$(RUSTUP_BIN):)$(PATH)
 CARGO := $(if $(RUSTUP_BIN),$(RUSTUP_BIN)/)cargo
 
 .DEFAULT_GOAL := build-ko
-.PHONY: build-ko build-fake-ko ko-client-xcframework build-bench test-ko cargo fmt lint-rs lint probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane verus e2e-ko verify install ci-like preview-pi unpreview-pi release prompts schemas api-docs website
+# The Linux architectures that build-ko-linux, check-static and install handle: the host's alone by
+# default; make build-ko-linux LINUX_ARCHS="aarch64 x86_64" builds both.
+LINUX_ARCHS ?= $(patsubst arm64,aarch64,$(shell uname -m))
+.PHONY: build-ko build-ko-linux check-static build-fake-ko ko-client-xcframework build-bench test-ko cargo fmt lint-rs lint probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane verus e2e-ko verify install ci-like preview-pi unpreview-pi release prompts schemas api-docs website
 
 # The installed layout is build/ko: bin/ko, bin/ko-pane and share/ko. rm -f first:
 # macOS kills (Killed: 9) a process whose executable was overwritten in place.
-install: build-ko
-	mkdir -p "$(PREFIX)/bin" "$(PREFIX)/share"
+install: build-ko build-ko-linux
+	mkdir -p "$(PREFIX)/bin"
 	rm -rf "$(PREFIX)/share/ko"
-	cp -R $(KO)/share/ko "$(PREFIX)/share/ko"
+	mkdir -p "$(PREFIX)/share/ko/linux"
+	cp -R $(addprefix $(KO)/share/ko/,$(SHARE)) "$(PREFIX)/share/ko/"
+	cp -R $(addprefix $(LINUX)/,$(LINUX_ARCHS)) "$(PREFIX)/share/ko/linux/"
 	rm -f "$(PREFIX)/bin/ko" "$(PREFIX)/bin/ko-pane"
 	cp $(KO)/bin/ko $(KO)/bin/ko-pane "$(PREFIX)/bin/"
 
@@ -78,10 +83,12 @@ website:
 # source by terminfo.zig; tic writes x/ or 78/ by platform, and both are shipped.
 # zig keeps its caches in the KO_ZIG_CACHE of .cargo/config.toml.
 KO := build/ko
+SHARE := bin pi shim.sh terminfo
+BUILD_ID = KO_BUILD_ID=$$(git describe --always --dirty)
 ZIG_CACHE := $(CURDIR)/target/zig-cache
 TERMINFO := $(KO)/share/ko/terminfo
 build-ko: $(TERMINFO)/x/xterm-ghostty
-	KO_BUILD_ID=$$(git describe --always --dirty) $(CARGO) build --locked --release --bin ko --bin ko-pane
+	$(BUILD_ID) $(CARGO) build --locked --release --bin ko --bin ko-pane
 	rm -f $(KO)/bin/ko $(KO)/bin/ko-pane
 	cp target/release/ko target/release/ko-pane $(KO)/bin/
 	rm -rf $(KO)/share/ko/bin $(KO)/share/ko/pi
@@ -89,6 +96,27 @@ build-ko: $(TERMINFO)/x/xterm-ghostty
 	mkdir -p $(KO)/share/ko/pi
 	cp share/pi/ko-pi.ts $(KO)/share/ko/pi/ko-pi.ts
 	cp share/ko/shim.sh $(KO)/share/ko/shim.sh
+
+# The static Linux ko under share/ko/linux/<arch>: bin/ko and share/ko, which has the SHARE files of
+# the host's layout. No ko-pane: no server runs inside.
+# zig is the C compiler and linker (.cargo/config.toml names scripts/zig-cc-*).
+LINUX := $(KO)/share/ko/linux
+build-ko-linux: build-ko
+	set -e; for arch in $(LINUX_ARCHS); do \
+	  $(BUILD_ID) $(CARGO) build --locked --release --bin ko --target $$arch-unknown-linux-musl; \
+	  dir=$(LINUX)/$$arch; \
+	  rm -rf $$dir; mkdir -p $$dir/bin $$dir/share/ko; \
+	  cp target/$$arch-unknown-linux-musl/release/ko $$dir/bin/ko; \
+	  cp -R $(addprefix $(KO)/share/ko/,$(SHARE)) $$dir/share/ko/; \
+	done
+
+# Fails when a built Linux ko is not one static executable.
+check-static:
+	set -e; for arch in $(LINUX_ARCHS); do \
+	  out=$$(file -b $(LINUX)/$$arch/bin/ko); \
+	  case "$$out" in *"statically linked"*|*"static-pie linked"*) ;; \
+	    *) echo "check-static: $$arch ko is not static: $$out" >&2; exit 1 ;; esac; \
+	done
 
 $(TERMINFO)/x/xterm-ghostty: ko_vt/terminfo.zig $(wildcard third_party/ghostty/src/terminfo/*.zig)
 	mkdir -p $(KO)/bin $(TERMINFO)/x $(TERMINFO)/78

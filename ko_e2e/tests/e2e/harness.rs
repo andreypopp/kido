@@ -740,11 +740,11 @@ pub(crate) fn start_with(shell: &Path, env: &[(&str, &str)], args: &[&str]) -> S
     server
 }
 
-pub(crate) fn host_ssh_enabled() -> bool {
-    if std::env::var("KO_E2E_HOST_SSH").as_deref() == Ok("1") {
+pub(crate) fn enabled(variable: &str) -> bool {
+    if std::env::var(variable).as_deref() == Ok("1") {
         true
     } else {
-        eprintln!("skipped: KO_E2E_HOST_SSH is not 1");
+        eprintln!("skipped: {variable} is not 1");
         false
     }
 }
