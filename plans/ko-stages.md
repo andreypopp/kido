@@ -742,6 +742,16 @@ the app engine's fetch thread.
   (`Vars`) and `GET /panes/{id}/vars/{name}` (`Var`) are removed. The
   writes (`SetVar`, `DeleteVar`, the conditional `DeleteVars`) stay.
 - If the run events leave a gap, the runs come into the same message.
+- `POST /clients/{id}/select` is removed: both clients select over
+  their own `/client` socket. `stress.py` and the e2e cases use the
+  socket. `ClientRequest::Select` stays.
+- A run's command becomes readable: `ko runs ID` (and `GET /runs/{id}`)
+  shows the argv, so an agent can look up an old run from the CLI. The
+  argv moves into `meta.json`, and the separate `command` file goes.
+- A run's outcome is written once by `State`, which refuses a second
+  outcome; the file is a plain atomic write, without kido's
+  first-write-wins `create_new` (every writer is on the server thread).
+- `ko prompt` stays: the user's nvim plugin calls it.
 - `POST /runs/reap`, `ko reap` and their client call are removed: the
   server sweeps by itself on each event that can end a run. The reap
   e2e tests wait for the sweep's effect (the outcome event or the pane's
