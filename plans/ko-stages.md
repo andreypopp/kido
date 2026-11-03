@@ -712,6 +712,29 @@ Built (2026-11-02), with two additions of the top-level session:
   kills its program itself, so only a `ko-pane` that cannot act
   (stopped) reaches the coordinator's last kill.
 
+### K2c. Panes travel with the layout (after K5 step 5 and K6's server part)
+
+Decided 2026-11-03. The client reads the layout, its panes and their
+variables from one source, so `ko_client` loses its separate `/panes`
+and `/runs` reads (`Model::fetch`, `refresh`, `stale`, `install`) and
+the app engine's fetch thread.
+
+- `GET /layout` and the welcome carry every pane's row with its
+  variables. Variables always travel with their pane.
+- A `/client` layout event carries the rows and variables of the panes
+  that this revision adds; a removed pane is one that the layout no
+  longer names. Changes to existing panes keep their own events, and
+  every row field that can change has one.
+- The layout event with a pane's row comes before the first other event
+  of that pane (a test checks it).
+- Server-to-client WebSocket messages get a much larger limit than the
+  1 MiB of client-to-server messages, so a layout event or welcome with
+  large variables fits.
+- The read routes `GET /panes/{id}/vars` (`Vars`) and
+  `GET /panes/{id}/vars/{name}` (`Var`) are removed. The writes
+  (`SetVar`, `DeleteVar`, the conditional `DeleteVars`) stay.
+- If the run events leave a gap, the runs come into the same message.
+
 ### K4. Linux measurements (1 to 2 agent-days, after RL)
 
 RL builds, tests and verifies the Rust ko on Linux and adds Ubuntu to
