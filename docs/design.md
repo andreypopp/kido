@@ -916,8 +916,10 @@ order.
 Every duration that a test must shorten is an environment variable
 that the process under test reads when it uses it:
 
-- `KO_LINGER_SECONDS` (the sweep's grace, with an optional fraction)
-  and `KO_STOP_ESCALATION_MS`, read by `ko server`;
+- `KO_LINGER_SECONDS` (the sweep's grace, with an optional fraction),
+  `KO_STOP_ESCALATION_MS`, `KO_CLIPBOARD_TIMEOUT_MS`,
+  `KO_VIEW_QUEUE_BYTES` and `KO_VIEW_SPILL_BYTES`, read by `ko server`
+  (`ko_server/src/config.rs`);
 - `KO_PARENT_POLL_MS`, `KO_SPAWN_TIMEOUT_MS`, `KO_INBOX_WAIT_MS`,
   `KO_AGENT_LIST_TTL_MS`, `KO_STREAM_POLL_MS`, `KO_STREAM_FLUSH_MS`,
   `KO_STREAM_MAX_WAIT_MS`, `KO_STREAM_BUDGET_BYTES` and

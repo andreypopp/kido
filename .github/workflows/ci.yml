@@ -11,7 +11,7 @@ env:
 
 jobs:
   test:
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -99,30 +99,6 @@ jobs:
         timeout-minutes: 10
         run: ./scripts/verus.sh install "$PWD/build/verus/${{ steps.verus.outputs.key }}"
 
-      # The dune binary distribution, pinned to the release the README
-      # installs; there is no opam. `build-deps` builds dune.lock into
-      # _build (the compiler included) and the action caches dune's shared
-      # cache and _build across runs, so a lock that did not change costs a
-      # restore, not a compiler build. Mosaic comes from the pins in
-      # dune-project.
-      - name: Set up dune
-        uses: ocaml-dune/setup-dune@v2
-        timeout-minutes: 20
-        with:
-          version: 3.24.2
-          steps: install-dune build-deps
-
-      # Go only drives the e2e suite, which stays in Go.
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        timeout-minutes: 5
-        with:
-          go-version-file: go.mod
-
-      - name: Download Go modules
-        timeout-minutes: 5
-        run: go mod download
-
       - name: Install dependencies (Ubuntu)
         if: runner.os == 'Linux'
         timeout-minutes: 10
@@ -130,50 +106,13 @@ jobs:
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             | sudo tee /etc/apt/apt.conf.d/80-timeouts
           sudo apt-get update
-          sudo apt-get install -y libevent-dev libncurses-dev libutf8proc-dev libpng-dev zlib1g-dev \
-            bison autoconf automake pkg-config openssh-server zsh less procps
+          sudo apt-get install -y openssh-server zsh less procps
           # Debian's global compinit can block test shells with an insecure-directories prompt.
           echo 'skip_global_compinit=1' | sudo tee -a /etc/zsh/zshenv
 
-      - name: Install tmux dependencies (macOS)
-        if: runner.os == 'macOS'
-        timeout-minutes: 10
-        run: brew install libevent ncurses utf8proc libpng automake autoconf pkg-config
-
-      - name: Resolve tmux fork build key
-        timeout-minutes: 1
-        id: tmux-fork
-        run: |
-          build_key=$(./scripts/install-tmux-fork.sh --print-build-key)
-          echo "build-key=$build_key" >> "$GITHUB_OUTPUT"
-      - name: Restore tmux fork build
-        timeout-minutes: 5
-        id: tmux-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/tmux-side
-          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.build-key }}
-
-      - name: Build and install tmux fork
-        timeout-minutes: 20
-        if: steps.tmux-cache.outputs.cache-hit != 'true'
-        run: ./scripts/install-tmux-fork.sh "$HOME/tmux-side"
-
-      - name: Save tmux fork build
-        timeout-minutes: 5
-        if: steps.tmux-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/tmux-side
-          key: tmux-side-${{ runner.os }}-${{ steps.tmux-fork.outputs.build-key }}
-
-      - name: Check tmux fork
-        timeout-minutes: 1
-        run: $HOME/tmux-side/bin/kido-tmux -V
-
-      # test-ts.sh skips cleanly on a node it cannot use, and a runner's
-      # preinstalled node is whatever it happens to be, so pin one and demand
-      # the suite runs. 24 rather than the 22.18 where unflagged TypeScript
+      # The lint and ts stages need node, and a runner's preinstalled node is
+      # whatever it happens to be, so pin one. verify.sh demands that the suite
+      # runs (KO_TS_TEST_REQUIRED). 24 rather than the 22.18 where unflagged TypeScript
       # landed: 22.18 parses the files and then its test runner cancels the
       # suite, which this pin is how we learned.
       - name: Set up node
@@ -181,25 +120,6 @@ jobs:
         timeout-minutes: 5
         with:
           node-version: '24'
-
-      - name: Build
-        timeout-minutes: 20
-        run: dune build
-
-      - name: Install
-        timeout-minutes: 10
-        run: make install PREFIX=$HOME/tmux-side && $HOME/tmux-side/bin/kido --version && test -x $HOME/tmux-side/share/kido/bin/tmux
-
-      - name: Unit tests
-        timeout-minutes: 15
-        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux dune test --force
-
-      # "fork failed: Device not configured" from tmux on macOS runners reads as
-      # pty exhaustion; this records the limit next to any such failure.
-      - name: Pty limit
-        timeout-minutes: 1
-        if: runner.os == 'macOS'
-        run: sysctl kern.tty.ptmx_max; ls /dev/ttys* | wc -l
 
       # Host-sshd e2e tests need localhost SSH. launchctl avoids systemsetup's
       # Full Disk Access requirement. macOS Bash 3.2 is too old to prime,
@@ -258,14 +178,10 @@ jobs:
               *) exit 1 ;;
             esac'
 
-      - name: E2E tests
-        timeout-minutes: 15
-        run: KIDO_TMUX=$HOME/tmux-side/bin/kido-tmux KIDO_E2E_REQUIRED=1 KIDO_E2E_HOST_SSH=1 make e2e
+      - name: Verify
+        timeout-minutes: 35
+        run: KO_VERUS_REQUIRED=1 KO_E2E_HOST_SSH=1 make verify
 
-      - name: Verify ko
-        timeout-minutes: 25
-        run: KO_VERUS_REQUIRED=1 KO_E2E_HOST_SSH=1 make verify-ko STAGES="build-ko unit-ko e2e-ko lint-rs verus"
-
-      - name: TypeScript tests
+      - name: Install
         timeout-minutes: 10
-        run: KIDO_TS_TEST_REQUIRED=1 ./scripts/test-ts.sh
+        run: make install PREFIX=$HOME/ko-install && $HOME/ko-install/bin/ko version && test -x $HOME/ko-install/share/ko/bin/ko

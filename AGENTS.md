@@ -235,8 +235,11 @@ These requirements are fixed:
   `panic!` and indexing in tests. The readers of untrusted bytes
   (`ko_pane_wire`'s `frame.rs` and `ring.rs`, `ko_server`'s
   `pane_proc.rs`, `ko_pane`'s `io.rs`) also deny `clippy::indexing_slicing` and
-  `clippy::arithmetic_side_effects`. Inside `verus!`, Verus also
-  proves that each index is in bounds and that no arithmetic overflows.
+  `clippy::arithmetic_side_effects`. `print_stdout` and `print_stderr`
+  are denied: the CLI writes through `writeln!` on a locked stream, and
+  only `ko_bench/src/main.rs` allows the macros. Inside `verus!`, Verus
+  also proves that each index is in bounds and that no arithmetic
+  overflows.
 - **The command line is a contract** with `ko_e2e/`, `bench/`,
   `share/` and Kido.app. A long option is `--name`. clap's derive
   generates `--help` and the usage errors: the doc comment on each
@@ -483,8 +486,12 @@ Conventions:
   slice is deflated into the scratch buffer of the coordinator's
   one `Deflate` (`ko_server::deflate`) and written from it. A
   partial write copies the rest into the queue. Every other byte of a WebSocket goes through
-  tungstenite into the same queue. No other code writes a
-  connection's descriptor.
+  tungstenite into the same queue. The queue has a cap: a view's
+  output past it goes to an unlinked spill file of the state
+  directory (`ko_server::spill`, over `ko_sys::file::unlinked`),
+  drained after the queue, and a spill over its limit closes the view
+  with close code 1013 (docs/protocol.md, section 4); every other link
+  closes at the cap. No other code writes a connection's descriptor.
 - **Atomics.** The ring header's loads and stores are `SeqCst`
   ("The ring indices are sequentially consistent" below).
   `scripts/lint.sh` refuses any other `Ordering` in `ko_pane`,
@@ -823,7 +830,7 @@ environment: it unsets `KO_STATE_DIR`, `KO_PANE`, `KO_SOCKET`,
 `KO_RUN_ID`, `KO_RUN_OUTPUT` and every `KO_AGENT_*`, and removes installed
 `share/ko/bin` entries from PATH, so the developer's own pane does not
 enter the tests. The lint and ts stages need Node 24 or newer;
-`KO_TS_TEST_REQUIRED=1` (set in CI and by verify) makes a missing node
+`KO_TS_TEST_REQUIRED=1`, which verify sets itself, makes a missing node
 a failure. Before a release, validation uses `make verify` in full.
 Kido.app has its own checks in `app/` (`make test`, `make visual`,
 `make stress`; docs/design-app.md, "Testing").
@@ -835,8 +842,13 @@ plus `make visual` for a visible change. Agents run `make fuzz` only
 when the user asks. Long fuzz runs occur only in CI and never in
 verify.
 
-CI runs on Ubuntu and macOS on every push and PR. It does not build
-Kido.app (docs/known-issues-app.md, "App checks do not run in CI").
+CI (`.github/workflows/ci.yml`) runs on Ubuntu and macOS on every
+push and PR: one `make verify` with the default stages, under
+`KO_VERUS_REQUIRED=1` and `KO_E2E_HOST_SSH=1`, then the installed
+layout check (`make install PREFIX=$HOME/ko-install`, `ko version`
+from it, and the `ko` shim executable under its `share/ko/bin`).
+It does not build Kido.app
+(docs/known-issues-app.md, "App checks do not run in CI").
 `scripts/main-watch.sh` watches main and reports each observed head's
 CI. `/gh-watch` starts it through streamed `async_bash`.
 
@@ -878,11 +890,19 @@ NAME'"`). A CPU quota alone rarely reproduces timing failures.
 command as a loaded runner does. The siblings equally share `--budget`
 (default 2) minus the run's `--cpus`. Use contention for one named
 failure, not a whole suite. Never saturate the host's cores: other
-agents work in parallel. The image holds rustup at a pinned release
-with its checksums, the toolchain of `rust-toolchain.toml`, zig
-through `scripts/install-zig.sh` and `strace`. `target/` and `build/`
-are named volumes over the bind mount, so a Linux build never
-overwrites the host's macOS outputs. In a linked worktree, the script
+agents work in parallel. The image (`scripts/ci-like/Dockerfile`, on
+`debian:trixie`) holds rustup at a pinned release with its checksums,
+the toolchain of `rust-toolchain.toml`, zig through
+`scripts/install-zig.sh` and `strace`; its tag is `ko-ci-like:` and
+12 hex digits of a digest over the Dockerfile, `install-zig.sh` and
+`rust-toolchain.toml`, so a change of one rebuilds it. `target/` and
+`build/` are the named volumes `ko-ci-like-target` and
+`ko-ci-like-build` over the bind mount, so a Linux build never
+overwrites the host's macOS outputs. The container (`ko-ci-like-<pid>`;
+its busy siblings `ko-ci-like-busy-<pid>-N`) gets
+`KO_STATE_DIR=/tmp/ko-state`, and the host's other `KO_*` variables
+pass through, except `KO_AGENT_*`, `KO_PANE`, `KO_SOCKET`, `KO_RUN_ID`
+and `KO_RUN_OUTPUT`. In a linked worktree, the script
 also mounts the main repository's git directory read-only, because
 `ko_server/build.rs` runs git. Linux's check is `make ci-like
 ARGS="--cpus 2 --memory 6g -- make verify"`; the Rust and zig builds

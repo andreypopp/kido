@@ -299,6 +299,14 @@ unsent bytes passed the threshold gets a snapshot anyway, so it never
 holds the writer. No pending write ever references the ring: a partial
 write copies the rest of its frame into the connection's queue.
 
+A view's queue has a cap, and output past it goes to an unlinked spill
+file (`ko_server/src/spill.rs`) that the connection drains after the
+queue, so a snapshot larger than the cap reaches a slow reader whole
+and the memory of each view stays at the cap; a spill over its limit
+closes the view with a close frame (protocol.md, section 4). The cap
+and the spill limit are `KO_VIEW_QUEUE_BYTES` and
+`KO_VIEW_SPILL_BYTES`, read by `ko_server/src/config.rs`.
+
 Measured in the first build: on macOS a non-blocking writer on a unix
 stream socket accepts exactly its own `SO_SNDBUF` before it blocks,
 whatever the reader's buffer, so the server sets `SO_SNDBUF` and the
@@ -633,7 +641,41 @@ Each decision names its date. The code states the rest.
   that moves another client. Variables always travel with their pane,
   and a pane's row change never moves the layout revision.
 - The server deflates every snapshot slice with `miniz_oxide` at
-  level 1, with no negotiation; live output stays raw.
+  level 1, with no negotiation; live output stays raw. The table that
+  decided it, measured on macOS through a localhost sshd behind
+  `bench/rtt_proxy.py` at 150 ms RTT and 100 Mbit/s, a 100k-line
+  history of mixed lines (a 77 MB snapshot), medians of 3; "history
+  loaded" is from the spawn of `ko HOST` to the last history row in
+  the client, "transfer" the first to last snapshot slice; miniz was a
+  scratch build that deflated snapshot slices only:
+
+  | 150 ms, 100 Mbit/s | none | `ssh -C` | miniz level 1 | level 6 |
+  |---|---|---|---|---|
+  | attach, empty pane | 2.22 s | 2.19 s | 2.21 s | 2.19 s |
+  | mixed, history loaded | 8.74 s | 8.35 s | 4.87 s | 5.01 s |
+  | mixed, transfer | 6.19 s | 5.80 s | 2.38 s | 2.52 s |
+  | mixed, wire bytes down | 77.4 MB | 24.8 MB | 29.7 MB | 25.1 MB |
+  | mixed, server deflate CPU | - | - | 0.29 s | 2.4 s |
+  | echo over RTT, p50 / p99 | 0.6 / 0.8 ms | 0.6 / 2.1 ms | 0.6 / 4.1 ms | 0.8 / 11 ms |
+
+  At 300 ms the mixed history loaded in 15.9 s (none), 16.0 s
+  (`ssh -C`), 8.8 s (level 1) and 8.2 s (level 6). Unlimited bandwidth
+  gave the same times as 100 Mbit/s: OpenSSH's 2 MiB channel window
+  counts uncompressed bytes, so `ssh -C` sends a third of the bytes
+  and gains nothing. The shipped level 1, measured again in the same
+  cell: history loaded 4.90 s against 8.69 s, transfer 2.38 s against
+  6.19 s, wire bytes 29.7 MB against 77.4 MB; the local floor rose
+  from 0.33 s to 0.59 s and the server's CPU from 0.01 s to 0.26 s.
+  Through Kido.app (`app/scripts/rtt.py`, one run for each cell, the
+  same proxy, a 81.6 MB snapshot over 30.4 MB on the wire): attach
+  0.9 s at 50 ms, 2.5 s at 150 ms and 4.3 s at 300 ms RTT, with and
+  without compression; echo p50 under 1 ms over the RTT in every cell;
+  the mixed restore 1.0 s, 2.9 s and 5.7 s at unlimited bandwidth,
+  2.6 s, 3.0 s and 5.7 s at 100 Mbit/s, and about 25 s at 10 Mbit/s.
+  Before compression every mixed restore in the app stalled after
+  about 1.9 MB, because the per-view queue cap closed the view with a
+  bare EOF that the client missed (the spill file and the close frame
+  of protocol.md, section 4, fixed that).
 - A shared-memory object lives as long as its frame does, outside the
   kitty storage limit; a limit for the objects is open.
 - A view's output past the connection's queue cap goes to an unlinked
