@@ -148,6 +148,29 @@ import XCTest
         }
     }
 
+    func testAPngDrawnWhileHiddenAppearsWhenShownAndComesBackAfterAReconnect() throws {
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAADklEQVR4nGP4z8DwHwQBEPgD/U6VwW8AAAAASUVORK5CYII="
+        let draw = { (image: Int) in "printf '\\033_Ga=T,f=100,t=d,i=\(image),c=2,r=1,q=2;\(png)\\033\\\\'" }
+        let dir = try serverWithPane("\(draw(7)); printf MARK; read _; \(draw(8)); exec sleep 3600")
+        let connection = try connect(dir, Recorder())
+        let window = try XCTUnwrap(try connection.model().layout.layout.windows.first)
+        guard case .leaf(let leaf) = window.tree else { throw XCTSkip("not a single pane window") }
+        let pane = (dir: dir, connection: connection, pane: leaf.pane, cols: leaf.cols, rows: leaf.rows)
+        wait("the pane parsed the first image") { (try? self.output(["api", "/panes/\(leaf.pane)/screen"], dir: dir))?.contains("MARK") == true }
+
+        let first = try mirror(pane, local: true)
+        wait("image 7 attached") { first.surface.generation(image: 7, frame: 1) != nil && first.surface.pendingFrames.isEmpty }
+        try first.view.text(Data("\n".utf8))
+        wait("image 8 attached live") { first.surface.generation(image: 8, frame: 1) != nil && first.surface.pendingFrames.isEmpty }
+
+        first.images.stop()
+        first.view.close()
+        let second = try mirror(pane, local: true)
+        wait("both images attached after the reconnect") {
+            second.surface.generation(image: 7, frame: 1) != nil && second.surface.generation(image: 8, frame: 1) != nil && second.surface.pendingFrames.isEmpty
+        }
+    }
+
     func testAFetchThatFailsOnceIsTriedAgainWithoutNewOutput() throws {
         let pane = try pane()
         let mirror = try mirror(pane, local: true, failing: 1)

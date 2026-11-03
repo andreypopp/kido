@@ -179,6 +179,27 @@ fn a_t_s_image_is_fetched_by_name_and_as_a_body() {
     assert!(leaks(&s).contains(name.as_str()), "{}", leaks(&s));
 }
 
+const PNG: [u8; 71] = [
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 1, 8, 6, 0,
+    0, 0, 244, 34, 127, 138, 0, 0, 0, 14, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 31, 4,
+    1, 16, 248, 3, 253, 78, 149, 193, 111, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+];
+
+#[test]
+fn a_png_sent_as_t_d_is_decoded_to_rgba() {
+    let s = start(&[]);
+    let pane = s.echo_pane();
+    s.text(&pane, &graphics("a=T,f=100,t=d,i=5,c=2,r=1", &PNG));
+    let generation = wait_generation(&s, &pane, 5, 1);
+
+    let (reply, body) = fetch(&s, &path(&pane, 5, 1, generation), &[]);
+    assert_eq!(reply.status, 200, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(reply.header("ko-image-format"), Some("rgba"));
+    assert_eq!(reply.header("ko-image-width"), Some("2"));
+    assert_eq!(reply.header("ko-image-height"), Some("1"));
+    assert_eq!(body, [RED, GREEN].concat());
+}
+
 #[test]
 fn a_frame_edit_moves_the_generation_so_the_old_object_is_gone_and_the_new_fetch_lands() {
     let s = start(&[]);
