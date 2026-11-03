@@ -880,6 +880,7 @@ import PaneGeometry
             fixture.app.closePalette()
         }
         fixture.app.togglePalette()
+        try owner.testClient?.focus(true)
         let payload = Data("palette OSC52".utf8).base64EncodedString()
         let osc52 = try FileHandle(forWritingTo: URL(fileURLWithPath: feed))
         defer { try? osc52.close() }

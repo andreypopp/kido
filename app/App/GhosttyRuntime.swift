@@ -39,6 +39,14 @@ extension NSColor {
         var unfocusedShift = 0.03
     }
     private(set) var settings: KidoSettings
+    // What the user's config says about a program's clipboard access. The surfaces get both policies
+    // as deny, so a mirror never answers or applies OSC 52; the server's events carry it.
+    struct ClipboardPolicy: Equatable {
+        enum Access: Equatable { case deny, ask, allow }
+        var read = Access.ask
+        var write = Access.allow
+    }
+    private(set) var clipboard: ClipboardPolicy
     enum ThemeOverride: Equatable { case none, preview(String), session(String) }
     private enum Preview: Equatable { case file, theme(String) }
     private var preview: Preview?
@@ -93,11 +101,16 @@ extension NSColor {
                         nanoseconds: value.st_mtimespec.tv_nsec, size: value.st_size)
     }
     private var loadedStat: FileStat?
-    nonisolated private static func protectClipboard(_ config: ghostty_config_t) {
-        var access: UnsafePointer<CChar>?
-        let key = "clipboard-read"
-        if ghostty_config_get(config, &access, key, UInt(key.utf8.count)), access.map({ String(cString: $0) }) != "allow" { return }
-        let policy = "clipboard-read = ask\n"
+    nonisolated private static func userClipboardPolicy(_ config: ghostty_config_t) -> ClipboardPolicy {
+        func access(_ key: String) -> String? {
+            var value: UnsafePointer<CChar>?
+            return ghostty_config_get(config, &value, key, UInt(key.utf8.count)) ? value.map { String(cString: $0) } : nil
+        }
+        return ClipboardPolicy(read: access("clipboard-read") == "deny" ? .deny : .ask, write: access("clipboard-write") == "allow" ? .allow : .deny)
+    }
+
+    nonisolated private static func denyMirrorClipboard(_ config: ghostty_config_t) {
+        let policy = "clipboard-read = deny\nclipboard-write = deny\n"
         ghostty_config_load_string(config, policy, UInt(policy.utf8.count), "/kido-clipboard")
     }
     var onConfigChange: () -> Void = {}
@@ -139,6 +152,7 @@ extension NSColor {
         let fontKey = "font-size"
         _ = ghostty_config_get(loaded.config, &loadedFont, fontKey, UInt(fontKey.utf8.count))
         self.settings = loaded.settings
+        self.clipboard = loaded.clipboard
         self.diagnostics = loaded.diagnostics
 
         var runtime = ghostty_runtime_config_s(
@@ -168,7 +182,6 @@ extension NSColor {
             },
             read_clipboard_cb: { @Sendable userdata, location, state, mimes, count, list in
                 nonisolated(unsafe) let (userdata, state) = (userdata, state)
-                let requested = (0..<count).compactMap { mimes?[$0].map { String(cString: $0) } }
                 return MainActor.assumeIsolated {
                     let view = Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
                     guard view.acceptingInput, let state else { return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
@@ -176,21 +189,16 @@ extension NSColor {
                     case GHOSTTY_CLIPBOARD_REQUEST_PASTE:
                         let image = location == GHOSTTY_CLIPBOARD_STANDARD && view.pasteImage()
                         let text = image ? "" : view.pasting ?? view.runtime.pasteboard.string(forType: .string) ?? ""
-                        GhosttyRuntime.completeClipboard(view.surface, [("text/plain", Data(text.utf8))], available: list ? ["text/plain"] : [], state, confirmed: false)
+                        GhosttyRuntime.completeClipboard(view.surface, [KoClipboardContent(mime: "text/plain", data: Data(text.utf8))], available: list ? ["text/plain"] : [], state, confirmed: false)
                     case GHOSTTY_CLIPBOARD_REQUEST_LIST:
                         view.listClipboard(state)
-                    case GHOSTTY_CLIPBOARD_REQUEST_KITTY_READ:
-                        guard location == GHOSTTY_CLIPBOARD_STANDARD else { return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED }
-                        view.readClipboard(state, requested, list: list)
-                    case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ:
-                        view.requestClipboard(state, ["text/plain"], list: false, .clipboard)
                     default: return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE
                     }
                     return GHOSTTY_CLIPBOARD_READ_STARTED
                 }
             },
             // Ghostty asks from the main thread: from a paste binding, or from
-            // its app tick for an OSC 52 read.
+            // a deferred paste.
             confirm_read_clipboard_cb: { @Sendable userdata, payload, state, request in
                 nonisolated(unsafe) let (userdata, state) = (userdata, state)
                 var text: String?
@@ -202,8 +210,7 @@ extension NSColor {
                 MainActor.assumeIsolated {
                     let view = Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
                     if let text { view.confirmPaste(text, state) }
-                    else if request == GHOSTTY_CLIPBOARD_REQUEST_OSC_52_READ { view.requestClipboard(state, ["text/plain"], list: false, .clipboard) }
-                    else { view.deny(state) }
+                    else { GhosttyRuntime.completeClipboard(view.surface, [KoClipboardContent(mime: "text/plain", data: Data())], state, confirmed: true) }
                 }
             },
             write_clipboard_cb: { @Sendable userdata, _, content, count, confirm in
@@ -241,6 +248,7 @@ extension NSColor {
         let config: ghostty_config_t
         let settings: KidoSettings
         let diagnostics: [String]
+        let clipboard: ClipboardPolicy
     }
 
     private static let settingKeys: [String: WritableKeyPath<KidoSettings, Double>] = [
@@ -314,10 +322,11 @@ extension NSColor {
             ghostty_config_load_string(config, text, UInt(text.utf8.count), "/kido-theme")
         }
         ghostty_config_finalize(config)
-        protectClipboard(config)
+        let clipboard = userClipboardPolicy(config)
+        denyMirrorClipboard(config)
         let diagnostics = readDiagnostics(config)
         for message in diagnostics { note("ghostty config: \(message)") }
-        return LoadedConfig(config: config, settings: settings, diagnostics: diagnostics)
+        return LoadedConfig(config: config, settings: settings, diagnostics: diagnostics, clipboard: clipboard)
     }
 
     private func reloadConfig() {
@@ -351,6 +360,7 @@ extension NSColor {
         loadedFont = newFont
         loadedTheme = override
         settings = loaded.settings
+        clipboard = loaded.clipboard
         ghostty_app_update_config_without_surface_propagation(app, loaded.config)
         ghostty_config_free(loaded.config)
         if changed { DispatchQueue.main.async { [weak self] in self?.onConfigReload(font) } }
@@ -446,7 +456,7 @@ extension NSColor {
         if action.tag == GHOSTTY_ACTION_CONFIG_CHANGE {
             guard target.tag == GHOSTTY_TARGET_APP,
                   let config = ghostty_config_clone(action.action.config_change.config) else { return true }
-            protectClipboard(config)
+            denyMirrorClipboard(config)
             nonisolated(unsafe) let owned = config
             DispatchQueue.main.async {
                 ghostty_config_free(runtime.config)
@@ -602,24 +612,19 @@ extension NSColor {
         }
     }
 
-    static func completeClipboard(_ surface: ghostty_surface_t?, _ contents: [(mime: String, data: Data)], available: [String] = [],
+    static func completeClipboard(_ surface: ghostty_surface_t?, _ contents: [KoClipboardContent], available: [String] = [],
                                   _ state: UnsafeMutableRawPointer?, confirmed: Bool) {
-        let names = (contents.map(\.mime) + available).map { strdup($0) }
-        defer { names.forEach { free($0) } }
-        let data = contents.map { $0.data as NSData }
-        let items = data.indices.map { i in
-            ghostty_clipboard_content_s(mime: names[i], data: data[i].bytes.assumingMemoryBound(to: CChar.self), len: data[i].length)
+        withClipboard(contents, available: available, item: { ghostty_clipboard_content_s(mime: $0, data: $1.assumingMemoryBound(to: CChar.self), len: $2) }) { items, listing in
+            var payload = ghostty_clipboard_complete_s(contents: items.baseAddress, contents_len: items.count,
+                available: listing.baseAddress, available_len: listing.count, confirmed: confirmed, remember: false)
+            ghostty_surface_complete_clipboard_request(surface, &payload, state)
         }
-        let listing = names.dropFirst(contents.count).map { UnsafePointer($0) }
-        withExtendedLifetime(data) {
-            items.withUnsafeBufferPointer { items in
-                listing.withUnsafeBufferPointer { listing in
-                    var payload = ghostty_clipboard_complete_s(contents: items.baseAddress, contents_len: items.count,
-                        available: listing.baseAddress, available_len: listing.count, confirmed: confirmed, remember: false)
-                    ghostty_surface_complete_clipboard_request(surface, &payload, state)
-                }
-            }
-        }
+    }
+
+    func store(_ items: [(type: NSPasteboard.PasteboardType, data: Data)]) -> Bool {
+        let item = NSPasteboardItem()
+        pasteboard.clearContents()
+        return items.allSatisfy { item.setData($0.data, forType: $0.type) } && pasteboard.writeObjects([item])
     }
 
     nonisolated private static func writeClipboard(
@@ -629,21 +634,16 @@ extension NSColor {
         _ confirm: Bool
     ) -> ghostty_clipboard_write_result_e {
         guard !confirm, let content else { return GHOSTTY_CLIPBOARD_WRITE_EINVAL }
-        var items: [(type: NSPasteboard.PasteboardType, data: Data)] = []
-        for i in 0..<count {
-            let data = content[i].len == 0 ? Data() : Data(bytes: content[i].data, count: content[i].len)
-            guard let item = PasteboardMIME.written(String(cString: content[i].mime), data) else { return GHOSTTY_CLIPBOARD_WRITE_EINVAL }
-            if !items.contains(where: { $0.type == item.type }) { items.append(item) }
+        let contents = (0..<count).map { i in
+            KoClipboardContent(mime: String(cString: content[i].mime), data: content[i].len == 0 ? Data() : Data(bytes: content[i].data, count: content[i].len))
         }
+        guard let items = PasteboardMIME.items(contents) else { return GHOSTTY_CLIPBOARD_WRITE_EINVAL }
         nonisolated(unsafe) let userdata = userdata
         return MainActor.assumeIsolated { [items] in
             let view = Unmanaged<PaneView>.fromOpaque(userdata!).takeUnretainedValue()
             guard !view.disposed, view.acceptingInput else { return GHOSTTY_CLIPBOARD_WRITE_EIO }
             let items = view.copyingLines ? items.map { $0.type == .string ? ($0.type, $0.data + Data("\n".utf8)) : $0 } : items
-            let pasteboard = view.runtime.pasteboard, item = NSPasteboardItem()
-            pasteboard.clearContents()
-            guard items.allSatisfy({ item.setData($0.data, forType: $0.type) }), pasteboard.writeObjects([item]) else { return GHOSTTY_CLIPBOARD_WRITE_EIO }
-            return GHOSTTY_CLIPBOARD_WRITE_OK
+            return view.runtime.store(items) ? GHOSTTY_CLIPBOARD_WRITE_OK : GHOSTTY_CLIPBOARD_WRITE_EIO
         }
     }
 }

@@ -6,6 +6,7 @@ import PaneGeometry
 final class SessionView: NSView {
     // The client whose views feed the panes.
     weak var client: KoClient?
+    var host = Host.local
     var edit: (KoSchema.Edit, LayoutEditor.Key?) -> Void = { _, _ in }
     var editing: () -> Bool = { false }
     var selectPane: (PaneID) -> Void = { _ in }

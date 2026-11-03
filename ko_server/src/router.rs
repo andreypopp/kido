@@ -432,7 +432,6 @@ pub(crate) fn image<E: Endpoint<Reply = route::pixels>>(
         ImageReply::Missing => error(conn, ErrorKind::Missing, "image not found"),
         ImageReply::Shm(shm) => respond(conn, Status::Ok, &protocol::json(shm)),
         ImageReply::Pixels(shm, map) => {
-            let format = protocol::json(&shm.format);
             let numbers = [
                 shm.length,
                 u64::from(shm.width),
@@ -448,7 +447,7 @@ pub(crate) fn image<E: Endpoint<Reply = route::pixels>>(
                 &[
                     ("content-type", "application/octet-stream"),
                     ("content-length", length),
-                    (IMAGE_FORMAT_HEADER, format.trim_matches('"')),
+                    (IMAGE_FORMAT_HEADER, shm.format.header()),
                     (IMAGE_WIDTH_HEADER, width),
                     (IMAGE_HEIGHT_HEADER, height),
                     (IMAGE_GENERATION_HEADER, generation),

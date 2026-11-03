@@ -2,9 +2,11 @@
 
 mod calls;
 mod engine;
+mod images;
 mod view;
 
 pub use calls::*;
+pub use images::*;
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -16,10 +18,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 
-use ko_pane_wire::frame::{self, History};
+use ko_pane_wire::frame::{self, History, ServedBuf};
 use ko_server::ids::{ClientId, PaneId, WindowId};
 use ko_server::protocol::{
-    self, ClientRequest, Direction, ErrorKind, Hello, Input, Over, Selection, Switch, Text, Version,
+    self, ClientRequest, ClipboardContent, ClipboardLocation, Direction, ErrorKind, Hello, Input,
+    Over, Selection, Switch, Text, Version,
 };
 use ko_sys::event::Wake;
 
@@ -119,6 +122,34 @@ pub struct Alert {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
+pub struct ClipboardItem {
+    pub mime: *const c_char,
+    pub data: *const u8,
+    pub len: usize,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ClipboardWrite {
+    pub pane: *const c_char,
+    pub location: c_int,
+    pub contents: *const ClipboardItem,
+    pub count: usize,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ClipboardRead {
+    pub pane: *const c_char,
+    pub id: u64,
+    pub location: c_int,
+    pub mimes: *const *const c_char,
+    pub count: usize,
+    pub list: bool,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
 pub struct VersionInfo {
     pub protocol: *const c_char,
     pub vt: *const c_char,
@@ -158,6 +189,12 @@ const EVENT_ALERT: c_int = 6;
 const EVENT_VIEW_RESTORED: c_int = 7;
 const EVENT_VIEW_CLOSED: c_int = 8;
 const EVENT_MISMATCH: c_int = 9;
+const EVENT_CLIPBOARD_WRITE: c_int = 10;
+const EVENT_CLIPBOARD_READ: c_int = 11;
+
+const LOCATION_STANDARD: c_int = 1;
+const LOCATION_SELECTION: c_int = 2;
+const LOCATION_PRIMARY: c_int = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -170,6 +207,8 @@ pub union Body {
     pub view_restored: ViewRestored,
     pub view_closed: ViewClosed,
     pub mismatch: Mismatch,
+    pub clipboard_write: ClipboardWrite,
+    pub clipboard_read: ClipboardRead,
 }
 
 #[repr(C)]
@@ -336,6 +375,14 @@ fn post(shared: &Arc<Shared>, posted: Posted) {
     unsafe { dispatch_async_f(shared.queue.0, item.cast(), deliver) }
 }
 
+fn location_number(location: ClipboardLocation) -> c_int {
+    match location {
+        ClipboardLocation::Standard => LOCATION_STANDARD,
+        ClipboardLocation::Selection => LOCATION_SELECTION,
+        ClipboardLocation::Primary => LOCATION_PRIMARY,
+    }
+}
+
 fn pointer(text: &Option<CString>) -> *const c_char {
     text.as_ref().map_or(std::ptr::null(), |text| text.as_ptr())
 }
@@ -415,7 +462,60 @@ extern "C" fn deliver(context: *mut c_void) {
                 Notice::Notify { pane, title, body } => {
                     (2, pane, title.as_deref().map(string), Some(string(body)))
                 }
-                Notice::ClipboardWrite { .. } | Notice::ClipboardRead { .. } => return,
+                Notice::ClipboardWrite {
+                    pane,
+                    location,
+                    contents,
+                } => {
+                    let pane = string(&pane.to_string());
+                    let mimes: Vec<CString> =
+                        contents.iter().map(|item| string(&item.mime)).collect();
+                    let items: Vec<ClipboardItem> = contents
+                        .iter()
+                        .zip(&mimes)
+                        .map(|(item, mime)| ClipboardItem {
+                            mime: mime.as_ptr(),
+                            data: item.data.0.as_ptr(),
+                            len: item.data.0.len(),
+                        })
+                        .collect();
+                    return call(Event {
+                        kind: EVENT_CLIPBOARD_WRITE,
+                        body: Body {
+                            clipboard_write: ClipboardWrite {
+                                pane: pane.as_ptr(),
+                                location: location_number(*location),
+                                contents: items.as_ptr(),
+                                count: items.len(),
+                            },
+                        },
+                    });
+                }
+                Notice::ClipboardRead {
+                    pane,
+                    id,
+                    location,
+                    mimes,
+                    list,
+                } => {
+                    let pane = string(&pane.to_string());
+                    let names: Vec<CString> = mimes.iter().map(|mime| string(mime)).collect();
+                    let pointers: Vec<*const c_char> =
+                        names.iter().map(|name| name.as_ptr()).collect();
+                    return call(Event {
+                        kind: EVENT_CLIPBOARD_READ,
+                        body: Body {
+                            clipboard_read: ClipboardRead {
+                                pane: pane.as_ptr(),
+                                id: *id,
+                                location: location_number(*location),
+                                mimes: pointers.as_ptr(),
+                                count: pointers.len(),
+                                list: *list,
+                            },
+                        },
+                    });
+                }
             };
             let pane = string(&pane.to_string());
             call(Event {
@@ -544,6 +644,15 @@ fn text_of<'a>(pointer: *const c_char) -> Option<&'a str> {
     }
     // SAFETY: pointer is non-null and NUL-terminated by contract.
     unsafe { CStr::from_ptr(pointer) }.to_str().ok()
+}
+
+fn texts_of<'a>(pointers: *const *const c_char, count: usize) -> Option<Vec<&'a str>> {
+    if pointers.is_null() {
+        return Some(Vec::new());
+    }
+    // SAFETY: pointers points to count NUL-terminated strings by contract.
+    let pointers = unsafe { std::slice::from_raw_parts(pointers, count) };
+    pointers.iter().map(|pointer| text_of(*pointer)).collect()
 }
 
 fn bytes_of<'a>(data: *const u8, len: usize) -> Option<&'a [u8]> {
@@ -901,6 +1010,90 @@ pub unsafe extern "C" fn ko_client_size(
 
 /// # Safety
 ///
+/// `client` is a live handle. `contents` is null, or points to `count` items
+/// whose strings are NUL-terminated and whose data is readable for `len` bytes.
+/// `available` is null, or points to `available_count` NUL-terminated strings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ko_client_clipboard_answer(
+    client_: *const Client,
+    id: u64,
+    contents: *const ClipboardItem,
+    count: usize,
+    available: *const *const c_char,
+    available_count: usize,
+) -> Code {
+    let Some(client) = client(client_) else {
+        return Code::Argument;
+    };
+    let served = if contents.is_null() {
+        None
+    } else {
+        let items = if count == 0 {
+            &[]
+        } else {
+            // SAFETY: contents points to count items by contract.
+            unsafe { std::slice::from_raw_parts(contents, count) }
+        };
+        let (Some(items), Some(available)) = (
+            items
+                .iter()
+                .map(|item| {
+                    Some(ClipboardContent {
+                        mime: text_of(item.mime)?.to_owned(),
+                        data: Text(bytes_of(item.data, item.len)?.to_vec()),
+                    })
+                })
+                .collect::<Option<Vec<_>>>(),
+            texts_of(available, available_count),
+        ) else {
+            return Code::Argument;
+        };
+        let fits = ServedBuf::new(
+            items
+                .iter()
+                .map(|item| (item.mime.as_bytes(), item.data.0.as_slice())),
+            available.iter().map(|name| name.as_bytes()),
+        )
+        .is_ok();
+        fits.then(|| protocol::ClipboardServed {
+            contents: items,
+            available: available.into_iter().map(str::to_owned).collect(),
+        })
+    };
+    request(client, ClientRequest::ClipboardAnswer { id, served })
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    pub kitty_images_max_bytes: u64,
+}
+
+/// # Safety
+///
+/// `client` is a live handle. `out` is writable for one `ko_limits`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ko_client_limits(client_: *const Client, out: *mut Limits) -> Code {
+    let Some(client) = client(client_).filter(|_| !out.is_null()) else {
+        return Code::Argument;
+    };
+    let Some(kitty_images_max_bytes) = locked(&client.shared.model)
+        .as_ref()
+        .map(|model| model.limits.kitty_images_max_bytes)
+    else {
+        return Code::Closed;
+    };
+    // SAFETY: out is non-null and writable by contract.
+    unsafe {
+        *out = Limits {
+            kitty_images_max_bytes,
+        }
+    };
+    Code::Ok
+}
+
+/// # Safety
+///
 /// `client` is a live handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_focus(client_: *const Client, focused: bool) -> Code {
@@ -925,16 +1118,8 @@ pub unsafe extern "C" fn ko_client_observe(
     let Some(client) = client(client_) else {
         return Code::Argument;
     };
-    let names: &[*const c_char] = if panes.is_null() {
-        &[]
-    } else {
-        // SAFETY: panes points to count strings by contract.
-        unsafe { std::slice::from_raw_parts(panes, count) }
-    };
-    let ids: Option<Vec<PaneId>> = names
-        .iter()
-        .map(|name| text_of(*name).and_then(|name| name.parse().ok()))
-        .collect();
+    let ids: Option<Vec<PaneId>> = texts_of(panes, count)
+        .and_then(|names| names.iter().map(|name| name.parse().ok()).collect());
     let Some(ids) = ids else {
         return Code::Argument;
     };
@@ -1175,6 +1360,8 @@ mod tests {
         Model,
         Selected(Option<String>, Option<String>, Option<String>),
         Alert(c_int, String, Option<String>, Option<String>),
+        ClipboardWrite(String, c_int, Vec<(String, Vec<u8>)>),
+        ClipboardRead(String, u64, c_int, Vec<String>, bool),
         Failed(Code, String),
         Mismatch(Code, String, String),
         Restored(u64, Restored),
@@ -1261,6 +1448,35 @@ mod tests {
                 EVENT_VIEW_CLOSED => {
                     let closed = event.body.view_closed;
                     Seen::Closed(closed.code, owned(closed.message))
+                }
+                EVENT_CLIPBOARD_WRITE => {
+                    let write = event.body.clipboard_write;
+                    Seen::ClipboardWrite(
+                        owned(write.pane),
+                        write.location,
+                        std::slice::from_raw_parts(write.contents, write.count)
+                            .iter()
+                            .map(|item| {
+                                (
+                                    owned(item.mime),
+                                    std::slice::from_raw_parts(item.data, item.len).to_vec(),
+                                )
+                            })
+                            .collect(),
+                    )
+                }
+                EVENT_CLIPBOARD_READ => {
+                    let read = event.body.clipboard_read;
+                    Seen::ClipboardRead(
+                        owned(read.pane),
+                        read.id,
+                        read.location,
+                        std::slice::from_raw_parts(read.mimes, read.count)
+                            .iter()
+                            .map(|mime| owned(*mime))
+                            .collect(),
+                        read.list,
+                    )
                 }
                 _ => {
                     let failure = event.body.failure;
@@ -1578,6 +1794,17 @@ mod tests {
         } else {
             match plain(&request) {
                 Some((0, _)) => {}
+                Some((200, body))
+                    if request.target.contains("/images/")
+                        && header(&head, "Ko-Accept-Shm").is_none() =>
+                {
+                    let generation = request.target.split("generation=").nth(1).unwrap_or("0");
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 Reply\r\nContent-Type: application/octet-stream\r\nko-image-format: rgba\r\nko-image-width: 2\r\nko-image-height: 1\r\nko-image-generation: {generation}\r\nko-image-gap-ms: 40\r\nko-image-frames: 3\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    );
+                }
                 Some((status, body)) => {
                     let _ = write!(
                         stream,
@@ -1875,6 +2102,12 @@ mod tests {
         unsafe { ko_buffer_free(buffer) };
         // SAFETY: a null buffer is allowed and frees nothing.
         unsafe { ko_buffer_free(std::ptr::null_mut()) };
+    }
+
+    fn freed_once_if_any(buffer: &mut Buffer) {
+        if !buffer.data.is_null() {
+            freed_once(buffer);
+        }
     }
 
     fn empty_buffer() -> Buffer {
@@ -4032,6 +4265,234 @@ mod tests {
         let seen = fixture.quiet();
         let models = seen.iter().filter(|seen| **seen == Seen::Model).count();
         assert_eq!(models, 1, "{seen:?}");
+        close(client);
+    }
+
+    #[test]
+    fn clipboard_events_reach_the_callback_and_answers_reach_the_wire() {
+        let (answers, answered) = channel();
+        let server = serve(
+            "clipboard",
+            client_script(move |socket, _| {
+                welcomed(socket);
+                send(
+                    socket,
+                    r#"{"type":"clipboard_write","pane":"pane_1","location":"primary","contents":[{"mime":"text/plain","data":"aGk="},{"mime":"image/png","data":"AAEC"}]}"#,
+                );
+                send(
+                    socket,
+                    r#"{"type":"clipboard_read","pane":"pane_2","id":5,"location":"selection","mimes":["text/plain"],"list":true}"#,
+                );
+                for text in text_messages(socket, 4) {
+                    let _ = answers.send(text);
+                }
+                wait_for_hangup(socket);
+            }),
+        );
+        let fixture = Fixture::new();
+        let client = fixture.connect(&server);
+        assert!(matches!(fixture.next(), Seen::Welcome(..)));
+        assert!(matches!(fixture.next(), Seen::Layout(0, ..)));
+        assert_eq!(
+            fixture.next(),
+            Seen::ClipboardWrite(
+                "pane_1".to_owned(),
+                3,
+                vec![
+                    ("text/plain".to_owned(), b"hi".to_vec()),
+                    ("image/png".to_owned(), vec![0, 1, 2]),
+                ]
+            )
+        );
+        assert_eq!(
+            fixture.next(),
+            Seen::ClipboardRead(
+                "pane_2".to_owned(),
+                5,
+                2,
+                vec!["text/plain".to_owned()],
+                true
+            )
+        );
+        let item = ClipboardItem {
+            mime: c"text/plain".as_ptr(),
+            data: b"clip".as_ptr(),
+            len: 4,
+        };
+        let avail = [c"text/plain".as_ptr(), c"image/png".as_ptr()];
+        // SAFETY: the client is live; the item and its strings are valid for the call.
+        unsafe {
+            assert_eq!(
+                ko_client_clipboard_answer(client, 5, &item, 1, std::ptr::null(), 0),
+                Code::Ok
+            );
+            assert_eq!(
+                ko_client_clipboard_answer(client, 6, std::ptr::null(), 0, std::ptr::null(), 0),
+                Code::Ok
+            );
+            assert_eq!(
+                ko_client_clipboard_answer(client, 7, &item, 0, avail.as_ptr(), 2),
+                Code::Ok
+            );
+            let big = vec![0u8; ko_pane_wire::frame::MAX_CLIPBOARD];
+            let large = ClipboardItem {
+                mime: c"image/png".as_ptr(),
+                data: big.as_ptr(),
+                len: big.len(),
+            };
+            assert_eq!(
+                ko_client_clipboard_answer(client, 8, &large, 1, std::ptr::null(), 0),
+                Code::Ok
+            );
+        }
+        let sent: Vec<Value> = (0..4)
+            .map(|_| serde_json::from_str(&answered.recv_timeout(WAIT).unwrap()).unwrap())
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                json!({"type": "clipboard_answer", "id": 5, "contents": [{"mime": "text/plain", "data": "Y2xpcA=="}]}),
+                json!({"type": "clipboard_answer", "id": 6}),
+                json!({"type": "clipboard_answer", "id": 7, "contents": [], "available": ["text/plain", "image/png"]}),
+                json!({"type": "clipboard_answer", "id": 8}),
+            ]
+        );
+        close(client);
+    }
+
+    fn image_of(
+        client: *mut Client,
+        (pane, image, frame, generation): (&CStr, u32, u32, u64),
+        accept_shm: bool,
+    ) -> (Code, Image) {
+        let mut out = Image {
+            format: 0,
+            width: 0,
+            height: 0,
+            generation: 0,
+            gap_ms: 0,
+            frames: 0,
+            length: 0,
+            shm_name: [0; 32],
+            body: empty_buffer(),
+        };
+        // SAFETY: the client is live, the pane is NUL-terminated and out is writable.
+        let code = unsafe {
+            ko_client_image(
+                client,
+                pane.as_ptr(),
+                image,
+                frame,
+                generation,
+                accept_shm,
+                &mut out,
+            )
+        };
+        (code, out)
+    }
+
+    #[test]
+    fn an_image_frame_comes_as_a_shared_memory_name_or_a_body_and_a_missing_one_is_not_found() {
+        let server = serve(
+            "image",
+            client_script(|socket, _| {
+                welcomed(socket);
+                wait_for_hangup(socket);
+            })
+            .plain(|request| {
+                if !request.target.starts_with("/panes/pane_1/images/") {
+                    return answer_empty(request);
+                }
+                if request.target.contains("/images/9/") {
+                    return Some((
+                        404,
+                        r#"{"kind":"not_found","message":"image not found"}"#.to_owned(),
+                    ));
+                }
+                if header(&request.head, "Ko-Accept-Shm").is_some() {
+                    return Some((
+                        200,
+                        r#"{"name":"/ko-77-3","length":8,"format":"rgb","width":1,"height":2,"generation":42,"gap_ms":15,"frames":2}"#.to_owned(),
+                    ));
+                }
+                Some((200, "PIXELS!!".to_owned()))
+            }),
+        );
+        let fixture = Fixture::new();
+        let client = fixture.connect(&server);
+        assert!(matches!(fixture.next(), Seen::Welcome(..)));
+        assert!(matches!(fixture.next(), Seen::Layout(0, ..)));
+
+        let (code, mut shm) = image_of(client, (c"pane_1", 7, 2, 42), true);
+        assert_eq!(code, Code::Ok);
+        assert_eq!(
+            (
+                shm.format,
+                shm.width,
+                shm.height,
+                shm.generation,
+                shm.gap_ms,
+                shm.frames,
+                shm.length
+            ),
+            (1, 1, 2, 42, 15, 2, 8)
+        );
+        assert_eq!(owned(shm.shm_name.as_ptr()), "/ko-77-3");
+        assert!(shm.body.data.is_null());
+        freed_once_if_any(&mut shm.body);
+        let heads = server.heads("GET", "/panes/pane_1/images/7/frames/2?generation=42");
+        assert_eq!(heads.len(), 1);
+        assert!(
+            header(&heads[0], "Ko-Accept-Shm") == Some("1")
+                && heads[0].contains("Ko-Client: client_7"),
+            "{}",
+            heads[0]
+        );
+
+        let (code, mut body) = image_of(client, (c"pane_1", 7, 3, 99), false);
+        assert_eq!(code, Code::Ok);
+        assert_eq!(
+            (
+                body.format,
+                body.width,
+                body.height,
+                body.generation,
+                body.gap_ms,
+                body.frames,
+                body.length
+            ),
+            (2, 2, 1, 99, 40, 3, 8)
+        );
+        assert_eq!(owned(body.shm_name.as_ptr()), "");
+        assert_eq!(contents(&body.body), "PIXELS!!");
+        freed_once(&mut body.body);
+        let heads = server.heads("GET", "/panes/pane_1/images/7/frames/3?generation=99");
+        assert!(header(&heads[0], "Ko-Accept-Shm").is_none(), "{}", heads[0]);
+
+        for accept in [true, false] {
+            let (code, mut gone) = image_of(client, (c"pane_1", 9, 1, 1), accept);
+            assert_eq!(code, Code::NotFound);
+            assert_eq!(contents(&gone.body), "image not found");
+            freed_once(&mut gone.body);
+        }
+        for bad in [
+            (c"bogus", 7, 1, 1),
+            (c"pane_1", 0, 1, 1),
+            (c"pane_1", 7, 0, 1),
+            (c"pane_1", 7, 1, 0),
+        ] {
+            let (code, out) = image_of(client, bad, true);
+            assert_eq!((code, out.body.data.is_null()), (Code::Argument, true));
+        }
+        let fetched = server.targets("GET");
+        assert_eq!(
+            fetched
+                .iter()
+                .filter(|target| target.starts_with("/panes/"))
+                .count(),
+            4,
+            "a bad argument sends nothing: {fetched:?}"
+        );
         close(client);
     }
 }
