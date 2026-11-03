@@ -1277,8 +1277,26 @@ The coordinator's one thread deflates each view's slices: N views
 that attach at once cost N times the deflate (about 0.26 s for each
 77 MB history).
 
-Open: the app rows of the RTT table (attach, the 100k-row restore and
-echo through the app), measured before and after compression.
+The app rows (`app/scripts/rtt.py` through the same proxy, one run per
+cell, ms; before is 1c0ffaf6 without compression, after is 517e8ec5):
+
+| RTT × Mbit/s | attach before/after | echo p50 after | 100k mixed restore after | wire down before/after |
+|---|---|---|---|---|
+| 50 × ∞ | 898 / 919 | 50.5 | 964 | 2.3 / 30.4 MB |
+| 50 × 100 | 906 / 996 | 50.4 | 2633 | 3.3 / 30.4 MB |
+| 50 × 10 | 900 / 900 | 50.7 | 24402 | 2.2 / 30.4 MB |
+| 150 × ∞ | 2467 / 2450 | 150.5 | 2875 | 2.3 / 30.4 MB |
+| 150 × 100 | 2488 / 2473 | 150.5 | 3034 | 2.5 / 30.4 MB |
+| 150 × 10 | 2492 / 2493 | 150.4 | 24854 | 2.4 / 30.4 MB |
+| 300 × ∞ | 4340 / 4324 | 300.5 | 5723 | 2.3 / 30.4 MB |
+| 300 × 100 | 4281 / 4297 | 300.6 | 5720 | 2.3 / 30.4 MB |
+| 300 × 10 | 4309 / 4322 | 300.7 | 25452 | 2.3 / 30.4 MB |
+
+Echo adds under 1 ms over the RTT at p50 in every cell. After, every
+cell restored the whole 81.6 MB snapshot over 30.4 MB on the wire.
+Before, every mixed restore stalled after about 1.9 MB: the 64 MiB
+per-view queue closed the view with a bare EOF that the client missed
+(the overflow unit fixes the close and adds a spill file).
 
 ### K8. The cut-over (6 to 9 agent-days)
 
