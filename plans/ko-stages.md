@@ -46,9 +46,11 @@ Facts that change the earlier plan:
 - `tungstenite` 0.30 has no `permessage-deflate` feature, and no crate
   in the set inflates or deflates. Compression on the remote path
   needs a new crate (section 4.6).
-- The ghostty pin (`da3eff4c`, the app's fork branch) still exposes
-  only the current frame's pixels (`GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR`,
-  `kitty_graphics.h`). The frame question of migration.md S6 is open.
+- The ghostty pin (`da3eff4c`, the app's fork branch) exposed only
+  the current frame's pixels (`GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR`,
+  `kitty_graphics.h`). K6's first task settles the frame question of
+  migration.md S6: the fork reads frame `n` and attaches pixels to a
+  pending frame.
 - `ko_vt::cut` already filters `KITTY_IMAGE_PAYLOAD` records out of a
   snapshot (`a_snapshot_drops_kitty_payloads`). `images=all` is the
   missing path, not `images=none`.
@@ -836,9 +838,52 @@ The server and terminal client part depends on K1 (the callback
 plumbing); the app part on K5. Decided 2026-11-02: animation is done
 properly from the start, with no fallback (4.5).
 
-**First task: the Ghostty fork** (3 to 4 agent-days, in
-`third_party/ghostty`, the app's fork that ko pins). Two additions to
-the libghostty-vt C API, in one fork commit on top of `da3eff4c`:
+**First task: the Ghostty fork** (built; one fork commit on
+`1972e7a1a`). The header is `include/ghostty/vt/kitty_graphics.h`
+(`ghostty_kitty_graphics_frame_get`, `_frame_attach`,
+`_frame_adopt`, `_screen_image`, the animation keys of `image_get`)
+and the terminal key `KITTY_PENDING_GENERATION`; the app's surface
+wrappers are in `include/ghostty.h`. `ko_vt/src/frames.rs` wraps the
+read and the copying attach. Decisions that the code does not state
+(reviewed by the app's side, 2026-11-02 and 2026-11-03):
+
+- A frame's generation is a serial that the bytes alone decide, so
+  the pane and every mirror compute the same value for the same frame
+  state, and `?generation=` keys the server's objects and the mirror's
+  attach with one number. A counter over graphics commands moves
+  once for each command that stores pixels or numbers frames
+  (transmission, `a=f`, `a=c`, `a=d d=f`), before the image lookup
+  and whatever the local outcome, so an eviction, a refused medium or
+  image storage that is off in one terminal does not move it apart.
+  One counter serves both screens. A chunked command moves it
+  at its last chunk. `a=a`, `a=p`, queries, ticks and restore input
+  never move it. A serial never repeats in a terminal, also across a
+  reset. Serial 0 is a frame without an identity (a frame that restore
+  input created), and no fetch completes it. The snapshot carries the counter and each frame's serial,
+  and a payload record carries its frame's serial, so a payload for a
+  frame that an edit stamped again is dropped.
+- A frame that this terminal cannot fill becomes pending with the
+  command's serial: a refused or unreadable `t=s`, an edit of a pending
+  frame, and an `a=f` or `a=c` whose source is pending here. A fetch
+  at that serial then gets the pane's composed pixels. This closes the
+  race in which a mirror attaches post-edit pixels under the old
+  serial and then composes the edit a second time.
+- A live transmission on a held image replaces it with a new serial;
+  only restore input fills a held image in place (`1972e7a1a`).
+- An animation with a pending frame does not play; the last attach
+  restarts its frame timer.
+- Adopt takes the mapping that `mmap` returned (`map_len` is the mmap
+  length) and owns it on success; a frame of any number can be a
+  mapping, copied only before an in-place edit.
+- The vt calls take no lock. The surface wrappers take the renderer
+  lock and wake the renderer; they are the app's apprt and stay in the
+  fork. The vt calls and the snapshot fields are candidates for
+  upstream Ghostty. `ghostty_surface_fill_images` stays until K8.
+- The snapshot bytes changed (the payload record and the storage
+  record), so the app's decoder and ko's must come from the same pin.
+
+The original task text follows. Two additions to the libghostty-vt C
+API, in one fork commit:
 
 - Read frame `n` of an image: a frame iterator or an indexed query
   beside `GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR`, which gives the pixels,

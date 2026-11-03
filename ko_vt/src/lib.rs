@@ -14,6 +14,7 @@ use ko_vt_sys as sys;
 
 pub mod compress;
 mod cut;
+pub mod frames;
 pub mod input;
 pub mod render;
 pub mod unicode;
@@ -45,11 +46,28 @@ impl fmt::Display for Error {
     }
 }
 
-fn check(result: sys::GhosttyResult) -> Result<(), Error> {
+pub(crate) fn check(result: sys::GhosttyResult) -> Result<(), Error> {
     if result == sys::GHOSTTY_SUCCESS {
         Ok(())
     } else {
         Err(Error::Ghostty(result))
+    }
+}
+
+pub(crate) fn get<T>(
+    call: impl FnOnce(*mut c_void) -> sys::GhosttyResult,
+    mut value: T,
+) -> Result<T, Error> {
+    check(call(ptr::from_mut(&mut value).cast()))?;
+    Ok(value)
+}
+
+/// A call that answers NO_VALUE for "nothing there" and succeeds or fails otherwise.
+pub(crate) fn present(result: sys::GhosttyResult) -> Result<bool, Error> {
+    match result {
+        sys::GHOSTTY_SUCCESS => Ok(true),
+        sys::GHOSTTY_NO_VALUE => Ok(false),
+        code => Err(Error::Ghostty(code)),
     }
 }
 
@@ -988,7 +1006,7 @@ mod tests {
         Dim::new(value).unwrap()
     }
 
-    fn make(cols: u16, rows: u16) -> Terminal {
+    pub(crate) fn make(cols: u16, rows: u16) -> Terminal {
         let limits = Limits {
             scrollback: Scrollback::Bounded {
                 max_bytes: NonZeroUsize::new(50_000_000),
