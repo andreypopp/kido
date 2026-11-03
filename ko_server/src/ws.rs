@@ -647,8 +647,16 @@ mod tests {
         out.send(vec![0; 1 << 20]);
         let mut chunk = [0u8; 4096];
         for second in [36, 42, 48, 54, 60] {
-            assert!(reader.read(&mut chunk).is_ok());
-            out.writable();
+            let before = out.accepted();
+            // Linux frees a unix socket's send room in whole skbs, not for each byte read.
+            for _ in 0..(1 << 20) / chunk.len() {
+                assert!(reader.read(&mut chunk).unwrap() > 0);
+                out.writable();
+                if out.accepted() != before {
+                    break;
+                }
+            }
+            assert_ne!(out.accepted(), before, "the reads freed no room");
             assert!(
                 matches!(ws.ping(&mut out, at(start, second)), Ping::After(_)),
                 "the link ended at {second} s while its output progressed"

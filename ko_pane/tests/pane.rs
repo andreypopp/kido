@@ -14,6 +14,7 @@ use ko_pane_wire::frame::{
 use ko_pane_wire::ring::{Marker, Pos, Reader, RecordKind};
 use ko_sys::fd;
 use ko_sys::pid::{Exit, Pid, Waited};
+use ko_sys::retry::retry;
 use ko_sys::signal::Signal;
 use ko_sys::spawn;
 use ko_vt::{Extent, Format, Terminal};
@@ -129,7 +130,7 @@ impl Harness {
             }
             assert!(started.elapsed() < DEADLINE, "no frame from the pane");
             let mut chunk = [0u8; 65536];
-            let count = self.control.read(&mut chunk).unwrap();
+            let count = retry(|| self.control.read(&mut chunk)).unwrap();
             assert!(count > 0, "the pane closed its control socket");
             self.buffer.extend_from_slice(&chunk[..count]);
         }
