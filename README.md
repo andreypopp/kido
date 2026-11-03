@@ -15,6 +15,12 @@ load it. The extension uses tmux for supervision and status reporting.
 brew install andreypopp/tap/kido
 ```
 
+With Nix, install the flake:
+
+```sh
+nix profile install github:andreypopp/kido
+```
+
 Then start kido from a plain terminal:
 
 ```sh

@@ -19,6 +19,14 @@ contract = pathlib.Path('share/rpc/contract.md').read_text()
 if f'fork revision: {revision}\n' not in contract:
     print('share/rpc/contract.md: fork revision differs from third_party/tmux gitlink')
     raise SystemExit(1)
+flake = pathlib.Path('flake.nix').read_text()
+if f'github:andreypopp/tmux/{revision}"' not in flake:
+    print('flake.nix: tmux-fork revision differs from third_party/tmux gitlink')
+    raise SystemExit(1)
+mosaic = re.search(r'invariant-hq/mosaic#([0-9a-f]{40})', pathlib.Path('dune-project').read_text())[1]
+if f'github:invariant-hq/mosaic/{mosaic}"' not in flake:
+    print('flake.nix: mosaic revision differs from the dune-project pin')
+    raise SystemExit(1)
 
 errors = 0
 def report(path, text, offset, message):
