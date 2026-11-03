@@ -730,8 +730,10 @@ the app engine's fetch thread.
 - Server-to-client WebSocket messages get a much larger limit than the
   1 MiB of client-to-server messages, so a layout event or welcome with
   large variables fits.
-- The read routes `GET /panes/{id}/vars` (`Vars`) and
-  `GET /panes/{id}/vars/{name}` (`Var`) are removed. The writes
+- `GET /layout` is the only read of panes. The read routes
+  `GET /panes` (`ListPanes`), `GET /panes/{id}/vars` (`Vars`) and
+  `GET /panes/{id}/vars/{name}` (`Var`) are removed; `ko panes`,
+  `ko_client` and `ko-pi` read the layout instead. The writes
   (`SetVar`, `DeleteVar`, the conditional `DeleteVars`) stay.
 - If the run events leave a gap, the runs come into the same message.
 
