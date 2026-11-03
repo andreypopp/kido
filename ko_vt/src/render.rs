@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use ko_vt_sys as sys;
 
-use crate::{Error, Notes, Terminal, check};
+use crate::{Error, Notes, Terminal, check, get};
 
 const HOLD: Duration = Duration::from_millis(150);
 const LOCAL: usize = 128;
@@ -187,11 +187,6 @@ fn colour(color: sys::GhosttyStyleColor) -> Colour {
         }
         _ => Colour::Default,
     }
-}
-
-fn get<T>(call: impl FnOnce(*mut c_void) -> sys::GhosttyResult, mut value: T) -> Result<T, Error> {
-    check(call(ptr::from_mut(&mut value).cast()))?;
-    Ok(value)
 }
 
 impl Terminal {
