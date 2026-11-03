@@ -4256,6 +4256,7 @@ mod tests {
 
     fn a_server_close_during_a_restore(name: &str, paused: bool, close_frame: bool) {
         const SLICE: usize = 512 << 10;
+        let (restore_started, started) = channel::<()>();
         let routes = client_script(|socket, _| {
             welcomed(socket);
             wait_for_hangup(socket);
@@ -4266,6 +4267,7 @@ mod tests {
                 let record = slice_record(10, index == 0, false, true, &pattern(index, SLICE));
                 send_binary(socket, record);
             }
+            let _ = started.recv_timeout(WAIT);
             if close_frame {
                 let _ = socket.close(Some(tungstenite::protocol::CloseFrame {
                     code: tungstenite::protocol::frame::coding::CloseCode::Again,
@@ -4282,6 +4284,7 @@ mod tests {
         let (release, gate) = channel::<()>();
         let (cancelled, was_cancelled) = channel();
         let decoder = Decoder::new(move |snapshot| {
+            let _ = restore_started.send(());
             if paused {
                 let _ = pull(snapshot, 64 << 10, 64 << 10);
                 let _ = reading.send(());
