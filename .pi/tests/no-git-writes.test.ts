@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { after, test } from "node:test";
-import { blocksGitWrite, parentSession } from "../extensions/no-git-writes/policy.ts";
+import { blocksGitWrite, blocksSleep, parentSession } from "../extensions/no-git-writes/policy.ts";
 
 const allowed = [
   "git status", "git diff --cached", "git log -3", "git show HEAD", "git grep TODO",
@@ -107,4 +107,11 @@ test("worktree add: only value-less options are allowed", () => {
 test("neither variable set is a top-level session", () => {
   assert.equal(blocksGitWrite("git add .", parentSession({})), false);
   assert.equal(blocksGitWrite("git add .", parentSession({ KO_AGENT_PARENT_SESSION: "" })), false);
+});
+
+test("sleep is blocked, also inside a script, and other commands are not", () => {
+  for (const command of ["sleep 5", "make test; sleep 240; tail log", "sh -c 'sleep 1'", "x=$(sleep 1)", "/bin/sleep 1"])
+    assert.equal(blocksSleep(command), true, command);
+  for (const command of ["tail -f log", "echo sleep", "grep sleep file", "make sleepy"])
+    assert.equal(blocksSleep(command), false, command);
 });
