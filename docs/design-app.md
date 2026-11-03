@@ -91,7 +91,9 @@ the active app, has no sheet and a pane of the shown window is first
 responder. `SessionView.requestSize` sends the window size with
 `ko_client_size`, at most once per main-queue turn and only when it
 changed; `present` sends it at once. The size carries the cell size in pixels from a shown pane, so
-the server answers `CSI 14t`/`16t` with real values; 0 and 0 mean unknown.
+the server answers `CSI 14t`/`16t` and `TIOCGWINSZ` with real values; 0 and 0 mean unknown.
+The cell's pixels are part of the size that is compared: a font or
+backing-scale change (a display move) that keeps the grid still sends a size.
 A floating sidebar changes no size.
 
 **Version mismatch.** A server of another protocol or terminal revision

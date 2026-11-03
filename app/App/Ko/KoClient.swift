@@ -314,9 +314,9 @@ private final class ClientHandle: @unchecked Sendable {
         try handle.call { try check(ko_client_select($0, Int32(kind), id.description)) }
     }
 
-    // The cell's pixel size answers a program's size queries; 0 and 0 when unknown.
-    func size(cols: Int, rows: Int, cell: (width: UInt32, height: UInt32) = (0, 0)) throws {
-        try handle.call { try check(ko_client_size($0, UInt16(cols), UInt16(rows), UInt16(clamping: cell.width), UInt16(clamping: cell.height))) }
+    // The cell's pixel size answers a program's size queries; the C call takes 0 and 0 for unknown.
+    func size(cols: Int, rows: Int, cell: CellPixels?) throws {
+        try handle.call { try check(ko_client_size($0, UInt16(cols), UInt16(rows), UInt16(clamping: cell?.width ?? 0), UInt16(clamping: cell?.height ?? 0))) }
     }
 
     func switchOver(_ over: Int, _ direction: Int) throws {

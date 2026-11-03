@@ -3,6 +3,11 @@ import GhosttyKit
 import KoModel
 import PaneGeometry
 
+struct CellPixels: Equatable {
+    let width: UInt32
+    let height: UInt32
+}
+
 final class SessionView: NSView {
     // The client whose views feed the panes.
     weak var client: KoClient?
@@ -11,14 +16,19 @@ final class SessionView: NSView {
     var editing: () -> Bool = { false }
     var selectPane: (PaneID) -> Void = { _ in }
     var paneCommand: (PaneCommand, PaneID) -> Void = { _, _ in }
-    var sizeClient: (Int, Int) -> Void = { _, _ in }
-    private var requestedSize: (cols: Int, rows: Int)?
-    private var sentSize: (cols: Int, rows: Int)?
+    var sizeClient: (Int, Int, CellPixels?) -> Void = { _, _, _ in }
+    private struct Size: Equatable {
+        let cols: Int
+        let rows: Int
+        let cell: CellPixels?
+    }
+    private var requestedSize: Size?
+    private var sentSize: Size?
 
-    // The size for the server, sent at most once a frame and only when it changed.
+    // The size for the server, sent at most once a frame and only when it or the cell's pixels changed.
     func requestSize(cols: Int, rows: Int, immediately: Bool = false) {
         let queued = requestedSize != nil
-        requestedSize = (cols, rows)
+        requestedSize = Size(cols: cols, rows: rows, cell: cellPixels)
         if immediately { return sendRequestedSize() }
         guard !queued else { return }
         DispatchQueue.main.async { [weak self] in self?.sendRequestedSize() }
@@ -29,7 +39,7 @@ final class SessionView: NSView {
         requestedSize = nil
         guard sentSize.map({ $0 != size }) ?? true else { return }
         sentSize = size
-        sizeClient(size.cols, size.rows)
+        sizeClient(size.cols, size.rows, size.cell)
     }
     #if KIDO_VISUAL
     var visualShown: (WindowID) -> Void = { _ in }
@@ -171,11 +181,11 @@ final class SessionView: NSView {
         return cell
     }
 
-    var cellPixels: (width: UInt32, height: UInt32)? {
+    var cellPixels: CellPixels? {
         guard let pane = panes.first else { return nil }
         let size = ghostty_surface_size(pane.surface)
         guard size.cell_width_px > 0, size.cell_height_px > 0 else { return nil }
-        return (size.cell_width_px, size.cell_height_px)
+        return CellPixels(width: size.cell_width_px, height: size.cell_height_px)
     }
 
     var font: Float { panes.first?.font ?? 0 }
