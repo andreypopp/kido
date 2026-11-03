@@ -385,9 +385,24 @@ fn view_resume_resize_and_input() {
     assert!(marker.contains(r#""cols":62"#), "marker: {marker}");
 
     v.send(&paste(23, "hello\n", false));
-    let reply = v.event("pasted").to_string();
+    v.within(DEADLINE);
+    let (mut echo, mut reply) = (Vec::new(), None);
+    while reply.is_none() || !contains(&echo, b"\x1b[201~") {
+        match v.read() {
+            Message::Binary(bytes) => {
+                if let Some(Record::Output { data, .. }) = Record::parse(&bytes) {
+                    echo.extend_from_slice(data);
+                }
+            }
+            Message::Text(text) => {
+                if tagged(&text).is_some_and(|(tag, _)| tag == "pasted") {
+                    reply = Some(text);
+                }
+            }
+        }
+    }
+    let reply = reply.expect("pasted reply");
     assert!(reply.contains(r#""pasted":true"#), "paste: {reply}");
-    v.output("\x1b[201~");
     v.type_text("\x1b[?2004l");
     let offset = v.output("\x1b[?2004l");
 

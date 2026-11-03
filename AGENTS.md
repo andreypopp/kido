@@ -438,7 +438,9 @@ Conventions:
   text (`chord('s')`, `line("echo abc")`, `contains`, `gone`). Snapshots
   decode in the test process through `ko_vt::Terminal::decode`. A client
   test is the outer terminal (`outer.rs`): an interactive `/bin/sh` on a
-  pty from `ko_sys::pty::spawn`, and a `ko_vt::Terminal` that gets every
+  pty from `ko_sys::pty::spawn`, with job control off (`set +m`;
+  with it, bash 3.2's `setpgid` for the attach child can fail with
+  `EPERM`, and the client's tty read fails with `EIO`), and a `ko_vt::Terminal` that gets every
   byte from the master and writes its replies back, so the client's
   queries get a real terminal's answers. An outer terminal without
   extended keys drops the kitty keyboard query (`CSI ? u`) before the

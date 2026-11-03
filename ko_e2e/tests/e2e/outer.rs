@@ -240,6 +240,7 @@ impl Outer {
             let (shared, master) = (shared.clone(), master.clone());
             thread::spawn(move || pump(&shared, &master, keys));
         }
+        write_all(&master, b"set +m\r").unwrap();
         Outer {
             shared,
             master,
