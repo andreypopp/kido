@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use ko_pane_wire::ring::{SLICE_MAX, Slice};
 use ko_sys::pid::{Exit, Pid};
 use ko_sys::signal::Signal;
 use ko_sys::spawn::{self, Env};
@@ -373,7 +374,7 @@ pub(crate) enum Record<'a> {
         first: bool,
         last: bool,
         extent: Extent,
-        data: &'a [u8],
+        data: Vec<u8>,
     },
 }
 
@@ -385,17 +386,21 @@ impl Record<'_> {
                 offset,
                 data: &bytes[9..],
             }),
-            2 if bytes.len() >= 11 => Some(Record::Snapshot {
-                offset,
-                first: bytes[9] & 1 != 0,
-                last: bytes[9] & 2 != 0,
-                extent: match bytes[10] {
-                    0 => Extent::Full,
-                    1 => Extent::Screen,
-                    _ => return None,
-                },
-                data: &bytes[11..],
-            }),
+            2 => {
+                let (slice, packed) = Slice::decode(&bytes[9..])?;
+                Some(Record::Snapshot {
+                    offset,
+                    first: slice.first,
+                    last: slice.last,
+                    extent: if slice.screen {
+                        Extent::Screen
+                    } else {
+                        Extent::Full
+                    },
+                    data: miniz_oxide::inflate::decompress_to_vec_with_limit(packed, SLICE_MAX)
+                        .ok()?,
+                })
+            }
             _ => None,
         }
     }
@@ -536,7 +541,7 @@ impl Ws {
             if first {
                 result.clear();
             }
-            result.extend_from_slice(data);
+            result.extend_from_slice(&data);
             if last {
                 return (result, offset);
             }

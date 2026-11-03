@@ -1,3 +1,4 @@
+adler2
 aho-corasick
 anstyle
 arbitrary
@@ -63,6 +64,7 @@ log
 loom
 matchers
 memchr
+miniz_oxide
 nu-ansi-term
 num-traits
 once_cell

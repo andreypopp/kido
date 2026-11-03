@@ -245,6 +245,18 @@ skip or a paste result.
   snapshot file, which it decodes with a file reader and unlinks.
 - A skip is always followed by a snapshot.
 
+A snapshot record's body is compressed; a `bytes` record's is not.
+The slice header stays raw, and the libghostty-vt bytes after it are
+one raw deflate stream (RFC 1951) for each slice. `ko_server::ws`
+owns the codec and its limits. There is no negotiation and no
+uncompressed form: every client inflates, and a slice that does not
+inflate within the limit is a bad record. Rationale: OpenSSH's
+channel window counts uncompressed bytes and limits a remote
+restore, so `ssh -C` gains nothing and only compression inside ko
+helps. Live output stays raw because it is small and latency-bound.
+The cost is the coordinator's CPU on a local restore
+(plans/ko-stages.md K7 has the measurements).
+
 A snapshot can cut a sequence open: an APC, a kitty image or an OSC
 that the pane's terminal held when the snapshot began. The decoded
 terminal completes it from the bytes after the snapshot's offset.

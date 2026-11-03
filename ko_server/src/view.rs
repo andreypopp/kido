@@ -13,6 +13,7 @@ use vstd::view::View as _;
 #[cfg(verus_only)]
 use crate::conn::BATCH;
 use crate::conn::{Batch, Output, Written};
+use crate::deflate::Deflate;
 #[cfg(verus_only)]
 use crate::delivery::instance_of;
 use crate::delivery::{Delivery, Done, Handle};
@@ -552,16 +553,35 @@ fn emit_skipped(wire: &mut Wire<'_>, head: u64, from: u64)
     wire.ws.send(wire.out, protocol::json(&ViewEvent::Skipped(skipped)));
 }
 
-// Assumes: it writes the slice record to the output, closes the output when the write fails, and
-// never reopens a closed output.
+#[verifier::external_type_specification]
 #[verifier::external_body]
-fn write_slice(out: &mut Output, ring: &Reader, at: Pos, offset: u64) -> (r: Result<Written, Invalid>)
+#[allow(dead_code, unreachable_pub)]
+pub struct ExDeflate(Deflate);
+
+// Assumes: it writes the slice record, its body deflated, to the output, closes the output when the write fails, and
+// never reopens a closed output. A closed output gets no write.
+#[verifier::external_body]
+fn write_slice(
+    out: &mut Output,
+    ring: &Reader,
+    at: Pos,
+    offset: u64,
+    deflate: &mut Deflate,
+) -> (r: Result<Written, Invalid>)
     ensures
         old(out).closed() ==> final(out).closed(),
         r is Ok && r->Ok_0 is Closed ==> final(out).closed(),
 {
+    if !out.is_open() {
+        return Ok(Written::Closed);
+    }
     match ring.payload(at) {
-        Ok(payload) => Ok(out.record(true, ws::Record::Snapshot, offset, payload)),
+        Ok(payload) => match ws::with_packed_slice(deflate, payload, |packed| {
+            out.record(true, ws::Record::Snapshot, offset, packed)
+        }) {
+            Some(written) => Ok(written),
+            None => Err(Invalid::Slice),
+        },
         Err(e) => Err(e),
     }
 }
@@ -986,7 +1006,7 @@ impl View {
         &&& self.stamp == handle.stamp_of()
     }
 
-    pub(crate) fn on_slice(&mut self, out: &mut Output, handle: Handle<'_>) -> (r: Result<(), Invalid>)
+    pub(crate) fn on_slice(&mut self, out: &mut Output, deflate: &mut Deflate, handle: Handle<'_>) -> (r: Result<(), Invalid>)
         requires
             old(self).wf(),
             handle.valid(),
@@ -1017,7 +1037,7 @@ impl View {
         if offset < self.coff {
             return Err(Invalid::Slice);
         }
-        let written = write_slice(out, ring, at, offset)?;
+        let written = write_slice(out, ring, at, offset, deflate)?;
         proof {
             let l = ring.log();
             wf_rec(ring.cap(), l, at.v() as nat);
@@ -1222,9 +1242,10 @@ mod tests {
             writer.put(RecordKind::Slice, &body);
         }
         let mut seen = 0;
+        let mut deflate = Deflate::new();
         let mut sink = |handle: Handle<'_>| {
             if Some(seen) != dropped {
-                view.on_slice(&mut out, handle).unwrap();
+                view.on_slice(&mut out, &mut deflate, handle).unwrap();
             }
             seen += 1;
         };

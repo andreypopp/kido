@@ -9,6 +9,7 @@ httparse.workspace = true
 ko_pane_wire = { path = "../ko_pane_wire" }
 ko_sys = { path = "../ko_sys", features = ["e2e"] }
 ko_vt = { path = "../ko_vt" }
+miniz_oxide.workspace = true
 serde_json.workspace = true
 tungstenite.workspace = true
 

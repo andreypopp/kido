@@ -9,7 +9,7 @@ use ko_pane_wire::ring::Slice;
 use ko_server::api::{Offset, Route};
 use ko_server::ids::{ClientId, PaneId};
 use ko_server::protocol::{self, Images, Marker, ViewEvent, ViewOptions, ViewRequest, json};
-use ko_server::ws::{BadRecord, Record, parse_record};
+use ko_server::ws::{BadRecord, Parsed, parse_record};
 use ko_sys::clock::Mono;
 use ko_sys::event::{Poll, Ready, Token};
 use ko_vt::compress::{Compress, Tick};
@@ -329,10 +329,11 @@ impl Mirror {
 
     fn record(&mut self, state: &mut State, record: &Bytes) -> Result<(), String> {
         match parse_record(record) {
-            Ok((Record::Output, offset, data)) => self.output(state, record, offset, data),
-            Ok((Record::Snapshot, offset, data)) => self.snapshot(state, offset, data),
+            Ok(Parsed::Output { offset, data }) => self.output(state, record, offset, data),
+            Ok(Parsed::Snapshot { offset, slice }) => self.snapshot(state, offset, &slice),
             Err(BadRecord::Short) => Err("short record".to_owned()),
             Err(BadRecord::Kind(_)) => Err("invalid record kind".to_owned()),
+            Err(BadRecord::Inflate) => Err("corrupt snapshot slice".to_owned()),
         }
     }
 
@@ -571,8 +572,19 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, chunk)| {
-                let flags = u8::from(i == 0) | u8::from(i + 1 == chunks.len()) << 1;
-                [&[2][..], &[0; 8], &[flags, 0], chunk].concat()
+                let header = ko_pane_wire::ring::Slice {
+                    first: i == 0,
+                    last: i + 1 == chunks.len(),
+                    screen: false,
+                }
+                .encode();
+                [
+                    &[2][..],
+                    &[0; 8],
+                    &header,
+                    &miniz_oxide::deflate::compress_to_vec(chunk, 1),
+                ]
+                .concat()
             })
             .collect()
     }

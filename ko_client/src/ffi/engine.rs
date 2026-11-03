@@ -14,7 +14,7 @@ use ko_server::protocol::{
     self, ClientEvent, ClientRequest, Error, ErrorKind, Version, ViewEvent as Wire, ViewRequest,
     check_version, json,
 };
-use ko_server::ws::{Record, parse_record};
+use ko_server::ws::{Parsed, parse_record};
 use ko_sys::event::{Events, Interest, Mode, Poll, Ready, Timer, Token, Wake};
 use tungstenite::Bytes;
 
@@ -588,14 +588,14 @@ fn feed_text(view: &Arc<View>, event: &str) {
 }
 
 fn feed_record(view: &Arc<View>, continuation: usize, record: &Bytes) -> Result<(), &'static str> {
-    let (kind, offset, data) = parse_record(record).map_err(|_| "invalid record")?;
-    match kind {
-        Record::Output => view.feed(Feed::Bytes {
+    match parse_record(record).map_err(|_| "invalid record")? {
+        Parsed::Output { offset, data } => view.feed(Feed::Bytes {
             offset,
             data: record.slice_ref(data),
         }),
-        Record::Snapshot => {
-            let (header, body) = Header::decode(data).ok_or("short snapshot slice")?;
+        Parsed::Snapshot { offset, slice } => {
+            let data = Bytes::from(slice);
+            let (header, body) = Header::decode(&data).ok_or("short snapshot slice")?;
             view.slice(
                 &Slice {
                     first: header.first,
@@ -604,7 +604,7 @@ fn feed_record(view: &Arc<View>, continuation: usize, record: &Bytes) -> Result<
                     offset,
                     continuation,
                 },
-                record.slice_ref(body),
+                data.slice_ref(body),
             )?;
         }
     }

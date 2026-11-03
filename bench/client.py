@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """usage: KIDO_TMUX=path/to/kido-tmux [KO_BIN=build/ko/bin/ko] bench/client.py [latency] [yes] [attach] [resize] [memory] [scroll] [busy] [idle]
-       [KO_BIN=...] bench/client.py rtt --rtt MS --bw MBIT --variant local|none|ssh-c|miniz1|miniz6 --out FILE [--rows attach,plain,mixed,echo] [--runs N]
+       [KO_BIN=...] bench/client.py rtt --rtt MS --bw MBIT --variant local|none|ssh-c|deflate --out FILE [--rows attach,plain,mixed,echo] [--runs N]
        bench/client.py rtt-table FILE...   (a Markdown table of the rtt records; bench/rtt.sh runs both)
 
 KO_BIN names the ko to measure (a reference build); without it `make build-ko` runs and build/ko/bin/ko is measured."""
@@ -810,7 +810,7 @@ class Remote(Ko):
 
     def client_env(self):
         h = f"{self.rdir}/home"
-        return scrubbed(HOME=h, XDG_CONFIG_HOME=h, XDG_STATE_HOME=h, SHELL="/bin/sh", TERM="xterm-ghostty", PATH=f"{self.rdir}/bin:{os.environ['PATH']}", KO_INFLATE_STATS=f"{self.rdir}/inflate")
+        return scrubbed(HOME=h, XDG_CONFIG_HOME=h, XDG_STATE_HOME=h, SHELL="/bin/sh", TERM="xterm-ghostty", PATH=f"{self.rdir}/bin:{os.environ['PATH']}")
 
     def attach(self):
         c = Outer([self.exe, HOST], self.client_env(), ROWS, PANE_COLS + SIDEBAR, track=True)
@@ -851,10 +851,8 @@ def rtt_target(args):
     variant = args.variant
     if variant == "local":
         return Ko(scrollback="2G")
-    exe, env = os.environ.get("KO_BIN_REMOTE"), {}
-    if variant.startswith("miniz"):
-        env = {"KO_DEFLATE_LEVEL": variant[5:]}
-    return Remote(args.rtt, args.bw, variant == "ssh-c", exe=exe, env=env, scrollback="2G")
+    exe = None if variant == "deflate" else os.environ["KO_BIN_REF"]
+    return Remote(args.rtt, args.bw, variant == "ssh-c", exe=exe, scrollback="2G")
 
 
 def echo_samples(c, count, first=1):
@@ -878,20 +876,6 @@ def cpu_seconds(target, c, before):
         used["proxy"] = sum(cpu_or_zero(x) for p in ssh for x in children(p))
         used["sshd"] = sum(cpu_or_zero(p) for p in target.sshd_pids())
     return {k: round(v, 2) for k, v in used.items()}
-
-
-def scratch_stats(target):
-    out = {}
-    try:
-        with open(target.dir + "/server.log") as f:
-            found = re.findall(r"deflate_ms=([\d.]+) in=(\d+) out=(\d+)", f.read())
-        if found:
-            out["deflate_ms"], out["deflate_in"], out["deflate_out"] = float(found[-1][0]), int(found[-1][1]), int(found[-1][2])
-        with open(target.rdir + "/inflate") as f:
-            out["inflate_ms"] = float(f.read().split()[0])
-    except (OSError, AttributeError, IndexError):
-        pass
-    return out
 
 
 def row_attach(args, echo):
@@ -933,7 +917,6 @@ def row_restore(args, kind):
         c.quiet(0.3, 10)
         up, down = (b - a for a, b in zip(wire, target.wire()))
         out = {"shown_ms": (shown - began) * 1000, "loaded_ms": (loaded - began) * 1000, "wire_up": up, "wire_down": down, "cpu": used}
-        out.update(scratch_stats(target))
         c.close()
         target.clients.remove(c)
         signal.alarm(RTT_DEADLINE)
@@ -995,7 +978,7 @@ def rtt(argv):
     parser = argparse.ArgumentParser(prog="client.py rtt")
     parser.add_argument("--rtt", type=float, required=True)
     parser.add_argument("--bw", type=float, required=True)
-    parser.add_argument("--variant", required=True, choices=["local", "none", "ssh-c", "miniz1", "miniz6"])
+    parser.add_argument("--variant", required=True, choices=["local", "none", "ssh-c", "deflate"])
     parser.add_argument("--out", required=True)
     parser.add_argument("--rows", default="attach,plain,mixed,echo")
     parser.add_argument("--runs", type=int, default=3)
@@ -1012,7 +995,7 @@ def rtt(argv):
             guarded(label, fns[row], record)
 
 
-VARIANT_NAMES = [("local", "local"), ("none", "none"), ("ssh-c", "ssh -C"), ("miniz1", "miniz l1"), ("miniz6", "miniz l6")]
+VARIANT_NAMES = [("local", "local"), ("none", "none"), ("ssh-c", "ssh -C"), ("deflate", "deflate l1")]
 
 
 def rtt_table(files):
@@ -1049,7 +1032,7 @@ def rtt_table(files):
     block("key echo, quiet pane, p50 over RTT (ms), 100 samples", "attach", lambda r: r.get("echo_p50"), ms1)
     block("key echo, quiet pane, p99 over RTT (ms)", "attach", lambda r: r.get("echo_p99"), ms1)
     for row, label in (("plain", "restore 100k plain lines"), ("mixed", "restore 100k mixed lines")):
-        sizes = sorted({r["view_bytes"] for r in records if r["row"] == row and "view_bytes" in r and r["variant"] in ("local", "none")})
+        sizes = sorted({r["view_bytes"] for r in records if r["row"] == row and "view_bytes" in r and r["variant"] == "none"})
         note = f"snapshot bytes (history=all, uncompressed, first to last slice): {', '.join(f'{b / 1e6:.1f} MB' for b in sizes)}" if sizes else ""
         block(f"{label}: screen visible (ms)", row, lambda r: r["shown_ms"], ms, note)
         block(f"{label}: history loaded in the client (ms)", row, lambda r: r["loaded_ms"], ms)
@@ -1061,9 +1044,6 @@ def rtt_table(files):
         block(f"{label}: CPU seconds, client ko", row, lambda r: r["cpu"]["client"], sec)
         block(f"{label}: CPU seconds, ssh master + proxy", row, lambda r: r["cpu"].get("ssh", 0) + r["cpu"].get("proxy", 0) if "ssh" in r["cpu"] else None, sec)
         block(f"{label}: CPU seconds, sshd", row, lambda r: r["cpu"].get("sshd"), sec)
-    block("mixed: server deflate time per restore (ms, in-process timer)", "mixed", lambda r: r.get("deflate_ms"), ms)
-    block("mixed: client inflate time per restore (ms)", "mixed", lambda r: r.get("inflate_ms"), ms)
-    block("mixed: deflate output / input bytes", "mixed", lambda r: r["deflate_out"] / r["deflate_in"] if "deflate_in" in r else None, lambda v: f"{v:.3f}")
     print("\n### key echo while the mixed restore streams: the first key, typed when the screen is visible, then the keys delayed by more than 20 ms over RTT (of 50, 10 ms apart)")
     print("| RTT ms | Mbit/s | " + " | ".join(label for _, label in VARIANT_NAMES) + " |")
     print("|---|---|" + "---|" * len(VARIANT_NAMES))

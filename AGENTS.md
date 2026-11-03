@@ -346,8 +346,11 @@ These requirements are fixed:
   `serde_json`, `schemars` (`default-features = false`, with
   `derive` only), `vte` and `clap` (`default-features = false`, with
   exactly `std`, `derive`, `help`, `usage` and `error-context`),
-  and `vstd` and `verus_state_machines_macros` in `ko_pane_wire`
-  and `vstd` in `ko_server`, pinned with `=` to the crates version of `scripts/verus.sh`
+  `miniz_oxide` (`default-features = false`, with `with-alloc`
+  only; it brings `adler2`) in `ko_server` and as a
+  dev-dependency of `ko_client`, `ko_tui` and `ko_e2e`, and `vstd`
+  and `verus_state_machines_macros` in `ko_pane_wire` and `vstd` in
+  `ko_server`, pinned with `=` to the crates version of `scripts/verus.sh`
   (`scripts/lint.sh` compares them).
   `proptest` and `loom` are dev-dependencies.
   `scripts/crates.txt` lists every package of `Cargo.lock`, ko's own
@@ -602,9 +605,11 @@ Conventions:
   gets `431` after the responses to earlier pipelined requests.
   Pipelined requests get their responses in order.
 - **The view write path.** `ko_server::conn` writes a view record
-  with `write_vectored` over `IoSlice`s that borrow the ring, only
-  while the connection's queue is empty. A partial write copies the
-  rest into the queue. Every other byte of a WebSocket goes through
+  with `write_vectored` over `IoSlice`s, only while the connection's
+  queue is empty. A `bytes` record borrows the ring; a snapshot
+  slice is deflated into the scratch buffer of the coordinator's
+  one `Deflate` (`ko_server::deflate`) and written from it. A
+  partial write copies the rest into the queue. Every other byte of a WebSocket goes through
   tungstenite into the same queue. No other code writes a
   connection's descriptor.
 - **Atomics.** The ring header's loads and stores are `SeqCst`

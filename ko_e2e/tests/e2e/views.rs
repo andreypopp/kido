@@ -66,7 +66,7 @@ fn full_snapshot_slow_reader() {
             Extent::Full,
             "full snapshot was downgraded to screen"
         );
-        snapshot.extend_from_slice(data);
+        snapshot.extend_from_slice(&data);
         s.request("GET", "/version", None, 200);
         if last {
             break;
