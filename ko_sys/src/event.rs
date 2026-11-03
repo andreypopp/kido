@@ -695,7 +695,10 @@ mod tests {
         a.write_all(b"unread").unwrap();
         drop(b);
         let mut poll = Poll::new();
+        let mut events = Events::default();
         let token = poll.watch(a.as_fd(), Interest::Read);
+        poll.turn(Mode::Wait, &mut events).unwrap();
+        assert_eq!(events.ready().len(), 1);
         let read = poll.read(token, a.as_fd(), &mut [0; 8], &mut Reads::new());
         assert_eq!(read.unwrap(), Some(Read::End));
         assert_eq!(poll.interest_of(token), Interest::Idle);
