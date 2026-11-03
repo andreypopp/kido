@@ -1,0 +1,4 @@
+#!/bin/sh
+# ko's ssh: hands off to `ko ssh`, which primes the remote shell when it can.
+. "${0%/*}/../shim.sh"
+exec "$ko_prefix_bin/ko" ssh "$@"

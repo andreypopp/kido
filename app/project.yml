@@ -1,0 +1,178 @@
+name: Kido
+options:
+  bundleIdPrefix: com.andreypopp
+  deploymentTarget:
+    macOS: "26.0"
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_ACTIVE_COMPILATION_CONDITIONS: ["$(inherited)", "$(KIDO_STRESS_CONDITION)", "$(KIDO_VISUAL_CONDITION)"]
+    ARCHS: arm64
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+  configs:
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: ["$(inherited)", DEBUG, "$(KIDO_STRESS_CONDITION)", "$(KIDO_VISUAL_CONDITION)"]
+    Release:
+      DEBUG_INFORMATION_FORMAT: dwarf
+      CODE_SIGN_IDENTITY: Apple Development
+      DEVELOPMENT_TEAM: LC2633WWXE
+      CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+      ENABLE_HARDENED_RUNTIME: NO
+settingGroups:
+  KoClientHeaders:
+    KO_CLIENT_SLICE: "$(SRCROOT)/build/ko_client.xcframework/macos-arm64"
+    SWIFT_INCLUDE_PATHS: "$(KO_CLIENT_SLICE)/Headers"
+packages:
+  SnapshotTesting:
+    url: https://github.com/pointfreeco/swift-snapshot-testing
+    exactVersion: 1.18.7
+  PaneGeometry:
+    path: Packages/PaneGeometry
+  SidebarFeed:
+    path: Packages/SidebarFeed
+  PromptMarkdown:
+    path: Packages/PromptMarkdown
+  KoModel:
+    path: Packages/KoModel
+targets:
+  Kido:
+    type: application
+    platform: macOS
+    sources:
+      - App
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
+      - path: Resources/ghostty
+        type: folder
+        buildPhase: resources
+    info:
+      path: build/Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: com.andreypopp.kido.connect
+            CFBundleURLSchemes: [kido-app]
+    settings:
+      groups: [KoClientHeaders]
+      base:
+        KIDO_PRODUCT_NAME: Kido
+        PRODUCT_NAME: "$(KIDO_PRODUCT_NAME)"
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        LIBRARY_SEARCH_PATHS: "$(KO_CLIENT_SLICE)"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        LM_SKIP_METADATA_EXTRACTION: NO
+        GENERATE_INFOPLIST_FILE: YES
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "0.1.0"
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        INFOPLIST_KEY_CFBundleDisplayName: Kido
+        OTHER_LDFLAGS: [-lko_client_private, -lc++]
+        SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/App/Shm.h"
+      configs:
+        Debug:
+          PRODUCT_BUNDLE_IDENTIFIER: com.andreypopp.kido.debug
+        Release:
+          PRODUCT_BUNDLE_IDENTIFIER: com.andreypopp.kido
+    preBuildScripts:
+      - name: Build ko_client
+        script: |
+          set -eu
+          : "${KO_CHECKOUT:?set KO_CHECKOUT to the repository root}"
+          env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin DEVELOPER_DIR="$DEVELOPER_DIR" MACOSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+            make -C "$KO_CHECKOUT" ko-client-xcframework KO_CLIENT_XC="$SRCROOT/build/ko_client.xcframework"
+        basedOnDependencyAnalysis: false
+    postBuildScripts:
+      - name: Bundle ko
+        script: python3 "$SRCROOT/scripts/bundle-ko.py"
+        basedOnDependencyAnalysis: false
+    dependencies:
+      - package: PaneGeometry
+      - package: SidebarFeed
+      - package: PromptMarkdown
+      - package: KoModel
+      - framework: build/GhosttyKit.xcframework
+        embed: false
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: IOSurface.framework
+      - sdk: Carbon.framework
+  VisualTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: VisualTests
+        excludes: ["__Snapshots__"]
+      - path: TestSupport
+    settings:
+      groups: [KoClientHeaders]
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Kido.app/Contents/MacOS/Kido"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+    dependencies:
+      - target: Kido
+      - sdk: Carbon.framework
+      - package: SnapshotTesting
+      - package: PaneGeometry
+      - package: SidebarFeed
+      - package: KoModel
+      - package: PromptMarkdown
+        link: false
+      - framework: build/GhosttyKit.xcframework
+        embed: false
+        link: false
+  KoTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: KoTests
+      - path: TestSupport
+    settings:
+      groups: [KoClientHeaders]
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Kido.app/Contents/MacOS/Kido"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+    dependencies:
+      - target: Kido
+      - package: KoModel
+      - framework: build/GhosttyKit.xcframework
+        embed: false
+        link: false
+      - sdk: Carbon.framework
+schemes:
+  Ko:
+    build:
+      targets:
+        Kido: all
+        KoTests: [test]
+    test:
+      targets: [KoTests]
+      environmentVariables:
+        KIDO_APP_BACKGROUND: "1"
+        HOME: "$(SRCROOT)/build/bundle/ko-tests/home"
+        XDG_STATE_HOME: "$(SRCROOT)/build/bundle/ko-tests/state"
+        XDG_CONFIG_HOME: "$(SRCROOT)/build/bundle/ko-tests/home/.config"
+        KO_CHECKOUT: "$(KO_CHECKOUT)"
+        KIDO_APP_SERVER: "$(KIDO_APP_SERVER)"
+        KO_RECORD_FIXTURES: "$(KO_RECORD_FIXTURES)"
+  Kido:
+    build:
+      targets:
+        Kido: all
+  Visual:
+    build:
+      targets:
+        Kido: all
+        VisualTests: [test]
+    test:
+      targets: [VisualTests]
+      environmentVariables:
+        KIDO_APP_BACKGROUND: "1"
+        DYLD_INSERT_LIBRARIES: "$(SRCROOT)/build/bundle/visual/renderer-probes.dylib"
+        KIDO_APP_SERVER: "$(KIDO_VISUAL_SERVER)"
+        HOME: "$(SRCROOT)/build/bundle/visual/home"
+        XDG_STATE_HOME: "$(SRCROOT)/build/bundle/visual/state"
+        XDG_CONFIG_HOME: "$(SRCROOT)/build/bundle/visual/home/.config"
+        KIDO_VISUAL_RECORD: "$(KIDO_VISUAL_RECORD)"
+        KIDO_VSYNC_MEASURE: "$(KIDO_VSYNC_MEASURE)"

@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = ["fuzz", "share/pi/testdata/fake_ko", "ko", "ko_bench", "ko_client", "ko_e2e", "ko_pane", "ko_pane_wire", "ko_server", "ko_shell", "ko_sys", "ko_tui", "ko_vt", "ko_vt_sys"]
+default-members = ["ko", "ko_bench", "ko_client", "ko_pane", "ko_pane_wire", "ko_server", "ko_shell", "ko_sys", "ko_tui", "ko_vt", "ko_vt_sys"]
+
+[workspace.package]
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+clap = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
+httparse = "1.10.1"
+libc = "0.2"
+loom = "0.7.2"
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
+proptest = "1.12.0"
+schemars = { version = "1.2.3", default-features = false, features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+verus_state_machines_macros = "=0.0.0-2026-10-25-0158"
+vstd = "=0.0.0-2026-10-25-0158"
+vte = "0.15.0"
+
+[workspace.lints.rust]
+dead_code = "deny"
+unreachable_pub = "deny"
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unexpected_cfgs = { level = "deny", check-cfg = ["cfg(loom)", "cfg(verus_only)", "cfg(verus_keep_ghost)", "cfg(verus_keep_ghost_body)"] }
+
+[workspace.lints.clippy]
+expect_used = "deny"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+undocumented_unsafe_blocks = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+
+[profile.release]
+panic = "abort"
+overflow-checks = true

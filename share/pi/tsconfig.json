@@ -10,5 +10,5 @@
     "erasableSyntaxOnly": true,
     "skipLibCheck": true
   },
-  "include": ["kido-pi.ts", "kido-pi-fixture.ts", "kido-pi-*.test.ts"]
+  "include": ["ko-pi.ts", "ko-pi-fixture.ts", "ko-pi-*.test.ts"]
 }

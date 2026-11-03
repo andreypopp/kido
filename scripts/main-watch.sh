@@ -18,31 +18,7 @@ for c in "$@"; do
 	fi
 	pending+=("$sha")
 done
-peer=$(python3 - <<'PY'
-import json, os, pathlib, re
-try:
-    own = pathlib.Path(os.environ['KIDO_AGENT_TASK_FILE']).parent
-    runs = own.parent
-    meta = json.loads((own / 'meta.json').read_text())
-    parent = meta.get('parent') if meta['kind'] == 'bash' else ''
-except (KeyError, OSError, ValueError):
-    parent = ''
-if parent:
-    for path in runs.glob('*/meta.json'):
-        try:
-            peer = json.loads(path.read_text())
-            if path.parent == own or peer.get('parent') != parent or peer['kind'] != 'bash' or peer['pid'] <= 0 or (path.parent / 'outcome').exists():
-                continue
-            command = json.loads((path.parent / 'command').read_text())
-            if not any(re.search(r'''(^|[\s/'"])scripts/main-watch\.sh($|[\s;'"&|])''', arg) for arg in command):
-                continue
-            os.kill(peer['pid'], 0)
-            print(path.parent.name)
-            break
-        except (KeyError, OSError, ValueError):
-            continue
-PY
-)
+peer=$("$(dirname "$0")/watch-peer.sh" main-watch.sh)
 if [ -n "$peer" ]; then
 	echo "main-watch already running (run $peer)"
 	exit 0
@@ -72,25 +48,15 @@ $jobs"
 				{
 					line = $0
 					sub(/^[^\t]*\t[[:space:]]*/, "", line)
-					split(line, words, /[[:space:]]+/)
-					if (line ~ /^=== (RUN|PAUSE|CONT|NAME) /) {
-						current[$1] = words[3]
-						next
-					}
-					if (line ~ /^--- (FAIL|PASS|SKIP): /) {
-						key = $1 SUBSEP words[3]
-						if (words[2] == "FAIL:") {
-							printf "%s", messages[key]
-							print
-						}
-						delete messages[key]
-						next
-					}
-					if (line ~ /_test\.go:[0-9]+:/) {
-						key = $1 SUBSEP current[$1]
-						messages[key] = messages[key] $0 "\n"
-					} else if (line ~ /^(FAIL:|panic:|Error:|File ".*", line)|✖|AssertionError/)
-						print
+					if (after_panic) {
+						after_panic = 0
+						print line
+					} else if (line ~ /panicked at /) {
+						after_panic = 1
+						print line
+					} else if (line ~ /^test .* \.\.\. FAILED$/ || line ~ /^---- .* stdout ----$/ || line == "failures:" ||
+						 line ~ /^(error(\[E[0-9]+\])?:|FAIL:|Error:)/ || line ~ /✖|AssertionError/)
+						print line
 				}' | head -25 | sed 's/^/      /')
 		[ -z "$failed" ] || report="$report
 $failed"

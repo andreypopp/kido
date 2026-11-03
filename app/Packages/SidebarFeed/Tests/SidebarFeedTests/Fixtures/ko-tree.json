@@ -1,0 +1,671 @@
+{
+  "instance" : "a2abbf0a9cc6689d5f94c40b81c8b715",
+  "layout" : {
+    "layout" : {
+      "sessions" : [
+        {
+          "id" : "session_1",
+          "name" : "main",
+          "vars" : {
+
+          },
+          "windows" : [
+            {
+              "cols" : 80,
+              "floats" : [
+
+              ],
+              "focus" : "pane_1",
+              "id" : "window_1",
+              "name" : "build",
+              "rows" : 24,
+              "tree" : {
+                "children" : [
+                  {
+                    "cols" : 40,
+                    "pane" : "pane_1",
+                    "rows" : 24
+                  },
+                  {
+                    "cols" : 39,
+                    "pane" : "pane_2",
+                    "rows" : 24
+                  }
+                ],
+                "split" : "h"
+              },
+              "vars" : {
+
+              }
+            },
+            {
+              "cols" : 80,
+              "floats" : [
+
+              ],
+              "focus" : "pane_3",
+              "id" : "window_2",
+              "name" : "running",
+              "rows" : 24,
+              "tree" : {
+                "cols" : 80,
+                "pane" : "pane_3",
+                "rows" : 24
+              },
+              "vars" : {
+
+              }
+            },
+            {
+              "cols" : 80,
+              "floats" : [
+
+              ],
+              "focus" : "pane_4",
+              "id" : "window_3",
+              "name" : "failed",
+              "rows" : 24,
+              "tree" : {
+                "cols" : 80,
+                "pane" : "pane_4",
+                "rows" : 24
+              },
+              "vars" : {
+
+              }
+            },
+            {
+              "cols" : 80,
+              "floats" : [
+
+              ],
+              "focus" : "pane_5",
+              "id" : "window_4",
+              "name" : "pi",
+              "rows" : 24,
+              "tree" : {
+                "cols" : 80,
+                "pane" : "pane_5",
+                "rows" : 24
+              },
+              "vars" : {
+
+              }
+            },
+            {
+              "cols" : 80,
+              "floats" : [
+
+              ],
+              "focus" : "pane_7",
+              "id" : "window_6",
+              "name" : "first",
+              "rows" : 24,
+              "tree" : {
+                "cols" : 80,
+                "pane" : "pane_7",
+                "rows" : 24
+              },
+              "vars" : {
+
+              }
+            },
+            {
+              "cols" : 80,
+              "floats" : [
+
+              ],
+              "focus" : "pane_8",
+              "id" : "window_7",
+              "name" : "nested",
+              "rows" : 24,
+              "tree" : {
+                "cols" : 80,
+                "pane" : "pane_8",
+                "rows" : 24
+              },
+              "vars" : {
+
+              }
+            },
+            {
+              "cols" : 80,
+              "floats" : [
+
+              ],
+              "focus" : "pane_9",
+              "id" : "window_8",
+              "name" : "ended",
+              "rows" : 24,
+              "tree" : {
+                "cols" : 80,
+                "pane" : "pane_9",
+                "rows" : 24
+              },
+              "vars" : {
+
+              }
+            }
+          ]
+        },
+        {
+          "id" : "session_2",
+          "name" : "other",
+          "vars" : {
+
+          },
+          "windows" : [
+            {
+              "cols" : 80,
+              "floats" : [
+
+              ],
+              "focus" : "pane_6",
+              "id" : "window_5",
+              "name" : "plain",
+              "rows" : 24,
+              "tree" : {
+                "cols" : 80,
+                "pane" : "pane_6",
+                "rows" : 24
+              },
+              "vars" : {
+
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "revision" : 4
+  },
+  "outline" : [
+    {
+      "id" : "session_1",
+      "name" : "main",
+      "type" : "session"
+    },
+    {
+      "depth" : 0,
+      "id" : "pane_1",
+      "type" : "pane",
+      "window" : "window_1"
+    },
+    {
+      "depth" : 0,
+      "id" : "pane_2",
+      "type" : "pane",
+      "window" : "window_1"
+    },
+    {
+      "depth" : 0,
+      "id" : "pane_3",
+      "type" : "pane",
+      "window" : "window_2"
+    },
+    {
+      "depth" : 0,
+      "id" : "pane_4",
+      "type" : "pane",
+      "window" : "window_3"
+    },
+    {
+      "depth" : 0,
+      "id" : "pane_5",
+      "type" : "pane",
+      "window" : "window_4"
+    },
+    {
+      "depth" : 1,
+      "id" : "pane_7",
+      "type" : "pane",
+      "window" : "window_6"
+    },
+    {
+      "depth" : 2,
+      "id" : "pane_8",
+      "type" : "pane",
+      "window" : "window_7"
+    },
+    {
+      "depth" : 0,
+      "id" : "pane_9",
+      "type" : "pane",
+      "window" : "window_8"
+    },
+    {
+      "id" : "session_2",
+      "name" : "other",
+      "type" : "session"
+    },
+    {
+      "depth" : 0,
+      "id" : "pane_6",
+      "type" : "pane",
+      "window" : "window_5"
+    }
+  ],
+  "panes" : [
+    {
+      "command" : [
+        "\/bin\/sh",
+        "-c",
+        "printf '\\033]7501;state=working:app=claude-code\\007'; stty raw -echo; exec cat"
+      ],
+      "cwd" : "\/",
+      "foreground" : {
+        "name" : "cat",
+        "pid" : 82085
+      },
+      "id" : "pane_1",
+      "label" : "claude-code",
+      "mark" : "running",
+      "pid" : 82085,
+      "records_seen" : false,
+      "status" : {
+        "kind" : {
+          "name" : "claude-code",
+          "status" : {
+            "since" : 1776827526886500,
+            "state" : {
+              "type" : "running"
+            }
+          },
+          "type" : "some_agent"
+        },
+        "program_status" : {
+          "records" : [
+            {
+              "app" : "claude-code",
+              "id" : "",
+              "state" : "working"
+            }
+          ],
+          "serial" : 1
+        },
+        "since" : 1776827526886500,
+        "title" : "claude-code"
+      },
+      "title" : "",
+      "vars" : {
+
+      }
+    },
+    {
+      "command" : [
+        "\/bin\/sh",
+        "-c",
+        "printf '\\033]7501;state=blocked:kind=permission:app=claude-code:title=TWVzc2FnZQ==\\007'; stty raw -echo; exec cat"
+      ],
+      "cwd" : "\/",
+      "foreground" : {
+        "name" : "cat",
+        "pid" : 82086
+      },
+      "id" : "pane_2",
+      "label" : "claude-code",
+      "mark" : "waiting",
+      "pid" : 82086,
+      "records_seen" : false,
+      "status" : {
+        "kind" : {
+          "name" : "claude-code",
+          "status" : {
+            "since" : 1776827526890708,
+            "state" : {
+              "kind" : "permission",
+              "type" : "waiting"
+            }
+          },
+          "type" : "some_agent"
+        },
+        "program_status" : {
+          "records" : [
+            {
+              "app" : "claude-code",
+              "id" : "",
+              "kind" : "permission",
+              "state" : "blocked",
+              "title" : "Message"
+            }
+          ],
+          "serial" : 1
+        },
+        "since" : 1776827526890708,
+        "title" : "claude-code"
+      },
+      "title" : "",
+      "vars" : {
+
+      }
+    },
+    {
+      "command" : [
+        "\/bin\/sh",
+        "-c",
+        "printf '\\033]133;C;cmdline_url=make\\007'; stty raw -echo; exec cat"
+      ],
+      "cwd" : "\/",
+      "foreground" : {
+        "name" : "bash",
+        "pid" : 82087
+      },
+      "id" : "pane_3",
+      "label" : "make",
+      "mark" : "running",
+      "pid" : 82087,
+      "records_seen" : false,
+      "status" : {
+        "kind" : {
+          "phase" : {
+            "fullscreen" : false,
+            "origin" : {
+              "command" : "make",
+              "started_at" : 1776827522438041,
+              "type" : "command"
+            },
+            "type" : "running"
+          },
+          "type" : "terminal"
+        },
+        "program_status" : {
+          "records" : [
+
+          ],
+          "serial" : 0
+        },
+        "since" : 1776827744442583,
+        "title" : "make"
+      },
+      "title" : "",
+      "vars" : {
+
+      }
+    },
+    {
+      "command" : [
+        "\/bin\/sh",
+        "-c",
+        "printf '\\033]133;C;cmdline_url=false\\007\\033]133;D;1\\007\\033]133;A\\007'; stty raw -echo; exec cat"
+      ],
+      "cwd" : "\/",
+      "foreground" : {
+        "name" : "bash",
+        "pid" : 82089
+      },
+      "id" : "pane_4",
+      "label" : "bash",
+      "mark" : "none",
+      "pid" : 82089,
+      "records_seen" : false,
+      "status" : {
+        "kind" : {
+          "phase" : {
+            "last" : {
+              "code" : 1,
+              "command" : "false",
+              "ended_at" : 1776827523343000,
+              "started_at" : 1776827523343000
+            },
+            "type" : "idle"
+          },
+          "type" : "terminal"
+        },
+        "program_status" : {
+          "records" : [
+
+          ],
+          "serial" : 0
+        },
+        "since" : 1776827526891875,
+        "title" : "bash"
+      },
+      "title" : "",
+      "vars" : {
+
+      }
+    },
+    {
+      "command" : [
+        "\/bin\/sh",
+        "-c",
+        "printf '\\033]7501;state=working:app=pi\\007'; stty raw -echo; exec cat"
+      ],
+      "cwd" : "\/",
+      "foreground" : {
+        "name" : "cat",
+        "pid" : 82088
+      },
+      "id" : "pane_5",
+      "label" : "Worker",
+      "mark" : "running",
+      "pid" : 82088,
+      "records_seen" : false,
+      "status" : {
+        "kind" : {
+          "session" : "s1",
+          "status" : {
+            "since" : 1776827526892041,
+            "state" : {
+              "type" : "running"
+            }
+          },
+          "type" : "pi_agent"
+        },
+        "program_status" : {
+          "records" : [
+            {
+              "app" : "pi",
+              "id" : "",
+              "state" : "working"
+            }
+          ],
+          "serial" : 1
+        },
+        "since" : 1776827526892041,
+        "title" : "Worker"
+      },
+      "title" : "",
+      "vars" : {
+        "pi.name" : "Worker",
+        "pi.session" : "s1"
+      }
+    },
+    {
+      "command" : [
+        "\/bin\/sh",
+        "-c",
+        "stty raw -echo; exec cat"
+      ],
+      "cwd" : "\/",
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82090
+      },
+      "id" : "pane_6",
+      "label" : "sh",
+      "mark" : "none",
+      "pid" : 82090,
+      "records_seen" : false,
+      "status" : {
+        "kind" : {
+          "phase" : {
+            "type" : "unknown"
+          },
+          "type" : "terminal"
+        },
+        "program_status" : {
+          "records" : [
+
+          ],
+          "serial" : 0
+        },
+        "since" : 1776827526895083,
+        "title" : "sh"
+      },
+      "title" : "",
+      "vars" : {
+
+      }
+    },
+    {
+      "command" : [
+        "\/bin\/sleep",
+        "60"
+      ],
+      "cwd" : "\/",
+      "foreground" : {
+        "name" : "sleep",
+        "pid" : 82117
+      },
+      "id" : "pane_7",
+      "label" : "sleep",
+      "mark" : "none",
+      "pid" : 0,
+      "records_seen" : false,
+      "run" : {
+        "argv" : [
+          "\/bin\/sleep",
+          "60"
+        ],
+        "cwd" : "\/",
+        "id" : "b15c2df5afbac0d0b5aab2132aa812da",
+        "name" : "first",
+        "pane" : "pane_7",
+        "parent" : "pane_5",
+        "startedAt" : "2026-11-03T11:17:11.496267Z"
+      },
+      "status" : {
+        "kind" : {
+          "phase" : {
+            "type" : "unknown"
+          },
+          "type" : "terminal"
+        },
+        "program_status" : {
+          "records" : [
+
+          ],
+          "serial" : 0
+        },
+        "since" : 1776827779163083,
+        "title" : "sleep"
+      },
+      "title" : "",
+      "vars" : {
+
+      }
+    },
+    {
+      "command" : [
+        "\/bin\/sleep",
+        "60"
+      ],
+      "cwd" : "\/",
+      "foreground" : {
+        "name" : "sleep",
+        "pid" : 82120
+      },
+      "id" : "pane_8",
+      "label" : "sleep",
+      "mark" : "none",
+      "pid" : 0,
+      "records_seen" : false,
+      "run" : {
+        "argv" : [
+          "\/bin\/sleep",
+          "60"
+        ],
+        "cwd" : "\/",
+        "id" : "7c44e568ddbb65d3a404a58e82a97f22",
+        "name" : "nested",
+        "pane" : "pane_8",
+        "parent" : "b15c2df5afbac0d0b5aab2132aa812da",
+        "startedAt" : "2026-11-03T11:17:11.50329Z"
+      },
+      "status" : {
+        "kind" : {
+          "phase" : {
+            "type" : "unknown"
+          },
+          "type" : "terminal"
+        },
+        "program_status" : {
+          "records" : [
+
+          ],
+          "serial" : 0
+        },
+        "since" : 1776827779166041,
+        "title" : "sleep"
+      },
+      "title" : "",
+      "vars" : {
+
+      }
+    },
+    {
+      "command" : [
+        "\/bin\/sh",
+        "-c",
+        "exit 3"
+      ],
+      "cwd" : "\/",
+      "dead" : {
+        "at" : 1776827776819333,
+        "cause" : {
+          "code" : 3,
+          "type" : "exited"
+        }
+      },
+      "foreground" : {
+        "name" : "sh",
+        "pid" : 82122
+      },
+      "id" : "pane_9",
+      "label" : "sh",
+      "mark" : "none",
+      "pid" : 0,
+      "records_seen" : false,
+      "run" : {
+        "argv" : [
+          "\/bin\/sh",
+          "-c",
+          "exit 3"
+        ],
+        "cwd" : "\/",
+        "id" : "34094f4c0bc4d210297e3a1545880cb2",
+        "name" : "ended",
+        "outcome" : {
+          "result" : "failed",
+          "text" : "exit 3"
+        },
+        "pane" : "pane_9",
+        "startedAt" : "2026-11-03T11:17:11.509301Z"
+      },
+      "status" : {
+        "kind" : {
+          "phase" : {
+            "type" : "unknown"
+          },
+          "type" : "terminal"
+        },
+        "program_status" : {
+          "records" : [
+
+          ],
+          "serial" : 0
+        },
+        "since" : 1776827779166166,
+        "title" : "sh"
+      },
+      "title" : "",
+      "vars" : {
+
+      }
+    }
+  ],
+  "selection" : {
+
+  }
+}

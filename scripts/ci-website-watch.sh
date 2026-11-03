@@ -19,31 +19,7 @@ for c in "$@"; do
 	fi
 	pending+=("$sha")
 done
-peer=$(python3 - <<'PY'
-import json, os, pathlib, re
-try:
-    own = pathlib.Path(os.environ['KIDO_AGENT_TASK_FILE']).parent
-    runs = own.parent
-    meta = json.loads((own / 'meta.json').read_text())
-    parent = meta.get('parent') if meta['kind'] == 'bash' else ''
-except (KeyError, OSError, ValueError):
-    parent = ''
-if parent:
-    for path in runs.glob('*/meta.json'):
-        try:
-            peer = json.loads(path.read_text())
-            if path.parent == own or peer.get('parent') != parent or peer['kind'] != 'bash' or peer['pid'] <= 0 or (path.parent / 'outcome').exists():
-                continue
-            command = json.loads((path.parent / 'command').read_text())
-            if not any(re.search(r'''(^|[\s/'"])scripts/ci-website-watch\.sh($|[\s;'"&|])''', arg) for arg in command):
-                continue
-            os.kill(peer['pid'], 0)
-            print(path.parent.name)
-            break
-        except (KeyError, OSError, ValueError):
-            continue
-PY
-)
+peer=$("$(dirname "$0")/watch-peer.sh" ci-website-watch.sh)
 if [ -n "$peer" ]; then
 	echo "ci-website-watch already running (run $peer)"
 	exit 0

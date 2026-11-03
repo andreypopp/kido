@@ -1,7 +1,0 @@
-(test
- (name tmux_server)
- (flags
-  (:standard -open Containers))
- (enabled_if
-  (<> %{env:KIDO_TMUX=} ""))
- (libraries kido tmux containers unix))

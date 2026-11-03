@@ -1,0 +1,15 @@
+[package]
+name = "ko_shell"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+ko_client = { path = "../ko_client" }
+ko_pane_wire = { path = "../ko_pane_wire" }
+ko_server = { path = "../ko_server" }
+ko_sys = { path = "../ko_sys" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -9,9 +9,9 @@ They can run in parallel.
    Replace `N` with the PR number.
    Run `git fetch origin pull/N/head`.
    Record the fetched head SHA.
-   Run `git worktree add --detach "$(mktemp -d /tmp/kido-prN-XXXXXX)" <head sha>`.
-   Run `git -C <worktree> submodule update --init third_party/tmux`.
-   The e2e stage needs the fork source.
+   Run `git worktree add --detach ~/Workspace/kido-prN <head sha>`.
+   Run `git -C <worktree> submodule update --init third_party/ghostty`.
+   The build needs libghostty-vt's source.
    Record the PR's base.
    Record how many commits the PR is behind main.
 
@@ -20,7 +20,7 @@ They can run in parallel.
    Ask the reviewer to check the PR against the project values in
    AGENTS.md's "Code rules".
    Ask the reviewer to check that the PR follows the existing code
-   standards: the AGENTS.md "OCaml" conventions, and the naming, idiom
+   standards: the AGENTS.md "Rust" conventions, and the naming, idiom
    and layout of the code around the change.
    Ask the reviewer to check each added comment against the "No comments
    unless absolutely necessary" rule.

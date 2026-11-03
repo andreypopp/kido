@@ -2,22 +2,63 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 case "${1:-}" in
-  ''|--update-prompts) ;;
-  *) echo "usage: scripts/lint.sh [--update-prompts]" >&2; exit 1 ;;
+  ''|--update-prompts|--update-schemas) ;;
+  *) echo "usage: scripts/lint.sh [--update-prompts|--update-schemas]" >&2; exit 1 ;;
 esac
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 failed=0
+# A negative pid or a process group reaches kill(2) only through ko_sys::pid and signal_child.
+signal_pattern='\bkillpg\b|\bkill[[:space:]]*\([[:space:]]*-'
+signals=$( {
+  grep -rnE "$signal_pattern" bench --include='*.c' --include='*.h' --include='*.py'
+  grep -rnE '\bos\.kill' bench --include='*.py' \
+    | grep -vE '^bench/client\.py:[0-9]+:    os\.kill\(pid, sig\)$'
+  grep -rnE '\blibc::kill(pg)?\b|\bkillpg\b|nix::sys::signal|Command::new\([[:space:]]*"kill"' ko ko_* fuzz --include='*.rs' \
+    | grep -vE '^ko_sys/src/pid\.rs:'
+} || true)
+if [[ -n "$signals" ]]; then
+  echo "$signals" | sed 's/$/: signals must go through ko_sys::pid or signal_child/'
+  failed=1
+fi
+# The ring header's atomics are sequentially consistent; only the loom model's acquire/release
+# twin, which shows the lost wakeup without them, uses another ordering.
+orderings=$(grep -rnoE 'Ordering::[A-Za-z]+' ko_pane ko_pane_wire ko_server --include='*.rs' \
+  | grep -vE '^ko_pane_wire/src/ring/model\.rs:|:Ordering::SeqCst$' || true)
+if [[ -n "$orderings" ]]; then
+  echo "$orderings" | sed 's/$/: ko_pane, ko_pane_wire and ko_server use only Ordering::SeqCst/'
+  failed=1
+fi
 python3 - <<'PY' || failed=1
 import glob
 import pathlib
 import re
 import subprocess
+import tomllib
 
-revision = subprocess.check_output(['git', 'ls-files', '-s', 'third_party/tmux'], text=True).split()[1]
-contract = pathlib.Path('share/rpc/contract.md').read_text()
-if f'fork revision: {revision}\n' not in contract:
-    print('share/rpc/contract.md: fork revision differs from third_party/tmux gitlink')
+zig = re.search(r'^release=(\S+)$', pathlib.Path('scripts/install-zig.sh').read_text(), re.M).group(1)
+zon = pathlib.Path('third_party/ghostty/build.zig.zon').read_text()
+if f'.minimum_zig_version = "{zig}"' not in zon:
+    print('scripts/install-zig.sh: zig release differs from third_party/ghostty minimum_zig_version')
+    raise SystemExit(1)
+
+locked = {package['name'] for package in tomllib.loads(pathlib.Path('Cargo.lock').read_text())['package']}
+listed = set(pathlib.Path('scripts/crates.txt').read_text().split())
+for name in sorted(locked - listed):
+    print(f'Cargo.lock: package {name} is not in scripts/crates.txt')
+for name in sorted(listed - locked):
+    print(f'scripts/crates.txt: {name} is not in Cargo.lock')
+verus_crates = re.search(r'^crates_version=(\S+)$', pathlib.Path('scripts/verus.sh').read_text(), re.M).group(1)
+workspace = tomllib.loads(pathlib.Path('Cargo.toml').read_text())['workspace']['dependencies']
+for name in ('vstd', 'verus_state_machines_macros'):
+    if workspace.get(name) != f'={verus_crates}':
+        print(f'Cargo.toml: {name} is not pinned to ={verus_crates}, the crates version of scripts/verus.sh')
+        raise SystemExit(1)
+headers = subprocess.check_output(['scripts/bindgen.sh', '--print-hash'], text=True).strip()
+if f'// ghostty headers sha256: {headers}\n' not in pathlib.Path('ko_vt_sys/src/bindings.rs').read_text():
+    print('ko_vt_sys/src/bindings.rs: header hash differs from third_party/ghostty/include; regenerate: make bindgen')
+    raise SystemExit(1)
+if locked != listed:
     raise SystemExit(1)
 
 errors = 0
@@ -35,128 +76,184 @@ def candidates(pattern, paths):
     return set(result.stdout.splitlines())
 
 # Mask literals before looking for comments, and comments before looking for code.
-def lexical(text, ocaml=False):
-    pattern = (r"\{[a-z_]*\|[\s\S]*?\|[a-z_]*\}|'(?:\\[\s\S]|[^'\\])'|\"(?:\\[\s\S]|[^\"\\])*\"|\(\*[\s\S]*?\*\)" if ocaml else
-               r'"(?:\\[\s\S]|[^"\\])*"|\'(?:\\[\s\S]|[^\'\\])*\'|`(?:\\[\s\S]|[^`\\])*`|//[^\n]*|/\*[\s\S]*?\*/')
+def lexical(text):
+    pattern = r'"(?:\\[\s\S]|[^"\\])*"|\'(?:\\[\s\S]|[^\'\\])*\'|`(?:\\[\s\S]|[^`\\])*`|//[^\n]*|/\*[\s\S]*?\*/'
     comments = []
     def mask(match):
         token = match.group()
-        if token.startswith('(*' if ocaml else ('//', '/*')):
+        if token.startswith(('//', '/*')):
             comments.append((match.start(), token))
         return re.sub(r'[^\n]', ' ', token)
     return re.sub(pattern, mask, text), comments
 
-core = ['share/pi/kido-pi.ts']
+# A glob or named import of libc's kill makes a bare kill( call; only ko_sys::pid signals.
+for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', recursive=True):
+    if path == 'ko_sys/src/pid.rs':
+        continue
+    text = pathlib.Path(path).read_text()
+    code, _ = lexical(text)
+    if re.search(r'\buse\s+libc::(\*|kill(?:pg)?\b|\{[^}]*(\*|\bkill(?:pg)?\b))', code):
+        for match in re.finditer(r'(?<![\w:])kill(?:pg)?\s*\(', code):
+            report(path, text, match.start(), 'signals must go through ko_sys::pid')
+
+core = ['share/pi/ko-pi.ts']
 for path in candidates(r'(^|[^a-zA-Z_])(as|any)([^a-zA-Z_]|$)|!', core):
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text)
     for match in re.finditer(r'\bas\b(?!\s+const\b)|\bany\b|(?<=[\w)\]])!(?!=)', code):
         report(path, text, match.start(), 'TS hygiene: assertion or any')
 
-sources = sum((glob.glob(pattern, recursive=True) for pattern in [
-    'lib/**/*.ml', 'lib/**/*.mli', 'lib_tmux/**/*.ml', 'lib_tmux/**/*.mli',
-    'bin/*.ml', 'bin/*.mli', 'share/pi/*.ts', 'test_e2e/*.go']), [])
-for path in candidates('Mosaic|Matrix', [p for p in sources if p.startswith(('lib/', 'lib_tmux/'))]):
+fuzz_allowed = {
+    'ko_e2e/tests/e2e/config.rs': {
+        'b"KO_FUZZ_SECONDS=abc".to_vec(),': 1,
+        'b"KO_FUZZ_SEED=abc".to_vec(),': 1,
+    },
+}
+for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', recursive=True):
     text = pathlib.Path(path).read_text()
-    for match in re.finditer(r'\b(?:Mosaic|Matrix)\w*', text):
-        report(path, text, match.start(), 'TUI dependency outside bin/kido_sidebar')
-text = pathlib.Path('lib/dune').read_text()
-for match in re.finditer(r'\b(?:mosaic|matrix(?:\.text)?)\b', text):
-    report('lib/dune', text, match.start(), 'TUI library dependency')
+    allowed = fuzz_allowed.get(path, {})
+    for match in re.finditer(r'^.*KO_FUZZ_\w+.*$', text, re.M):
+        statement = match.group().strip()
+        if allowed.get(statement, 0) > 0:
+            allowed[statement] -= 1
+        else:
+            report(path, text, match.start(), 'fuzz variables are read in fuzz/ only')
+for path, statements in fuzz_allowed.items():
+    for statement, left in statements.items():
+        if left:
+            report(path, '', 0, f'stale KO_FUZZ_ allowance {statement!r} ({left} unused)')
 
 history = r'\b(previously|no longer|(?<!be )used to|formerly|as of now|since this fix)\b'
-for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s of now|[Ss]ince this fix', sources):
+for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s of now|[Ss]ince this fix', glob.glob('share/pi/*.ts')):
     text = pathlib.Path(path).read_text()
-    _, comments = lexical(text, path.endswith(('.ml', '.mli')))
+    _, comments = lexical(text)
     for offset, comment in comments:
         for match in re.finditer(history, comment, re.I):
             report(path, text, offset + match.start(), 'comment history: ' + match.group())
 
-without_interface = {'lib/sh.ml', 'lib/test_support.ml', 'lib/test_fixture.ml', 'lib/view_fixture.ml', 'lib/state_fixture.ml', 'lib_tmux/program_status.ml', 'lib/tmux_vars.ml'}
-for path in (p for p in set(glob.glob('lib/*.ml') + glob.glob('lib_tmux/*.ml') + glob.glob('bin/*.ml')) - without_interface if not pathlib.Path(p + 'i').exists()):
-    text = pathlib.Path(path).read_text()
-    code, _ = lexical(text, True)
-    match = re.search(r'^let\b', code, re.M)
-    if match:
-        report(path, text, match.start(), 'missing .mli')
-
+# A backticked ko crate path or file in the docs must exist: `ko_x::a::b` names a crate directory
+# whose sources mention each segment, `ko_x/src/y.rs` a path in the tree.
+crate_code = {}
 for path in ['AGENTS.md', *glob.glob('docs/*.md'), 'share/pi/README.md']:
     text = pathlib.Path(path).read_text()
-    for match in re.finditer(r'`((?:[A-Z][\w]*\.){1,2}[A-Za-z_][\w]*)`', text):
-        parts = match.group(1).split('.')
-        if parts[0] == 'Tmux':
-            module = 'lib_tmux/program_status.ml' if parts[1] == 'Program_status' else 'lib_tmux/tmux.ml'
-            symbols = parts[2:] if parts[1] in {'Client', 'Program_status'} else parts[1:]
-        elif parts[0] == 'Kido_sidebar':
-            module = 'bin/kido_sidebar.ml'
-            symbols = parts[1:]
-        else:
-            module = 'lib/' + parts[0].lower() + '.ml'
-            symbols = parts[1:]
-        if not pathlib.Path(module).exists():
+    for match in re.finditer(r'`(ko(?:_[a-z0-9]+)*)((?:::[A-Za-z_]\w*)+)', text):
+        crate, segments = match.group(1), match.group(2).split('::')[1:]
+        if not pathlib.Path(crate).is_dir():
+            report(path, text, match.start(), f'stale reference {match.group(0)[1:]}: no crate {crate}')
             continue
-        code, _ = lexical(pathlib.Path(module).read_text(), True)
-        for symbol in symbols:
-            if not re.search(r'\b' + re.escape(symbol) + r'\b', code):
-                report(path, text, match.start(), f'stale reference {match.group(1)} ({module})')
+        if crate not in crate_code:
+            crate_code[crate] = ''.join(p.read_text() for p in pathlib.Path(crate).rglob('*.rs'))
+        for segment in segments:
+            if not re.search(r'\b' + re.escape(segment) + r'\b', crate_code[crate]):
+                report(path, text, match.start(), f'stale reference {match.group(0)[1:]}: {segment} not in {crate}')
+    for match in re.finditer(r'`(ko(?:_[a-z0-9]+)*/[\w./-]*[\w/])`', text):
+        if not pathlib.Path(match.group(1)).exists():
+            report(path, text, match.start(), f'stale reference {match.group(1)}: no such path')
 
-# Existing bounded timing probes and whole-second timestamp tests; exact statements,
-# not entire files, so a new sleep in any of these files still fails.
-sleeps = {
-    'test_e2e/conn_test.go': {'time.Sleep(20 * time.Millisecond)': 1},
-    'test_e2e/launch_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
-    'test_e2e/leak_check_test.go': {'time.Sleep(50 * time.Millisecond)': 2},
-    'test_e2e/reap_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
-    'test_e2e/render_test.go': {'time.Sleep(1200 * time.Millisecond)': 2},
-    'test_e2e/ssh_prime_test.go': {'time.Sleep(100 * time.Millisecond)': 1},
-    'test_e2e/standalone_test.go': {'time.Sleep(60 * time.Millisecond)': 2},
-    'test_e2e/switch_session_test.go': {'time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second)) + 50*time.Millisecond)': 1},
-    'test_e2e/watchdog_test.go': {'time.Sleep(110 * time.Second)': 1, 'time.Sleep(200 * time.Millisecond)': 2},
+# ko_e2e waits for events; its one fixed wait is the idle measurement, and harness.rs holds the poll tick.
+rust_sleeps = {
+    'ko_e2e/tests/e2e/idle.rs': {'std::thread::sleep(Duration::from_secs(2));': 1},
+    'ko_e2e/tests/e2e/wait.rs': {'std::thread::sleep(Duration::from_secs(2));': 1},
 }
-for path in candidates(r'time\.Sleep', glob.glob('test_e2e/*.go')):
-    if path == 'test_e2e/harness_test.go':
+for path in candidates(r'thread::(sleep|park_timeout)', glob.glob('ko_e2e/tests/e2e/*.rs')):
+    if path == 'ko_e2e/tests/e2e/harness.rs':
         continue
     text = pathlib.Path(path).read_text()
-    for match in re.finditer(r'^.*time\.Sleep.*$', text, re.M):
+    for match in re.finditer(r'^.*thread::(sleep|park_timeout).*$', text, re.M):
         statement = match.group().strip().split('//')[0].rstrip()
-        allowed = sleeps.get(path, {})
+        allowed = rust_sleeps.get(path, {})
         if allowed.get(statement, 0) == 0:
-            report(path, text, match.start(), 'time.Sleep outside harness/allowlist')
+            report(path, text, match.start(), 'thread::sleep outside the allowlist')
         else:
             allowed[statement] -= 1
-for path, statements in sleeps.items():
+for path, statements in rust_sleeps.items():
     for statement, left in statements.items():
         if left:
-            report(path, '', 0, f'stale time.Sleep allowance {statement!r} ({left} unused)')
-
-for path in candidates('kill-server', glob.glob('test_e2e/*.go') + glob.glob('scripts/*')):
-    text = pathlib.Path(path).read_text()
-    for match in re.finditer(r'^.*kill-server.*$', text, re.M):
-        line = match.group().strip()
-        if line.startswith(('//', '#')) or path == 'scripts/lint.sh':
-            continue
-        # kido's own subcommand resolves its private server, not tmux's default socket.
-        if line == 'r.kido("kill-server")':
-            continue
-        if not re.search(r'(?:["\s])-([SL])(?:["\s])', line):
-            report(path, text, match.start(), 'kill-server without explicit -S/-L')
+            report(path, '', 0, f'stale thread::sleep allowance {statement!r} ({left} unused)')
+# Names of the removed tmux-based kido must not come back.
+# Kido.app keeps its own KIDO_ knobs, in app/ and in the two app docs.
+app_knob = re.compile(r'KIDO_(VISUAL|STRESS|APP_|DEMO_|PRODUCT_NAME$|VSYNC_MEASURE$|MTC_VERIFY$|SHM_H$)')
+app_scope = ('app/', 'docs/design-app.md', 'docs/known-issues-app.md')
+gates = [
+    re.compile(p) for p in (
+        r'kido-pi', r'kido-tmux', r'share/kido', r'\bdune\b', r'(?i)\btmux\b', r'install-tmux-fork', r'test_e2e',
+        r'\bgo test\b', r'\.mli?\b', r'verify-ko', r'make flake', r'make e2e(?![\w-])', r'lib_tmux', r'rfc/kido-server',
+        r'lib/[a-z_]+\.ml',
+    )
+]
+# Whole-tree exemptions: a directory ends in /, anything else names one file.
+gate_exempt = (
+    'website/', 'third_party/', 'ko_server/testdata/', 'bench/streams/',
+    'app/design/',  # historical mockups, kept as drawn
+    'scripts/lint.sh', 'app/VisualTests/PaletteTests.swift',  # the gate's own patterns; snapshot test data
+)
+# Exact statements, as the sleep tables above: a real tmux passthrough form in a fuzz sample.
+gate_statements = {
+    'ko_server/src/harness.rs': {'"tmux;\\x1b\\x1b[0m",': 1},
+}
+prefilter = r'KIDO_|kido-|share/kido|dune|tmux|test_e2e|go test|\.ml|verify-ko|make flake|make e2e|lib/|rfc/kido-server'
+excluded = [f':(exclude){entry}' for entry in gate_exempt]
+found = subprocess.run(['git', 'grep', '-I', '-n', '-i', '--untracked', '-E', prefilter, '--', '.', *excluded], capture_output=True, text=True)
+if found.returncode not in (0, 1):
+    raise RuntimeError(found.stderr)
+for hit in found.stdout.splitlines():
+    path, line, text = hit.split(':', 2)
+    names = {m.group() for m in re.finditer(r'KIDO_[A-Z_]+', text) if not (path.startswith(app_scope) and app_knob.match(m.group()))}
+    for pattern in gates:
+        names.update(m.group() for m in pattern.finditer(text))
+    allowed = gate_statements.get(path, {})
+    if names and allowed.get(text.strip(), 0) > 0:
+        allowed[text.strip()] -= 1
+        continue
+    if names:
+        print(f"{path}:{line}: removed name " + ', '.join(sorted(names)))
+        errors += 1
+for path, statements in gate_statements.items():
+    for statement, left in statements.items():
+        if left:
+            report(path, '', 0, f'stale gate allowance {statement!r} ({left} unused)')
 raise SystemExit(1 if errors else 0)
 PY
 node_flags=()
+make --no-print-directory build-ko >&2
+build/ko/bin/ko api-schema > "$scratch/openapi.json"
+if [[ "${1:-}" == --update-schemas ]]; then
+  cp "$scratch/openapi.json" share/ko/openapi.json
+elif ! diff -u share/ko/openapi.json "$scratch/openapi.json"; then
+  echo 'share/ko/openapi.json:1: OpenAPI snapshot differs; regenerate: scripts/lint.sh --update-schemas'
+  failed=1
+fi
+build/ko/bin/ko api-schema --client > "$scratch/client-model.json"
+if [[ "${1:-}" == --update-schemas ]]; then
+  cp "$scratch/client-model.json" share/ko/client-model.json
+elif ! diff -u share/ko/client-model.json "$scratch/client-model.json"; then
+  echo 'share/ko/client-model.json:1: client model schema differs; regenerate: scripts/lint.sh --update-schemas'
+  failed=1
+fi
 printf 'const probe: number = 1;\n' > "$scratch/probe.ts"
 if command -v node >/dev/null 2>&1 && node "$scratch/probe.ts" >/dev/null 2>&1; then
   :
 elif command -v node >/dev/null 2>&1 && node --experimental-strip-types "$scratch/probe.ts" >/dev/null 2>&1; then
   node_flags=(--experimental-strip-types)
 else
-  echo 'lint: SKIP prompt snapshot (node cannot run TypeScript)'
+  echo 'lint: SKIP prompt and ko-api.d.ts snapshots (node cannot run TypeScript)'
   exit "$failed"
 fi
-if ! node "${node_flags[@]}" scripts/dump-prompts.ts > "$scratch/prompts.txt"; then
+if [ ! -d share/pi/node_modules ] || [ share/pi/package-lock.json -nt share/pi/node_modules ]; then
+  (cd share/pi && npm install --silent && touch node_modules)
+fi
+share/pi/node_modules/.bin/openapi-typescript "$scratch/openapi.json" --default-non-nullable false -o "$scratch/ko-api.d.ts" >/dev/null
+if [[ "${1:-}" == --update-schemas ]]; then
+  cp "$scratch/ko-api.d.ts" share/pi/ko-api.d.ts
+elif ! diff -u share/pi/ko-api.d.ts "$scratch/ko-api.d.ts"; then
+  echo 'share/pi/ko-api.d.ts:1: generated types differ; regenerate: scripts/lint.sh --update-schemas'
+  failed=1
+fi
+fixture=share/pi/testdata/ko-prompts.txt
+if ! node ${node_flags[@]+"${node_flags[@]}"} scripts/dump-prompts.ts > "$scratch/prompts.txt"; then
   echo 'scripts/dump-prompts.ts:1: prompt dump failed' >&2
   exit 1
 fi
-fixture=share/pi/testdata/prompts.txt
 if [[ "${1:-}" == --update-prompts ]]; then
   cp "$scratch/prompts.txt" "$fixture"
 elif ! diff -u "$fixture" "$scratch/prompts.txt"; then

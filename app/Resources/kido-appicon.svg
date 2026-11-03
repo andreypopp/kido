@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a2620"/>
+      <stop offset="1" stop-color="#0b110e"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#bdf6da"/>
+      <stop offset="1" stop-color="#8fe3bb"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".16"/>
+      <stop offset=".5" stop-color="#ffffff" stop-opacity=".03"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity=".06"/>
+    </linearGradient>
+    <filter id="shadow" filterUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="14"/>
+      <feOffset dy="12" result="b"/>
+      <feFlood flood-color="#000" flood-opacity=".32"/>
+      <feComposite in2="b" operator="in"/>
+    </filter>
+    <radialGradient id="halo" cx="512" cy="500" r="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8fe3bb" stop-opacity=".16"/>
+      <stop offset="1" stop-color="#8fe3bb" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="#000" filter="url(#shadow)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#halo)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="183.5" fill="none" stroke="url(#rim)" stroke-width="3"/>
+  <g transform="translate(100 100) scale(12.875)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20 14v36m0-15 21-17M20 35l22 15" stroke="url(#mark)" stroke-width="7"/>
+  </g>
+</svg>

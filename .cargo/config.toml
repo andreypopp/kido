@@ -1,0 +1,2 @@
+[env]
+KO_ZIG_CACHE = { value = "target/zig-cache", relative = true }

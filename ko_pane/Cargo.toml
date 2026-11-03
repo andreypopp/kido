@@ -1,0 +1,17 @@
+[package]
+name = "ko_pane"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "ko-pane"
+path = "src/main.rs"
+
+[dependencies]
+ko_pane_wire = { path = "../ko_pane_wire" }
+ko_sys = { path = "../ko_sys" }
+ko_vt = { path = "../ko_vt" }
+
+[lints]
+workspace = true

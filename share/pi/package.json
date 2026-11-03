@@ -1,11 +1,13 @@
 {
-  "name": "kido-pi-tests",
+  "name": "ko-pi-tests",
   "private": true,
   "type": "module",
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@earendil-works/pi-tui": "1.4.0",
+    "@redocly/cli": "2.72.1",
     "@types/node": "^24.0.0",
+    "openapi-typescript": "7.13.0",
     "typebox": "^1.3.34",
     "typescript": "^5.9.3"
   }

@@ -10,11 +10,18 @@ action() {
   printf '+'; printf ' %q' "$@"; printf '\n'
   if ! $dry; then "$@"; fi
 }
-tap=$(brew --repo andreypopp/tap)
-formula="$tap/Formula/kido.rb"
-ssh_tap="$HOME/Workspace/homebrew-tap"
+# KO_RELEASE_TAP, KO_RELEASE_SSH_TAP and KO_RELEASE_OLD_KO replace the tap checkout, its push checkout
+# and the installed ko, for a dry run against a copy of the tap.
+tap=${KO_RELEASE_TAP:-$(brew --repo andreypopp/tap)}
+formula="$tap/Formula/ko.rb"
+ssh_tap=${KO_RELEASE_SSH_TAP:-$HOME/Workspace/homebrew-tap}
+old_ko=${KO_RELEASE_OLD_KO:-$(brew --prefix ko)/bin/ko}
 action git fetch origin main
 sha=$(git rev-parse origin/main)
+if [[ $(git rev-parse HEAD) != "$sha" ]]; then
+  echo "HEAD is not origin/main: the command diff reads this checkout's build" >&2
+  $dry || exit 1
+fi
 echo "+ gh run list --commit $sha --json conclusion,status --limit 100"
 ci=$(gh run list --commit "$sha" --json conclusion,status --limit 100)
 python3 -c 'import json,sys; runs=json.loads(sys.argv[1]); assert runs and all(r["status"]=="completed" and r["conclusion"]=="success" for r in runs), "origin/main CI is not all green"' "$ci"
@@ -29,30 +36,30 @@ s=open(sys.argv[1]).read()
 print(re.search(r'revision: "([a-f0-9]+)"',s)[1],re.search(r'version "([^"]+)"',s)[1])
 PY
 )
-work=$(mktemp -d /tmp/kido-release-XXXXXX)
-trap 'rm -rf "$work"; git worktree prune' EXIT
-for rev in "$old" "$sha"; do
-  echo "+ git worktree add --detach $work/$rev $rev"
-  git worktree add --detach "$work/$rev" "$rev"
-  echo "+ (cd $work/$rev && dune build bin/main.exe)"
-  (cd "$work/$rev" && dune build bin/main.exe)
-  "$work/$rev/_build/default/bin/main.exe" --help=plain > "$work/$rev/top.help"
-done
-python3 - "$work" "$old" "$sha" "$previous" "$version" <<'PY'
+installed=$("$old_ko" version | python3 -c 'import json,sys; print(json.load(sys.stdin)["build"])')
+[[ $old == "$installed"* ]] || { echo "The installed ko ($installed) is not the formula's revision ($old): brew upgrade ko first" >&2; exit 1; }
+make build-ko
+work=$(mktemp -d /tmp/ko-release-XXXXXX)
+trap 'rm -rf "$work"' EXIT
+"$old_ko" --help > "$work/old.help"
+build/ko/bin/ko --help > "$work/new.help"
+git show "$old:share/pi/testdata/ko-prompts.txt" > "$work/old.prompts"
+cp share/pi/testdata/ko-prompts.txt "$work/new.prompts"
+python3 - "$work" "$previous" "$version" <<'PY'
 import re,sys,pathlib
-root,old,new,previous,version=sys.argv[1:]
-def names(rev):
-    p=pathlib.Path(root)/rev
-    help=(p/'top.help').read_text().split('COMMANDS\n',1)[1]
-    help=re.split(r'\n[A-Z][A-Z ]*\n',help,maxsplit=1)[0]
-    result={'command:'+x for x in re.findall(r'^       ([a-z][a-z_-]+)(?: |$)',help,re.M)}
-    text=(p/'share/pi/testdata/prompts.txt').read_text().split('## Tools\n',1)[1].split('\n## ',1)[0]
+root,previous,version=sys.argv[1:]
+def names(which):
+    p=pathlib.Path(root)
+    help=(p/(which+'.help')).read_text().split('Commands:\n',1)[1]
+    help=re.split(r'\n\S',help,maxsplit=1)[0]
+    result={'command:'+x for x in re.findall(r'^  ([a-z][a-z-]*)(?: |$)',help,re.M)}
+    text=(p/(which+'.prompts')).read_text().split('## Tools\n',1)[1].split('\n## ',1)[0]
     result.update('tool:'+x for x in re.findall(r'^### (.+)$',text,re.M))
     return result
 before=tuple(map(int,previous.split('.')))
 after=tuple(map(int,version.split('.')))
 if after<=before: sys.exit('VERSION must increase')
-removed=names(old)-names(new)
+removed=names('old')-names('new')
 if removed:
     print('Removed commands/tools: '+', '.join(sorted(removed)))
     print('panes must be restarted, not /reloaded')
@@ -70,8 +77,8 @@ s=re.sub(r'version "[^"]+"','version "'+sys.argv[3]+'"',s,count=1)
 p.write_text(s)
 PY
 fi
-action git -C "$tap" add Formula/kido.rb
-action git -C "$tap" commit -m "kido $version"
+action git -C "$tap" add Formula/ko.rb
+action git -C "$tap" commit -m "ko $version"
 action git -C "$ssh_tap" fetch "$tap" HEAD
 action git -C "$ssh_tap" merge --ff-only FETCH_HEAD
 action git -C "$ssh_tap" push origin HEAD

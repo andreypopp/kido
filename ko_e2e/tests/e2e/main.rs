@@ -1,0 +1,26 @@
+#![cfg(test)]
+
+mod agents;
+mod client;
+mod clients;
+mod clipboard;
+mod config;
+mod edits;
+mod harness;
+mod hostile;
+mod idle;
+mod images;
+mod layout;
+mod outer;
+mod prompt;
+mod protocol;
+mod reap;
+mod remote;
+mod runs;
+mod search;
+mod shell;
+mod spawn_tree;
+mod status;
+mod vars;
+mod views;
+mod wait;
