@@ -2044,6 +2044,8 @@ delegates to subagents, by these rules:
   command's process group and exits 124 when the command prints nothing
   for 60 seconds, so a stuck test or a deadlock ends instead of hanging
   the agent
+  (one exception: the cold GhosttyKit build, `app/scripts/build-ghosttykit.sh`,
+  prints nothing for about a minute, so it runs under `quiet-limit 600`)
 - flakes and fuzzing have a time box: a flake investigation gets 5
   minutes, and a fuzz or long property-test run gets 5 minutes; then the
   agent reports what it has; first suspect the test (a race in its waits,
