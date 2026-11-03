@@ -12,6 +12,7 @@ use serde::de::{self, DeserializeOwned};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::api::WaitMs;
 use crate::config::BUILD;
 use crate::http::Status;
 use crate::ids::{ClientId, Instance, Name, PaneId, RunId, SessionId, VarName, WindowId};
@@ -80,6 +81,14 @@ pub fn version() -> Version {
         vt: VT.to_owned(),
         build: BUILD.to_owned(),
     }
+}
+
+/// The reply of a running server: its version, and the instance that changes at each start.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ServerVersion {
+    #[serde(flatten)]
+    pub version: Version,
+    pub instance: Instance,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -466,6 +475,10 @@ pub struct Row {
     pub progress: Option<Progress>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<RunRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<PaneId>,
+    #[serde(default, skip_serializing_if = "Close::is_keep")]
+    pub close: Close,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -667,6 +680,21 @@ pub struct Variable {
     pub value: String,
 }
 
+/// What the sweep does with a dead pane: keep stays, on_exit removes it after the linger grace.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Close {
+    #[default]
+    Keep,
+    OnExit,
+}
+
+impl Close {
+    fn is_keep(&self) -> bool {
+        *self == Close::Keep
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CreatePane {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -677,6 +705,38 @@ pub struct CreatePane {
     pub env: Vec<Variable>,
     #[serde(default, skip_serializing_if = "Loose::is_empty")]
     pub vars: Loose,
+    /// The pane that this pane belongs to, for the pane's life. It must be a pane that is not
+    /// dead. The sweep removes the pane when the parent is gone or dead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<PaneId>,
+    #[serde(default, skip_serializing_if = "Close::is_keep")]
+    pub close: Close,
+}
+
+/// A window of one pane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct NewWindow {
+    /// Defaults to the session of the parent, else of the calling pane, else a new session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<Name>,
+    #[serde(flatten)]
+    pub pane: CreatePane,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Placement {
+    pub session: SessionId,
+    pub window: WindowId,
+    pub pane: PaneId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StopPane {
+    /// Milliseconds to wait for the pane to end by itself before ko removes it.
+    #[serde(default = "WaitMs::none")]
+    pub wait_ms: WaitMs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1690,14 +1750,6 @@ pub struct Info {
     pub output: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct Detail {
-    #[serde(flatten)]
-    pub info: Info,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub screen: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum SessionRef {
@@ -1782,8 +1834,8 @@ pub enum StopResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StopRun {
-    #[serde(default)]
-    pub wait_ms: u64,
+    #[serde(default = "WaitMs::none")]
+    pub wait_ms: WaitMs,
     pub result: StopResult,
 }
 

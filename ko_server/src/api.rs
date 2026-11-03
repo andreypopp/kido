@@ -9,10 +9,10 @@ use serde_json::Value;
 
 use crate::ids::{ClientId, PaneId, RunId, SessionId, VarName, WindowId};
 use crate::protocol::{
-    Candidate, ClientEvent, ClientRequest, DeleteVars, Detail, Empty, HistoryDef, Images, Info,
-    Input, InputResult, LayoutPanes, Listing, PutLayout, ReportOutcome, SearchEvent, SendPrompt,
-    Sent, Show, Snapshot, StartRun, Started, StopRun, VarValue, Version, ViewEvent, ViewRequest,
-    Waited,
+    Candidate, ClientEvent, ClientRequest, DeleteVars, Empty, HistoryDef, Images, Info, Input,
+    InputResult, LayoutPanes, Listing, NewWindow, Placement, PutLayout, ReportOutcome, SearchEvent,
+    SendPrompt, Sent, ServerVersion, Show, Snapshot, StartRun, Started, StopPane, StopRun,
+    VarValue, ViewEvent, ViewRequest, Waited,
 };
 use crate::route::{Invalid, Param, binary, pixels, routes, text};
 
@@ -20,12 +20,36 @@ use crate::runs::Parent;
 
 const MAX_OFFSET: u64 = (1 << 62) - 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u64", into = "u64")]
 pub struct WaitMs(u64);
+
+impl TryFrom<u64> for WaitMs {
+    type Error = &'static str;
+
+    fn try_from(milliseconds: u64) -> Result<WaitMs, &'static str> {
+        if milliseconds > WaitMs::MAX.0 {
+            Err("wait is too long")
+        } else {
+            Ok(WaitMs(milliseconds))
+        }
+    }
+}
+
+impl From<WaitMs> for u64 {
+    fn from(wait: WaitMs) -> u64 {
+        wait.0
+    }
+}
 
 impl WaitMs {
     pub const DEFAULT: WaitMs = WaitMs(30_000);
     pub const MAX: WaitMs = WaitMs(3_600_000);
+    pub const NONE: WaitMs = WaitMs(0);
+
+    pub fn none() -> WaitMs {
+        WaitMs::NONE
+    }
 
     pub fn clamped(milliseconds: u64) -> WaitMs {
         WaitMs(milliseconds.min(WaitMs::MAX.0))
@@ -537,7 +561,7 @@ impl Param for Images {
 
 routes! {
     /// The protocol and terminal revisions of this server.
-    Version { method: GET, path: /version, reply: Version }
+    Version { method: GET, path: /version, reply: ServerVersion }
     /// Every pane, with its status, variables and run.
     ListPanes { method: GET, path: /panes, reply: Vec<Listing> }
     /// One pane, with its status, variables and run.
@@ -549,11 +573,32 @@ routes! {
         method: PUT,
         path: /layout,
         body: PutLayout,
+        caller: optional,
         reply: Snapshot,
         errors: { 409: Snapshot },
     }
     /// The client-lifetime socket: layout, focus and status events.
     Client { method: WS, path: /client, send: ClientRequest, recv: ClientEvent }
+    /// Creates a window with one pane, in one change of the layout. No client switches to it.
+    /// The pane's session is the given one, else the parent's, else the caller's, else a new one.
+    /// The window goes after the parent's or the caller's window of that session, else at the end.
+    NewPane {
+        method: POST,
+        path: /panes,
+        body: NewWindow,
+        caller: optional,
+        reply: Placement,
+    }
+    /// Waits up to wait_ms for the pane to end by itself, then removes it and hangs up its
+    /// program. ko kills a removed program that still lives after the escalation time. A dead
+    /// pane is removed at once.
+    StopPane {
+        method: POST,
+        path: /panes/{id: PaneId}/stop,
+        body: StopPane,
+        caller: optional,
+        reply: Empty,
+    }
     /// Closes a pane.
     DeletePane { method: DELETE, path: /panes/{id: PaneId}, reply: Empty }
     /// Closes every pane of a window.
@@ -610,15 +655,22 @@ routes! {
         method: PUT,
         path: /panes/{id: PaneId}/vars/{name: VarName},
         body: VarValue,
+        caller: optional,
         reply: Empty,
     }
     /// Removes one variable of a pane.
-    DeleteVar { method: DELETE, path: /panes/{id: PaneId}/vars/{name: VarName}, reply: Empty }
+    DeleteVar {
+        method: DELETE,
+        path: /panes/{id: PaneId}/vars/{name: VarName},
+        caller: optional,
+        reply: Empty,
+    }
     /// Removes variables of a pane, if its condition holds.
     DeleteVars {
         method: DELETE,
         path: /panes/{id: PaneId}/vars,
         body: DeleteVars,
+        caller: optional,
         reply: Empty,
         errors: { 412 },
     }
@@ -637,8 +689,11 @@ routes! {
         query: { show: Show = Live, parent: Option<Parent> },
         reply: Vec<Info>,
     }
-    /// One run, with its screen when it failed.
-    GetRun { method: GET, path: /runs/{id: RunId}, reply: Detail }
+    /// One run.
+    GetRun { method: GET, path: /runs/{id: RunId}, reply: Info }
+    /// The screen that the sweep captured when the run's pane went: the whole history of the
+    /// pane, cut to its last KO_RUN_SCREEN_BYTES bytes. A run that has none is not_found.
+    RunScreen { method: GET, path: /runs/{id: RunId}/screen, reply: text }
     /// Waits for the outcome of a run, up to the timeout.
     WaitRun {
         method: GET,
@@ -665,7 +720,7 @@ routes! {
         method: GET,
         path: /prompt/resolve,
         query: { window: Option<WindowOnly> },
-        caller: required,
+        caller: named,
         reply: Vec<Candidate>,
     }
     /// Sends a prompt to an agent.
@@ -673,7 +728,7 @@ routes! {
         method: POST,
         path: /prompt,
         body: SendPrompt,
-        caller: required,
+        caller: named,
         reply: Sent,
     }
 }

@@ -229,6 +229,8 @@ mod tests {
                 }),
                 progress: None,
                 run: None,
+                parent: None,
+                close: Default::default(),
             },
             vars: BTreeMap::new(),
         }

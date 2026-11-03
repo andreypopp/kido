@@ -672,19 +672,19 @@ is not a second notice.
 
 These controls reach descendants only ("Scope", above).
 
-The sweep collects orphans. A marked run pane is an orphan if its run
-meta names a parent that has ended (design.md, "Window lifecycle").
-Before it closes the run's pane, it records `failed` with "its parent
-ended". A one-shot `ko reap` also applies this rule.
+The sweep collects orphans. A run's pane carries the pane `parent`
+that `POST /runs` gave it: a top-level parent's pane (`pane_N`) as
+given, a subagent parent's run resolved to that run's pane. The pane
+is an orphan when that parent pane is gone or dead (design.md, "Window
+lifecycle"). Before it closes the run's pane, the sweep records
+`failed` with "its parent ended".
 
-A top-level parent is its pane (`pane_N`): it has ended when its pane is
-gone, dead or shows neither a pi root nor `pi.session`. A subagent
-parent is its run. When pi exits, both go, so the next sweep collects
-its runs. While pi is in the external editor or suspended, only its
-root goes; `/new`, `/resume` and `/fork` change the parent's session id
-but keep a pi root on the pane. The sweep keeps the children in these
-cases (design.md, "Window lifecycle", rule 2). A subagent's own parent
-watch, which reads `pi.session`, ends it.
+The sweep reads no pi evidence. A pi that quits inside a shell pane
+that stays open, or that moves to another session id with `/new`,
+`/resume` or `/fork`, keeps its pane alive, so the sweep keeps its
+children. A subagent's own parent watch, which reads `pi.session`,
+ends it. An `async_bash` run of such a pi lives until the pane closes
+(design.md, "Known limits").
 
 ## Restarting through a message
 

@@ -13,10 +13,12 @@ use ko_client::edit::Edit;
 use ko_client::launch::{self, PATIENCE};
 use ko_client::layout::Document;
 use ko_client::remote::Remote;
+use ko_client::wire::Caller;
 use ko_pane_wire::frame::Scrollback;
 use ko_server::agent;
 use ko_server::api::Route;
 use ko_server::config::{self, Config, DEFAULT_LIMITS};
+use ko_server::ids::PaneId;
 use ko_server::protocol::{self, Cause, Row};
 use ko_server::schema;
 use ko_server::server::{Server, Status, Timing};
@@ -265,11 +267,31 @@ struct ApiArgs {
     path: String,
 }
 
-pub(crate) fn client_dir(server: Option<PathBuf>) -> PathBuf {
-    let pane_server = std::env::var_os("KO_SOCKET")
+pub(crate) struct Target {
+    pub(crate) dir: PathBuf,
+    pub(crate) caller: Option<Caller>,
+}
+
+pub(crate) fn target(server: Option<PathBuf>) -> Target {
+    let own = std::env::var_os("KO_SOCKET")
         .map(PathBuf::from)
         .and_then(|socket| socket.parent().map(std::path::Path::to_path_buf));
-    config::dir(server.or(pane_server))
+    let dir = config::dir(server.or_else(|| own.clone()));
+    let same = |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let pane = std::env::var("KO_PANE")
+        .ok()
+        .and_then(|pane| pane.parse::<PaneId>().ok())
+        .filter(|_| own.as_deref().map(same) == Some(same(&dir)));
+    let caller = pane.map(|pane| {
+        match std::env::var("KO_PANE_TOKEN")
+            .ok()
+            .and_then(|token| token.parse().ok())
+        {
+            Some(token) => Caller::Pane { pane, token },
+            None => Caller::Named(pane),
+        }
+    });
+    Target { dir, caller }
 }
 
 pub(crate) fn complain(message: impl std::fmt::Display) {
@@ -403,11 +425,14 @@ fn api(args: ApiArgs) -> ExitCode {
         Ok(remote) => remote,
         Err(code) => return code,
     };
-    let dir = remote.as_ref().map_or_else(
-        || client_dir(args.server),
-        |(remote, _)| remote.dir().to_path_buf(),
-    );
-    match api::request(&dir, &method, &args.path, &body) {
+    let Target { dir, caller } = match &remote {
+        Some((remote, _)) => Target {
+            dir: remote.dir().to_path_buf(),
+            caller: None,
+        },
+        None => target(args.server),
+    };
+    match api::request(&dir, caller, &method, &args.path, &body) {
         Err(api::Error::Websocket) => {
             complain(format_args!(
                 "ko api: {} is a WebSocket endpoint; ko api sends one request and prints one response",
@@ -469,14 +494,8 @@ fn ssh(args: &[OsString]) -> ExitCode {
         .try_clone_to_owned()
         .and_then(|fd| std::fs::File::from(fd).metadata())
         .is_ok_and(|meta| meta.file_type().is_char_device());
-    let pane = std::env::var_os("KO_PANE")
-        .zip(std::env::var_os("KO_SOCKET"))
-        .and_then(|(id, socket)| {
-            Some(ssh::Pane {
-                dir: PathBuf::from(socket).parent()?.to_path_buf(),
-                id: id.into_string().ok()?.parse().ok()?,
-            })
-        });
+    let Target { dir, caller } = target(None);
+    let pane = caller.map(|caller| ssh::Pane { dir, caller });
     let argv = ssh::prepare(tty, pane.as_ref(), args);
     let Some((first, rest)) = argv.split_first() else {
         return fail("ssh", "no arguments");
@@ -491,8 +510,8 @@ fn ssh(args: &[OsString]) -> ExitCode {
 }
 
 fn get(name: &str, server: Option<PathBuf>, route: &Route) -> Result<Vec<u8>, ExitCode> {
-    let dir = client_dir(server);
-    match api::get(&dir, route) {
+    let Target { dir, caller } = target(server);
+    match api::get(&dir, caller, route) {
         Ok(response) if response.status / 100 == 2 => Ok(response.body),
         Ok(response) => Err(fail(name, format!("HTTP {}", response.status))),
         Err(failure) => Err(server_failure(name, &dir, failure)),
@@ -558,7 +577,7 @@ fn layout(args: LayoutArgs) -> ExitCode {
         Some(LayoutCommand::Edit { edit }) => return layout_edit(args.server, &edit),
         Some(LayoutCommand::Put { file }) => file,
     };
-    let dir = client_dir(args.server);
+    let Target { dir, caller } = target(args.server);
     let document = read_input(&file)
         .map_err(|error| error.to_string())
         .and_then(|text| protocol::decode::<Document>(&text).map_err(|error| error.to_string()));
@@ -566,7 +585,7 @@ fn layout(args: LayoutArgs) -> ExitCode {
         Ok(document) => document,
         Err(message) => return fail("layout put", message),
     };
-    match api::replace_layout(&dir, &document) {
+    match api::replace_layout(&dir, caller, &document) {
         Ok(snapshot) => {
             let _ = writeln!(io::stdout().lock(), "{}", protocol::json(&snapshot));
             ExitCode::SUCCESS
@@ -580,8 +599,8 @@ fn layout_edit(server: Option<PathBuf>, edit: &str) -> ExitCode {
         Ok(edit) => edit,
         Err(error) => return fail("layout edit", error),
     };
-    let dir = client_dir(server);
-    match api::edit_layout(&dir, &edit) {
+    let Target { dir, caller } = target(server);
+    match api::edit_layout(&dir, caller, &edit) {
         Ok(edited) => {
             let _ = writeln!(io::stdout().lock(), "{}", protocol::json(&edited));
             ExitCode::SUCCESS

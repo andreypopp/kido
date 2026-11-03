@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ko_client::api;
+use ko_client::wire::Caller;
 use ko_server::api::Route;
-use ko_server::ids::{PaneId, VarName};
+use ko_server::ids::VarName;
 use serde_json::json;
 
 use crate::prime::ssh_bootstrap;
@@ -36,7 +37,7 @@ struct SshArgs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pane {
     pub dir: PathBuf,
-    pub id: PaneId,
+    pub caller: Caller,
 }
 
 fn letters(args: &SshArgs) -> String {
@@ -161,14 +162,14 @@ fn mark(pane: &Pane, parsed: Option<&SshArgs>) {
         match parsed {
             Some(parsed) => (
                 Route::SetVar {
-                    id: pane.id,
+                    id: pane.caller.pane(),
                     name: dest,
                 },
                 json!(parsed.dest).to_string().into_bytes(),
             ),
             None => (
                 Route::DeleteVar {
-                    id: pane.id,
+                    id: pane.caller.pane(),
                     name: dest,
                 },
                 Vec::new(),
@@ -177,14 +178,14 @@ fn mark(pane: &Pane, parsed: Option<&SshArgs>) {
         match parsed.and_then(connection_args) {
             Some(connection) => (
                 Route::SetVar {
-                    id: pane.id,
+                    id: pane.caller.pane(),
                     name: extra,
                 },
                 json!(connection).to_string().into_bytes(),
             ),
             None => (
                 Route::DeleteVar {
-                    id: pane.id,
+                    id: pane.caller.pane(),
                     name: extra,
                 },
                 Vec::new(),
@@ -198,7 +199,14 @@ fn mark(pane: &Pane, parsed: Option<&SshArgs>) {
             return;
         }
         let (method, path) = route.to_request();
-        let _ = api::request_within(&pane.dir, method, &path, &body, left);
+        let _ = api::request_within(
+            &pane.dir,
+            Some(pane.caller.clone()),
+            method,
+            &path,
+            &body,
+            left,
+        );
     }
 }
 
@@ -462,7 +470,7 @@ mod tests {
         let args = [OsString::from("host"), OsString::from_vec(vec![0xff])];
         let pane = Pane {
             dir: PathBuf::from("/nonexistent"),
-            id: "pane_1".parse().unwrap(),
+            caller: Caller::Named("pane_1".parse().unwrap()),
         };
         let argv = prepare(true, Some(&pane), &args);
         assert_eq!(

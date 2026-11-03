@@ -5,20 +5,18 @@ use std::io;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::time::Duration;
 
-use ko_sys::clock::Mono;
 use ko_sys::pid::Exit;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{PaneId, RunId};
 use crate::pane_proc::Cause;
-use crate::protocol::{Detail, Info, RunRow, Show};
+use crate::panes::{Condition, Seen};
+use crate::protocol::{Info, RunRow, Show};
 use crate::timestamp::Timestamp;
 
 const NAME_MAX: usize = 64;
-const SCREEN_MAX: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -170,22 +168,6 @@ pub struct Meta {
     pub started_at: Timestamp,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum Condition<'a> {
-    Live,
-    Dead { at: Mono, cause: &'a Cause },
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct Seen<'a> {
-    pub(crate) id: PaneId,
-    pub(crate) run: Option<RunId>,
-    pub(crate) condition: Condition<'a>,
-    pub(crate) agent_session: Option<String>,
-    pub(crate) pi_evidence: bool,
-    pub(crate) shown: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Ended {
     Unknown(String),
@@ -195,14 +177,7 @@ pub(crate) enum Ended {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Closing {
     pub(crate) pane: PaneId,
-    pub(crate) run: RunId,
-    pub(crate) outcome: RunOutcome,
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct Swept {
-    pub(crate) closing: Vec<Closing>,
-    pub(crate) next: Option<Duration>,
+    pub(crate) run: Option<(RunId, RunOutcome)>,
 }
 
 pub(crate) fn root(dir: &Path) -> PathBuf {
@@ -256,23 +231,28 @@ fn outcome(root: &Path, id: &RunId, condition: Option<Condition<'_>>) -> Option<
     read_outcome(root, id).or_else(|| ended_by_pane(condition))
 }
 
-fn read_screen(root: &Path, id: &RunId) -> Option<String> {
-    fs::read(file(root, id, "screen"))
-        .ok()
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+pub(crate) fn open_screen(root: &Path, id: &RunId) -> Option<(fs::File, usize)> {
+    let file = fs::File::open(file(root, id, "screen")).ok()?;
+    let length = usize::try_from(file.metadata().ok()?.len()).ok()?;
+    Some((file, length))
+}
+
+pub(crate) fn cut_point(screen: &[u8], max: usize) -> usize {
+    let cut = screen.len().saturating_sub(max);
+    cut + screen
+        .get(cut..)
+        .unwrap_or_default()
+        .iter()
+        .take_while(|byte| **byte & 0xC0 == 0x80)
+        .count()
 }
 
 pub(crate) fn write_screen(root: &Path, id: &RunId, screen: &[u8]) {
-    let tail = screen
-        .len()
-        .checked_sub(SCREEN_MAX)
-        .and_then(|cut| screen.get(cut..))
-        .unwrap_or(screen);
-    if tail.is_empty() {
+    if screen.is_empty() {
         return;
     }
     let temp = file(root, id, "screen.tmp");
-    if fs::write(&temp, tail).is_ok() {
+    if fs::write(&temp, screen).is_ok() {
         let _ = fs::rename(temp, file(root, id, "screen"));
     }
 }
@@ -371,79 +351,56 @@ pub(crate) fn row(
     })
 }
 
-pub(crate) fn parent_ended(root: &Path, panes: &[Seen<'_>], parent: &Parent) -> Option<Ended> {
+pub(crate) fn parent_pane(
+    root: &Path,
+    panes: &[Seen<'_>],
+    parent: &Parent,
+) -> Result<PaneId, Ended> {
     match parent {
-        Parent::Run(id) => match read_meta(root, id) {
-            None => Some(Ended::Unknown(format!("no run {id}"))),
-            Some(meta) => {
-                ending(root, panes, &meta).map(|_| Ended::Over(format!("run {id} has ended")))
+        Parent::Pane(id) => Ok(*id),
+        Parent::Run(id) => {
+            let meta = read_meta(root, id).ok_or_else(|| Ended::Unknown(format!("no run {id}")))?;
+            let pane = meta
+                .pane
+                .ok_or_else(|| Ended::Unknown(format!("run {id} has no pane")))?;
+            if ending(root, panes, &meta).is_some() {
+                return Err(Ended::Over(format!("run {id} has ended")));
             }
-        },
-        Parent::Pane(id) => match panes.iter().find(|pane| pane.id == *id) {
-            None => Some(Ended::Over(format!("pane {id} is gone"))),
-            Some(pane) if matches!(pane.condition, Condition::Dead { .. }) => {
-                Some(Ended::Over(format!("pane {id} is dead")))
-            }
-            Some(pane) if !pane.pi_evidence => Some(Ended::Over(format!("pane {id} shows no pi"))),
-            Some(_) => None,
-        },
+            Ok(pane)
+        }
     }
 }
 
-pub(crate) fn sweep(root: &Path, panes: &[Seen<'_>], now: Mono, grace: Duration) -> Swept {
-    let mut swept = Swept::default();
-    for pane in panes {
-        let Some(meta) = pane
-            .run
-            .as_ref()
-            .and_then(|id| read_meta(root, id))
-            .filter(|meta| meta.pane == Some(pane.id))
-        else {
-            continue;
-        };
-        let outcome = match pane.condition {
-            Condition::Dead { at, cause } => {
-                let age = Duration::from_nanos(now.nanos().saturating_sub(at.nanos()));
-                if age < grace {
-                    let left = grace.saturating_sub(age);
-                    swept.next = Some(swept.next.map_or(left, |next| next.min(left)));
-                    continue;
-                }
-                outcome(root, &meta.id, Some(pane.condition)).unwrap_or_else(|| dead_outcome(cause))
-            }
-            Condition::Live => {
-                let orphan = meta
-                    .parent
-                    .as_ref()
-                    .is_some_and(|parent| parent_ended(root, panes, parent).is_some());
-                if !orphan {
-                    continue;
-                }
-                RunOutcome {
-                    result: RunResult::Failed,
-                    text: "its parent ended".to_owned(),
-                    at: None,
-                }
-            }
-        };
-        if !pane.shown {
-            swept.closing.push(Closing {
-                pane: pane.id,
-                run: meta.id,
-                outcome,
-            });
-        }
-    }
-    swept
+pub(crate) fn closing(root: &Path, panes: &[Seen<'_>], removed: &[PaneId]) -> Vec<Closing> {
+    removed
+        .iter()
+        .filter_map(|id| panes.iter().find(|pane| pane.id == *id))
+        .map(|pane| {
+            let run = pane
+                .run
+                .as_ref()
+                .and_then(|id| read_meta(root, id))
+                .filter(|meta| meta.pane == Some(pane.id))
+                .map(|meta| {
+                    let outcome =
+                        outcome(root, &meta.id, Some(pane.condition)).unwrap_or_else(|| {
+                            RunOutcome {
+                                result: RunResult::Failed,
+                                text: "its parent ended".to_owned(),
+                                at: None,
+                            }
+                        });
+                    (meta.id, outcome)
+                });
+            Closing { pane: pane.id, run }
+        })
+        .collect()
 }
 
 fn info(root: &Path, panes: &[Seen<'_>], meta: Meta) -> Info {
-    let session = run_pane(panes, &meta)
-        .filter(|pane| matches!(pane.condition, Condition::Live))
-        .and_then(|pane| pane.agent_session.clone());
     Info {
         output: output_path(root, &meta.id).to_string_lossy().into_owned(),
-        session,
+        session: None,
         run: RunRow {
             outcome: ending(root, panes, &meta),
             meta,
@@ -451,12 +408,8 @@ fn info(root: &Path, panes: &[Seen<'_>], meta: Meta) -> Info {
     }
 }
 
-pub(crate) fn detail(root: &Path, panes: &[Seen<'_>], id: &RunId) -> Option<Detail> {
-    let info = info(root, panes, read_meta(root, id)?);
-    Some(Detail {
-        screen: read_screen(root, id),
-        info,
-    })
+pub(crate) fn detail(root: &Path, panes: &[Seen<'_>], id: &RunId) -> Option<Info> {
+    Some(info(root, panes, read_meta(root, id)?))
 }
 
 pub(crate) fn infos(
@@ -494,7 +447,8 @@ pub(crate) fn infos(
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use crate::protocol::Close;
+    use ko_sys::clock::Mono;
     const NOW: u64 = 1_000_000_000_000;
 
     struct Scratch(PathBuf);
@@ -541,8 +495,8 @@ mod tests {
             id: pane(number),
             run: index.map(run),
             condition,
-            agent_session: None,
-            pi_evidence: false,
+            parent: None,
+            close: Close::OnExit,
             shown: false,
         }
     }
@@ -554,9 +508,8 @@ mod tests {
         }
     }
 
-    fn closed(swept: &Swept) -> Vec<(u64, String, String)> {
-        swept
-            .closing
+    fn closed(closings: &[Closing]) -> Vec<(u64, String)> {
+        closings
             .iter()
             .map(|closing| {
                 (
@@ -566,17 +519,13 @@ mod tests {
                         .trim_start_matches("pane_")
                         .parse()
                         .unwrap(),
-                    closing.outcome.result.to_string(),
-                    closing.outcome.text.clone(),
+                    closing.run.as_ref().map_or_else(
+                        || "no run".to_owned(),
+                        |(_, outcome)| format!("{} {}", outcome.result, outcome.text),
+                    ),
                 )
             })
             .collect()
-    }
-
-    const GRACE: Duration = Duration::from_secs(1);
-
-    fn swept(root: &Path, panes: &[Seen<'_>]) -> Swept {
-        sweep(root, panes, Mono::from_nanos(NOW), GRACE)
     }
 
     #[test]
@@ -763,167 +712,78 @@ mod tests {
     }
 
     #[test]
-    fn rule_one_waits_for_the_grace_and_records_the_ending() {
-        let scratch = Scratch::new("grace");
+    fn a_removed_pane_gives_its_run_the_ending_of_its_pane_or_of_its_parent() {
+        let scratch = Scratch::new("closing");
         let root = &scratch.0;
-        meta(root, 1, None, Some(1));
-        meta(root, 2, None, Some(2));
-        meta(root, 3, None, Some(3));
-        let (young, exit3, signal) = (
-            Cause::Exit(Exit::Exited(0)),
+        for index in 1..=4 {
+            meta(root, index, None, Some(u64::from(index)));
+        }
+        let (exit3, signal) = (
             Cause::Exit(Exit::Exited(3)),
             Cause::Exit(Exit::Signaled(libc::SIGTERM)),
         );
-        let outcome = swept(
-            root,
-            &[
-                seen(
-                    1,
-                    Some(1),
-                    Condition::Dead {
-                        at: Mono::from_nanos(NOW - 400_000_000),
-                        cause: &young,
-                    },
-                ),
-                seen(2, Some(2), dead(2, &exit3)),
-                seen(3, Some(3), dead(2, &signal)),
-            ],
-        );
-        assert_eq!(
-            closed(&outcome),
-            [
-                (2, "failed".to_owned(), "exit 3".to_owned()),
-                (3, "failed".to_owned(), "signal TERM".to_owned())
-            ]
-        );
-        assert_eq!(outcome.next, Some(Duration::from_millis(600)));
-    }
-
-    #[test]
-    fn the_sweep_acts_only_on_a_pane_that_the_run_names() {
-        let scratch = Scratch::new("trust");
-        let root = &scratch.0;
-        meta(root, 1, None, Some(1));
-        let cause = Cause::Exit(Exit::Exited(0));
-        assert_eq!(
-            closed(&swept(root, &[seen(2, Some(1), dead(5, &cause))])),
-            [],
-            "the meta names pane 1, not pane 2"
-        );
-        assert_eq!(
-            closed(&swept(root, &[seen(1, None, dead(5, &cause))])),
-            [],
-            "a pane without the variable is the user's"
-        );
-        assert_eq!(
-            closed(&swept(root, &[seen(1, Some(5), dead(5, &cause))])),
-            [],
-            "a variable for a run without a record"
-        );
-        let mut shown = seen(1, Some(1), dead(5, &cause));
-        shown.shown = true;
-        assert_eq!(
-            closed(&swept(root, &[shown])),
-            [],
-            "a pane that a client shows stays"
-        );
-    }
-
-    #[test]
-    fn rule_two_reads_the_status_of_the_parent() {
-        let scratch = Scratch::new("orphan");
-        let root = &scratch.0;
-        let cause = Cause::Exit(Exit::Exited(0));
-        let parent_pane = |condition, evidence| Seen {
-            pi_evidence: evidence,
-            ..seen(9, None, condition)
-        };
-        let child = |label: u8, parent: Option<Parent>| {
-            meta(root, label, parent, Some(1));
-            seen(1, Some(label), Condition::Live)
-        };
-        let outcome = |label: &str, child: Seen<'_>, others: Vec<Seen<'_>>| {
-            let mut panes = vec![child];
-            panes.extend(others);
-            (label.to_owned(), closed(&swept(root, &panes)).len())
-        };
-        let by_pane = Some(Parent::Pane(pane(9)));
-        meta(root, 50, None, Some(9));
-        let by_run = Some(Parent::Run(run(50)));
-        let results = vec![
-            outcome("parentless", child(10, None), vec![]),
-            outcome(
-                "pane alive",
-                child(11, by_pane.clone()),
-                vec![parent_pane(Condition::Live, true)],
-            ),
-            outcome(
-                "pane without pi evidence",
-                child(12, by_pane.clone()),
-                vec![parent_pane(Condition::Live, false)],
-            ),
-            outcome(
-                "pane dead",
-                child(13, by_pane.clone()),
-                vec![parent_pane(dead(0, &cause), true)],
-            ),
-            outcome("pane gone", child(14, by_pane), vec![]),
-            outcome(
-                "run alive",
-                child(15, by_run.clone()),
-                vec![seen(9, Some(50), Condition::Live)],
-            ),
-            outcome("run gone", child(16, Some(Parent::Run(run(60)))), vec![]),
-            outcome(
-                "run dead",
-                child(17, by_run.clone()),
-                vec![seen(9, Some(50), dead(0, &cause))],
-            ),
-        ];
-        assert_eq!(
-            results,
-            [
-                ("parentless".to_owned(), 0),
-                ("pane alive".to_owned(), 0),
-                ("pane without pi evidence".to_owned(), 1),
-                ("pane dead".to_owned(), 1),
-                ("pane gone".to_owned(), 1),
-                ("run alive".to_owned(), 0),
-                ("run gone".to_owned(), 1),
-                ("run dead".to_owned(), 1),
-            ]
-        );
         record_outcome_once(
             root,
-            &run(50),
+            &run(4),
             &RunOutcome {
                 result: RunResult::Completed,
                 text: String::new(),
                 at: None,
             },
         );
-        let panes = [child(18, by_run), seen(9, Some(50), Condition::Live)];
+        let panes = [
+            seen(1, Some(1), dead(2, &exit3)),
+            seen(2, Some(2), dead(2, &signal)),
+            seen(3, Some(3), Condition::Live),
+            seen(4, Some(4), dead(2, &exit3)),
+            seen(5, None, Condition::Live),
+            seen(6, Some(1), Condition::Live),
+        ];
+        let removed: Vec<PaneId> = (1..=6).map(pane).collect();
         assert_eq!(
-            closed(&swept(root, &panes)),
-            [(1, "failed".to_owned(), "its parent ended".to_owned())]
+            closed(&closing(root, &panes, &removed)),
+            [
+                (1, "failed exit 3".to_owned()),
+                (2, "failed signal TERM".to_owned()),
+                (3, "failed its parent ended".to_owned()),
+                (4, "completed ".to_owned()),
+                (5, "no run".to_owned()),
+                (6, "no run".to_owned()),
+            ],
+            "a pane that no run names gets no record, and the recorded outcome wins"
         );
     }
 
     #[test]
-    fn an_unknown_parent_differs_from_an_ended_one() {
+    fn a_parent_run_gives_its_pane_and_an_unknown_or_ended_one_is_refused() {
         let scratch = Scratch::new("ended");
         let root = &scratch.0;
         meta(root, 1, None, Some(1));
+        meta(root, 3, None, None);
         let live = [seen(1, Some(1), Condition::Live)];
-        let ended = |parent: Parent| parent_ended(root, &live, &parent);
-        assert_eq!(ended(Parent::Run(run(1))), None);
+        let found = |parent: Parent| parent_pane(root, &live, &parent);
+        assert_eq!(found(Parent::Run(run(1))), Ok(pane(1)));
+        assert_eq!(found(Parent::Pane(pane(8))), Ok(pane(8)));
         assert_eq!(
-            ended(Parent::Run(run(2))),
-            Some(Ended::Unknown(format!("no run {}", run(2))))
+            found(Parent::Run(run(2))),
+            Err(Ended::Unknown(format!("no run {}", run(2))))
         );
         assert_eq!(
-            ended(Parent::Pane(pane(8))),
-            Some(Ended::Over("pane pane_8 is gone".to_owned()))
+            found(Parent::Run(run(3))),
+            Err(Ended::Unknown(format!("run {} has no pane", run(3))))
+        );
+        record_outcome_once(
+            root,
+            &run(1),
+            &RunOutcome {
+                result: RunResult::Stopped,
+                text: String::new(),
+                at: None,
+            },
+        );
+        assert_eq!(
+            found(Parent::Run(run(1))),
+            Err(Ended::Over(format!("run {} has ended", run(1))))
         );
     }
 
@@ -958,29 +818,10 @@ mod tests {
         );
         assert_eq!(names(Show::Present, None).len(), 3);
         assert_eq!(
-            detail(root, &panes, &run(3)).map(|d| d.info.run.outcome.map(|o| o.result)),
+            detail(root, &panes, &run(3)).map(|d| d.run.outcome.map(|o| o.result)),
             Some(Some(RunResult::Completed))
         );
         assert_eq!(detail(root, &panes, &run(9)), None);
-    }
-
-    #[test]
-    fn the_session_shows_while_the_pane_lives_and_is_a_pi() {
-        let scratch = Scratch::new("session");
-        let root = &scratch.0;
-        meta(root, 1, None, Some(1));
-        let mut agent = seen(1, Some(1), Condition::Live);
-        agent.agent_session = Some("s-1".to_owned());
-        let cause = Cause::Exit(Exit::Exited(0));
-        let mut gone = seen(1, Some(1), dead(1, &cause));
-        gone.agent_session = Some("s-1".to_owned());
-        let session = |pane: Seen<'_>| {
-            infos(root, &[pane], Show::All, None)
-                .pop()
-                .and_then(|info| info.session)
-        };
-        assert_eq!(session(agent), Some("s-1".to_owned()));
-        assert_eq!(session(gone), None);
     }
 
     #[test]
@@ -1015,14 +856,21 @@ mod tests {
     }
 
     #[test]
-    fn a_screen_keeps_its_tail() {
-        let scratch = Scratch::new("screen");
-        let root = &scratch.0;
-        meta(root, 1, None, None);
-        write_screen(root, &run(1), b"");
-        assert_eq!(read_screen(root, &run(1)), None);
-        let long = [vec![b'x'; 10], vec![b'y'; SCREEN_MAX]].concat();
-        write_screen(root, &run(1), &long);
-        assert_eq!(read_screen(root, &run(1)), Some("y".repeat(SCREEN_MAX)));
+    fn a_screen_is_cut_to_its_end_at_the_start_of_a_character() {
+        assert_eq!(cut_point(b"abcdef", 4), 2);
+        assert_eq!(cut_point(b"abc", 4), 0);
+        let text = "aé€b".as_bytes();
+        assert_eq!(cut_point(text, 4), 3, "the cut at 3 starts the euro sign");
+        assert_eq!(
+            cut_point(text, 5),
+            3,
+            "the cut at 2 is inside é and moves on"
+        );
+        assert_eq!(
+            cut_point(text, 3),
+            6,
+            "the cut at 4 is inside the euro sign and moves on"
+        );
+        assert_eq!(cut_point(text, 1), 6);
     }
 }

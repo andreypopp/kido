@@ -796,6 +796,8 @@ mod tests {
             command: None,
             env: Vec::new(),
             vars: Default::default(),
+            parent: None,
+            close: Default::default(),
         }
     }
 

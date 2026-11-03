@@ -137,7 +137,10 @@ AGENTS.md, "Layout", names each crate. The coordinator's modules in
 the state of `state.rs` and `state/`, which owns the connections, the
 panes (`pane.rs`, `panes.rs`, each with its `pane_proc.rs` child), the
 clients (`client.rs`), the layout document (`layout.rs`) and the
-waiters. `view.rs` and `delivery.rs` are the verified stream path
+waiters; `state/pane_ops.rs` holds `POST /panes`, the pane stop with
+its escalation and what a pane identity may do (`router.rs` checks
+the identity itself), and `state/run_ops.rs` the
+runs, the sweep and the screen capture. `view.rs` and `delivery.rs` are the verified stream path
 (AGENTS.md, "Verus"); `conn.rs`, `ws.rs`, `http.rs` and `deflate.rs`
 the connection, the framing and the slice codec; `api.rs`, `route.rs`,
 `router.rs`, `protocol.rs` and `schema.rs` the routes, the wire types
@@ -370,7 +373,8 @@ builds no tree: a client builds its own from the layout document, the
 pane rows and their runs (`ko_client/src/model.rs`).
 
 Runs are in the server (protocol.md, section 10): the run records on
-disk, the sweep on each event that can end a run, and `run-wait` as a
+disk, the sweep over the pane rows on each event that can end a pane,
+and `run-wait` as a
 long poll.
 design.md gives the rules that the runs keep from the first
 implementation.

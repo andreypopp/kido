@@ -1,43 +1,24 @@
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
+use super::pane_ops::Via;
 use super::*;
-use crate::api::{WaitMs, routes};
+use crate::api::routes;
 use crate::ids::RunId;
 use crate::pane_kind::{self, Kind};
+use crate::panes::{self, Condition, Seen};
 use crate::protocol::{
-    Command, DraftLayout, Empty, Error, ErrorKind, Info, ReportOutcome, Reported, RunRow,
-    SessionRef, Show, StartRun, Started, StopResult, StopRun, Variable, Waited,
+    Close, Command, Empty, Error, ErrorKind, Info, ReportOutcome, Reported, RunRow, SessionRef,
+    Show, StartRun, Started, StopResult, StopRun, Variable, Waited,
 };
-use crate::runs::{self, Closing, Condition, Ended, Meta, RunOutcome, RunResult, Seen};
+use crate::runs::{self, Closing, Ended, Meta, RunOutcome, RunResult};
 use crate::timestamp::Timestamp;
 use crate::vars::Loose;
 use ko_pane_wire::frame::{Req, ScreenFormat};
 
-const SCREEN_HISTORY: u32 = 1000;
-
-#[derive(Debug)]
-enum WaitKind {
-    Ending(RunId),
-    Stopping(PaneId),
-}
-
 #[derive(Debug)]
 struct Wait {
     conn: Token,
-    kind: WaitKind,
-}
-
-#[derive(Debug)]
-enum Done {
-    Outcome(Option<RunOutcome>),
-    Stop(PaneId),
-}
-
-#[derive(Debug)]
-struct Settled {
-    conn: Token,
-    done: Done,
+    run: RunId,
 }
 
 #[derive(Debug)]
@@ -60,10 +41,8 @@ struct Capture {
 pub(super) struct RunState {
     root: PathBuf,
     sweep: Timer,
-    escalation: Timer,
     waits: Vec<Wait>,
     captures: Vec<Capture>,
-    doomed: Vec<(PaneId, Instant)>,
     sweep_due: bool,
     focused: BTreeSet<PaneId>,
 }
@@ -74,22 +53,13 @@ fn capture_at(captures: &[Capture], pane: PaneId, req: Req) -> Option<usize> {
     })
 }
 
-fn next_escalation(doomed: &[(PaneId, Instant)], now: Instant) -> Option<Duration> {
-    doomed
-        .iter()
-        .map(|(_, due)| due.saturating_duration_since(now))
-        .min()
-}
-
 impl RunState {
     pub(super) fn new(config: &Config, poll: &mut Poll) -> RunState {
         RunState {
             root: runs::root(&config.dir),
             sweep: poll.timer(),
-            escalation: poll.timer(),
             waits: Vec::new(),
             captures: Vec::new(),
-            doomed: Vec::new(),
             sweep_due: false,
             focused: BTreeSet::new(),
         }
@@ -101,7 +71,6 @@ impl RunState {
 
     pub(super) fn stop(&self, poll: &mut Poll) {
         poll.stop(self.sweep);
-        poll.stop(self.escalation);
     }
 
     pub(super) fn forget(&mut self, conn: Token) {
@@ -125,10 +94,6 @@ impl RunState {
 
     pub(super) fn is_sweep(&self, timer: Timer) -> bool {
         self.sweep == timer
-    }
-
-    pub(super) fn is_escalation(&self, timer: Timer) -> bool {
-        self.escalation == timer
     }
 }
 
@@ -162,29 +127,56 @@ impl State {
         let shown = self.focused_panes();
         self.panes
             .iter()
-            .map(|pane| {
-                let (telemetry, vars) = (pane.telemetry(), pane.vars());
-                Seen {
-                    id: pane.id(),
-                    run: pane.run().cloned(),
-                    condition: condition_of(pane),
-                    agent_session: match pane_kind::of_pane(telemetry, vars) {
-                        Kind::PiAgent { session, .. } => Some(session),
-                        _ => None,
-                    },
-                    pi_evidence: pane_kind::pi_evidence(telemetry, vars),
-                    shown: shown.contains(&pane.id()),
-                }
+            .map(|pane| Seen {
+                id: pane.id(),
+                run: pane.run().cloned(),
+                condition: condition_of(pane),
+                parent: pane.parent(),
+                close: pane.close(),
+                shown: shown.contains(&pane.id()),
             })
             .collect()
     }
 
-    pub(crate) fn list_runs(&self, show: Show, parent: Option<&runs::Parent>) -> Vec<Info> {
-        runs::infos(&self.runs.root, &self.seen(), show, parent)
+    fn with_session(&self, mut info: Info) -> Info {
+        info.session = info
+            .run
+            .meta
+            .pane
+            .and_then(|id| self.panes.find(id))
+            .filter(|pane| pane.proc().dead().is_none() && pane.run() == Some(&info.run.meta.id))
+            .and_then(
+                |pane| match pane_kind::of_pane(pane.telemetry(), pane.vars()) {
+                    Kind::PiAgent { session, .. } => Some(session),
+                    _ => None,
+                },
+            );
+        info
     }
 
-    pub(crate) fn run_detail(&self, id: &RunId) -> Result<crate::protocol::Detail, Error> {
-        runs::detail(&self.runs.root, &self.seen(), id).ok_or_else(|| no_such_run(id))
+    pub(crate) fn list_runs(&self, show: Show, parent: Option<&runs::Parent>) -> Vec<Info> {
+        runs::infos(&self.runs.root, &self.seen(), show, parent)
+            .into_iter()
+            .map(|info| self.with_session(info))
+            .collect()
+    }
+
+    pub(crate) fn run_detail(&self, id: &RunId) -> Result<Info, Error> {
+        runs::detail(&self.runs.root, &self.seen(), id)
+            .map(|info| self.with_session(info))
+            .ok_or_else(|| no_such_run(id))
+    }
+
+    pub(crate) fn run_screen(&self, id: &RunId) -> Result<(std::fs::File, usize), Error> {
+        if runs::read_meta(&self.runs.root, id).is_none() {
+            return Err(no_such_run(id));
+        }
+        runs::open_screen(&self.runs.root, id).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Missing,
+                format!("run {id}: no screen was captured"),
+            )
+        })
     }
 
     fn ending(&self, meta: &Meta) -> Option<RunOutcome> {
@@ -217,6 +209,7 @@ impl State {
 
     pub(super) fn runs_changed(&mut self, poll: &mut Poll) {
         self.sweep_soon(poll);
+        self.settle_stops(poll);
         if self.runs.waits.is_empty() {
             return;
         }
@@ -234,82 +227,35 @@ impl State {
             (settled, pending)
         };
         self.runs.waits.extend(pending);
-        for done in settled {
-            self.complete(poll, done);
+        for (conn, outcome) in settled {
+            router::answer::<routes::WaitRun>(self, poll, conn, Ok(Waited { outcome }));
         }
     }
 
-    fn settle_wait(&self, seen: &[Seen<'_>], wait: Wait) -> Result<Settled, Wait> {
-        let done = match &wait.kind {
-            WaitKind::Ending(id) => match runs::read_meta(&self.runs.root, id) {
-                None => Done::Outcome(None),
-                Some(meta) => match runs::ending(&self.runs.root, seen, &meta) {
-                    Some(outcome) => Done::Outcome(Some(outcome)),
-                    None => return Err(wait),
-                },
+    fn settle_wait(
+        &self,
+        seen: &[Seen<'_>],
+        wait: Wait,
+    ) -> Result<(Token, Option<RunOutcome>), Wait> {
+        match runs::read_meta(&self.runs.root, &wait.run) {
+            None => Ok((wait.conn, None)),
+            Some(meta) => match runs::ending(&self.runs.root, seen, &meta) {
+                Some(outcome) => Ok((wait.conn, Some(outcome))),
+                None => Err(wait),
             },
-            WaitKind::Stopping(pane) => {
-                if self
-                    .panes
-                    .find(*pane)
-                    .is_some_and(|pane| pane.proc().dead().is_none())
-                {
-                    return Err(wait);
-                }
-                Done::Stop(*pane)
-            }
-        };
-        Ok(Settled {
-            conn: wait.conn,
-            done,
-        })
-    }
-
-    fn complete(&mut self, poll: &mut Poll, settled: Settled) {
-        match settled.done {
-            Done::Outcome(outcome) => {
-                router::answer::<routes::WaitRun>(self, poll, settled.conn, Ok(Waited { outcome }));
-            }
-            Done::Stop(pane) => {
-                self.kill_run_pane(poll, pane);
-                router::answer::<routes::StopRun>(self, poll, settled.conn, Ok(Empty {}));
-            }
         }
     }
 
     pub(super) fn wait_due(&mut self, poll: &mut Poll, timer: Timer) -> bool {
-        let Some(token) = self
-            .conns
-            .iter()
-            .find(|conn| conn.timer == timer)
-            .map(|conn| conn.token)
-        else {
+        let Some(token) = self.token_of_timer(timer) else {
             return false;
         };
         let Some(at) = self.runs.waits.iter().position(|wait| wait.conn == token) else {
             return false;
         };
-        let wait = self.runs.waits.swap_remove(at);
-        match wait.kind {
-            WaitKind::Ending(_) => {
-                router::answer::<routes::WaitRun>(self, poll, token, Ok(Waited { outcome: None }));
-            }
-            WaitKind::Stopping(pane) => {
-                self.kill_run_pane(poll, pane);
-                router::answer::<routes::StopRun>(self, poll, token, Ok(Empty {}));
-            }
-        }
+        self.runs.waits.swap_remove(at);
+        router::answer::<routes::WaitRun>(self, poll, token, Ok(Waited { outcome: None }));
         true
-    }
-
-    fn defer(&mut self, poll: &mut Poll, index: usize, kind: WaitKind, within: Duration) {
-        let conn = &mut self.conns[index];
-        conn.phase = Phase::Handling;
-        let _ = poll.start(conn.timer, within, None);
-        self.runs.waits.push(Wait {
-            conn: conn.token,
-            kind,
-        });
     }
 
     pub(crate) fn wait_run(
@@ -326,12 +272,8 @@ impl State {
         if ending.is_some() || timeout_ms == 0 {
             return Some(Ok(Waited { outcome: ending }));
         }
-        self.defer(
-            poll,
-            index,
-            WaitKind::Ending(id),
-            Duration::from_millis(timeout_ms),
-        );
+        let conn = self.hold(poll, index, Duration::from_millis(timeout_ms));
+        self.runs.waits.push(Wait { conn, run: id });
         None
     }
 
@@ -375,9 +317,6 @@ impl State {
         let Some(meta) = runs::read_meta(&self.runs.root, &id) else {
             return Some(Err(no_such_run(&id)));
         };
-        if request.wait_ms > WaitMs::MAX.get() {
-            return Some(Err(Error::new(ErrorKind::Invalid, "wait is too long")));
-        }
         let live = self.live_run_pane(&meta);
         let result = match request.result {
             StopResult::Stopped => RunResult::Stopped,
@@ -398,47 +337,7 @@ impl State {
                 at: Some(Timestamp::now()),
             },
         );
-        if request.wait_ms == 0 {
-            self.kill_run_pane(poll, pane);
-            return Some(Ok(Empty {}));
-        }
-        self.defer(
-            poll,
-            index,
-            WaitKind::Stopping(pane),
-            Duration::from_millis(request.wait_ms),
-        );
-        None
-    }
-
-    fn kill_run_pane(&mut self, poll: &mut Poll, pane: PaneId) {
-        self.delete_pane(poll, pane);
-        self.runs
-            .doomed
-            .push((pane, Instant::now() + self.config.stop_escalation));
-        self.arm_escalation(poll);
-    }
-
-    fn arm_escalation(&mut self, poll: &mut Poll) {
-        match next_escalation(&self.runs.doomed, Instant::now()) {
-            Some(next) => {
-                let _ = poll.start(self.runs.escalation, next, None);
-            }
-            None => poll.stop(self.runs.escalation),
-        }
-    }
-
-    pub(super) fn escalate(&mut self, poll: &mut Poll) {
-        let now = Instant::now();
-        let State { runs, panes, .. } = self;
-        runs.doomed.retain(|(pane, due)| {
-            if *due > now {
-                return true;
-            }
-            let _ = panes.kill_removed(*pane);
-            false
-        });
-        self.arm_escalation(poll);
+        self.stop_after(poll, index, pane, request.wait_ms, Via::Run)
     }
 
     pub(crate) fn start_run(
@@ -459,15 +358,20 @@ impl State {
         }
         .ok_or_else(|| invalid("no such session".to_owned()))?;
         let session_id = session.id;
-        if let Some(parent) = &request.parent {
-            let gone = runs::parent_ended(&self.runs.root, &self.seen(), parent);
-            match gone {
-                Some(Ended::Unknown(message)) => {
-                    return Err(Error::new(ErrorKind::Missing, message));
-                }
-                Some(Ended::Over(message)) => return Err(Error::new(ErrorKind::Gone, message)),
-                None => {}
-            }
+        let parent = request
+            .parent
+            .as_ref()
+            .map(|parent| {
+                runs::parent_pane(&self.runs.root, &self.seen(), parent).map_err(
+                    |ended| match ended {
+                        Ended::Unknown(message) => Error::new(ErrorKind::Missing, message),
+                        Ended::Over(message) => Error::new(ErrorKind::Gone, message),
+                    },
+                )
+            })
+            .transpose()?;
+        if let Some(parent) = parent {
+            self.admit_parent(caller, parent)?;
         }
         let io = |error: std::io::Error| Error::new(ErrorKind::Io, error.to_string());
         let id = RunId::mint().map_err(io)?;
@@ -500,32 +404,22 @@ impl State {
             command: Some(Command::Argv { argv: request.argv }),
             env,
             vars: Loose::new(),
+            parent,
+            close: Close::OnExit,
         };
         let name =
             Name::try_from(request.name.as_str().to_owned()).map_err(|m| invalid(m.to_owned()))?;
-        let mut draft = DraftLayout::from(self.document.layout());
-        if let Some(draft_session) = draft
-            .sessions
-            .iter_mut()
-            .find(|candidate| candidate.id == Some(session_id))
-        {
-            let mut window = crate::protocol::DraftWindow::single(&create);
-            window.name = Some(name);
-            draft_session.windows.push(window);
-        }
-        let revision = self.document.revision();
-        let put = self.put_layout(
+        let placed = self.place_pane(
             poll,
-            PutLayout {
-                revision,
-                layout: draft,
-            },
+            caller,
+            Some(SessionRef::Id(session_id)),
+            Some(name),
+            create,
             Some(id.clone()),
         );
-        let snapshot = match put {
-            Ok(snapshot) => snapshot,
-            Err(failure) => {
-                let error = Error::from(failure);
+        let placement = match placed {
+            Ok(placement) => placement,
+            Err(error) => {
                 runs::record_outcome_once(
                     &self.runs.root,
                     &id,
@@ -538,14 +432,7 @@ impl State {
                 return Err(error);
             }
         };
-        let created = snapshot
-            .layout
-            .session(session_id)
-            .and_then(|session| session.windows.last())
-            .and_then(|window| Some((window.id, window.panes().first().copied()?)));
-        let Some((window, pane)) = created else {
-            return Err(Error::new(ErrorKind::Io, "the run's window is missing"));
-        };
+        let (window, pane) = (placement.window, placement.pane);
         meta.pane = Some(pane);
         if let Err(failed) = runs::write_meta(&self.runs.root, &meta) {
             self.delete_pane(poll, pane);
@@ -565,9 +452,15 @@ impl State {
     }
 
     pub(super) fn sweep(&mut self, poll: &mut Poll) {
-        let now = ko_sys::clock::Mono::now();
-        let swept = runs::sweep(&self.runs.root, &self.seen(), now, self.config.linger);
-        for Closing { pane, run, outcome } in swept.closing {
+        let (closing, next) = {
+            let seen = self.seen();
+            let swept = panes::sweep(&seen, ko_sys::clock::Mono::now(), self.config.linger);
+            (
+                runs::closing(&self.runs.root, &seen, &swept.removed),
+                swept.next,
+            )
+        };
+        for Closing { pane, run } in closing {
             if self
                 .runs
                 .captures
@@ -576,11 +469,16 @@ impl State {
             {
                 continue;
             }
-            if let Some(meta) = runs::read_meta(&self.runs.root, &run) {
-                self.begin_capture(poll, pane, meta, outcome, Then::Close);
+            match run {
+                Some((id, outcome)) => {
+                    if let Some(meta) = runs::read_meta(&self.runs.root, &id) {
+                        self.begin_capture(poll, pane, meta, outcome, Then::Close);
+                    }
+                }
+                None => self.delete_pane(poll, pane),
             }
         }
-        match swept.next {
+        match next {
             Some(next) => {
                 let _ = poll.start(self.runs.sweep, next, None);
             }
@@ -599,7 +497,7 @@ impl State {
         outcome.at.get_or_insert_with(Timestamp::now);
         let requested = self.call(poll, pane, |pane, io| {
             pane.proc_mut()
-                .screen(ScreenFormat::Plain, ScreenRows::Last(SCREEN_HISTORY), io)
+                .screen(ScreenFormat::Plain, ScreenRows::Full, io)
         });
         let (req, events) = match requested {
             Some((req, events)) => (req, events),
@@ -634,7 +532,13 @@ impl State {
         let Some(at) = capture_at(&self.runs.captures, pane, req) else {
             return;
         };
-        self.runs.captures[at].screen.extend_from_slice(chunk);
+        let max = self.config.run_screen_bytes;
+        let screen = &mut self.runs.captures[at].screen;
+        screen.extend_from_slice(chunk);
+        if last || screen.len() > max.saturating_mul(2) {
+            let cut = runs::cut_point(screen, max);
+            screen.drain(..cut);
+        }
         if last {
             let capture = self.runs.captures.swap_remove(at);
             self.finish_capture(poll, capture);
@@ -653,15 +557,9 @@ impl State {
         if !seen.iter().any(|candidate| candidate.id == pane) {
             return true;
         }
-        runs::sweep(
-            &self.runs.root,
-            &seen,
-            ko_sys::clock::Mono::now(),
-            self.config.linger,
-        )
-        .closing
-        .iter()
-        .any(|closing| closing.pane == pane)
+        panes::sweep(&seen, ko_sys::clock::Mono::now(), self.config.linger)
+            .removed
+            .contains(&pane)
     }
 
     fn finish_capture(&mut self, poll: &mut Poll, capture: Capture) {
@@ -738,21 +636,5 @@ mod tests {
         }
         assert_eq!(capture_at(&captures, pane, Req::of_serial(1)), None);
         assert!(capture_at(&captures, other, Req::of_serial(1)).is_some());
-    }
-
-    #[test]
-    fn the_escalation_timer_waits_for_the_earliest_deadline_not_a_full_interval() {
-        let now = Instant::now();
-        let at = |secs| (PaneId::new(secs), now + Duration::from_secs(secs));
-        assert_eq!(next_escalation(&[], now), None);
-        assert_eq!(
-            next_escalation(&[at(5), at(2), at(9)], now),
-            Some(Duration::from_secs(2))
-        );
-        assert_eq!(
-            next_escalation(&[at(5), at(2)], now + Duration::from_secs(3)),
-            Some(Duration::ZERO),
-            "a deadline that passed fires at once"
-        );
     }
 }

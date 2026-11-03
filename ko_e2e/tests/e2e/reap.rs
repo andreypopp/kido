@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::harness::{Server, poll, start, stays, wait_gone};
+use crate::harness::{PRINT_TOKEN, Server, poll, stays, wait_gone};
 use crate::runs::{
     caller, child_of, has_pane, id_of, info, ko_as, lingering, pane_of, run_of, wait_ending,
     wait_pane_gone, windows,
@@ -12,17 +12,16 @@ use crate::status::osc7501;
 use ko_sys::pid::Pid;
 
 fn screen(s: &Server, id: &str) -> String {
-    ko_as(s, None, &["runs", "--json", id], "").json()["screen"]
-        .as_str()
-        .unwrap_or_default()
-        .to_owned()
+    ko_as(s, None, &["runs", id], "").ok()
 }
 
 fn pi_parent(s: &Server) -> String {
-    s.new_pane(json!({
-        "command": {"type": "shell", "command": "stty raw -echo; printf '\\033]7501;state=idle:app=pi\\007'; exec cat"},
+    let pane = s.new_pane(json!({
+        "command": {"type": "shell", "command": format!("stty raw -echo; printf '\\033]7501;state=idle:app=pi\\007'; {PRINT_TOKEN}; exec cat")},
         "vars": {"pi.session": "parent-session"}
-    }))
+    }));
+    s.screen_has(&pane, "TOKEN<");
+    pane
 }
 
 fn a_dead_run_is_collected_after_the_linger_with_its_ending_and_its_last_screen(
@@ -183,12 +182,12 @@ fn the_last_window_of_a_session_goes_with_its_collected_run_and_the_session_ends
 
 #[test]
 fn a_child_whose_parent_ended_is_collected_while_its_command_runs() {
-    let s = start(&[]);
+    let s = lingering();
     let caller = caller(&s);
     let parent = pi_parent(&s);
     let file = s.scratch.join("orphan.pid");
     let script = format!("echo $$ > {}; exec sleep 300", file.display());
-    let child = child_of(&s, &caller, &parent, "orphan", &["sh", "-c", &script]);
+    let child = child_of(&s, &parent, &parent, "orphan", &["sh", "-c", &script]);
     poll("the pid file", || {
         fs::read_to_string(&file).is_ok_and(|text| !text.trim().is_empty())
     });
@@ -199,10 +198,11 @@ fn a_child_whose_parent_ended_is_collected_while_its_command_runs() {
     s.wait_row(&parent, "the root to clear", |row| {
         row["status"]["program_status"]["records"] == json!([])
     });
-    stays(
-        "a child died while its parent was in the editor",
-        Duration::from_millis(800),
-        || has_pane(&s, pane_of(&child)),
+    let witness = run_of(&s, &caller, "witness", &["sh", "-c", "exit 0"]);
+    wait_pane_gone(&s, pane_of(&witness));
+    assert!(
+        has_pane(&s, pane_of(&child)),
+        "a child went while its parent showed no pi"
     );
 
     s.delete(&format!("/panes/{}", parent)).ok();

@@ -28,6 +28,7 @@ pub struct Config {
     pub cwd: PathBuf,
     pub linger: Duration,
     pub stop_escalation: Duration,
+    pub run_screen_bytes: usize,
     pub clipboard_wait: Duration,
     pub view_queue: ViewQueue,
 }
@@ -52,6 +53,7 @@ impl Default for ViewQueue {
 
 pub const LINGER: Duration = Duration::from_secs(30);
 pub const STOP_ESCALATION: Duration = Duration::from_secs(5);
+pub const RUN_SCREEN_BYTES: usize = 64 << 20;
 pub const CLIPBOARD_WAIT: Duration = Duration::from_secs(8);
 
 pub const DEFAULT_LIMITS: Limits = Limits {
@@ -79,6 +81,7 @@ pub fn scratch(dir: &Path, pane_exe: PathBuf, limits: Limits) -> Config {
         cwd: PathBuf::from("/"),
         linger: LINGER,
         stop_escalation: STOP_ESCALATION,
+        run_screen_bytes: RUN_SCREEN_BYTES,
         clipboard_wait: CLIPBOARD_WAIT,
         view_queue: ViewQueue::default(),
     }
@@ -230,6 +233,9 @@ impl Config {
             linger: seconds(set("KO_LINGER_SECONDS")).unwrap_or(LINGER),
             stop_escalation: positive("KO_STOP_ESCALATION_MS")
                 .map_or(STOP_ESCALATION, Duration::from_millis),
+            run_screen_bytes: positive("KO_RUN_SCREEN_BYTES")
+                .and_then(|bytes| usize::try_from(bytes).ok())
+                .unwrap_or(RUN_SCREEN_BYTES),
             clipboard_wait: positive("KO_CLIPBOARD_TIMEOUT_MS")
                 .map_or(CLIPBOARD_WAIT, Duration::from_millis),
             view_queue: ViewQueue {

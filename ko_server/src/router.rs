@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::sync::Arc;
 
 use ko_sys::event::{Poll, Token};
@@ -7,15 +8,16 @@ use crate::api::{Offset, Request, Route, routes};
 use crate::client::Client;
 use crate::conn::{Conn, Payload, Phase, Request as Incoming};
 use crate::http::{self, LAST_CHUNK, Status};
-use crate::ids::{ClientId, PaneId};
+use crate::ids::{ClientId, PaneId, PaneToken};
 use crate::link::{Link, Role};
 use crate::pane_proc::{Life, Refusal};
+use crate::panes::acts_as;
 use crate::protocol::{
     self, ACCEPT_SHM_HEADER, Empty, Error, ErrorKind, IMAGE_FORMAT_HEADER, IMAGE_FRAMES_HEADER,
     IMAGE_GAP_HEADER, IMAGE_GENERATION_HEADER, IMAGE_HEIGHT_HEADER, IMAGE_WIDTH_HEADER, ImageShm,
-    InputResult, PROTOCOL_HEADER, PasteResult, VT_HEADER, check_version,
+    InputResult, PROTOCOL_HEADER, PasteResult, ServerVersion, VT_HEADER, check_version,
 };
-use crate::route::{self, Alt, Endpoint, Invalid};
+use crate::route::{self, Alt, Caller, Endpoint, Invalid};
 use crate::state::{Owner, PutFailure, State};
 use crate::view::View;
 use crate::ws::{self, Ws};
@@ -84,6 +86,44 @@ fn upgrade(state: &mut State, poll: &mut Poll, index: usize, response: Vec<u8>, 
     let _ = poll.start(conn.timer, ws::FIRST_PING, None);
 }
 
+// The pane that a request acts as: both headers must carry the token of a live pane.
+fn acting(
+    state: &State,
+    (pane, token): (Option<&str>, Option<&str>),
+    prompting: bool,
+) -> Result<Option<PaneId>, Error> {
+    let refuse = |message: &str| Err(Error::new(ErrorKind::Refused, message));
+    let Some(pane) = pane else {
+        return if token.is_some() {
+            refuse("Ko-Pane-Token needs Ko-Pane")
+        } else {
+            Ok(None)
+        };
+    };
+    let pane: PaneId = pane
+        .parse()
+        .map_err(|_| Error::new(ErrorKind::Invalid, "invalid Ko-Pane"))?;
+    let Some(token) = token else {
+        return if prompting {
+            Ok(Some(pane))
+        } else {
+            refuse("Ko-Pane needs Ko-Pane-Token")
+        };
+    };
+    let matches = token
+        .parse::<PaneToken>()
+        .ok()
+        .zip(state.panes.find(pane))
+        .is_some_and(|(given, found)| {
+            found.proc().dead().is_none() && found.token().matches(&given)
+        });
+    if matches {
+        Ok(Some(pane))
+    } else {
+        refuse("Ko-Pane-Token does not match Ko-Pane")
+    }
+}
+
 pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming: Incoming) {
     let Incoming {
         head,
@@ -124,15 +164,14 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
         return error(&mut state.conns[index], ErrorKind::Gone, "client is closed");
     }
     let client = client.flatten();
-    let caller = match head.header("ko-pane").map(str::parse::<PaneId>) {
-        None => None,
-        Some(Ok(pane)) => Some(pane),
-        Some(Err(_)) => {
-            return error(
-                &mut state.conns[index],
-                ErrorKind::Invalid,
-                "invalid Ko-Pane",
-            );
+    let caller = match acting(
+        state,
+        (head.header("ko-pane"), head.header("ko-pane-token")),
+        route.as_ref().map(Route::caller) == Some(Caller::Named),
+    ) {
+        Ok(caller) => caller,
+        Err(Error { kind, message }) => {
+            return error(&mut state.conns[index], kind, message);
         }
     };
     let Some(route) = route else {
@@ -169,7 +208,13 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
         }
     };
     match request {
-        Request::Version {} => ok::<routes::Version>(&mut state.conns[index], &ours),
+        Request::Version {} => {
+            let version = ServerVersion {
+                version: ours,
+                instance: state.instance().clone(),
+            };
+            ok::<routes::Version>(&mut state.conns[index], &version);
+        }
         Request::ListPanes {} => {
             let listing = state.layout_panes().panes;
             ok::<routes::ListPanes>(&mut state.conns[index], &listing);
@@ -183,7 +228,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             let layout = state.layout_panes();
             ok::<routes::GetLayout>(&mut state.conns[index], &layout);
         }
-        Request::PutLayout { body } => match state.put_layout(poll, body, None) {
+        Request::PutLayout { body } => match state.put_layout(poll, body, None, caller) {
             Ok(snapshot) => ok::<routes::PutLayout>(&mut state.conns[index], &snapshot),
             Err(PutFailure::Stale(snapshot)) => {
                 alt::<routes::PutLayout, 409>(&mut state.conns[index], &snapshot);
@@ -192,6 +237,15 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                 reply::<routes::PutLayout>(&mut state.conns[index], Err(failure.into()));
             }
         },
+        Request::NewPane { body } => {
+            let result = state.new_pane(poll, caller, body);
+            reply::<routes::NewPane>(&mut state.conns[index], result);
+        }
+        Request::StopPane { id, body } => {
+            if let Some(result) = state.stop_route(poll, index, caller, id, body.wait_ms) {
+                reply::<routes::StopPane>(&mut state.conns[index], result);
+            }
+        }
         Request::ClearHistory { id } => {
             state.clear_history(poll, id);
             ok::<routes::ClearHistory>(&mut state.conns[index], &Empty {});
@@ -240,6 +294,9 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             history,
         } => state.screen(poll, index, id, format, history),
         Request::SetVar { id, name, body } => {
+            if let Err(refused) = acts_as(caller, id, "change only its own variables") {
+                return reply::<routes::SetVar>(&mut state.conns[index], Err(refused));
+            }
             match state
                 .set_var(poll, id, name, body.0)
                 .map_err(|refusal| refusal.to_string())
@@ -249,6 +306,9 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             }
         }
         Request::DeleteVars { id, body } => {
+            if let Err(refused) = acts_as(caller, id, "change only its own variables") {
+                return reply::<routes::DeleteVars>(&mut state.conns[index], Err(refused));
+            }
             if state.delete_vars(poll, id, body) {
                 ok::<routes::DeleteVars>(&mut state.conns[index], &Empty {});
             } else {
@@ -260,6 +320,9 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             }
         }
         Request::DeleteVar { id, name } => {
+            if let Err(refused) = acts_as(caller, id, "change only its own variables") {
+                return reply::<routes::DeleteVar>(&mut state.conns[index], Err(refused));
+            }
             state.delete_var(poll, id, name);
             ok::<routes::DeleteVar>(&mut state.conns[index], &Empty {});
         }
@@ -270,6 +333,10 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
         Request::ListRuns { show, parent } => {
             let infos = state.list_runs(show, parent.as_ref());
             ok::<routes::ListRuns>(&mut state.conns[index], &infos);
+        }
+        Request::RunScreen { id } => {
+            let screen = state.run_screen(&id);
+            file_body::<routes::RunScreen>(&mut state.conns[index], screen);
         }
         Request::GetRun { id } => {
             let result = state.run_detail(&id);
@@ -383,6 +450,27 @@ fn finish(state: &mut State, poll: &mut Poll, conn: Token, reply: impl FnOnce(&m
     if matches!(state.conns[index].phase, Phase::Handling) {
         state.conns[index].phase = Phase::Head;
         state.serve(poll, index);
+    }
+}
+
+fn file_body<E: Endpoint<Reply = route::text>>(
+    conn: &mut Conn,
+    found: Result<(std::fs::File, usize), Error>,
+) {
+    let (mut file, length) = match found {
+        Ok(found) => found,
+        Err(Error { kind, message }) => return error(conn, kind, message),
+    };
+    let size = length.to_string();
+    let mut bytes = http::response(
+        Status::Ok,
+        &[("content-type", "text/plain"), ("content-length", &size)],
+        b"",
+    );
+    bytes.reserve(length);
+    match file.read_to_end(&mut bytes) {
+        Ok(_) => conn.out.send_reply(bytes),
+        Err(failure) => error(conn, ErrorKind::Io, failure.to_string()),
     }
 }
 
@@ -548,7 +636,10 @@ mod tests {
     fn refusals_are_the_bytes_of_the_reference_server() {
         let mut server = harness("refusals");
         let ours = protocol::version();
-        let version = protocol::json(&ours);
+        let version = protocol::json(&ServerVersion {
+            version: ours.clone(),
+            instance: server.state.instance().clone(),
+        });
         let mismatch = format!(
             r#"{{"kind":"protocol_mismatch","protocol":"{}","vt":"{}","build":"{}","message":"protocol major mismatch"}}"#,
             ours.protocol, ours.vt, ours.build
@@ -1369,6 +1460,13 @@ mod tests {
     }
 
     impl Harness {
+        fn run_screen(&mut self, id: &str) -> (String, String) {
+            let reply = self.reply(&format!("GET /runs/{id}/screen"), "\r\n");
+            let status = reply[9..12].to_owned();
+            let body = reply.split_once("\r\n\r\n").map_or("", |(_, body)| body);
+            (status, body.to_owned())
+        }
+
         fn call(&mut self, request: &str, body: &Value) -> (String, Value) {
             let body = if body.is_null() {
                 String::new()
@@ -1640,7 +1738,7 @@ mod tests {
             ),
             (
                 json!({"name": "a", "session": "s", "parent": "pane_99", "argv": argv}),
-                "410",
+                "404",
             ),
             (json!({"name": "a", "session": "s", "argv": ["sh"]}), "400"),
         ];
@@ -1858,9 +1956,10 @@ mod tests {
         let (_, detail) = server.call(&format!("GET /runs/{id}"), &json!(null));
         assert_eq!(detail["outcome"]["result"], "failed");
         assert_eq!(detail["outcome"]["text"], "exit 3");
+        let (status, screen) = server.run_screen(id);
         assert!(
-            detail["screen"].as_str().unwrap().contains("last words"),
-            "{detail}"
+            status == "200" && screen.contains("last words"),
+            "{status} {screen}"
         );
         let layout = server.state.layout_panes().snapshot.layout;
         assert_eq!(layout.windows().count(), 1, "the run's window is gone");
@@ -1897,7 +1996,11 @@ mod tests {
         }
         assert!(server.state.panes.find(pane).is_some());
         let (_, detail) = server.call(&format!("GET /runs/{id}"), &json!(null));
-        assert_eq!(detail["screen"], Value::Null, "nothing was recorded");
+        assert_eq!(
+            server.run_screen(&id).0,
+            "404",
+            "nothing was recorded: {detail}"
+        );
     }
 
     #[test]
@@ -1924,7 +2027,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sweep_stops_a_run_whose_parent_ended() {
+    fn the_sweep_stops_a_run_whose_parent_pane_ended() {
         let mut server = harness("sweep-orphan");
         let cat = json!(["/bin/sh", "-c", "exec cat"]);
         let start = |server: &mut Harness, name: &str, parent: Value| {
@@ -1942,11 +2045,6 @@ mod tests {
             child["id"].as_str().unwrap(),
         );
         let child_pane: crate::ids::PaneId = child["pane"].as_str().unwrap().parse().unwrap();
-        server.step(Mode::Peek);
-        assert!(
-            server.state.panes.find(child_pane).is_some(),
-            "a live parent keeps its child"
-        );
         let outcome = json!({"result": "completed"});
         assert_eq!(
             server
@@ -1954,6 +2052,13 @@ mod tests {
                 .0,
             "200"
         );
+        server.step(Mode::Peek);
+        assert!(
+            server.state.panes.find(child_pane).is_some(),
+            "a run that has an outcome and a live pane still holds its child"
+        );
+        let parent_pane: crate::ids::PaneId = parent["pane"].as_str().unwrap().parse().unwrap();
+        server.state.delete_pane(&mut server.poll, parent_pane);
         step_until(&mut server, "the orphan to be collected", |server| {
             server.state.panes.find(child_pane).is_none()
         });
@@ -1964,11 +2069,6 @@ mod tests {
             "{detail}"
         );
         assert!(detail["outcome"]["at"].is_string());
-        let (status, _) = server.call(
-            &format!("POST /runs/{parent_id}/stop"),
-            &json!({"result": "stopped"}),
-        );
-        assert_eq!(status, "200", "the parent's window goes too");
         assert_eq!(windows(&server).len(), 1, "only the first window remains");
     }
 }

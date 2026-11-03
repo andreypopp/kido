@@ -12,6 +12,7 @@ mod idle;
 mod images;
 mod layout;
 mod outer;
+mod panes;
 mod prompt;
 mod protocol;
 mod reap;

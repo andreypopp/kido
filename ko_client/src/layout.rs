@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use ko_server::api::Route;
-use ko_server::ids::{ClientId, Name, PaneId, SessionId, WindowId};
+use ko_server::ids::{Name, PaneId, SessionId, WindowId};
 use ko_server::protocol::{
     self, CreatePane, DraftLayout, LayoutPanes, Node, PutLayout, Revision, Snapshot,
 };
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
 use crate::edit::{Edit, Refusal, apply};
-use crate::wire::{self, Rejected, text};
+use crate::wire::{self, Rejected, Who, text};
 
 const ATTEMPTS: usize = 8;
 
@@ -61,14 +61,10 @@ fn decoded<T: Serialize + serde::de::DeserializeOwned>(body: &[u8]) -> Result<T,
     protocol::decode(body).map_err(|error| Rejected::Io(text(error)))
 }
 
-fn fetch(
-    socket: &Path,
-    client: Option<ClientId>,
-    cancel: Option<&Wake>,
-) -> Result<Snapshot, Rejected> {
+fn fetch(socket: &Path, who: Who, cancel: Option<&Wake>) -> Result<Snapshot, Rejected> {
     decoded::<LayoutPanes>(&wire::request(
         socket,
-        (client, None),
+        who,
         &Route::GetLayout {},
         b"",
         cancel,
@@ -78,7 +74,7 @@ fn fetch(
 
 pub(crate) fn send(
     socket: &Path,
-    client: Option<ClientId>,
+    who: Who,
     revision: Revision,
     layout: DraftLayout,
     cancel: Option<&Wake>,
@@ -87,7 +83,7 @@ pub(crate) fn send(
     let (method, target) = Route::PutLayout {}.to_request();
     let response = wire::exchange(
         socket,
-        (client, None),
+        who,
         (method, &target),
         &[],
         protocol::json(&request).as_bytes(),
@@ -154,29 +150,31 @@ pub(crate) fn edit_from(
     Err(EditError::Exhausted)
 }
 
-pub(crate) fn edit(
-    socket: &Path,
-    client: Option<ClientId>,
-    edit: &Edit,
-) -> Result<Edited, EditError> {
-    let first = fetch(socket, client, None).map_err(EditError::Rejected)?;
+pub(crate) fn edit(socket: &Path, who: Who, edit: &Edit) -> Result<Edited, EditError> {
+    let first = fetch(socket, who.clone(), None).map_err(EditError::Rejected)?;
     edit_from(first, edit, |revision, layout| {
-        send(socket, client, revision, layout, None)
+        send(socket, who.clone(), revision, layout, None)
     })
 }
 
 pub(crate) fn replace(
     socket: &Path,
-    client: Option<ClientId>,
+    who: Who,
     document: &Document,
     cancel: Option<&Wake>,
 ) -> Result<Snapshot, String> {
     let mut revision = match document.revision {
         Some(revision) => revision,
-        None => fetch(socket, client, cancel)?.revision,
+        None => fetch(socket, who.clone(), cancel)?.revision,
     };
     for _ in 0..ATTEMPTS {
-        match send(socket, client, revision, document.layout.clone(), cancel)? {
+        match send(
+            socket,
+            who.clone(),
+            revision,
+            document.layout.clone(),
+            cancel,
+        )? {
             Ok(done) => return Ok(done),
             Err(newer) => revision = newer.revision,
         }
@@ -204,21 +202,17 @@ fn single(edited: &Edited) -> Result<PaneId, String> {
     }
 }
 
-pub fn add_session(
-    socket: &Path,
-    client: Option<ClientId>,
-    request: &CreatePane,
-) -> Result<PaneId, String> {
+pub fn add_session(socket: &Path, who: Who, request: &CreatePane) -> Result<PaneId, String> {
     let edit = Edit::AddSession {
         name: ko_name()?,
         new: request.clone(),
     };
-    single(&self::edit(socket, client, &edit).map_err(|error| error.to_string())?)
+    single(&self::edit(socket, who, &edit).map_err(|error| error.to_string())?)
 }
 
 pub fn add_window(
     socket: &Path,
-    client: Option<ClientId>,
+    who: Who,
     (session, after): (SessionId, WindowId),
     request: &CreatePane,
 ) -> Result<PaneId, String> {
@@ -227,7 +221,7 @@ pub fn add_window(
         after,
         new: request.clone(),
     };
-    single(&self::edit(socket, client, &edit).map_err(|error| error.to_string())?)
+    single(&self::edit(socket, who, &edit).map_err(|error| error.to_string())?)
 }
 
 #[cfg(test)]
@@ -260,6 +254,8 @@ mod tests {
             command: None,
             env: Vec::new(),
             vars: Default::default(),
+            parent: None,
+            close: Default::default(),
         };
         let edge = Edge::Right;
         let cells = |count| Cells::new(count).unwrap();
@@ -416,6 +412,8 @@ mod tests {
             command: None,
             env: Vec::new(),
             vars: Default::default(),
+            parent: None,
+            close: Default::default(),
         };
         assert_eq!(
             created(

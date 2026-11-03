@@ -4,13 +4,12 @@ use std::time::Duration;
 use ko_server::api::Route;
 use ko_server::config::{self, Dir};
 use ko_server::http::Response;
-use ko_server::ids::PaneId;
 use ko_server::protocol::Snapshot;
 
 use crate::edit::Edit;
 use crate::launch;
 use crate::layout::{self, Document, Edited};
-use crate::wire;
+use crate::wire::{self, Caller};
 
 #[derive(Debug)]
 pub enum Failure {
@@ -35,7 +34,7 @@ fn socket(dir: &Path) -> Result<PathBuf, Failure> {
 
 pub(crate) fn exchange(
     dir: &Path,
-    caller: Option<PaneId>,
+    caller: Option<Caller>,
     (method, path): (&str, &str),
     body: &[u8],
     within: Duration,
@@ -58,12 +57,19 @@ pub(crate) fn exchange(
     })
 }
 
-pub fn request(dir: &Path, method: &str, path: &str, body: &[u8]) -> Result<Response, Error> {
-    request_within(dir, method, path, body, wire::READ_TIMEOUT)
+pub fn request(
+    dir: &Path,
+    caller: Option<Caller>,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> Result<Response, Error> {
+    request_within(dir, caller, method, path, body, wire::READ_TIMEOUT)
 }
 
 pub fn request_within(
     dir: &Path,
+    caller: Option<Caller>,
     method: &str,
     path: &str,
     body: &[u8],
@@ -73,18 +79,23 @@ pub fn request_within(
     if route.is_some_and(|route| route.websocket()) {
         return Err(Error::Websocket);
     }
-    exchange(dir, None, (method, path), body, within).map_err(Error::Server)
+    exchange(dir, caller, (method, path), body, within).map_err(Error::Server)
 }
 
-pub fn get(dir: &Path, route: &Route) -> Result<Response, Failure> {
+pub fn get(dir: &Path, caller: Option<Caller>, route: &Route) -> Result<Response, Failure> {
     let (method, path) = route.to_request();
-    exchange(dir, None, (method, &path), b"", wire::READ_TIMEOUT)
+    exchange(dir, caller, (method, &path), b"", wire::READ_TIMEOUT)
 }
 
-pub fn replace_layout(dir: &Path, document: &Document) -> Result<Snapshot, Failure> {
-    layout::replace(&socket(dir)?, None, document, None).map_err(Failure::Failed)
+pub fn replace_layout(
+    dir: &Path,
+    caller: Option<Caller>,
+    document: &Document,
+) -> Result<Snapshot, Failure> {
+    layout::replace(&socket(dir)?, (None, caller), document, None).map_err(Failure::Failed)
 }
 
-pub fn edit_layout(dir: &Path, edit: &Edit) -> Result<Edited, Failure> {
-    layout::edit(&socket(dir)?, None, edit).map_err(|error| Failure::Failed(error.to_string()))
+pub fn edit_layout(dir: &Path, caller: Option<Caller>, edit: &Edit) -> Result<Edited, Failure> {
+    layout::edit(&socket(dir)?, (None, caller), edit)
+        .map_err(|error| Failure::Failed(error.to_string()))
 }

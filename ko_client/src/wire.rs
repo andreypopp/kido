@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use ko_server::api::Route;
 use ko_server::http::{self, Response, call};
-use ko_server::ids::{ClientId, PaneId};
+use ko_server::ids::{ClientId, PaneId, PaneToken};
 use ko_server::ws::{accepted, upgrade_request};
 use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token, Wake};
 use ko_sys::fd::{self, Queue, Waited, Want};
@@ -94,9 +94,25 @@ fn write_until(
     stream.set_nonblocking(false)
 }
 
+// Who sends a request: a pane with its token, or a pane that is only named. The server accepts
+// the second only for the prompts of Kido.app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Caller {
+    Pane { pane: PaneId, token: PaneToken },
+    Named(PaneId),
+}
+
+impl Caller {
+    pub fn pane(&self) -> PaneId {
+        match self {
+            Caller::Pane { pane, .. } | Caller::Named(pane) => *pane,
+        }
+    }
+}
+
 fn open(
     socket: &Path,
-    (client, caller): (Option<ClientId>, Option<PaneId>),
+    (client, caller): Who,
     (method, target): (&str, &str),
     headers: &[(&str, &str)],
     body: &[u8],
@@ -106,11 +122,18 @@ fn open(
     let mut stream = launch::connect(socket, PATIENCE, cancel)?;
     stream.set_read_timeout(Some(within))?;
     stream.set_write_timeout(Some(within))?;
-    let caller = caller.map(|pane| pane.to_string());
+    let (pane, token) = match caller {
+        None => (None, None),
+        Some(Caller::Named(pane)) => (Some(pane.to_string()), None),
+        Some(Caller::Pane { pane, token }) => (Some(pane.to_string()), Some(token.to_string())),
+    };
     let mut extra = vec![("Connection", "keep-alive")];
     extra.extend_from_slice(headers);
-    if let Some(caller) = &caller {
-        extra.push(("Ko-Pane", caller));
+    if let Some(pane) = &pane {
+        extra.push(("Ko-Pane", pane));
+    }
+    if let Some(token) = &token {
+        extra.push(("Ko-Pane-Token", token));
     }
     write_until(
         &mut stream,
@@ -235,7 +258,7 @@ pub(crate) fn succeeded(response: Response) -> Result<Response, Rejected> {
     }
 }
 
-pub type Who = (Option<ClientId>, Option<PaneId>);
+pub type Who = (Option<ClientId>, Option<Caller>);
 
 pub fn request(
     socket: &Path,

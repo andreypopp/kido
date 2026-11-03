@@ -148,6 +148,19 @@ macro_rules! hex_id {
 
 hex_id!(pub Instance);
 hex_id!(pub RunId);
+hex_id!(pub PaneToken);
+
+impl PaneToken {
+    pub(crate) fn matches(&self, other: &PaneToken) -> bool {
+        let (ours, theirs) = (self.0.as_bytes(), other.0.as_bytes());
+        ours.len() == theirs.len()
+            && ours
+                .iter()
+                .zip(theirs)
+                .fold(0u8, |difference, (a, b)| difference | (a ^ b))
+                == 0
+    }
+}
 
 const MAX_NAME: usize = 256;
 
@@ -283,6 +296,16 @@ mod tests {
                 format!("invalid id {text:?}")
             );
         }
+    }
+
+    #[test]
+    fn a_token_matches_only_itself() {
+        let (one, other) = (PaneToken::mint().unwrap(), PaneToken::mint().unwrap());
+        assert!(one.matches(&one.clone()));
+        assert!(!one.matches(&other));
+        let near = PaneToken::try_from("0123456789abcdef0123456789abcdef".to_owned()).unwrap();
+        let far = PaneToken::try_from("0123456789abcdef0123456789abcdee".to_owned()).unwrap();
+        assert!(!near.matches(&far));
     }
 
     #[test]

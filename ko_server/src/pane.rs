@@ -4,9 +4,10 @@ use ko_pane_wire::frame::Size;
 
 use crate::config::Config;
 use crate::delivery::Stamps;
-use crate::ids::{PaneId, RunId};
+use crate::ids::{PaneId, PaneToken, RunId};
 use crate::model::PaneModel;
 use crate::pane_proc::{Input, Io, Launch, PaneProc};
+use crate::protocol::Close;
 use crate::telemetry::Telemetry;
 use crate::vars::Vars;
 
@@ -14,6 +15,8 @@ use crate::vars::Vars;
 pub(crate) struct Birth {
     pub(crate) vars: Vars,
     pub(crate) run: Option<RunId>,
+    pub(crate) parent: Option<PaneId>,
+    pub(crate) close: Close,
 }
 
 #[derive(Debug)]
@@ -26,6 +29,9 @@ pub(crate) struct Pane {
     telemetry: Telemetry,
     vars: Vars,
     run: Option<RunId>,
+    parent: Option<PaneId>,
+    close: Close,
+    token: PaneToken,
     model: PaneModel,
 }
 
@@ -33,8 +39,8 @@ impl Pane {
     pub(crate) fn spawn(
         config: &Config,
         launch: &Launch<'_>,
-        vars: Vars,
-        run: Option<RunId>,
+        birth: Birth,
+        token: PaneToken,
         stamps: &mut Stamps,
         io: &mut Io<'_>,
     ) -> io::Result<Pane> {
@@ -45,8 +51,11 @@ impl Pane {
             size: launch.size,
             focused: false,
             telemetry: Telemetry::default(),
-            vars,
-            run,
+            vars: birth.vars,
+            run: birth.run,
+            parent: birth.parent,
+            close: birth.close,
+            token,
             model: PaneModel::default(),
         })
     }
@@ -77,6 +86,18 @@ impl Pane {
 
     pub(crate) fn run(&self) -> Option<&RunId> {
         self.run.as_ref()
+    }
+
+    pub(crate) fn parent(&self) -> Option<PaneId> {
+        self.parent
+    }
+
+    pub(crate) fn close(&self) -> Close {
+        self.close
+    }
+
+    pub(crate) fn token(&self) -> &PaneToken {
+        &self.token
     }
 
     pub(crate) fn vars_mut(&mut self) -> &mut Vars {

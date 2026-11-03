@@ -442,6 +442,7 @@ pub(crate) mod tests {
             cwd: PathBuf::from("/"),
             linger: crate::config::LINGER,
             stop_escalation: crate::config::STOP_ESCALATION,
+            run_screen_bytes: crate::config::RUN_SCREEN_BYTES,
             clipboard_wait: crate::config::CLIPBOARD_WAIT,
             view_queue: crate::config::ViewQueue::default(),
         };
@@ -457,6 +458,8 @@ pub(crate) mod tests {
             }),
             env: Vec::new(),
             vars: Default::default(),
+            parent: None,
+            close: Default::default(),
         };
         let id = server
             .state

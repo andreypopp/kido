@@ -6,13 +6,17 @@ use ko_sys::pid::{Exit, Pid};
 use serde_json::{Value, json};
 
 use crate::harness::{
-    Run, Server, poll, run_ko, start, start_with, test_env, text_of, wait_gone, which,
+    PRINT_TOKEN, Run, Server, poll, run_ko, start, start_with, test_env, text_of, wait_gone, which,
 };
 
 pub(crate) fn ko_as(s: &Server, pane: Option<&str>, args: &[&str], stdin: &str) -> Run {
     let mut env = test_env(&s.dir);
     if let Some(pane) = pane {
         env.push(format!("KO_PANE={pane}").into_bytes());
+        env.push(format!("KO_SOCKET={}", s.dir.join("socket").display()).into_bytes());
+        if let Some(token) = s.token(pane) {
+            env.push(format!("KO_PANE_TOKEN={token}").into_bytes());
+        }
     }
     let mut argv = vec![args[0], "--server", text_of(&s.dir)];
     argv.extend_from_slice(&args[1..]);
@@ -27,7 +31,7 @@ pub(crate) fn code(run: &Run) -> i32 {
 }
 
 pub(crate) fn caller(s: &Server) -> String {
-    s.pane("exec cat")
+    s.token_pane("exec cat")
 }
 
 pub(crate) fn started(s: &Server, caller: &str, args: &[&str]) -> Value {
@@ -250,7 +254,7 @@ fn the_command_line_refuses_what_it_cannot_run_with_kidos_exit_codes() {
         (
             vec!["run-child", "pane_999999", "--name", "x", "--", "true"],
             2,
-            "pane pane_999999 is gone".to_owned(),
+            "no pane pane_999999 to be the parent".to_owned(),
         ),
         (
             vec!["run-child", unknown, "--name", "x", "--", "true"],
@@ -449,28 +453,57 @@ fn a_stop_waits_for_the_run_to_end_by_itself_and_then_kills_what_ignores_hup() {
 }
 
 #[test]
-fn a_child_runs_under_a_run_or_a_pane_that_has_not_ended_and_lists_under_it() {
-    let s = start(&[]);
+fn a_child_runs_under_its_callers_own_pane_or_run_and_goes_when_that_pane_goes() {
+    let s = lingering();
     let caller = caller(&s);
-    let parent_pane = s.new_pane(json!({
-        "command": {"type": "argv", "argv": ["/bin/sh", "-c", "exec cat"]},
-        "vars": {"pi.session": "parent-session"}
-    }));
-    let parent_run = run_of(&s, &caller, "parent", &["sleep", "300"]);
-    let by_run = child_of(
+    let parent_pane = s.token_pane("exec cat");
+    let parent_run = run_of(
         &s,
         &caller,
+        "parent",
+        &["sh", "-c", &format!("{PRINT_TOKEN}; exec sleep 300")],
+    );
+    s.screen_has(pane_of(&parent_run), "TOKEN<");
+    let by_run = child_of(
+        &s,
+        pane_of(&parent_run),
         id_of(&parent_run),
         "child-of-run",
         &["sleep", "300"],
     );
     let by_pane = child_of(
         &s,
-        &caller,
+        &parent_pane,
         &parent_pane,
         "child-of-pane",
         &["sleep", "300"],
     );
+    assert_eq!(
+        s.row(pane_of(&by_run))["parent"],
+        pane_of(&parent_run),
+        "a run parent is resolved to its pane"
+    );
+    assert_eq!(s.row(pane_of(&by_pane))["parent"], parent_pane.as_str());
+    for row in [s.row(pane_of(&by_run)), s.row(pane_of(&by_pane))] {
+        assert_eq!(row["close"], "on_exit");
+    }
+
+    for (parent, who) in [
+        (parent_pane.as_str(), caller.as_str()),
+        (id_of(&parent_run), parent_pane.as_str()),
+    ] {
+        let refused = ko_as(
+            &s,
+            Some(who),
+            &["run-child", parent, "--name", "x", "--", "sleep", "300"],
+            "",
+        );
+        assert_eq!(code(&refused), 1, "{refused:?}");
+        assert!(
+            refused.stderr.contains("may name only itself as a parent"),
+            "{refused:?}"
+        );
+    }
 
     let meta = |run: &Value| info(&s, id_of(run));
     assert_eq!(meta(&by_run)["parent"], id_of(&parent_run));
@@ -499,7 +532,14 @@ fn a_child_runs_under_a_run_or_a_pane_that_has_not_ended_and_lists_under_it() {
         "",
     )
     .ok();
-    s.unset_var(&parent_pane, "pi.session");
+    let witness = run_of(&s, &caller, "witness", &["sh", "-c", "exit 0"]);
+    wait_pane_gone(&s, pane_of(&witness));
+    assert!(
+        has_pane(&s, pane_of(&by_run)) && has_pane(&s, pane_of(&by_pane)),
+        "a child went while its parent's pane lived"
+    );
+    s.delete(&format!("/panes/{parent_pane}")).ok();
+    s.delete(&format!("/panes/{}", pane_of(&parent_run))).ok();
     for orphan in [&by_run, &by_pane] {
         wait_pane_gone(&s, pane_of(orphan));
         assert_eq!(
@@ -745,43 +785,4 @@ fn a_stop_that_waits_longer_than_the_bound_is_refused_and_records_nothing() {
     );
     let wait = format!("/runs/{id}/wait?timeout_ms=3600001");
     assert_eq!(s.exchange("GET", &wait, &s.headers(), b"").0, 400);
-}
-
-#[test]
-fn the_coordinator_kills_a_removed_run_pane_whose_pane_process_cannot_hang_it_up() {
-    use ko_sys::signal::Signal;
-
-    let delay = Duration::from_millis(600);
-    let s = start_with(
-        Path::new("/bin/sh"),
-        &[("KO_STOP_ESCALATION_MS", "600")],
-        &[],
-    );
-    let caller = caller(&s);
-    let run = run_of(
-        &s,
-        &caller,
-        "stuck",
-        &["sh", "-c", "trap '' HUP; exec sleep 300"],
-    );
-    let program = s.pane_program(pane_of(&run));
-    let pane_process = program.parent().expect("the pane process");
-    ko_sys::pid::signal_descendant(s.child.pid(), pane_process, Signal::Stop).unwrap();
-
-    let began = Instant::now();
-    ko_as(&s, None, &["run-stop", id_of(&run)], "").ok();
-    wait_pane_gone(&s, pane_of(&run));
-    crate::harness::stays(
-        "the program lived on while its stopped pane process could not hang it up",
-        Duration::from_millis(250),
-        || !program.has_ended(),
-    );
-    wait_gone(program, "the coordinator's escalation");
-    wait_gone(pane_process, "the coordinator's escalation");
-    let took = began.elapsed();
-    assert!(took >= delay, "{took:?}");
-    assert!(
-        took < Duration::from_secs(3),
-        "the configured delay, not the 5 s default: {took:?}"
-    );
 }

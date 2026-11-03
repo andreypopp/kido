@@ -49,7 +49,8 @@ export interface paths {
         /** @description Every pane, with its status, variables and run. */
         get: operations["ListPanes"];
         put?: never;
-        post?: never;
+        /** @description Creates a window with one pane, in one change of the layout. No client switches to it. The pane's session is the given one, else the parent's, else the caller's, else a new one. The window goes after the parent's or the caller's window of that session, else at the end. */
+        post: operations["NewPane"];
         delete?: never;
         options?: never;
         head?: never;
@@ -153,6 +154,23 @@ export interface paths {
         get: operations["Search"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/panes/{id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Waits up to wait_ms for the pane to end by itself, then removes it and hangs up its program. ko kills a removed program that still lives after the escalation time. A dead pane is removed at once. */
+        post: operations["StopPane"];
         delete?: never;
         options?: never;
         head?: never;
@@ -270,7 +288,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description One run, with its screen when it failed. */
+        /** @description One run. */
         get: operations["GetRun"];
         put?: never;
         post?: never;
@@ -291,6 +309,23 @@ export interface paths {
         put?: never;
         /** @description Reports the outcome of a run. */
         post: operations["RunOutcome"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{id}/screen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The screen that the sweep captured when the run's pane went: the whole history of the pane, cut to its last KO_RUN_SCREEN_BYTES bytes. A run that has none is not_found. */
+        get: operations["RunScreen"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -548,6 +583,11 @@ export interface components {
         };
         /** @enum {string} */
         ClipboardLocation: "standard" | "selection" | "primary";
+        /**
+         * @description What the sweep does with a dead pane: keep stays, on_exit removes it after the linger grace.
+         * @enum {string}
+         */
+        Close: "keep" | "on_exit";
         Command: {
             argv: string[];
             /** @constant */
@@ -564,10 +604,12 @@ export interface components {
             started_at: number;
         };
         CreatePane: {
+            close?: components["schemas"]["Close"];
             command?: components["schemas"]["Command"];
             cwd?: string;
             /** @default [] */
             env?: components["schemas"]["Variable"][];
+            parent?: components["schemas"]["PaneId"];
             vars?: {
                 [key: string]: unknown;
             };
@@ -579,19 +621,6 @@ export interface components {
         DeleteVars: {
             if?: components["schemas"]["VarCondition"];
             names: components["schemas"]["VarName"][];
-        };
-        Detail: {
-            argv: string[];
-            cwd: string;
-            id: components["schemas"]["RunId"];
-            name: components["schemas"]["RunName"];
-            outcome?: components["schemas"]["RunOutcome"];
-            output: string;
-            pane?: components["schemas"]["PaneId"];
-            parent?: components["schemas"]["Parent"];
-            screen?: string;
-            session?: string;
-            startedAt: components["schemas"]["Timestamp"];
         };
         /** @enum {string} */
         Direction: "next" | "previous";
@@ -777,11 +806,13 @@ export interface components {
             terminal: components["schemas"]["Terminal"];
         };
         Listing: {
+            close?: components["schemas"]["Close"];
             command: string[];
             cwd: string;
             dead: components["schemas"]["Dead"] | null;
             foreground?: components["schemas"]["Foreground"];
             id: components["schemas"]["PaneId"];
+            parent?: components["schemas"]["PaneId"];
             pid?: number;
             progress?: components["schemas"]["Progress"];
             run?: components["schemas"]["RunRow"];
@@ -839,6 +870,20 @@ export interface components {
         Name: string;
         /** @description The text to search for, percent-encoded in the query. */
         Needle: string;
+        /** @description A window of one pane. */
+        NewWindow: {
+            close?: components["schemas"]["Close"];
+            command?: components["schemas"]["Command"];
+            cwd?: string;
+            /** @default [] */
+            env?: components["schemas"]["Variable"][];
+            name?: components["schemas"]["Name"];
+            parent?: components["schemas"]["PaneId"];
+            session?: components["schemas"]["SessionRef"];
+            vars?: {
+                [key: string]: unknown;
+            };
+        };
         /** @description A byte offset of the pane's stream. */
         Offset: number;
         Origin: {
@@ -874,6 +919,7 @@ export interface components {
             since: number;
             title: string;
         };
+        PaneToken: string;
         /** @description A pane id, or the id of a run. */
         Parent: components["schemas"]["PaneId"] | components["schemas"]["RunId"];
         Paste: {
@@ -901,6 +947,11 @@ export interface components {
         };
         /** @enum {string} */
         PixelFormat: "rgb" | "rgba" | "gray_alpha" | "gray";
+        Placement: {
+            pane: components["schemas"]["PaneId"];
+            session: components["schemas"]["SessionId"];
+            window: components["schemas"]["WindowId"];
+        };
         /** @enum {string} */
         ProgramKind: "permission" | "question" | "auth";
         ProgramRecord: {
@@ -1015,6 +1066,13 @@ export interface components {
         Sent: {
             via: components["schemas"]["Via"];
         };
+        /** @description The reply of a running server: its version, and the instance that changes at each start. */
+        ServerVersion: {
+            build: string;
+            instance: components["schemas"]["Instance"];
+            protocol: string;
+            vt: string;
+        };
         Session: {
             id: components["schemas"]["SessionId"];
             name: components["schemas"]["Name"];
@@ -1066,12 +1124,19 @@ export interface components {
             pane: components["schemas"]["PaneId"];
             status: components["schemas"]["PaneStatus"];
         };
+        StopPane: {
+            /**
+             * @description Milliseconds to wait for the pane to end by itself before ko removes it.
+             * @default 0
+             */
+            wait_ms?: components["schemas"]["WaitMs"];
+        };
         /** @enum {string} */
         StopResult: "stopped" | "completed";
         StopRun: {
             result: components["schemas"]["StopResult"];
             /** @default 0 */
-            wait_ms?: number;
+            wait_ms?: components["schemas"]["WaitMs"];
         };
         Switch: {
             direction: components["schemas"]["Direction"];
@@ -1226,7 +1291,12 @@ export interface operations {
     PutLayout: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -1281,6 +1351,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Listing"][];
+                };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    NewPane: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewWindow"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Placement"];
                 };
             };
             /** @description The common error body. */
@@ -1536,10 +1644,56 @@ export interface operations {
             };
         };
     };
+    StopPane: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StopPane"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Empty"];
+                };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     DeleteVars: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
             path: {
                 /** @example pane_1 */
                 id: components["schemas"]["PaneId"];
@@ -1584,7 +1738,12 @@ export interface operations {
     SetVar: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
             path: {
                 /** @example pane_1 */
                 id: components["schemas"]["PaneId"];
@@ -1622,7 +1781,12 @@ export interface operations {
     DeleteVar: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
             path: {
                 /** @example pane_1 */
                 id: components["schemas"]["PaneId"];
@@ -1696,6 +1860,8 @@ export interface operations {
             header: {
                 /** @example pane_1 */
                 "Ko-Pane": components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
             };
             path?: never;
             cookie?: never;
@@ -1735,6 +1901,8 @@ export interface operations {
             header: {
                 /** @example pane_1 */
                 "Ko-Pane": components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
             };
             path?: never;
             cookie?: never;
@@ -1801,6 +1969,8 @@ export interface operations {
             header?: {
                 /** @example pane_1 */
                 "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
             };
             path?: never;
             cookie?: never;
@@ -1849,7 +2019,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Detail"];
+                    "application/json": components["schemas"]["Info"];
                 };
             };
             /** @description The common error body. */
@@ -1886,6 +2056,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Empty"];
+                };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    RunScreen: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example 0123456789abcdef0123456789abcdef */
+                id: components["schemas"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
             /** @description The common error body. */
@@ -2017,7 +2219,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Version"];
+                    "application/json": components["schemas"]["ServerVersion"];
                 };
             };
             /** @description The common error body. */

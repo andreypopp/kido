@@ -121,6 +121,8 @@ mod tests {
                 status: None,
                 progress: None,
                 run: None,
+                parent: None,
+                close: Default::default(),
             },
             vars: Default::default(),
         }

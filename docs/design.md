@@ -176,7 +176,9 @@ for identity.
 pane is a local pi agent only with an OSC 7501 root with `app=pi` and
 `pi.session`. Discovery and addressing apply it. A stale variable on a
 shell pane is no agent. Liveness of a known session is the exception,
-because pi clears its root while it runs ("Window lifecycle", rule 2).
+because pi clears its root while it runs: pi-tui's `stop()` writes a
+`clear` record while pi opens the external editor and while Ctrl+Z
+suspends it.
 A child's report and the parent watch find a session alive while a
 pane that is not dead holds its `pi.session`, with or without a pi
 root. A dead pane counts as gone, because a run pane keeps its screen
@@ -232,8 +234,11 @@ parent if its session is the parent session, a child if it is in
 
 **ko has no caller for a parent.** The run commands take their parent
 as an argument (`run-child PARENT`). The caller's own pane reaches the
-server as the `Ko-Pane` header from `$KO_PANE`, for the session of a
-new run and for prompt scope, never as a parent.
+server as its pane identity, `Ko-Pane` and `Ko-Pane-Token` from
+`$KO_PANE` and `$KO_PANE_TOKEN` (protocol.md, section 1), for the
+session of a new run, for prompt scope and for the checks of what a
+pane may do; it limits the parent to the caller's own pane or one of
+its runs, and never supplies one.
 
 **Children belong to the session that spawned them.** A parent that
 restarts under its own session id finds its children again in
@@ -439,8 +444,9 @@ last list without waiting for discovery. If the list is older than
 
 `spawn_agent` starts a child through `ko run-child`, or a top-level
 agent through `ko layout edit` (design-subagents.md,
-"What a child is given" and "A top-level agent"). Both create a window
-at the end of the caller's session, which no client switches to, and
+"What a child is given" and "A top-level agent"). A child's run window
+goes after its parent's window, a top-level agent's at the end of the
+caller's session; no client switches to either, and
 both wrap pi in `ko shell --` ("The login environment", below). The
 request carries the cwd (the `cwd` argument, a resumed session's own
 directory, or the caller's) and each environment variable, because a
@@ -508,8 +514,8 @@ unmarked run window.
 | command | does |
 |---|---|
 | `ko run --name N [--cwd D] [--session S] [--env K=V]... -- CMD...` | starts a parentless run; prints the JSON of `Started` (`ko_server/src/protocol.rs`): the id, window, pane and output path |
-| `ko run-child PARENT ...` | the same, under PARENT: a live run id, or the pane `pane_N` of a pi that has not ended (rule 2 below) |
-| `ko runs [--json] [--all] [--parent P] [ID]` | lists live runs newest first, with a SESSION column, or one run in any state with its argv and screen; `--all` also lists ended runs |
+| `ko run-child PARENT ...` | the same, under PARENT: a live run id, or a pane `pane_N` that is not dead; a caller in a pane names only its own pane or one of its runs |
+| `ko runs [--json] [--all] [--parent P] [ID]` | lists live runs newest first, with a SESSION column, or one run in any state with its argv and, without `--json`, its screen (`GET /runs/<id>/screen`); `--all` also lists ended runs |
 | `ko run-outcome ID --result completed\|failed\|stopped [--text T]` | records an ending; a second write exits 5 |
 | `ko run-wait ID [--json]` | blocks until the run has ended; prints the result, or the outcome object |
 | `ko run-stop ID [--wait SECS] [--result stopped\|completed]` | records the result, then ends the process and removes its pane |
@@ -523,10 +529,10 @@ is the pane's command, with no wrapper. The pane's environment has
 `pi.session` while the pane has a pi root, else empty.
 
 Exit codes: 0 success; 1 usage or any other error; 2 a bad or unknown
-PARENT (an unknown or ended run, a gone or dead pane, a pane with
-neither a pi root nor `pi.session`); 3 a bad or unknown run id; 4 a
-refused window name; 5 `run-stop` of a run that has ended, or a
-`run-outcome` write that loses to an earlier outcome.
+PARENT (an unknown or ended run, a gone or dead pane); 3 a bad or
+unknown run id; 4 a refused window name; 5 `run-stop` of a run that
+has ended, or a `run-outcome` write that loses to an earlier outcome.
+A parent that the caller's pane may not name is 1.
 
 `run-wait` is a long poll (protocol.md, section 10): the server
 answers at the run's end, and the waiting connection makes no work for
@@ -536,8 +542,9 @@ process survives its hangup has ended, and `run-wait` reports `died`.
 **run-stop** records its result first, so that an ending that the pane
 produces later cannot replace it. A run that has already ended exits 5
 at once and records nothing, so the ending that the pane gave stays
-the run's ending. Then it waits `--wait` seconds (default 0) for the
-pane to die and removes the pane. The removal hangs up the program:
+the run's ending. Then it stops the pane as `POST /panes/pane_N/stop`
+does: it waits `--wait` seconds (default 0) for the pane to die and
+removes the pane. The removal hangs up the program:
 `ko-pane` sends `SIGHUP`, then `SIGKILL` 250 ms later; if the removed
 pane still lives after `KO_STOP_ESCALATION_MS`, the coordinator kills
 it. A caller that must act between the record and the stop records
@@ -550,43 +557,36 @@ A run's pane stays dead with its last screen until the sweep removes
 it. Thus, an immediately failing child keeps its pane and last screen.
 
 **The sweep.** The server sweeps when one of its inputs changes: a
-pane's death or removal, a recorded outcome, the focused panes, a
-pane's pi evidence, and the end of a linger grace (protocol.md,
-section 10). It collects run panes in a live session. The sweep acts
-only on the pane of a run that ko started in its own window: the pane
-that the run's meta names and whose row carries the run. A pane id is
-not an identity across servers: each new server restarts pane ids at
-`pane_1`, while run records survive the server. Thus, a sweep cannot
-close a plain shell window or a top-level pi's window.
+pane's death or removal, the focused panes, and the end of a linger
+grace (protocol.md, section 10). It reads the pane rows, not the run
+records, so it acts on any pane by its `close` and `parent`, and a
+plain shell pane, which has neither, stays. The run record matters
+only for what the sweep writes: a pane whose row carries a run, and
+whose run meta names that pane, gets the run's outcome and the screen
+capture first. A pane id is not an identity across servers: each new
+server restarts pane ids at `pane_1`, while run records survive the
+server, so both must agree.
 
 Two rules apply:
 
-1. The run's pane has been dead for the linger grace
-   (`KO_LINGER_SECONDS`, 30 s by default). The sweep records the
-   ending that the dead pane gives (`completed`, `exit N`, `signal
-   NAME` or `died`).
-2. The run's parent has ended. A run parent has ended by the same
-   status rule. A pane parent (`pane_N`) has ended when its pane is
-   gone, dead, or shows neither an OSC 7501 root with `app=pi` nor
-   `pi.session`. The sweep removes the run's pane while its command
-   runs and records `failed` with the text "its parent ended".
-
-   Either fact alone keeps the parent alive, because pi removes each
-   one while it runs. pi-tui's `stop()` writes a `clear` record while
-   pi opens the external editor and while Ctrl+Z suspends it. `/new`,
-   `/resume` and `/fork` delete the variables between
-   `session_shutdown` and `session_start` while the root stays. A real
-   exit removes both. A shell prompt is no evidence: Ctrl+Z also gives
-   the shell its prompt. The rule reads no process, by design.
+1. A pane with `close: on_exit` has been dead for the linger grace
+   (`KO_LINGER_SECONDS`, 30 s by default). Every run pane has it. For
+   a run, the sweep records the ending that the dead pane gives
+   (`completed`, `exit N`, `signal NAME` or `died`).
+2. A pane's `parent` is gone or dead. The sweep removes the pane at
+   once, live or dead. For a run whose pane still lives, it records
+   `failed` with the text "its parent ended". A run parent is its
+   pane: a run whose pane lives keeps its children, whatever its
+   outcome. The rule reads no process and no pi evidence, by design:
+   a child of a pi that quits inside a living shell pane ends through
+   its own parent watch, not the sweep.
 
 An earlier outcome, from `run-outcome` or `run-stop`, stands in both
 cases: the server refuses the second write. Rule 2 forces a stop
 instead of requesting graceful shutdown like the child's poll. It is
-the only available action outside pi, and it ends a `tail -f` that an
-exited parent started. A run without a parent is a root that the sweep
-must not cancel. A stale final root or stale variables keep a child of
-a killed top-level pi alive. RIS clears only the root, so only the
-pane's death ends the child ("Known limits"); `run-stop` reaches it.
+the only available action outside the child, and it ends a `tail -f`
+that an exited parent started. A pane without a parent is a root that
+the sweep must not cancel.
 
 The sweep never closes a run pane that a client with terminal focus
 shows (protocol.md, section 3); it tries again when the focus changes.
@@ -607,23 +607,25 @@ server keeps the first written outcome.
 
 **The screen capture.** Before the sweep removes a run's pane, and
 before a `failed` outcome of a run whose pane exists, the server
-captures the pane's screen and bounded scrollback through the pane's
+captures the pane's screen and its whole scrollback through the pane's
 formatter (`ko_server/src/state/run_ops.rs`) and writes
 `<run-dir>/screen`. This is the only chance to capture crash
 diagnostics. Capture does not depend on the ending: even a clean
 exit's last screen can be useful. Losing a screen is better than
 leaving an uncollected pane: a capture error never prevents the
-removal. The byte cap (`SCREEN_MAX` in `ko_server/src/runs.rs`, 64 KiB)
-is much smaller than a task's 1 MB; truncation keeps the end, because
-the last output is the most likely crash diagnostic. `ko runs <id>`
-prints the screen when present.
+removal. The capture holds the whole history, cut to
+`KO_RUN_SCREEN_BYTES` (64 MiB by default); truncation keeps the end,
+because the last output is the most likely crash diagnostic. The
+coordinator keeps at most twice the cap while the chunks arrive and
+cuts at a character boundary. `ko runs <id>` prints the screen when
+present.
 
 **Parent death.** The child's pi belongs to the server, not the
 parent's pi process. Thus, no OS parent-death signal reaches it. Its
 extension watches the parent's pane (design-subagents.md, "A child's
 life"). A failed read supplies no evidence and never causes shutdown.
 If the parent is gone, the child calls pi's `shutdown`. The sweep's
-rule 2 covers a run that is not a pi.
+rule 2 covers a child whose parent pane is gone or dead, pi or not.
 
 ## Ending a child, and restarting it
 
@@ -918,7 +920,9 @@ Every duration that a test must shorten is an environment variable
 that the process under test reads when it uses it:
 
 - `KO_LINGER_SECONDS` (the sweep's grace, with an optional fraction),
-  `KO_STOP_ESCALATION_MS`, `KO_CLIPBOARD_TIMEOUT_MS`,
+  `KO_STOP_ESCALATION_MS`, `KO_RUN_SCREEN_BYTES` (a size, not a
+  duration, so that a test reaches the capture's cap),
+  `KO_CLIPBOARD_TIMEOUT_MS`,
   `KO_VIEW_QUEUE_BYTES` and `KO_VIEW_SPILL_BYTES`, read by `ko server`
   (`ko_server/src/config.rs`);
 - `KO_PARENT_POLL_MS`, `KO_SPAWN_TIMEOUT_MS`, `KO_INBOX_WAIT_MS`,
@@ -931,10 +935,10 @@ test. The e2e suite sets the server's through its environment.
 
 ## Known limits
 
-- A top-level pi that ends without cleanup, such as with SIGKILL,
-  leaves its pane variables. The sweep then keeps its runs until the
-  pane closes, or the user stops them. A pi child also ends through
-  its own parent watch when the parent's session id goes
+- A pi that quits inside a shell pane that stays open leaves its
+  `async_bash` runs alive: their parent is the pane, which lives. They
+  end when the pane closes, or the user stops them. A pi child ends
+  through its own parent watch when the parent's session id goes
   (design-subagents.md, "Watching the parent").
 - A `ko run` without a parent has nobody to collect it while it lives.
   The user must close its window. The sweep still collects its dead

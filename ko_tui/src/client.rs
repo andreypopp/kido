@@ -524,7 +524,7 @@ impl Client {
     fn create_pane(&mut self) -> Result<(), String> {
         let pane = ko_client::layout::add_session(
             &self.socket,
-            Some(self.model.client),
+            (Some(self.model.client), None),
             &new_pane(self.remote.is_some()),
         )?;
         self.switch(pane)
@@ -558,7 +558,7 @@ impl Client {
         };
         let pane = ko_client::layout::add_window(
             &self.socket,
-            Some(self.model.client),
+            (Some(self.model.client), None),
             place,
             &new_pane(self.remote.is_some()),
         )?;
@@ -1263,6 +1263,8 @@ fn new_pane(remote: bool) -> CreatePane {
         command: None,
         env: Vec::new(),
         vars: Default::default(),
+        parent: None,
+        close: Default::default(),
     }
 }
 

@@ -1,17 +1,20 @@
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use ko_pane_wire::frame::Size;
+use ko_sys::clock::Mono;
 use ko_sys::event::Token;
 
 use crate::config::{BUILD, Config, variable};
 use crate::delivery::{Stamps, mint_stamps};
-use crate::ids::PaneId;
+use crate::ids::{PaneId, PaneToken, RunId, SessionId};
 use crate::pane::{Birth, Pane};
-use crate::pane_proc::{Io, Launch, Life};
-use crate::protocol::{Command, CreatePane, Variable};
+use crate::pane_proc::{Cause, Io, Launch, Life};
+use crate::protocol::{Close, Command, CreatePane, Error, ErrorKind, Variable};
 
 #[derive(Debug)]
 pub(crate) enum AddError {
@@ -45,7 +48,12 @@ impl Default for Panes {
     }
 }
 
-fn environment(config: &Config, id: PaneId, requested: &[Variable]) -> Vec<Vec<u8>> {
+fn environment(
+    config: &Config,
+    id: PaneId,
+    token: &PaneToken,
+    requested: &[Variable],
+) -> Vec<Vec<u8>> {
     let mut terminfo = config.terminfo.as_os_str().as_encoded_bytes().to_vec();
     terminfo.push(b':');
     let mut forced: Vec<(&str, Vec<u8>)> = vec![
@@ -58,6 +66,7 @@ fn environment(config: &Config, id: PaneId, requested: &[Variable]) -> Vec<Vec<u
             config.socket.as_os_str().as_encoded_bytes().to_vec(),
         ),
         ("KO_PANE", id.to_string().into_bytes()),
+        ("KO_PANE_TOKEN", token.to_string().into_bytes()),
         (
             "KO_SHELL",
             config.shell.as_os_str().as_encoded_bytes().to_vec(),
@@ -211,7 +220,8 @@ impl Panes {
         if request.env.iter().any(invalid) {
             return Err(AddError::Invalid("invalid environment"));
         }
-        let env = environment(config, id, &request.env);
+        let token = PaneToken::mint().map_err(AddError::Io)?;
+        let env = environment(config, id, &token, &request.env);
         let pane = Pane::spawn(
             config,
             &Launch {
@@ -221,8 +231,8 @@ impl Panes {
                 env: &env,
                 size,
             },
-            birth.vars,
-            birth.run,
+            birth,
+            token,
             &mut self.stamps,
             io,
         )
@@ -274,9 +284,153 @@ impl Panes {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Condition<'a> {
+    Live,
+    Dead { at: Mono, cause: &'a Cause },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Seen<'a> {
+    pub(crate) id: PaneId,
+    pub(crate) run: Option<RunId>,
+    pub(crate) condition: Condition<'a>,
+    pub(crate) parent: Option<PaneId>,
+    pub(crate) close: Close,
+    pub(crate) shown: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Standing {
+    Live,
+    Dead,
+    Gone,
+}
+
+pub(crate) fn standing(panes: &[Seen<'_>], id: PaneId) -> Standing {
+    match panes.iter().find(|pane| pane.id == id) {
+        None => Standing::Gone,
+        Some(pane) if matches!(pane.condition, Condition::Dead { .. }) => Standing::Dead,
+        Some(_) => Standing::Live,
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Swept {
+    pub(crate) removed: Vec<PaneId>,
+    pub(crate) next: Option<Duration>,
+}
+
+pub(crate) fn sweep(panes: &[Seen<'_>], now: Mono, grace: Duration) -> Swept {
+    let mut swept = Swept::default();
+    for pane in panes {
+        let orphan = pane
+            .parent
+            .is_some_and(|parent| standing(panes, parent) != Standing::Live);
+        let lingered = match pane.condition {
+            Condition::Dead { at, .. } if pane.close == Close::OnExit => {
+                let age = Duration::from_nanos(now.nanos().saturating_sub(at.nanos()));
+                if age < grace {
+                    let left = grace.saturating_sub(age);
+                    swept.next = Some(swept.next.map_or(left, |next| next.min(left)));
+                }
+                age >= grace
+            }
+            _ => false,
+        };
+        if !pane.shown && (orphan || lingered) {
+            swept.removed.push(pane.id);
+        }
+    }
+    swept
+}
+
+pub(crate) fn acts_as(caller: Option<PaneId>, target: PaneId, what: &str) -> Result<(), Error> {
+    match caller {
+        Some(caller) if caller != target => Err(Error::new(
+            ErrorKind::Refused,
+            format!("{caller} may {what}, not {target}"),
+        )),
+        _ => Ok(()),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Edge {
+    pub(crate) pane: PaneId,
+    pub(crate) parent: Option<PaneId>,
+    pub(crate) session: SessionId,
+}
+
+pub(crate) fn scope(edges: &[Edge], caller: PaneId) -> BTreeSet<PaneId> {
+    let Some(me) = edges.iter().find(|edge| edge.pane == caller) else {
+        return BTreeSet::new();
+    };
+    let siblings = |of: &Edge| {
+        edges
+            .iter()
+            .filter(|edge| edge.session == me.session && edge.pane != of.pane)
+            .filter(|edge| edge.parent == of.parent)
+            .map(|edge| edge.pane)
+            .collect::<Vec<_>>()
+    };
+    let mut reach: BTreeSet<PaneId> = edges
+        .iter()
+        .filter(|edge| edge.session == me.session && edge.parent == Some(caller))
+        .map(|edge| edge.pane)
+        .chain(siblings(me))
+        .collect();
+    let mut at = me;
+    for _ in edges {
+        let Some(above) = at
+            .parent
+            .and_then(|parent| edges.iter().find(|edge| edge.pane == parent))
+        else {
+            break;
+        };
+        if above.session == me.session {
+            reach.insert(above.pane);
+            reach.extend(siblings(above));
+        }
+        at = above;
+    }
+    reach
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_scope_is_children_siblings_ancestors_and_their_siblings_in_one_session() {
+        let edge = |pane, parent: Option<u64>, session| Edge {
+            pane: PaneId::new(pane),
+            parent: parent.map(PaneId::new),
+            session: SessionId::new(session),
+        };
+        // 1 and 2 are roots; 3 and 4 are children of 1; 5 is a child of 3;
+        // 6 is a root of another session; 7 is a child of 1 in another session.
+        let edges = [
+            edge(1, None, 1),
+            edge(2, None, 1),
+            edge(3, Some(1), 1),
+            edge(4, Some(1), 1),
+            edge(5, Some(3), 1),
+            edge(6, None, 2),
+            edge(7, Some(1), 2),
+        ];
+        let scope_of = |pane| {
+            scope(&edges, PaneId::new(pane))
+                .into_iter()
+                .map(|pane| pane.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(scope_of(5), ["pane_1", "pane_2", "pane_3", "pane_4"]);
+        assert_eq!(scope_of(3), ["pane_1", "pane_2", "pane_4", "pane_5"]);
+        assert_eq!(scope_of(1), ["pane_2", "pane_3", "pane_4"]);
+        assert_eq!(scope_of(6), Vec::<String>::new());
+        assert_eq!(scope_of(9), Vec::<String>::new());
+    }
 
     fn config() -> Config {
         Config {
@@ -297,9 +451,77 @@ mod tests {
             cwd: PathBuf::from("/"),
             linger: crate::config::LINGER,
             stop_escalation: crate::config::STOP_ESCALATION,
+            run_screen_bytes: crate::config::RUN_SCREEN_BYTES,
             clipboard_wait: crate::config::CLIPBOARD_WAIT,
             view_queue: crate::config::ViewQueue::default(),
         }
+    }
+
+    const NOW: u64 = 1_000_000_000_000;
+    const GRACE: Duration = Duration::from_secs(1);
+
+    fn seen(id: u64, parent: Option<u64>, close: Close, condition: Condition<'_>) -> Seen<'_> {
+        Seen {
+            id: PaneId::new(id),
+            run: None,
+            condition,
+            parent: parent.map(PaneId::new),
+            close,
+            shown: false,
+        }
+    }
+
+    fn dead(secs_ago: u64, cause: &Cause) -> Condition<'_> {
+        Condition::Dead {
+            at: Mono::from_nanos(NOW - secs_ago * 1_000_000_000),
+            cause,
+        }
+    }
+
+    fn removed(panes: &[Seen<'_>]) -> Vec<u64> {
+        sweep(panes, Mono::from_nanos(NOW), GRACE)
+            .removed
+            .iter()
+            .map(|pane| {
+                pane.to_string()
+                    .trim_start_matches("pane_")
+                    .parse()
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_sweep_removes_a_lingered_on_exit_pane_and_a_pane_whose_parent_is_gone_or_dead() {
+        let cause = Cause::Exit(ko_sys::pid::Exit::Exited(0));
+        let live = Condition::Live;
+        let panes = [
+            seen(1, None, Close::OnExit, dead(5, &cause)),
+            seen(2, None, Close::Keep, dead(5, &cause)),
+            seen(3, None, Close::OnExit, dead(0, &cause)),
+            seen(4, None, Close::Keep, live),
+            seen(5, Some(4), Close::Keep, live),
+            seen(6, Some(2), Close::Keep, live),
+            seen(7, Some(9), Close::Keep, dead(0, &cause)),
+        ];
+        assert_eq!(removed(&panes), [1, 6, 7]);
+        assert_eq!(
+            sweep(&panes, Mono::from_nanos(NOW), GRACE).next,
+            Some(GRACE),
+            "the young on_exit pane is due when its grace ends"
+        );
+        let shown = Seen {
+            shown: true,
+            ..seen(1, None, Close::OnExit, dead(5, &cause))
+        };
+        assert_eq!(removed(&[shown]), Vec::<u64>::new(), "a shown pane stays");
+        assert_eq!(standing(&panes, PaneId::new(2)), Standing::Dead);
+        assert_eq!(standing(&panes, PaneId::new(4)), Standing::Live);
+        assert_eq!(standing(&panes, PaneId::new(8)), Standing::Gone);
+    }
+
+    fn token() -> PaneToken {
+        PaneToken::try_from("0123456789abcdef0123456789abcdef".to_owned()).unwrap()
     }
 
     #[test]
@@ -308,7 +530,7 @@ mod tests {
             name: name.to_owned(),
             value: value.to_owned(),
         });
-        let env: Vec<String> = environment(&config(), PaneId::new(3), &requested)
+        let env: Vec<String> = environment(&config(), PaneId::new(3), &token(), &requested)
             .into_iter()
             .map(|entry| String::from_utf8(entry).unwrap())
             .collect();
@@ -321,6 +543,7 @@ mod tests {
                 "TERMINFO_DIRS=/share/terminfo:".to_owned(),
                 "KO_SOCKET=/tmp/ko/socket".to_owned(),
                 "KO_PANE=pane_3".to_owned(),
+                format!("KO_PANE_TOKEN={}", token()),
                 "KO_SHELL=/bin/sh".to_owned(),
                 "LANG=en".to_owned(),
                 "SSH_AUTH_SOCK=/tmp/agent.sock".to_owned(),
@@ -335,7 +558,7 @@ mod tests {
             name: "SSH_AUTH_SOCK".to_owned(),
             value: "/mine".to_owned(),
         }];
-        let env: Vec<String> = environment(&config(), PaneId::new(3), &requested)
+        let env: Vec<String> = environment(&config(), PaneId::new(3), &token(), &requested)
             .into_iter()
             .map(|entry| String::from_utf8(entry).unwrap())
             .filter(|entry| entry.starts_with("SSH_AUTH_SOCK"))
@@ -364,6 +587,8 @@ mod tests {
                 })
                 .collect(),
             vars: Default::default(),
+            parent: None,
+            close: Default::default(),
         };
         let argv = |argv: &[&str]| {
             Some(Command::Argv {

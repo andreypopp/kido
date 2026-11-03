@@ -22,6 +22,8 @@ use tungstenite::{Message as Msg, WebSocket};
 
 pub(crate) const DEADLINE: Duration = Duration::from_secs(5);
 
+pub(crate) const PRINT_TOKEN: &str = "printf 'TOKEN<%s>' \"$KO_PANE_TOKEN\"";
+
 // Parallel heavy panes starve a small macOS runner past the 5 s deadline.
 pub(crate) static HEAVY: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1070,6 +1072,19 @@ impl Server {
 
     pub(crate) fn screen(&self, pane: &str) -> String {
         self.ko(&["api", &format!("/panes/{pane}/screen")], "").ok()
+    }
+
+    // A pane whose program printed its token with PRINT_TOKEN before it ran `command`.
+    pub(crate) fn token_pane(&self, command: &str) -> String {
+        let pane = self.pane(&format!("stty raw -echo; {PRINT_TOKEN}; {command}"));
+        self.screen_has(&pane, "TOKEN<");
+        pane
+    }
+
+    pub(crate) fn token(&self, pane: &str) -> Option<String> {
+        let screen = self.screen(pane);
+        let (_, rest) = screen.split_once("TOKEN<")?;
+        Some(rest.split_once('>')?.0.to_owned())
     }
 
     pub(crate) fn screen_has(&self, pane: &str, needle: &str) {

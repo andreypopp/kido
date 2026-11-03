@@ -21,7 +21,6 @@ use crate::layout::{Document, PutError, Removal, Resized};
 use crate::link::{Role, Wire};
 use crate::model::{self, Model};
 use crate::pane::{Birth, Pane};
-use crate::pane_kind::PI_SESSION;
 use crate::pane_proc::{self, Event, Io, Refusal, discard};
 use crate::panes::{AddError, Panes};
 use crate::protocol::{
@@ -38,6 +37,7 @@ use crate::view::View;
 use crate::ws::{Next, Ping};
 
 mod media;
+mod pane_ops;
 mod prompt;
 mod run_ops;
 
@@ -66,11 +66,13 @@ pub(crate) enum PutFailure {
     Stale(Snapshot),
     Invalid(String),
     Io(String),
+    Rejected(protocol::Error),
 }
 
 impl From<PutFailure> for protocol::Error {
     fn from(failure: PutFailure) -> protocol::Error {
         let (kind, message) = match failure {
+            PutFailure::Rejected(error) => return error,
             PutFailure::Invalid(message) => (protocol::ErrorKind::Invalid, message),
             PutFailure::Io(message) => (protocol::ErrorKind::Io, message),
             PutFailure::Stale(_) => (protocol::ErrorKind::Io, "layout changed".to_owned()),
@@ -95,6 +97,7 @@ pub(crate) struct State {
     tick: Duration,
     model: Model,
     runs: run_ops::RunState,
+    stops: pane_ops::Stops,
     prompts: prompt::PromptState,
     leaks: Leaks,
     next_object: u32,
@@ -140,6 +143,8 @@ fn pane_listing(pane: &Pane, root: &Path) -> Listing {
             status: pane.model().status().cloned(),
             progress: telemetry.progress,
             run: run_ops::run_row(root, pane),
+            parent: pane.parent(),
+            close: pane.close(),
         },
         vars: pane.vars().clone(),
     }
@@ -188,6 +193,7 @@ impl State {
         tick: Duration,
     ) -> State {
         let runs = run_ops::RunState::new(&config, poll);
+        let stops = pane_ops::Stops::new(poll);
         let document = Document::new(&config.shell);
         let leaks = Leaks::new(&config.dir);
         leaks.release_all();
@@ -206,6 +212,7 @@ impl State {
             tick,
             model: Model::new(poll),
             runs,
+            stops,
             prompts: prompt::PromptState::default(),
             leaks,
             next_object: 0,
@@ -215,6 +222,24 @@ impl State {
             withheld: BTreeSet::new(),
             held: Vec::new(),
         }
+    }
+
+    pub(super) fn token_of_timer(&self, timer: Timer) -> Option<Token> {
+        self.conns
+            .iter()
+            .find(|conn| conn.timer == timer)
+            .map(|conn| conn.token)
+    }
+
+    pub(super) fn hold(&mut self, poll: &mut Poll, index: usize, within: Duration) -> Token {
+        let conn = &mut self.conns[index];
+        conn.phase = Phase::Handling;
+        let _ = poll.start(conn.timer, within, None);
+        conn.token
+    }
+
+    pub(crate) fn instance(&self) -> &Instance {
+        &self.instance
     }
 
     fn index(&self, token: Token) -> Option<usize> {
@@ -290,7 +315,12 @@ impl State {
             id,
             size,
             request,
-            Birth { vars, run },
+            Birth {
+                vars,
+                run,
+                parent: request.parent,
+                close: request.close,
+            },
             &mut Io {
                 poll,
                 events: &mut events,
@@ -346,6 +376,7 @@ impl State {
         poll: &mut Poll,
         request: PutLayout,
         run: Option<RunId>,
+        caller: Option<PaneId>,
     ) -> Result<Snapshot, PutFailure> {
         let before = self.document.clone();
         let new_window = client::new_window_sizer(
@@ -361,6 +392,14 @@ impl State {
                 PutError::Stale => PutFailure::Stale(self.document.snapshot()),
                 PutError::Invalid(message) => PutFailure::Invalid(message),
             })?;
+        let admitted = created
+            .iter()
+            .filter_map(|(_, request, _)| request.parent)
+            .try_for_each(|parent| self.admit_parent(caller, parent));
+        if let Err(error) = admitted {
+            self.document.rollback(before);
+            return Err(PutFailure::Rejected(error));
+        }
         let added: usize = created.iter().map(|(_, _, vars)| vars.bytes()).sum();
         if self.vars_used().saturating_add(added) > SERVER_MAX_TOTAL {
             self.document.rollback(before);
@@ -416,7 +455,7 @@ impl State {
         let mut layout = DraftLayout::from(self.document.layout());
         layout.sessions.push(DraftSession::single(name, request));
         let revision = self.document.revision();
-        self.put_layout(poll, PutLayout { revision, layout }, None)?;
+        self.put_layout(poll, PutLayout { revision, layout }, None, None)?;
         self.document
             .layout()
             .sessions
@@ -700,6 +739,7 @@ impl State {
         poll.stop(self.ticker);
         self.model.stop(poll);
         self.runs.stop(poll);
+        self.stops.stop(poll);
         self.prompts.stop(poll);
     }
 
@@ -741,9 +781,6 @@ impl State {
         };
         if pane.vars_mut().set_within(&name, value, spare)? {
             self.model.mark(poll, pane);
-            if name == PI_SESSION {
-                self.runs.want_sweep();
-            }
             let event = watched
                 .then(|| pane.vars().get(&name).cloned())
                 .flatten()
@@ -765,9 +802,6 @@ impl State {
         };
         if pane.vars_mut().remove(&name) {
             self.model.mark(poll, pane);
-            if name == PI_SESSION {
-                self.runs.want_sweep();
-            }
             self.broadcast(&ClientEvent::VarDeleted { pane: id, name });
         }
     }
@@ -847,7 +881,6 @@ impl State {
                     && pane.telemetry_mut().records.apply(report)
                 {
                     self.model.mark(poll, pane);
-                    self.runs.want_sweep();
                 }
             }
             Event::Foreground(foreground) => {
@@ -1211,10 +1244,11 @@ impl State {
                     self.model_tick(poll);
                 } else if self.runs.is_sweep(due.timer) {
                     self.sweep(poll);
-                } else if self.runs.is_escalation(due.timer) {
+                } else if self.stops.is_escalation(due.timer) {
                     self.escalate(poll);
                 } else if self.prompt_due(poll, due.timer)
                     || self.wait_due(poll, due.timer)
+                    || self.stop_due(poll, due.timer)
                     || self.image_due(poll, due.timer)
                     || self.clipboard_due(poll, due.timer)
                 {
@@ -1494,6 +1528,7 @@ impl State {
             poll.unwatch(conn.token);
             poll.free(conn.timer);
             self.runs.forget(conn.token);
+            self.forget_stops(poll, conn.token);
             self.prompts.forget(conn.token);
             if let Phase::Ws(link) = conn.phase {
                 match link.role {
@@ -1547,6 +1582,8 @@ mod tests {
             }),
             env: Vec::new(),
             vars: Default::default(),
+            parent: None,
+            close: Default::default(),
         };
         let pane = rig.state.new_session(&mut rig.poll, &request).unwrap();
         assert_eq!(rig.state.pane_listing(pane).unwrap().row.pid, None);

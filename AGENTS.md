@@ -491,7 +491,9 @@ Conventions:
   directory (`ko_server::spill`, over `ko_sys::file::unlinked`),
   drained after the queue, and a spill over its limit closes the view
   with close code 1013 (docs/protocol.md, section 4); every other link
-  closes at the cap. No other code writes a connection's descriptor.
+  closes at the cap, except a run's screen reply, which the capture's
+  cap bounds and which stops the reading of requests until the queue
+  is below the cap. No other code writes a connection's descriptor.
 - **Atomics.** The ring header's loads and stores are `SeqCst`
   ("The ring indices are sequentially consistent" below).
   `scripts/lint.sh` refuses any other `Ordering` in `ko_pane`,
@@ -733,8 +735,11 @@ else `~/.local/state/ko-pi`.
 A server is its state directory (`$KO_STATE_DIR`, else
 `$XDG_STATE_HOME/ko`, else `~/.local/state/ko`). Its socket is
 `<dir>/socket`. Every command accepts `--server DIR`. Inside a pane,
-`$KO_SOCKET` names the pane's own server and `$KO_PANE` the pane; the
-run and prompt commands send the pane as the `Ko-Pane` header. ko has
+`$KO_SOCKET` names the pane's own server, `$KO_PANE` the pane and
+`$KO_PANE_TOKEN` its secret; every `ko` command but the terminal
+client sends the pair as the
+`Ko-Pane` and `Ko-Pane-Token` headers to that server only, and a
+request without them is the user (docs/protocol.md, section 1). ko has
 no caller otherwise: `run-child` takes its parent as an argument.
 docs/design-ko.md, "Lifecycle and the command line", gives the
 directory rules, the server's options and every variable that a pane
@@ -761,10 +766,10 @@ lifecycle", gives the rules. The ones a change breaks most easily:
 - A run's status comes from its outcome and its pane, never a pid.
 - The server writes an outcome once and refuses a second. Only the
   sweep, `run-outcome` and `run-stop` write one.
-- The orphan rule reads the parent's status, never a process. A pane
-  parent has ended when its pane is gone, dead or shows neither a pi
-  root nor `pi.session`; pi clears its root while it runs, so the root
-  alone is no evidence.
+- The sweep reads the pane rows, never a process or pi evidence. It
+  removes a `close: on_exit` pane dead for the linger grace, and a
+  pane whose immutable `parent` pane is gone or dead. A run's pane
+  gets `close: on_exit` and its parent's pane as `parent`.
 - `ko prompt` uses the pane's trusted `pi.inbox`, and a paste only for
   a pane without one. An advertised but unavailable inbox is an error,
   not permission to paste. A failure after the connect may have
@@ -828,7 +833,7 @@ the e2e stage to the tests whose names contain the text (a cargo test
 filter). Every selected stage runs even after a failure and prints
 PASS/FAIL/SKIP with its time. `scripts/verify.sh` scrubs the
 environment: it unsets `KO_STATE_DIR`, `KO_PANE`, `KO_SOCKET`,
-`KO_RUN_ID`, `KO_RUN_OUTPUT` and every `KO_AGENT_*`, and removes installed
+`KO_PANE_TOKEN`, `KO_RUN_ID`, `KO_RUN_OUTPUT` and every `KO_AGENT_*`, and removes installed
 `share/ko/bin` entries from PATH, so the developer's own pane does not
 enter the tests. The lint and ts stages need Node 24 or newer;
 `KO_TS_TEST_REQUIRED=1`, which verify sets itself, makes a missing node
@@ -902,8 +907,8 @@ the toolchain of `rust-toolchain.toml`, zig through
 overwrites the host's macOS outputs. The container (`ko-ci-like-<pid>`;
 its busy siblings `ko-ci-like-busy-<pid>-N`) gets
 `KO_STATE_DIR=/tmp/ko-state`, and the host's other `KO_*` variables
-pass through, except `KO_AGENT_*`, `KO_PANE`, `KO_SOCKET`, `KO_RUN_ID`
-and `KO_RUN_OUTPUT`. In a linked worktree, the script
+pass through, except `KO_AGENT_*`, `KO_PANE`, `KO_PANE_TOKEN`,
+`KO_SOCKET`, `KO_RUN_ID` and `KO_RUN_OUTPUT`. In a linked worktree, the script
 also mounts the main repository's git directory read-only, because
 `ko_server/build.rs` runs git. Linux's check is `make ci-like
 ARGS="--cpus 2 --memory 6g -- make verify"`; the Rust and zig builds

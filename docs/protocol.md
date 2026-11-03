@@ -85,7 +85,23 @@ apart. A host that refuses unix-socket forwarding is unsupported.
 
 Authentication is the socket's mode (0700 directory) and the peer uid
 check on accept. Forwarded connections arrive from sshd as the user,
-so they pass. There is no token and no TLS.
+so they pass. There is no TLS.
+
+A request without identity headers is the user, who may do
+everything. A request that acts as a pane sends `Ko-Pane: pane_N` and
+`Ko-Pane-Token`, the pane's `KO_PANE_TOKEN`: 128 random bits as hex,
+made when the pane is created and given only to the pane's
+environment. The server compares the token with the live pane's in
+constant time. A token without `Ko-Pane`, a `Ko-Pane` without a token
+and a token that does not match are `refused`; the one exception is
+the prompt routes (section 11), which take `Ko-Pane` alone, because
+Kido.app names the pane that its user prompts from and has no token.
+Every process of a pane inherits the token, so the pane is one trust
+unit. The `ko` CLI sends both headers from `KO_PANE` and
+`KO_PANE_TOKEN` on the requests of every command, but only to the
+server of its own `KO_SOCKET`; the terminal client, the user's
+client, sends none: a pane's identity means nothing to
+another server. What a pane identity may do is in sections 7 and 10.
 
 A request that carries an `Origin` header is refused (`refused`). A
 unix-socket server has no origin of its own. No native client sends
@@ -113,8 +129,10 @@ where a wall time is needed.
 
 `GET /version` is the one request without version headers, because a
 client reads it before it knows the server's version. Its shape is
-frozen across minors. It carries only the protocol version, the
-libghostty-vt revision and the build (decided 2026-10-31). The
+frozen across minors. It carries the protocol version, the
+libghostty-vt revision and the build (decided 2026-10-31), and the
+server's `instance` (below); `ko version`, which asks no server,
+prints the same fields without `instance`. The
 terminal limits that form the mirror contract (design-ko.md, "The pane's terminal") arrive
 with the `Welcome` event on `/client`; a client applies them to every
 mirror before it opens a view. The `Welcome` event also carries
@@ -237,8 +255,7 @@ state it shows and gets a new id; the client owns that state, not the
 server. Messages on one client connection are applied in order.
 
 Requests that act as a client send `Ko-Client`. The CLI uses no client
-id for a one-shot read; for a write that needs scope (`prompt`), it
-passes the pane it runs in with `Ko-Pane`.
+id for a one-shot read; it acts as the pane it runs in (section 1).
 
 ## 4. Views: terminal content, resume, backpressure
 
@@ -330,7 +347,10 @@ after the spill is drained, under the backpressure rule above: the
 view resumes from the ring, or it gets a skip and a `screen`
 snapshot. So a snapshot reaches a slow reader whole, and the memory
 of each view stays at the cap. Only views spill; the other links
-close at the cap. `ko_server/src/config.rs` holds the cap and the
+close at the cap. A run's screen (section 10) is the exception: its
+reply, which `KO_RUN_SCREEN_BYTES` bounds, enters the queue past the
+cap, and the connection reads no further request until its queue is
+below the cap again. `ko_server/src/config.rs` holds the cap and the
 spill limit of each view. When the spill limit is exceeded, or a
 spill write or read fails, the server discards the unsent messages
 after the one that the socket has in part and closes the view with
@@ -517,9 +537,16 @@ invariants.
 - A `PUT` must keep every live pane: a document that omits one is
   `invalid`. A new session or window has no `id`; the server allocates
   it. A new pane is a leaf or float whose `pane` is `{new: {cwd?,
-  command?, env?, vars?}}`; its `vars` have the limits of the pane
-  variables below, and a refused one is `invalid` with the document
-  unchanged. A pane without `command` runs `ko shell`. Every pane gets
+  command?, env?, vars?, parent?, close?}}` (`CreatePane`); its `vars`
+  have the limits of the pane variables below, and a refused one is
+  `invalid` with the document unchanged. A pane without `command` runs
+  `ko shell`. `parent` and `close` are the pane's for its life, and
+  its row carries them from the layout event that adds it. `parent`
+  must name a pane that is not dead: an unknown one is `missing`, a
+  dead one `gone`; a caller that acts as a pane may name only itself.
+  No cycle can form, because the parent exists before the child.
+  `close` is `keep` (the default) or `on_exit`; both, and the orphan
+  rule on `parent`, act through the sweep (section 10). Every pane gets
   `SSH_AUTH_SOCK=<dir>/agent.sock` unless its `env` names that
   variable; a client publishes an agent by an atomic replacement of
   that path with a symlink, and the server links it to its own
@@ -541,8 +568,7 @@ invariants.
   with its last window. A `PUT` has no remove list (decided
   2026-11-02). A pane whose `ko-pane` process ends
   leaves the document by itself; a pane whose program exits stays,
-  dead, until a `DELETE`. There is no `POST /panes`: a pane is
-  created inside a `PUT /layout`. The server starts with an empty
+  dead, until a `DELETE`. The server starts with an empty
   document, and it keeps running with an empty document when the
   last session goes; a client that finds it empty `PUT`s one new
   session with one new pane.
@@ -566,6 +592,26 @@ invariants.
   window's name, because the document does not know a pane's program.
   An existing window without `name` keeps its name; a `name` renames
   it. A session has no default name.
+- `POST /panes` (`NewWindow`) creates one window with one pane as
+  one server-made `PUT`, as `POST /runs` does, and answers with its
+  session, window and pane. Its session is the body's, else the
+  parent's, else the calling pane's, else a new session with no name;
+  the window goes after the parent's window, else after the caller's,
+  when that window is in the chosen session, else at the end. `name`
+  names the window in the same change, so no unnamed window shows. No
+  client switches to it. The pane's fields and errors are those of a
+  new pane above; a pane that cannot start is `io`, with the old
+  document kept.
+- `POST /panes/pane_N/stop` (`StopPane`) records nothing. It waits up
+  to `wait_ms` (at most one hour) for the pane to die, then removes
+  it; a dead pane and `wait_ms: 0` remove it at once, and an unknown
+  pane is `missing`. The removal hangs up the program (`ko-pane`
+  sends `SIGHUP`, then `SIGKILL` 250 ms later); if the removed pane
+  still lives after `KO_STOP_ESCALATION_MS`, the coordinator kills
+  it. A caller that acts as a pane may stop only a pane in its scope:
+  in the caller's session, its children and its siblings, and each
+  ancestor with that ancestor's siblings; the roots of a session are
+  siblings (`scope` in `ko_server/src/panes.rs`).
 - `POST /panes/pane_N/clear_history` clears the pane's scrollback.
   `ko-pane` puts the clear into the ring at its position in the
   stream, so every mirror, live or resumed,
@@ -573,7 +619,8 @@ invariants.
 Session and window variables are the `vars` objects inside the
 document. Pane variables are part of the pane's row (section 6), and
 they are written under `/panes/pane_N/vars`: `PUT` one name with one
-JSON value, `DELETE` one name. There is no read of one variable: a
+JSON value, `DELETE` one name. A caller that acts as a pane writes
+and deletes only its own variables. There is no read of one variable: a
 client reads them with the row. `DELETE /panes/pane_N/vars` with a body of
 `names` and an optional `if` (a name and a value) deletes the names
 in one step, with one `var_deleted` event for each name that existed.
@@ -692,24 +739,27 @@ the run's command writes. Every writer of a run is on the server's
 loop thread: `State` refuses a second outcome, and the `outcome` file
 is a plain atomic write (a temporary file renamed over it).
 
-A run request that names a caller sends the header `Ko-Pane: pane_N`.
-The run and prompt commands of the CLI send it from `$KO_PANE`; `ko
-api` sends none.
+A run request acts as the calling pane through the headers of
+section 1.
 
 - `POST /runs` creates the run and its window as one server-made
-  `PUT` of the document: a new window at the end of the caller's
-  session, or of the session that the body names. No client switches
-  to it. The pane's environment gets `KO_RUN_ID` and `KO_RUN_OUTPUT`,
+  `PUT` of the document, placed as `POST /panes` places its window
+  (section 7), with the run's parent pane as the parent. No client
+  switches to it. The run's pane gets `close: on_exit` and, under a parent, the
+  pane's `parent`: a `pane_N` parent as given, a run parent resolved
+  to that run's pane. A caller that acts as a pane may name only
+  itself or a run whose pane it is. The pane's environment gets `KO_RUN_ID` and `KO_RUN_OUTPUT`,
   and its command is the body's argv with no wrapper. The server ties
   the run to its pane when it creates the pane, and nothing changes
   the tie later: no variable names a run. The run's pane enters the
   document in one layout event whose row carries the `run` field. A
-  parent (a run id or `pane_N`) that is unknown is `missing`, one that
-  has ended is `gone`.
+  parent (a run id or `pane_N`) that is unknown, or a run parent that
+  has no pane, is `missing`; one that has ended is `gone`.
 - `GET /runs` lists runs, newest first: `live` (no outcome),
   `present` (the pane still exists and names the run) or `all`, and
   optionally only the children of one parent. Each entry carries the
-  run's argv. `GET /runs/<id>` adds the captured screen. A run whose
+  run's argv. `GET /runs/<id>/screen` is the captured screen as
+  `text/plain`, `missing` when there is none. A run whose
   pane is gone stays in this history; an active run is one whose pane
   is in the layout.
 - `GET /runs/<id>/wait` is a long poll (design-ko.md, "The loop rule"): the
@@ -721,24 +771,23 @@ api` sends none.
   `refused`. A `failed` outcome of a run whose pane exists first
   captures the pane's screen.
 - `POST /runs/<id>/stop` records `stopped` (or `completed`), then
-  waits up to its `wait_ms` for the pane to die and removes it. The
-  removal hangs up the program (`ko-pane` sends `SIGHUP`, then
-  `SIGKILL` 250 ms later); if the removed pane still lives after
-  `KO_STOP_ESCALATION_MS`, the coordinator kills it. A run that has
-  already ended is `refused`.
+  stops the pane as `POST /panes/pane_N/stop` does (section 7). A run
+  that has already ended is `refused`.
 
-The sweep runs when one of its inputs changes: a pane's death or
-removal, a recorded outcome, the focused panes, a pane's pi evidence,
-and at the end of a linger grace. It closes a run's pane when the pane is dead for longer than
-`KO_LINGER_SECONDS` (the linger grace, in seconds with an optional
-fraction), or when the run's parent has
-ended (the orphan rule: a run parent by its outcome; a pane parent
-when it is gone, dead or shows neither a pi root nor `pi.session`).
-It records the run's outcome (the pane's exit, else `died`; `failed`
-"its parent ended" for an orphan), captures the screen and removes the
-pane. It never closes a run pane that is focused: shown by a client
-whose terminal has focus (section 3); it tries again when the focus
-changes. The removal of a window's last pane removes the window in
+The sweep reads the pane rows and runs when one of its inputs
+changes: a pane's death or removal, the focused panes, and the end of
+a linger grace. It removes a pane in two cases: a pane with `close:
+on_exit` that has been dead for longer than `KO_LINGER_SECONDS` (the
+linger grace, in seconds with an optional fraction), and a pane whose
+`parent` is gone or dead, live or dead itself, at once (the orphan
+rule). When the pane carries a run, the sweep first records the run's
+outcome (the pane's exit, else `died`; `failed` "its parent ended"
+for a live orphan) and captures the screen with its whole history,
+keeping the last `KO_RUN_SCREEN_BYTES` (64 MiB by default) into
+`runs/<id>/screen`; a pane without a run gets no record and no
+capture. The sweep never removes a pane that is focused: shown by a
+client whose terminal has focus (section 3); it tries again when the
+focus changes. The removal of a window's last pane removes the window in
 the same change, as a window delete does (section 7). An empty
 session ends.
 
@@ -769,7 +818,8 @@ jumps to a match by taking a full snapshot and searching its mirror,
 since server rows move with output.
 
 `GET /prompt/resolve` lists the candidate agent panes for the caller
-of the `Ko-Pane` header, with the scope rule applied in the server:
+of the `Ko-Pane` header (with or without its token, section 1), with
+the scope rule applied in the server:
 the candidates of the caller's window, else, when that window has
 none, those of the other windows of its session. With `window=true`
 it never widens. Run windows and terminal panes are not candidates. `POST /prompt` sends text to one candidate

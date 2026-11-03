@@ -26,7 +26,7 @@ pub(crate) fn exchange(socket: &Path, route: &Route, body: &str) -> io::Result<R
 pub(crate) fn create_pane(socket: &Path, argv: &[String]) -> io::Result<PaneId> {
     ko_client::layout::add_session(
         socket,
-        None,
+        (None, None),
         &CreatePane {
             cwd: Some("/".to_owned()),
             command: Some(Command::Argv {
@@ -34,6 +34,8 @@ pub(crate) fn create_pane(socket: &Path, argv: &[String]) -> io::Result<PaneId> 
             }),
             env: Vec::new(),
             vars: Default::default(),
+            parent: None,
+            close: Default::default(),
         },
     )
     .map_err(io::Error::other)

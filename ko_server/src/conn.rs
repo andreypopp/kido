@@ -114,6 +114,13 @@ impl Queue {
         }
     }
 
+    fn push_reply(&mut self, bytes: Vec<u8>) {
+        if !self.sealed() && !bytes.is_empty() {
+            self.bytes = self.bytes.saturating_add(bytes.len());
+            self.chunks.push_back(Chunk { bytes, tail: false });
+        }
+    }
+
     pub(crate) fn push(&mut self, parts: &[&[u8]], fit: Fit) -> bool {
         let len = parts.iter().map(|part| part.len()).sum();
         if self.sealed() || len == 0 {
@@ -312,6 +319,10 @@ impl Output {
         self.accepted
     }
 
+    pub(crate) fn backed_up(&self) -> bool {
+        self.queue.bytes >= self.queue.cap
+    }
+
     pub(crate) fn waiting(&self) -> bool {
         self.refused || !self.queue.is_empty() || self.pixels.is_some()
     }
@@ -399,6 +410,13 @@ impl Output {
         self.send(head);
         if self.is_open() {
             self.pixels = Some(Pixels { object, sent: 0 });
+            self.flush();
+        }
+    }
+
+    pub(crate) fn send_reply(&mut self, bytes: Vec<u8>) {
+        if self.is_open() {
+            self.queue.push_reply(bytes);
             self.flush();
         }
     }
@@ -766,7 +784,10 @@ impl Conn {
 
     pub(crate) fn interest(&self) -> Interest {
         let read = match self.phase {
-            Phase::Head | Phase::Body { .. } | Phase::Oversized { .. } | Phase::Ws(_) => !self.eof,
+            Phase::Head | Phase::Body { .. } | Phase::Oversized { .. } => {
+                !self.eof && !self.out.backed_up()
+            }
+            Phase::Ws(_) => !self.eof,
             Phase::Handling | Phase::Streaming | Phase::Closing => false,
         };
         match self.out.life() {
@@ -779,6 +800,7 @@ impl Conn {
     pub(crate) fn reading_http(&self) -> bool {
         self.out.is_open()
             && !self.eof
+            && !self.out.backed_up()
             && matches!(
                 self.phase,
                 Phase::Head | Phase::Body { .. } | Phase::Oversized { .. }

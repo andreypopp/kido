@@ -2573,6 +2573,8 @@ mod tests {
             status,
             progress: None,
             run: None,
+            parent: None,
+            close: Default::default(),
         };
         Listing {
             row,

@@ -5,7 +5,7 @@ use serde_json::{Map, Value, json};
 
 use crate::api::ROUTES;
 use crate::http::Status;
-use crate::ids::PaneId;
+use crate::ids::{PaneId, PaneToken};
 use crate::protocol;
 use crate::route::{Caller, Content, Kind, Param, ParamInfo, RouteInfo};
 
@@ -127,10 +127,16 @@ fn operation(generator: &mut SchemaGenerator, route: &RouteInfo) -> Value {
         example: <PaneId as Param>::EXAMPLE,
         default: None,
     };
-    let caller = match route.caller {
-        Caller::Absent => None,
-        Caller::Optional => Some((&caller, "header", false)),
-        Caller::Required => Some((&caller, "header", true)),
+    let token = ParamInfo {
+        name: "Ko-Pane-Token",
+        schema: |generator| generator.subschema_for::<PaneToken>(),
+        example: "0123456789abcdef0123456789abcdef",
+        default: None,
+    };
+    let caller: Vec<_> = match route.caller {
+        Caller::Absent => Vec::new(),
+        Caller::Optional => vec![(&caller, "header", false), (&token, "header", false)],
+        Caller::Named => vec![(&caller, "header", true), (&token, "header", false)],
     };
     let parameters: Vec<Value> = route
         .path_params

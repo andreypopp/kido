@@ -14,7 +14,7 @@ use super::engine::{mismatch_of, probe};
 use super::{Buffer, Client, Code, bytes_of, client, empty, hand_over, locked, text_of};
 use crate::edit::{Edit, Refusal};
 use crate::layout::{self, Document, EditError};
-use crate::wire;
+use crate::wire::{self, Caller};
 
 pub(super) fn call(
     client: &Client,
@@ -102,7 +102,7 @@ pub unsafe extern "C" fn ko_client_put_layout(
     };
     call(client, out, |socket, id, cancel| {
         let revision = document.revision.unwrap_or(Revision::FIRST);
-        match layout::send(socket, id, revision, document.layout, Some(cancel)) {
+        match layout::send(socket, (id, None), revision, document.layout, Some(cancel)) {
             Ok(Ok(snapshot)) => Ok(protocol::json(&snapshot).into_bytes()),
             Ok(Err(newer)) => Err((Code::Conflict, protocol::json(&newer).into_bytes())),
             Err(failure) => Err(rejected(failure)),
@@ -168,7 +168,7 @@ pub unsafe extern "C" fn ko_client_prompt(
     call(client, out, |socket, id, cancel| {
         wire::request(
             socket,
-            (id, Some(caller)),
+            (id, Some(Caller::Named(caller))),
             &Route::SendPrompt {},
             body.as_bytes(),
             Some(cancel),
@@ -198,7 +198,14 @@ pub unsafe extern "C" fn ko_client_prompt_resolve(
         window: window_only.then_some(WindowOnly),
     };
     call(client, out, |socket, id, cancel| {
-        wire::request(socket, (id, Some(caller)), &route, b"", Some(cancel)).map_err(rejected)
+        wire::request(
+            socket,
+            (id, Some(Caller::Named(caller))),
+            &route,
+            b"",
+            Some(cancel),
+        )
+        .map_err(rejected)
     })
 }
 
@@ -241,7 +248,7 @@ pub unsafe extern "C" fn ko_client_edit(
     };
     call(client, out, |socket, id, cancel| {
         layout::edit_from(first, &edit, |revision, draft| {
-            layout::send(socket, id, revision, draft, Some(cancel))
+            layout::send(socket, (id, None), revision, draft, Some(cancel))
         })
         .map(|edited| protocol::json(&edited).into_bytes())
         .map_err(edit_failure)

@@ -223,6 +223,11 @@ public enum KoSchema {
 
     public typealias Cells = Int
 
+    public enum Close: String, Codable, Equatable, Sendable {
+        case keep
+        case onExit = "on_exit"
+    }
+
     public enum Command: Codable, Equatable, Sendable {
         case argv(CommandArgv)
         case shell(CommandShell)
@@ -291,14 +296,18 @@ public enum KoSchema {
     }
 
     public struct CreatePane: Codable, Equatable, Sendable {
+        public var close: Close?
         public var command: Command?
         public var cwd: String?
         public var env: [Variable]?
+        public var parent: PaneId?
         public var vars: [String: JSONValue]?
-        public init(command: Command? = nil, cwd: String? = nil, env: [Variable]? = nil, vars: [String: JSONValue]? = nil) {
+        public init(close: Close? = nil, command: Command? = nil, cwd: String? = nil, env: [Variable]? = nil, parent: PaneId? = nil, vars: [String: JSONValue]? = nil) {
+            self.close = close
             self.command = command
             self.cwd = cwd
             self.env = env
+            self.parent = parent
             self.vars = vars
         }
     }
@@ -1059,6 +1068,7 @@ public enum KoSchema {
     public typealias PaneId = PaneID
 
     public struct PaneJson: Codable, Equatable, Sendable {
+        public var close: Close?
         public var command: [String]
         public var cwd: String
         public var dead: Dead?
@@ -1066,6 +1076,7 @@ public enum KoSchema {
         public var id: PaneId
         public var label: String
         public var mark: Mark
+        public var parent: PaneId?
         public var pid: Int?
         public var progress: Progress?
         public var recordsSeen: Bool
@@ -1073,7 +1084,8 @@ public enum KoSchema {
         public var status: PaneStatus?
         public var title: String
         public var vars: [String: JSONValue]
-        public init(command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, label: String, mark: Mark, pid: Int? = nil, progress: Progress? = nil, recordsSeen: Bool, run: RunRow? = nil, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
+        public init(close: Close? = nil, command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, label: String, mark: Mark, parent: PaneId? = nil, pid: Int? = nil, progress: Progress? = nil, recordsSeen: Bool, run: RunRow? = nil, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
+            self.close = close
             self.command = command
             self.cwd = cwd
             self.dead = dead
@@ -1081,6 +1093,7 @@ public enum KoSchema {
             self.id = id
             self.label = label
             self.mark = mark
+            self.parent = parent
             self.pid = pid
             self.progress = progress
             self.recordsSeen = recordsSeen
@@ -1090,6 +1103,7 @@ public enum KoSchema {
             self.vars = vars
         }
         private enum CodingKeys: String, CodingKey {
+            case close
             case command
             case cwd
             case dead
@@ -1097,6 +1111,7 @@ public enum KoSchema {
             case id
             case label
             case mark
+            case parent
             case pid
             case progress
             case recordsSeen = "records_seen"

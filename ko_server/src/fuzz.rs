@@ -395,6 +395,8 @@ impl Rig {
             }),
             env: Vec::new(),
             vars: Default::default(),
+            parent: None,
+            close: Default::default(),
         };
         let pane = state
             .new_session(&mut poll, &request)

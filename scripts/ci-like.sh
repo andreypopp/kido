@@ -132,7 +132,7 @@ env_args=()
 for var in $(env | awk -F= '/^KO_/{print $1}'); do
 	case "$var" in
 	KO_STATE_DIR) continue ;; # always the container's own, below
-	KO_AGENT_* | KO_PANE | KO_SOCKET | KO_RUN_ID | KO_RUN_OUTPUT) continue ;; # the host's own pane and parent edge, never the container's
+	KO_AGENT_* | KO_PANE | KO_PANE_TOKEN | KO_SOCKET | KO_RUN_ID | KO_RUN_OUTPUT) continue ;; # the host's own pane and parent edge, never the container's
 	esac
 	env_args+=(-e "$var")
 done

@@ -561,6 +561,9 @@
       },
       "PaneJson": {
         "properties": {
+          "close": {
+            "$ref": "#/components/schemas/Close"
+          },
           "command": {
             "items": {
               "type": "string"
@@ -591,6 +594,9 @@
           },
           "mark": {
             "$ref": "#/components/schemas/Mark"
+          },
+          "parent": {
+            "$ref": "#/components/schemas/PaneId"
           },
           "pid": {
             "type": "integer"

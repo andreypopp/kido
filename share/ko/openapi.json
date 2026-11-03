@@ -720,6 +720,14 @@
         ],
         "type": "string"
       },
+      "Close": {
+        "description": "What the sweep does with a dead pane: keep stays, on_exit removes it after the linger grace.",
+        "enum": [
+          "keep",
+          "on_exit"
+        ],
+        "type": "string"
+      },
       "Command": {
         "oneOf": [
           {
@@ -786,6 +794,9 @@
       },
       "CreatePane": {
         "properties": {
+          "close": {
+            "$ref": "#/components/schemas/Close"
+          },
           "command": {
             "$ref": "#/components/schemas/Command"
           },
@@ -798,6 +809,9 @@
               "$ref": "#/components/schemas/Variable"
             },
             "type": "array"
+          },
+          "parent": {
+            "$ref": "#/components/schemas/PaneId"
           },
           "vars": {
             "additionalProperties": true,
@@ -836,55 +850,6 @@
         },
         "required": [
           "names"
-        ],
-        "type": "object"
-      },
-      "Detail": {
-        "properties": {
-          "argv": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "cwd": {
-            "type": "string"
-          },
-          "id": {
-            "$ref": "#/components/schemas/RunId"
-          },
-          "name": {
-            "$ref": "#/components/schemas/RunName"
-          },
-          "outcome": {
-            "$ref": "#/components/schemas/RunOutcome"
-          },
-          "output": {
-            "type": "string"
-          },
-          "pane": {
-            "$ref": "#/components/schemas/PaneId"
-          },
-          "parent": {
-            "$ref": "#/components/schemas/Parent"
-          },
-          "screen": {
-            "type": "string"
-          },
-          "session": {
-            "type": "string"
-          },
-          "startedAt": {
-            "$ref": "#/components/schemas/Timestamp"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "argv",
-          "cwd",
-          "startedAt",
-          "output"
         ],
         "type": "object"
       },
@@ -1629,6 +1594,9 @@
       },
       "Listing": {
         "properties": {
+          "close": {
+            "$ref": "#/components/schemas/Close"
+          },
           "command": {
             "items": {
               "type": "string"
@@ -1652,6 +1620,9 @@
             "$ref": "#/components/schemas/Foreground"
           },
           "id": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "parent": {
             "$ref": "#/components/schemas/PaneId"
           },
           "pid": {
@@ -1897,6 +1868,41 @@
         "minLength": 1,
         "type": "string"
       },
+      "NewWindow": {
+        "description": "A window of one pane.",
+        "properties": {
+          "close": {
+            "$ref": "#/components/schemas/Close"
+          },
+          "command": {
+            "$ref": "#/components/schemas/Command"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "env": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Variable"
+            },
+            "type": "array"
+          },
+          "name": {
+            "$ref": "#/components/schemas/Name"
+          },
+          "parent": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionRef"
+          },
+          "vars": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
       "Offset": {
         "description": "A byte offset of the pane's stream.",
         "maximum": 4611686018427387903,
@@ -2039,6 +2045,10 @@
         ],
         "type": "object"
       },
+      "PaneToken": {
+        "pattern": "^[0-9a-f]{32}$",
+        "type": "string"
+      },
       "Parent": {
         "anyOf": [
           {
@@ -2147,6 +2157,25 @@
           "gray"
         ],
         "type": "string"
+      },
+      "Placement": {
+        "properties": {
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "window": {
+            "$ref": "#/components/schemas/WindowId"
+          }
+        },
+        "required": [
+          "session",
+          "window",
+          "pane"
+        ],
+        "type": "object"
       },
       "ProgramKind": {
         "enum": [
@@ -2603,6 +2632,30 @@
         ],
         "type": "object"
       },
+      "ServerVersion": {
+        "description": "The reply of a running server: its version, and the instance that changes at each start.",
+        "properties": {
+          "build": {
+            "type": "string"
+          },
+          "instance": {
+            "$ref": "#/components/schemas/Instance"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "vt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocol",
+          "vt",
+          "build",
+          "instance"
+        ],
+        "type": "object"
+      },
       "Session": {
         "properties": {
           "id": {
@@ -2804,6 +2857,20 @@
         ],
         "type": "object"
       },
+      "StopPane": {
+        "properties": {
+          "wait_ms": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WaitMs"
+              }
+            ],
+            "default": 0,
+            "description": "Milliseconds to wait for the pane to end by itself before ko removes it."
+          }
+        },
+        "type": "object"
+      },
       "StopResult": {
         "enum": [
           "stopped",
@@ -2817,9 +2884,12 @@
             "$ref": "#/components/schemas/StopResult"
           },
           "wait_ms": {
-            "default": 0,
-            "minimum": 0,
-            "type": "integer"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WaitMs"
+              }
+            ],
+            "default": 0
           }
         },
         "required": [
@@ -3225,6 +3295,26 @@
       "put": {
         "description": "Replaces the layout. A stale revision gets 409 with the current layout.",
         "operationId": "PutLayout",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3282,6 +3372,62 @@
                     "$ref": "#/components/schemas/Listing"
                   },
                   "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      },
+      "post": {
+        "description": "Creates a window with one pane, in one change of the layout. No client switches to it. The pane's session is the given one, else the parent's, else the caller's, else a new one. The window goes after the parent's or the caller's window of that session, else at the end.",
+        "operationId": "NewPane",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewWindow"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Placement"
                 }
               }
             },
@@ -3662,6 +3808,73 @@
         }
       }
     },
+    "/panes/{id}/stop": {
+      "post": {
+        "description": "Waits up to wait_ms for the pane to end by itself, then removes it and hangs up its program. ko kills a removed program that still lives after the escalation time. A dead pane is removed at once.",
+        "operationId": "StopPane",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StopPane"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
     "/panes/{id}/vars": {
       "delete": {
         "description": "Removes variables of a pane, if its condition holds.",
@@ -3674,6 +3887,24 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
             }
           }
         ],
@@ -3743,6 +3974,24 @@
             "schema": {
               "$ref": "#/components/schemas/VarName"
             }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
           }
         ],
         "responses": {
@@ -3788,6 +4037,24 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/VarName"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
             }
           }
         ],
@@ -3913,6 +4180,15 @@
             "schema": {
               "$ref": "#/components/schemas/PaneId"
             }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
           }
         ],
         "requestBody": {
@@ -3970,6 +4246,15 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
             }
           }
         ],
@@ -4063,6 +4348,15 @@
             "schema": {
               "$ref": "#/components/schemas/PaneId"
             }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
           }
         ],
         "requestBody": {
@@ -4101,7 +4395,7 @@
     },
     "/runs/{id}": {
       "get": {
-        "description": "One run, with its screen when it failed.",
+        "description": "One run.",
         "operationId": "GetRun",
         "parameters": [
           {
@@ -4119,7 +4413,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Detail"
+                  "$ref": "#/components/schemas/Info"
                 }
               }
             },
@@ -4169,6 +4463,45 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/runs/{id}/screen": {
+      "get": {
+        "description": "The screen that the sweep captured when the run's pane went: the whole history of the pane, cut to its last KO_RUN_SCREEN_BYTES bytes. A run that has none is not_found.",
+        "operationId": "RunScreen",
+        "parameters": [
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RunId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             },
@@ -4333,7 +4666,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Version"
+                  "$ref": "#/components/schemas/ServerVersion"
                 }
               }
             },

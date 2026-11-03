@@ -2,7 +2,7 @@ use std::fs;
 
 use serde_json::Value;
 
-use crate::harness::{ko, poll, text_of};
+use crate::harness::{PRINT_TOKEN, ko, poll, text_of};
 use crate::runs::{
     caller, child_of, ending, has_pane, id_of, ko_as, lingering, pane_of, wait_ending,
     wait_pane_gone,
@@ -36,6 +36,7 @@ fn a_tree_of_depth_two_reports_to_its_parents_is_stopped_and_is_swept() {
         "child.sh",
         &format!(
             "{FIND_ID}\n\
+             {PRINT_TOKEN}\n\
              live=$(\"$KO\" run-child \"$KO_RUN_ID\" --name grandchild-live --env KO=\"$KO\" -- sleep 300 | id)\n\
              done=$(\"$KO\" run-child \"$KO_RUN_ID\" --name grandchild-done --env KO=\"$KO\" -- sh -c 'exit 0' | id)\n\
              \"$KO\" run-wait --json \"$done\" >> {}\n\
@@ -104,7 +105,8 @@ fn a_tree_of_depth_two_reports_to_its_parents_is_stopped_and_is_swept() {
     assert_eq!(ending(&s, live["id"].as_str().unwrap()).0, "stopped");
     wait_pane_gone(&s, done["pane"].as_str().unwrap());
 
-    let late = child_of(&s, &caller, &child_id, "late", &["sleep", "300"]);
+    let child_pane = child["pane"].as_str().unwrap();
+    let late = child_of(&s, child_pane, &child_id, "late", &["sleep", "300"]);
     assert!(has_pane(&s, pane_of(&late)));
     ko_as(
         &s,
@@ -117,15 +119,19 @@ fn a_tree_of_depth_two_reports_to_its_parents_is_stopped_and_is_swept() {
         fs::read_to_string(&notices_root)
             .is_ok_and(|text| text.contains("\"result\":\"completed\""))
     });
+    assert!(
+        has_pane(&s, pane_of(&late)),
+        "a child of a run that reported stays while the run's pane lives"
+    );
+
+    ko_as(&s, None, &["run-stop", &child_id], "").ok();
+    wait_pane_gone(&s, child_pane);
     wait_pane_gone(&s, pane_of(&late));
     assert_eq!(
         wait_ending(&s, id_of(&late)),
         ("failed".to_owned(), "its parent ended".to_owned()),
-        "a child of a run that reported is swept"
+        "a child of a pane that went is swept"
     );
-
-    ko_as(&s, None, &["run-stop", &child_id], "").ok();
-    wait_pane_gone(&s, child["pane"].as_str().unwrap());
     ko_as(&s, None, &["run-stop", root_id], "").ok();
     wait_pane_gone(&s, pane_of(&root));
     assert_eq!(
@@ -145,11 +151,12 @@ fn the_client_lists_a_subagent_under_its_parent_indented_one_column() {
     let s = crate::harness::start(&[]);
     let title = |name: &str| {
         serde_json::json!({
-            "command": {"type": "shell", "command": format!("printf '\\033]0;{name}\\007'; exec cat")},
+            "command": {"type": "shell", "command": format!("printf '\\033]0;{name}\\007'; {PRINT_TOKEN}; exec cat")},
             "vars": {"pi.session": format!("session-{name}")}
         })
     };
     let parent = s.new_pane(title("parent"));
+    s.screen_has(&parent, "TOKEN<");
     s.new_pane(title("other"));
     let child = child_of(
         &s,

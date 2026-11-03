@@ -6,7 +6,7 @@ use std::time::Duration;
 use clap::{Args, ValueEnum};
 use ko_client::runs::{self, Failure};
 use ko_server::api::WaitMs;
-use ko_server::ids::{PaneId, RunId};
+use ko_server::ids::RunId;
 use ko_server::protocol::{
     self, Error, ErrorKind, Info, ReportOutcome, Reported, SendPrompt, SessionRef, Show, StartRun,
     StopResult, StopRun, Variable,
@@ -15,7 +15,7 @@ use ko_server::runs::{Parent, RunName, RunOutcome};
 use ko_server::timestamp::Timestamp;
 use ko_shell::bin_dir;
 
-use crate::{client_dir, complain, fail, server_message, table};
+use crate::{Target, complain, fail, server_message, table, target};
 
 const WAIT_POLL: Duration = Duration::from_secs(30);
 
@@ -151,10 +151,6 @@ fn seconds(text: &str) -> Result<Duration, String> {
         })
 }
 
-fn caller() -> Option<PaneId> {
-    std::env::var("KO_PANE").ok()?.parse().ok()
-}
-
 fn describe(dir: &Path, failure: Failure) -> String {
     match failure {
         Failure::Server(failure) => server_message(dir, failure),
@@ -253,8 +249,8 @@ fn start(name: &str, parent: Option<Parent>, args: RunArgs) -> ExitCode {
         env,
         argv,
     };
-    let dir = client_dir(args.server);
-    match runs::start(&dir, caller(), &request) {
+    let Target { dir, caller } = target(args.server);
+    match runs::start(&dir, caller, &request) {
         Ok(started) => {
             say(&protocol::json(&started));
             ExitCode::SUCCESS
@@ -332,9 +328,10 @@ fn duration_text(micros: i64) -> String {
     }
 }
 
-fn list(args: RunsArgs, dir: &Path, parent: Option<Parent>) -> ExitCode {
+fn list(args: RunsArgs, target: &Target, parent: Option<Parent>) -> ExitCode {
+    let Target { dir, caller } = target;
     let show = if args.all { Show::All } else { Show::Live };
-    let infos = match runs::list(dir, show, parent) {
+    let infos = match runs::list(dir, caller.clone(), show, parent) {
         Ok(infos) => infos,
         Err(failure) => return failed("runs", dir, failure),
     };
@@ -378,16 +375,21 @@ fn list(args: RunsArgs, dir: &Path, parent: Option<Parent>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn show(args: &RunsArgs, dir: &Path, id: &RunId) -> ExitCode {
-    let detail = match runs::detail(dir, id) {
-        Ok(detail) => detail,
+fn show(args: &RunsArgs, target: &Target, id: &RunId) -> ExitCode {
+    let Target { dir, caller } = target;
+    let info = match runs::detail(dir, caller.clone(), id) {
+        Ok(info) => info,
         Err(failure) => return by_kind("runs", dir, failure, 3),
     };
     if args.json {
-        say(&protocol::json(&detail));
+        say(&protocol::json(&info));
         return ExitCode::SUCCESS;
     }
-    let (info, mut out) = (&detail.info, io::stdout().lock());
+    let screen = match runs::screen(dir, caller.clone(), id) {
+        Ok(screen) => screen,
+        Err(failure) => return failed("runs", dir, failure),
+    };
+    let mut out = io::stdout().lock();
     let mut line = |key: &str, value: &str| {
         let _ = writeln!(out, "{:<10}{value}", format!("{key}:"));
     };
@@ -420,22 +422,22 @@ fn show(args: &RunsArgs, dir: &Path, id: &RunId) -> ExitCode {
         }
     }
     line("output", &info.output);
-    if let Some(screen) = &detail.screen {
+    if let Some(screen) = &screen {
         let _ = writeln!(out, "screen:\n{screen}");
     }
     ExitCode::SUCCESS
 }
 
 pub(crate) fn runs(args: RunsArgs) -> ExitCode {
-    let dir = client_dir(args.server.clone());
+    let target = target(args.server.clone());
     let parent = match args.parent.as_deref().map(str::parse::<Parent>).transpose() {
         Ok(parent) => parent,
         Err(message) => return refused("runs", message, 2),
     };
     match args.args.as_slice() {
-        [] => list(args, &dir, parent),
+        [] => list(args, &target, parent),
         [id] => match run_id("runs", id) {
-            Ok(id) => show(&args, &dir, &id),
+            Ok(id) => show(&args, &target, &id),
             Err(code) => code,
         },
         [_, extra, ..] => fail(
@@ -460,8 +462,8 @@ pub(crate) fn run_outcome(args: RunOutcomeArgs) -> ExitCode {
         },
         text: args.text,
     };
-    let dir = client_dir(args.server);
-    match runs::outcome(&dir, &id, &report) {
+    let Target { dir, caller } = target(args.server);
+    match runs::outcome(&dir, caller, &id, &report) {
         Ok(()) => ExitCode::SUCCESS,
         Err(failure) => by_kind("run-outcome", &dir, failure, 5),
     }
@@ -480,9 +482,9 @@ pub(crate) fn run_wait(args: RunWaitArgs) -> ExitCode {
         Ok(id) => id,
         Err(code) => return code,
     };
-    let dir = client_dir(args.server);
+    let Target { dir, caller } = target(args.server);
     loop {
-        match runs::wait(&dir, &id, WAIT_POLL) {
+        match runs::wait(&dir, caller.clone(), &id, WAIT_POLL) {
             Ok(Some(outcome)) => {
                 say(&outcome_line(args.json, &outcome));
                 return ExitCode::SUCCESS;
@@ -499,14 +501,14 @@ pub(crate) fn run_stop(args: RunStopArgs) -> ExitCode {
         Err(code) => return code,
     };
     let request = StopRun {
-        wait_ms: u64::try_from(args.wait.as_millis()).unwrap_or(WaitMs::MAX.get()),
+        wait_ms: WaitMs::clamped(u64::try_from(args.wait.as_millis()).unwrap_or(WaitMs::MAX.get())),
         result: match args.result {
             StopChoice::Stopped => StopResult::Stopped,
             StopChoice::Completed => StopResult::Completed,
         },
     };
-    let dir = client_dir(args.server);
-    match runs::stop(&dir, &id, &request) {
+    let Target { dir, caller } = target(args.server);
+    match runs::stop(&dir, caller, &id, &request) {
         Ok(()) => {
             say(&format!("stopped run {id}; killed its pane"));
             ExitCode::SUCCESS
@@ -525,11 +527,11 @@ pub(crate) fn prompt(args: PromptArgs) -> ExitCode {
         complain("no prompt given");
         return exit(1);
     }
-    let dir = client_dir(args.server);
-    let Some(caller) = caller() else {
+    let Target { dir, caller } = target(args.server);
+    let Some(caller) = caller else {
         return fail("prompt", "pane \"\" not found");
     };
-    let found = match runs::resolve(&dir, Some(caller), args.window) {
+    let found = match runs::resolve(&dir, Some(caller.clone()), args.window) {
         Ok(found) => found,
         Err(failure) => return failed("prompt", &dir, failure),
     };

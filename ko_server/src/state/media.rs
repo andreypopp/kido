@@ -99,12 +99,7 @@ impl State {
     }
 
     pub(super) fn image_due(&mut self, poll: &mut Poll, timer: Timer) -> bool {
-        let Some(conn) = self
-            .conns
-            .iter()
-            .find(|conn| conn.timer == timer)
-            .map(|conn| conn.token)
-        else {
+        let Some(conn) = self.token_of_timer(timer) else {
             return false;
         };
         let Some(waiting) = self.owners.values_mut().find_map(|owner| match owner {

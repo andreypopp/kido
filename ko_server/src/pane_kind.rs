@@ -81,14 +81,6 @@ pub(crate) fn of_pane(telemetry: &Telemetry, vars: &Vars) -> Kind {
     classify(telemetry, vars, &telemetry.records.published().records)
 }
 
-pub(crate) fn pi_evidence(telemetry: &Telemetry, vars: &Vars) -> bool {
-    let published = telemetry.records.published();
-    root(&published.records).is_some_and(|record| app(&published.records, record) == Some("pi"))
-        || vars
-            .text(&PI_SESSION)
-            .is_some_and(|session| !session.is_empty())
-}
-
 pub(crate) fn title(kind: &Kind, pane_title: &str) -> Option<String> {
     let named = |name: &str| {
         if pane_title.is_empty() {
@@ -203,7 +195,7 @@ mod tests {
     }
 
     #[test]
-    fn pi_evidence_is_a_pi_root_or_a_session_variable_and_the_inbox_needs_the_root() {
+    fn the_inbox_needs_the_pi_root() {
         let mut found = telemetry(
             "zsh",
             &[
@@ -211,7 +203,6 @@ mod tests {
                 ("pi.inbox", json!("/tmp/inbox.sock")),
             ],
         );
-        assert!(pi_evidence(&found.telemetry, &found.vars));
         assert_eq!(of_pane(&found.telemetry, &found.vars), Kind::Terminal);
         let root = root_app("pi").pop().unwrap();
         found
@@ -227,16 +218,6 @@ mod tests {
                 inbox: Some("/tmp/inbox.sock".to_owned())
             }
         );
-        let bare = telemetry("zsh", &[]);
-        assert!(!pi_evidence(&bare.telemetry, &bare.vars));
-        let mut rooted = telemetry("zsh", &[]);
-        rooted
-            .telemetry
-            .records
-            .apply(crate::program_status::Report::Set(
-                root_app("pi").pop().unwrap(),
-            ));
-        assert!(pi_evidence(&rooted.telemetry, &rooted.vars));
     }
 
     #[test]
