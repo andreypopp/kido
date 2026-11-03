@@ -524,6 +524,7 @@ fn foreground_on_events() {
         |row| row["foreground"]["name"] == "ko-probe",
     );
     assert!(row["foreground"]["pid"].as_u64().unwrap() > 1);
+    s.text(&pane, "\r");
     s.wait_row(&pane, "zsh back in the foreground at the prompt", |row| {
         row["foreground"]["name"] == "zsh"
     });

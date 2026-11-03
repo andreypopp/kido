@@ -337,8 +337,12 @@ These requirements are fixed:
   differs has its two halves in `ko_sys`, behind `cfg(target_os)`
   (plan decisions 170 to 172). Outside `ko_sys`, only the C++ runtime
   that `ko_vt_sys/build.rs` and `build-bench` link (`c++` on macOS,
-  `stdc++` on Linux) and tests that pin a platform's behaviour
-  branch on the platform. On Linux, a read of a unix socket whose peer closed with unread input
+  `stdc++` on Linux), `ko_client::ffi` (code that only the ffi uses
+  lives in it; an item that needs another module's private fields,
+  as `Model::json`, carries `cfg(target_vendor = "apple")` on itself
+  and on the imports that only it uses, never an
+  `#[allow(dead_code)]`), and tests that pin a platform's
+  behaviour branch on the platform. On Linux, a read of a unix socket whose peer closed with unread input
   fails with `ECONNRESET`; `ko_sys::fd::read` returns it as `Ok(0)`,
   the end of the source.
 - **Dependencies.** The production crates are `libc`, `httparse`,
@@ -1573,8 +1577,15 @@ and `build/` are named volumes over the bind mount, so a Linux build
 never overwrites the host's macOS outputs. In a linked worktree, the
 script also mounts the main repository's git directory read-only,
 because `ko_server/build.rs` runs git. Linux's ko check is
-`make ci-like ARGS="--cpus 3 --memory 6g -- make verify-ko"`; the
-Rust and zig builds need more than the default 1g. The podman
+`make ci-like ARGS="--cpus 2 --memory 6g -- make verify-ko"`; the
+Rust and zig builds need more than the default 1g. The container's
+`/dev/shm` is 1g (`--shm-size`): the e2e test of a 100 MiB kitty
+`t=s` image needs more than podman's default 64 MB. On Linux,
+`Named::create` reserves an object's pages with `posix_fallocate`, so
+a full shm tmpfs is `ENOSPC` at creation, not a SIGBUS at the first
+write. The
+Linux run does not cover the host-sshd tests (the image has no
+sshd); CI's Ubuntu job does. The podman
 machine on Apple silicon runs aarch64 Linux; CI's Ubuntu runner is
 x86_64. For a worktree under `/tmp`, run the script from its
 `/private/tmp` path: podman cannot mount the `/tmp` alias.

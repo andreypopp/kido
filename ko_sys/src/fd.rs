@@ -1,6 +1,6 @@
 use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::retry::{check, check_size, retry};
 
@@ -59,11 +59,19 @@ pub fn wait(
             revents: 0,
         },
     ];
-    let millis = timeout.map_or(-1, |timeout| {
-        libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX)
-    });
-    // SAFETY: waits holds two initialized pollfd entries; a negative descriptor is ignored.
-    let found = retry(|| check(unsafe { libc::poll(waits.as_mut_ptr(), 2, millis) }))?;
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    let found = retry(|| {
+        let millis = deadline.map_or(-1, |deadline| {
+            libc::c_int::try_from(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .as_millis(),
+            )
+            .unwrap_or(libc::c_int::MAX)
+        });
+        // SAFETY: waits holds two initialized pollfd entries; a negative descriptor is ignored.
+        check(unsafe { libc::poll(waits.as_mut_ptr(), 2, millis) })
+    })?;
     Ok(match (found, waits[1].revents != 0) {
         (0, _) => Waited::TimedOut,
         (_, true) => Waited::Cancelled,

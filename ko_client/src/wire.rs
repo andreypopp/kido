@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use ko_server::api::Route;
 use ko_server::http::{self, Response, call};
 use ko_server::ids::{ClientId, PaneId};
-use ko_server::protocol::ACCEPT_SHM_HEADER;
 use ko_server::ws::{accepted, upgrade_request};
 use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token, Wake};
 use ko_sys::fd::{self, Queue, Waited, Want};
@@ -224,7 +223,7 @@ fn fetch(
     succeeded(response).map(|_| ())
 }
 
-fn succeeded(response: Response) -> Result<Response, Rejected> {
+pub(crate) fn succeeded(response: Response) -> Result<Response, Rejected> {
     if response.status == 200 {
         Ok(response)
     } else {
@@ -278,32 +277,6 @@ pub fn download(
         |piece| file.write_all(piece),
     )
     .map_err(String::from)
-}
-
-pub(crate) fn image(
-    socket: &Path,
-    client: Option<ClientId>,
-    route: &Route,
-    accept_shm: bool,
-    cancel: Option<&Wake>,
-) -> Result<Response, Rejected> {
-    let (method, target) = route.to_request();
-    let headers: &[(&str, &str)] = if accept_shm {
-        &[(ACCEPT_SHM_HEADER, "1")]
-    } else {
-        &[]
-    };
-    let response = exchange(
-        socket,
-        (client, None),
-        (method, &target),
-        headers,
-        b"",
-        READ_TIMEOUT,
-        cancel,
-    )
-    .map_err(|error| Rejected::Unanswered(text(error)))?;
-    succeeded(response)
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
