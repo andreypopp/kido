@@ -30,6 +30,7 @@ struct Launch: Sendable {
 }
 
 final class Child: @unchecked Sendable {
+    typealias Finished = (status: Int32, signaled: Bool, out: String, err: String)
     let process = Process()
     let ended = DispatchGroup()
     private(set) var stderr = ""
@@ -63,6 +64,11 @@ final class Child: @unchecked Sendable {
         }
     }
 
+    // Resumes when the process has ended and its stderr is complete.
+    func finished() async {
+        await withCheckedContinuation { done in ended.notify(queue: .main) { done.resume() } }
+    }
+
     func stop() {
         guard lock.withLock({ if stopping { return false }; stopping = true; return true }) else { return }
         if process.isRunning { process.terminate() }
@@ -73,14 +79,14 @@ final class Child: @unchecked Sendable {
 
     static func run(
         _ launch: Launch, deadline: TimeInterval = 10, drain: Drain? = nil, input: (@Sendable (FileHandle) -> Void)? = nil
-    ) async throws(Failure) -> (status: Int32, out: String, err: String) {
+    ) async throws(Failure) -> Finished {
         try await run(launch.path, launch.arguments, env: launch.environment, deadline: deadline, drain: drain, input: input)
     }
 
     static func run(
         _ path: String, _ args: [String], env: [String: String]? = nil, cwd: String? = nil, deadline: TimeInterval = 10, drain: Drain? = nil,
         input: (@Sendable (FileHandle) -> Void)? = nil
-    ) async throws(Failure) -> (status: Int32, out: String, err: String) {
+    ) async throws(Failure) -> Finished {
         guard !Task.isCancelled else { throw Failure(message: "Connection cancelled") }
         let out = Pipe(), stdin = input.map { _ in Pipe() }
         if let stdin { _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) }
@@ -99,7 +105,7 @@ final class Child: @unchecked Sendable {
             child.stop()
             throw Failure.transport("\(path) did not finish within \(Int(deadline)) seconds (or was cancelled)")
         }
-        return (child.process.terminationStatus, text(stdout), child.stderr)
+        return (child.process.terminationStatus, child.process.terminationReason == .uncaughtSignal, text(stdout), child.stderr)
     }
 
     private static func text(_ data: Data) -> String {

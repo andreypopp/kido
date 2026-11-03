@@ -13,7 +13,7 @@ DERIVED := build/xcode.noindex/derived
 CONFIG ?= Debug
 APP = $(DERIVED)/Build/Products/$(CONFIG)/Kido.app
 
-.PHONY: ko-test ko-model ko-fixtures visual visual-fast visual-slow project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release
+.PHONY: ko-test ko-model ko-fixtures visual visual-fast visual-slow project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release rtt
 
 project:
 	ln -sfn "$$(GHOSTTY_OPTIMIZE=$(GHOSTTY_OPTIMIZE) scripts/build-ghosttykit.sh)" build/GhosttyKit.xcframework
@@ -87,6 +87,15 @@ ko-model:
 
 ko-fixtures:
 	$(MAKE) ko-test ONLY=KoFixtureRecorder KO_RECORD_FIXTURES=$(abspath Packages)
+
+RTT_ARGS ?=
+
+# The remote RTT row (docs/design-app.md): the app builds with KIDO_VISUAL for KIDO_APP_CONNECT and the key driver.
+# RTT_ARGS is for scripts/rtt.py: --rtt MS --bw MBIT --proxy rtt_proxy.py, or --ssh-config FILE --host ALIAS.
+rtt: DERIVED = build/xcode.noindex/derived-rtt
+rtt:
+	$(MAKE) all DERIVED=$(DERIVED) XCODE_SETTINGS="KIDO_VISUAL_CONDITION=KIDO_VISUAL"
+	scripts/rtt.py --app $(DERIVED)/Build/Products/$(CONFIG)/Kido.app/Contents/MacOS/Kido --ko $(KO_ABS)/build/ko/bin/ko $(RTT_ARGS)
 
 run: all
 	open -W $(APP)

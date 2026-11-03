@@ -158,6 +158,8 @@ final class SessionView: NSView {
 
     func windowName(_ window: WindowID) -> String? { windows[window]?.name }
 
+    func retryImages() { panes.forEach { $0.retryImages() } }
+
     private var panes: [PaneView] {
         (windows.values.flatMap(\.panes) + others.values.flatMap(\.panes)).sorted { $0.pane.number < $1.pane.number }
     }

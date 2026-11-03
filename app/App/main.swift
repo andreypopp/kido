@@ -5,6 +5,9 @@ import SidebarFeed
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
     private var runtime: GhosttyRuntime?
     private(set) var owners: [WindowOwner] = []
+    #if KIDO_VISUAL || KIDO_STRESS
+    private var rttDriver: RTTDriver?
+    #endif
     private let menus = SessionMenus()
     private var editMenu: NSMenu?
     private var signals: [DispatchSourceSignal] = []
@@ -89,6 +92,13 @@ import SidebarFeed
         configureRuntime(runtime)
         NSApp.mainMenu = mainMenu()
         routes.ready(isDefaultLaunch: isDefaultLaunch == true && ordinaryLaunchEvent) { [weak self] in _ = self?.open($0, cause: $1) }
+        #if KIDO_VISUAL || KIDO_STRESS
+        let environment = ProcessInfo.processInfo.environment
+        if let alias = environment["KIDO_APP_CONNECT"], let host = try? Host(alias) { routes.connect(host) }
+        if let requests = environment["KIDO_APP_RTT_REQUESTS"] {
+            rttDriver = RTTDriver(path: requests) { [weak self] in self?.owners.first { $0.host != .local } }
+        }
+        #endif
         #if KIDO_VISUAL
         if ProcessInfo.processInfo.environment["KIDO_APP_QUIT_VERIFY"] == "1", let owner = owners.first ?? open(.local) {
             let deadline = Date().addingTimeInterval(15)

@@ -56,8 +56,8 @@ final class Recorder {
         return String(cString: try XCTUnwrap(mkdtemp(&template)))
     }
 
-    func server() throws -> String {
-        let dir = try stateDir()
+    func server(at path: String? = nil) throws -> String {
+        let dir = try path ?? stateDir()
         let process = try ko(["server"], dir: dir)
         addTeardownBlock {
             process.waitUntilExit()
@@ -91,8 +91,8 @@ final class Recorder {
 
     // A server whose one session has a window for each entry of `windows`, with that many
     // panes in a row; every pane runs `argv`.
-    func serverWithWindows(_ windows: [Int], argv: [String] = ["/bin/sleep", "60"]) throws -> String {
-        let dir = try server()
+    func serverWithWindows(_ windows: [Int], argv: [String] = ["/bin/sleep", "60"], at path: String? = nil) throws -> String {
+        let dir = try server(at: path)
         let command = try String(decoding: JSONSerialization.data(withJSONObject: argv), as: UTF8.self)
         let pane = #"{"pane":{"new":{"command":{"type":"argv","argv":\#(command)}}}}"#
         let tree = { (count: Int) in
@@ -104,8 +104,8 @@ final class Recorder {
     }
 
     // A server with one pane that runs `script` under sh.
-    func serverWithPane(_ script: String) throws -> String {
-        try serverWithWindows([1], argv: ["/bin/sh", "-c", script])
+    func serverWithPane(_ script: String, at path: String? = nil) throws -> String {
+        try serverWithWindows([1], argv: ["/bin/sh", "-c", script], at: path)
     }
 
     // Connects and waits until the model holds `panes` panes.
@@ -121,4 +121,26 @@ final class Recorder {
     }
 
 
+}
+
+// Runs a program to its end within `deadline` seconds and returns its status and standard output.
+func runTool(_ path: String, _ arguments: [String], env: [String: String], deadline: TimeInterval = 10) throws -> (status: Int32, out: String) {
+    let process = Process(), out = Pipe()
+    process.executableURL = URL(fileURLWithPath: path)
+    process.arguments = arguments
+    process.environment = env
+    process.standardOutput = out
+    let ended = DispatchGroup()
+    ended.enter()
+    process.terminationHandler = { _ in ended.leave() }
+    try process.run()
+    nonisolated(unsafe) var data = Data()
+    let read = DispatchGroup()
+    DispatchQueue.global().async(group: read) { data = out.fileHandleForReading.readDataToEndOfFile() }
+    if ended.wait(timeout: .now() + deadline) == .timedOut {
+        process.terminate()
+        XCTFail("\(path) did not end within \(Int(deadline)) seconds")
+    }
+    _ = read.wait(timeout: .now() + 2)
+    return (process.terminationStatus, String(decoding: data, as: UTF8.self))
 }

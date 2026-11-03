@@ -3,12 +3,14 @@
 use std::ffi::{c_char, c_int};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use ko_server::api::{Route, WindowOnly};
 use ko_server::ids::{ClientId, PaneId};
 use ko_server::protocol::{self, Revision, SendPrompt, Show};
 use ko_sys::event::Wake;
 
+use super::engine::{mismatch_of, probe};
 use super::{Buffer, Client, Code, bytes_of, client, empty, hand_over, locked, text_of};
 use crate::edit::{Edit, Refusal};
 use crate::layout::{self, Document, EditError};
@@ -277,4 +279,29 @@ pub unsafe extern "C" fn ko_client_delete(
     call(client, out, |socket, id, cancel| {
         wire::request(socket, (id, None), &route, b"", Some(cancel)).map_err(rejected)
     })
+}
+
+/// # Safety
+///
+/// `socket` is a NUL-terminated string. `out` is writable for one `ko_buffer`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ko_client_probe(
+    socket: *const c_char,
+    within_ms: u32,
+    out: *mut Buffer,
+) -> Code {
+    let Some(socket) = text_of(socket).filter(|_| !out.is_null()) else {
+        return Code::Argument;
+    };
+    let within = Duration::from_millis(u64::from(within_ms));
+    match probe(Path::new(socket), within, None) {
+        Ok(server) => {
+            hand_over(out, protocol::json(&server).into_bytes());
+            mismatch_of(&server).unwrap_or(Code::Ok)
+        }
+        Err((code, message)) => {
+            hand_over(out, message.into_bytes());
+            code
+        }
+    }
 }

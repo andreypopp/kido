@@ -52,6 +52,9 @@ enum Host: Hashable, Sendable {
         switch self { case .local: "local"; case .remote(let destination): "ssh:\(destination)" }
     }
 
+    // A remote window shares one ssh connection, so it fetches fewer image frames at once.
+    var imageFetches: Int { self == .local ? 8 : 4 }
+
     var label: String {
         switch self { case .local: "Local"; case .remote(let destination): destination }
     }

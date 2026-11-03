@@ -50,6 +50,7 @@ import XCTest
         private var failures: Int
         init(failing: Int = 0) { failures = failing }
         var count: Int { lock.withLock { value } }
+        func heal() { lock.withLock { failures = 0 } }
         func attempt() -> Bool {
             lock.withLock {
                 value += 1
@@ -73,11 +74,11 @@ import XCTest
     }
 
     // A view of the pane on a new surface. Until `armed`, nothing fetches: the state of a mirror without PaneImages.
-    private func mirror(_ pane: (dir: String, connection: KoClient, pane: PaneID, cols: Int, rows: Int), local: Bool, armed: Bool = true, failing: Int = 0) throws -> Mirror {
+    private func mirror(_ pane: (dir: String, connection: KoClient, pane: PaneID, cols: Int, rows: Int), local: Bool, armed: Bool = true, failing: Int = 0, retries: [TimeInterval]? = nil) throws -> Mirror {
         let surface = KoSurface(cols: pane.cols, rows: pane.rows)
         let connection = pane.connection, id = pane.pane
         let fetched = Counter(failing: failing)
-        let images = PaneImages(surface: surface.surface, local: local, fetches: connection.imageFetches) { image, frame, generation, acceptShm in
+        let images = PaneImages(surface: surface.surface, local: local, fetches: connection.imageFetches, retryDelays: retries ?? PaneImages.retryDelays) { image, frame, generation, acceptShm in
             guard fetched.attempt() else { throw KoError(code: KO_ERR_IO) }
             return try connection.image(pane: id, image: image, frame: frame, generation: generation, acceptShm: acceptShm)
         }
@@ -151,5 +152,15 @@ import XCTest
         let pane = try pane()
         let mirror = try mirror(pane, local: true, failing: 1)
         wait("every frame completed after the retry", within: 10) { mirror.fetched.count == 4 && mirror.surface.pendingFrames.isEmpty }
+    }
+
+    func testAFetchThatFailedWithoutRetriesLeftCompletesWhenTheNextWelcomeRetries() throws {
+        let pane = try pane()
+        let mirror = try mirror(pane, local: false, failing: 1000, retries: [])
+        wait("the failed attempts") { mirror.fetched.count >= 3 && mirror.surface.pendingFrames.count == 3 }
+
+        mirror.fetched.heal()
+        mirror.images.retry()
+        wait("the frames completed by the retry") { mirror.surface.pendingFrames.isEmpty }
     }
 }
