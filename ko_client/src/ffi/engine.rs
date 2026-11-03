@@ -64,7 +64,10 @@ fn failure(error: &io::Error) -> Failed {
         Code::NoServer
     } else if matches!(
         error.kind(),
-        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset | io::ErrorKind::UnexpectedEof
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::NotConnected
+            | io::ErrorKind::UnexpectedEof
     ) {
         Code::Closed
     } else {
