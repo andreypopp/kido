@@ -29,7 +29,7 @@ calls a run command. Every other tool reads the layout through
 |---|---|
 | `list_runs()` | `ko runs --json --all --parent P`, `agents/<me>/*`, one `ko api /layout` |
 | `message_agent(to, message, mode?)` | the target's inbox; `ko run-child` to restart an ended child |
-| `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)` | pi's session list, `pi --list-models`, `ko run-child P --name N --cwd D --env ... -- ko shell -- ko-pi ...`, or `ko run` for a top-level agent |
+| `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)` | pi's session list, `pi --list-models`, `ko run-child P --name N --cwd D --env ... -- ko shell -- ko-pi ...`, or `ko layout edit` with `add_window` and `rename_window` for a top-level agent |
 | `stop_run(to, force?)`, `to` one address or a list | the target's inbox, then `ko run-stop` |
 | `async_bash(command, name, stream?)` | `ko run-child P --name N -- bash -o pipefail -c ...` |
 
@@ -75,6 +75,8 @@ ended runs, newest first, also when a run's window moved to another
 session. The list excludes the caller itself. A live child merges into its pane's row: the row
 id is the child's session id, and `run` is its current run id. Children
 that `ko run-child pane_N` started for a top-level pi are listed too.
+A top-level agent has no run, whether the user started it or
+`spawn_agent` did, so its row comes from its pane alone.
 
 Rows carry `kind` (`agent`, `subagent`, `bash`) and `relationship`
 (`own`, `parent`, `peer` for the same parent, or `relative`: a
@@ -288,14 +290,20 @@ no report was owed`.
 
 ## A top-level agent
 
-`toplevel: true` starts the agent with no parent edge:
+`toplevel: true` starts the agent with no parent edge and no run. It
+is then the same as a pi that the user starts in a shell: a pane with
+`pi.*` variables. The extension adds a window after the last window
+of the caller's session (the session that holds `$KO_PANE`) with `ko
+layout edit`, which applies the edit again when the layout changed
+meanwhile. The window's one new pane runs `ko shell -- ko-pi ...` in
+the cwd. A second edit gives the window the agent's name.
 
-    ko run --name N --cwd C --session <caller's session> -- ko shell -- ko-pi ...
-
-The window is in the caller's session. There is no agent
-directory, no `KO_AGENT_DIR`, no `run-wait` and no notice to the
-caller, and the run meta has no parent, so the orphan rule never
-applies. The task goes over the new agent's inbox, as a message from
+There is no agent directory, no `KO_AGENT_DIR`, no run, no
+`run-wait`, no notice to the caller and no orphan rule. When pi exits,
+the pane dies as any command pane does, with no shell after it. The
+sweep does not collect it: it stays until the user closes it, and
+`ko runs` never lists it. The result names the window and the pane,
+not a run. The task goes over the new agent's inbox, as a message from
 the caller. The spawn waits up to `KO_INBOX_WAIT_MS` (30000 ms) for the pane to
 publish `pi.session` and its inbox, also for an empty task, and holds the
 name claim and the session lock during the wait. Thus, a second spawn

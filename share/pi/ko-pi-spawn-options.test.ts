@@ -131,23 +131,33 @@ test("toplevel holds its name until publication, sends @ tasks by inbox, and sta
   try {
     fx.setPanes([selfPane()]);
     const s = await startNamedSession(fx, "Self");
+    const edits = () => fx.layoutEdits() as Array<Record<string, any>>;
     const spawned = s.tools.get("spawn_agent").execute("c", { name: "peer", task: "@work", toplevel: true, fork: true, cwd: fx.stateDir });
     let returned = false;
     void spawned.then(() => { returned = true; });
-    await pollUntil(() => fx.runCalls().length === 1, 3000, "the independent run");
+    await pollUntil(() => edits().length === 2, 3000, "the independent window");
     assert.equal(returned, false, "wait for the pane to publish its identity and inbox");
     assert.match((await s.tools.get("spawn_agent").execute("c", { name: "PEER", task: "x", toplevel: true })).content[0].text, /taken by a live agent in this session/);
-    const argv = fx.runCalls()[0]!;
+    const [add, rename] = edits();
+    assert.equal(add!.type, "add_window");
+    assert.equal(add!.session, "session_1");
+    assert.equal(add!.after, "window_1");
+    assert.deepEqual(rename, { type: "rename_window", window: "window_9", name: "peer" });
+    const spec = add!.new;
+    const argv: string[] = spec.command.argv;
     const session = argAfter(argv, "--session-id")!;
     const inbox = await fx.startInbox();
     fx.setPanes([selfPane(), agentPane({ pane: "pane_9", session, name: "peer", inbox: inbox.path })]);
     const result = await spawned;
     assert.match(result.content[0].text, /independent peer; no report or ending notice/);
-    assert.equal(argv[0], "run");
-    assert.deepEqual(argv.slice(argv.indexOf("--") + 2, argv.indexOf("--") + 5), ["shell", "--", "ko-pi"]);
-    assert.equal(argAfter(argv, "--session"), "session_1");
-    assert.equal(argAfter(argv, "--cwd"), fx.stateDir);
-    assert.equal(argAfter(argv, "--env"), undefined);
+    assert.equal(result.details?.window, "window_9");
+    assert.equal(result.details?.pane, "pane_9");
+    assert.equal(result.details?.run, undefined);
+    assert.doesNotMatch(result.content[0].text, /run/);
+    assert.deepEqual(argv.slice(1, 4), ["shell", "--", "ko-pi"]);
+    assert.equal(spec.cwd, fx.stateDir);
+    assert.deepEqual(spec.env, []);
+    assert.deepEqual(fx.runCalls(), []);
     assert.equal(argAfter(argv, "--fork"), `/tmp/${SELF}.json`);
     assert.equal(argv.includes("@work"), false);
     assert.equal(JSON.parse(inbox.received()[0]!).text, "@work");
@@ -161,7 +171,7 @@ test("toplevel holds its name until publication, sends @ tasks by inbox, and sta
     for (const mode of ["steer", "interrupt-and-steer"]) assert.match((await s.tools.get("message_agent").execute("c", { to: session, message: "change", mode })).content[0].text, /descendant/);
     assert.match((await s.tools.get("message_agent").execute("c", { to: "peer", message: "hello" })).content[0].text, /delivered to peer by inbox/);
     assert.match((await s.tools.get("spawn_agent").execute("c", { name: "PEER", task: "x", toplevel: true })).content[0].text, /already taken/);
-    assert.equal(fx.runCalls().length, 1);
+    assert.equal(edits().length, 2);
     await asSubagent(fx, "worker-session", async () => {
       fx.setPanes([agentPane({ pane: "pane_1", session: "worker-session", name: "worker" }), agentPane({ pane: "pane_2", session: "boss", name: "boss" }), agentPane({ pane: "pane_9", session, name: "peer", inbox: inbox.path })]);
       const child = await startNamedSession(fx, "worker", "worker-session");
@@ -177,15 +187,31 @@ test("toplevel holds its name until publication, sends @ tasks by inbox, and sta
       const pending = s.tools.get("spawn_agent").execute("c", { task: "", name: "saved", resume_from: saved, toplevel: true });
       let done = false;
       void pending.then(() => { done = true; });
-      await pollUntil(() => fx.runCalls().length === 2, 3000, "the continued independent run");
+      await pollUntil(() => edits().length === 4, 3000, "the continued independent window");
       assert.equal(done, false, "an empty task also waits for publication");
       fx.setPanes([selfPane(), agentPane({ pane: "pane_8", session: saved, name: "saved", inbox: inbox.path })]);
       const resumed = await pending;
       assert.equal(resumed.details?.session, saved);
-      assert.equal(fx.runCalls().at(-1)![0], "run");
+      assert.deepEqual(fx.runCalls(), []);
       assert.equal(existsSync(join(fx.agentDir("old-boss", "saved"), "agent.json")), false);
       assert.equal(existsSync(fx.agentDir(SELF, "saved")), false);
     });
+  } finally { await fx.restore(); }
+});
+
+test("a toplevel agent without a run is listed to every caller as a top-level agent", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane(), agentPane({ pane: "pane_9", session: "runless", name: "peer" })]);
+    fx.setRuns([]);
+    const s = await startNamedSession(fx, "Self");
+    const rows = JSON.parse((await s.tools.get("list_runs").execute("c", {})).content[0].text);
+    const row = rows.find((r: { id: string }) => r.id === "runless");
+    assert.equal(row.name, "peer");
+    assert.equal(row.kind, "agent");
+    assert.equal(row.relationship, "peer");
+    assert.equal(row.run, "");
+    assert.equal(row.state, "running");
   } finally { await fx.restore(); }
 });
 

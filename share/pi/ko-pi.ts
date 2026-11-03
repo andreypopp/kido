@@ -272,13 +272,19 @@ function parsePanes(layout: Api["LayoutPanes"]): PaneInfo[] {
   });
 }
 
-async function listPanesResult(timeoutMs = KO_TIMEOUT_MS): Promise<{ ok: boolean; panes: PaneInfo[] }> {
+async function listPanesResult(timeoutMs = KO_TIMEOUT_MS): Promise<{ ok: boolean; panes: PaneInfo[]; lastWindows: Map<string, string> }> {
   const res = await runCommand("ko", ["api", "/layout"], { timeoutMs });
-  if (!res.ok) return { ok: false, panes: [] };
+  if (!res.ok) return { ok: false, panes: [], lastWindows: new Map() };
   try {
-    return { ok: true, panes: parsePanes(JSON.parse(res.out)) };
+    const layout: Api["LayoutPanes"] = JSON.parse(res.out);
+    const lastWindows = new Map<string, string>();
+    for (const session of layout.layout.sessions) {
+      const last = session.windows.at(-1);
+      if (last) lastWindows.set(session.id, last.id);
+    }
+    return { ok: true, panes: parsePanes(layout), lastWindows };
   } catch {
-    return { ok: false, panes: [] };
+    return { ok: false, panes: [], lastWindows: new Map() };
   }
 }
 
@@ -961,10 +967,10 @@ export default function (pi: ExtensionAPI) {
 
   const myRuns = async (): Promise<RunRow[]> => (await myRunsOnce()) ?? [];
 
-  type Snapshot = { rows: AgentRow[]; all: AgentRow[]; panes: PaneInfo[]; mySession: string; entries: AgentEntry[]; runs: RunRow[] };
+  type Snapshot = { rows: AgentRow[]; all: AgentRow[]; panes: PaneInfo[]; mySession: string; lastWindow: string | undefined; entries: AgentEntry[]; runs: RunRow[] };
 
   const discovery = async (): Promise<Snapshot> => {
-    const [panes, runs] = await Promise.all([listPanes(), myRuns()]);
+    const [{ panes, lastWindows }, runs] = await Promise.all([listPanesResult(), myRuns()]);
     const entries = dir ? agentEntries(dir) : [];
     const ownEntries = own(entries);
     const bySession = bySessionOf(entries);
@@ -1051,7 +1057,7 @@ export default function (pi: ExtensionAPI) {
     }
     const rows = all.filter((a) => !a.self && a.relationship !== "other" &&
       (a.relationship === "own" || a.koSession === mySession));
-    return { rows, all, panes, mySession, entries, runs };
+    return { rows, all, panes, mySession, lastWindow: lastWindows.get(mySession), entries, runs };
   };
 
   const toolRow = (a: AgentRow) => {
@@ -1115,20 +1121,25 @@ export default function (pi: ExtensionAPI) {
 
   type Created = Api["Started"];
   type Started = { created: Created } | { error: string };
+  type Spawned = { created: { window: string; pane: string; id?: string } } | { error: string };
 
-  const startChild = async (parent: string | null, name: string, agentDir: string | null, command: string[], cwd?: string, sessionId?: string): Promise<Started> => {
-    const executable = ko;
-    if (!executable) return { error: "ko is not on PATH" };
+  const spawnBase = async (): Promise<{ executable: string; trustedRoot: string | undefined; timeoutMs: number } | { error: string }> => {
+    if (!ko) return { error: "ko is not on PATH" };
     const trustedRoot = session?.isProjectTrusted() ? await gitCommonDir(session.cwd) : undefined;
+    return { executable: ko, trustedRoot, timeoutMs: envMs("KO_SPAWN_TIMEOUT_MS", 5000) };
+  };
+
+  const startChild = async (parent: string, name: string, agentDir: string | null, command: string[], cwd?: string): Promise<Started> => {
+    const base = await spawnBase();
+    if ("error" in base) return base;
     const args = [
-      ...(parent ? ["run-child", parent] : ["run"]), "--name", name,
+      "run-child", parent, "--name", name,
       ...(cwd ? ["--cwd", cwd] : []),
-      ...(sessionId ? ["--session", sessionId] : []),
-      ...(trustedRoot ? ["--env", `KO_AGENT_TRUSTED_ROOT=${trustedRoot}`] : []),
+      ...(base.trustedRoot ? ["--env", `KO_AGENT_TRUSTED_ROOT=${base.trustedRoot}`] : []),
       ...(agentDir === null ? [] : ["--env", `KO_AGENT_PARENT_SESSION=${ownSessionId}`, "--env", `KO_AGENT_DIR=${agentDir}`]),
       "--", ...command,
     ];
-    const res = await runCommand(executable, args, { timeoutMs: envMs("KO_SPAWN_TIMEOUT_MS", 5000) });
+    const res = await runCommand(base.executable, args, { timeoutMs: base.timeoutMs });
     if (!res.ok) return { error: res.error };
     let created: Created | null = null;
     try {
@@ -1138,6 +1149,35 @@ export default function (pi: ExtensionAPI) {
       }
     } catch {}
     return created ? { created } : { error: "ko printed no run" };
+  };
+
+  type NewPane = { cwd: string; command: { type: "argv"; argv: string[] }; env: Array<{ name: string; value: string }> };
+  type LayoutEdit = { type: "add_window"; session: string; after: string; new: NewPane } | { type: "rename_window"; window: string; name: string };
+  type Edited = { snapshot: Api["Snapshot"]; created?: { type: "window"; window: string } | { type: "session" | "pane" } };
+
+  const editLayout = async (base: { executable: string; timeoutMs: number }, edit: LayoutEdit): Promise<{ edited: Edited } | { error: string }> => {
+    const res = await runCommand(base.executable, ["layout", "edit", JSON.stringify(edit)], { timeoutMs: base.timeoutMs });
+    if (!res.ok) return { error: res.error };
+    try {
+      return { edited: JSON.parse(res.out) };
+    } catch {
+      return { error: "ko printed no layout edit" };
+    }
+  };
+
+  const openWindow = async (name: string, command: string[], cwd: string, place: { session: string; after: string }): Promise<Spawned> => {
+    const base = await spawnBase();
+    if ("error" in base) return base;
+    const env = base.trustedRoot ? [{ name: "KO_AGENT_TRUSTED_ROOT", value: base.trustedRoot }] : [];
+    const added = await editLayout(base, { type: "add_window", ...place, new: { cwd, command: { type: "argv", argv: command }, env } });
+    if ("error" in added) return added;
+    const made = added.edited.created;
+    if (made?.type !== "window") return { error: "ko made no window" };
+    const window = added.edited.snapshot.layout.sessions.flatMap((s) => s.windows).find((w) => w.id === made.window);
+    if (!window || !("pane" in window.tree)) return { error: "the new window is not one pane" };
+    const renamed = await editLayout(base, { type: "rename_window", window: made.window, name });
+    if ("error" in renamed) return { error: `window ${made.window} was created but not named: ${renamed.error}` };
+    return { created: { window: made.window, pane: window.tree.pane } };
   };
 
   const writeAgentJson = (agentDir: string, record: AgentRecord): void => {
@@ -2109,21 +2149,21 @@ export default function (pi: ExtensionAPI) {
           if (target === "toplevel" ? snapshot?.all.some((agent) => agent.koSession === snapshot.mySession && agent.state === "running" && agent.name.toLowerCase() === name.toLowerCase() && snapshot.panes.some((pane) => pane.pane === agent.pane && !pane.dead)) : !existing && await nameTaken(name, entries, snapshot?.runs)) return taken();
           const depth = depthOfSession(parentSession, bySessionOf(entries)) + 1;
           if (target === "child" && depth > MAX_DEPTH) return refuse(`refusing to spawn at depth ${depth}: maximum nesting is ${MAX_DEPTH} (root 0, subagent 1, subagent 2)`);
-          if (target === "toplevel" && !snapshot?.mySession) return refuse("caller's session is unknown");
           const childDir = existing?.dir ?? join(dir ?? "", "agents", parentSession, name);
           const entry: AgentEntry = { session: childSession, run: existing?.run ?? "", model, fork: session.kind === "copy", name, parent: parentSession, dir: childDir };
           const policy = { sessionFile: session.kind === "continue" ? session.source.path : null, fork: session.kind === "copy" ? session.file : null };
-          let started: Started;
-          if (existing && snapshot && session.kind === "continue") {
+          let started: Spawned;
+          if (target === "toplevel") {
+            if (!snapshot?.mySession || !snapshot.lastWindow) return refuse("caller's session is unknown");
+            started = await openWindow(name, piArgs(entry, policy), cwd, { session: snapshot.mySession, after: snapshot.lastWindow });
+          } else if (existing && snapshot && session.kind === "continue") {
             const prepared = await prepareRestart(normalizeAddress(childSession), task, snapshot, { model, sessionFile: session.source.path, cwd });
             if ("error" in prepared) return refuse(prepared.error);
             if (!prepared.created) return refuse(`session ${childSession} already has a live run`);
             started = { created: prepared.created.run };
-          } else if (target === "child") {
+          } else {
             mkdirSync(childDir, { recursive: true, mode: 0o700 });
             started = await restartAgent(entry, task, policy, cwd);
-          } else {
-            started = await startChild(null, name, null, piArgs(entry, policy), cwd, snapshot?.mySession);
           }
           if ("error" in started) {
             if (!existing && target === "child") rmSync(childDir, { recursive: true, force: true });
@@ -2152,7 +2192,7 @@ export default function (pi: ExtensionAPI) {
             }
           }
           return reply(
-            `spawned ${name} (session ${childSession}, window ${created.window}, pane ${created.pane}, run ${created.id})${session.kind === "copy" ? `, forked from session ${source?.id ?? parentSession}` : ""}; session id is what resume_from takes later; ${target === "toplevel" ? "independent peer; no report or ending notice" : owesWork(task) ? liveRunRule(SPAWN_RESULT_RULE) : SPAWN_RESULT_RULE}${deliveryError}`,
+            `spawned ${name} (session ${childSession}, window ${created.window}, pane ${created.pane}${created.id ? `, run ${created.id}` : ""})${session.kind === "copy" ? `, forked from session ${source?.id ?? parentSession}` : ""}; session id is what resume_from takes later; ${target === "toplevel" ? "independent peer; no report or ending notice" : owesWork(task) ? liveRunRule(SPAWN_RESULT_RULE) : SPAWN_RESULT_RULE}${deliveryError}`,
             { session: childSession, name, window: created.window, pane: created.pane, run: created.id, fork: session.kind === "copy" },
           );
         } finally { releaseName(name); }

@@ -1153,7 +1153,8 @@ function, `adjacentWindow` in `SidebarFeed/Windows.swift`, computes the
 step. It reads the displayed order, so a pending reorder counts. From a
 top-level window, a step goes to the adjacent top-level window. It never
 goes into child windows, and it wraps across sessions in both directions.
-A run window that has no parent is a top-level window. From a child
+A window that the snapshot does not nest under a pane is a top-level
+window: a shell's, a top-level pi's or a parentless run's. From a child
 window, a step goes to its adjacent sibling. Previous from the first
 sibling selects the parent. Next from the last sibling selects the
 top-level window after its top-level ancestor. When the target is the

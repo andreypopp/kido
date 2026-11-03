@@ -123,12 +123,13 @@ session name.
 
 The extension uses only these interfaces of ko:
 
-- The run commands `run`, `run-child`, `runs --json --all [--parent P]`,
+- The run commands `run-child`, `runs --json --all [--parent P]`,
   `run-wait ID --json`, `run-stop` and `run-outcome`.
 - `ko api`: `GET /layout` for the panes with their sessions and
   windows, `PUT` on `/panes/$KO_PANE/vars/<name>` for its variables,
   and one conditional `DELETE` on `/panes/$KO_PANE/vars` at the end.
   It never opens ko's socket itself.
+- `ko layout edit` for a top-level agent's window.
 
 It never finds or parses ko's state directory. The only ko file it
 reads is a run's output, at the path that `run-child` and `runs
@@ -437,13 +438,13 @@ last list without waiting for discovery. If the list is older than
 ## Spawning
 
 `spawn_agent` starts a child through `ko run-child`, or a top-level
-agent through `ko run` (design-subagents.md, "What a child is given"
-and "A top-level agent"). Both create a window at the end of the
-caller's session, which no client switches to, and both wrap pi in
-`ko shell --` ("The login environment", below). The run request
-carries the cwd (the `cwd` argument, a resumed session's own
-directory, or the caller's) and each `--env` variable, because a new
-pane gets the server's environment, not the caller's.
+agent through `ko layout edit` (design-subagents.md,
+"What a child is given" and "A top-level agent"). Both create a window
+at the end of the caller's session, which no client switches to, and
+both wrap pi in `ko shell --` ("The login environment", below). The
+request carries the cwd (the `cwd` argument, a resumed session's own
+directory, or the caller's) and each environment variable, because a
+new pane gets the server's environment, not the caller's.
 
 The task is never a command-line argument. A model writes text of any
 form. The task is a file in the agent directory, and the child reads
@@ -482,7 +483,7 @@ shell integration is not installed, and no prompt runs before the
 exec, so the pane gets no OSC 133 marks from ko, and pi's OSC 7501
 root classifies it. Because the shell execs, pi keeps the pane's
 process: the pane's death is pi's, and "Run outcomes" applies
-unchanged. If the exec fails, the shell exits 127 (126 for
+unchanged to a child. If the exec fails, the shell exits 127 (126 for
 permission). Another shell, such as fish, has no `"$@"` semantics: ko
 execs CMD directly, and the user's dotfiles do not run.
 

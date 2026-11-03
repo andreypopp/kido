@@ -123,7 +123,8 @@ the reloaded module.
   user's login-shell environment and the caller's model
   unless `model` names one. `resume_from` continues a saved pi session
   by id or unique prefix; with `fork`, it starts a copy. `toplevel`
-  starts a peer through `ko run`, with no parent, report or notice.
+  starts a peer in a new window of the caller's session, with no run,
+  parent, report or notice.
   The result holds the new pi session id, which `resume_from` takes. A
   child's ending arrives as a notice.
 - `async_bash(command, name, stream?)`: a command through

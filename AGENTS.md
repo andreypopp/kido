@@ -716,9 +716,10 @@ Every C file of `bench/` starts with `#define _DARWIN_C_SOURCE` and
 `-std=c11`, which hides `clock_gettime` on Linux.
 
 **The harness is one pi extension.** `share/pi/ko-pi.ts` holds every
-agent tool. It calls only ko's run commands (`run`, `run-child`, `runs
---json`, `run-wait --json`, `run-stop`, `run-outcome`) and `ko api`:
-`GET /layout`, and `PUT` and `DELETE` on `/panes/$KO_PANE/vars/<name>`. It
+agent tool. It calls only ko's run commands (`run-child`, `runs
+--json`, `run-wait --json`, `run-stop`, `run-outcome`), `ko layout
+edit` (a top-level agent's window) and `ko api`: `GET /layout`, and
+`PUT` and `DELETE` on `/panes/$KO_PANE/vars/<name>`. It
 never opens ko's socket. These commands, their flags, exit codes and
 JSON are the contract between the two (docs/design.md, "The pi
 extension, ko-pi"). The extension never finds or parses ko's state

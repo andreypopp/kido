@@ -115,6 +115,7 @@ export interface Fixture {
   panes(): PaneRow[];
   setRuns(rows: unknown[]): void;
   apiCalls(): ApiCall[];
+  layoutEdits(): Array<Record<string, unknown>>;
   layoutReads(): number;
   optionWrites(): Array<{ key: string; value: string | undefined }>;
   agentDir(parent: string, name: string): string;
@@ -180,6 +181,7 @@ export function makeFixture(): Fixture {
   const inboxes: Array<{ close(): Promise<void> }> = [];
   const stateDir = join(dir, "state");
   const apiLogFile = join(dir, "api.jsonl");
+  const layoutEditLogFile = join(dir, "layout-edits.jsonl");
   const panesFile = join(dir, "panes.json");
   const koLogFile = join(dir, "ko.jsonl");
   const runsFile = join(dir, "runs.json");
@@ -213,6 +215,7 @@ export function makeFixture(): Fixture {
   delete process.env.XDG_STATE_HOME;
   process.env.KO_FAKE_KO = cachedFakeKo;
   process.env.KO_FAKE_API_LOG = apiLogFile;
+  process.env.KO_FAKE_LAYOUT_EDIT_LOG = layoutEditLogFile;
   process.env.KO_FAKE_PANES = panesFile;
   process.env.KO_FAKE_STATE_DIR = stateDir;
   process.env.KO_FAKE_LOG = koLogFile;
@@ -269,6 +272,9 @@ export function makeFixture(): Fixture {
     },
     apiCalls() {
       return jsonLines(apiLogFile);
+    },
+    layoutEdits() {
+      return jsonLines(layoutEditLogFile);
     },
     layoutReads() {
       return (jsonLines(apiLogFile) as ApiCall[]).filter((call) => call.method === "GET" && call.path === "/layout").length;

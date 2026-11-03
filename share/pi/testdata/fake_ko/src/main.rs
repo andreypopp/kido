@@ -425,6 +425,39 @@ fn layout(table: &[Value]) -> Value {
     })
 }
 
+fn layout_edit(argv: &[String]) -> ExitCode {
+    let raw = argv.get(2).cloned().unwrap_or_default();
+    append("KO_FAKE_LAYOUT_EDIT_LOG", &raw);
+    let edit: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+    let text = |value: &Value| value.as_str().is_some_and(|text| !text.is_empty());
+    let pane = &edit["new"];
+    let valid = match edit["type"].as_str() {
+        Some("add_window") => {
+            text(&edit["session"])
+                && text(&edit["after"])
+                && text(&pane["cwd"])
+                && pane["command"]["type"] == "argv"
+                && pane["command"]["argv"].is_array()
+                && pane["env"].is_array()
+        }
+        Some("rename_window") => text(&edit["window"]) && text(&edit["name"]),
+        _ => false,
+    };
+    if !valid {
+        eprintln!("ko layout edit: invalid edit");
+        return ExitCode::FAILURE;
+    }
+    let window = json!({"id": "window_9", "name": "window_9", "vars": {}, "cols": 80, "rows": 24, "tree": {"pane": "pane_9", "cols": 80, "rows": 24}, "floats": []});
+    let mut edited = json!({
+        "snapshot": {"layout": {"sessions": [{"id": edit["session"], "name": "s", "vars": {}, "windows": [window]}]}, "revision": 2},
+    });
+    if edit["type"] == "add_window" {
+        edited["created"] = json!({"type": "window", "window": "window_9"});
+    }
+    println!("{edited}");
+    ExitCode::SUCCESS
+}
+
 fn delete_vars(table: &[Value], pane: &str, body: &str) -> ExitCode {
     let request: Value = serde_json::from_str(body).unwrap_or(Value::Null);
     let row = table.iter().find(|row| text(row, "pane_id") == pane);
@@ -517,6 +550,7 @@ fn main() -> ExitCode {
         Some("run-stop") => run_stop(&argv),
         Some("run-outcome") => run_outcome(&argv),
         Some("api") => api(&argv),
+        Some("layout") if argv.get(1).map(String::as_str) == Some("edit") => layout_edit(&argv),
         _ => ExitCode::FAILURE,
     }
 }
