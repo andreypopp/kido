@@ -259,9 +259,6 @@ impl State {
     }
 
     fn complete(&mut self, poll: &mut Poll, settled: Settled) {
-        if let Some(index) = self.index(settled.conn) {
-            poll.stop(self.conns[index].timer);
-        }
         match settled.done {
             Done::Outcome(outcome) => {
                 router::answer::<routes::WaitRun>(self, poll, settled.conn, Ok(Waited { outcome }));

@@ -95,8 +95,7 @@ function gitWrite(args: string[], home: string): boolean {
   return ["commit", "push", "add", "rm", "mv", "reset", "checkout", "switch", "restore", "rebase", "merge", "cherry-pick", "revert", "tag", "clean", "am", "apply", "update-index"].includes(subcommand ?? "");
 }
 
-export function blocksGitWrite(command: string, parentSession: string | undefined, home = homedir()): boolean {
-  if (!parentSession) return false;
+function runs(command: string, home: string, hit: (executable: string, args: string[]) => boolean): boolean {
   const words = tokens(command, home);
   for (let start = 0; start < words.length;) {
     const end = words.indexOf(";", start);
@@ -109,18 +108,26 @@ export function blocksGitWrite(command: string, parentSession: string | undefine
       else break;
     }
     const executable = basename(args[i] ?? "");
-    if (executable === "git" && gitWrite(args.slice(i + 1), home)) return true;
+    if (hit(executable, args.slice(i + 1))) return true;
     if (["bash", "sh", "zsh", "eval"].includes(executable)) {
       const script = executable === "eval" ? args.slice(i + 1).join(" ") : args[args.indexOf("-c", i + 1) + 1];
-      if (script && script !== args[0] && blocksGitWrite(script, parentSession, home)) return true;
+      if (script && script !== args[0] && runs(script, home, hit)) return true;
     }
     for (const arg of args) {
-      if ((arg.includes("$(") || arg.includes("`")) && blocksGitWrite(arg.replace(/\$\(/g, ";"), parentSession, home)) return true;
+      if ((arg.includes("$(") || arg.includes("`")) && runs(arg.replace(/\$\(/g, ";"), home, hit)) return true;
     }
     if (end < 0) break;
     start = end + 1;
   }
   return false;
+}
+
+export function blocksGitWrite(command: string, parentSession: string | undefined, home = homedir()): boolean {
+  return !!parentSession && runs(command, home, (executable, args) => executable === "git" && gitWrite(args, home));
+}
+
+export function blocksSleep(command: string, home = homedir()): boolean {
+  return runs(command, home, (executable) => executable === "sleep");
 }
 
 export const parentSession = (env: NodeJS.ProcessEnv): string | undefined =>

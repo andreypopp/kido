@@ -52,6 +52,16 @@ pub enum Kind {
     Notify = 26,
     Progress = 27,
     ClearHistory = 28,
+    Image = 29,
+    ImageReply = 30,
+    ImageGone = 31,
+    ClipboardWrite = 32,
+    ClipboardRead = 33,
+    ClipboardAnswer = 34,
+    Search = 35,
+    SearchCancel = 36,
+    Matches = 37,
+    SearchDone = 38,
 }
 
 impl Kind {
@@ -85,6 +95,16 @@ impl Kind {
             26 => Kind::Notify,
             27 => Kind::Progress,
             28 => Kind::ClearHistory,
+            29 => Kind::Image,
+            30 => Kind::ImageReply,
+            31 => Kind::ImageGone,
+            32 => Kind::ClipboardWrite,
+            33 => Kind::ClipboardRead,
+            34 => Kind::ClipboardAnswer,
+            35 => Kind::Search,
+            36 => Kind::SearchCancel,
+            37 => Kind::Matches,
+            38 => Kind::SearchDone,
             _ => return None,
         })
     }
@@ -231,6 +251,243 @@ pub enum ProgressState {
 pub struct ProgressReport {
     pub state: ProgressState,
     pub progress: Option<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelFormat {
+    Rgb,
+    Rgba,
+    GrayAlpha,
+    Gray,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ImageKey {
+    pub image: u32,
+    pub frame: u32,
+    pub generation: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageObject<'a> {
+    pub name: &'a [u8],
+    pub len: u64,
+    pub width: u32,
+    pub height: u32,
+    pub format: PixelFormat,
+    pub generation: u64,
+    pub gap_ms: u32,
+    pub frames: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardLocation {
+    Standard,
+    Selection,
+    Primary,
+}
+
+impl ClipboardLocation {
+    pub fn selector(self) -> char {
+        match self {
+            ClipboardLocation::Standard => 'c',
+            ClipboardLocation::Selection => 's',
+            ClipboardLocation::Primary => 'p',
+        }
+    }
+
+    pub fn of_selector(selector: &[u8]) -> Option<ClipboardLocation> {
+        match selector {
+            b"c" => Some(ClipboardLocation::Standard),
+            b"s" => Some(ClipboardLocation::Selection),
+            b"p" => Some(ClipboardLocation::Primary),
+            _ => None,
+        }
+    }
+
+    pub fn osc52(self, data: &[u8]) -> String {
+        format!(
+            "\x1b]52;{};{}\x1b\\",
+            self.selector(),
+            crate::base64::encode(data)
+        )
+    }
+
+    pub fn osc52_query(self) -> String {
+        format!("\x1b]52;{};?\x1b\\", self.selector())
+    }
+}
+
+pub const MAX_CLIPBOARD: usize = 512 << 10;
+
+fn strings_of(bytes: &[u8]) -> Result<usize, Malformed> {
+    let mut fields = Fields(bytes);
+    let count = fields.u32()?;
+    for _ in 0..count {
+        fields.bytes()?;
+    }
+    fields.end()?;
+    usize::try_from(count).map_err(|_| Malformed::Field)
+}
+
+fn strings(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut fields = Fields(bytes.get(4..).unwrap_or_default());
+    std::iter::from_fn(move || fields.bytes().ok())
+}
+
+pub fn first_text<'a>(mut pairs: impl Iterator<Item = (&'a [u8], &'a [u8])>) -> Option<&'a [u8]> {
+    pairs
+        .find(|(mime, _)| mime.starts_with(b"text/"))
+        .map(|(_, data)| data)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mimes<'a>(&'a [u8]);
+
+impl Mimes<'static> {
+    pub const TEXT: Mimes<'static> = Mimes(b"\x01\0\0\0\x0a\0\0\0text/plain");
+}
+
+impl<'a> Mimes<'a> {
+    pub fn of(bytes: &'a [u8]) -> Result<Mimes<'a>, Malformed> {
+        strings_of(bytes).map(|_| Mimes(bytes))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &'a [u8]> {
+        strings(self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Contents<'a>(&'a [u8]);
+
+impl<'a> Contents<'a> {
+    pub fn of(bytes: &'a [u8]) -> Result<Contents<'a>, Malformed> {
+        if strings_of(bytes)?.is_multiple_of(2) {
+            Ok(Contents(bytes))
+        } else {
+            Err(Malformed::Field)
+        }
+    }
+
+    pub fn pairs(&self) -> impl Iterator<Item = (&'a [u8], &'a [u8])> {
+        let mut items = strings(self.0);
+        std::iter::from_fn(move || Some((items.next()?, items.next()?)))
+    }
+
+    pub fn text(&self) -> Option<&'a [u8]> {
+        first_text(self.pairs())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentsBuf(Vec<u8>);
+
+impl ContentsBuf {
+    pub fn new<'a>(
+        pairs: impl Iterator<Item = (&'a [u8], &'a [u8])> + Clone,
+    ) -> Result<ContentsBuf, Oversize> {
+        let (count, bytes) =
+            pairs
+                .clone()
+                .fold((0usize, 0usize), |(count, bytes), (mime, data)| {
+                    (
+                        count.saturating_add(1),
+                        bytes.saturating_add(mime.len()).saturating_add(data.len()),
+                    )
+                });
+        if bytes > MAX_CLIPBOARD {
+            return Err(Oversize);
+        }
+        let mut out = Vec::with_capacity(
+            bytes
+                .saturating_add(count.saturating_mul(8))
+                .saturating_add(4),
+        );
+        let mut body = Body { out: &mut out };
+        body.u32(u32::try_from(count.saturating_mul(2)).map_err(|_| Oversize)?);
+        for (mime, data) in pairs {
+            body.string(mime)?;
+            body.string(data)?;
+        }
+        Ok(ContentsBuf(out))
+    }
+
+    pub fn view(&self) -> Contents<'_> {
+        Contents(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cell {
+    pub row: u32,
+    pub col: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Match {
+    pub start: Cell,
+    pub end: Cell,
+}
+
+const MATCH_SIZE: usize = 12;
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct MatchesBuf(Vec<u8>);
+
+impl MatchesBuf {
+    pub fn new(matches: &[Match]) -> MatchesBuf {
+        let mut buf = MatchesBuf::default();
+        buf.set(matches);
+        buf
+    }
+
+    pub fn set(&mut self, matches: &[Match]) {
+        self.0.clear();
+        let mut body = Body { out: &mut self.0 };
+        for found in matches {
+            body.u32(found.start.row);
+            body.u16(found.start.col);
+            body.u32(found.end.row);
+            body.u16(found.end.col);
+        }
+    }
+
+    pub fn view(&self) -> Matches<'_> {
+        Matches(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Matches<'a>(&'a [u8]);
+
+impl<'a> Matches<'a> {
+    pub fn of(bytes: &'a [u8]) -> Option<Matches<'a>> {
+        bytes
+            .len()
+            .is_multiple_of(MATCH_SIZE)
+            .then_some(Matches(bytes))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Match> + use<'a> {
+        self.0
+            .as_chunks::<MATCH_SIZE>()
+            .0
+            .iter()
+            .filter_map(|record| {
+                let record = record.as_slice();
+                Some(Match {
+                    start: Cell {
+                        row: u32_at(record, 0)?,
+                        col: u16_at(record, 4)?,
+                    },
+                    end: Cell {
+                        row: u32_at(record, 6)?,
+                        col: u16_at(record, 10)?,
+                    },
+                })
+            })
+    }
 }
 
 verus! {
@@ -434,6 +691,20 @@ pub enum ToPane<'a> {
         rows: ScreenRows,
     },
     ClearHistory,
+    Image {
+        req: Req,
+        key: ImageKey,
+        name: &'a [u8],
+    },
+    ClipboardAnswer {
+        req: Req,
+        contents: Option<Contents<'a>>,
+    },
+    Search {
+        req: Req,
+        needle: &'a [u8],
+    },
+    SearchCancel(Req),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -696,7 +967,63 @@ impl Body<'_> {
                 self.progress(report);
                 Kind::Progress
             }
+            FromPane::Image { req, object } => {
+                self.u32(req.0);
+                self.bool(object.is_some());
+                if let Some(object) = object {
+                    self.string(object.name)?;
+                    self.u64(object.len);
+                    self.u32(object.width);
+                    self.u32(object.height);
+                    self.u8(match object.format {
+                        PixelFormat::Rgb => 0,
+                        PixelFormat::Rgba => 1,
+                        PixelFormat::GrayAlpha => 2,
+                        PixelFormat::Gray => 3,
+                    });
+                    self.u64(object.generation);
+                    self.u32(object.gap_ms);
+                    self.u32(object.frames);
+                }
+                Kind::ImageReply
+            }
+            FromPane::ImageGone(name) => {
+                self.string(name)?;
+                Kind::ImageGone
+            }
+            FromPane::ClipboardWrite { location, contents } => {
+                self.location(location);
+                self.bytes(contents.0);
+                Kind::ClipboardWrite
+            }
+            FromPane::ClipboardRead {
+                req,
+                location,
+                mimes,
+            } => {
+                self.u32(req.0);
+                self.location(location);
+                self.bytes(mimes.0);
+                Kind::ClipboardRead
+            }
+            FromPane::Matches { req, matches } => {
+                self.u32(req.0);
+                self.bytes(matches.0);
+                Kind::Matches
+            }
+            FromPane::SearchDone(req) => {
+                self.u32(req.0);
+                Kind::SearchDone
+            }
         })
+    }
+
+    fn location(&mut self, location: ClipboardLocation) {
+        self.u8(match location {
+            ClipboardLocation::Standard => 0,
+            ClipboardLocation::Selection => 1,
+            ClipboardLocation::Primary => 2,
+        });
     }
 
     fn frame(&mut self, frame: &ToPane<'_>) -> Result<Kind, Oversize> {
@@ -757,6 +1084,31 @@ impl Body<'_> {
                     ScreenRows::Last(rows) => rows,
                 });
                 Kind::Screen
+            }
+            ToPane::Image { req, key, name } => {
+                self.u32(req.0);
+                self.u32(key.image);
+                self.u32(key.frame);
+                self.u64(key.generation);
+                self.string(name)?;
+                Kind::Image
+            }
+            ToPane::ClipboardAnswer { req, contents } => {
+                self.u32(req.0);
+                self.bool(contents.is_some());
+                if let Some(contents) = contents {
+                    self.bytes(contents.0);
+                }
+                Kind::ClipboardAnswer
+            }
+            ToPane::Search { req, needle } => {
+                self.u32(req.0);
+                self.string(needle)?;
+                Kind::Search
+            }
+            ToPane::SearchCancel(req) => {
+                self.u32(req.0);
+                Kind::SearchCancel
             }
         })
     }
@@ -884,6 +1236,25 @@ pub enum FromPane<'a> {
         body: &'a [u8],
     },
     Progress(Option<ProgressReport>),
+    Image {
+        req: Req,
+        object: Option<ImageObject<'a>>,
+    },
+    ImageGone(&'a [u8]),
+    ClipboardWrite {
+        location: ClipboardLocation,
+        contents: Contents<'a>,
+    },
+    ClipboardRead {
+        req: Req,
+        location: ClipboardLocation,
+        mimes: Mimes<'a>,
+    },
+    Matches {
+        req: Req,
+        matches: Matches<'a>,
+    },
+    SearchDone(Req),
 }
 
 pub fn check_sizes(mut input: &[u8]) -> bool {
@@ -1124,6 +1495,71 @@ pub fn decode(frame: &[u8]) -> Result<Option<FromPane<'_>>, Malformed> {
                 _ => return Err(Malformed::Field),
             })
         }
+        Kind::ImageReply => {
+            let mut fields = Fields(body);
+            let req = Req(fields.u32()?);
+            let object = if fields.flag()? {
+                let name = fields.bytes()?;
+                let len = fields.u64()?;
+                let (width, height) = (fields.u32()?, fields.u32()?);
+                let format = match fields.u8()? {
+                    0 => PixelFormat::Rgb,
+                    1 => PixelFormat::Rgba,
+                    2 => PixelFormat::GrayAlpha,
+                    3 => PixelFormat::Gray,
+                    _ => return Err(Malformed::Field),
+                };
+                Some(ImageObject {
+                    name,
+                    len,
+                    width,
+                    height,
+                    format,
+                    generation: fields.u64()?,
+                    gap_ms: fields.u32()?,
+                    frames: fields.u32()?,
+                })
+            } else {
+                None
+            };
+            fields.end()?;
+            FromPane::Image { req, object }
+        }
+        Kind::ImageGone => {
+            let mut fields = Fields(body);
+            let name = fields.bytes()?;
+            fields.end()?;
+            FromPane::ImageGone(name)
+        }
+        Kind::ClipboardWrite => {
+            let mut fields = Fields(body);
+            let location = fields.location()?;
+            let contents = Contents::of(fields.rest())?;
+            FromPane::ClipboardWrite { location, contents }
+        }
+        Kind::ClipboardRead => {
+            let mut fields = Fields(body);
+            let req = Req(fields.u32()?);
+            let location = fields.location()?;
+            let mimes = Mimes::of(fields.rest())?;
+            FromPane::ClipboardRead {
+                req,
+                location,
+                mimes,
+            }
+        }
+        Kind::Matches => {
+            let mut fields = Fields(body);
+            let req = Req(fields.u32()?);
+            let matches = Matches::of(fields.rest()).ok_or(Malformed::Field)?;
+            FromPane::Matches { req, matches }
+        }
+        Kind::SearchDone => {
+            let mut fields = Fields(body);
+            let req = Req(fields.u32()?);
+            fields.end()?;
+            FromPane::SearchDone(req)
+        }
         Kind::Init
         | Kind::Tail
         | Kind::Resize
@@ -1134,7 +1570,11 @@ pub fn decode(frame: &[u8]) -> Result<Option<FromPane<'_>>, Malformed> {
         | Kind::Paste
         | Kind::Mouse
         | Kind::Focus
-        | Kind::ClearHistory => return Ok(None),
+        | Kind::ClearHistory
+        | Kind::Image
+        | Kind::ClipboardAnswer
+        | Kind::Search
+        | Kind::SearchCancel => return Ok(None),
     }))
 }
 
@@ -1163,6 +1603,20 @@ pub enum Request<'a> {
         rows: ScreenRows,
     },
     ClearHistory,
+    Image {
+        req: Req,
+        key: ImageKey,
+        name: &'a [u8],
+    },
+    ClipboardAnswer {
+        req: Req,
+        contents: Option<Contents<'a>>,
+    },
+    Search {
+        req: Req,
+        needle: &'a [u8],
+    },
+    SearchCancel(Req),
 }
 
 #[derive(Debug)]
@@ -1249,6 +1703,19 @@ impl<'a> Fields<'a> {
 
     fn size(&mut self) -> Result<Size, Malformed> {
         size(self.take(8)?).ok_or(Malformed::Field)
+    }
+
+    fn rest(&mut self) -> &'a [u8] {
+        std::mem::take(&mut self.0)
+    }
+
+    fn location(&mut self) -> Result<ClipboardLocation, Malformed> {
+        match self.u8()? {
+            0 => Ok(ClipboardLocation::Standard),
+            1 => Ok(ClipboardLocation::Selection),
+            2 => Ok(ClipboardLocation::Primary),
+            _ => Err(Malformed::Field),
+        }
     }
 
     fn end(&self) -> Result<(), Malformed> {
@@ -1395,6 +1862,31 @@ pub fn decode_request(frame: &[u8]) -> Result<Request<'_>, Malformed> {
             };
             Request::Screen { req, format, rows }
         }
+        Kind::Image => {
+            let req = Req(fields.u32()?);
+            let key = ImageKey {
+                image: fields.u32()?,
+                frame: fields.u32()?,
+                generation: fields.u64()?,
+            };
+            let name = fields.bytes()?;
+            Request::Image { req, key, name }
+        }
+        Kind::ClipboardAnswer => {
+            let req = Req(fields.u32()?);
+            let contents = if fields.flag()? {
+                Some(Contents::of(fields.rest())?)
+            } else {
+                None
+            };
+            Request::ClipboardAnswer { req, contents }
+        }
+        Kind::Search => {
+            let req = Req(fields.u32()?);
+            let needle = fields.bytes()?;
+            Request::Search { req, needle }
+        }
+        Kind::SearchCancel => Request::SearchCancel(Req(fields.u32()?)),
         Kind::Ready
         | Kind::Head
         | Kind::Title
@@ -1410,7 +1902,13 @@ pub fn decode_request(frame: &[u8]) -> Result<Request<'_>, Malformed> {
         | Kind::Alternate
         | Kind::Bell
         | Kind::Notify
-        | Kind::Progress => return Err(Malformed::Unknown),
+        | Kind::Progress
+        | Kind::ImageReply
+        | Kind::ImageGone
+        | Kind::ClipboardWrite
+        | Kind::ClipboardRead
+        | Kind::Matches
+        | Kind::SearchDone => return Err(Malformed::Unknown),
     };
     fields.end()?;
     Ok(request)
@@ -1941,6 +2439,154 @@ mod tests {
             Err(Malformed::Trailing)
         );
         assert_eq!(decode(&frame(Kind::Bell, &[0])), Err(Malformed::Trailing));
+    }
+
+    #[test]
+    fn image_clipboard_and_search_frames_round_trip() {
+        let contents = ContentsBuf::new([(&b"text/plain"[..], &b"hello"[..])].into_iter()).unwrap();
+        let found = [
+            Match {
+                start: Cell { row: 4, col: 2 },
+                end: Cell { row: 4, col: 6 },
+            },
+            Match {
+                start: Cell { row: 70000, col: 0 },
+                end: Cell { row: 70001, col: 9 },
+            },
+        ];
+        let matches = MatchesBuf::new(&found);
+        let object = ImageObject {
+            name: b"/ko-12-3",
+            len: 1 << 30,
+            width: 5120,
+            height: 5120,
+            format: PixelFormat::GrayAlpha,
+            generation: 1 << 40,
+            gap_ms: 40,
+            frames: 3,
+        };
+        let cases = [
+            FromPane::Image {
+                req: Req(7),
+                object: Some(object),
+            },
+            FromPane::Image {
+                req: Req(8),
+                object: None,
+            },
+            FromPane::ImageGone(b"/ko-12-3"),
+            FromPane::ClipboardWrite {
+                location: ClipboardLocation::Primary,
+                contents: contents.view(),
+            },
+            FromPane::ClipboardRead {
+                req: Req(9),
+                location: ClipboardLocation::Standard,
+                mimes: Mimes::TEXT,
+            },
+            FromPane::Matches {
+                req: Req(10),
+                matches: matches.view(),
+            },
+            FromPane::SearchDone(Req(10)),
+        ];
+        for case in cases {
+            let mut out = Vec::new();
+            encode_from(&case, &mut out).unwrap();
+            assert_eq!(decode(&out), Ok(Some(case)));
+        }
+        assert_eq!(matches.view().iter().collect::<Vec<_>>(), found);
+        assert_eq!(
+            contents.view().pairs().collect::<Vec<_>>(),
+            [(&b"text/plain"[..], &b"hello"[..])]
+        );
+        assert_eq!(contents.view().text(), Some(&b"hello"[..]));
+        assert_eq!(Mimes::TEXT.iter().collect::<Vec<_>>(), [&b"text/plain"[..]]);
+        assert_eq!(
+            Mimes::of(b"\x01\0\0\0\x0a\0\0\0text/plain"),
+            Ok(Mimes::TEXT)
+        );
+
+        let key = ImageKey {
+            image: 5,
+            frame: 2,
+            generation: 99,
+        };
+        let answer = contents.view();
+        for (frame, expected) in [
+            (
+                ToPane::Image {
+                    req: Req(1),
+                    key,
+                    name: b"/ko-1-0",
+                },
+                "Image { req: Req(1), key: ImageKey { image: 5, frame: 2, generation: 99 }, name: [47, 107, 111, 45, 49, 45, 48] }",
+            ),
+            (ToPane::SearchCancel(Req(3)), "SearchCancel(Req(3))"),
+            (
+                ToPane::Search {
+                    req: Req(2),
+                    needle: b"hay",
+                },
+                "Search { req: Req(2), needle: [104, 97, 121] }",
+            ),
+            (
+                ToPane::ClipboardAnswer {
+                    req: Req(4),
+                    contents: None,
+                },
+                "ClipboardAnswer { req: Req(4), contents: None }",
+            ),
+            (
+                ToPane::ClipboardAnswer {
+                    req: Req(4),
+                    contents: Some(answer),
+                },
+                &format!("ClipboardAnswer {{ req: Req(4), contents: Some({answer:?}) }}"),
+            ),
+        ] {
+            let mut out = Vec::new();
+            encode(&frame, &mut out).unwrap();
+            assert_eq!(format!("{:?}", decode_request(&out).unwrap()), expected);
+        }
+    }
+
+    #[test]
+    fn an_osc_52_sequence_names_the_clipboard_and_carries_base64() {
+        assert_eq!(
+            ClipboardLocation::Primary.osc52(b"hi"),
+            "\x1b]52;p;aGk=\x1b\\"
+        );
+        assert_eq!(
+            ClipboardLocation::Selection.osc52_query(),
+            "\x1b]52;s;?\x1b\\"
+        );
+    }
+
+    #[test]
+    fn a_clipboard_or_match_frame_with_a_bad_shape_is_refused() {
+        assert_eq!(
+            decode(&frame(
+                Kind::ClipboardWrite,
+                &[&[0][..], Mimes::TEXT.0].concat()
+            )),
+            Err(Malformed::Field)
+        );
+        let large = vec![0u8; MAX_CLIPBOARD];
+        assert!(ContentsBuf::new([(&b"text/plain"[..], &large[..])].into_iter()).is_err());
+        assert!(ContentsBuf::new([(&b"a"[..], &large[..MAX_CLIPBOARD - 1])].into_iter()).is_ok());
+        assert_eq!(
+            decode(&frame(Kind::ClipboardWrite, &[3, 0, 0, 0, 0])),
+            Err(Malformed::Field)
+        );
+        assert_eq!(
+            decode(&frame(Kind::Matches, &[1, 0, 0, 0, 0, 0])),
+            Err(Malformed::Field)
+        );
+        assert_eq!(
+            decode(&frame(Kind::ClipboardRead, &[1, 0, 0, 0, 0, 1, 0, 0, 0])),
+            Err(Malformed::Short)
+        );
     }
 
     #[test]

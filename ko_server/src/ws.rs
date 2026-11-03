@@ -265,15 +265,25 @@ impl Ws {
     }
 
     pub(crate) fn reject(&mut self, out: &mut Output, kind: &'static str) {
-        if out.available() {
+        let send = out.available();
+        self.close_with(out, CloseCode::Policy, kind, send);
+        out.close();
+    }
+
+    pub(crate) fn finish(&mut self, out: &mut Output) {
+        let send = out.is_open();
+        self.close_with(out, CloseCode::Normal, "done", send);
+    }
+
+    fn close_with(&mut self, out: &mut Output, code: CloseCode, reason: &'static str, send: bool) {
+        if send {
             let frame = CloseFrame {
-                code: CloseCode::Policy,
-                reason: kind.into(),
+                code,
+                reason: reason.into(),
             };
             let _ = self.ctx.close(&mut writer(out), Some(frame));
             out.flush();
         }
-        out.close();
     }
 
     pub(crate) fn ping(&mut self, out: &mut Output, now: Instant) -> Ping {
@@ -355,6 +365,38 @@ mod tests {
 
     fn text(text: &str) -> Vec<u8> {
         masked(1, true, text.as_bytes(), [1, 2, 3, 4], 0)
+    }
+
+    #[test]
+    fn a_finished_stream_queues_its_close_behind_the_messages_that_wait() {
+        use std::io::Read;
+        let (mut out, mut reader) = crate::conn::tests::full_output();
+        let mut ws = Ws::new(Vec::new());
+        ws.send(&mut out, "last-message".to_owned());
+        ws.finish(&mut out);
+        assert!(out.is_open() && out.waiting());
+        let mut seen = Vec::new();
+        let mut chunk = [0u8; 8192];
+        for _ in 0..100_000 {
+            match reader.read(&mut chunk) {
+                Ok(count) => seen.extend_from_slice(&chunk[..count]),
+                Err(_) => {
+                    out.writable();
+                    if !out.waiting() {
+                        break;
+                    }
+                }
+            }
+        }
+        while let Ok(count) = reader.read(&mut chunk) {
+            seen.extend_from_slice(&chunk[..count]);
+        }
+        let mut tail = vec![0x81, 12];
+        tail.extend_from_slice(b"last-message");
+        tail.extend_from_slice(&[0x88, 6, 0x03, 0xe8]);
+        tail.extend_from_slice(b"done");
+        assert!(seen.ends_with(&tail), "the tail of {} bytes", seen.len());
+        assert!(out.is_open());
     }
 
     fn texts(ws: &mut Ws, conn: &mut Conn, poll: &mut Poll) -> Vec<Next> {

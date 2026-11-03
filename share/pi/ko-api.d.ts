@@ -107,6 +107,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/panes/{id}/images/{image}/frames/{frame}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description One frame of an image of a pane. Frame 1 is the image itself. The reply is the pixels as an application/octet-stream body, with their format, size and timing in the ko-image-* headers. With the header Ko-Accept-Shm: 1 the reply is instead a JSON body that names a shared memory object, which the client maps and never unlinks. An image that was evicted, a frame that does not exist and a generation that moved on are not_found. */
+        get: operations["Image"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/panes/{id}/input": {
         parameters: {
             query?: never;
@@ -133,6 +150,23 @@ export interface paths {
         };
         /** @description The text of a pane, from the server's terminal. */
         get: operations["Screen"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/panes/{id}/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description A search of the pane's terminal, history included: the matches in batches, oldest first, then done. The rows count from the top of the history at the time of the search, for display only. Closing the socket cancels the search. */
+        get: operations["Search"];
         put?: never;
         post?: never;
         delete?: never;
@@ -479,6 +513,19 @@ export interface components {
             /** @constant */
             type: "bell";
         } | {
+            contents: components["schemas"]["ClipboardContent"][];
+            location: components["schemas"]["ClipboardLocation"];
+            pane: components["schemas"]["PaneId"];
+            /** @constant */
+            type: "clipboard_write";
+        } | {
+            id: number;
+            location: components["schemas"]["ClipboardLocation"];
+            mimes: string[];
+            pane: components["schemas"]["PaneId"];
+            /** @constant */
+            type: "clipboard_read";
+        } | {
             body: string;
             pane: components["schemas"]["PaneId"];
             title?: string;
@@ -512,7 +559,18 @@ export interface components {
             focused: boolean;
             /** @constant */
             type: "focused";
+        } | {
+            contents?: components["schemas"]["ClipboardContent"][];
+            id: number;
+            /** @constant */
+            type: "clipboard_answer";
         };
+        ClipboardContent: {
+            data: components["schemas"]["Base64"];
+            mime: string;
+        };
+        /** @enum {string} */
+        ClipboardLocation: "standard" | "selection" | "primary";
         Command: {
             argv: string[];
             /** @constant */
@@ -649,6 +707,10 @@ export interface components {
             name: string;
             pid: number;
         };
+        /** @description 1 is the image itself; 2 and up are its animation frames. */
+        FrameNumber: number;
+        /** @description The serial that the pane's terminal stamped on the frame. */
+        Generation: number;
         Hello: {
             focused: boolean;
             /** @default false */
@@ -662,6 +724,18 @@ export interface components {
         };
         /** @enum {string} */
         History: "none" | "all";
+        /** @description The id a program gave an image. */
+        ImageId: number;
+        ImageShm: {
+            format: components["schemas"]["PixelFormat"];
+            frames: number;
+            gap_ms: number;
+            generation: number;
+            height: number;
+            length: number;
+            name: string;
+            width: number;
+        };
         /** @enum {string} */
         Images: "none";
         Info: {
@@ -778,6 +852,8 @@ export interface components {
         MouseButton: "unknown" | "left" | "right" | "middle" | "four" | "five" | "six" | "seven" | "eight" | "nine" | "ten" | "eleven";
         /** @description At most 256 bytes, without control characters. */
         Name: string;
+        /** @description The text to search for, percent-encoded in the query. */
+        Needle: string;
         /** @description A byte offset of the pane's stream. */
         Offset: number;
         Origin: {
@@ -838,6 +914,8 @@ export interface components {
             /** @constant */
             type: "running";
         };
+        /** @enum {string} */
+        PixelFormat: "rgb" | "rgba" | "gray_alpha" | "gray";
         /** @enum {string} */
         ProgramKind: "permission" | "question" | "auth";
         ProgramRecord: {
@@ -924,6 +1002,20 @@ export interface components {
             /** @constant */
             type: "scrollback";
         } & components["schemas"]["Bounds"]);
+        SearchEvent: {
+            matches: components["schemas"]["SearchMatch"][];
+            /** @constant */
+            type: "matches";
+        } | {
+            /** @constant */
+            type: "done";
+        };
+        SearchMatch: {
+            col: number;
+            end_col: number;
+            end_row: number;
+            row: number;
+        };
         Selection: {
             pane?: components["schemas"]["PaneId"];
             session?: components["schemas"]["SessionId"];
@@ -1315,6 +1407,46 @@ export interface operations {
             };
         };
     };
+    Image: {
+        parameters: {
+            query?: {
+                /** @example 3 */
+                generation?: components["schemas"]["Generation"];
+            };
+            header?: never;
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+                /** @example 7 */
+                image: components["schemas"]["ImageId"];
+                /** @example 1 */
+                frame: components["schemas"]["FrameNumber"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageShm"];
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     Input: {
         parameters: {
             query?: never;
@@ -1376,6 +1508,39 @@ export interface operations {
                 content: {
                     "text/plain": string;
                 };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    Search: {
+        parameters: {
+            query?: {
+                /** @example needle */
+                needle?: components["schemas"]["Needle"];
+            };
+            header?: never;
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Switching Protocols */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description The common error body. */
             default: {

@@ -186,6 +186,7 @@ pub(crate) enum Content {
     Json(SchemaFn),
     Text,
     Binary,
+    Pixels(SchemaFn),
 }
 
 pub(crate) trait Media {
@@ -214,6 +215,15 @@ pub(crate) struct binary;
 
 impl Media for binary {
     const CONTENT: Content = Content::Binary;
+}
+
+// An image frame: the pixels as a body, or a JSON description of a shared memory object.
+#[allow(non_camel_case_types)]
+#[derive(Debug)]
+pub(crate) struct pixels;
+
+impl Media for pixels {
+    const CONTENT: Content = Content::Pixels(json::<protocol::ImageShm>);
 }
 
 pub(crate) trait Endpoint {

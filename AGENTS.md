@@ -418,7 +418,10 @@ Conventions:
   `ko-probe`), because macOS reports a `#!` script's interpreter as
   its process name. A pane that runs `stty raw -echo; exec cat`
   echoes the OSC 133 and OSC 7501 bytes that a test sends as `text`
-  input; it replaces kido's fake agent. The ssh tests that use the
+  input; it replaces kido's fake agent. It also echoes the
+  terminal's kitty graphics reply (`ESC _ G i=N;OK`) back as a new
+  command that replaces image N, so a test sends graphics with
+  `q=2`. The ssh tests that use the
   host's sshd run only with `KO_E2E_HOST_SSH=1`, as kido's do. The
   remote tests (`remote.rs`) run under the same variable, with a
   private `sshd` (its own config, and host and client keys made once

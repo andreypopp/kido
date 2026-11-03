@@ -10,10 +10,11 @@ use serde_json::Value;
 use crate::ids::{ClientId, PaneId, RunId, SessionId, VarName, WindowId};
 use crate::protocol::{
     Candidate, ClientEvent, ClientRequest, DeleteVars, Detail, Empty, HistoryDef, Images, Info,
-    Input, InputResult, Listing, PutLayout, ReportOutcome, Selection, SendPrompt, Sent, Show,
-    Snapshot, StartRun, Started, StopRun, VarValue, Version, ViewEvent, ViewRequest, Waited,
+    Input, InputResult, Listing, PutLayout, ReportOutcome, SearchEvent, Selection, SendPrompt,
+    Sent, Show, Snapshot, StartRun, Started, StopRun, VarValue, Version, ViewEvent, ViewRequest,
+    Waited,
 };
-use crate::route::{Invalid, Param, binary, routes, text};
+use crate::route::{Invalid, Param, binary, pixels, routes, text};
 
 use crate::runs::Parent;
 use crate::vars::Vars;
@@ -66,6 +67,84 @@ impl JsonSchema for Offset {
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({"type": "integer", "minimum": 0, "maximum": MAX_OFFSET, "description": "A byte offset of the pane's stream."})
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageId(u32);
+
+impl ImageId {
+    pub fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl JsonSchema for ImageId {
+    fn schema_name() -> Cow<'static, str> {
+        "ImageId".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "integer", "minimum": 1, "maximum": u32::MAX, "description": "The id a program gave an image."})
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameNumber(u32);
+
+impl FrameNumber {
+    pub fn get(self) -> u32 {
+        self.0
+    }
+}
+
+impl JsonSchema for FrameNumber {
+    fn schema_name() -> Cow<'static, str> {
+        "FrameNumber".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "integer", "minimum": 1, "maximum": u32::MAX, "description": "1 is the image itself; 2 and up are its animation frames."})
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Generation(u64);
+
+impl Generation {
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl JsonSchema for Generation {
+    fn schema_name() -> Cow<'static, str> {
+        "Generation".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "integer", "minimum": 1, "maximum": u64::MAX, "description": "The serial that the pane's terminal stamped on the frame."})
+    }
+}
+
+const MAX_NEEDLE: usize = 4096;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Needle(String);
+
+impl Needle {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl JsonSchema for Needle {
+    fn schema_name() -> Cow<'static, str> {
+        "Needle".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "string", "minLength": 1, "maxLength": MAX_NEEDLE, "description": "The text to search for, percent-encoded in the query."})
     }
 }
 
@@ -270,6 +349,87 @@ impl Param for Offset {
     }
 }
 
+fn positive(value: &str, max: u64) -> Result<u64, Invalid> {
+    natural(value, max).and_then(|number| {
+        (number > 0)
+            .then_some(number)
+            .ok_or_else(|| Invalid::message("invalid number"))
+    })
+}
+
+impl Param for ImageId {
+    const EXAMPLE: &'static str = "7";
+
+    fn parse(value: &str) -> Result<ImageId, Invalid> {
+        let number = positive(value, u64::from(u32::MAX))?;
+        u32::try_from(number)
+            .map(ImageId)
+            .map_err(|_| Invalid::message("invalid number"))
+    }
+
+    fn render(&self) -> String {
+        self.0.to_string()
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<ImageId>()
+    }
+}
+
+impl Param for FrameNumber {
+    const EXAMPLE: &'static str = "1";
+
+    fn parse(value: &str) -> Result<FrameNumber, Invalid> {
+        let number = positive(value, u64::from(u32::MAX))?;
+        u32::try_from(number)
+            .map(FrameNumber)
+            .map_err(|_| Invalid::message("invalid number"))
+    }
+
+    fn render(&self) -> String {
+        self.0.to_string()
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<FrameNumber>()
+    }
+}
+
+impl Param for Generation {
+    const EXAMPLE: &'static str = "3";
+
+    fn parse(value: &str) -> Result<Generation, Invalid> {
+        positive(value, u64::MAX).map(Generation)
+    }
+
+    fn render(&self) -> String {
+        self.0.to_string()
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<Generation>()
+    }
+}
+
+impl Param for Needle {
+    const EXAMPLE: &'static str = "needle";
+
+    fn parse(value: &str) -> Result<Needle, Invalid> {
+        percent_decode(value)
+            .filter(|needle| !needle.is_empty() && needle.len() <= MAX_NEEDLE)
+            .map(Needle)
+            .ok_or_else(|| Invalid::message("invalid needle"))
+    }
+
+    fn render(&self) -> String {
+        percent_encode(&self.0)
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<Needle>()
+    }
+}
+
 impl Param for WindowOnly {
     const EXAMPLE: &'static str = "true";
 
@@ -429,6 +589,27 @@ routes! {
         query: { history: History = None, images: Images = None, offset: Option<Offset> },
         send: ViewRequest,
         recv: ViewEvent | binary,
+    }
+    /// One frame of an image of a pane. Frame 1 is the image itself. The reply is the pixels as
+    /// an application/octet-stream body, with their format, size and timing in the ko-image-*
+    /// headers. With the header Ko-Accept-Shm: 1 the reply is instead a JSON body that names a
+    /// shared memory object, which the client maps and never unlinks. An image that was evicted,
+    /// a frame that does not exist and a generation that moved on are not_found.
+    Image {
+        method: GET,
+        path: /panes/{id: PaneId}/images/{image: ImageId}/frames/{frame: FrameNumber},
+        query: { generation: Generation },
+        reply: pixels,
+    }
+    /// A search of the pane's terminal, history included: the matches in batches, oldest first,
+    /// then done. The rows count from the top of the history at the time of the search, for
+    /// display only. Closing the socket cancels the search.
+    Search {
+        method: WS,
+        path: /panes/{id: PaneId}/search,
+        query: { needle: Needle },
+        send: Empty,
+        recv: SearchEvent,
     }
     /// The variables of a pane.
     Vars { method: GET, path: /panes/{id: PaneId}/vars, reply: Vars }
@@ -615,6 +796,16 @@ mod tests {
             },
             Route::DeleteVars { id },
             Route::Input { id },
+            Route::Image {
+                id,
+                image: ImageId(7),
+                frame: FrameNumber(2),
+                generation: Generation(1 << 40),
+            },
+            Route::Search {
+                id,
+                needle: Needle("a b&c=é".to_owned()),
+            },
             Route::Screen {
                 id,
                 format: ScreenFormat::Ansi,
@@ -707,6 +898,12 @@ mod tests {
             ("GET", "/panes/pane_7/view?offset=4611686018427387904"),
             ("GET", "/panes/pane_7/view?images=all"),
             ("GET", "/panes/pane_7/view?a=b=c"),
+            ("GET", "/panes/pane_7/images/0/frames/1?generation=1"),
+            ("GET", "/panes/pane_7/images/1/frames/0?generation=1"),
+            ("GET", "/panes/pane_7/images/1/frames/1?generation=0"),
+            ("GET", "/panes/pane_7/images/1/frames/1"),
+            ("GET", "/panes/pane_7/search?needle="),
+            ("GET", "/panes/pane_7/search"),
             ("GET", "/panes/pane_7/view?"),
             ("GET", "/panes/pane_x/view"),
             ("PUT", "/panes"),
@@ -733,6 +930,12 @@ mod tests {
                 "invalid number",
                 "P1 supports images=none only",
                 "invalid query",
+                "invalid number",
+                "invalid number",
+                "invalid number",
+                "missing parameter",
+                "invalid needle",
+                "missing parameter",
                 "invalid query",
                 "no route",
                 "no route",

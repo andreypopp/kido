@@ -1,6 +1,7 @@
 use std::ffi::c_void;
 use std::ptr;
 
+use ko_pane_wire::frame::PixelFormat;
 use ko_vt_sys as sys;
 
 use crate::{Error, Terminal, check, present};
@@ -18,14 +19,6 @@ impl Screen {
             Screen::Alternate => sys::GHOSTTY_TERMINAL_SCREEN_ALTERNATE,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PixelFormat {
-    Rgb,
-    Rgba,
-    GrayAlpha,
-    Gray,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +40,8 @@ pub struct Frame<'a> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Animation {
+    pub width: u32,
+    pub height: u32,
     pub frames: u32,
     pub state: Playback,
     pub current: u32,
@@ -66,6 +61,8 @@ impl Terminal {
             return Ok(None);
         }
         let keys = [
+            sys::GHOSTTY_KITTY_IMAGE_DATA_WIDTH,
+            sys::GHOSTTY_KITTY_IMAGE_DATA_HEIGHT,
             sys::GHOSTTY_KITTY_IMAGE_DATA_FRAME_COUNT,
             sys::GHOSTTY_KITTY_IMAGE_DATA_ANIMATION_STATE,
             sys::GHOSTTY_KITTY_IMAGE_DATA_CURRENT_FRAME,
@@ -73,6 +70,7 @@ impl Terminal {
             sys::GHOSTTY_KITTY_IMAGE_DATA_CURRENT_LOOP,
             sys::GHOSTTY_KITTY_IMAGE_DATA_PENDING_FRAMES,
         ];
+        let (mut width, mut height) = (0u32, 0u32);
         let mut frames = 0u32;
         let mut state = sys::GHOSTTY_KITTY_ANIMATION_STATE_NONE;
         let mut current = 0u32;
@@ -80,7 +78,9 @@ impl Terminal {
         let mut current_loop = 0u32;
         let mut pending = false;
         let mut values = [
-            ptr::from_mut(&mut frames).cast::<c_void>(),
+            ptr::from_mut(&mut width).cast::<c_void>(),
+            ptr::from_mut(&mut height).cast(),
+            ptr::from_mut(&mut frames).cast(),
             ptr::from_mut(&mut state).cast(),
             ptr::from_mut(&mut current).cast(),
             ptr::from_mut(&mut max_loops).cast(),
@@ -101,6 +101,8 @@ impl Terminal {
             )
         })?;
         Ok(Some(Animation {
+            width,
+            height,
             frames,
             state: match state {
                 sys::GHOSTTY_KITTY_ANIMATION_STATE_NONE => Playback::None,
@@ -208,6 +210,82 @@ impl Terminal {
         })
     }
 
+    pub fn storage_generation(&self) -> Result<u64, Error> {
+        let graphics = self.get(
+            sys::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+            ptr::null_mut::<c_void>() as sys::GhosttyKittyGraphics,
+        )?;
+        let mut generation = 0u64;
+        // SAFETY: the graphics handle is live, and GENERATION takes a uint64_t.
+        check(unsafe {
+            sys::ghostty_kitty_graphics_get(
+                graphics,
+                sys::GHOSTTY_KITTY_GRAPHICS_DATA_GENERATION,
+                (&raw mut generation).cast(),
+            )
+        })?;
+        Ok(generation)
+    }
+
+    pub fn placements(&self) -> Result<Vec<(u32, u32)>, Error> {
+        let graphics = self.get(
+            sys::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+            ptr::null_mut::<c_void>() as sys::GhosttyKittyGraphics,
+        )?;
+        let mut iterator = ptr::null_mut();
+        // SAFETY: a NULL allocator selects the default one; iterator receives the new handle.
+        check(unsafe {
+            sys::ghostty_kitty_graphics_placement_iterator_new(ptr::null(), &mut iterator)
+        })?;
+        // SAFETY: the graphics handle is live, and the iterator takes this data kind.
+        let filled = check(unsafe {
+            sys::ghostty_kitty_graphics_get(
+                graphics,
+                sys::GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR,
+                (&raw mut iterator).cast(),
+            )
+        });
+        let mut found = Vec::new();
+        let mut result = filled;
+        // SAFETY: the iterator is live and filled when result is Ok.
+        while result.is_ok() && unsafe { sys::ghostty_kitty_graphics_placement_next(iterator) } {
+            let (mut image, mut placement) = (0u32, 0u32);
+            let read = |data, out: *mut u32| {
+                // SAFETY: the iterator points at a placement, and both data kinds are uint32_t.
+                check(unsafe {
+                    sys::ghostty_kitty_graphics_placement_get(iterator, data, out.cast())
+                })
+            };
+            result = read(
+                sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID,
+                &mut image,
+            )
+            .and_then(|()| {
+                read(
+                    sys::GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_PLACEMENT_ID,
+                    &mut placement,
+                )
+            });
+            found.push((image, placement));
+        }
+        // SAFETY: the iterator is freed once.
+        unsafe { sys::ghostty_kitty_graphics_placement_iterator_free(iterator) };
+        result.map(|()| found)
+    }
+
+    pub fn animation_tick(&mut self, now_ms: u64) -> Result<Option<u64>, Error> {
+        let graphics = self.get(
+            sys::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+            ptr::null_mut::<c_void>() as sys::GhosttyKittyGraphics,
+        )?;
+        let mut next = 0u64;
+        // SAFETY: the handle came from the live terminal, and next is writable.
+        present(unsafe {
+            sys::ghostty_kitty_graphics_animation_tick(graphics, now_ms, &raw mut next)
+        })
+        .map(|playing| playing.then_some(next))
+    }
+
     /// Grows each time a frame of either screen becomes pending or a pending frame's generation
     /// moves. Read it after a feed batch.
     pub fn pending_generation(&self) -> Result<u64, Error> {
@@ -252,6 +330,8 @@ mod tests {
         assert_eq!(
             animation,
             Animation {
+                width: 1,
+                height: 1,
                 frames: 2,
                 state: Playback::Stopped,
                 current: 1,
@@ -266,6 +346,13 @@ mod tests {
         assert!(vt.frame(Screen::Alternate, 1, 1).unwrap().is_none());
         assert!(vt.animation(Screen::Alternate, 1).unwrap().is_none());
         assert_eq!(vt.pending_generation().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_placement_is_listed_with_its_image() {
+        let vt = two_frames();
+        assert_eq!(vt.placements().unwrap(), [(1, 0)]);
+        assert_eq!(make(80, 24).placements().unwrap(), []);
     }
 
     #[test]

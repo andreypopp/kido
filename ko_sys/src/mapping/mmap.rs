@@ -1,11 +1,15 @@
-#[cfg(target_os = "macos")]
-use std::ffi::CString;
 use std::io;
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
-use std::ptr::{self, NonNull};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+#[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::ptr::NonNull;
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicU32, Ordering};
 
+#[cfg(target_os = "macos")]
+use super::named::{Name, open_fd, unlink};
+use super::named::{map_shared, size_of, truncate};
+#[cfg(target_os = "linux")]
 use crate::retry::{check, retry};
 
 #[derive(Debug)]
@@ -21,21 +25,15 @@ static NEXT: AtomicU32 = AtomicU32::new(0);
 #[cfg(target_os = "macos")]
 fn create() -> io::Result<OwnedFd> {
     loop {
-        let pid = std::process::id();
-        let name = CString::new(format!(
-            "/ko-ring-{pid}-{}",
+        let name = Name::new(&format!(
+            "/ko-ring-{}-{}",
+            std::process::id(),
             NEXT.fetch_add(1, Ordering::SeqCst)
         ))
-        .map_err(io::Error::other)?;
-        let flags = libc::O_CREAT | libc::O_EXCL | libc::O_RDWR;
-        // SAFETY: name is a NUL-terminated path, and the mode is the variadic argument.
-        match retry(|| check(unsafe { libc::shm_open(name.as_ptr(), flags, 0o600) })) {
-            Ok(raw) => {
-                // SAFETY: shm_open returned a new descriptor that nothing else owns.
-                let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-                // SAFETY: name names the object just created.
-                check(unsafe { libc::shm_unlink(name.as_ptr()) })?;
-                crate::fd::set_cloexec(fd.as_fd())?;
+        .ok_or_else(|| io::Error::other("invalid ring name"))?;
+        match open_fd(&name, libc::O_CREAT | libc::O_EXCL | libc::O_RDWR, 0o600) {
+            Ok(fd) => {
+                unlink(&name)?;
                 return Ok(fd);
             }
             Err(error) if error.raw_os_error() == Some(libc::EEXIST) => {}
@@ -60,31 +58,14 @@ fn create() -> io::Result<OwnedFd> {
 }
 
 fn map(fd: OwnedFd, len: usize) -> io::Result<Mapping> {
-    // SAFETY: a new shared mapping of fd; the kernel picks the address.
-    let base = unsafe {
-        libc::mmap(
-            ptr::null_mut(),
-            len,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_SHARED,
-            fd.as_raw_fd(),
-            0,
-        )
-    };
-    if base == libc::MAP_FAILED {
-        return Err(io::Error::last_os_error());
-    }
-    let base = NonNull::new(base.cast()).ok_or_else(|| io::Error::other("mmap returned NULL"))?;
+    let base = map_shared(&fd, len, true)?;
     Ok(Mapping { base, len, fd })
 }
 
 impl Mapping {
     pub fn shared(len: usize) -> io::Result<Mapping> {
-        let size = libc::off_t::try_from(len)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "mapping too large"))?;
         let fd = create()?;
-        // SAFETY: fd is the new shared memory object.
-        retry(|| check(unsafe { libc::ftruncate(fd.as_raw_fd(), size) }))?;
+        truncate(&fd, len)?;
         #[cfg(target_os = "linux")]
         // SAFETY: fd is open; the seals stop the other process from shrinking the ring under a
         // mapping (SIGBUS) or growing it.
@@ -103,12 +84,7 @@ impl Mapping {
     }
 
     pub fn attach(fd: OwnedFd) -> io::Result<Mapping> {
-        // SAFETY: an all-zero stat is valid, and fstat fills it.
-        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-        // SAFETY: stat is writable.
-        check(unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) })?;
-        let len = usize::try_from(stat.st_size)
-            .ok()
+        let len = Some(size_of(&fd)?)
             .filter(|&len| len > 0)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty mapping"))?;
         map(fd, len)

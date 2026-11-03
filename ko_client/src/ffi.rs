@@ -471,6 +471,7 @@ extern "C" fn deliver(context: *mut c_void) {
                 Notice::Notify { pane, title, body } => {
                     (2, pane, title.as_deref().map(string), Some(string(body)))
                 }
+                Notice::ClipboardWrite { .. } | Notice::ClipboardRead { .. } => return,
             };
             let pane = string(&pane.to_string());
             call(Event {

@@ -7,6 +7,7 @@ use std::os::unix::net::UnixStream;
 
 use ko_pane_wire::ring::{Pos, Reader};
 use ko_sys::event::{Interest, Poll, Read, Reads, Timer, Token};
+use ko_sys::mapping::Named;
 use vstd::prelude::*;
 
 use crate::http::{self, Framing, Head, MAX_HEAD, Parsed, Status};
@@ -16,6 +17,8 @@ use crate::ws::{Header, Record};
 
 const MAX_QUEUED: usize = 64 << 20;
 const SLICES: usize = 64;
+const PIXEL_PIECE: usize = 1 << 20;
+const PIXEL_PIECES_PER_FLUSH: usize = 4;
 
 #[derive(Debug, Default)]
 pub(crate) struct Queue {
@@ -82,9 +85,16 @@ pub(crate) enum Written {
 }
 
 #[derive(Debug)]
+struct Pixels {
+    object: Named,
+    sent: usize,
+}
+
+#[derive(Debug)]
 pub(crate) struct Output {
     stream: UnixStream,
     queue: Queue,
+    pixels: Option<Pixels>,
     open: bool,
     refused: bool,
 }
@@ -102,7 +112,7 @@ impl Output {
     }
 
     pub(crate) fn waiting(&self) -> bool {
-        self.refused || !self.queue.is_empty()
+        self.refused || !self.queue.is_empty() || self.pixels.is_some()
     }
 
     pub(crate) fn available(&self) -> bool {
@@ -126,8 +136,49 @@ impl Output {
     }
 
     pub(crate) fn flush(&mut self) {
-        if self.open && self.queue.flush(&self.stream).is_err() {
+        if self.open && (self.queue.flush(&self.stream).is_err() || self.pull().is_err()) {
             self.close();
+        }
+    }
+
+    fn pull(&mut self) -> io::Result<()> {
+        for _ in 0..PIXEL_PIECES_PER_FLUSH {
+            let Some(Pixels { object, sent }) = &mut self.pixels else {
+                break;
+            };
+            if !self.queue.is_empty() {
+                break;
+            }
+            let rest = object.bytes().get(*sent..).unwrap_or_default();
+            if rest.is_empty() {
+                self.pixels = None;
+                break;
+            }
+            let piece = rest.get(..PIXEL_PIECE).unwrap_or(rest);
+            match write_slices(&self.stream, &[IoSlice::new(piece)])? {
+                0 => break,
+                count => *sent = sent.saturating_add(count),
+            }
+        }
+        if self
+            .pixels
+            .as_ref()
+            .is_some_and(|pixels| pixels.sent >= pixels.object.bytes().len())
+        {
+            self.pixels = None;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn streaming(&self) -> bool {
+        self.pixels.is_some()
+    }
+
+    pub(crate) fn send_pixels(&mut self, head: Vec<u8>, object: Named) {
+        self.send(head);
+        if self.open {
+            self.pixels = Some(Pixels { object, sent: 0 });
+            self.flush();
         }
     }
 
@@ -367,7 +418,7 @@ impl Output {
     pub(crate) uninterp spec fn waits(&self) -> bool;
 }
 
-// Assumes: waits() holds when the socket refused a write or bytes wait in the queue.
+// Assumes: waits() holds when the socket refused a write, or bytes or a pixel body wait to be sent.
 #[verifier::external_fn_specification]
 #[allow(dead_code, unreachable_pub)]
 pub fn ex_waiting(output: &Output) -> (b: bool)
@@ -446,6 +497,7 @@ pub(crate) enum Phase {
         length: usize,
     },
     Handling,
+    Streaming,
     Ws(Box<Link>),
     Closing,
 }
@@ -473,6 +525,7 @@ impl Conn {
             out: Output {
                 stream,
                 queue: Queue::default(),
+                pixels: None,
                 open: true,
                 refused: false,
             },
@@ -505,7 +558,7 @@ impl Conn {
         let write = self.out.waiting();
         let read = match self.phase {
             Phase::Head | Phase::Body { .. } | Phase::Oversized { .. } | Phase::Ws(_) => !self.eof,
-            Phase::Handling | Phase::Closing => false,
+            Phase::Handling | Phase::Streaming | Phase::Closing => false,
         };
         if self.out.is_open() {
             Interest::of(read, write)
@@ -651,7 +704,7 @@ impl Conn {
                         return None;
                     }
                 }
-                Phase::Handling | Phase::Ws(_) | Phase::Closing => return None,
+                Phase::Handling | Phase::Streaming | Phase::Ws(_) | Phase::Closing => return None,
             }
         }
         None
@@ -1029,6 +1082,7 @@ pub(crate) mod tests {
         let out = Output {
             stream: writer,
             queue: Queue::default(),
+            pixels: None,
             open: true,
             refused: false,
         };

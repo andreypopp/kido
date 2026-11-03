@@ -74,26 +74,48 @@ impl Pid {
             .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
     }
 
+    // macOS reports a stopped or continued child to waitid(WEXITED); that is no exit. The report
+    // is consumed, so that a blocking wait goes on to wait for the exit.
     fn peek(self, flags: libc::c_int) -> io::Result<Option<Exit>> {
         let id = libc::id_t::try_from(self.0).map_err(io::Error::other)?;
-        // SAFETY: an all-zero siginfo_t is valid, and waitid fills it.
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        retry(|| {
-            // SAFETY: info is writable; WNOWAIT leaves the child waitable.
-            check(unsafe {
-                libc::waitid(
-                    libc::P_PID,
-                    id,
-                    &mut info,
-                    libc::WEXITED | flags | libc::WNOWAIT,
-                )
-            })
-        })?;
-        let (child, status) = sigchld(&info);
-        if child != self.0 {
-            return Ok(None);
+        loop {
+            // SAFETY: an all-zero siginfo_t is valid, and waitid fills it.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            retry(|| {
+                // SAFETY: info is writable; WNOWAIT leaves the child waitable.
+                check(unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        id,
+                        &mut info,
+                        libc::WEXITED | flags | libc::WNOWAIT,
+                    )
+                })
+            })?;
+            let (child, status) = sigchld(&info);
+            if child != self.0 {
+                return Ok(None);
+            }
+            match info.si_code {
+                libc::CLD_EXITED => return Ok(Some(Exit::Exited(status))),
+                libc::CLD_KILLED | libc::CLD_DUMPED => return Ok(Some(Exit::Signaled(status))),
+                _ => {}
+            }
+            retry(|| {
+                // SAFETY: info is writable; this call consumes the stop or continue report.
+                check(unsafe {
+                    libc::waitid(
+                        libc::P_PID,
+                        id,
+                        &mut info,
+                        libc::WSTOPPED | libc::WCONTINUED | libc::WNOHANG,
+                    )
+                })
+            })?;
+            if flags & libc::WNOHANG != 0 {
+                return Ok(None);
+            }
         }
-        Ok(Some(Exit::new(info.si_code == libc::CLD_EXITED, status)))
     }
 
     pub fn try_wait(self) -> io::Result<Waited> {
@@ -113,10 +135,7 @@ impl Pid {
             Ok(_) if libc::WIFEXITED(status) => {
                 Ok(Waited::Ended(Exit::new(true, libc::WEXITSTATUS(status))))
             }
-            Ok(_) if libc::WIFSIGNALED(status) => {
-                Ok(Waited::Ended(Exit::new(false, libc::WTERMSIG(status))))
-            }
-            Ok(_) => Ok(Waited::Ended(Exit::new(false, libc::WSTOPSIG(status)))),
+            Ok(_) => Ok(Waited::Ended(Exit::new(false, libc::WTERMSIG(status)))),
             Err(error) if error.raw_os_error() == Some(libc::ECHILD) => Ok(Waited::NoChild),
             Err(error) => Err(error),
         }
@@ -315,6 +334,40 @@ mod tests {
 
     fn killed_by_sigkill(pid: Pid) -> bool {
         pid.wait().unwrap() == Waited::Ended(Exit::Signaled(libc::SIGKILL))
+    }
+
+    #[cfg(feature = "e2e")]
+    #[test]
+    fn a_stopped_child_has_not_exited_and_its_exit_follows_a_kill() {
+        use std::time::{Duration, Instant};
+        let pid =
+            spawn::program(Path::new("/bin/sleep"), &["30"], &[], spawn::Env::Inherit).unwrap();
+        let id = libc::id_t::try_from(pid.get()).unwrap();
+        pid.signal(Signal::Stop).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            // SAFETY: an all-zero siginfo_t is valid, and waitid fills it.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: info is writable; WNOWAIT leaves the stop report in place.
+            let seen = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    id,
+                    &mut info,
+                    libc::WSTOPPED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if seen == 0 && sigchld(&info).0 == pid.get() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the child never stopped");
+        }
+        assert_eq!(pid.peek_exit().unwrap(), None);
+        pid.signal(Signal::Cont).unwrap();
+        assert_eq!(pid.peek_exit().unwrap(), None);
+        pid.signal(Signal::Kill).unwrap();
+        assert_eq!(pid.wait_exit().unwrap(), Exit::Signaled(libc::SIGKILL));
+        assert!(killed_by_sigkill(pid));
     }
 
     #[test]

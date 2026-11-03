@@ -1,6 +1,6 @@
 # ko protocol (appendix to design.md)
 
-Status: design, 2026-10-29, updated 2026-11-02 (K1, K2 and K3). HTTP/1.1 over a unix
+Status: design, 2026-10-29, updated 2026-11-03 (K1, K2, K3 and K6). HTTP/1.1 over a unix
 socket, with WebSocket (RFC 6455) for the long-lived streams.
 
 **The code is the source of truth for every message shape** (decided
@@ -291,59 +291,85 @@ capture and for tests.
 
 ## 5. Images
 
-Placements and image metadata live inside the mirror. Pixels are
-resources: `GET /panes/pane_N/images/<image_id>` with a `generation`
-query. The response is the pixels as a body with their format and
-size in headers, deflate-negotiable; or, when the client sent
-`Ko-Accept-Shm: 1` and the server is local, a JSON body that names a
-shared-memory object and the pixels' offset, length, format and size.
-An evicted image or a moved generation is `not_found`.
+Placements, image metadata, animation frames and the playback state
+that `a=a` set live inside the mirror's own kitty state, delivered in
+the view stream as the program sends them or in the snapshot. Pixels
+are resources, one for each frame:
+`GET /panes/pane_N/images/<image_id>/frames/<n>?generation=<g>`
+(`ko_server/src/api.rs`, route `Image`). Frame 1 is the image itself;
+2 and up are its animation frames, as kitty numbers them. The
+generation is the frame's serial that the bytes alone decide (the
+fork's counter over graphics commands, plans/ko-stages.md K6), so the
+pane and every mirror compute the same value for the same frame
+state, and one number keys the server's object and the mirror's
+attach. Serial 0 is a frame with no identity, and no fetch completes
+it. An image that was evicted, a frame that does not exist and a
+generation that moved on are all `not_found`.
 
-A client requests the images that have placements on screen, one
-connection each, in parallel, and caches by `(pane, image_id,
-generation)`. A placement that appears live names an image the mirror
-already stores if the program sent pixels inline; the client fetches
-only when its store lacks the pixels (`t=s`, a snapshot with
-`images=none`, or a remote client).
+Without `Ko-Accept-Shm: 1` the reply is the pixels as an
+`application/octet-stream` body, with the format, size, generation,
+frame gap and frame count in `ko-image-*` headers. With it, the reply
+is a JSON body that names a shared memory object and gives the same
+facts with its length (`ko_server/src/protocol.rs`). The
+client maps the object read-only and never unlinks it. A body comes
+from the coordinator's own read-only mapping of the object through a
+pull source on the connection (`Phase::Streaming` in
+`ko_server/src/conn.rs`): the connection writes it in pieces as the
+socket drains, so a body larger than the queue cap never sits in
+memory and the connection serves its next request after it. A fetch
+that waits for `ko-pane` is a stored waiter with the connection's
+deadline of 10 s, never a thread (section 14's `image` frame).
 
-Pixels come from `ko-pane` through per-image shared-memory objects
-(decided 2026-10-30), never through the ring: an image can be larger
-than the 1 MiB ring, the same pixels are read again by every client
-that attaches, and a local client maps the object directly. On a
-request the coordinator sends an `image` frame (section 14).
-`ko-pane` copies the pixels once out of its terminal's storage into a
-POSIX object `/ko-<pid>-<n>` (under 31 bytes, the macOS limit;
-`<pid>` is `ko-pane`'s) with mode 0600, or answers from the object it
-already made for that id and generation, and replies with the name and
-geometry, or not found. `ko-pane` owns the objects' lifetime: it
-unlinks one when the image is evicted, when its generation moves on,
-and all of them when it exits. A local client that sent
-`Ko-Accept-Shm: 1` gets the name; it maps the object and unlinks
-nothing. For any other client the coordinator maps the object itself,
-streams the pixels as the body, and unmaps.
+A client fetches the frames that its mirror holds pending, for the
+placements on screen, one connection each, in parallel, and caches by
+`(pane, image_id, frame, generation)`. A mirror that received the
+pixels inline (`t=d` in the live bytes) fetches nothing.
+`images=all`, a snapshot that keeps the payload records for a mirror
+that wants them inline, is still refused.
 
-The leak record stays with the coordinator, because it is the one
-process that outlives a pane: it appends every name that `ko-pane`
-reports to `<dir>/shm`, removes the entry on `ko-pane`'s `image_gone`
-frame or the pane's exit, unlinks a crashed `ko-pane`'s names itself,
-and unlinks every name it finds in the file at start, because macOS
-cannot enumerate POSIX shared-memory objects and a crash would leak
-them until reboot. This removes descriptor passing entirely; there is
-no second socket.
+Pixels come from `ko-pane` through shared memory objects, never
+through the ring: an image can be larger than the 1 MiB ring, every
+client that attaches reads the same pixels again, and a local client
+maps the object directly. On a fetch the coordinator mints a name
+`/ko-<pid>-<n>` (under 31 bytes, the macOS limit; `<pid>` is the
+coordinator's), appends it to the leak record, and only then sends an
+`image` frame with the image, frame, generation and that name, so a
+crash at any step leaves no object that the record does not name. A
+failed record write fails the fetch before any object exists.
+`ko-pane` copies that frame's pixels once out of its terminal's
+storage (either screen, the active one first) into a POSIX object of
+that name with mode 0600, or answers with the object it already made
+for that key, and replies with the name and the frame's metadata,
+which it reads from the terminal for each reply, or not found. When
+the reply names an older object, or is not found, the coordinator
+releases the minted line. A reply that comes after the fetch's
+deadline is still handled, so its object stays in the record.
+`ko-pane` owns the objects' lifetime: after a write that changed the
+kitty storage or the active screen, it unlinks every object whose
+frame no longer has pixels at that generation (an eviction, an edit
+that moved the serial, an `a=d` that removed the frame) and sends
+`image_gone` with its name; it unlinks all of them when it exits.
+An object lives as long as its frame does, and the kitty storage limit
+does not count it: a frame that a client fetched uses its memory twice
+until the frame goes (decided 2026-11-03 for K6; a limit for the
+objects is open).
 
-Animation frames and playback state are part of the mirror's own
-kitty state, delivered inside the view stream as the program sends
-them or in the snapshot. In kitty's protocol a frame is a number
-inside one image, not an image with its own id: the snapshot numbers
-payloads 1 for the image and 2 and up for its frames, and the
-pinned libghostty-vt exposes only the current frame's pixels through
-its image API and has no call that attaches fetched pixels to a
-pending frame. So the pixel resource needs a frame number, and
-whether a mirror opened with `images=none` can play an animation from
-fetched frames at all depends on the fork; migration.md S6 opens with
-that check and fixes the resource's shape and the shm objects'
-naming and lifetime (per image, frame and generation) from its
-result.
+The leak record is the coordinator's, because it is the one process
+that outlives a pane: `<dir>/shm` holds one line for each minted
+object, with the pane, image, frame, generation and name
+(`ko_server/src/shm.rs`). The coordinator removes a line on
+`image_gone`, unlinks and removes a pane's lines when the pane is
+removed or its `ko-pane` dies, unlinks every line at shutdown, and
+unlinks every line it finds at start, because macOS cannot enumerate
+POSIX shared memory and a crash would leak the objects until reboot.
+The file is the only copy. A new name is one appended line; a
+release rewrites the file whole through a rename. There is no descriptor passing and no second socket.
+
+`ko-pane` enables the shared memory medium (`t=s`) for programs, and
+`KO_KITTY_IMAGES_MAX_BYTES` sets its image storage limit. The
+snapshot decoder of a mirror takes the same limit
+(`Terminal::decode_limited`), because libghostty-vt's default limit
+drops a larger image from a restored snapshot.
 
 ## 6. Events
 
@@ -529,9 +555,50 @@ text message on the view, or as the response body of the `POST` form.
 
 ## 9. Clipboard
 
-The server sends a clipboard read request on `/client` to one client
-(design.md 4.8) and waits 8 s. The client answers on the same
-WebSocket with data or a refusal.
+A program's clipboard write goes as a `clipboard_write` event on
+`/client` to every client whose focus is in a window that shows the
+pane. Each client applies its own consent.
+
+A clipboard read goes as a `clipboard_read` event to one answerer
+(`ko_server/src/clipboard.rs`): the client whose focus is on the
+pane, else a focused client of a window that shows it, else the
+newest client of such a window. A read for a pane that no attended
+window shows is refused at once (decided 2026-11-02), with no wait.
+Clipboard contents have one limit for the whole path,
+`MAX_CLIPBOARD` in `ko_pane_wire/src/frame.rs`, chosen so that the
+base64 and JSON of the event stay under the 1 MiB `/client` message
+limit: `ko-pane` drops a larger write, and a larger answer is a
+refusal, so a clipboard payload never closes `/client`.
+
+The answerer replies with a `clipboard_answer` request on the same
+WebSocket, with contents or without them for a refusal. The server
+takes only the first answer, only from that client; it refuses the
+read when the answerer disconnects, and when no answer comes within
+8 s (`KO_CLIPBOARD_TIMEOUT_MS` shortens it for tests). Each read
+waits on its own timer of the loop.
+
+In `ko-pane` only OSC 52 reads are served: `ko-pane` drops the empty
+reply that the terminal writes at once and writes the OSC 52 answer
+to the pty when the coordinator's answer arrives, so a read never
+blocks the pane's other output. The answer always ends with ST,
+because libghostty-vt does not report the read's terminator. Other
+reads (OSC 5522 reads and its paste events) are refused. A known
+limit: the pinned callback does not name the read's protocol, and an
+unnamed OSC 5522 read of the one MIME type `text/plain` has the same
+fields as an OSC 52 read, so `ko-pane` answers it as OSC 52. The
+fork change that removes the limit is a field for the protocol, or a
+reply that stays valid after the callback returns and carries the
+terminator.
+
+The terminal client (`ko_tui/src/clipboard.rs`) forwards a write to
+the outer terminal as OSC 52, and answers a read with an OSC 52 query
+to the outer terminal; the reply router of `ko_tui/src/input.rs`
+gives the outer terminal's reply back as the `clipboard_answer`.
+It keeps the pending reads in arrival order, at most 16; a 17th
+drops the oldest, which the server's timer then refuses. The outer
+terminal's reply names its clipboard and answers the oldest pending
+read of that clipboard. A reply with no pending read is ignored, and a
+reconnect clears the queue.
 
 ## 10. Runs
 
@@ -598,11 +665,17 @@ or `gone` of a parent to 2, an unknown run to 3, a refused name to 4
 
 ## 11. Search and prompting
 
-`GET /panes/pane_N/search` upgrades to a stream of matches for a
-needle, then a done message; closing cancels. A match's row counts
-from the top of the history at the time of the search, for display
-only; a client jumps to a match by taking a full snapshot and
-searching its mirror, since server rows move with output.
+`GET /panes/pane_N/search?needle=` upgrades to a stream of match
+batches for a needle, oldest first, then a done message and a normal
+close. `ko-pane` runs `ghostty_search_*` in steps from its loop, so
+a search of a long history does not stop the pane's output, and
+sends the matches in batches of 512. Each search is keyed by its
+request, so several searches of one pane run at once, each with its
+own done and cancel. The normal close is queued behind the queued
+messages. Closing the socket sends `search_cancel` to `ko-pane`. A match's row counts from the top of
+the history at the time of the search, for display only; a client
+jumps to a match by taking a full snapshot and searching its mirror,
+since server rows move with output.
 
 `GET /prompt/resolve` lists the candidate agent panes for the caller
 of the `Ko-Pane` header, with kido's scope rule applied in the server:
@@ -723,16 +796,17 @@ design.md 4.12.
 
 Frames the coordinator sends: `init`, `tail`, `resize`, the input
 frames (`key`, `text`, `paste`, `mouse`, `focus`), `snapshot`, `screen`,
-`signal`, `exit`. Later stages add `image` (section 5), `search` and
-`search_cancel` (section 11), `clipboard_answer` (section 9), `option`
-(a terminal option change) and `master` (the pty master over
+`signal`, `exit`, `image` (section 5), `search` and `search_cancel`
+(section 11) and `clipboard_answer` (section 9). Later stages add
+`option` (a terminal option change) and `master` (the pty master over
 `SCM_RIGHTS`, for the per-pane upgrade).
 
 Frames `ko-pane` sends: `ready`, `head`, `full`, `title`, `pwd`, `dead`,
 `snapshot_done`, `screen`, `paste_done`, `error`, `prompt`, `record`,
-`foreground`, `alternate`, `bell`, `notify` and `progress`. Later
-stages add `image` and `image_gone` (section 5), `search`,
-`clipboard_write`, `clipboard_read` and `snapshot_file`.
+`foreground`, `alternate`, `bell`, `notify`, `progress`, the image
+reply and `image_gone` (section 5), the search matches and their done
+(section 11), and `clipboard_write` and `clipboard_read` (section 9).
+A later stage adds `snapshot_file`.
 
 The libghostty-vt callbacks of the reports only record; `ko-pane`
 sends one frame for each recorded report after the write that carried

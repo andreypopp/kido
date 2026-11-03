@@ -9,13 +9,16 @@ use crate::ids::{ClientId, PaneId};
 use crate::link::{Link, Role};
 use crate::pane_proc::{Life, Refusal};
 use crate::protocol::{
-    self, Empty, Error, ErrorKind, InputResult, PROTOCOL_HEADER, PasteResult, VT_HEADER,
-    check_version,
+    self, ACCEPT_SHM_HEADER, Empty, Error, ErrorKind, IMAGE_FORMAT_HEADER, IMAGE_FRAMES_HEADER,
+    IMAGE_GAP_HEADER, IMAGE_GENERATION_HEADER, IMAGE_HEIGHT_HEADER, IMAGE_WIDTH_HEADER, ImageShm,
+    InputResult, PROTOCOL_HEADER, PasteResult, VT_HEADER, check_version,
 };
 use crate::route::{self, Alt, Endpoint, Invalid};
 use crate::state::{Owner, PutFailure, SelectFailure, State};
 use crate::view::View;
 use crate::ws::{self, Ws};
+use ko_pane_wire::frame::ImageKey;
+use ko_sys::mapping::Named;
 
 fn reply<E: Endpoint>(conn: &mut Conn, result: Result<E::Reply, Error>)
 where
@@ -319,6 +322,40 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                 reply::<routes::SendPrompt>(&mut state.conns[index], result);
             }
         }
+        Request::Image {
+            id,
+            image,
+            frame,
+            generation,
+        } => {
+            let shm = head.header(ACCEPT_SHM_HEADER) == Some("1");
+            let key = ImageKey {
+                image: image.get(),
+                frame: frame.get(),
+                generation: generation.get(),
+            };
+            state.fetch_image(poll, index, id, key, shm);
+        }
+        Request::Search { id, needle } => {
+            let Some(response) = ws::handshake(&head) else {
+                return error(
+                    &mut state.conns[index],
+                    ErrorKind::Invalid,
+                    "Didn't pass scrutiny",
+                );
+            };
+            match state.start_search(poll, token, id, needle.as_str()) {
+                Some(search) => {
+                    upgrade(state, poll, index, response, Role::Search(search));
+                    state.read_ws(poll, index);
+                }
+                None => error(
+                    &mut state.conns[index],
+                    ErrorKind::Io,
+                    Refusal::Ended.to_string(),
+                ),
+            }
+        }
         Request::View {
             id,
             history,
@@ -364,6 +401,7 @@ fn finish(state: &mut State, poll: &mut Poll, conn: Token, reply: impl FnOnce(&m
     let Some(index) = state.conns.iter().position(|found| found.token == conn) else {
         return;
     };
+    poll.stop(state.conns[index].timer);
     reply(&mut state.conns[index]);
     if matches!(state.conns[index].phase, Phase::Handling) {
         state.conns[index].phase = Phase::Head;
@@ -408,6 +446,55 @@ pub(crate) fn answer<E: Endpoint>(
     E::Reply: Serialize,
 {
     finish(state, poll, conn, |conn| reply::<E>(conn, result));
+}
+
+pub(crate) enum ImageReply<'a> {
+    Missing,
+    Shm(&'a ImageShm),
+    Pixels(&'a ImageShm, Named),
+}
+
+pub(crate) fn image<E: Endpoint<Reply = route::pixels>>(
+    state: &mut State,
+    poll: &mut Poll,
+    conn: Token,
+    reply: ImageReply<'_>,
+) {
+    finish(state, poll, conn, |conn| match reply {
+        ImageReply::Missing => error(conn, ErrorKind::Missing, "image not found"),
+        ImageReply::Shm(shm) => respond(conn, Status::Ok, &protocol::json(shm)),
+        ImageReply::Pixels(shm, map) => {
+            let format = protocol::json(&shm.format);
+            let numbers = [
+                shm.length,
+                u64::from(shm.width),
+                u64::from(shm.height),
+                shm.generation,
+                u64::from(shm.gap_ms),
+                u64::from(shm.frames),
+            ]
+            .map(|number| number.to_string());
+            let [length, width, height, generation, gap, frames] = &numbers;
+            let head = http::response(
+                Status::Ok,
+                &[
+                    ("content-type", "application/octet-stream"),
+                    ("content-length", length),
+                    (IMAGE_FORMAT_HEADER, format.trim_matches('"')),
+                    (IMAGE_WIDTH_HEADER, width),
+                    (IMAGE_HEIGHT_HEADER, height),
+                    (IMAGE_GENERATION_HEADER, generation),
+                    (IMAGE_GAP_HEADER, gap),
+                    (IMAGE_FRAMES_HEADER, frames),
+                ],
+                b"",
+            );
+            conn.out.send_pixels(head, map);
+            if conn.out.streaming() {
+                conn.phase = Phase::Streaming;
+            }
+        }
+    });
 }
 
 pub(crate) fn pasted(state: &mut State, poll: &mut Poll, conn: Token, result: PasteResult) {

@@ -361,6 +361,7 @@ impl Mirror {
     fn snapshot(&mut self, state: &mut State, offset: u64, data: &[u8]) -> Result<(), String> {
         let (slice, body) = Slice::decode(data).ok_or("short snapshot slice")?;
         let (first, last) = (slice.first, slice.last);
+        let images = self.limits.kitty_images_max_bytes;
         if first {
             self.resume.clear();
             self.assembly = Some(Assembly {
@@ -385,7 +386,7 @@ impl Mirror {
             && ready.as_mut().is_some_and(|scan| scan.feed(body))
         {
             *ready = None;
-            let early = Terminal::decode(&mut &assembly.buffer[..], Extent::Screen)
+            let early = Terminal::decode_limited(&mut &assembly.buffer[..], Extent::Screen, images)
                 .and_then(Screen::new)
                 .map_err(text)?;
             let pending = match &state.surface {
@@ -410,7 +411,12 @@ impl Mirror {
             self.resume.at(assembly.end);
         }
         let extent = if full { Extent::Full } else { Extent::Screen };
-        let mut vt = Terminal::decode(&mut &assembly.buffer[..], extent).map_err(text)?;
+        let mut vt = Terminal::decode_limited(
+            &mut &assembly.buffer[..],
+            extent,
+            self.limits.kitty_images_max_bytes,
+        )
+        .map_err(text)?;
         vt.configure(self.limits).map_err(text)?;
         let mut screen = Screen::new(vt).map_err(text)?;
         for next in assembly.following {

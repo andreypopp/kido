@@ -148,6 +148,7 @@ pub(crate) enum Reply {
     Kitty,
     Da1,
     Xtversion(String),
+    Clipboard(ko_pane_wire::frame::ClipboardLocation, Vec<u8>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -822,6 +823,18 @@ impl Perform for Collector {
         }
     }
 
+    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        if let [b"52", selector, data] = params
+            && let Some(location) = frame::ClipboardLocation::of_selector(selector)
+            && let Some(text) = std::str::from_utf8(data)
+                .ok()
+                .and_then(ko_pane_wire::base64::decode)
+        {
+            self.events
+                .push(Event::Reply(Reply::Clipboard(location, text)));
+        }
+    }
+
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], ignore: bool, action: char) {
         if ignore {
             return;
@@ -1391,6 +1404,30 @@ mod tests {
             input.feed(b"z", start, &mut seen);
             assert!(matches!(seen.last(), Some(Event::Key(k)) if k.name == Name::Char('z')));
         }
+    }
+
+    #[test]
+    fn an_osc_52_reply_names_its_clipboard_and_carries_the_decoded_text() {
+        let mut input = Input::default();
+        let mut events = Vec::new();
+        input.feed(
+            b"\x1b]52;p;aGk=\x1b\\\x1b]52;c;\x07\x1b]52;x;aGk=\x07",
+            Instant::now(),
+            &mut events,
+        );
+        assert_eq!(
+            events,
+            [
+                Event::Reply(Reply::Clipboard(
+                    frame::ClipboardLocation::Primary,
+                    b"hi".to_vec()
+                )),
+                Event::Reply(Reply::Clipboard(
+                    frame::ClipboardLocation::Standard,
+                    Vec::new()
+                )),
+            ]
+        );
     }
 
     #[test]

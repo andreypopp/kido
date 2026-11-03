@@ -97,6 +97,7 @@ fn turns(pane: &mut Pane) -> Outcome {
         let committed = (master.is_some_and(ready) || pane.exit_pending()) && pane.read_pty();
         let dead = pane.dead();
         pane.clear_history();
+        pane.search_step();
         if let Err(stop) = dead.and_then(|()| pane.flush()) {
             return ended(pane, stop);
         }
@@ -121,6 +122,9 @@ fn turns(pane: &mut Pane) -> Outcome {
             }
         } else {
             poll.stop(timer);
+        }
+        if pane.searching() {
+            mode = Mode::Peek;
         }
     }
 }
