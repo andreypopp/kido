@@ -198,26 +198,32 @@ fn pane_runs_the_shims() {
     s.wait_row(&pane, "the first prompt", |row| {
         row["status"]["kind"]["phase"]["type"] == "idle"
     });
+    let out = s.dir.join("shims.txt");
     s.text(
         &pane,
-        "printf 'K<%s>\\n' \"$(command -v ko)\" \"$(command -v ssh)\"; ko version\r",
+        &format!(
+            "{{ command -v ko; command -v ssh; ko version; }} > {}; printf 'M%s\\n' ok\r",
+            out.display()
+        ),
     );
-    s.screen_has(&pane, "\"protocol\"");
-    let screen = s.screen(&pane);
-    let found: Vec<PathBuf> = screen
-        .lines()
-        .filter_map(|line| line.strip_prefix("K<")?.strip_suffix('>'))
+    s.screen_has(&pane, "Mok");
+    let written = fs::read_to_string(&out).unwrap();
+    let mut lines = written.lines();
+    let found: Vec<PathBuf> = lines
+        .by_ref()
+        .take(2)
         .map(|path| fs::canonicalize(path).unwrap())
         .collect();
     assert_eq!(
         found,
         [shims.join("ko"), shims.join("ssh")],
-        "the shims come first after a login file demoted them: {screen}"
+        "the shims come first after a login file demoted them: {written}"
     );
     let version = run_ko(&s.scratch, &test_env(&s.dir), &["version"], "").ok();
-    assert!(
-        screen.replace('\n', "").contains(version.trim()),
-        "ko version through the shim is the prefix binary's: {screen}"
+    assert_eq!(
+        lines.collect::<Vec<_>>().join("\n"),
+        version.trim(),
+        "ko version through the shim is the prefix binary's"
     );
 }
 
