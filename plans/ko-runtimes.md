@@ -959,6 +959,16 @@ stay compatible with it:
 Not designed here; this section shows that the model and the stream
 layer hold for each, with the facts measured or read on 2026-11-03.
 
+- **ko ships pi into the runtime (idea, 2026-11-04).** "pi inside"
+  without an installed pi: pi's npm package already runs from a 9 MB
+  esbuild bundle (`dist/bundle`) with a few external packages
+  (photon-node, typebox, WASM files; its native module is optional on
+  Linux), so a bundle plus Node, or a standalone Bun build of pi if
+  one exists for Linux, could be copied as the static ko is. Open:
+  whether `ko-pi.ts` loads in it, and credentials, since pi inside
+  needs the model key there unless ko proxies model requests on the
+  host. Not investigated yet.
+
 - **podman on Linux.** The link is a running container with the
   runtime *directory* bind-mounted (`-v <rt dir>:/run/ko`; a file
   mount pins the old inode) and `--security-opt label=disable` on a
