@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use ko_pane_wire::frame::Dim;
+use ko_pane_wire::frame::{Dim, Size};
 
 use crate::ids::{Name, PaneId, SessionId, WindowId};
 use crate::protocol::{
@@ -10,8 +10,10 @@ use crate::protocol::{
 };
 use crate::vars::Vars;
 
-const DEFAULT_COLS: usize = 80;
-const DEFAULT_ROWS: usize = 24;
+const UNSIZED_WINDOW: Size = Size {
+    cell_px: None,
+    ..Size::DEFAULT
+};
 
 #[derive(Debug, Clone, Copy)]
 struct Ids {
@@ -112,12 +114,19 @@ impl Document {
     pub(crate) fn put(
         &mut self,
         request: PutLayout,
+        new_window: Option<Size>,
     ) -> Result<Vec<(PaneId, CreatePane, Vars)>, PutError> {
         if request.revision != self.revision {
             return Err(PutError::Stale);
         }
-        let normalized = normalize(request.layout, &self.layout, self.ids, self.shell.as_ref())
-            .map_err(PutError::Invalid)?;
+        let normalized = normalize(
+            request.layout,
+            &self.layout,
+            self.ids,
+            self.shell.as_ref(),
+            new_window.unwrap_or(UNSIZED_WINDOW),
+        )
+        .map_err(PutError::Invalid)?;
         self.ids = normalized.ids;
         self.replace(normalized.layout);
         Ok(normalized.created)
@@ -653,6 +662,7 @@ fn window(
     draft: DraftWindow,
     id: WindowId,
     previous: Option<&Window>,
+    new_window: Size,
     claims: &mut Claims<'_>,
 ) -> Result<Window, String> {
     let name = match (draft.name, previous) {
@@ -687,18 +697,16 @@ fn window(
             title,
         });
     }
-    let wanted = |given: Option<Cells>, old: Option<Cells>, default: usize| {
-        given
-            .or(old)
-            .map_or(default, |cells| usize::from(cells.get()))
+    let wanted = |given: Option<Cells>, old: Option<Cells>, default: Dim| {
+        usize::from(given.or(old).map_or(default.get(), Cells::get))
     };
     let bordered = floats.iter().any(|float| float.border);
     let (cols, rows) = extent(
         &tree,
         bordered,
         (
-            wanted(draft.cols, previous.map(|old| old.cols), DEFAULT_COLS),
-            wanted(draft.rows, previous.map(|old| old.rows), DEFAULT_ROWS),
+            wanted(draft.cols, previous.map(|old| old.cols), new_window.cols),
+            wanted(draft.rows, previous.map(|old| old.rows), new_window.rows),
         ),
     );
     if cols > usize::from(Dim::MAX.get()) || rows > usize::from(Dim::MAX.get()) {
@@ -712,7 +720,9 @@ fn window(
         vars: Vars::checked(draft.vars)?,
         cols: Cells::clamped(cols),
         rows: Cells::clamped(rows),
-        cell_px: draft.cell_px.or(previous.and_then(|old| old.cell_px)),
+        cell_px: draft
+            .cell_px
+            .or(previous.map_or(new_window.cell_px.map(CellPixels), |old| old.cell_px)),
         zoom: draft.zoom,
         focus,
         tree: fit(tree, cols, rows),
@@ -729,6 +739,7 @@ fn normalize(
     current: &Layout,
     ids: Ids,
     shell: Option<&Name>,
+    new_window: Size,
 ) -> Result<Normalized, String> {
     let live = current.panes();
     let mut claims = Claims {
@@ -768,6 +779,7 @@ fn normalize(
                 draft,
                 id,
                 current.window(id).map(|(_, window)| window),
+                new_window,
                 &mut claims,
             )?);
         }
@@ -830,7 +842,7 @@ mod tests {
     fn document_of(window: Value) -> Document {
         let mut document = Document::empty();
         document
-            .put(request(&document, vec![session(vec![window])]))
+            .put(request(&document, vec![session(vec![window])]), None)
             .unwrap();
         document.publish();
         document
@@ -844,7 +856,7 @@ mod tests {
         edited["id"] = json!("window_1");
         let mut named = session(vec![edited]);
         named["id"] = json!("session_1");
-        let created = document.put(request(document, vec![named]))?;
+        let created = document.put(request(document, vec![named]), None)?;
         document.publish();
         Ok(created)
     }
@@ -877,7 +889,7 @@ mod tests {
     }
 
     fn invalid(document: &mut Document, sessions: Vec<Value>) -> String {
-        match document.put(request(document, sessions)) {
+        match document.put(request(document, sessions), None) {
             Err(PutError::Invalid(message)) => message,
             other => panic!("expected invalid, got {other:?}"),
         }
@@ -986,6 +998,7 @@ mod tests {
                         "layout": before.layout,
                     }))
                     .unwrap(),
+                    None,
                 )
                 .unwrap();
             assert_eq!(document.snapshot(), before);
@@ -1283,15 +1296,18 @@ mod tests {
         let first = document.snapshot().revision;
         let stale = request(&document, vec![]);
         assert_eq!(
-            document.put(PutLayout {
-                revision: Revision::FIRST,
-                ..stale
-            }),
+            document.put(
+                PutLayout {
+                    revision: Revision::FIRST,
+                    ..stale
+                },
+                None
+            ),
             Err(PutError::Stale)
         );
         let again = json!({"revision": first, "layout": document.snapshot().layout});
         document
-            .put(serde_json::from_value(again).unwrap())
+            .put(serde_json::from_value(again).unwrap(), None)
             .unwrap();
         assert_eq!(document.snapshot().revision, first);
         edit(
@@ -1388,10 +1404,13 @@ mod tests {
         first["zoom"] = json!("pane_1");
         let mut document = Document::empty();
         document
-            .put(request(
-                &document,
-                vec![session(vec![first, window(unsized_leaf(new_pane()))])],
-            ))
+            .put(
+                request(
+                    &document,
+                    vec![session(vec![first, window(unsized_leaf(new_pane()))])],
+                ),
+                None,
+            )
             .unwrap();
         document.remove_pane(PaneId::new(1));
         assert_eq!(first_window(&document).zoom, None);
@@ -1476,19 +1495,22 @@ mod tests {
     fn two_sessions() -> Document {
         let mut document = Document::empty();
         document
-            .put(request(
-                &document,
-                vec![
-                    session(vec![
-                        window(split(
-                            "h",
-                            vec![unsized_leaf(new_pane()), unsized_leaf(new_pane())],
-                        )),
-                        window(unsized_leaf(new_pane())),
-                    ]),
-                    session(vec![window(unsized_leaf(new_pane()))]),
-                ],
-            ))
+            .put(
+                request(
+                    &document,
+                    vec![
+                        session(vec![
+                            window(split(
+                                "h",
+                                vec![unsized_leaf(new_pane()), unsized_leaf(new_pane())],
+                            )),
+                            window(unsized_leaf(new_pane())),
+                        ]),
+                        session(vec![window(unsized_leaf(new_pane()))]),
+                    ],
+                ),
+                None,
+            )
             .unwrap();
         document.publish();
         document
@@ -1565,7 +1587,9 @@ mod tests {
         let mut sent = serde_json::to_value(document.snapshot()).unwrap();
         sent["layout"]["sessions"][0]["windows"][0]["focus"] = json!("pane_1");
         sent["layout"]["sessions"][0]["windows"][1]["focus"] = json!("pane_99");
-        document.put(serde_json::from_value(sent).unwrap()).unwrap();
+        document
+            .put(serde_json::from_value(sent).unwrap(), None)
+            .unwrap();
         assert_eq!(focus(&document), PaneId::new(2));
         assert!(!document.unpublished());
         assert_eq!(document.revision(), revision);
@@ -1603,7 +1627,7 @@ mod tests {
             split("h", vec![tree, unsized_leaf(json!("pane_2"))]);
         moved["layout"]["sessions"][0]["windows"][0]["tree"] = unsized_leaf(json!("pane_1"));
         document
-            .put(serde_json::from_value(moved).unwrap())
+            .put(serde_json::from_value(moved).unwrap(), None)
             .unwrap();
         let windows = &document.layout().sessions[0].windows;
         assert_eq!(windows[0].focus, PaneId::new(1));
@@ -1625,7 +1649,9 @@ mod tests {
             named(argv(&["/"])),
             {"name": "given", "tree": unsized_leaf(new_pane())},
         ]});
-        document.put(request(&document, vec![created])).unwrap();
+        document
+            .put(request(&document, vec![created]), None)
+            .unwrap();
         let names = |document: &Document| -> Vec<String> {
             document.layout().sessions[0]
                 .windows
@@ -1644,7 +1670,7 @@ mod tests {
         windows[1]["name"] = json!("renamed");
         windows[4]["name"] = json!("given");
         document
-            .put(serde_json::from_value(edited).unwrap())
+            .put(serde_json::from_value(edited).unwrap(), None)
             .unwrap();
         let renamed_names = names(&document);
         assert_eq!(renamed_names, ["vim", "renamed", "sh", "sh", "given"]);
@@ -1659,7 +1685,7 @@ mod tests {
             .unwrap();
         first.remove(0);
         document
-            .put(serde_json::from_value(moved).unwrap())
+            .put(serde_json::from_value(moved).unwrap(), None)
             .unwrap();
         let windows = &document.layout().sessions[0].windows;
         assert_eq!(String::from(windows[5].name.clone()), "vim");
@@ -1745,148 +1771,149 @@ mod tests {
     }
 
     proptest! {
-        #[test]
-        fn any_draft_normalizes_to_a_consistent_document(generated in windows()) {
-            let mut document = Document::empty();
-            let created = document
-                .put(request(&document, vec![session(vec![generated])]))
-                .unwrap();
-            let layout = document.snapshot().layout;
-            check(&layout);
-            prop_assert_eq!(pane_count(&layout), created.len());
-            prop_assert_eq!(
-                layout.panes(),
-                created.iter().map(|(pane, ..)| *pane).collect::<BTreeSet<_>>()
-            );
-        }
+            #[test]
+            fn any_draft_normalizes_to_a_consistent_document(generated in windows()) {
+                let mut document = Document::empty();
+                let created = document
+                    .put(request(&document, vec![session(vec![generated])]), None)
+                    .unwrap();
+                let layout = document.snapshot().layout;
+                check(&layout);
+                prop_assert_eq!(pane_count(&layout), created.len());
+                prop_assert_eq!(
+                    layout.panes(),
+                    created.iter().map(|(pane, ..)| *pane).collect::<BTreeSet<_>>()
+                );
+            }
 
-        #[test]
-        fn a_normalized_document_is_a_fixed_point(generated in windows()) {
-            let mut document = document_of(generated);
-            let before = document.snapshot();
-            let created = document
-                .put(
-                    serde_json::from_value(json!({
-                        "revision": before.revision,
-                        "layout": before.layout,
-                    }))
-                    .unwrap(),
-                )
-                .unwrap();
-            prop_assert!(created.is_empty());
-            prop_assert_eq!(document.snapshot(), before);
-        }
+            #[test]
+            fn a_normalized_document_is_a_fixed_point(generated in windows()) {
+                let mut document = document_of(generated);
+                let before = document.snapshot();
+                let created = document
+                    .put(
+                        serde_json::from_value(json!({
+                            "revision": before.revision,
+                            "layout": before.layout,
+                        }))
+                        .unwrap(),
+                    None,
+    )
+                    .unwrap();
+                prop_assert!(created.is_empty());
+                prop_assert_eq!(document.snapshot(), before);
+            }
 
-        #[test]
-        fn omitting_every_size_equalizes_into_a_consistent_fixed_point(generated in windows()) {
-            let mut document = document_of(generated);
-            let before = document.snapshot().layout;
-            let created = document.put(equalizing(&document)).unwrap();
-            prop_assert!(created.is_empty());
-            let equalized = document.snapshot().layout;
-            check(&equalized);
-            prop_assert_eq!(equalized.panes(), before.panes());
-            let (old, new) = (&before.sessions[0].windows[0], &equalized.sessions[0].windows[0]);
-            prop_assert_eq!((new.cols, new.rows), (old.cols, old.rows));
-            let (mut leaves, mut was) = (vec![], vec![]);
-            new.tree.leaves(&mut leaves);
-            old.tree.leaves(&mut was);
-            prop_assert_eq!(
-                leaves.iter().map(|leaf| leaf.pane).collect::<Vec<_>>(),
-                was.iter().map(|leaf| leaf.pane).collect::<Vec<_>>()
-            );
-            prop_assert!(leaves.iter().all(|leaf| leaf.cols.get() >= 1 && leaf.rows.get() >= 1));
-            let again = document.put(equalizing(&document)).unwrap();
-            prop_assert!(again.is_empty());
-            prop_assert_eq!(document.snapshot().layout, equalized);
-        }
+            #[test]
+            fn omitting_every_size_equalizes_into_a_consistent_fixed_point(generated in windows()) {
+                let mut document = document_of(generated);
+                let before = document.snapshot().layout;
+                let created = document.put(equalizing(&document), None).unwrap();
+                prop_assert!(created.is_empty());
+                let equalized = document.snapshot().layout;
+                check(&equalized);
+                prop_assert_eq!(equalized.panes(), before.panes());
+                let (old, new) = (&before.sessions[0].windows[0], &equalized.sessions[0].windows[0]);
+                prop_assert_eq!((new.cols, new.rows), (old.cols, old.rows));
+                let (mut leaves, mut was) = (vec![], vec![]);
+                new.tree.leaves(&mut leaves);
+                old.tree.leaves(&mut was);
+                prop_assert_eq!(
+                    leaves.iter().map(|leaf| leaf.pane).collect::<Vec<_>>(),
+                    was.iter().map(|leaf| leaf.pane).collect::<Vec<_>>()
+                );
+                prop_assert!(leaves.iter().all(|leaf| leaf.cols.get() >= 1 && leaf.rows.get() >= 1));
+                let again = document.put(equalizing(&document), None).unwrap();
+                prop_assert!(again.is_empty());
+                prop_assert_eq!(document.snapshot().layout, equalized);
+            }
 
-        #[test]
-        fn omitting_the_sizes_of_a_flat_split_shares_its_axis_within_one_cell(
-            sizes in prop::collection::vec((1u16..60, 1u16..40), 2..7),
-            horizontal in any::<bool>(),
-            cols in 1u16..200,
-            rows in 1u16..80,
-        ) {
-            let leaves = sizes.iter().map(|(c, r)| leaf(new_pane(), *c, *r)).collect();
-            let mut generated = window(split(if horizontal { "h" } else { "v" }, leaves));
-            generated["cols"] = json!(cols);
-            generated["rows"] = json!(rows);
-            let mut document = document_of(generated);
-            document.put(equalizing(&document)).unwrap();
-            let (mut shared, tree) = (vec![], first_window(&document).tree);
-            tree.leaves(&mut shared);
-            let along: Vec<_> = shared
-                .iter()
-                .map(|leaf| usize::from(if horizontal { leaf.cols } else { leaf.rows }.get()))
-                .collect();
-            let (low, high) = (along.iter().min().unwrap(), along.iter().max().unwrap());
-            prop_assert!(high - low <= 1, "{along:?}");
-        }
+            #[test]
+            fn omitting_the_sizes_of_a_flat_split_shares_its_axis_within_one_cell(
+                sizes in prop::collection::vec((1u16..60, 1u16..40), 2..7),
+                horizontal in any::<bool>(),
+                cols in 1u16..200,
+                rows in 1u16..80,
+            ) {
+                let leaves = sizes.iter().map(|(c, r)| leaf(new_pane(), *c, *r)).collect();
+                let mut generated = window(split(if horizontal { "h" } else { "v" }, leaves));
+                generated["cols"] = json!(cols);
+                generated["rows"] = json!(rows);
+                let mut document = document_of(generated);
+                document.put(equalizing(&document), None).unwrap();
+                let (mut shared, tree) = (vec![], first_window(&document).tree);
+                tree.leaves(&mut shared);
+                let along: Vec<_> = shared
+                    .iter()
+                    .map(|leaf| usize::from(if horizontal { leaf.cols } else { leaf.rows }.get()))
+                    .collect();
+                let (low, high) = (along.iter().min().unwrap(), along.iter().max().unwrap());
+                prop_assert!(high - low <= 1, "{along:?}");
+            }
 
-        #[test]
-        fn scaling_keeps_every_rule_and_returns_from_the_smallest_size(
-            generated in windows(),
-            cols in 1u16..300,
-            rows in 1u16..100,
-        ) {
-            let mut document = document_of(generated);
-            let start = first_window(&document);
-            let size = |count| Cells::new(count).unwrap();
-            document.resize_window(start.id, size(cols), size(rows), None);
-            check(&document.snapshot().layout);
-            document.resize_window(start.id, size(1), size(1), None);
-            let smallest = first_window(&document);
-            check(&document.snapshot().layout);
-            let outer = if smallest.floats.iter().any(|float| float.border) { 3 } else { 1 };
-            prop_assert_eq!(
-                (usize::from(smallest.cols.get()), usize::from(smallest.rows.get())),
-                (
-                    smallest.tree.minimum(Axis::Horizontal).max(outer),
-                    smallest.tree.minimum(Axis::Vertical).max(outer)
-                )
-            );
-            document.resize_window(start.id, start.cols, start.rows, None);
-            let back = first_window(&document);
-            check(&document.snapshot().layout);
-            prop_assert_eq!((back.cols, back.rows), (start.cols, start.rows));
-            prop_assert_eq!(back.panes().len(), start.panes().len());
-        }
+            #[test]
+            fn scaling_keeps_every_rule_and_returns_from_the_smallest_size(
+                generated in windows(),
+                cols in 1u16..300,
+                rows in 1u16..100,
+            ) {
+                let mut document = document_of(generated);
+                let start = first_window(&document);
+                let size = |count| Cells::new(count).unwrap();
+                document.resize_window(start.id, size(cols), size(rows), None);
+                check(&document.snapshot().layout);
+                document.resize_window(start.id, size(1), size(1), None);
+                let smallest = first_window(&document);
+                check(&document.snapshot().layout);
+                let outer = if smallest.floats.iter().any(|float| float.border) { 3 } else { 1 };
+                prop_assert_eq!(
+                    (usize::from(smallest.cols.get()), usize::from(smallest.rows.get())),
+                    (
+                        smallest.tree.minimum(Axis::Horizontal).max(outer),
+                        smallest.tree.minimum(Axis::Vertical).max(outer)
+                    )
+                );
+                document.resize_window(start.id, start.cols, start.rows, None);
+                let back = first_window(&document);
+                check(&document.snapshot().layout);
+                prop_assert_eq!((back.cols, back.rows), (start.cols, start.rows));
+                prop_assert_eq!(back.panes().len(), start.panes().len());
+            }
 
-        #[test]
-        fn removing_any_pane_leaves_a_consistent_document(
-            generated in windows(),
-            pick in any::<prop::sample::Index>(),
-        ) {
-            let mut document = document_of(generated);
-            let before = document.snapshot().layout;
-            let panes: Vec<_> = before.panes().into_iter().collect();
-            let victim = panes[pick.index(panes.len())];
-            prop_assert!(document.remove_pane(victim).is_some());
-            let after = document.snapshot().layout;
-            check(&after);
-            let mut expected = before.panes();
-            expected.remove(&victim);
-            prop_assert_eq!(after.panes(), expected);
-            let order = |layout: &Layout| {
-                let mut panes = vec![];
-                if let Some(window) = layout.sessions.first().and_then(|session| session.windows.first()) {
-                    let mut tiled = vec![];
-                    window.tree.leaves(&mut tiled);
-                    panes.extend(tiled.into_iter().map(|leaf| leaf.pane));
+            #[test]
+            fn removing_any_pane_leaves_a_consistent_document(
+                generated in windows(),
+                pick in any::<prop::sample::Index>(),
+            ) {
+                let mut document = document_of(generated);
+                let before = document.snapshot().layout;
+                let panes: Vec<_> = before.panes().into_iter().collect();
+                let victim = panes[pick.index(panes.len())];
+                prop_assert!(document.remove_pane(victim).is_some());
+                let after = document.snapshot().layout;
+                check(&after);
+                let mut expected = before.panes();
+                expected.remove(&victim);
+                prop_assert_eq!(after.panes(), expected);
+                let order = |layout: &Layout| {
+                    let mut panes = vec![];
+                    if let Some(window) = layout.sessions.first().and_then(|session| session.windows.first()) {
+                        let mut tiled = vec![];
+                        window.tree.leaves(&mut tiled);
+                        panes.extend(tiled.into_iter().map(|leaf| leaf.pane));
+                    }
+                    panes
+                };
+                let mut tiled = order(&before);
+                let promoted = order(&after).len() == 1 && tiled.len() == 1;
+                tiled.retain(|pane| *pane != victim);
+                if !promoted {
+                    prop_assert_eq!(order(&after), tiled);
                 }
-                panes
-            };
-            let mut tiled = order(&before);
-            let promoted = order(&after).len() == 1 && tiled.len() == 1;
-            tiled.retain(|pane| *pane != victim);
-            if !promoted {
-                prop_assert_eq!(order(&after), tiled);
-            }
-            if let Some(window) = after.sessions.first().and_then(|session| session.windows.first()) {
-                let old = &before.sessions[0].windows[0];
-                prop_assert_eq!((window.cols, window.rows), (old.cols, old.rows));
+                if let Some(window) = after.sessions.first().and_then(|session| session.windows.first()) {
+                    let old = &before.sessions[0].windows[0];
+                    prop_assert_eq!((window.cols, window.rows), (old.cols, old.rows));
+                }
             }
         }
-    }
 }

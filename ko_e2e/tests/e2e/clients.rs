@@ -361,23 +361,39 @@ def ask(q):
   if not select.select([0],[],[],3)[0]: return 'NONE'
   buf+=os.read(0,64)
  return buf.decode().replace('\x1b','E')
-n=0
-out('READY')
-while os.read(0,1):
+n=-1
+while True:
  n+=1
  r,c,x,y=struct.unpack('4H',fcntl.ioctl(0,termios.TIOCGWINSZ,b'\0'*8))
+ out('%d size=%dx%d'%(n,c,r))
  out('%d px=%dx%d'%(n,x,y))
- out('%d t14=%s'%(n,ask(b'\x1b[14t')))
- out('%d t16=%s'%(n,ask(b'\x1b[16t')))
+ if x:
+  out('%d t14=%s'%(n,ask(b'\x1b[14t')))
+  out('%d t16=%s'%(n,ask(b'\x1b[16t')))
+  out('%d t18=%s'%(n,ask(b'\x1b[18t')))
+ out('READY')
+ if not os.read(0,1): break
 "#;
 
-fn probe(s: &Server, pane: &str, n: u32, (cols, rows): (u32, u32), (width, height): (u32, u32)) {
+fn probe(s: &Server, pane: &str, n: u32, size: (u32, u32), cell: (u32, u32)) {
     s.text(pane, "x");
+    probe_round(s, pane, n, size, cell);
+}
+
+fn probe_round(
+    s: &Server,
+    pane: &str,
+    n: u32,
+    (cols, rows): (u32, u32),
+    (width, height): (u32, u32),
+) {
     let (x, y) = (cols * width, rows * height);
     for line in [
+        format!("{n} size={cols}x{rows}"),
         format!("{n} px={x}x{y}"),
         format!("{n} t14=E[4;{y};{x}t"),
         format!("{n} t16=E[6;{height};{width}t"),
+        format!("{n} t18=E[8;{rows};{cols}t"),
     ] {
         s.screen_has(pane, &line);
     }
@@ -421,4 +437,36 @@ fn a_pane_knows_its_pixel_size_from_the_cell_size_of_the_sizing_client() {
     });
     probe(&s, &first, 3, (panes[0].2, panes[0].1), (9, 20));
     probe(&s, &second, 2, (cols, rows), (9, 20));
+}
+
+#[test]
+fn a_new_pane_reports_its_size_to_a_program_that_asks_at_startup() {
+    let s = start(&[]);
+    let command = format!("exec python3 -u -c {}", quote(SIZE_PROBE));
+    let first = s.pane("cat");
+    let mut client = s.hello(crate::harness::Hello {
+        kind: "app",
+        selection: json!({"pane": first}),
+        focused: true,
+        size: json!({"cols": 69, "rows": 28, "cell_px": {"width": 16, "height": 35}}),
+    });
+    client.welcome();
+    wait_doc("the client's size", &s, |d| window_size(d, 0) == (69, 28));
+    s.edit(|layout| {
+        let windows = layout["sessions"][0]["windows"].as_array_mut().unwrap();
+        windows[0]["tree"] = split(
+            "h",
+            vec![old(&first), json!({"pane": {"new": sh(&command)}})],
+        );
+        windows.push(json!({"name": "other", "tree": {"pane": {"new": sh(&command)}}}));
+    });
+    let document = s.doc();
+    assert_eq!(window_size(&document, 1), (69, 28));
+    for (window, at) in [(0, 1), (1, 0)] {
+        let mut panes = Vec::new();
+        leaves(&windows(&document)[window]["tree"], &mut panes);
+        let (pane, rows, cols) = panes[at].clone();
+        s.screen_has(&pane, "READY");
+        probe_round(&s, &pane, 0, (cols, rows), (16, 35));
+    }
 }

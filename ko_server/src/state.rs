@@ -348,10 +348,19 @@ impl State {
         run: Option<RunId>,
     ) -> Result<Snapshot, PutFailure> {
         let before = self.document.clone();
-        let created = self.document.put(request).map_err(|error| match error {
-            PutError::Stale => PutFailure::Stale(self.document.snapshot()),
-            PutError::Invalid(message) => PutFailure::Invalid(message),
-        })?;
+        let new_window = client::new_window_sizer(
+            self.conns
+                .iter()
+                .filter_map(client_of)
+                .filter_map(|client| client.active.as_ref()),
+        );
+        let created = self
+            .document
+            .put(request, new_window)
+            .map_err(|error| match error {
+                PutError::Stale => PutFailure::Stale(self.document.snapshot()),
+                PutError::Invalid(message) => PutFailure::Invalid(message),
+            })?;
         let added: usize = created.iter().map(|(_, _, vars)| vars.bytes()).sum();
         if self.vars_used().saturating_add(added) > SERVER_MAX_TOTAL {
             self.document.rollback(before);

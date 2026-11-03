@@ -188,6 +188,17 @@ terminal client sends its outer tty's `TIOCGWINSZ` pixels divided by
 its columns and rows, or no `cell_px` when the outer terminal reports
 0 pixels.
 
+A pane starts at its initial size: `ko-pane` sets the pty's cells and
+pixels before the program starts, and its terminal answers `CSI 18t`
+from that first size, and `CSI 14t` and `16t` when the window has a
+`cell_px`, so a program that asks at startup gets the answer. A new window of a `PUT` that does not give
+`cols`, `rows` or `cell_px` takes them from the size of a client that
+sizes windows: the client whose terminal has focus, else the first
+such client. Without one (the first pane of an empty server, a
+`PUT` with no client connected), the window is 80x24 with no
+`cell_px`. A client that later selects the window as its sizing
+client resizes it.
+
 The client exists from the hello to the close. There is no
 registration request, no linger and no delete: detach is a close, and
 a crash, a network loss or a ping timeout is a close too. On close the

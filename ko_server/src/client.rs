@@ -55,6 +55,13 @@ pub(crate) enum Change {
     },
 }
 
+pub(crate) fn new_window_sizer<'a>(actives: impl Iterator<Item = &'a Active>) -> Option<Size> {
+    actives
+        .filter(|active| !active.ignore_size)
+        .min_by_key(|active| !active.focused)
+        .map(|active| active.size)
+}
+
 pub(crate) fn claims<'a>(
     client: ClientId,
     active: &Active,
@@ -249,6 +256,7 @@ mod tests {
             .put(
                 serde_json::from_value(json!({"revision": 0, "layout": {"sessions": sessions}}))
                     .unwrap(),
+                None,
             )
             .unwrap();
         document.publish();
@@ -431,7 +439,10 @@ mod tests {
         edited["sessions"][1]["windows"][0]["tree"] =
             pair(json!({"pane": "pane_4"}), json!({"pane": "pane_1"}));
         source
-            .put(serde_json::from_value(json!({"revision": 1, "layout": edited})).unwrap())
+            .put(
+                serde_json::from_value(json!({"revision": 1, "layout": edited})).unwrap(),
+                None,
+            )
             .unwrap();
         assert_eq!(
             at(current(1, 1, 1)).reconcile(&before, source.layout()),
