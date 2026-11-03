@@ -131,7 +131,7 @@ fn pane_listing(pane: &Pane, root: &Path) -> Listing {
     Listing {
         row: Row {
             id: pane.id(),
-            pid: proc.child_pid().map_or(0, |pid| pid.get()),
+            pid: proc.child_pid().map(|pid| pid.get()),
             command: pane.command().iter().map(|arg| lossy(arg)).collect(),
             cwd: lossy(proc.cwd()),
             title: lossy(proc.title()),
@@ -807,6 +807,14 @@ impl State {
                 }
             }
             Event::Pwd => {}
+            Event::Ready => {
+                if let Some(pid) = self.panes.find(id).and_then(|pane| pane.proc().child_pid()) {
+                    self.broadcast(&ClientEvent::Pid {
+                        pane: id,
+                        pid: pid.get(),
+                    });
+                }
+            }
             Event::Dead(death) => {
                 if let Some(pane) = self.panes.find_mut(id) {
                     pane.telemetry_mut().records.clear();
@@ -1511,6 +1519,42 @@ impl State {
         }
         for conn in &self.conns {
             poll.interest(conn.token, conn.interest());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::DEFAULT_LIMITS;
+    use crate::fuzz::Rig;
+    use crate::protocol::{Command, CreatePane};
+    use crate::server::tests::scratch;
+    use ko_sys::event::Mode;
+    use std::path::PathBuf;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_pane_row_has_no_pid_until_the_pane_is_ready() {
+        let exe = PathBuf::from(
+            std::env::var_os("KO_PANE_EXE")
+                .expect("KO_PANE_EXE names the Rust ko-pane; make test-ko builds it and sets it"),
+        );
+        let mut rig = Rig::new(scratch("state-pid"), exe, DEFAULT_LIMITS, "exec cat");
+        let request = CreatePane {
+            cwd: None,
+            command: Some(Command::Argv {
+                argv: ["/bin/sh", "-c", "exec cat"].map(str::to_owned).to_vec(),
+            }),
+            env: Vec::new(),
+            vars: Default::default(),
+        };
+        let pane = rig.state.new_session(&mut rig.poll, &request).unwrap();
+        assert_eq!(rig.state.pane_listing(pane).unwrap().row.pid, None);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while rig.state.pane_listing(pane).unwrap().row.pid.is_none() {
+            assert!(Instant::now() < deadline, "the pane never became ready");
+            rig.step(Mode::Wait);
         }
     }
 }

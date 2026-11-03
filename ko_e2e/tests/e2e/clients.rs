@@ -1,4 +1,4 @@
-use ko_sys::pid::{Pid, signal_descendant};
+use ko_sys::pid::signal_descendant;
 use ko_sys::signal::Signal;
 use serde_json::{Value, json};
 
@@ -99,8 +99,7 @@ fn a_change_the_server_makes_reaches_every_client_as_a_layout_event() {
         program = s
             .pane_pids()
             .into_iter()
-            .find(|(id, pid)| id == "pane_3" && *pid > 1)
-            .and_then(|(_, pid)| Pid::new(pid));
+            .find_map(|(id, pid)| (id == "pane_3").then_some(pid).flatten());
         program.is_some()
     });
     let program = program.unwrap();
@@ -116,6 +115,21 @@ fn a_change_the_server_makes_reaches_every_client_as_a_layout_event() {
             "4:80x24"
         );
     }
+}
+
+#[test]
+fn a_connected_client_learns_the_pid_of_a_pane_when_it_becomes_ready() {
+    let s = start(&[]);
+    one_window(&s, new());
+    s.pane_program("pane_1");
+    let (mut a, _) = s.app_client(json!({}), false, (80, 24));
+    one_window(&s, split("h", vec![old("pane_1"), new()]));
+    let event = a.event("pid");
+    assert_eq!(event["pane"], json!("pane_2"));
+    assert_eq!(
+        event["pid"].as_i64(),
+        Some(i64::from(s.pane_program("pane_2").get()))
+    );
 }
 
 #[test]

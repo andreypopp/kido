@@ -42,7 +42,7 @@ pub(crate) fn create_pane(socket: &Path, argv: &[String]) -> io::Result<PaneId> 
 pub(crate) fn program_pids(socket: &Path) -> io::Result<Vec<i32>> {
     let response = exchange(socket, &Route::ListPanes {}, "")?;
     let rows: Vec<Row> = protocol::decode(&response.body).map_err(io::Error::other)?;
-    Ok(rows.iter().map(|row| row.pid).collect())
+    Ok(rows.iter().filter_map(|row| row.pid).collect())
 }
 
 pub(crate) fn screen_text(socket: &Path, pane: PaneId) -> io::Result<String> {

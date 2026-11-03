@@ -531,7 +531,8 @@ fn panes(args: PanesArgs) -> ExitCode {
     lines.extend(rows.iter().map(|row| {
         vec![
             row.id.to_string(),
-            row.pid.to_string(),
+            row.pid
+                .map_or_else(|| "-".to_owned(), |pid| pid.to_string()),
             state(row),
             row.title.clone(),
             row.cwd.clone(),

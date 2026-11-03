@@ -112,7 +112,7 @@ mod tests {
         Pane {
             row: Row {
                 id: id(number),
-                pid: 1,
+                pid: Some(1),
                 command: vec!["/bin/sh".to_owned()],
                 cwd: "/".to_owned(),
                 title: title.to_owned(),

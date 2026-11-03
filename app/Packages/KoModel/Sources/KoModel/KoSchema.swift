@@ -1066,14 +1066,14 @@ public enum KoSchema {
         public var id: PaneId
         public var label: String
         public var mark: Mark
-        public var pid: Int
+        public var pid: Int?
         public var progress: Progress?
         public var recordsSeen: Bool
         public var run: RunRow?
         public var status: PaneStatus?
         public var title: String
         public var vars: [String: JSONValue]
-        public init(command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, label: String, mark: Mark, pid: Int, progress: Progress? = nil, recordsSeen: Bool, run: RunRow? = nil, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
+        public init(command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, label: String, mark: Mark, pid: Int? = nil, progress: Progress? = nil, recordsSeen: Bool, run: RunRow? = nil, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
             self.command = command
             self.cwd = cwd
             self.dead = dead

@@ -451,7 +451,8 @@ pub struct Progress {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Row {
     pub id: PaneId,
-    pub pid: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<i32>,
     pub command: Vec<String>,
     pub cwd: String,
     pub title: String,
@@ -1479,6 +1480,10 @@ pub enum ClientEvent {
     Selected(Selection),
     Title(Title),
     Pwd(Pwd),
+    Pid {
+        pane: PaneId,
+        pid: i32,
+    },
     Foreground {
         pane: PaneId,
         foreground: Foreground,

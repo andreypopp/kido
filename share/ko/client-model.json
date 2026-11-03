@@ -620,7 +620,6 @@
           "mark",
           "records_seen",
           "id",
-          "pid",
           "command",
           "cwd",
           "title",

@@ -1178,13 +1178,13 @@ impl Server {
         .ok();
     }
 
-    pub(crate) fn pane_pids(&self) -> Vec<(String, i64)> {
+    pub(crate) fn pane_pids(&self) -> Vec<(String, Option<Pid>)> {
         self.rows()
             .iter()
             .map(|row| {
                 (
                     row["id"].as_str().unwrap_or_default().to_owned(),
-                    row["pid"].as_i64().unwrap_or_default(),
+                    row["pid"].as_i64().and_then(Pid::new),
                 )
             })
             .collect()
@@ -1192,15 +1192,17 @@ impl Server {
 
     pub(crate) fn pane_program(&self, pane: &str) -> Pid {
         let row = self.wait_row(pane, &format!("the program of {pane}"), |row| {
-            row["pid"].as_i64().unwrap_or_default() > 1
+            row["pid"].as_i64().is_some()
         });
-        Pid::new(row["pid"].as_i64().unwrap_or_default()).unwrap()
+        Pid::new(row["pid"].as_i64().unwrap()).unwrap()
     }
 
     pub(crate) fn program_pid(&self) -> Pid {
         let panes = self.pane_pids();
-        assert!(panes.len() == 1 && panes[0].1 > 1, "program pid: {panes:?}");
-        Pid::new(panes[0].1).unwrap()
+        let [(_, Some(pid))] = panes[..] else {
+            panic!("program pid: {panes:?}");
+        };
+        pid
     }
 
     fn shutdown(&mut self) -> Result<(), String> {

@@ -2564,7 +2564,7 @@ mod tests {
     fn pane_row(number: u64, status: Option<PaneStatus>) -> Listing {
         let row = Row {
             id: format!("pane_{number}").parse().unwrap(),
-            pid: 100,
+            pid: Some(100),
             command: vec!["/bin/sh".to_owned()],
             cwd: "/".to_owned(),
             title: String::new(),

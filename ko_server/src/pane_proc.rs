@@ -81,6 +81,7 @@ pub(crate) enum Event {
     },
     Prompt(Prompt),
     Record(Report),
+    Ready,
     Foreground(Foreground),
     Alternate(bool),
     Bell,
@@ -739,6 +740,7 @@ impl PaneProc {
                     (Claim::Awaiting, Verdict::Child(group)) => Claim::Reported(Some(group)),
                     _ => return Err(Fault::Ready),
                 };
+                io.events.push(Event::Ready);
             }
             FromPane::Title(title) => {
                 if store(&mut self.title, title) {

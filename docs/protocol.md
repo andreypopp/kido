@@ -461,7 +461,9 @@ Pane state and pane events:
 
 - A pane's row (`Listing` in `ko_server/src/protocol.rs`) carries
   its title, pwd, foreground process, death, status, variables,
-  progress (OSC 9;4) and, for a run's pane, its run. The status is
+  progress (OSC 9;4) and, for a run's pane, its run. The pid is
+  absent until the coordinator accepts the `ready` pid (section 14),
+  and absent when that pid had no process. The status is
   absent until the model has run once for the pane; the progress is
   absent after a `remove` report. `GET /panes` lists every row, `GET
   /panes/pane_N` one; both read the same rows as the layout.

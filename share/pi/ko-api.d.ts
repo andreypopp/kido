@@ -457,6 +457,11 @@ export interface components {
             /** @constant */
             type: "pwd";
         } & components["schemas"]["Pwd"]) | {
+            pane: components["schemas"]["PaneId"];
+            pid: number;
+            /** @constant */
+            type: "pid";
+        } | {
             foreground: components["schemas"]["Foreground"];
             pane: components["schemas"]["PaneId"];
             /** @constant */
@@ -777,7 +782,7 @@ export interface components {
             dead: components["schemas"]["Dead"] | null;
             foreground?: components["schemas"]["Foreground"];
             id: components["schemas"]["PaneId"];
-            pid: number;
+            pid?: number;
             progress?: components["schemas"]["Progress"];
             run?: components["schemas"]["RunRow"];
             status?: components["schemas"]["PaneStatus"];

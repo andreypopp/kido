@@ -945,7 +945,12 @@ mod tests {
     fn kinds(events: &[serde_json::Value]) -> Vec<String> {
         events
             .iter()
-            .filter(|event| !matches!(event["type"].as_str(), Some("status" | "foreground")))
+            .filter(|event| {
+                !matches!(
+                    event["type"].as_str(),
+                    Some("status" | "foreground" | "pid")
+                )
+            })
             .map(|event| {
                 let kind = event["type"].as_str().unwrap_or_default();
                 match event["pane"].as_str() {

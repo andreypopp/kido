@@ -285,6 +285,12 @@ impl Model {
                     return Applied::State;
                 }
             }
+            ClientEvent::Pid { pane, pid } => {
+                if let Some(pane) = self.pane_mut(pane) {
+                    pane.row.pid = Some(pid);
+                    return Applied::State;
+                }
+            }
             ClientEvent::Foreground { pane, foreground } => {
                 if let Some(pane) = self.pane_mut(pane) {
                     pane.row.foreground = Some(foreground);
@@ -1000,6 +1006,10 @@ mod tests {
                 pane: pane(1),
                 pwd: "/tmp".to_owned(),
             }),
+            ClientEvent::Pid {
+                pane: pane(1),
+                pid: 4242,
+            },
             ClientEvent::Foreground {
                 pane: pane(1),
                 foreground: protocol::Foreground {
@@ -1024,10 +1034,11 @@ mod tests {
                 row.dead.clone(),
                 row.title.as_str(),
                 row.cwd.as_str(),
+                row.pid,
                 row.foreground.as_ref().map(|f| f.name.as_str()),
                 row.progress.and_then(|p| p.progress),
             ),
-            (Some(dead), "t", "/tmp", Some("vim"), Some(40))
+            (Some(dead), "t", "/tmp", Some(4242), Some("vim"), Some(40))
         );
     }
 

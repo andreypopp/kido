@@ -308,6 +308,26 @@
           },
           {
             "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "pid": {
+                "type": "integer"
+              },
+              "type": {
+                "const": "pid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "pid"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
               "foreground": {
                 "$ref": "#/components/schemas/Foreground"
               },
@@ -1657,7 +1677,6 @@
         },
         "required": [
           "id",
-          "pid",
           "command",
           "cwd",
           "title",
