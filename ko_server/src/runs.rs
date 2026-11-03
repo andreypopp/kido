@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 use std::fmt;
-use std::fs::{self, DirBuilder, OpenOptions};
-use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::fs::{self, DirBuilder};
+use std::io;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{PaneId, RunId};
 use crate::pane_proc::Cause;
-use crate::protocol::{Detail, Info, Show};
+use crate::protocol::{Detail, Info, RunRow, Show};
 use crate::timestamp::Timestamp;
 
 const NAME_MAX: usize = 64;
@@ -164,6 +164,7 @@ pub struct Meta {
     pub parent: Option<Parent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane: Option<PaneId>,
+    pub argv: Vec<String>,
     pub cwd: String,
     #[serde(rename = "startedAt")]
     pub started_at: Timestamp,
@@ -230,16 +231,6 @@ pub(crate) fn write_meta(root: &Path, meta: &Meta) -> io::Result<()> {
     fs::rename(temp, file(root, &meta.id, "meta.json"))
 }
 
-pub(crate) fn write_command(root: &Path, id: &RunId, argv: &[String]) -> io::Result<()> {
-    let mut command = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(file(root, id, "command"))?;
-    command.write_all(&serde_json::to_vec(argv)?)
-}
-
 pub(crate) fn read_meta(root: &Path, id: &RunId) -> Option<Meta> {
     serde_json::from_slice(&fs::read(file(root, id, "meta.json")).ok()?).ok()
 }
@@ -248,24 +239,21 @@ fn read_outcome(root: &Path, id: &RunId) -> Option<RunOutcome> {
     serde_json::from_slice(&fs::read(file(root, id, "outcome")).ok()?).ok()
 }
 
-pub(crate) fn record_outcome(root: &Path, id: &RunId, outcome: &RunOutcome) -> bool {
-    let Ok(body) = serde_json::to_vec(outcome) else {
-        return false;
+pub(crate) fn record_outcome_once(root: &Path, id: &RunId, outcome: &RunOutcome) -> bool {
+    let write = || -> io::Result<()> {
+        let temp = file(root, id, "outcome.tmp");
+        fs::write(&temp, serde_json::to_vec(outcome)?)?;
+        fs::rename(temp, file(root, id, "outcome"))
     };
-    let path = file(root, id, "outcome");
-    let Ok(mut created) = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o644)
-        .open(&path)
-    else {
-        return false;
-    };
-    if created.write_all(&body).is_err() {
-        let _ = fs::remove_file(path);
-        return false;
-    }
-    true
+    read_outcome(root, id).is_none() && write().is_ok()
+}
+
+pub(crate) fn recorded(root: &Path, id: &RunId) -> bool {
+    read_outcome(root, id).is_some()
+}
+
+fn outcome(root: &Path, id: &RunId, condition: Option<Condition<'_>>) -> Option<RunOutcome> {
+    read_outcome(root, id).or_else(|| ended_by_pane(condition))
 }
 
 fn read_screen(root: &Path, id: &RunId) -> Option<String> {
@@ -362,8 +350,25 @@ fn run_pane<'a, 'b>(panes: &'a [Seen<'b>], meta: &Meta) -> Option<&'a Seen<'b>> 
 }
 
 pub(crate) fn ending(root: &Path, panes: &[Seen<'_>], meta: &Meta) -> Option<RunOutcome> {
-    read_outcome(root, &meta.id)
-        .or_else(|| ended_by_pane(run_pane(panes, meta).map(|pane| pane.condition)))
+    outcome(
+        root,
+        &meta.id,
+        run_pane(panes, meta).map(|pane| pane.condition),
+    )
+}
+
+pub(crate) fn row(
+    root: &Path,
+    pane: PaneId,
+    run: &RunId,
+    condition: Condition<'_>,
+) -> Option<RunRow> {
+    let mut meta = read_meta(root, run)?;
+    meta.pane = Some(pane);
+    Some(RunRow {
+        outcome: outcome(root, run, Some(condition)),
+        meta,
+    })
 }
 
 pub(crate) fn parent_ended(root: &Path, panes: &[Seen<'_>], parent: &Parent) -> Option<Ended> {
@@ -404,7 +409,7 @@ pub(crate) fn sweep(root: &Path, panes: &[Seen<'_>], now: Mono, grace: Duration)
                     swept.next = Some(swept.next.map_or(left, |next| next.min(left)));
                     continue;
                 }
-                read_outcome(root, &meta.id).unwrap_or_else(|| dead_outcome(cause))
+                outcome(root, &meta.id, Some(pane.condition)).unwrap_or_else(|| dead_outcome(cause))
             }
             Condition::Live => {
                 let orphan = meta
@@ -437,10 +442,12 @@ fn info(root: &Path, panes: &[Seen<'_>], meta: Meta) -> Info {
         .filter(|pane| matches!(pane.condition, Condition::Live))
         .and_then(|pane| pane.agent_session.clone());
     Info {
-        outcome: ending(root, panes, &meta),
         output: output_path(root, &meta.id).to_string_lossy().into_owned(),
         session,
-        meta,
+        run: RunRow {
+            outcome: ending(root, panes, &meta),
+            meta,
+        },
     }
 }
 
@@ -474,13 +481,13 @@ pub(crate) fn infos(
         .map(|meta| info(root, panes, meta))
         .filter(|info| match show {
             Show::All => true,
-            Show::Live => info.outcome.is_none(),
+            Show::Live => info.run.outcome.is_none(),
             Show::Present => panes.iter().any(|pane| {
-                info.meta.pane == Some(pane.id) && pane.run.as_ref() == Some(&info.meta.id)
+                info.run.meta.pane == Some(pane.id) && pane.run.as_ref() == Some(&info.run.meta.id)
             }),
         })
         .collect();
-    found.sort_by_key(|info| std::cmp::Reverse(info.meta.started_at));
+    found.sort_by_key(|info| std::cmp::Reverse(info.run.meta.started_at));
     found
 }
 
@@ -521,6 +528,7 @@ mod tests {
             name: RunName::new(&format!("run-{index}")).unwrap(),
             parent,
             pane: on.map(pane),
+            argv: vec!["run".to_owned()],
             cwd: "/tmp".to_owned(),
             started_at: Timestamp::from_micros(i64::from(index) * 1_000_000),
         };
@@ -631,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn the_first_outcome_stands() {
+    fn an_outcome_is_one_atomic_file() {
         let scratch = Scratch::new("first");
         let root = &scratch.0;
         meta(root, 1, None, None);
@@ -640,23 +648,64 @@ mod tests {
             text: String::new(),
             at: None,
         };
-        assert!(record_outcome(
+        assert!(record_outcome_once(
             root,
             &run(1),
             &outcome(RunResult::Completed)
         ));
-        assert!(!record_outcome(root, &run(1), &outcome(RunResult::Died)));
+        assert!(!record_outcome_once(
+            root,
+            &run(1),
+            &outcome(RunResult::Died)
+        ));
         assert_eq!(
             read_outcome(root, &run(1)).map(|outcome| outcome.result),
             Some(RunResult::Completed)
         );
-        assert!(!record_outcome(root, &run(2), &outcome(RunResult::Died)));
+        assert!(!record_outcome_once(
+            root,
+            &run(2),
+            &outcome(RunResult::Died)
+        ));
         let mut names: Vec<_> = fs::read_dir(run_dir(root, &run(1)))
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect();
         names.sort();
         assert_eq!(names, ["meta.json", "outcome"]);
+    }
+
+    #[test]
+    fn a_pane_row_has_its_run_with_the_pane_named_and_the_ending_of_the_pane() {
+        let scratch = Scratch::new("row");
+        let root = &scratch.0;
+        meta(root, 1, None, None);
+        let row = |run_id, condition| row(root, pane(1), &run(run_id), condition);
+        let found = row(1, Condition::Live).unwrap();
+        assert_eq!(
+            (found.meta.pane, found.meta.argv, found.outcome),
+            (Some(pane(1)), vec!["run".to_owned()], None)
+        );
+        let cause = Cause::Exit(Exit::Exited(3));
+        assert_eq!(
+            row(1, dead(5, &cause)).and_then(|row| row.outcome.map(|o| (o.result, o.text))),
+            Some((RunResult::Failed, "exit 3".to_owned()))
+        );
+        assert_eq!(row(4, Condition::Live), None, "no such run");
+        record_outcome_once(
+            root,
+            &run(1),
+            &RunOutcome {
+                result: RunResult::Stopped,
+                text: String::new(),
+                at: None,
+            },
+        );
+        assert_eq!(
+            row(1, dead(5, &cause)).and_then(|row| row.outcome.map(|o| o.result)),
+            Some(RunResult::Stopped),
+            "a recorded outcome wins over the pane's"
+        );
     }
 
     #[test]
@@ -670,7 +719,7 @@ mod tests {
             ending(root, &panes, &m).map(|o| (o.result, o.text)),
             Some((RunResult::Failed, "exit 3".to_owned()))
         );
-        record_outcome(
+        record_outcome_once(
             root,
             &run(1),
             &RunOutcome {
@@ -844,7 +893,7 @@ mod tests {
                 ("run dead".to_owned(), 1),
             ]
         );
-        record_outcome(
+        record_outcome_once(
             root,
             &run(50),
             &RunOutcome {
@@ -894,7 +943,7 @@ mod tests {
         let names = |show, parent: Option<&Parent>| -> Vec<String> {
             infos(root, &panes, show, parent)
                 .iter()
-                .map(|info| info.meta.name.as_str().to_owned())
+                .map(|info| info.run.meta.name.as_str().to_owned())
                 .collect()
         };
         assert_eq!(names(Show::Live, None), ["run-2", "run-1"]);
@@ -909,7 +958,7 @@ mod tests {
         );
         assert_eq!(names(Show::Present, None).len(), 3);
         assert_eq!(
-            detail(root, &panes, &run(3)).map(|d| d.info.outcome.map(|o| o.result)),
+            detail(root, &panes, &run(3)).map(|d| d.info.run.outcome.map(|o| o.result)),
             Some(Some(RunResult::Completed))
         );
         assert_eq!(detail(root, &panes, &run(9)), None);
@@ -948,6 +997,7 @@ mod tests {
                 "name": "run-1",
                 "parent": "pane_4",
                 "pane": "pane_2",
+                "argv": ["run"],
                 "cwd": "/tmp",
                 "startedAt": "1970-01-01T00:00:01Z",
                 "output": output_path(root, &m.id).to_string_lossy(),

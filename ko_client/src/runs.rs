@@ -108,10 +108,6 @@ pub fn stop(dir: &Path, id: &RunId, request: &StopRun) -> Result<(), Failure> {
     .map(drop)
 }
 
-pub fn reap(dir: &Path) -> Result<(), Failure> {
-    plain::<Empty>(dir, &Route::Reap {}, None).map(drop)
-}
-
 pub fn resolve(
     dir: &Path,
     caller: Option<PaneId>,

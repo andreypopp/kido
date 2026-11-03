@@ -14,7 +14,7 @@ use crate::protocol::{
     InputResult, PROTOCOL_HEADER, PasteResult, VT_HEADER, check_version,
 };
 use crate::route::{self, Alt, Endpoint, Invalid};
-use crate::state::{Owner, PutFailure, SelectFailure, State};
+use crate::state::{Owner, PutFailure, State};
 use crate::view::View;
 use crate::ws::{self, Ws};
 use ko_pane_wire::frame::ImageKey;
@@ -162,37 +162,25 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
     match request {
         Request::Version {} => ok::<routes::Version>(&mut state.conns[index], &ours),
         Request::ListPanes {} => {
-            let listing = state.listing();
+            let listing = state.layout_panes().panes;
             ok::<routes::ListPanes>(&mut state.conns[index], &listing);
         }
-        Request::GetLayout {} => {
-            let snapshot = state.snapshot_layout();
-            ok::<routes::GetLayout>(&mut state.conns[index], &snapshot);
+        Request::GetPane { id } => {
+            if let Some(listing) = state.pane_listing(id) {
+                ok::<routes::GetPane>(&mut state.conns[index], &listing);
+            }
         }
-        Request::PutLayout { body } => match state.put_layout(poll, body) {
+        Request::GetLayout {} => {
+            let layout = state.layout_panes();
+            ok::<routes::GetLayout>(&mut state.conns[index], &layout);
+        }
+        Request::PutLayout { body } => match state.put_layout(poll, body, None) {
             Ok(snapshot) => ok::<routes::PutLayout>(&mut state.conns[index], &snapshot),
             Err(PutFailure::Stale(snapshot)) => {
                 alt::<routes::PutLayout, 409>(&mut state.conns[index], &snapshot);
             }
             Err(failure) => {
                 reply::<routes::PutLayout>(&mut state.conns[index], Err(failure.into()));
-            }
-        },
-        Request::SelectClient { id, body } => match state.select_client(poll, id, body) {
-            Ok(()) => ok::<routes::SelectClient>(&mut state.conns[index], &Empty {}),
-            Err(SelectFailure::NoClient) => {
-                error(
-                    &mut state.conns[index],
-                    ErrorKind::Missing,
-                    "client not found",
-                );
-            }
-            Err(SelectFailure::NoTarget) => {
-                error(
-                    &mut state.conns[index],
-                    ErrorKind::Invalid,
-                    "nothing to select",
-                );
             }
         },
         Request::ClearHistory { id } => {
@@ -242,22 +230,6 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             format,
             history,
         } => state.screen(poll, index, id, format, history),
-        Request::Vars { id } => {
-            if let Some(pane) = state.panes.find(id) {
-                ok::<routes::Vars>(&mut state.conns[index], pane.vars());
-            }
-        }
-        Request::Var { id, name } => {
-            let value = state.panes.find(id).and_then(|pane| pane.vars().get(&name));
-            match value {
-                Some(value) => ok::<routes::Var>(&mut state.conns[index], value),
-                None => error(
-                    &mut state.conns[index],
-                    ErrorKind::Missing,
-                    "variable not found",
-                ),
-            }
-        }
         Request::SetVar { id, name, body } => {
             match state
                 .set_var(poll, id, name, body.0)
@@ -289,10 +261,6 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
         Request::ListRuns { show, parent } => {
             let infos = state.list_runs(show, parent.as_ref());
             ok::<routes::ListRuns>(&mut state.conns[index], &infos);
-        }
-        Request::Reap {} => {
-            state.reap_runs(poll);
-            ok::<routes::Reap>(&mut state.conns[index], &Empty {});
         }
         Request::GetRun { id } => {
             let result = state.run_detail(&id);
@@ -668,7 +636,7 @@ mod tests {
     fn a_record_sent_as_an_array_is_refused_and_changes_nothing() {
         let mut server = harness("arrays");
         let panes = server.state.panes.len();
-        let revision = server.state.snapshot_layout().revision;
+        let revision = server.state.layout_panes().snapshot.revision;
         let create = server.status("PUT /layout", "Content-Length: 10\r\n\r\n[\"/tmp\"]  ");
         let nested = format!(
             r#"{{"revision":{},"layout":{{"sessions":[["s",[]]]}}}}"#,
@@ -695,7 +663,7 @@ mod tests {
                 array_layout.as_str(),
                 input.as_str(),
                 server.state.panes.len(),
-                server.state.snapshot_layout().revision,
+                server.state.layout_panes().snapshot.revision,
                 server.state.conns.len()
             ),
             (
@@ -735,7 +703,8 @@ mod tests {
     fn bad_bodies_are_answered_with_400_or_411_not_a_crash_or_a_500() {
         let mut server = harness("bodies");
         let chunked = server.status("PUT /layout", "Transfer-Encoding: chunked\r\n\r\n{}");
-        let revision = serde_json::to_string(&server.state.snapshot_layout().revision).unwrap();
+        let revision =
+            serde_json::to_string(&server.state.layout_panes().snapshot.revision).unwrap();
         let layout = r#"{"sessions":[{"id":"session_1","name":"s","windows":[{"id":"window_1","name":"w","tree":{"split":"h","children":[{"pane":"pane_1"},{"pane":{"new":{"cwd":"/nonexistent"}}}]}}]}]}"#;
         let body = format!(r#"{{"revision":{revision},"layout":{layout}}}"#);
         let cwd = server.status(
@@ -932,7 +901,7 @@ mod tests {
         }
 
         fn put(&mut self, edit: impl FnOnce(&mut serde_json::Value)) -> String {
-            let mut snapshot = serde_json::to_value(self.state.snapshot_layout()).unwrap();
+            let mut snapshot = serde_json::to_value(self.state.layout_panes().snapshot).unwrap();
             edit(&mut snapshot["layout"]);
             let body = snapshot.to_string();
             self.reply(
@@ -968,7 +937,7 @@ mod tests {
     fn kinds(events: &[serde_json::Value]) -> Vec<String> {
         events
             .iter()
-            .filter(|event| event["type"] != "status")
+            .filter(|event| !matches!(event["type"].as_str(), Some("status" | "foreground")))
             .map(|event| {
                 let kind = event["type"].as_str().unwrap_or_default();
                 match event["pane"].as_str() {
@@ -980,7 +949,7 @@ mod tests {
     }
 
     fn windows(server: &Harness) -> Vec<(String, String, Vec<String>)> {
-        let layout = server.state.snapshot_layout().layout;
+        let layout = server.state.layout_panes().snapshot.layout;
         layout
             .windows()
             .map(|(session, window)| {
@@ -1031,7 +1000,7 @@ mod tests {
     #[test]
     fn a_put_with_a_stale_revision_gets_409_and_the_current_document() {
         let mut server = harness("stale");
-        let current = serde_json::to_value(server.state.snapshot_layout()).unwrap();
+        let current = serde_json::to_value(server.state.layout_panes().snapshot).unwrap();
         let stale = json!({"revision": 0, "layout": current["layout"]}).to_string();
         let reply = server.reply(
             "PUT /layout",
@@ -1045,24 +1014,31 @@ mod tests {
         );
         let get = server.reply("GET /layout", "\r\n");
         let (_, body) = get.split_once("\r\n\r\n").unwrap();
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(body).unwrap(),
-            current
-        );
+        let mut listed = serde_json::from_str::<serde_json::Value>(body).unwrap();
+        assert_eq!(listed["panes"][0]["id"], "pane_1");
+        listed.as_object_mut().unwrap().remove("panes");
+        assert_eq!(listed, current);
     }
 
     #[test]
     fn a_failed_pane_start_rolls_the_whole_put_back() {
         let mut server = harness("rollback");
-        let before = server.state.snapshot_layout();
+        let mut peer = server.peer(&hello("", false, 80, 24));
+        peer.events(&mut server);
+        let before = server.state.layout_panes().snapshot;
         let reply = server.put(|layout| {
             layout["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
                 {"pane": "pane_1"}, {"pane": {"new": cat()}},
                 {"pane": {"new": {"cwd": "/nonexistent"}}}]});
         });
         assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
-        assert_eq!(server.state.snapshot_layout(), before);
+        assert_eq!(server.state.layout_panes().snapshot, before);
         assert_eq!(server.state.panes.len(), 1);
+        assert_eq!(
+            kinds(&peer.events(&mut server)),
+            Vec::<String>::new(),
+            "a pane that was never published has no event, not even its death in the cleanup"
+        );
     }
 
     #[test]
@@ -1125,22 +1101,9 @@ mod tests {
         a.send(&mut server, r#"{"type":"select","window":"window_9"}"#);
         assert!(kinds(&b.events(&mut server)).is_empty());
         assert_eq!(server.current(2), None);
-        let body = r#"{"window":"window_3"}"#;
-        let post = |server: &mut Harness, client: &str, body: &str| {
-            server.status(
-                &format!("POST /clients/{client}/select"),
-                &format!("Content-Length: {}\r\n\r\n{body}", body.len()),
-            )
-        };
-        assert_eq!(post(&mut server, "client_2", body), "HTTP/1.1 200");
+        b.send(&mut server, r#"{"type":"select","window":"window_3"}"#);
         assert_eq!(kinds(&b.events(&mut server)), ["selected pane_3"]);
         assert!(kinds(&a.events(&mut server)).is_empty());
-        assert_eq!(post(&mut server, "client_9", body), "HTTP/1.1 404");
-        assert_eq!(post(&mut server, "client_2", "{}"), "HTTP/1.1 400");
-        assert_eq!(
-            post(&mut server, "client_2", r#"{"pane":"pane_9"}"#),
-            "HTTP/1.1 400"
-        );
     }
 
     #[test]
@@ -1175,7 +1138,7 @@ mod tests {
         );
         server.reply("DELETE /panes/pane_3", "\r\n");
         server.reply("DELETE /panes/pane_1", "\r\n");
-        assert_eq!(server.state.snapshot_layout().layout.sessions, vec![]);
+        assert_eq!(server.state.layout_panes().snapshot.layout.sessions, vec![]);
         assert_eq!(server.current(1), None);
         assert_eq!(server.state.panes.len(), 0);
     }
@@ -1217,7 +1180,7 @@ mod tests {
             (size.cols.get(), size.rows.get())
         };
         let window = |server: &Harness, id: &str| {
-            let layout = server.state.snapshot_layout().layout;
+            let layout = server.state.layout_panes().snapshot.layout;
             let (_, window) = layout
                 .windows()
                 .find(|(_, w)| w.id.to_string() == id)
@@ -1257,7 +1220,7 @@ mod tests {
         });
         let mut peer = server.peer(&hello_of("terminal", r#""pane":"pane_1","#, true, 70, 20));
         peer.events(&mut server);
-        let layout = server.state.snapshot_layout().layout;
+        let layout = server.state.layout_panes().snapshot.layout;
         assert_eq!(
             layout
                 .window(crate::ids::WindowId::new(1))
@@ -1269,7 +1232,7 @@ mod tests {
         );
         peer.send(&mut server, r#"{"type":"select","pane":"pane_2"}"#);
         peer.send(&mut server, r#"{"type":"size","cols":71,"rows":21}"#);
-        let layout = server.state.snapshot_layout().layout;
+        let layout = server.state.layout_panes().snapshot.layout;
         assert_eq!(
             layout
                 .window(crate::ids::WindowId::new(2))
@@ -1432,28 +1395,28 @@ mod tests {
                 .state
                 .panes
                 .find(pane.parse().unwrap())
-                .and_then(|pane| pane
-                    .vars()
-                    .text(&crate::ids::VarName::new("ko.run").unwrap())
-                    .map(str::to_owned)),
+                .and_then(|pane| pane.run().map(ToString::to_string)),
             Some(id.to_owned())
         );
         let (_, listed) = server.call("GET /runs?show=live", &json!(null));
         assert_eq!(listed[0]["name"], "job");
         assert_eq!(listed[0]["pane"], pane);
+        assert_eq!(listed[0]["argv"], cat);
         assert_eq!(listed[0].get("outcome"), None);
 
         let events = peer.events(&mut server);
-        let runs: Vec<&Value> = events
-            .iter()
-            .filter(|event| event["type"] == "run")
-            .collect();
         assert_eq!(
-            runs,
-            [
-                &json!({"type": "run", "id": id, "name": "job", "pane": pane, "startedAt": listed[0]["startedAt"]})
-            ]
+            kinds(&events),
+            ["layout"],
+            "a run's start is one layout event, with no event of its own"
         );
+        assert_eq!(
+            events[0]["panes"][0]["run"],
+            json!({"id": id, "name": "job", "pane": pane, "argv": cat, "cwd": "", "startedAt": listed[0]["startedAt"]})
+        );
+        assert_eq!(events[0]["panes"][0]["id"], pane);
+        assert_eq!(events[0]["panes"].as_array().map(Vec::len), Some(1));
+        let started_layout = serde_json::to_value(server.state.layout_panes().snapshot).unwrap();
         let began = std::time::Instant::now();
         let (_, waited) = server.call(&format!("GET /runs/{id}/wait?timeout_ms=150"), &json!(null));
         assert_eq!(waited, json!({}));
@@ -1476,6 +1439,17 @@ mod tests {
             .collect();
         assert_eq!(ended.len(), 1, "a lost write announces nothing: {ended:?}");
         assert_eq!(ended[0]["outcome"]["result"], "completed");
+        assert_eq!(ended[0]["pane"], pane);
+        assert_eq!(ended[0]["argv"], cat);
+        let stale = started_layout.to_string();
+        assert_eq!(
+            server.status(
+                "PUT /layout",
+                &format!("Content-Length: {}\r\n\r\n{stale}", stale.len())
+            ),
+            "HTTP/1.1 200",
+            "an outcome moved no revision, so the layout from before it is current"
+        );
         let (_, waited) = server.call(&format!("GET /runs/{id}/wait"), &json!(null));
         assert_eq!(waited["outcome"]["result"], "completed");
         let (_, live) = server.call("GET /runs", &json!(null));
@@ -1498,6 +1472,140 @@ mod tests {
             detail["outcome"]["result"], "completed",
             "the first outcome stands"
         );
+    }
+
+    #[test]
+    fn a_new_pane_arrives_in_its_layout_event_before_any_event_of_its_own() {
+        let mut server = harness("pane-order");
+        let mut peer = server.peer(&hello("", false, 80, 24));
+        peer.events(&mut server);
+        let revision = server.state.layout_panes().snapshot.revision;
+        let titled = json!({
+            "command": {"type": "shell", "command": "printf '\\033]0;fresh\\007'; exec cat"},
+            "vars": {"a": 1}
+        });
+        let reply = server.put(|layout| {
+            layout["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
+                {"pane": "pane_1"}, {"pane": {"new": titled}}]});
+        });
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        let mut events = peer.events(&mut server);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !events.iter().any(|event| event["type"] == "title")
+            && std::time::Instant::now() < deadline
+        {
+            server.step(Mode::Wait);
+            events.extend(peer.events(&mut server));
+        }
+        let layout = events
+            .iter()
+            .position(|event| event["type"] == "layout")
+            .expect("a layout event");
+        let title = events
+            .iter()
+            .position(|event| event["type"] == "title" && event["pane"] == "pane_2")
+            .expect("a title event of the new pane");
+        assert!(layout < title, "{events:?}");
+        assert_eq!(
+            events[..layout]
+                .iter()
+                .filter(|event| event["pane"] == "pane_2")
+                .count(),
+            0,
+            "no event of the new pane comes before its row: {events:?}"
+        );
+        let panes = events[layout]["panes"].as_array().unwrap();
+        assert_eq!(panes.len(), 1, "only the pane that this revision adds");
+        assert_eq!(panes[0]["id"], "pane_2");
+        assert_eq!(panes[0]["vars"], json!({"a": 1}));
+        assert!(events[layout]["revision"].as_u64() > Some(revision.get()));
+
+        let moved = server.state.layout_panes().snapshot.revision;
+        let var = "Content-Length: 1\r\n\r\n2";
+        assert_eq!(
+            server.status("PUT /panes/pane_2/vars/b", var),
+            "HTTP/1.1 200"
+        );
+        let after = peer.events(&mut server);
+        assert_eq!(kinds(&after), ["var"]);
+        assert_eq!(server.state.layout_panes().snapshot.revision, moved);
+    }
+
+    #[test]
+    fn the_server_wide_variable_budget_refuses_what_the_limit_of_one_pane_allows() {
+        let mut server = harness("vars-budget");
+        three_windows(&mut server);
+        let big = format!("\"{}\"", "x".repeat(1_040_000));
+        let set = |server: &mut Harness, pane: &str, name: &str| {
+            server.reply(
+                &format!("PUT /panes/{pane}/vars/{name}"),
+                &format!("Content-Length: {}\r\n\r\n{big}", big.len()),
+            )
+        };
+        for pane in ["pane_1", "pane_2"] {
+            for index in 0..8 {
+                let reply = set(&mut server, pane, &format!("v{index}"));
+                assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+            }
+        }
+        let refused = set(&mut server, "pane_3", "v");
+        assert!(refused.starts_with("HTTP/1.1 400"), "{refused}");
+        assert!(
+            refused.contains("variables of the server too large"),
+            "{refused}"
+        );
+        let revision = server.state.layout_panes().snapshot.revision;
+        let reply = server.put(|layout| {
+            layout["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
+                {"pane": "pane_1"},
+                {"pane": {"new": {"vars": {"w": serde_json::from_str::<Value>(&big).unwrap()}}}}]});
+        });
+        assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
+        assert!(
+            reply.contains("variables of the server too large"),
+            "{reply}"
+        );
+        assert_eq!(
+            (
+                server.state.panes.len(),
+                server.state.layout_panes().snapshot.revision
+            ),
+            (3, revision),
+            "a refused put changes nothing"
+        );
+        server.reply("DELETE /panes/pane_1/vars/v0", "\r\n");
+        let reply = set(&mut server, "pane_3", "v");
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    }
+
+    #[test]
+    fn a_run_pane_that_dies_without_an_outcome_tells_clients_the_outcome_a_fresh_welcome_shows() {
+        let mut server = harness("run-death");
+        server.state.config.linger = std::time::Duration::from_secs(3600);
+        let mut peer = server.peer(&hello("", false, 80, 24));
+        peer.events(&mut server);
+        let (id, pane) = dying_run(&mut server, "dies");
+        let events = peer.events(&mut server);
+        let run = events
+            .iter()
+            .rfind(|event| event["type"] == "run")
+            .unwrap_or_else(|| panic!("no run event: {events:?}"));
+        assert_eq!(run["id"], id);
+        assert_eq!(run["pane"], pane.to_string());
+        assert_eq!(
+            run["outcome"],
+            json!({"result": "failed", "text": "exit 3"})
+        );
+        let (_, layout) = server.call("GET /layout", &json!(null));
+        let fresh = layout["panes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == pane.to_string())
+            .unwrap();
+        let mut event = run.clone();
+        event.as_object_mut().unwrap().remove("type");
+        assert_eq!(fresh["run"], event);
     }
 
     #[test]
@@ -1741,7 +1849,7 @@ mod tests {
             detail["screen"].as_str().unwrap().contains("last words"),
             "{detail}"
         );
-        let layout = server.state.snapshot_layout().layout;
+        let layout = server.state.layout_panes().snapshot.layout;
         assert_eq!(layout.windows().count(), 1, "the run's window is gone");
     }
 
@@ -1768,7 +1876,7 @@ mod tests {
         server.state.config.linger = std::time::Duration::from_secs(3600);
         let (id, pane) = dying_run(&mut server, "recheck");
         server.state.config.linger = std::time::Duration::from_millis(1);
-        server.state.reap_runs(&mut server.poll);
+        server.state.sweep_now(&mut server.poll);
         server.state.config.linger = std::time::Duration::from_secs(3600);
         let until = std::time::Instant::now() + std::time::Duration::from_millis(400);
         while std::time::Instant::now() < until {

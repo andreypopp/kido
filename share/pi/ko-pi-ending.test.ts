@@ -36,16 +36,16 @@ const SELF = "self-session";
 
 const NO_TURN = "no turn ever ran: the task was delivered and the session never started work on it (the pane's own screen, kept with the run, is the only account of why)";
 
-function paneReads(fx: Fixture): number {
-  return fx.paneReads();
+function layoutReads(fx: Fixture): number {
+  return fx.layoutReads();
 }
 
 async function duringParentLookup(fx: Fixture, settle: () => Promise<unknown>, action: () => Promise<void> | void): Promise<void> {
   const gate = join(fx.stateDir, "panes-gate");
-  await withEnv({ KO_FAKE_PANES_GATE: gate }, async () => {
-    const before = paneReads(fx);
+  await withEnv({ KO_FAKE_LAYOUT_GATE: gate }, async () => {
+    const before = layoutReads(fx);
     const settling = settle();
-    await pollUntil(() => paneReads(fx) > before, 2000, "the ending's parent lookup");
+    await pollUntil(() => layoutReads(fx) > before, 2000, "the ending's parent lookup");
     await action();
     writeFileSync(gate, "");
     await settling;
@@ -469,7 +469,7 @@ test("the parent watch shuts the child down when its parent's pi pane is gone", 
         await withEnv({ KO_PARENT_POLL_MS: "20" }, async () => {
           const s = await startWithSpies(fx, koPi, SELF);
           await pollUntil(
-            () => paneReads(fx) >= 3,
+            () => layoutReads(fx) >= 3,
             2000,
             "several parent readings",
           );
@@ -493,9 +493,9 @@ test("a pane read that fails is not evidence that the parent is gone", async () 
       fx,
       SELF,
       async () => {
-        await withEnv({ KO_PARENT_POLL_MS: "20", KO_FAKE_PANES_FAIL: "1" }, async () => {
+        await withEnv({ KO_PARENT_POLL_MS: "20", KO_FAKE_LAYOUT_FAIL: "1" }, async () => {
           const s = await startWithSpies(fx, koPi, SELF);
-          await pollUntil(() => paneReads(fx) >= 3, 2000, "several failing readings");
+          await pollUntil(() => layoutReads(fx) >= 3, 2000, "several failing readings");
           assert.equal(s.shutdowns(), 0, "a failing query says nothing");
         });
       },
@@ -519,7 +519,7 @@ test("the parent watch finds its parent by the session variable alone, without a
           const editing = paneRow({ pane_id: "pane_2", pi_session: "boss-session", pi_name: "boss", pi_inbox: "/tmp/none.sock", pane_program_status: "" });
           fx.setPanes([agentPane({ pane: "pane_1", session: SELF, name: "worker" }), editing]);
           await pollUntil(
-            () => paneReads(fx) >= 3,
+            () => layoutReads(fx) >= 3,
             2000,
             "several parent readings",
           );
@@ -544,14 +544,14 @@ test("a slow parent read does not let ticks pile up concurrent readings", async 
       fx,
       SELF,
       async () => {
-        await withEnv({ KO_PARENT_POLL_MS: "10", KO_FAKE_PANES_GATE: gate }, async () => {
+        await withEnv({ KO_PARENT_POLL_MS: "10", KO_FAKE_LAYOUT_GATE: gate }, async () => {
           const s = await startWithSpies(fx, koPi, SELF);
-          await pollUntil(() => paneReads(fx) >= 1, 2000, "the first reading");
+          await pollUntil(() => layoutReads(fx) >= 1, 2000, "the first reading");
           await new Promise((r) => setTimeout(r, 120));
-          const stuck = paneReads(fx);
+          const stuck = layoutReads(fx);
           assert.equal(stuck, 1, "one reading in flight holds every later tick back");
           writeFileSync(gate, "");
-          await pollUntil(() => paneReads(fx) >= 3, 2000, "later readings on the parent's own pane");
+          await pollUntil(() => layoutReads(fx) >= 3, 2000, "later readings on the parent's own pane");
           assert.equal(s.shutdowns(), 0, "the parent is still there");
         });
       },

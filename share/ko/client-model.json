@@ -546,12 +546,6 @@
             },
             "type": "array"
           },
-          "runs": {
-            "items": {
-              "$ref": "#/components/schemas/RunEvent"
-            },
-            "type": "array"
-          },
           "selection": {
             "$ref": "#/components/schemas/Selection"
           }
@@ -561,7 +555,6 @@
           "selection",
           "layout",
           "panes",
-          "runs",
           "outline"
         ],
         "type": "object"
@@ -607,6 +600,9 @@
           },
           "records_seen": {
             "type": "boolean"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunRow"
           },
           "status": {
             "$ref": "#/components/schemas/PaneStatus"

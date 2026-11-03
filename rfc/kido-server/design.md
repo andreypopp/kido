@@ -742,8 +742,8 @@ Clipboard is the exception, because the answer lives in a client:
 
 tmux user options were the only typed channel kido had. Every pane
 carries arbitrary client-set JSON variables (decided 2026-10-30):
-`GET /panes/pane_N/vars`, `PUT` and `DELETE /panes/pane_N/vars/<name>`,
-announced as `var` events on `/client`, with the limits of
+`PUT` and `DELETE /panes/pane_N/vars/<name>`, read with the pane's row
+(protocol.md section 6) and announced as `var` events on `/client`, with the limits of
 migration.md 3.3 (1 MiB a value, 8 MiB a pane). They live with their
 pane: an in-place upgrade keeps them, `kill-server` removes them,
 nothing persists to disk. Session and window variables live inside
@@ -799,9 +799,9 @@ today, the sweep runs in the server's tick once, not once per sidebar,
 and `run-wait` is a long poll instead of a poll. The run commands
 of the CLI become requests with the same exit codes and JSON. A run's
 window is a server-made change of the layout document.
-`ko run-child`'s parent rule, the orphan rule, first-write-wins
-outcomes and the screen capture (now `ghostty_formatter` over the dead
-pane's terminal) keep their design.
+`ko run-child`'s parent rule, the orphan rule and the screen capture
+(now `ghostty_formatter` over the dead pane's terminal) keep their
+design; a run's outcome is written once by the server's `State`.
 
 ### 4.11 The terminal client
 
@@ -938,8 +938,8 @@ not block the forward. No tmux and no `kido rpc` process on the
 remote.
 
 Reconnect: the client opens `/client` again with a hello that carries
-its current window, pane, size and focus, gets a new id, reads
-`/layout` and `/panes`, and reopens each visible view with the last
+its current window, pane, size and focus, gets a new id, takes the
+layout and the pane rows from its welcome, and reopens each visible view with the last
 offset it saw.
 The WebSocket ping of protocol.md section 1 closes a half-open
 connection after sleep within 40 s, so a dead client does not stay

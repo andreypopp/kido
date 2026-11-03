@@ -1,12 +1,12 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::*;
 use crate::api::{WaitMs, routes};
 use crate::ids::RunId;
-use crate::pane_kind::{self, Kind, RUN};
+use crate::pane_kind::{self, Kind};
 use crate::protocol::{
-    Command, DraftLayout, Empty, Error, ErrorKind, Info, ReportOutcome, Reported, RunEvent,
+    Command, DraftLayout, Empty, Error, ErrorKind, Info, ReportOutcome, Reported, RunRow,
     SessionRef, Show, StartRun, Started, StopResult, StopRun, Variable, Waited,
 };
 use crate::runs::{self, Closing, Condition, Ended, Meta, RunOutcome, RunResult, Seen};
@@ -95,6 +95,10 @@ impl RunState {
         }
     }
 
+    pub(super) fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub(super) fn stop(&self, poll: &mut Poll) {
         poll.stop(self.sweep);
         poll.stop(self.escalation);
@@ -128,6 +132,20 @@ impl RunState {
     }
 }
 
+fn condition_of(pane: &Pane) -> Condition<'_> {
+    match pane.proc().dead() {
+        Some(death) => Condition::Dead {
+            at: death.at,
+            cause: &death.cause,
+        },
+        None => Condition::Live,
+    }
+}
+
+pub(super) fn run_row(root: &Path, pane: &Pane) -> Option<RunRow> {
+    runs::row(root, pane.id(), pane.run()?, condition_of(pane))
+}
+
 fn no_such_run(id: &RunId) -> Error {
     Error::new(ErrorKind::Missing, format!("run {id}: no such run"))
 }
@@ -145,18 +163,11 @@ impl State {
         self.panes
             .iter()
             .map(|pane| {
-                let condition = match pane.proc().dead() {
-                    Some(death) => Condition::Dead {
-                        at: death.at,
-                        cause: &death.cause,
-                    },
-                    None => Condition::Live,
-                };
                 let (telemetry, vars) = (pane.telemetry(), pane.vars());
                 Seen {
                     id: pane.id(),
-                    run: vars.text(&RUN).and_then(|text| text.parse().ok()),
-                    condition,
+                    run: pane.run().cloned(),
+                    condition: condition_of(pane),
                     agent_session: match pane_kind::of_pane(telemetry, vars) {
                         Kind::PiAgent { session, .. } => Some(session),
                         _ => None,
@@ -182,21 +193,17 @@ impl State {
 
     fn live_run_pane(&self, meta: &Meta) -> Option<PaneId> {
         let pane = self.panes.find(meta.pane?)?;
-        (pane.proc().dead().is_none()
-            && pane
-                .vars()
-                .text(&RUN)
-                .and_then(|text| text.parse().ok())
-                .as_ref()
-                == Some(&meta.id))
-        .then(|| pane.id())
+        (pane.proc().dead().is_none() && pane.run() == Some(&meta.id)).then(|| pane.id())
     }
 
     fn record(&mut self, poll: &mut Poll, meta: &Meta, outcome: RunOutcome) -> bool {
-        let recorded = runs::record_outcome(&self.runs.root, &meta.id, &outcome);
+        let recorded = runs::record_outcome_once(&self.runs.root, &meta.id, &outcome);
         if recorded {
-            if let Some(event) = RunEvent::of(meta, Some(outcome)) {
-                self.broadcast(&ClientEvent::Run(event));
+            if meta.pane.is_some() {
+                self.broadcast(&ClientEvent::Run(RunRow {
+                    meta: meta.clone(),
+                    outcome: Some(outcome),
+                }));
             }
             self.runs_changed(poll);
         }
@@ -469,11 +476,11 @@ impl State {
             name: request.name.clone(),
             parent: request.parent.clone(),
             pane: None,
+            argv: request.argv.clone(),
             cwd: request.cwd.clone().unwrap_or_default(),
             started_at: Timestamp::now(),
         };
         runs::write_meta(&self.runs.root, &meta).map_err(io)?;
-        runs::write_command(&self.runs.root, &id, &request.argv).map_err(io)?;
         let output = runs::output_path(&self.runs.root, &id)
             .to_string_lossy()
             .into_owned();
@@ -492,7 +499,7 @@ impl State {
             cwd: request.cwd,
             command: Some(Command::Argv { argv: request.argv }),
             env,
-            vars: Loose::from([(RUN.as_str().to_owned(), serde_json::json!(id.to_string()))]),
+            vars: Loose::new(),
         };
         let name =
             Name::try_from(request.name.as_str().to_owned()).map_err(|m| invalid(m.to_owned()))?;
@@ -513,12 +520,13 @@ impl State {
                 revision,
                 layout: draft,
             },
+            Some(id.clone()),
         );
         let snapshot = match put {
             Ok(snapshot) => snapshot,
             Err(failure) => {
                 let error = Error::from(failure);
-                runs::record_outcome(
+                runs::record_outcome_once(
                     &self.runs.root,
                     &id,
                     &RunOutcome {
@@ -543,9 +551,6 @@ impl State {
             self.delete_pane(poll, pane);
             return Err(io(failed));
         }
-        if let Some(event) = RunEvent::of(&meta, None) {
-            self.broadcast(&ClientEvent::Run(event));
-        }
         Ok(Started {
             id,
             window,
@@ -554,7 +559,8 @@ impl State {
         })
     }
 
-    pub(crate) fn reap_runs(&mut self, poll: &mut Poll) {
+    #[cfg(test)]
+    pub(crate) fn sweep_now(&mut self, poll: &mut Poll) {
         self.sweep(poll);
     }
 
@@ -700,6 +706,7 @@ mod tests {
                 name: crate::runs::RunName::new("r").unwrap(),
                 parent: None,
                 pane: None,
+                argv: Vec::new(),
                 cwd: String::new(),
                 started_at: Timestamp::from_micros(0),
             },

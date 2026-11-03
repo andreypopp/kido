@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import type { components, paths } from "./ko-api.d.ts";
+import type { components } from "./ko-api.d.ts";
 
 type Api = components["schemas"];
 
@@ -208,10 +208,6 @@ export type PaneInfo = {
   title: string;
 };
 
-type Reply<P extends keyof paths> = paths[P] extends { get: { responses: { 200: { content: { "application/json": infer R } } } } }
-  ? R
-  : never;
-
 function rootRecord(programStatus: Api["ProgramStatus"] | null): { app: string; state: string } | null {
   const root = programStatus?.records.find((r) => r.id === "");
   return root ? { app: root.app ?? "", state: root.state } : null;
@@ -228,7 +224,7 @@ function placeLeaves(node: Api["LeafNode"] | Api["Float"], place: Place, into: M
   else for (const child of node.children) placeLeaves(child, place, into);
 }
 
-function placesOf(layout: Api["Snapshot"]): Map<string, Place> {
+function placesOf(layout: Api["LayoutPanes"]): Map<string, Place> {
   const places = new Map<string, Place>();
   for (const session of layout.layout.sessions) {
     for (const window of session.windows) {
@@ -240,9 +236,9 @@ function placesOf(layout: Api["Snapshot"]): Map<string, Place> {
   return places;
 }
 
-function parsePanes(rows: Api["Listing"][], layout: Api["Snapshot"]): PaneInfo[] {
+function parsePanes(layout: Api["LayoutPanes"]): PaneInfo[] {
   const places = placesOf(layout);
-  return rows.map((row) => {
+  return layout.panes.map((row) => {
     const place = places.get(row.id);
     return {
       pane: row.id,
@@ -260,19 +256,14 @@ function parsePanes(rows: Api["Listing"][], layout: Api["Snapshot"]): PaneInfo[]
   });
 }
 
-async function readJson<P extends "/panes" | "/layout">(path: P, timeoutMs: number): Promise<{ ok: true; value: Reply<P> } | { ok: false }> {
-  const res = await runCommand("ko", ["api", path], { timeoutMs });
-  if (!res.ok) return { ok: false };
-  try {
-    return { ok: true, value: JSON.parse(res.out) };
-  } catch {
-    return { ok: false };
-  }
-}
-
 async function listPanesResult(timeoutMs = KO_TIMEOUT_MS): Promise<{ ok: boolean; panes: PaneInfo[] }> {
-  const [rows, layout] = await Promise.all([readJson("/panes", timeoutMs), readJson("/layout", timeoutMs)]);
-  return rows.ok && layout.ok ? { ok: true, panes: parsePanes(rows.value, layout.value) } : { ok: false, panes: [] };
+  const res = await runCommand("ko", ["api", "/layout"], { timeoutMs });
+  if (!res.ok) return { ok: false, panes: [] };
+  try {
+    return { ok: true, panes: parsePanes(JSON.parse(res.out)) };
+  } catch {
+    return { ok: false, panes: [] };
+  }
 }
 
 async function listPanes(timeoutMs = KO_TIMEOUT_MS): Promise<PaneInfo[]> {

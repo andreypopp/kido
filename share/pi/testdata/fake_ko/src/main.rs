@@ -416,7 +416,11 @@ fn layout(table: &[Value]) -> Value {
             json!({"id": id, "name": id, "vars": {}, "windows": windows})
         })
         .collect();
-    json!({"revision": 1, "layout": {"sessions": sessions}})
+    json!({
+        "revision": 1,
+        "layout": {"sessions": sessions},
+        "panes": table.iter().map(listing).collect::<Vec<_>>(),
+    })
 }
 
 fn delete_vars(table: &[Value], pane: &str, body: &str) -> ExitCode {
@@ -484,34 +488,15 @@ fn api(argv: &[String]) -> ExitCode {
         "KO_FAKE_API_LOG",
         &json!({"method": method, "path": path, "body": body}).to_string(),
     );
-    let reading = method == "GET" && (path == "/panes" || path == "/layout");
-    if reading && env("KO_FAKE_PANES_FAIL") == "1" {
+    if method == "GET" && path == "/layout" && env("KO_FAKE_LAYOUT_FAIL") == "1" {
         return ExitCode::FAILURE;
     }
     let table = rows("KO_FAKE_PANES");
     let segments: Vec<&str> = path.split('/').collect();
     match (method.as_str(), segments.as_slice()) {
-        ("GET", ["", "panes"]) => {
-            wait_gate("KO_FAKE_PANES_GATE");
-            println!("{}", Value::Array(table.iter().map(listing).collect()));
-        }
-        ("GET", ["", "layout"]) => println!("{}", layout(&table)),
-        ("GET", ["", "panes", pane, "vars", name]) => {
-            let value = table
-                .iter()
-                .find(|row| text(row, "pane_id") == *pane)
-                .and_then(|row| pane_vars(row).get(name).cloned());
-            match value {
-                Some(value) => println!("{}", json!(value)),
-                None => {
-                    println!(
-                        "{}",
-                        json!({"kind": "not_found", "message": "variable not found"})
-                    );
-                    eprintln!("ko api: HTTP 404");
-                    return ExitCode::FAILURE;
-                }
-            }
+        ("GET", ["", "layout"]) => {
+            wait_gate("KO_FAKE_LAYOUT_GATE");
+            println!("{}", layout(&table));
         }
         ("DELETE", ["", "panes", pane, "vars"]) => return delete_vars(&table, pane, &body),
         ("PUT" | "DELETE", ["", "panes", _, "vars", _]) => println!("{{}}"),

@@ -1,23 +1,20 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::collections::BTreeMap;
+use std::time::Instant;
 
 use ko_pane_wire::frame::Limits;
-use ko_server::api::Route;
 use ko_server::ids::{ClientId, Instance, PaneId, RunId, SessionId, VarName, WindowId};
 use ko_server::protocol::{
-    self, ClientEvent, ClientRequest, ClipboardContent, ClipboardLocation, Hello, Info, Listing,
-    Row, RunEvent, Selection, Show, Snapshot,
+    self, ClientEvent, ClientRequest, ClipboardContent, ClipboardLocation, Hello, LayoutPanes,
+    Listing, Row, RunRow, Selection, Snapshot,
 };
 use ko_server::runs::Parent;
-use ko_sys::event::Wake;
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::status::{self, Mark, Seen};
 use crate::tree;
-use crate::wire::{self, Link, Next, text};
+use crate::wire::{Link, Next, text};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Notice {
@@ -48,24 +45,16 @@ pub struct Pane {
 
 #[derive(Debug)]
 pub struct Model {
-    socket: PathBuf,
     pub client: ClientId,
     pub instance: Instance,
     pub limits: Limits,
     pub layout: Snapshot,
     pub selection: Selection,
     pub panes: Vec<Pane>,
-    runs: BTreeMap<RunId, RunEvent>,
     anchor: (u64, Instant),
     seen: Seen,
     // What the caller shows, and whether the user looks: the panes that each change acknowledges.
     watched: (Vec<PaneId>, bool),
-}
-
-#[derive(Debug)]
-pub(crate) struct Fetched {
-    listing: Vec<Listing>,
-    infos: Vec<Info>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -98,7 +87,6 @@ pub(crate) struct ModelJson<'a> {
     selection: &'a Selection,
     layout: &'a Snapshot,
     panes: Vec<PaneJson<'a>>,
-    runs: Vec<&'a RunEvent>,
     outline: Vec<Item>,
 }
 
@@ -118,27 +106,10 @@ pub enum Rejoin {
 }
 
 impl Model {
-    pub fn join(
-        link: &mut Link,
-        hello: Hello,
-        socket: &Path,
-        cancel: Option<&Wake>,
-    ) -> Result<Model, String> {
-        Model::greet(link, hello)?;
-        Model::welcome(link, socket, (cancel, wire::READ_TIMEOUT))
-    }
-
-    fn greet(link: &mut Link, hello: Hello) -> Result<(), String> {
+    pub fn join(link: &mut Link, hello: Hello) -> Result<Model, String> {
         link.send(protocol::json(&ClientRequest::Hello(hello)))
             .and_then(|()| link.flush_blocking())
-            .map_err(text)
-    }
-
-    fn welcome(
-        link: &mut Link,
-        socket: &Path,
-        limits: (Option<&Wake>, Duration),
-    ) -> Result<Model, String> {
+            .map_err(text)?;
         let mut next = || match link.receive().map_err(text)? {
             Next::Text(event) => protocol::decode::<ClientEvent>(event.as_bytes()).map_err(text),
             _ => Err("client event missing".to_owned()),
@@ -149,35 +120,29 @@ impl Model {
         let ClientEvent::Layout(layout) = next()? else {
             return Err("layout missing".to_owned());
         };
-        let mut model = Model::new(welcome, socket.to_owned(), layout);
-        model.refresh(limits)?;
-        Ok(model)
+        Ok(Model::new(welcome, layout))
     }
 
-    fn new(welcome: protocol::Welcome, socket: PathBuf, layout: Snapshot) -> Model {
-        Model {
-            socket,
+    fn new(welcome: protocol::Welcome, announced: LayoutPanes) -> Model {
+        let LayoutPanes { snapshot, panes } = announced;
+        let mut model = Model {
             client: welcome.client,
             instance: welcome.instance,
             limits: welcome.limits.terminal.limits(),
-            layout,
+            layout: snapshot,
             selection: Selection::default(),
             panes: Vec::new(),
-            runs: BTreeMap::new(),
             anchor: (welcome.now, Instant::now()),
             seen: Seen::new(welcome.now),
             watched: (Vec::new(), false),
-        }
+        };
+        model.add(panes);
+        model.acknowledge();
+        model
     }
 
-    pub fn rejoin(
-        &mut self,
-        link: &mut Link,
-        hello: Hello,
-        limits: (Option<&Wake>, Duration),
-    ) -> Result<Rejoin, String> {
-        Model::greet(link, hello)?;
-        let joined = Model::welcome(link, &self.socket, limits)?;
+    pub fn rejoin(&mut self, link: &mut Link, hello: Hello) -> Result<Rejoin, String> {
+        let joined = Model::join(link, hello)?;
         Ok(self.gate(joined))
     }
 
@@ -207,7 +172,6 @@ impl Model {
                     vars: &pane.vars,
                 })
                 .collect(),
-            runs: self.runs().collect(),
             outline: self.outline(),
         }
     }
@@ -237,114 +201,60 @@ impl Model {
         self.seen.observe(shown, *attending, &self.panes);
     }
 
-    #[cfg(target_vendor = "apple")]
-    pub(crate) fn runs(&self) -> impl Iterator<Item = &RunEvent> {
-        self.runs.values()
+    fn runs(&self) -> impl Iterator<Item = (PaneId, &RunRow)> {
+        self.panes
+            .iter()
+            .filter_map(|pane| Some((pane.row.id, pane.row.run.as_ref()?)))
     }
 
     pub fn mark(&self, pane: &Pane) -> Mark {
         self.seen.mark(pane)
     }
 
-    fn refresh(&mut self, limits: (Option<&Wake>, Duration)) -> Result<(), String> {
-        let rows = Model::fetch(&self.socket, self.client, limits)?;
-        self.install(rows);
-        Ok(())
+    fn install(&mut self, announced: LayoutPanes) {
+        let LayoutPanes { snapshot, panes } = announced;
+        let in_layout = snapshot.layout.panes();
+        self.layout = snapshot;
+        self.panes.retain(|pane| in_layout.contains(&pane.row.id));
+        self.add(panes);
     }
 
-    pub(crate) fn fetch(
-        socket: &Path,
-        client: ClientId,
-        limits: (Option<&Wake>, Duration),
-    ) -> Result<Fetched, String> {
-        let body = wire::request_within(
-            socket,
-            (Some(client), None),
-            &Route::ListPanes {},
-            b"",
-            limits,
-        )?;
-        let listing = protocol::decode(&body).map_err(text)?;
-        let route = Route::ListRuns {
-            show: Show::Present,
-            parent: None,
-        };
-        let body = wire::request_within(socket, (Some(client), None), &route, b"", limits)?;
-        Ok(Fetched {
-            listing,
-            infos: protocol::decode(&body).map_err(text)?,
-        })
-    }
-
-    pub(crate) fn install(&mut self, fetched: Fetched) {
-        self.load(fetched.listing);
-        self.load_runs(fetched.infos);
-        self.acknowledge();
-    }
-
-    fn stale(&self) -> bool {
-        let known: BTreeSet<PaneId> = self.panes.iter().map(|pane| pane.row.id).collect();
-        known != self.order().into_iter().collect()
-    }
-
-    fn load_runs(&mut self, infos: Vec<Info>) {
-        self.runs = infos
-            .into_iter()
-            .filter_map(|info| RunEvent::of(&info.meta, info.outcome))
-            .map(|event| (event.id.clone(), event))
+    fn add(&mut self, panes: Vec<Listing>) {
+        let mut at: BTreeMap<PaneId, usize> = self
+            .panes
+            .iter()
+            .enumerate()
+            .map(|(index, pane)| (pane.row.id, index))
             .collect();
-        self.forget_runs();
-    }
-
-    fn forget_runs(&mut self) {
-        let in_layout: BTreeSet<PaneId> = self.order().into_iter().collect();
-        self.runs.retain(|_, run| in_layout.contains(&run.pane));
-    }
-
-    fn parent_of_run(&self, run: &RunEvent) -> Option<PaneId> {
-        match run.parent.as_ref()? {
-            Parent::Pane(parent) => Some(*parent),
-            Parent::Run(id) => self.runs.get(id).map(|parent| parent.pane),
-        }
-    }
-
-    fn load(&mut self, listing: Vec<Listing>) {
-        let in_layout: BTreeSet<PaneId> = self.order().into_iter().collect();
-        self.panes = listing
-            .into_iter()
-            .filter(|entry| in_layout.contains(&entry.row.id))
-            .map(|entry| Pane {
+        for entry in panes {
+            let added = Pane {
                 row: entry.row,
                 vars: entry.vars.into(),
-            })
-            .collect();
+            };
+            match at.get(&added.row.id) {
+                Some(index) => self.panes[*index] = added,
+                None => {
+                    at.insert(added.row.id, self.panes.len());
+                    self.panes.push(added);
+                }
+            }
+        }
     }
 
     fn pane_mut(&mut self, id: PaneId) -> Option<&mut Pane> {
         self.panes.iter_mut().find(|pane| pane.row.id == id)
     }
 
-    pub fn apply(&mut self, event: ClientEvent) -> Result<Applied, String> {
-        let (applied, fetch) = self.apply_event(event);
-        if fetch {
-            self.refresh((None, wire::READ_TIMEOUT))?;
-        }
-        Ok(applied)
-    }
-
-    // The second member says that the rows are stale and `fetch` must run again.
-    pub(crate) fn apply_event(&mut self, event: ClientEvent) -> (Applied, bool) {
-        let layout = matches!(event, ClientEvent::Layout(_));
+    pub fn apply(&mut self, event: ClientEvent) -> Applied {
         let applied = self.apply_now(event);
         self.acknowledge();
-        (applied, layout && self.stale())
+        applied
     }
 
     fn apply_now(&mut self, event: ClientEvent) -> Applied {
         match event {
-            ClientEvent::Layout(layout) => {
-                self.layout = layout;
-                self.forget_runs();
+            ClientEvent::Layout(announced) => {
+                self.install(announced);
                 return Applied::Layout;
             }
             ClientEvent::Focus { window, pane } => {
@@ -361,8 +271,20 @@ impl Model {
                 }
             }
             ClientEvent::Run(run) => {
-                if self.order().contains(&run.pane) {
-                    self.runs.insert(run.id.clone(), run);
+                if let Some(pane) = run.meta.pane.and_then(|pane| self.pane_mut(pane)) {
+                    pane.row.run = Some(run);
+                    return Applied::State;
+                }
+            }
+            ClientEvent::Pwd(pwd) => {
+                if let Some(pane) = self.pane_mut(pwd.pane) {
+                    pane.row.cwd = pwd.pwd;
+                    return Applied::State;
+                }
+            }
+            ClientEvent::Foreground { pane, foreground } => {
+                if let Some(pane) = self.pane_mut(pane) {
+                    pane.row.foreground = Some(foreground);
                     return Applied::State;
                 }
             }
@@ -435,12 +357,20 @@ impl Model {
                     mimes,
                 });
             }
-            ClientEvent::Welcome(_) | ClientEvent::Pwd(_) => {}
+            ClientEvent::Welcome(_) => {}
         }
         Applied::Nothing
     }
 
     pub fn outline(&self) -> Vec<Item> {
+        let pane_of_run: BTreeMap<&RunId, PaneId> = self
+            .runs()
+            .map(|(pane, run)| (&run.meta.id, pane))
+            .collect();
+        let parent_of_run = |run: &RunRow| match run.meta.parent.as_ref()? {
+            Parent::Pane(parent) => Some(*parent),
+            Parent::Run(id) => pane_of_run.get(id).copied(),
+        };
         let mut items = Vec::new();
         for session in &self.layout.layout.sessions {
             items.push(Item::Session {
@@ -455,9 +385,9 @@ impl Model {
             let window_of: BTreeMap<PaneId, WindowId> = panes.iter().copied().collect();
             let mut by_pane = BTreeMap::new();
             let mut by_window = BTreeMap::new();
-            for run in self.runs.values() {
-                by_pane.entry(run.pane).or_insert(run);
-                if let Some(window) = window_of.get(&run.pane) {
+            for (pane, run) in self.runs() {
+                by_pane.entry(pane).or_insert(run);
+                if let Some(window) = window_of.get(&pane) {
                     by_window.entry(*window).or_insert(run);
                 }
             }
@@ -467,7 +397,7 @@ impl Model {
                     |(pane, _)| *pane,
                     |(pane, window)| {
                         let run = by_pane.get(pane).or_else(|| by_window.get(window))?;
-                        self.parent_of_run(run)
+                        parent_of_run(run)
                     },
                 )
                 .into_iter()
@@ -514,9 +444,9 @@ impl Model {
 mod tests {
     use std::collections::BTreeMap;
 
-    use ko_server::ids::Name;
+    use ko_server::ids::{Name, RunId};
     use ko_server::protocol::{
-        Axis, Cause, Cells, Dead, Float, Layout, Leaf, Node, Revision, Session,
+        Axis, Cause, Cells, Dead, Float, Layout, Leaf, Listing, Node, Revision, Session,
     };
     use ko_server::vars::Vars;
     use proptest::prelude::*;
@@ -623,7 +553,7 @@ mod tests {
     }
 
     fn model(layout: Layout) -> Model {
-        let welcome = serde_json::from_value(json!({
+        let welcome = serde_json::from_value::<protocol::Welcome>(json!({
             "client": "client_1",
             "limits": {"terminal": {"scrollback": {"type": "disabled"}, "apc_max_bytes": 0,
                 "kitty_images_max_bytes": 0, "continuation_max_bytes": 0}, "media": []},
@@ -631,14 +561,21 @@ mod tests {
             "now": 1000
         }))
         .unwrap();
+        let snapshot = Snapshot {
+            revision: Revision::FIRST,
+            layout,
+        };
         Model::new(
             welcome,
-            PathBuf::from("/nonexistent"),
-            Snapshot {
-                revision: Revision::FIRST,
-                layout,
+            LayoutPanes {
+                snapshot,
+                panes: Vec::new(),
             },
         )
+    }
+
+    fn announced(snapshot: Snapshot, panes: Vec<Listing>) -> ClientEvent {
+        ClientEvent::Layout(LayoutPanes { snapshot, panes })
     }
 
     fn revision(number: u64) -> Revision {
@@ -659,6 +596,16 @@ mod tests {
             .map(|id| Pane {
                 row: row(id),
                 vars: BTreeMap::new(),
+            })
+            .collect()
+    }
+
+    fn listings_of(layout: &Layout) -> Vec<Listing> {
+        rows_of(layout)
+            .into_iter()
+            .map(|pane| Listing {
+                row: pane.row,
+                vars: Vars::default(),
             })
             .collect()
     }
@@ -762,13 +709,17 @@ mod tests {
         assert_eq!(model.locate(pane(9)), None);
     }
 
-    fn run(number: u8, on: u64, parent: Option<Parent>) -> RunEvent {
-        RunEvent {
-            id: format!("{number:032x}").parse().unwrap(),
-            name: ko_server::runs::RunName::new("r").unwrap(),
-            parent,
-            pane: pane(on),
-            started_at: ko_server::timestamp::Timestamp::from_micros(0),
+    fn run(number: u8, on: u64, parent: Option<Parent>) -> RunRow {
+        RunRow {
+            meta: ko_server::runs::Meta {
+                id: format!("{number:032x}").parse().unwrap(),
+                name: ko_server::runs::RunName::new("r").unwrap(),
+                parent,
+                pane: Some(pane(on)),
+                argv: vec!["cmd".to_owned()],
+                cwd: String::new(),
+                started_at: ko_server::timestamp::Timestamp::from_micros(0),
+            },
             outcome: None,
         }
     }
@@ -797,6 +748,7 @@ mod tests {
             (Shape::Leaf, 0),
         ];
         let mut model = model(layout_of(&[windows, vec![(Shape::Leaf, 0)]]));
+        model.panes = rows_of(&model.layout.layout);
         assert_eq!(
             outline_of(&model),
             ["0pane_1", "0pane_2", "0pane_3", "0pane_4", "0pane_5"]
@@ -807,7 +759,7 @@ mod tests {
             run(3, 2, Some(Parent::Pane(pane(5)))),
         ];
         for event in events {
-            assert_eq!(model.apply(ClientEvent::Run(event)), Ok(Applied::State));
+            assert_eq!(model.apply(ClientEvent::Run(event)), Applied::State);
         }
         assert_eq!(
             outline_of(&model),
@@ -816,26 +768,45 @@ mod tests {
         );
         assert_eq!(model.step(Some(pane(1)), 1), Some(pane(3)));
         assert_eq!(model.step(Some(pane(4)), 1), Some(pane(2)));
-        let mut without_runs = model.layout.clone();
-        without_runs.layout.sessions[0].windows.remove(2);
-        model.panes = rows_of(&without_runs.layout);
+        let mut without_run = model.layout.clone();
+        without_run.layout.sessions[0].windows.remove(2);
         assert_eq!(
-            model.apply(ClientEvent::Layout(without_runs)),
-            Ok(Applied::Layout)
+            model.apply(announced(without_run, Vec::new())),
+            Applied::Layout
         );
+        let mut kept: Vec<RunId> = model.runs().map(|(_, run)| run.meta.id.clone()).collect();
+        kept.sort();
         assert_eq!(
-            model.runs.keys().cloned().collect::<Vec<_>>(),
+            kept,
             [run_id(2), run_id(3)],
             "the run of a pane that the layout dropped goes with it"
         );
         assert_eq!(
             model.apply(ClientEvent::Run(run(9, 3, None))),
-            Ok(Applied::Nothing)
+            Applied::Nothing
         );
         assert_eq!(
-            model.runs.len(),
+            model.runs().count(),
             2,
             "a run event for a pane the layout lacks changes nothing"
+        );
+        let mut ended = run(2, 4, Some(Parent::Run(run_id(1))));
+        ended.outcome = Some(ko_server::runs::RunOutcome {
+            result: ko_server::runs::RunResult::Completed,
+            text: String::new(),
+            at: None,
+        });
+        assert_eq!(model.apply(ClientEvent::Run(ended.clone())), Applied::State);
+        assert_eq!(
+            model
+                .panes
+                .iter()
+                .find(|p| p.row.id == pane(4))
+                .unwrap()
+                .row
+                .run,
+            Some(ended),
+            "an outcome lands on the row of the run's pane"
         );
     }
 
@@ -846,9 +817,10 @@ mod tests {
             (Shape::Split(true, vec![Shape::Leaf, Shape::Leaf]), 0),
         ];
         let mut model = model(layout_of(&[windows]));
+        model.panes = rows_of(&model.layout.layout);
         assert_eq!(
             model.apply(ClientEvent::Run(run(1, 3, Some(Parent::Pane(pane(1)))))),
-            Ok(Applied::State)
+            Applied::State
         );
         assert_eq!(
             outline_of(&model),
@@ -881,32 +853,30 @@ mod tests {
     }
 
     #[test]
-    fn layout_and_selected_events_replace_the_model_and_others_leave_it() {
+    fn a_layout_event_brings_the_rows_of_its_new_panes_and_a_selected_event_the_selection() {
         let mut model = model(Layout { sessions: vec![] });
         let next = Snapshot {
             revision: revision(1),
             layout: layout_of(&[vec![(Shape::Leaf, 0)]]),
         };
-        model.panes = rows_of(&next.layout);
-        assert_eq!(
-            model.apply(ClientEvent::Layout(next.clone())),
-            Ok(Applied::Layout)
-        );
+        let rows = vec![entry(1, &[("a", json!(1))])];
+        assert_eq!(model.apply(announced(next.clone(), rows)), Applied::Layout);
         assert_eq!(model.layout, next);
+        assert_eq!(vars_in(&model, 1), Some(plain(&[("a", json!(1))])));
         let selection = Selection {
             pane: Some(pane(1)),
             ..Selection::default()
         };
         assert_eq!(
             model.apply(ClientEvent::Selected(selection)),
-            Ok(Applied::Selected)
+            Applied::Selected
         );
         assert_eq!(model.selection, selection);
         let title = ClientEvent::Title(protocol::Title {
             pane: pane(1),
             title: "t".to_owned(),
         });
-        assert_eq!(model.apply(title), Ok(Applied::State));
+        assert_eq!(model.apply(title), Applied::State);
     }
 
     #[test]
@@ -914,12 +884,11 @@ mod tests {
         let layout = layout_of(&[vec![(Shape::Leaf, 1), (Shape::Leaf, 0)]]);
         let mut model = model(layout);
         model.layout.revision = revision(4);
-        model.panes = rows_of(&model.layout.layout);
         let focus = |window, number| ClientEvent::Focus {
             window: id("window_", window),
             pane: pane(number),
         };
-        assert_eq!(model.apply(focus(1, 2)), Ok(Applied::Layout));
+        assert_eq!(model.apply(focus(1, 2)), Applied::Layout);
         let focused: Vec<_> = model
             .layout
             .layout
@@ -928,7 +897,7 @@ mod tests {
             .collect();
         assert_eq!(focused, [pane(2), pane(3)]);
         assert_eq!(model.layout.revision, revision(4));
-        assert_eq!(model.apply(focus(9, 1)), Ok(Applied::Nothing));
+        assert_eq!(model.apply(focus(9, 1)), Applied::Nothing);
         let focused: Vec<_> = model
             .layout
             .layout
@@ -958,19 +927,19 @@ mod tests {
     }
 
     #[test]
-    fn events_applied_after_the_listing_win_over_it() {
-        let mut model = model(one_pane_layout(&[1]).layout);
-        model.load(vec![entry(
+    fn variables_arrive_with_their_pane_and_its_events_change_them() {
+        let mut model = model(Layout { sessions: vec![] });
+        let layout = one_pane_layout(&[1]);
+        let rows = vec![entry(
             1,
             &[("a", json!(1)), ("gone", json!(true)), ("b", json!(5))],
-        )]);
-        model.apply(var(1, "a", json!(2))).unwrap();
-        model
-            .apply(ClientEvent::VarDeleted {
-                pane: pane(1),
-                name: name("gone"),
-            })
-            .unwrap();
+        )];
+        model.apply(announced(layout, rows));
+        model.apply(var(1, "a", json!(2)));
+        model.apply(ClientEvent::VarDeleted {
+            pane: pane(1),
+            name: name("gone"),
+        });
         assert_eq!(
             vars_in(&model, 1),
             Some(plain(&[("a", json!(2)), ("b", json!(5))]))
@@ -978,40 +947,10 @@ mod tests {
     }
 
     #[test]
-    fn queued_events_older_than_the_listing_never_drop_a_variable() {
-        let mut model = model(one_pane_layout(&[1]).layout);
-        let filler: Vec<(String, Value)> = (0..1022).map(|n| (format!("f{n}"), json!(n))).collect();
-        let mut vars: Vec<(&str, Value)> = filler
-            .iter()
-            .map(|(key, value)| (key.as_str(), value.clone()))
-            .collect();
-        vars.extend([("A", json!(1)), ("B", json!(2))]);
-        model.load(vec![entry(1, &vars)]);
-        for event in [
-            ClientEvent::VarDeleted {
-                pane: pane(1),
-                name: name("A"),
-            },
-            var(1, "C", json!(3)),
-            var(1, "A", json!(1)),
-            ClientEvent::VarDeleted {
-                pane: pane(1),
-                name: name("C"),
-            },
-            var(1, "B", json!(2)),
-        ] {
-            model.apply(event).unwrap();
-        }
-        let found = vars_in(&model, 1).unwrap();
-        assert_eq!(found.len(), 1024);
-        assert_eq!(found.get(&name("A")), Some(&json!(1)));
-        assert_eq!(found.get(&name("B")), Some(&json!(2)));
-    }
-
-    #[test]
     fn an_outcome_of_a_watched_pane_is_seen_as_it_arrives_and_others_stay_marked() {
-        let mut model = model(one_pane_layout(&[1, 2]).layout);
-        model.load(vec![entry(1, &[]), entry(2, &[])]);
+        let mut model = model(Layout { sessions: vec![] });
+        let layout = one_pane_layout(&[1, 2]);
+        model.apply(announced(layout, vec![entry(1, &[]), entry(2, &[])]));
         assert!(!model.observe(&[pane(1)], true), "no mark changed");
         let failed = |number| {
             ClientEvent::Status(
@@ -1025,8 +964,8 @@ mod tests {
                 .unwrap(),
             )
         };
-        model.apply_event(failed(1));
-        model.apply_event(failed(2));
+        model.apply(failed(1));
+        model.apply(failed(2));
         let marks: Vec<Mark> = model.panes.iter().map(|found| model.mark(found)).collect();
         assert_eq!(marks, [Mark::None, Mark::Failed]);
         assert!(
@@ -1036,43 +975,87 @@ mod tests {
     }
 
     #[test]
-    fn a_dead_event_after_the_listing_marks_the_pane_dead() {
-        let mut model = model(one_pane_layout(&[1]).layout);
-        model.load(vec![entry(1, &[])]);
+    fn each_row_field_that_changes_has_its_event() {
+        let mut model = model(Layout { sessions: vec![] });
+        model.apply(announced(one_pane_layout(&[1]), vec![entry(1, &[])]));
         let dead = Dead {
             at: 1,
             cause: Cause::Exited { code: 0 },
         };
-        model
-            .apply(ClientEvent::Dead(protocol::PaneDead {
+        let events = [
+            ClientEvent::Dead(protocol::PaneDead {
                 pane: pane(1),
                 dead: dead.clone(),
-            }))
-            .unwrap();
-        assert_eq!(model.panes[0].row.dead, Some(dead));
-    }
-
-    #[test]
-    fn a_listing_drops_the_pane_the_layout_no_longer_has_and_its_events_do_nothing() {
-        let mut model = model(one_pane_layout(&[1]).layout);
-        model.load(vec![entry(1, &[]), entry(2, &[("x", json!(1))])]);
-        assert_eq!(vars_in(&model, 2), None);
-        model.apply(var(2, "x", json!(1))).unwrap();
-        assert_eq!(vars_in(&model, 2), None);
-        assert_eq!(vars_in(&model, 1), Some(BTreeMap::new()));
-    }
-
-    #[test]
-    fn a_layout_event_with_another_pane_set_reads_the_listing_again() {
-        let mut model = model(one_pane_layout(&[1]).layout);
-        model.load(vec![entry(1, &[])]);
-        let same = ClientEvent::Layout(one_pane_layout(&[1]));
-        assert_eq!(model.apply(same), Ok(Applied::Layout));
-        let more = ClientEvent::Layout(one_pane_layout(&[1, 2]));
-        assert!(
-            model.apply(more).is_err(),
-            "the unreachable socket shows the read"
+            }),
+            ClientEvent::Title(protocol::Title {
+                pane: pane(1),
+                title: "t".to_owned(),
+            }),
+            ClientEvent::Pwd(protocol::Pwd {
+                pane: pane(1),
+                pwd: "/tmp".to_owned(),
+            }),
+            ClientEvent::Foreground {
+                pane: pane(1),
+                foreground: protocol::Foreground {
+                    pid: 7,
+                    name: "vim".to_owned(),
+                },
+            },
+            ClientEvent::Progress {
+                pane: pane(1),
+                progress: Some(protocol::Progress {
+                    state: protocol::ProgressState::Set,
+                    progress: Some(40),
+                }),
+            },
+        ];
+        for event in events {
+            assert_eq!(model.apply(event), Applied::State);
+        }
+        let row = &model.panes[0].row;
+        assert_eq!(
+            (
+                row.dead.clone(),
+                row.title.as_str(),
+                row.cwd.as_str(),
+                row.foreground.as_ref().map(|f| f.name.as_str()),
+                row.progress.and_then(|p| p.progress),
+            ),
+            (Some(dead), "t", "/tmp", Some("vim"), Some(40))
         );
+    }
+
+    #[test]
+    fn a_layout_event_adds_the_rows_it_carries_and_drops_the_panes_it_no_longer_names() {
+        let mut model = model(Layout { sessions: vec![] });
+        model.apply(announced(one_pane_layout(&[1]), vec![entry(1, &[])]));
+        model.apply(ClientEvent::Title(protocol::Title {
+            pane: pane(1),
+            title: "t".to_owned(),
+        }));
+        model.apply(announced(
+            one_pane_layout(&[1, 2]),
+            vec![entry(2, &[("x", json!(1))])],
+        ));
+        let titles: Vec<_> = model
+            .panes
+            .iter()
+            .map(|found| (found.row.id, found.row.title.clone()))
+            .collect();
+        assert_eq!(
+            titles,
+            [(pane(1), "t".to_owned()), (pane(2), String::new())],
+            "the old row stays as its events left it"
+        );
+        model.apply(announced(one_pane_layout(&[1]), Vec::new()));
+        assert_eq!(vars_in(&model, 2), None);
+        assert_eq!(
+            model.apply(var(2, "x", json!(1))),
+            Applied::Nothing,
+            "an event of a pane the layout lacks does nothing"
+        );
+        assert_eq!(vars_in(&model, 2), None);
     }
 
     #[test]
@@ -1092,10 +1075,10 @@ mod tests {
             for (n, sessions) in sequence.iter().enumerate() {
                 let layout = layout_of(sessions);
                 let revision = revision(n as u64 + 1);
-                model.panes = rows_of(&layout);
-                model
-                    .apply(ClientEvent::Layout(Snapshot { revision, layout: layout.clone() }))
-                    .unwrap();
+                model.apply(announced(
+                    Snapshot { revision, layout: layout.clone() },
+                    listings_of(&layout),
+                ));
                 let outline = model.outline();
                 let headers = outline
                     .iter()

@@ -4,11 +4,17 @@ use ko_pane_wire::frame::Size;
 
 use crate::config::Config;
 use crate::delivery::Stamps;
-use crate::ids::PaneId;
+use crate::ids::{PaneId, RunId};
 use crate::model::PaneModel;
 use crate::pane_proc::{Input, Io, Launch, PaneProc};
 use crate::telemetry::Telemetry;
 use crate::vars::Vars;
+
+#[derive(Debug, Default)]
+pub(crate) struct Birth {
+    pub(crate) vars: Vars,
+    pub(crate) run: Option<RunId>,
+}
 
 #[derive(Debug)]
 pub(crate) struct Pane {
@@ -19,6 +25,7 @@ pub(crate) struct Pane {
     focused: bool,
     telemetry: Telemetry,
     vars: Vars,
+    run: Option<RunId>,
     model: PaneModel,
 }
 
@@ -27,6 +34,7 @@ impl Pane {
         config: &Config,
         launch: &Launch<'_>,
         vars: Vars,
+        run: Option<RunId>,
         stamps: &mut Stamps,
         io: &mut Io<'_>,
     ) -> io::Result<Pane> {
@@ -38,6 +46,7 @@ impl Pane {
             focused: false,
             telemetry: Telemetry::default(),
             vars,
+            run,
             model: PaneModel::default(),
         })
     }
@@ -64,6 +73,10 @@ impl Pane {
 
     pub(crate) fn vars(&self) -> &Vars {
         &self.vars
+    }
+
+    pub(crate) fn run(&self) -> Option<&RunId> {
+        self.run.as_ref()
     }
 
     pub(crate) fn vars_mut(&mut self) -> &mut Vars {

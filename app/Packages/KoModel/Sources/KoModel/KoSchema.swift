@@ -978,14 +978,12 @@ public enum KoSchema {
         public var layout: Snapshot
         public var outline: [Item]
         public var panes: [PaneJson]
-        public var runs: [RunEvent]
         public var selection: Selection
-        public init(instance: String, layout: Snapshot, outline: [Item], panes: [PaneJson], runs: [RunEvent], selection: Selection) {
+        public init(instance: String, layout: Snapshot, outline: [Item], panes: [PaneJson], selection: Selection) {
             self.instance = instance
             self.layout = layout
             self.outline = outline
             self.panes = panes
-            self.runs = runs
             self.selection = selection
         }
     }
@@ -1071,10 +1069,11 @@ public enum KoSchema {
         public var pid: Int
         public var progress: Progress?
         public var recordsSeen: Bool
+        public var run: RunRow?
         public var status: PaneStatus?
         public var title: String
         public var vars: [String: JSONValue]
-        public init(command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, label: String, mark: Mark, pid: Int, progress: Progress? = nil, recordsSeen: Bool, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
+        public init(command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, label: String, mark: Mark, pid: Int, progress: Progress? = nil, recordsSeen: Bool, run: RunRow? = nil, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
             self.command = command
             self.cwd = cwd
             self.dead = dead
@@ -1085,6 +1084,7 @@ public enum KoSchema {
             self.pid = pid
             self.progress = progress
             self.recordsSeen = recordsSeen
+            self.run = run
             self.status = status
             self.title = title
             self.vars = vars
@@ -1100,6 +1100,7 @@ public enum KoSchema {
             case pid
             case progress
             case recordsSeen = "records_seen"
+            case run
             case status
             case title
             case vars
@@ -1435,23 +1436,6 @@ public enum KoSchema {
         }
     }
 
-    public struct RunEvent: Codable, Equatable, Sendable {
-        public var id: RunId
-        public var name: RunName
-        public var outcome: RunOutcome?
-        public var pane: PaneId
-        public var parent: Parent?
-        public var startedAt: Timestamp
-        public init(id: RunId, name: RunName, outcome: RunOutcome? = nil, pane: PaneId, parent: Parent? = nil, startedAt: Timestamp) {
-            self.id = id
-            self.name = name
-            self.outcome = outcome
-            self.pane = pane
-            self.parent = parent
-            self.startedAt = startedAt
-        }
-    }
-
     public typealias RunId = String
 
     public typealias RunName = String
@@ -1472,6 +1456,27 @@ public enum KoSchema {
         case failed
         case died
         case stopped
+    }
+
+    public struct RunRow: Codable, Equatable, Sendable {
+        public var argv: [String]
+        public var cwd: String
+        public var id: RunId
+        public var name: RunName
+        public var outcome: RunOutcome?
+        public var pane: PaneId?
+        public var parent: Parent?
+        public var startedAt: Timestamp
+        public init(argv: [String], cwd: String, id: RunId, name: RunName, outcome: RunOutcome? = nil, pane: PaneId? = nil, parent: Parent? = nil, startedAt: Timestamp) {
+            self.argv = argv
+            self.cwd = cwd
+            self.id = id
+            self.name = name
+            self.outcome = outcome
+            self.pane = pane
+            self.parent = parent
+            self.startedAt = startedAt
+        }
     }
 
     public struct Selection: Codable, Equatable, Sendable {

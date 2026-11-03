@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::{Dead, History, ImageKey, Req, ScreenFormat, ScreenRows, Size};
 use ko_pane_wire::ring::Invalid;
 use ko_sys::event::{Events, Mode, Poll, Reads, Ready, Timer, Token};
+use tungstenite::Utf8Bytes;
 
 use crate::api::routes;
 use crate::client::{self, Change, Client, Current};
@@ -12,23 +14,24 @@ use crate::config::Config;
 use crate::conn::{Conn, Phase};
 use crate::delivery::{Delivery, Handle};
 use crate::http::lossy;
-use crate::ids::{ClientId, Instance, Name, PaneId, SessionId, VarName, WindowId};
+use crate::ids::{ClientId, Instance, Name, PaneId, RunId, SessionId, VarName, WindowId};
 use crate::layout::{Document, PutError, Removal, Resized};
 use crate::link::{Role, Wire};
 use crate::model::{self, Model};
-use crate::pane::Pane;
-use crate::pane_kind::{PI_SESSION, RUN};
+use crate::pane::{Birth, Pane};
+use crate::pane_kind::PI_SESSION;
 use crate::pane_proc::{self, Event, Io, Refusal, discard};
 use crate::panes::{AddError, Panes};
 use crate::protocol::{
     self, CellPixels, ClientEvent, ClientKind, ClientRequest, CreatePane, DeleteVars, Input,
-    Layout, Limits, Listing, PaneDead, PasteResult, PutLayout, Pwd, Row, Selection, Snapshot,
-    StatusChange, Title, VarCondition, ViewEvent, ViewRequest, Welcome,
+    Layout, LayoutPanes, Limits, Listing, PaneDead, PasteResult, PutLayout, Pwd, Row, Selection,
+    Snapshot, StatusChange, Title, VarCondition, ViewEvent, ViewRequest, Welcome,
 };
 use crate::router;
+use crate::runs;
 use crate::server::Verified;
 use crate::shm::Leaks;
-use crate::vars::{Refusal as VarRefusal, Vars};
+use crate::vars::{Refusal as VarRefusal, SERVER_MAX_TOTAL, Vars};
 use crate::view::View;
 use crate::ws::{Next, Ping};
 
@@ -74,12 +77,6 @@ impl From<PutFailure> for protocol::Error {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SelectFailure {
-    NoClient,
-    NoTarget,
-}
-
 #[derive(Debug)]
 pub(crate) struct State {
     pub(crate) config: Config,
@@ -100,6 +97,8 @@ pub(crate) struct State {
     clipboard: clipboard::Reads,
     spare: Vec<Vec<Event>>,
     ticked: Vec<(PaneId, Event)>,
+    withheld: BTreeSet<PaneId>,
+    held: Vec<(PaneId, Event)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -119,6 +118,42 @@ fn view_of(conn: &Conn) -> Option<&View> {
     match conn.role()? {
         Role::View(view) => Some(view),
         Role::Client(_) | Role::Search(_) => None,
+    }
+}
+
+fn pane_listing(pane: &Pane, root: &Path) -> Listing {
+    let proc = pane.proc();
+    let telemetry = pane.telemetry();
+    Listing {
+        row: Row {
+            id: pane.id(),
+            pid: proc.child_pid().map_or(0, |pid| pid.get()),
+            command: pane.command().iter().map(|arg| lossy(arg)).collect(),
+            cwd: lossy(proc.cwd()),
+            title: lossy(proc.title()),
+            dead: proc.dead().map(Into::into),
+            foreground: telemetry.foreground.clone(),
+            status: pane.model().status().cloned(),
+            progress: telemetry.progress,
+            run: run_ops::run_row(root, pane),
+        },
+        vars: pane.vars().clone(),
+    }
+}
+
+fn layout_panes(
+    document: &Document,
+    panes: &Panes,
+    root: &Path,
+    keep: impl Fn(PaneId) -> bool,
+) -> LayoutPanes {
+    LayoutPanes {
+        snapshot: document.snapshot(),
+        panes: panes
+            .iter()
+            .filter(|pane| keep(pane.id()))
+            .map(|pane| pane_listing(pane, root))
+            .collect(),
     }
 }
 
@@ -170,6 +205,8 @@ impl State {
             clipboard: clipboard::Reads::default(),
             spare: Vec::new(),
             ticked: Vec::new(),
+            withheld: BTreeSet::new(),
+            held: Vec::new(),
         }
     }
 
@@ -236,6 +273,7 @@ impl State {
         size: Size,
         request: &CreatePane,
         vars: Vars,
+        run: Option<RunId>,
     ) -> Result<(), AddError> {
         let has_vars = !vars.is_empty();
         let mut events = self.spare.pop().unwrap_or_default();
@@ -244,7 +282,7 @@ impl State {
             id,
             size,
             request,
-            vars,
+            Birth { vars, run },
             &mut Io {
                 poll,
                 events: &mut events,
@@ -263,41 +301,90 @@ impl State {
         added
     }
 
-    pub(crate) fn snapshot_layout(&self) -> Snapshot {
-        self.document.snapshot()
+    pub(crate) fn layout_panes(&self) -> LayoutPanes {
+        layout_panes(&self.document, &self.panes, self.runs.root(), |_| true)
+    }
+
+    pub(crate) fn pane_listing(&self, id: PaneId) -> Option<Listing> {
+        let pane = self.panes.find(id)?;
+        Some(pane_listing(pane, self.runs.root()))
+    }
+
+    fn vars_used(&self) -> usize {
+        let in_layout: usize = self
+            .document
+            .layout()
+            .sessions
+            .iter()
+            .map(|session| {
+                session.vars.bytes()
+                    + session
+                        .windows
+                        .iter()
+                        .map(|window| window.vars.bytes())
+                        .sum::<usize>()
+            })
+            .sum();
+        in_layout
+            + self
+                .panes
+                .iter()
+                .map(|pane| pane.vars().bytes())
+                .sum::<usize>()
     }
 
     pub(crate) fn put_layout(
         &mut self,
         poll: &mut Poll,
         request: PutLayout,
+        run: Option<RunId>,
     ) -> Result<Snapshot, PutFailure> {
         let before = self.document.clone();
         let created = self.document.put(request).map_err(|error| match error {
             PutError::Stale => PutFailure::Stale(self.document.snapshot()),
             PutError::Invalid(message) => PutFailure::Invalid(message),
         })?;
+        let added: usize = created.iter().map(|(_, _, vars)| vars.bytes()).sum();
+        if self.vars_used().saturating_add(added) > SERVER_MAX_TOTAL {
+            self.document.rollback(before);
+            return Err(PutFailure::Invalid(
+                VarRefusal::ServerTotalTooLarge.to_string(),
+            ));
+        }
         let sizes: BTreeMap<PaneId, Size> =
             self.document.layout().pane_sizes().into_iter().collect();
         let mut started = Vec::new();
+        self.withheld.extend(created.iter().map(|(id, _, _)| *id));
         for (id, request, vars) in created {
             let size = sizes.get(&id).copied().unwrap_or(Size::DEFAULT);
-            if let Err(error) = self.add_pane(poll, id, size, &request, vars) {
-                for id in started {
-                    self.remove_pane(poll, id);
+            match self.add_pane(poll, id, size, &request, vars, run.clone()) {
+                Ok(()) => started.push(id),
+                Err(error) => {
+                    for id in started {
+                        self.remove_pane(poll, id);
+                    }
+                    self.withheld.clear();
+                    self.held.clear();
+                    self.document.rollback(before);
+                    return Err(match error {
+                        AddError::Invalid(message) => PutFailure::Invalid(message.to_owned()),
+                        AddError::Io(error) => PutFailure::Io(error.to_string()),
+                    });
                 }
-                self.document.rollback(before);
-                return Err(match error {
-                    AddError::Invalid(message) => PutFailure::Invalid(message.to_owned()),
-                    AddError::Io(error) => PutFailure::Io(error.to_string()),
-                });
             }
-            started.push(id);
         }
         if self.document.unpublished() {
             self.changed(poll, before.layout());
         }
+        self.release(poll);
         Ok(self.document.snapshot())
+    }
+
+    fn release(&mut self, poll: &mut Poll) {
+        self.withheld.clear();
+        for (pane, event) in std::mem::take(&mut self.held) {
+            self.event(poll, pane, event);
+        }
     }
 
     #[cfg(any(test, feature = "fuzz"))]
@@ -312,7 +399,7 @@ impl State {
         let mut layout = DraftLayout::from(self.document.layout());
         layout.sessions.push(DraftSession::single(name, request));
         let revision = self.document.revision();
-        self.put_layout(poll, PutLayout { revision, layout })?;
+        self.put_layout(poll, PutLayout { revision, layout }, None)?;
         self.document
             .layout()
             .sessions
@@ -385,9 +472,19 @@ impl State {
             self.claim(poll, *index);
         }
         self.document.publish();
+        let added: BTreeSet<PaneId> = self
+            .document
+            .layout()
+            .panes()
+            .difference(&before.panes())
+            .copied()
+            .collect();
+        let announced = layout_panes(&self.document, &self.panes, self.runs.root(), |pane| {
+            added.contains(&pane)
+        });
+        self.broadcast(&ClientEvent::Layout(announced));
         let sizes = self.document.layout().pane_sizes().into_iter().collect();
         self.resize_panes(poll, &sizes);
-        self.broadcast(&ClientEvent::Layout(self.document.snapshot()));
         for (index, current) in moved {
             self.selected(index, current);
         }
@@ -514,27 +611,8 @@ impl State {
 
     fn publish(&mut self) {
         self.document.publish();
-        self.broadcast(&ClientEvent::Layout(self.document.snapshot()));
-    }
-
-    pub(crate) fn select_client(
-        &mut self,
-        poll: &mut Poll,
-        id: ClientId,
-        selection: Selection,
-    ) -> Result<(), SelectFailure> {
-        let index = self
-            .conns
-            .iter()
-            .position(|conn| {
-                client_of(conn).is_some_and(|client| client.id == id && client.active.is_some())
-            })
-            .ok_or(SelectFailure::NoClient)?;
-        let current = client_of(&self.conns[index])
-            .and_then(|client| client.select(self.document.layout(), selection))
-            .ok_or(SelectFailure::NoTarget)?;
-        self.enter(poll, index, Some(current), true);
-        Ok(())
+        let announced = layout_panes(&self.document, &self.panes, self.runs.root(), |_| false);
+        self.broadcast(&ClientEvent::Layout(announced));
     }
 
     fn enter(&mut self, poll: &mut Poll, index: usize, current: Option<Current>, notify: bool) {
@@ -639,12 +717,13 @@ impl State {
         value: serde_json::Value,
     ) -> Result<(), VarRefusal> {
         let watched = self.watched();
+        let spare = SERVER_MAX_TOTAL.saturating_sub(self.vars_used());
         let Some(pane) = self.panes.find_mut(id) else {
             return Ok(());
         };
-        if pane.vars_mut().set(&name, value)? {
+        if pane.vars_mut().set_within(&name, value, spare)? {
             self.model.mark(poll, pane);
-            if name == RUN || name == PI_SESSION {
+            if name == PI_SESSION {
                 self.runs.want_sweep();
             }
             let event = watched
@@ -668,7 +747,7 @@ impl State {
         };
         if pane.vars_mut().remove(&name) {
             self.model.mark(poll, pane);
-            if name == RUN || name == PI_SESSION {
+            if name == PI_SESSION {
                 self.runs.want_sweep();
             }
             self.broadcast(&ClientEvent::VarDeleted { pane: id, name });
@@ -689,6 +768,10 @@ impl State {
     }
 
     fn event(&mut self, poll: &mut Poll, id: PaneId, event: Event) {
+        if self.withheld.contains(&id) {
+            self.held.push((id, event));
+            return;
+        }
         match event {
             Event::Title => {
                 self.mark(poll, id);
@@ -715,6 +798,13 @@ impl State {
                     pane: id,
                     dead: (&death).into(),
                 }));
+                let ended = self.panes.find(id).and_then(|pane| {
+                    run_ops::run_row(self.runs.root(), pane)
+                        .filter(|row| !runs::recorded(self.runs.root(), &row.meta.id))
+                });
+                if let Some(row) = ended {
+                    self.broadcast(&ClientEvent::Run(row));
+                }
                 if let pane_proc::Cause::Failed(_) = death.cause {
                     self.delete_pane(poll, id);
                 }
@@ -736,9 +826,13 @@ impl State {
             }
             Event::Foreground(foreground) => {
                 if let Some(pane) = self.panes.find_mut(id)
-                    && pane.telemetry_mut().foreground(foreground)
+                    && pane.telemetry_mut().foreground(foreground.clone())
                 {
                     self.model.mark(poll, pane);
+                    self.broadcast(&ClientEvent::Foreground {
+                        pane: id,
+                        foreground,
+                    });
                 }
             }
             Event::Alternate(on) => {
@@ -894,30 +988,6 @@ impl State {
         }
     }
 
-    pub(crate) fn listing(&self) -> Vec<Listing> {
-        self.panes
-            .iter()
-            .map(|pane| {
-                let proc = pane.proc();
-                let telemetry = pane.telemetry();
-                Listing {
-                    row: Row {
-                        id: pane.id(),
-                        pid: proc.child_pid().map_or(0, |pid| pid.get()),
-                        command: pane.command().iter().map(|arg| lossy(arg)).collect(),
-                        cwd: lossy(proc.cwd()),
-                        title: lossy(proc.title()),
-                        dead: proc.dead().map(Into::into),
-                        foreground: telemetry.foreground.clone(),
-                        status: pane.model().status().cloned(),
-                        progress: telemetry.progress,
-                    },
-                    vars: pane.vars().clone(),
-                }
-            })
-            .collect()
-    }
-
     fn watched(&self) -> bool {
         self.conns
             .iter()
@@ -928,7 +998,7 @@ impl State {
         if !self.watched() {
             return;
         }
-        let text = protocol::json(event);
+        let text: Utf8Bytes = protocol::json(event).into();
         for conn in &mut self.conns {
             if let Some((Role::Client(client), wire)) = conn.role_mut()
                 && client.active.is_some()
@@ -1210,7 +1280,11 @@ impl State {
     fn client_text(&mut self, poll: &mut Poll, index: usize, text: &[u8]) {
         let request = protocol::decode::<ClientRequest>(text);
         let State {
-            document, conns, ..
+            document,
+            conns,
+            panes,
+            runs,
+            ..
         } = self;
         let Some((Role::Client(client), wire)) = conns.get_mut(index).and_then(Conn::role_mut)
         else {
@@ -1242,8 +1316,9 @@ impl State {
                     now: ko_sys::clock::Mono::now().nanos(),
                 });
                 wire.ws.send(wire.out, protocol::json(&welcome));
-                let snapshot = ClientEvent::Layout(document.snapshot());
-                wire.ws.send(wire.out, protocol::json(&snapshot));
+                let announced =
+                    ClientEvent::Layout(layout_panes(document, panes, runs.root(), |_| true));
+                wire.ws.send(wire.out, protocol::json(&announced));
                 let notify = current.is_some_and(|current| selection.pane != Some(current.pane));
                 (current, notify)
             }

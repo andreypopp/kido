@@ -151,9 +151,13 @@ fn a_run_is_a_pane_marked_at_creation_that_runs_the_argv_as_given() {
     let (id, pane) = (id_of(&run), pane_of(&run));
 
     let layout = watcher.event("layout");
-    assert!(layout.to_string().contains(pane), "{layout}");
+    let added = layout["panes"].as_array().unwrap();
+    assert_eq!(added.len(), 1, "only the pane that this revision adds");
+    assert_eq!(added[0]["id"], pane);
+    assert_eq!(added[0]["run"]["id"], id, "the run arrives with its pane");
     let row = s.row(pane);
-    assert_eq!(row["vars"]["ko.run"], id, "the mark exists with the pane");
+    assert_eq!(row["run"]["id"], id);
+    assert_eq!(row["vars"], json!({}), "the run is no variable");
     let sh = which("sh").unwrap();
     assert_eq!(
         row["command"],
@@ -162,10 +166,12 @@ fn a_run_is_a_pane_marked_at_creation_that_runs_the_argv_as_given() {
     );
 
     let record = s.dir.join("runs").join(id);
-    let command: Value =
-        serde_json::from_slice(&fs::read(record.join("command")).unwrap()).unwrap();
-    assert_eq!(command, row["command"]);
+    assert!(
+        !record.join("command").exists(),
+        "the argv is in meta.json, not in a file of its own"
+    );
     let meta: Value = serde_json::from_slice(&fs::read(record.join("meta.json")).unwrap()).unwrap();
+    assert_eq!(meta["argv"], row["command"]);
     assert_eq!(
         (&meta["name"], &meta["pane"]),
         (&json!("env"), &json!(pane))
@@ -175,18 +181,20 @@ fn a_run_is_a_pane_marked_at_creation_that_runs_the_argv_as_given() {
         meta["cwd"],
         std::env::current_dir().unwrap().to_str().unwrap()
     );
-
-    let event = watcher.event("run");
     assert_eq!(
-        (
-            &event["id"],
-            &event["name"],
-            &event["pane"],
-            event.get("outcome")
-        ),
-        (&json!(id), &json!("env"), &json!(pane), None)
+        added[0]["run"],
+        json!({"id": id, "name": "env", "pane": pane, "argv": meta["argv"], "cwd": meta["cwd"], "startedAt": meta["startedAt"]}),
+        "the pane arrives with its run, which has no outcome yet"
     );
-    assert_eq!(event["startedAt"], meta["startedAt"]);
+    assert_eq!(
+        ko_as(&s, None, &["runs", "--json", id], "").json()["argv"],
+        meta["argv"]
+    );
+    let shown = ko_as(&s, None, &["runs", id], "").ok();
+    assert!(
+        shown.contains(&format!("command:  {} -c", sh.to_str().unwrap())),
+        "{shown}"
+    );
 
     assert_eq!(
         wait_ending(&s, id),
@@ -536,13 +544,13 @@ fn the_runs_table_the_detail_and_the_json_render_the_records_for_a_human() {
     write_run(
         &s,
         a,
-        &json!({"id": a, "name": "kid", "parent": b, "cwd": "/tmp/some project", "startedAt": "2023-11-14T22:13:20Z"}),
+        &json!({"id": a, "name": "kid", "parent": b, "argv": [], "cwd": "/tmp/some project", "startedAt": "2023-11-14T22:13:20Z"}),
         Some(r#"{"result":"completed","at":"2023-11-14T22:14:50Z"}"#),
     );
     write_run(
         &s,
         b,
-        &json!({"id": b, "name": "later", "cwd": "", "startedAt": "2023-11-14T23:13:20Z"}),
+        &json!({"id": b, "name": "later", "argv": [], "cwd": "", "startedAt": "2023-11-14T23:13:20Z"}),
         None,
     );
     let ko = |args: &[&str]| ko_in_zone(&s, "IST-5:30", args);
@@ -585,7 +593,7 @@ fn the_runs_table_the_detail_and_the_json_render_the_records_for_a_human() {
     assert_eq!(
         ko(&["runs", a]),
         format!(
-            "id:       {a}\nname:     kid\nsession:  \nparent:   {b}\ncwd:      /tmp/some project\n\
+            "id:       {a}\nname:     kid\nsession:  \nparent:   {b}\ncommand:  \ncwd:      /tmp/some project\n\
              started:  2023-11-15T03:43:20+05:30\noutcome:  completed\nended:    2023-11-15T03:44:50+05:30\noutput:   {}\n",
             output.display()
         )
@@ -596,10 +604,11 @@ fn the_runs_table_the_detail_and_the_json_render_the_records_for_a_human() {
         "id",
         "name",
         "parent",
+        "argv",
         "cwd",
         "startedAt",
-        "output",
         "outcome",
+        "output",
     ]
     .iter()
     .map(|key| detail.find(&format!("\"{key}\":")).unwrap_or(usize::MAX))
@@ -637,7 +646,7 @@ fn the_runs_table_the_detail_and_the_json_render_the_records_for_a_human() {
         write_run(
             &s,
             &id,
-            &json!({"id": id, "name": "tz", "cwd": "", "startedAt": instant}),
+            &json!({"id": id, "name": "tz", "argv": [], "cwd": "", "startedAt": instant}),
             None,
         );
         let shown = ko_in_zone(&s, zone, &["runs", &id]);

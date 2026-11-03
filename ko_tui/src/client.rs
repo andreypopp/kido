@@ -346,7 +346,7 @@ impl Client {
             Panel::Hidden
         };
         let hello = hello(geometry, panel, warning, true);
-        let model = Model::join(&mut link, hello, &socket, None)?;
+        let model = Model::join(&mut link, hello)?;
         let link_token = link.watch(&mut poll).map_err(text)?;
         let (wake, escape, watchdog, retry) = (
             Deadline::new(&mut poll),
@@ -1098,7 +1098,7 @@ impl Client {
         let mut link = Link::connect_within(&self.socket, None, &Route::Client {}, None, left)
             .map_err(text)?;
         let hello = hello(self.geometry, self.panel, self.warning, self.focused);
-        let rejoin = self.model.rejoin(&mut link, hello, (None, left))?;
+        let rejoin = self.model.rejoin(&mut link, hello)?;
         let token = link.watch(&mut self.poll).map_err(text)?;
         self.link.unwatch(&mut self.poll);
         self.link = link;
@@ -1170,7 +1170,7 @@ impl Client {
                     }
                     Next::Text(event) => {
                         let event = protocol::decode(event.as_bytes()).map_err(text)?;
-                        let applied = self.model.apply(event)?;
+                        let applied = self.model.apply(event);
                         self.model.observe(self.pane().as_slice(), true);
                         match applied {
                             Applied::Nothing | Applied::State | Applied::Layout => {}

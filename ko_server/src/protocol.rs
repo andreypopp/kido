@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::num::{NonZeroU16, NonZeroUsize};
 
 use ko_pane_wire::frame::{
@@ -17,7 +18,6 @@ use crate::ids::{ClientId, Instance, Name, PaneId, RunId, SessionId, VarName, Wi
 use crate::pane_proc::{self, Death};
 use crate::route::{Body, Invalid};
 use crate::runs::{Meta, Parent, RunName, RunOutcome, RunResult};
-use crate::timestamp::Timestamp;
 use crate::vars::{Loose, Vars};
 
 const PROTOCOL: &str = "1.0";
@@ -463,6 +463,8 @@ pub struct Row {
     pub status: Option<PaneStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -845,6 +847,13 @@ pub struct Snapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LayoutPanes {
+    #[serde(flatten)]
+    pub snapshot: Snapshot,
+    pub panes: Vec<Listing>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum PaneRef {
     Existing(PaneId),
@@ -1149,6 +1158,12 @@ impl Layout {
             .flat_map(|(_, window)| window.pane_sizes())
             .collect()
     }
+
+    pub fn panes(&self) -> BTreeSet<PaneId> {
+        self.windows()
+            .flat_map(|(_, window)| window.panes())
+            .collect()
+    }
 }
 
 impl From<&Node<Leaf>> for Node<DraftLeaf> {
@@ -1435,8 +1450,8 @@ pub struct Title {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Pwd {
-    pub(crate) pane: PaneId,
-    pub(crate) pwd: String,
+    pub pane: PaneId,
+    pub pwd: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1456,7 +1471,7 @@ pub struct StatusChange {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientEvent {
     Welcome(Welcome),
-    Layout(Snapshot),
+    Layout(LayoutPanes),
     Focus {
         window: WindowId,
         pane: PaneId,
@@ -1464,6 +1479,10 @@ pub enum ClientEvent {
     Selected(Selection),
     Title(Title),
     Pwd(Pwd),
+    Foreground {
+        pane: PaneId,
+        foreground: Foreground,
+    },
     Dead(PaneDead),
     Status(StatusChange),
     Var {
@@ -1500,7 +1519,7 @@ pub enum ClientEvent {
         #[schemars(extend("x-always-sent" = true))]
         progress: Option<Progress>,
     },
-    Run(RunEvent),
+    Run(RunRow),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1593,29 +1612,11 @@ pub(crate) const IMAGE_FRAMES_HEADER: &str = "ko-image-frames";
 pub(crate) const ACCEPT_SHM_HEADER: &str = "ko-accept-shm";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct RunEvent {
-    pub id: RunId,
-    pub name: RunName,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<Parent>,
-    pub pane: PaneId,
-    #[serde(rename = "startedAt")]
-    pub started_at: Timestamp,
+pub struct RunRow {
+    #[serde(flatten)]
+    pub meta: Meta,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<RunOutcome>,
-}
-
-impl RunEvent {
-    pub fn of(meta: &Meta, outcome: Option<RunOutcome>) -> Option<RunEvent> {
-        Some(RunEvent {
-            id: meta.id.clone(),
-            name: meta.name.clone(),
-            parent: meta.parent.clone(),
-            pane: meta.pane?,
-            started_at: meta.started_at,
-            outcome,
-        })
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1647,12 +1648,10 @@ impl From<Reported> for RunResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Info {
     #[serde(flatten)]
-    pub meta: Meta,
+    pub run: RunRow,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
     pub output: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub outcome: Option<RunOutcome>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1932,11 +1931,11 @@ mod tests {
         ] {
             same::<StopRun>(json);
         }
-        same::<RunEvent>(
-            r#"{"id":"0123456789abcdef0123456789abcdef","name":"w","parent":"pane_1","pane":"pane_3","startedAt":"2023-11-14T22:13:20Z","outcome":{"result":"died"}}"#,
+        same::<RunRow>(
+            r#"{"id":"0123456789abcdef0123456789abcdef","name":"w","parent":"pane_1","pane":"pane_3","argv":["/bin/sh","-c","x"],"cwd":"/tmp","startedAt":"2023-11-14T22:13:20Z","outcome":{"result":"died"}}"#,
         );
         same::<ClientEvent>(
-            r#"{"type":"run","id":"0123456789abcdef0123456789abcdef","name":"w","pane":"pane_3","startedAt":"2023-11-14T22:13:20Z"}"#,
+            r#"{"type":"run","id":"0123456789abcdef0123456789abcdef","name":"w","pane":"pane_3","argv":["/bin/sh"],"cwd":"/tmp","startedAt":"2023-11-14T22:13:20Z"}"#,
         );
         same::<SendPrompt>(r#"{"target":"pane_2","text":"hi\nthere"}"#);
         same::<Sent>(r#"{"via":"inbox"}"#);
@@ -1980,8 +1979,9 @@ mod tests {
             r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":["file","temp_file","shared_mem"]},"instance":"0123456789abcdef0123456789abcdef","now":123456789}"#,
             r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":83886080,"max_lines":5000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789}"#,
             r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789}"#,
-            r#"{"type":"layout","revision":3,"layout":{"sessions":[{"id":"session_1","name":"s","vars":{"a":1},"windows":[{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"cell_px":{"width":8,"height":16},"zoom":"pane_1","focus":"pane_2","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"pane":"pane_2","cols":39,"rows":24}]},"floats":[{"pane":"pane_3","x":6,"y":4,"cols":28,"rows":8,"z":0,"border":false,"title":""}]}]}]}}"#,
-            r#"{"type":"layout","revision":0,"layout":{"sessions":[]}}"#,
+            r#"{"type":"layout","revision":3,"layout":{"sessions":[{"id":"session_1","name":"s","vars":{"a":1},"windows":[{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"cell_px":{"width":8,"height":16},"zoom":"pane_1","focus":"pane_2","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"pane":"pane_2","cols":39,"rows":24}]},"floats":[{"pane":"pane_3","x":6,"y":4,"cols":28,"rows":8,"z":0,"border":false,"title":""}]}]}]},"panes":[{"id":"pane_3","pid":7,"command":["/bin/sh"],"cwd":"/tmp","title":"t","dead":null,"foreground":{"pid":7,"name":"sh"},"run":{"id":"0123456789abcdef0123456789abcdef","name":"w","pane":"pane_3","argv":["/bin/sh"],"cwd":"/tmp","startedAt":"2023-11-14T22:13:20Z"},"vars":{}}]}"#,
+            r#"{"type":"layout","revision":0,"layout":{"sessions":[]},"panes":[]}"#,
+            r#"{"type":"foreground","pane":"pane_3","foreground":{"pid":7,"name":"sh"}}"#,
             r#"{"type":"selected","session":"session_1","window":"window_1","pane":"pane_2"}"#,
             r#"{"type":"selected"}"#,
             r#"{"type":"title","pane":"pane_3","title":"x"}"#,

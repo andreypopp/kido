@@ -10,14 +10,13 @@ use serde_json::Value;
 use crate::ids::{ClientId, PaneId, RunId, SessionId, VarName, WindowId};
 use crate::protocol::{
     Candidate, ClientEvent, ClientRequest, DeleteVars, Detail, Empty, HistoryDef, Images, Info,
-    Input, InputResult, Listing, PutLayout, ReportOutcome, SearchEvent, Selection, SendPrompt,
+    Input, InputResult, LayoutPanes, Listing, PutLayout, ReportOutcome, SearchEvent, SendPrompt,
     Sent, Show, Snapshot, StartRun, Started, StopRun, VarValue, Version, ViewEvent, ViewRequest,
     Waited,
 };
 use crate::route::{Invalid, Param, binary, pixels, routes, text};
 
 use crate::runs::Parent;
-use crate::vars::Vars;
 
 const MAX_OFFSET: u64 = (1 << 62) - 1;
 
@@ -539,10 +538,12 @@ impl Param for Images {
 routes! {
     /// The protocol and terminal revisions of this server.
     Version { method: GET, path: /version, reply: Version }
-    /// Every pane, with its status and variables.
+    /// Every pane, with its status, variables and run.
     ListPanes { method: GET, path: /panes, reply: Vec<Listing> }
-    /// The layout of every session, with its revision.
-    GetLayout { method: GET, path: /layout, reply: Snapshot }
+    /// One pane, with its status, variables and run.
+    GetPane { method: GET, path: /panes/{id: PaneId}, reply: Listing }
+    /// The layout of every session, with its revision, and every pane that it names.
+    GetLayout { method: GET, path: /layout, reply: LayoutPanes }
     /// Replaces the layout. A stale revision gets 409 with the current layout.
     PutLayout {
         method: PUT,
@@ -553,13 +554,6 @@ routes! {
     }
     /// The client-lifetime socket: layout, focus and status events.
     Client { method: WS, path: /client, send: ClientRequest, recv: ClientEvent }
-    /// Selects a session, a window or a pane for a client.
-    SelectClient {
-        method: POST,
-        path: /clients/{id: ClientId}/select,
-        body: Selection,
-        reply: Empty,
-    }
     /// Closes a pane.
     DeletePane { method: DELETE, path: /panes/{id: PaneId}, reply: Empty }
     /// Closes every pane of a window.
@@ -611,10 +605,6 @@ routes! {
         send: Empty,
         recv: SearchEvent,
     }
-    /// The variables of a pane.
-    Vars { method: GET, path: /panes/{id: PaneId}/vars, reply: Vars }
-    /// The value of one variable of a pane.
-    Var { method: GET, path: /panes/{id: PaneId}/vars/{name: VarName}, reply: Value }
     /// Sets one variable of a pane.
     SetVar {
         method: PUT,
@@ -647,8 +637,6 @@ routes! {
         query: { show: Show = Live, parent: Option<Parent> },
         reply: Vec<Info>,
     }
-    /// Collects the runs that are finished with.
-    Reap { method: POST, path: /runs/reap, reply: Empty }
     /// One run, with its screen when it failed.
     GetRun { method: GET, path: /runs/{id: RunId}, reply: Detail }
     /// Waits for the outcome of a run, up to the timeout.
@@ -713,13 +701,6 @@ mod tests {
         let encoded = "/panes/pane_2/vars/pi.session%20%C3%A9%2Fx%3F";
         for (method, route) in [
             (
-                "GET",
-                Route::Var {
-                    id,
-                    name: name.clone(),
-                },
-            ),
-            (
                 "PUT",
                 Route::SetVar {
                     id,
@@ -739,7 +720,11 @@ mod tests {
         }
         assert_eq!(
             Route::of_request("GET", "/panes/pane_2/vars"),
-            Ok(Route::Vars { id })
+            Err(Invalid::NoRoute)
+        );
+        assert_eq!(
+            Route::of_request("GET", "/panes/pane_2/vars/a"),
+            Err(Invalid::NoRoute)
         );
         assert_eq!(
             Route::of_request("POST", "/panes/pane_2/vars/a"),
@@ -761,15 +746,15 @@ mod tests {
             &format!("/panes/pane_2/vars/{}", "n".repeat(257)),
         ] {
             assert_eq!(
-                Route::of_request("GET", bad),
+                Route::of_request("PUT", bad),
                 Err(Invalid::message("invalid variable name")),
                 "{bad}"
             );
         }
         let longest = format!("/panes/pane_2/vars/{}", "n".repeat(256));
         assert!(matches!(
-            Route::of_request("GET", &longest),
-            Ok(Route::Var { .. })
+            Route::of_request("PUT", &longest),
+            Ok(Route::SetVar { .. })
         ));
     }
 
@@ -782,9 +767,7 @@ mod tests {
             Route::ListPanes {},
             Route::GetLayout {},
             Route::PutLayout {},
-            Route::SelectClient {
-                id: ClientId::new(4),
-            },
+            Route::GetPane { id },
             Route::ClearHistory { id },
             Route::Client {},
             Route::DeletePane { id },
@@ -829,7 +812,6 @@ mod tests {
                 show: Show::Present,
                 parent: Some(Parent::Run(run.clone())),
             },
-            Route::Reap {},
             Route::GetRun { id: run.clone() },
             Route::WaitRun {
                 id: run.clone(),
@@ -907,7 +889,6 @@ mod tests {
             ("GET", "/panes/pane_7/view?"),
             ("GET", "/panes/pane_x/view"),
             ("PUT", "/panes"),
-            ("POST", "/clients/client_x/select"),
             ("POST", "/panes/pane_1/clear_history/x"),
             ("GET", "/panes?x=1"),
             ("GET", "/runs?show=some"),
@@ -917,7 +898,6 @@ mod tests {
             ("GET", &format!("{wait}?timeout_ms=3600001")),
             ("GET", &wait),
             ("GET", "/runs/abc"),
-            ("POST", "/runs/reap"),
             ("PUT", "/runs"),
         ]
         .into_iter()
@@ -940,7 +920,6 @@ mod tests {
                 "no route",
                 "no route",
                 "no route",
-                "no route",
                 "ListPanes",
                 "invalid show",
                 "invalid window",
@@ -949,7 +928,6 @@ mod tests {
                 "invalid number",
                 &format!("WaitRun {{ id: RunId(\"{RUN}\"), timeout_ms: WaitMs(30000) }}"),
                 "no route",
-                "Reap",
                 "no route",
             ]
         );
@@ -957,30 +935,23 @@ mod tests {
 
     #[test]
     fn a_body_is_decoded_for_the_route_that_takes_one_and_refused_for_the_others() {
-        let selection = Route::SelectClient {
-            id: ClientId::new(1),
-        };
+        let delete = Route::DeleteVars { id: PaneId::new(1) };
         assert_eq!(
-            selection.clone().with_body(Some(br#"{"pane":"pane_2"}"#)),
-            Ok(Request::SelectClient {
-                id: ClientId::new(1),
-                body: Selection {
-                    session: None,
-                    window: None,
-                    pane: Some(PaneId::new(2)),
+            delete.clone().with_body(Some(br#"{"names":["a"]}"#)),
+            Ok(Request::DeleteVars {
+                id: PaneId::new(1),
+                body: DeleteVars {
+                    names: vec![VarName::new("a").unwrap()],
+                    condition: None,
                 },
             })
         );
         assert_eq!(
-            selection.clone().with_body(Some(b"[null,null,null]")),
+            delete.clone().with_body(Some(b"[[\"a\"],null]")),
             Err(Invalid::message("a record must be a JSON object"))
         );
         assert_eq!(
-            selection.clone().with_body(Some(br#"{"pane":"x"}"#)),
-            Err(Invalid::message("invalid id \"x\" at line 1 column 12"))
-        );
-        assert_eq!(
-            selection.with_body(None),
+            delete.with_body(None),
             Err(Invalid::message("body exceeds 1 MiB"))
         );
         let set = Route::SetVar {
@@ -999,10 +970,13 @@ mod tests {
             set.with_body(None),
             Err(Invalid::message("variable too large"))
         );
-        assert_eq!(Route::Reap {}.with_body(Some(b"")), Ok(Request::Reap {}));
+        assert_eq!(
+            Route::GetLayout {}.with_body(Some(b"")),
+            Ok(Request::GetLayout {})
+        );
         for body in [Some(&b"{}"[..]), Some(b"not json"), None] {
             assert_eq!(
-                Route::Reap {}.with_body(body),
+                Route::GetLayout {}.with_body(body),
                 Err(Invalid::message("this route takes no body"))
             );
         }

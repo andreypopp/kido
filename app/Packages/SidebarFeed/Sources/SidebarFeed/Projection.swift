@@ -14,13 +14,11 @@ extension Snapshot {
 private struct Projection {
     let model: KoModel
     let panes: [PaneID: KoSchema.PaneJson]
-    let runs: [PaneID: KoSchema.RunEvent]
     let windows: [WindowID: KoSchema.Window]
 
     init(_ model: KoModel) {
         self.model = model
         panes = Dictionary(model.panes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        runs = Dictionary(model.runs.map { ($0.pane, $0) }, uniquingKeysWith: { first, _ in first })
         windows = Dictionary(model.layout.layout.windows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
@@ -69,19 +67,19 @@ private struct Projection {
 
     private func item(_ entry: KoSchema.ItemPane, children: [Node]) -> Item? {
         guard let pane = panes[entry.id] else { return nil }
-        let run = runs[entry.id]
+        let run = pane.run
         let live = pane.dead == nil
         return Item(
             id: entry.id, window: entry.window, title: pane.label,
-            lifecycle: live ? .live(kind(pane)) : .ended(ended(pane, run)),
+            lifecycle: live ? .live(kind(pane)) : .ended(ended(pane)),
             program_status: programStatus(pane.status?.programStatus),
             run: run?.id,
             started: live && run?.outcome == nil ? run.flatMap { Self.wallClock($0.startedAt) } : nil,
             children: children, mark: pane.mark, recordsSeen: pane.recordsSeen, inbox: pane.vars["pi.inbox"] != nil)
     }
 
-    private func ended(_ pane: KoSchema.PaneJson, _ run: KoSchema.RunEvent?) -> KoSchema.RunResult {
-        if let result = run?.outcome?.result { return result }
+    private func ended(_ pane: KoSchema.PaneJson) -> KoSchema.RunResult {
+        if let result = pane.run?.outcome?.result { return result }
         guard case .exited(let exited) = pane.dead?.cause else { return .failed }
         return exited.code == 0 ? .completed : .failed
     }

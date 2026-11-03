@@ -10,12 +10,14 @@ use crate::ids::VarName;
 const MAX_VALUE: usize = (1 << 20) - 4096;
 const MAX_TOTAL: usize = 8 << 20;
 const MAX_NAMES: usize = 1024;
+pub(crate) const SERVER_MAX_TOTAL: usize = 16 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
     ValueTooLarge,
     TotalTooLarge,
     TooManyNames,
+    ServerTotalTooLarge,
 }
 
 impl fmt::Display for Refusal {
@@ -24,6 +26,7 @@ impl fmt::Display for Refusal {
             Refusal::ValueTooLarge => "variable too large",
             Refusal::TotalTooLarge => "variables too large",
             Refusal::TooManyNames => "too many variables",
+            Refusal::ServerTotalTooLarge => "variables of the server too large",
         })
     }
 }
@@ -93,7 +96,20 @@ impl Vars {
         self.get(name).and_then(Value::as_str)
     }
 
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
+    }
+
     pub fn set(&mut self, name: &VarName, value: Value) -> Result<bool, Refusal> {
+        self.set_within(name, value, usize::MAX)
+    }
+
+    pub(crate) fn set_within(
+        &mut self,
+        name: &VarName,
+        value: Value,
+        spare: usize,
+    ) -> Result<bool, Refusal> {
         let old = self.map.get(name);
         if old.is_some_and(|(old, _)| *old == value) {
             return Ok(false);
@@ -112,6 +128,9 @@ impl Vars {
             .saturating_add(weight);
         if total > MAX_TOTAL {
             return Err(Refusal::TotalTooLarge);
+        }
+        if total.saturating_sub(self.bytes) > spare {
+            return Err(Refusal::ServerTotalTooLarge);
         }
         self.bytes = total;
         self.map.insert(name.clone(), (value, weight));

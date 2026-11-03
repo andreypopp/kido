@@ -2,7 +2,9 @@ use std::path::Path;
 
 use ko_server::api::Route;
 use ko_server::ids::{ClientId, Name, PaneId, SessionId, WindowId};
-use ko_server::protocol::{self, CreatePane, DraftLayout, Node, PutLayout, Revision, Snapshot};
+use ko_server::protocol::{
+    self, CreatePane, DraftLayout, LayoutPanes, Node, PutLayout, Revision, Snapshot,
+};
 use ko_sys::event::Wake;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -64,13 +66,14 @@ fn fetch(
     client: Option<ClientId>,
     cancel: Option<&Wake>,
 ) -> Result<Snapshot, Rejected> {
-    decoded(&wire::request(
+    decoded::<LayoutPanes>(&wire::request(
         socket,
         (client, None),
         &Route::GetLayout {},
         b"",
         cancel,
     )?)
+    .map(|layout| layout.snapshot)
 }
 
 pub(crate) fn send(

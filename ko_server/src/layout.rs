@@ -474,13 +474,6 @@ fn resize(window: &mut Window, wanted: (usize, usize), cell_px: Option<CellPixel
     changed
 }
 
-fn layout_panes(layout: &Layout) -> BTreeSet<PaneId> {
-    layout
-        .windows()
-        .flat_map(|(_, window)| window.panes())
-        .collect()
-}
-
 fn grow(node: &mut Node<Leaf>, axis: Axis, delta: usize) {
     match node {
         Node::Leaf(leaf) => {
@@ -737,7 +730,7 @@ fn normalize(
     ids: Ids,
     shell: Option<&Name>,
 ) -> Result<Normalized, String> {
-    let live = layout_panes(current);
+    let live = current.panes();
     let mut claims = Claims {
         current,
         shell,
@@ -1748,7 +1741,7 @@ mod tests {
     }
 
     fn pane_count(layout: &Layout) -> usize {
-        layout_panes(layout).len()
+        layout.panes().len()
     }
 
     proptest! {
@@ -1762,7 +1755,7 @@ mod tests {
             check(&layout);
             prop_assert_eq!(pane_count(&layout), created.len());
             prop_assert_eq!(
-                layout_panes(&layout),
+                layout.panes(),
                 created.iter().map(|(pane, ..)| *pane).collect::<BTreeSet<_>>()
             );
         }
@@ -1792,7 +1785,7 @@ mod tests {
             prop_assert!(created.is_empty());
             let equalized = document.snapshot().layout;
             check(&equalized);
-            prop_assert_eq!(layout_panes(&equalized), layout_panes(&before));
+            prop_assert_eq!(equalized.panes(), before.panes());
             let (old, new) = (&before.sessions[0].windows[0], &equalized.sessions[0].windows[0]);
             prop_assert_eq!((new.cols, new.rows), (old.cols, old.rows));
             let (mut leaves, mut was) = (vec![], vec![]);
@@ -1867,14 +1860,14 @@ mod tests {
         ) {
             let mut document = document_of(generated);
             let before = document.snapshot().layout;
-            let panes: Vec<_> = layout_panes(&before).into_iter().collect();
+            let panes: Vec<_> = before.panes().into_iter().collect();
             let victim = panes[pick.index(panes.len())];
             prop_assert!(document.remove_pane(victim).is_some());
             let after = document.snapshot().layout;
             check(&after);
-            let mut expected = layout_panes(&before);
+            let mut expected = before.panes();
             expected.remove(&victim);
-            prop_assert_eq!(layout_panes(&after), expected);
+            prop_assert_eq!(after.panes(), expected);
             let order = |layout: &Layout| {
                 let mut panes = vec![];
                 if let Some(window) = layout.sessions.first().and_then(|session| session.windows.first()) {

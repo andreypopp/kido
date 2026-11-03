@@ -206,7 +206,7 @@ test("a pane read failure at settlement writes and sends nothing; a later settle
       async () => {
         const s = await startNamedSession(fx, "worker", SELF);
         const report = join(fx.agentDir("boss-session", "worker"), "report");
-        await withEnv({ KO_FAKE_PANES_FAIL: "1" }, async () => {
+        await withEnv({ KO_FAKE_LAYOUT_FAIL: "1" }, async () => {
           await idleTurn(s, "the merge is done");
           assert.equal(existsSync(report), false, "a failed read says nothing about the parent, so it writes nothing");
           assert.equal(inbox.received().length, 0);

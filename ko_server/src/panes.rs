@@ -9,10 +9,9 @@ use ko_sys::event::Token;
 use crate::config::{BUILD, Config, variable};
 use crate::delivery::{Stamps, mint_stamps};
 use crate::ids::PaneId;
-use crate::pane::Pane;
+use crate::pane::{Birth, Pane};
 use crate::pane_proc::{Io, Launch, Life};
 use crate::protocol::{Command, CreatePane, Variable};
-use crate::vars::Vars;
 
 #[derive(Debug)]
 pub(crate) enum AddError {
@@ -158,7 +157,7 @@ impl Panes {
         id: PaneId,
         size: Size,
         request: &CreatePane,
-        vars: Vars,
+        birth: Birth,
         io: &mut Io<'_>,
     ) -> Result<(), AddError> {
         let cwd = request
@@ -222,7 +221,8 @@ impl Panes {
                 env: &env,
                 size,
             },
-            vars,
+            birth.vars,
+            birth.run,
             &mut self.stamps,
             io,
         )
@@ -394,7 +394,7 @@ mod tests {
                     PaneId::new(1),
                     Size::DEFAULT,
                     &request,
-                    Vars::default(),
+                    Birth::default(),
                     &mut io,
                 )
                 .unwrap_err();
@@ -405,7 +405,7 @@ mod tests {
             PaneId::new(1),
             Size::DEFAULT,
             &request("/", None, &[]),
-            Vars::default(),
+            Birth::default(),
             &mut io,
         );
         assert!(matches!(spawned, Err(AddError::Io(_))));
