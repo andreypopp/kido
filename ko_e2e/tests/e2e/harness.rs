@@ -413,6 +413,7 @@ pub(crate) struct Ws {
     began: Instant,
     received: usize,
     last: String,
+    close: Option<(u16, String)>,
 }
 
 impl Ws {
@@ -428,10 +429,13 @@ impl Ws {
                 .checked_duration_since(Instant::now())
                 .filter(|left| !left.is_zero())
                 .ok_or(End::Timeout)?;
-            self.socket
-                .get_ref()
-                .set_read_timeout(Some(left))
-                .map_err(|_| End::Closed)?;
+            // macOS refuses the option (EINVAL) on a socket whose peer has shut down. Such a read
+            // never waits: it returns the unread data or the end.
+            if let Err(error) = self.socket.get_ref().set_read_timeout(Some(left))
+                && error.kind() != std::io::ErrorKind::InvalidInput
+            {
+                return Err(End::Closed);
+            }
             match self.socket.read() {
                 Ok(Msg::Text(text)) => {
                     self.received += 1;
@@ -443,7 +447,11 @@ impl Ws {
                     self.last = format!("binary kind {:?}, {} bytes", bytes.first(), bytes.len());
                     return Ok(Message::Binary(bytes.to_vec()));
                 }
-                Ok(Msg::Close(_)) => return Err(End::Closed),
+                Ok(Msg::Close(frame)) => {
+                    self.close =
+                        frame.map(|frame| (u16::from(frame.code), frame.reason.to_string()));
+                    return Err(End::Closed);
+                }
                 Ok(_) => {}
                 Err(tungstenite::Error::Io(error))
                     if matches!(
@@ -453,7 +461,10 @@ impl Ws {
                 {
                     return Err(End::Timeout);
                 }
-                Err(_) => return Err(End::Closed),
+                Err(error) => {
+                    self.last = format!("error {error}");
+                    return Err(End::Closed);
+                }
             }
         }
     }
@@ -474,6 +485,14 @@ impl Ws {
         self.socket
             .send(Msg::text(value.to_string()))
             .unwrap_or_else(|error| panic!("send {value}: {error}"));
+    }
+
+    pub(crate) fn last(&self) -> &str {
+        &self.last
+    }
+
+    pub(crate) fn close_frame(&self) -> Option<&(u16, String)> {
+        self.close.as_ref()
     }
 
     pub(crate) fn raw(&mut self) -> &mut Steady {
@@ -956,6 +975,7 @@ impl Server {
                 began: Instant::now(),
                 received: 0,
                 last: String::new(),
+                close: None,
             }),
             Err(error) => panic!("upgrade {path}: {error} ({})", self.log()),
         }

@@ -239,6 +239,12 @@ specifics: a named kept object is a new constructor in
 mapping through the connection's queue, and a body larger than the
 queue cap (64 MiB) needs a pull source that the connection drains in
 pieces, a small change in `conn.rs` outside its verified `Batch`.
+A snapshot has a pull source of its own: past the queue cap, a view's
+output goes to its unlinked spill file, which the connection drains
+after the queue (decided 2026-11-03, protocol.md section 4). The
+alternative of producing slices only as the socket drains does not
+work: the ring is 1 MiB, so a waiting slice is either overwritten or
+blocks the pane's program for every view.
 
 ### 4.6 SSH unix-socket forwarding, no stdio
 
@@ -1270,9 +1276,13 @@ medians of 3, 1-minute load 1.8 to 2.6):
 The `none` column is 20cc9449 with its per-view queue raised to
 1 GiB: unchanged, it times out on all 3 runs, because the 77 MB
 uncompressed snapshot is over the 64 MiB queue cap and the server
-closes the view. The shipped build keeps the 64 MiB cap; its 29.7 MB
-fit, but a history whose compressed snapshot is over 64 MiB still
-loses its view until the queue drains in pieces (4.5).
+closes the view. That close had no close frame, and the app showed
+no error and opened no new view. Open: why the app did not react,
+because `ko_client`'s tests show that it posts the view's close on
+that EOF. Now a snapshot over
+the cap spills to a file and reaches the client whole; only a spill
+over 1 GiB, or a failed spill, closes the view, with close code 1013
+(4.5, protocol.md section 4).
 The coordinator's one thread deflates each view's slices: N views
 that attach at once cost N times the deflate (about 0.26 s for each
 77 MB history).

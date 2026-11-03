@@ -29,6 +29,7 @@ pub mod runs;
 pub mod schema;
 pub mod server;
 mod shm;
+mod spill;
 mod state;
 mod telemetry;
 pub mod timestamp;

@@ -50,7 +50,8 @@ frames are masked, as the RFC requires; it costs an XOR over input
 bytes and buys standard tooling (`websocat --unix`). The server pings
 every 30 s on idle streams and closes a connection without a pong
 after 10 s more. A close frame carries the error kind of section 2 as
-its reason.
+its reason. The exception is a view's overflow close (section 4),
+with code 1013 and the reason `view queue overflow`.
 
 Backpressure is the connection's own: the server writes with
 non-blocking writes and never blocks on a client. A stream that cannot
@@ -314,6 +315,33 @@ offsets. The server coalesces a pane's output into one record per
 2 ms while output continues. The client sets `SO_RCVBUF` and the
 server `SO_SNDBUF` to 1 MiB on a view connection; on macOS the
 sender's buffer is the one that counts (measured in P1.0).
+
+A snapshot does not wait for its reader. The pane writes it through
+the ring at the pane's speed, and the server takes every slice at
+once, so a slow link cannot hold the ring or the pane's program. A
+view's slices go to its connection's queue in memory, up to the
+queue cap. Past the cap, the rest of the view's output goes to its
+spill file, an unlinked file in the server state directory, which
+the connection drains after the queue as the socket drains. The order
+on the wire stays the order of the messages, and live bytes go only
+after the spill is drained, under the backpressure rule above: the
+view resumes from the ring, or it gets a skip and a `screen`
+snapshot. So a snapshot reaches a slow reader whole, and the memory
+of each view stays at the cap. Only views spill; the other links
+close at the cap. `ko_server/src/config.rs` holds the cap and the
+spill limit of each view. When the spill limit is exceeded, or a
+spill write or read fails, the server discards the unsent messages
+after the one that the socket has in part and closes the view with
+close code 1013 (try again later) and the reason `view queue
+overflow`. The client treats it as any other view close: a new view
+gets a new snapshot. A connection whose output waits and makes no
+progress closes, whether a pong or the close frame waits: the ping
+timer finds the stall, and the close comes 10 s later. While the
+output drains, the pong deadline restarts, because a ping waits
+behind the queued messages. Rationale: a close without a frame gave
+the client no reason, and a cap without a spill closed every
+snapshot that was larger than the cap, again after each reconnect
+(plans/ko-stages.md K7).
 
 `GET /panes/pane_N/screen` returns text from the server's formatter
 (`format` plain or ansi, `history` rows), for the CLI's `runs` screen

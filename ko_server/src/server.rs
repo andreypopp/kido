@@ -247,13 +247,13 @@ fn halt(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use ko_sys::pid::{Exit, Pid, Waited};
     use std::os::fd::AsFd;
     use std::path::PathBuf;
 
-    fn scratch(name: &str) -> PathBuf {
+    pub(crate) fn scratch(name: &str) -> PathBuf {
         let dir = PathBuf::from(format!("/tmp/ko-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -443,6 +443,7 @@ mod tests {
             linger: crate::config::LINGER,
             stop_escalation: crate::config::STOP_ESCALATION,
             clipboard_wait: crate::config::CLIPBOARD_WAIT,
+            view_queue: crate::config::ViewQueue::default(),
         };
         let timing = Timing {
             shutdown_grace: Duration::from_millis(100),

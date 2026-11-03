@@ -12,7 +12,7 @@ use vstd::view::View as _;
 
 #[cfg(verus_only)]
 use crate::conn::BATCH;
-use crate::conn::{Batch, Output, Written};
+use crate::conn::{Batch, Fit, Output, Written};
 use crate::deflate::Deflate;
 #[cfg(verus_only)]
 use crate::delivery::instance_of;
@@ -558,8 +558,8 @@ fn emit_skipped(wire: &mut Wire<'_>, head: u64, from: u64)
 #[allow(dead_code, unreachable_pub)]
 pub struct ExDeflate(Deflate);
 
-// Assumes: it writes the slice record, its body deflated, to the output, closes the output when the write fails, and
-// never reopens a closed output. A closed output gets no write.
+// Assumes: it writes the slice record, its body deflated, to the output (to the queue, or to the spill when the queue is
+// full), leaves the output not Open when the write fails, and never reopens an output that is not Open. closed() holds when the output is not Open: it is shut, or it drains a queued close frame and takes no more writes.
 #[verifier::external_body]
 fn write_slice(
     out: &mut Output,
@@ -577,7 +577,7 @@ fn write_slice(
     }
     match ring.payload(at) {
         Ok(payload) => match ws::with_packed_slice(deflate, payload, |packed| {
-            out.record(true, ws::Record::Snapshot, offset, packed)
+            out.record(Fit::Spill, ws::Record::Snapshot, offset, packed)
         }) {
             Some(written) => Ok(written),
             None => Err(Invalid::Slice),
