@@ -177,7 +177,7 @@ app_scope = ('app/', 'docs/design-app.md', 'docs/known-issues-app.md')
 gates = [
     re.compile(p) for p in (
         r'kido-pi', r'kido-tmux', r'share/kido', r'\bdune\b', r'install-tmux-fork', r'test_e2e',
-        r'\bgo test\b', r'\.mli?\b', r'verify-ko', r'make flake', r'make e2e(?![\w-])', r'lib_tmux', r'rfc/kido-server',
+        r'\bgo test\b', r'\.mli?\b', r'verify-ko', r'make flake', r'lib_tmux', r'rfc/kido-server',
         r'lib/[a-z_]+\.ml',
     )
 ]
@@ -188,7 +188,7 @@ gate_exempt = (
     'scripts/lint.sh', 'app/VisualTests/PaletteTests.swift',  # the gate's own patterns; snapshot test data
 )
 gate_statements = {}
-prefilter = r'KIDO_|kido-|share/kido|dune|tmux|test_e2e|go test|\.ml|verify-ko|make flake|make e2e|lib/|rfc/kido-server'
+prefilter = r'KIDO_|kido-|share/kido|dune|tmux|test_e2e|go test|\.ml|verify-ko|make flake|lib/|rfc/kido-server'
 excluded = [f':(exclude){entry}' for entry in gate_exempt]
 found = subprocess.run(['git', 'grep', '-I', '-n', '-i', '--untracked', '-E', prefilter, '--', '.', *excluded], capture_output=True, text=True)
 if found.returncode not in (0, 1):
@@ -212,7 +212,7 @@ for path, statements in gate_statements.items():
 raise SystemExit(1 if errors else 0)
 PY
 node_flags=()
-make --no-print-directory build-ko >&2
+make --no-print-directory build >&2
 build/ko/bin/ko api-schema > "$scratch/openapi.json"
 if [[ "${1:-}" == --update-schemas ]]; then
   cp "$scratch/openapi.json" share/ko/openapi.json

@@ -857,7 +857,7 @@ target after the next cleanup. A `ko` binary without an adjacent
 keeps the shims only if its login files preserve the inherited PATH
 order.
 
-**Install layout.** `make build-ko` lays out `build/ko/` as installed:
+**Install layout.** `make build` lays out `build/ko/` as installed:
 `bin/ko`, `bin/ko-pane` and `share/ko` with `bin/`, `shim.sh`,
 `pi/ko-pi.ts` and the terminfo. `make install` copies it under
 `PREFIX`, default `~/.local`. This is Homebrew's `pkgshare` layout.

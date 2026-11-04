@@ -580,7 +580,7 @@ test("the exec client drives a real ko server with a command-kind runtime the wa
   const repo = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
   const bin = join(repo, "build", "ko", "bin");
   if (!existsSync(join(bin, "ko"))) {
-    if (process.env.KO_TS_TEST_REQUIRED === "1") assert.fail("build/ko/bin/ko is missing: run make build-ko");
+    if (process.env.KO_TS_TEST_REQUIRED === "1") assert.fail("build/ko/bin/ko is missing: run make build");
     context.skip("build/ko/bin/ko is missing");
     return;
   }

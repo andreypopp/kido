@@ -38,7 +38,7 @@ PY
 )
 installed=$("$old_ko" version | python3 -c 'import json,sys; print(json.load(sys.stdin)["build"])')
 [[ $old == "$installed"* ]] || { echo "The installed ko ($installed) is not the formula's revision ($old): brew upgrade ko first" >&2; exit 1; }
-make build-ko
+make build
 work=$(mktemp -d /tmp/ko-release-XXXXXX)
 trap 'rm -rf "$work"' EXIT
 "$old_ko" --help > "$work/old.help"

@@ -6,7 +6,7 @@
 set -eu
 out=${1:?usage: bench/rtt.sh OUT.jsonl}
 . "$(dirname "$0")/setup.sh"
-make build-ko
+make build
 export KO_BIN="$root/build/ko/bin/ko"
 cells=${CELLS:-"150:100 300:100 150:0 300:0 50:100 50:0 150:10 300:10 50:10"}
 variants=${VARIANTS:-"none ssh-c deflate"}

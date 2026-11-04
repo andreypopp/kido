@@ -1722,7 +1722,7 @@ mod tests {
     fn a_pane_row_has_no_pid_until_the_pane_is_ready() {
         let exe = PathBuf::from(
             std::env::var_os("KO_PANE_EXE")
-                .expect("KO_PANE_EXE names the Rust ko-pane; make test-ko builds it and sets it"),
+                .expect("KO_PANE_EXE names ko-pane; make test builds it and sets it"),
         );
         let mut rig = Rig::new(scratch("state-pid"), exe, "exec cat");
         let request = CreatePane {
@@ -1750,7 +1750,7 @@ mod tests {
     fn a_removed_pane_tells_its_parent_it_is_gone_only_when_it_was_alive() {
         let exe = PathBuf::from(
             std::env::var_os("KO_PANE_EXE")
-                .expect("KO_PANE_EXE names the Rust ko-pane; make test-ko builds it and sets it"),
+                .expect("KO_PANE_EXE names ko-pane; make test builds it and sets it"),
         );
         let mut rig = Rig::new(scratch("state-gone"), exe, "exec cat");
         let request = |command: &str, parent: Option<PaneId>| CreatePane {

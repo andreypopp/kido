@@ -475,7 +475,7 @@ guess.
 Linux ko of `share/ko/linux/aarch64` beside the server's installation
 (AGENTS.md, "Layout") read-only at `/opt/ko`, so an image needs no ko
 of its own. A missing layout fails only a start that must create the
-container, with the path and `make build-ko-linux`. `{ "mount": DIR }`
+container, with the path and `make build-linux`. `{ "mount": DIR }`
 mounts another layout there, and `"path"` uses the image's `ko`. The
 layout is always aarch64, because the VM's kernel is arm64 whatever
 the image; an amd64 image under Rosetta was not measured.

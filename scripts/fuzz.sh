@@ -36,7 +36,7 @@ target_dir=$PWD/target/fuzz
 boxed fuzz.sh 3000 make --no-print-directory nightly-cargo ARGS="fuzz build -a --target-dir $target_dir $target" || exit 1
 binary=$(find "$target_dir" -maxdepth 3 -path "*/release/$target" -type f | head -1)
 if [[ $target == http ]]; then
-  boxed fuzz.sh 1500 make --no-print-directory fuzz-pane || exit 1
+  boxed fuzz.sh 1500 make --no-print-directory cargo ARGS="build --release -p ko_pane" || exit 1
   export KO_PANE_EXE=$PWD/target/release/ko-pane
 fi
 corpus=$scratch/corpus

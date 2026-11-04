@@ -31,7 +31,7 @@ pub(crate) fn ko() -> PathBuf {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../build/ko/bin/ko");
     assert!(
         path.exists(),
-        "{} is missing: run make build-ko first",
+        "{} is missing: run make build first",
         path.display()
     );
     path

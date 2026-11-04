@@ -3,7 +3,7 @@
        [KO_BIN=...] bench/client.py rtt --rtt MS --bw MBIT --variant local|none|ssh-c|deflate --out FILE [--rows attach,plain,mixed,echo] [--runs N]
        bench/client.py rtt-table FILE...   (a Markdown table of the rtt records; bench/rtt.sh runs both)
 
-KO_BIN names the ko to measure (a reference build); without it `make build-ko` runs and build/ko/bin/ko is measured."""
+KO_BIN names the ko to measure (a reference build); without it `make build` runs and build/ko/bin/ko is measured."""
 import base64
 import argparse
 import fcntl
@@ -991,6 +991,6 @@ if __name__ == "__main__":
     if any(n not in ROWS_BY_NAME for n in names):
         raise SystemExit(__doc__)
     if not os.environ.get("KO_BIN"):
-        subprocess.run(["make", "build-ko"], cwd=ROOT, check=True)
+        subprocess.run(["make", "build"], cwd=ROOT, check=True)
     for n in names:
         ROWS_BY_NAME[n]()

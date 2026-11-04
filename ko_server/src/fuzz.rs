@@ -572,7 +572,7 @@ fn with_rig<T>(f: impl FnOnce(&mut Rig) -> T) -> T {
     RIG.with_borrow_mut(|slot| {
         f(slot.get_or_insert_with(|| {
             let exe = std::env::var_os("KO_PANE_EXE")
-                .expect("KO_PANE_EXE names the Rust ko-pane; fuzz.sh and make test-ko set it");
+                .expect("KO_PANE_EXE names ko-pane; fuzz.sh and make test set it");
             let dir = PathBuf::from(format!("/tmp/ko-fuzz-http-{}", std::process::id()));
             let mut rig = Rig::new(dir, PathBuf::from(exe), "stty raw -echo; exec cat");
             // A later pane is never a real program: a fuzzed request must not run a command.
@@ -655,7 +655,7 @@ mod tests {
     fn the_replayed_corpora_run_to_the_end() {
         assert!(
             std::env::var_os("KO_PANE_EXE").is_some(),
-            "make test-ko sets KO_PANE_EXE"
+            "make test sets KO_PANE_EXE"
         );
         let replayed = [
             replay("decode", decode),

@@ -161,8 +161,8 @@ ko is a Rust cargo workspace. It needs:
 
 ```sh
 git clone --recurse-submodules https://github.com/andreypopp/kido.git && cd kido
-make build-ko   # the installed layout under build/ko/
-make build-ko-linux  # the static Linux ko under build/ko/share/ko/linux/<arch>/
+make build   # the installed layout under build/ko/
+make build-linux  # the static Linux ko under build/ko/share/ko/linux/<arch>/
 make install    # binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/ko
 make verify     # the whole verification: build, unit tests, e2e, lint, the pi extension's suite, Verus
 ```

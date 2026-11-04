@@ -90,7 +90,7 @@ fn mount(settings: &Container, exe: &Path) -> Result<Option<PathBuf>, String> {
                 .map(Some)
                 .ok_or_else(|| {
                     format!(
-                        "the static Linux ko is missing at {}: run make build-ko-linux",
+                        "the static Linux ko is missing at {}: run make build-linux",
                         layouts
                             .first()
                             .map_or_else(|| text(exe), |layout| text(layout))
@@ -453,7 +453,7 @@ mod tests {
         let mut stage = Stage::Inspect;
         assert_eq!(
             failure(advance(&shipped, &mut stage, missing)),
-            "the static Linux ko is missing at /nonexistent/share/ko/linux/aarch64: run make build-ko-linux"
+            "the static Linux ko is missing at /nonexistent/share/ko/linux/aarch64: run make build-linux"
         );
         let mut stage = Stage::Inspect;
         assert_eq!(

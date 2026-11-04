@@ -28,7 +28,7 @@ with (scratch / 'ko-install.lock').open('w') as lock:
     xcode = str(Path(env['DEVELOPER_DIR']).parent) + '/'
     env['PATH'] = ':'.join(path for path in env['PATH'].split(':')
                            if not path.startswith((xcode, '/var/run/com.apple.security.cryptexd/mnt/')))
-    subprocess.run(['make', '-C', str(ko), 'build-ko'], env=env, check=True, timeout=900)
+    subprocess.run(['make', '-C', str(ko), 'build'], env=env, check=True, timeout=900)
     shutil.rmtree(prefix, ignore_errors=True)
     shutil.copytree(ko / 'build/ko', prefix, symlinks=True)
     (prefix / 'BUILD-ID').write_bytes(subprocess.check_output([prefix / 'bin/ko', 'version']))

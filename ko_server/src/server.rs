@@ -401,7 +401,7 @@ pub(crate) mod tests {
     fn ko_pane() -> PathBuf {
         PathBuf::from(
             std::env::var_os("KO_PANE_EXE")
-                .expect("KO_PANE_EXE names the Rust ko-pane; make test-ko builds it and sets it"),
+                .expect("KO_PANE_EXE names ko-pane; make test builds it and sets it"),
         )
     }
 

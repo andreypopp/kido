@@ -32,7 +32,7 @@ fn the_static_linux_ko_runs_in_a_container() {
         .join("share/ko/linux/aarch64");
     assert!(
         layout.join("bin/ko").exists(),
-        "{} is missing: run make build-ko-linux first",
+        "{} is missing: run make build-linux first",
         layout.display()
     );
     let container = which("container").expect("KO_E2E_CONTAINER needs the container CLI");
@@ -157,7 +157,7 @@ fn a_container_runtime_starts_on_the_first_pane_and_follows_its_container() {
         .join("share/ko/linux/aarch64");
     assert!(
         layout.join("bin/ko").exists(),
-        "{} is missing: run make build-ko-linux first",
+        "{} is missing: run make build-linux first",
         layout.display()
     );
     let container = which("container").expect("KO_E2E_CONTAINER needs the container CLI");

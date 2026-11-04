@@ -189,7 +189,7 @@ callbacks:
   2 s of continuous activity it runs one step every 10 ms. The mirror
   runs the same steps on a thread of its own.
 - `TERM` is `xterm-ghostty` in every pane, with the terminfo that
-  `make build-ko` compiles from Ghostty's source beside the server
+  `make build` compiles from Ghostty's source beside the server
   (`TERMINFO_DIRS`). ko owns the whole pane environment.
 
 Cell pixel size comes from the window (protocol.md, section 3).
@@ -900,10 +900,11 @@ the remote rows through `bench/rtt_proxy.py`. `ko-bench`
 | `yes` for 5 s in the shown pane | client CPU for each MB parsed no more than the reference |
 | idle wakeups | no wakeup of the coordinator or a `ko-pane` with idle primed panes |
 
-The reference is the Rust ko at the commit that the last bench run
+The reference is ko at the commit that the last bench run
 names (relative, because absolute figures drift with the machine and
 its load). A later run
-builds that commit in a scratch worktree with `make build-ko` and
+builds that commit in a scratch worktree with `make` (its default
+goal builds the layout at every commit) and
 measures it first, in the same session, on AC power, at a load average
 under 2. A change that moves a row past its rule names the new
 reference commit with the reason.

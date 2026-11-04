@@ -9,15 +9,15 @@ export PATH := $(if $(RUSTUP_BIN),$(RUSTUP_BIN):)$(PATH)
 # own PATH, not the exported one.
 CARGO := $(if $(RUSTUP_BIN),$(RUSTUP_BIN)/)cargo
 
-.DEFAULT_GOAL := build-ko
-# The Linux architectures that build-ko-linux, check-static and install handle: the host's alone by
-# default; make build-ko-linux LINUX_ARCHS="aarch64 x86_64" builds both.
+.DEFAULT_GOAL := build
+# The Linux architectures that build-linux, check-static and install handle: the host's alone by
+# default; make build-linux LINUX_ARCHS="aarch64 x86_64" builds both.
 LINUX_ARCHS ?= $(patsubst arm64,aarch64,$(shell uname -m))
-.PHONY: build-ko build-ko-linux check-static build-fake-ko ko-client-xcframework build-bench test-ko cargo fmt lint-rs lint probe-ko bindgen fuzz miri nightly-has nightly-cargo fuzz-pane verus e2e-ko verify install ci-like preview-pi unpreview-pi release prompts schemas api-docs website
+.PHONY: build build-linux check-static build-fake-ko ko-client-xcframework build-bench test cargo fmt lint-rs lint probe bindgen fuzz miri nightly-has nightly-cargo verus e2e verify install ci-like preview-pi unpreview-pi release prompts schemas api-docs website
 
 # The installed layout is build/ko: bin/ko, bin/ko-pane and share/ko. rm -f first:
 # macOS kills (Killed: 9) a process whose executable was overwritten in place.
-install: build-ko build-ko-linux
+install: build build-linux
 	mkdir -p "$(PREFIX)/bin"
 	rm -rf "$(PREFIX)/share/ko"
 	mkdir -p "$(PREFIX)/share/ko/linux"
@@ -39,7 +39,7 @@ api-docs:
 	@echo build/ko-api.html
 
 verify:
-	STAGES='$(STAGES)' E2E_KO='$(E2E_KO)' bash scripts/verify.sh
+	STAGES='$(STAGES)' E2E='$(E2E)' bash scripts/verify.sh
 
 # verifies the crates of scripts/verus.sh with the pinned Verus release, which it
 # downloads into build/verus/<release> once. Only this target needs Verus.
@@ -57,9 +57,6 @@ nightly-has:
 
 nightly-cargo:
 	$(CARGO) +$(NIGHTLY) $(ARGS)
-
-fuzz-pane:
-	$(CARGO) build --locked --release -p ko_pane
 
 miri:
 	bash scripts/miri.sh
@@ -79,7 +76,7 @@ release:
 website:
 	cd website && npm ci && npm run dev
 
-# The installed layout of the Rust ko. The terminfo is compiled from ghostty's
+# The installed layout of ko. The terminfo is compiled from ghostty's
 # source by terminfo.zig; tic writes x/ or 78/ by platform, and both are shipped.
 # zig keeps its caches in the KO_ZIG_CACHE of .cargo/config.toml.
 KO := build/ko
@@ -87,7 +84,7 @@ SHARE := bin pi shim.sh terminfo
 BUILD_ID = KO_BUILD_ID=$$(git describe --always --dirty)
 ZIG_CACHE := $(CURDIR)/target/zig-cache
 TERMINFO := $(KO)/share/ko/terminfo
-build-ko: $(TERMINFO)/x/xterm-ghostty
+build: $(TERMINFO)/x/xterm-ghostty
 	$(BUILD_ID) $(CARGO) build --locked --release --bin ko --bin ko-pane
 	rm -f $(KO)/bin/ko $(KO)/bin/ko-pane
 	cp target/release/ko target/release/ko-pane $(KO)/bin/
@@ -101,7 +98,7 @@ build-ko: $(TERMINFO)/x/xterm-ghostty
 # the host's layout. No ko-pane: no server runs inside.
 # zig is the C compiler and linker (.cargo/config.toml names scripts/zig-cc-*).
 LINUX := $(KO)/share/ko/linux
-build-ko-linux: build-ko
+build-linux: build
 	set -e; for arch in $(LINUX_ARCHS); do \
 	  $(BUILD_ID) $(CARGO) build --locked --release --bin ko --target $$arch-unknown-linux-musl; \
 	  dir=$(LINUX)/$$arch; \
@@ -167,9 +164,9 @@ FORCE:
 
 # The loom models of the ring handshake build with --cfg loom, so they get their own target
 # directory and do not rebuild the workspace's.
-# The server tests start the Rust ko-pane. The default members of the workspace exclude fuzz/, which needs a nightly
+# The server tests start ko-pane. The default members of the workspace exclude fuzz/, which needs a nightly
 # toolchain to run.
-test-ko:
+test:
 	$(CARGO) build --locked -p ko_pane
 	KO_PANE_EXE=$(CURDIR)/target/debug/ko-pane $(CARGO) test --locked
 	RUSTFLAGS='--cfg loom' $(CARGO) test --locked --release -p ko_pane_wire --target-dir target/loom ring::model
@@ -197,12 +194,12 @@ bindgen:
 	./scripts/bindgen.sh
 
 # The C helpers of bench/, built into build/bench/. pty_read and parse link the
-# libghostty-vt that ko_vt_sys/build.rs built (build-ko first).
+# libghostty-vt that ko_vt_sys/build.rs built (build first).
 BENCH := build/bench
 CXX_LIB := $(if $(filter Darwin,$(shell uname -s)),c++,stdc++)
 BENCH_CC := cc -std=c11 -O2 -Wall -Wextra -Werror
-build-bench: build-ko
-	KO_BUILD_ID=$$(git describe --always --dirty) $(CARGO) build --locked --release -p ko_bench
+build-bench: build
+	$(BUILD_ID) $(CARGO) build --locked --release -p ko_bench
 	mkdir -p $(BENCH)
 	set -e; for tool in produce drain wait_master; do $(BENCH_CC) bench/$$tool.c -o $(BENCH)/$$tool; done
 	set -e; lib=$$(ls -t target/release/build/ko_vt_sys-*/out/zig-out/lib/libghostty-vt.a | head -1); \
@@ -210,12 +207,12 @@ build-bench: build-ko
 
 # ko-bench throughput through one pane: BYTES of bench/streams, every record counted; it fails on a lost
 # record, a gap, an invalid record or another byte total.
-probe-ko: build-bench
+probe: build-bench
 	target/release/ko-bench throughput writev $(or $(BYTES),1073741824) 2 $(addprefix $(CURDIR)/,$(wildcard bench/streams/*.vt))
 
-# the Rust suite of ko_e2e drives the built build/ko/bin/ko; E2E_KO is a cargo test name filter
-e2e-ko: build-ko
-	$(CARGO) test --locked -p ko_e2e -- --test-threads=64 $(E2E_KO)
+# the e2e suite drives the built build/ko/bin/ko; E2E is a cargo test name filter
+e2e: build
+	$(CARGO) test --locked -p ko_e2e -- --test-threads=64 $(E2E)
 
 # reproduces a CI-runner-only failure in a CPU/memory-capped Linux
 # container instead of by loading the host, e.g.:

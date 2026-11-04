@@ -163,7 +163,7 @@ These requirements are fixed:
   remote login shell, the ssh arguments, the bin directory lookup,
   and `ko enter`, with the exec session's supervisor (`session.rs`).
   It embeds the shell integrations of `share/ko/` with `include_str!`;
-  `make build-ko` installs `share/ko/bin` (the `ko`, `ssh` and
+  `make build` installs `share/ko/bin` (the `ko`, `ssh` and
   `ko-pi` shims), `share/ko/shim.sh` and `share/pi/ko-pi.ts` (as
   `share/ko/pi/ko-pi.ts`) beside `bin/ko` in `build/ko/`, the layout
   that `ko_shell/src/bin_dir.rs` finds as installed.
@@ -293,7 +293,7 @@ Conventions:
   Property tests use proptest in the same module. No unit test execs
   the `ko` binary; the e2e suite does that. `ko_pane/tests/pane.rs` drives
   the `ko-pane` binary over a socketpair and a ring. The `Server` SIGTERM test starts the
-  `ko-pane` that `make test-ko` builds and names in `KO_PANE_EXE`. A test starts a process only through
+  `ko-pane` that `make test` builds and names in `KO_PANE_EXE`. A test starts a process only through
   `ko_sys::spawn::program`, which closes every descriptor but its
   targets and stderr in the child: `POSIX_SPAWN_CLOEXEC_DEFAULT` on
   macOS, `posix_spawn_file_actions_addclosefrom_np` above the targets
@@ -308,7 +308,7 @@ Conventions:
   `ko_e2e/tests/e2e/main.rs`, with one module for each area, because
   cargo runs test binaries one after another and the tests of one binary
   in parallel. It is a workspace member outside `default-members`, so
-  `make test-ko` does not run it. Its second binary, `ko-fake`
+  `make test` does not run it. Its second binary, `ko-fake`
   (`ko_e2e/fake/main.rs`), is the fake program of the status and ssh
   tests: a test copies it under the name it stands for (`ssh`,
   `ko-probe`), because macOS reports a `#!` script's interpreter as
@@ -338,9 +338,9 @@ Conventions:
   Its runtime name carries the test's pid, so the container `ko-<name>`
   is its own, and a drop guard deletes that container on every exit;
   it never touches another container and pulls no image. It needs
-  `make build-ko-linux` first; with the variable set, a missing layout
+  `make build-linux` first; with the variable set, a missing layout
   or `container` CLI is a failure. CI does not set it. The suite drives `build/ko/bin/ko`,
-  which `make e2e-ko` builds first; a test never runs make or cargo.
+  which `make e2e` builds first; a test never runs make or cargo.
   A test reads like command-line use: a step that a `ko` command can
   do (`ko api`, `ko kill-server`, `ko version`) runs that command
   through `Server::ko`, or `run_ko` without a started server or with
@@ -378,12 +378,12 @@ Conventions:
   `fd::wait_writable_within`), and only `ko_e2e` enables it. A `Child`
   of the harness reaps its process under the lock that its signals take,
   after a wait that keeps the zombie, so no signal reaches a reaped pid.
-  `make e2e-ko` runs the tests with `--test-threads=64`, so every test
+  `make e2e` runs the tests with `--test-threads=64`, so every test
   starts at once.
 - **loom.** `ko_pane_wire::ring::model` checks the ring's records
   and the wakeup handshake on the real `Reader` and `Writer` under
   `--cfg loom` ("Proved modules" below). `make
-  test-ko` runs them in `target/loom`. loom does not model a `SeqCst`
+  test` runs them in `target/loom`. loom does not model a `SeqCst`
   access as sequentially consistent, so the model puts a
   `fence(SeqCst)` beside each one (its comment has the issue). The
   acquire/release twin of the wakeup model is `#[should_panic]`.
@@ -734,7 +734,7 @@ maps the coordinator's modules.
     third_party/ghostty the Ghostty fork, a git submodule ("One Ghostty")
     website/            the kido.tools site
 
-`make build-ko` builds the installed layout under `build/ko/`: `ko`,
+`make build` builds the installed layout under `build/ko/`: `ko`,
 `ko-pane`, `share/ko` and the terminfo, which `ko_vt/terminfo.zig`
 writes from ghostty's source and `tic` compiles. It replaces each
 binary with a new file, because macOS kills a process whose executable
@@ -742,7 +742,7 @@ was overwritten in place after an earlier run (`Killed: 9`). `make
 install PREFIX=<prefix>` copies that layout under `<prefix>/bin` and
 `<prefix>/share/ko` (default `~/.local`), Homebrew's `pkgshare` layout.
 
-`make build-ko-linux` builds the static Linux ko for each architecture
+`make build-linux` builds the static Linux ko for each architecture
 of `LINUX_ARCHS` (`aarch64`, `x86_64`; by default the host's alone)
 into
 `build/ko/share/ko/linux/<arch>/`: `bin/ko` and `share/ko` with the
@@ -777,7 +777,7 @@ into `ko_client.h`, `ffi.rs` and `exports.txt` together.
 `build/bench/`, beside `ko-bench` in `target/release/`; `bench/run.sh`,
 `bench/flood.sh` and `bench/rtt.sh` call it. `bench/client.py` runs
 the `ko` that `KO_BIN` names, which measures a reference build
-(docs/design-ko.md, "Performance"), else it runs `make build-ko` and
+(docs/design-ko.md, "Performance"), else it runs `make build` and
 uses `build/ko/bin/ko`.
 
 `scripts/install-zig.sh` pins the zig release and its checksums. CI
@@ -906,19 +906,19 @@ acquire/release and none under `seq_cst`. The loom models of
 
 ## Tests
 
-    make verify  the one verification, in this order: a scrubbed make build-ko, make build-ko-linux check-static (build-ko-linux), fmt, clippy and scripts/lint.sh (lint; lint-rs is the stage without lint.sh), ko's cargo tests (unit-ko), ko's e2e (e2e-ko), the TypeScript suite (ts), and make verus
+    make verify  the one verification, in this order: a scrubbed make build, make build-linux check-static (build-linux), fmt, clippy and scripts/lint.sh (lint; lint-rs is the stage without lint.sh), ko's cargo tests (unit), ko's e2e (e2e), the TypeScript suite (ts), and make verus
     make verus   cargo verus verify on ko_pane_wire and ko_server with the pinned Verus release, downloaded once into build/verus/
-    make build-ko  the installed layout under build/ko/; the default goal
-    make build-ko-linux  the static Linux ko under build/ko/share/ko/linux/<arch>/ (LINUX_ARCHS, default the host's); check-static checks it
-    make test-ko  ko's cargo tests and the loom models, without the e2e suite
-    make e2e-ko E2E_KO=name  the e2e suite against build/ko/bin/ko
+    make build  the installed layout under build/ko/; the default goal
+    make build-linux  the static Linux ko under build/ko/share/ko/linux/<arch>/ (LINUX_ARCHS, default the host's); check-static checks it
+    make test  ko's cargo tests and the loom models, without the e2e suite
+    make e2e E2E=name  the e2e suite against build/ko/bin/ko
     make cargo ARGS='test -p ko_server'  one cargo command, with --locked added after the subcommand, for iterating on one package
     make fmt     cargo fmt on the workspace
     make lint    cargo fmt --check, clippy and scripts/lint.sh
     make build-fake-ko  the fake ko of the TypeScript suite
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
-    make probe-ko BYTES=N  ko-bench throughput: the server's ring reader under ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
-    make build-bench  the C helpers of bench/ in build/bench/, after build-ko
+    make probe BYTES=N  ko-bench throughput: the server's ring reader under ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
+    make build-bench  the C helpers of bench/ in build/bench/, after build
     make prompts regenerate the prompt fixture through scripts/lint.sh --update-prompts
     make schemas regenerate share/ko/openapi.json, share/ko/client-model.json, share/ko/config-schema.json and share/pi/ko-api.d.ts through scripts/lint.sh --update-schemas
     make api-docs  one static HTML page of share/ko/openapi.json (Redocly) in build/ko-api.html; not part of verify
@@ -929,7 +929,7 @@ acquire/release and none under `seq_cst`. The loom models of
     make preview-pi  replace the installed share/ko/pi/ko-pi.ts with the checkout's; unpreview-pi restores it
     make website the website's dev server at http://localhost:4321 (website/README.md)
 
-`make verify STAGES=e2e-ko` selects stages. `E2E_KO=client_` limits
+`make verify STAGES=e2e` selects stages. `E2E=client_` limits
 the e2e stage to the tests whose names contain the text (a cargo test
 filter). Every selected stage runs even after a failure and prints
 PASS/FAIL/SKIP with its time. `scripts/verify.sh` scrubs the
@@ -1230,8 +1230,8 @@ A brief does not repeat them.
 
   After the last edit, run the verification once: `make verify`
   ("Which verification" under "Tests"). It controls environment
-  scrubbing. Use `E2E_KO=name` to limit the e2e stage to the changed
-  behaviour. Do not also run `make test-ko` or `make e2e-ko`.
+  scrubbing. Use `E2E=name` to limit the e2e stage to the changed
+  behaviour. Do not also run the top-level `make test` or `make e2e`.
   Report PASS/FAIL/SKIP as printed.
   If a failure is in a file you do not own, report it.
   Do not fix it.
@@ -1359,7 +1359,7 @@ delegates to subagents, by these rules:
   the implementation and before review, so the implementer's final make verify
   (lint checks doc references) runs after the last docs edit
 - batch work and verify once at the end: implementers make all edits
-  without intermediate suite runs (no repeated make test-ko, make visual-fast
+  without intermediate suite runs (no repeated make test, make visual-fast
   or make verify while iterating); they run only the specific tests they add
   or change, and make sure each test checks the intended behaviour (no
   negative controls: do not break the code to prove a test fails); the

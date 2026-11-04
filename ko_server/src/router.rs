@@ -729,9 +729,8 @@ mod tests {
         Rig::new(
             PathBuf::from(format!("/tmp/ko-router-{name}-{}", std::process::id())),
             PathBuf::from(
-                std::env::var_os("KO_PANE_EXE").expect(
-                    "KO_PANE_EXE names the Rust ko-pane; make test-ko builds it and sets it",
-                ),
+                std::env::var_os("KO_PANE_EXE")
+                    .expect("KO_PANE_EXE names ko-pane; make test builds it and sets it"),
             ),
             "stty raw -echo; exec cat",
         )
