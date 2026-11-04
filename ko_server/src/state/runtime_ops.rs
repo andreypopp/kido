@@ -204,6 +204,8 @@ impl State {
                 .to_string_lossy()
                 .into_owned(),
             paths: runtime.paths(),
+            cwd: runtime.cwd.clone(),
+            pi: runtime.pi,
         }
     }
 

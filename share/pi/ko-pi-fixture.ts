@@ -113,6 +113,9 @@ export interface Fixture {
   scriptSends(replies: Array<{ status: number; body: unknown }>): void;
   output(record: Record<string, unknown>): void;
   setRuns(rows: unknown[]): void;
+  setRuntimes(runtimes: Record<string, Record<string, unknown>>): void;
+  execLog(): Array<{ runtime: string; request: Record<string, any> }>;
+  running(): number;
   runCalls(): string[][];
   runWaitCalls(): string[][];
   runStopCalls(): string[][];
@@ -136,11 +139,13 @@ function jsonLines(file: string): any[] {
 
 const commandWork = new Map<string, Set<childProcess.ChildProcess>>();
 
+let barePathWork: Set<childProcess.ChildProcess> | undefined;
+
 const spawn = childProcess.spawn;
 
 childProcess.spawn = ((command: string, args: string[] = [], options: childProcess.SpawnOptions = {}) => {
   const child = spawn(command, args, options);
-  const work = commandWork.get(command) ?? args?.map((arg) => commandWork.get(arg)).find(Boolean);
+  const work = commandWork.get(command) ?? (command === "ko" ? barePathWork : undefined) ?? args?.map((arg) => commandWork.get(arg)).find(Boolean);
   if (work) {
     work.add(child);
     child.once("close", () => work.delete(child));
@@ -164,14 +169,16 @@ export function makeFixture(): Fixture {
   symlinkSync(cachedFakeKo, command);
   const work = new Set<childProcess.ChildProcess>();
   commandWork.set(command, work);
+  barePathWork = work;
   const sessions: Array<() => Promise<unknown>> = [];
   const file = (name: string) => join(dir, name);
-  const [apiLog, panesFile, feedFile, acksFile, dropFile, sendScript, outputFile, runsFile] = [
-    "api.jsonl", "panes.json", "feed.jsonl", "acks.jsonl", "drop", "sends.json", "output.jsonl", "runs.json",
+  const [apiLog, panesFile, feedFile, acksFile, dropFile, sendScript, outputFile, runsFile, runtimesFile, execLog] = [
+    "api.jsonl", "panes.json", "feed.jsonl", "acks.jsonl", "drop", "sends.json", "output.jsonl", "runs.json", "runtimes.json", "exec.jsonl",
   ].map(file);
   const screens = file("screens");
   mkdirSync(screens);
-  for (const empty of [apiLog, feedFile, acksFile, outputFile, file("run.jsonl"), file("run-wait.jsonl"), file("run-stop.jsonl"), file("runs-log.jsonl"), file("ko.jsonl")]) writeFileSync(empty, "");
+  for (const empty of [apiLog, feedFile, acksFile, outputFile, file("run.jsonl"), file("run-wait.jsonl"), file("run-stop.jsonl"), file("runs-log.jsonl"), file("ko.jsonl"), execLog]) writeFileSync(empty, "");
+  writeFileSync(runtimesFile, "{}");
   writeFileSync(panesFile, "[]");
   writeFileSync(runsFile, "[]");
   writeFileSync(sendScript, "[]");
@@ -200,6 +207,8 @@ export function makeFixture(): Fixture {
   process.env.KO_FAKE_INSTANCE = "a".repeat(32);
   process.env.KO_FAKE_LOG = file("ko.jsonl");
   process.env.KO_FAKE_RUNS_FILE = runsFile;
+  process.env.KO_FAKE_RUNTIMES = runtimesFile;
+  process.env.KO_FAKE_EXEC_LOG = execLog;
   process.env.KO_FAKE_RUN_LOG = file("run.jsonl");
   process.env.KO_FAKE_RUN_WAIT_LOG = file("run-wait.jsonl");
   process.env.KO_FAKE_RUN_STOP_LOG = file("run-stop.jsonl");
@@ -264,6 +273,15 @@ export function makeFixture(): Fixture {
     setRuns(rows) {
       writeFileSync(runsFile, JSON.stringify(rows));
     },
+    setRuntimes(runtimes) {
+      writeFileSync(runtimesFile, JSON.stringify(runtimes));
+    },
+    execLog() {
+      return jsonLines(execLog);
+    },
+    running() {
+      return work.size;
+    },
     runCalls() {
       return jsonLines(file("run.jsonl"));
     },
@@ -280,6 +298,7 @@ export function makeFixture(): Fixture {
       for (const shutdown of sessions.reverse()) await shutdown();
       await pollUntil(() => work.size === 0, 15000, "all fake commands to close");
       commandWork.delete(command);
+      barePathWork = undefined;
       for (const key of Object.keys(process.env)) {
         if (key.startsWith("KO_")) delete process.env[key];
       }
@@ -301,7 +320,10 @@ export function createFakePi(sessionDir = "/tmp/ko-pi-no-sessions/caller", entri
   const renderers = new Map<string, (message: any, options: any, theme: any) => { render(width: number): string[]; handleMouse(event: any): unknown }>();
   const widgets = new Map<string, { content: ((tui: unknown, theme: any) => { render(width: number): string[]; handleMouse?(event: any): unknown }) | undefined; options?: unknown }>();
   const failAppends = new Set<string>();
+  const flags = new Map<string, boolean | string>();
   const pi = {
+    registerFlag(_name: string, _options: unknown) {},
+    getFlag: (name: string) => flags.get(name),
     sessionName: undefined as string | undefined,
     getSessionName: (): string | undefined => pi.sessionName,
     getSettings: (): { tuiMode?: "regular" | "fullscreen" } => ({ tuiMode: "regular" }),
@@ -360,6 +382,7 @@ export function createFakePi(sessionDir = "/tmp/ko-pi-no-sessions/caller", entri
     emit,
     entries,
     failAppends,
+    flags,
   };
 }
 
@@ -417,10 +440,11 @@ export type Started = ReturnType<typeof createFakePi> & { aborts(): number; shut
 
 export async function startSession(
   fx: Fixture,
-  opts: { factory?: (pi: never) => void; sessionId?: string; name?: string; idle?: () => boolean; entries?: Entry[]; ctx?: Record<string, unknown>; record?: boolean } = {},
+  opts: { factory?: (pi: never) => void; sessionId?: string; name?: string; idle?: () => boolean; entries?: Entry[]; ctx?: Record<string, unknown>; record?: boolean; flags?: Record<string, string> } = {},
 ): Promise<Started> {
-  const { factory = koPi, sessionId = "self-session", name, idle, entries = [], ctx, record = true } = opts;
+  const { factory = koPi, sessionId = "self-session", name, idle, entries = [], ctx, record = true, flags = {} } = opts;
   const created = createFakePi(join(fx.dir, "sessions", "caller"), entries);
+  for (const [flag, value] of Object.entries(flags)) created.flags.set(flag, value);
   if (name) created.pi.sessionName = name;
   factory(created.pi as never);
   let aborts = 0;

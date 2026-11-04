@@ -1,9 +1,41 @@
-import { AgentSession, type ExtensionAPI, type ExtensionContext, type MessageRenderer, type Theme } from "@earendil-works/pi-coding-agent";
+import {
+  AgentSession,
+  type BashOperations,
+  DEFAULT_MAX_BYTES,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type FindOperations,
+  type GrepToolDetails,
+  type GrepToolInput,
+  type LsOperations,
+  type MessageRenderer,
+  type ReadOperations,
+  type Theme,
+  type ToolDefinition,
+  type WriteOperations,
+  createBashTool,
+  createBashToolDefinition,
+  createEditTool,
+  createEditToolDefinition,
+  createFindTool,
+  createFindToolDefinition,
+  createGrepToolDefinition,
+  createLsTool,
+  createLsToolDefinition,
+  createReadTool,
+  createReadToolDefinition,
+  createWriteTool,
+  createWriteToolDefinition,
+  formatSize,
+  getAgentDir,
+  truncateHead,
+  truncateLine,
+} from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { accessSync, closeSync, constants, openSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { dirname, delimiter, join, resolve } from "node:path";
+import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "./ko-api.d.ts";
@@ -18,6 +50,8 @@ const VAR_SESSION = "pi.session";
 const VAR_NAME = "pi.name";
 const VAR_ACTIVITY = "pi.activity";
 const VAR_TASK = "ko-pi.task";
+const VAR_RUNTIME = "pi.runtime";
+const VAR_KO_RUNTIME = "ko.runtime";
 const VAR_KEYS = [VAR_SESSION, VAR_NAME, VAR_ACTIVITY];
 
 const ENTRY_CHILD = "ko-pi.child";
@@ -132,6 +166,16 @@ const apiError = (reply: Reply): { kind: Api["Error"]["kind"]; message: string }
   return { kind: "io", message: `HTTP ${reply.status}` };
 };
 
+function isRuntimeInfo(value: unknown): value is Api["RuntimeInfo"] {
+  return isRecord(value) && typeof value.name === "string" && Array.isArray(value.paths) && (value.pi === "host" || value.pi === "runtime") && isRecord(value.state);
+}
+
+async function fetchRuntime(name: string): Promise<Api["RuntimeInfo"] | { error: string }> {
+  const answer = await apiCall("GET", `/runtimes/${name}`);
+  const info = apiJson(answer);
+  return isRuntimeInfo(info) ? info : { error: apiError(answer).message };
+}
+
 const ERROR_KINDS = ["invalid", "refused", "gone", "io", "precondition_failed", "not_found", "protocol_mismatch", "vt_mismatch"];
 
 function isErrorKind(value: unknown): value is Api["Error"]["kind"] {
@@ -146,6 +190,7 @@ type PaneInfo = {
   name: string;
   activity: string;
   cwd: string;
+  runtime: string;
   dead: Dead | null;
   root: { app: string; state: string } | null;
   title: string;
@@ -186,6 +231,9 @@ function parsePanes(layout: Api["LayoutPanes"]): PaneInfo[] {
   const places = placesOf(layout);
   return layout.panes.map((row) => {
     const place = places.get(row.id);
+    const root = rootRecord(row.status?.program_status ?? null);
+    const routed = row.vars[VAR_RUNTIME];
+    const inRuntime = root?.app === "pi" && isRecord(routed) && typeof routed.name === "string" ? { name: routed.name, cwd: str(routed.cwd) } : undefined;
     return {
       pane: row.id,
       session: place?.session ?? "",
@@ -193,9 +241,10 @@ function parsePanes(layout: Api["LayoutPanes"]): PaneInfo[] {
       agentSession: str(row.vars[VAR_SESSION]),
       name: str(row.vars[VAR_NAME]),
       activity: str(row.vars[VAR_ACTIVITY]),
-      cwd: row.cwd,
+      cwd: inRuntime?.cwd || row.cwd,
+      runtime: row.runtime ?? inRuntime?.name ?? "",
       dead: row.dead,
-      root: rootRecord(row.status?.program_status ?? null),
+      root,
       title: row.title,
       parent: row.parent ?? "",
       inbox: row.inbox === true,
@@ -242,7 +291,8 @@ export const RELATION_TEXT: Record<Relation, string> = {
   sibling_descendant: "a subagent of another agent in this session",
 };
 
-export const senderHeader = (from: string, relation: Relation): string => `message from @${from} (${RELATION_TEXT[relation]}):`;
+export const senderHeader = (from: string, relation: Relation, runtime?: string): string =>
+  `message from @${from} (${RELATION_TEXT[relation]}${runtime ? `, in runtime ${runtime}` : ""}):`;
 
 const steerHeader = (from: string): string => `${from} is redirecting this work: `;
 
@@ -306,6 +356,7 @@ type AgentRow = {
   depth: number;
   self: boolean;
   cwd: string;
+  runtime?: string;
   canMessage: boolean;
   kind: "agent" | "subagent";
   relationship: "parent" | "peer" | "own" | "relative" | "other";
@@ -316,6 +367,8 @@ type AgentRow = {
   report?: string;
 };
 
+type ChildRuntime = { name: string; mode: "routed" | "inside" };
+
 type ChildData = {
   owner: string;
   name: string;
@@ -323,6 +376,7 @@ type ChildData = {
   model: string;
   fork: boolean;
   cwd: string;
+  runtime?: ChildRuntime;
   pane: { instance: string; pane: string };
 };
 
@@ -439,7 +493,9 @@ function normalizeAddress(to: string): { wanted: string; mention: boolean } {
   return { wanted: id ?? raw, mention: id !== undefined };
 }
 
-type Held = { from: Api["Sender"]; relation?: Relation; text: string };
+type Held = { from: Api["Sender"]; relation?: Relation; text: string; runtime?: string };
+
+const runtimeOf = (data: unknown): string | undefined => (isRecord(data) && typeof data.runtime === "string" ? data.runtime : undefined);
 
 const isString = (value: unknown): value is string => typeof value === "string";
 
@@ -487,6 +543,13 @@ function isOutputEvent(value: unknown): value is Api["OutputEvent"] {
   return value.type === "dead" && typeof value.at === "number" && isCause(value.cause);
 }
 
+function isExecServer(value: unknown): value is Api["ExecServer"] {
+  if (!isRecord(value)) return false;
+  if (value.type === "stdout" || value.type === "stderr") return isString(value.data);
+  if (value.type === "exit") return typeof value.status === "number" || isString(value.signal);
+  return value.type === "error" && isString(value.message);
+}
+
 // The complete UTF-8 of the carry and the bytes, and the incomplete tail that waits for the next bytes.
 function utf8Complete(carry: Buffer, bytes: Buffer): { text: string; carry: Buffer } {
   const all = Buffer.concat([carry, bytes]);
@@ -514,8 +577,8 @@ function lineReader(hold: { partial: Buffer }, onLine: (line: string) => void): 
   };
 }
 
-function openStream(ko: string, path: string, stdin: "pipe" | "ignore"): ChildProcess {
-  const child = spawn(ko, ["api", "--stream", path], { stdio: [stdin, "pipe", "ignore"], env: process.env });
+function openStream(ko: string, path: string, stdin: "pipe" | "ignore", stderr: "pipe" | "ignore" = "ignore"): ChildProcess {
+  const child = spawn(ko, ["api", "--stream", path], { stdio: [stdin, "pipe", stderr], env: process.env });
   child.on("error", () => {});
   child.stdin?.on("error", () => {});
   return child;
@@ -725,8 +788,384 @@ function realpathOf(path: string): string | undefined {
   try { return realpathSync(path); } catch { return undefined; }
 }
 
+// ---- the routed mode: pi on the host, its built-in tools in a runtime ----
+
+const EXEC_CHUNK = 64 * 1024;
+
+const GREP_MAX_LINE_LENGTH = 500;
+
+const GREP_DEFAULT_LIMIT = 100;
+
+const CONTEXT_FILE_NAMES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+
+const IMAGE_TYPES: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp" };
+
+// The Linux numbers: an exec session reports a signal by name.
+const SIGNAL_NUMBERS: Record<Exclude<Api["ExitSignal"], "OTHER">, number> = { HUP: 1, INT: 2, QUIT: 3, ILL: 4, TRAP: 5, ABRT: 6, BUS: 7, FPE: 8, KILL: 9, USR1: 10, SEGV: 11, USR2: 12, PIPE: 13, ALRM: 14, TERM: 15 };
+
+type PathMap = Api["PathMap"];
+
+type Routed = {
+  name: string;
+  ko: string;
+  hostCwd: string;
+  paths: PathMap[];
+  cwd: string;
+  contextFiles: Array<{ path: string; content: string }>;
+  facts: () => Promise<Facts>;
+  ready: (signal?: AbortSignal) => Promise<void>;
+};
+
+type Facts = { programs: Map<string, string>; home: string };
+
+type Run = { out: Buffer; err: Buffer; exitCode: number | null };
+
+type ExecOptions = {
+  argv: string[];
+  cwd?: string;
+  input?: Buffer;
+  signal?: AbortSignal;
+  onStdout?: (data: Buffer) => void;
+  onStderr?: (data: Buffer) => void;
+};
+
+// Resolves or rejects as the signal aborts, without ending the work it waits for.
+function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("aborted"));
+      return;
+    }
+    const onAbort = (): void => reject(new Error("aborted"));
+    signal?.addEventListener("abort", onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal?.removeEventListener("abort", onAbort));
+  });
+}
+
+// One `ko api --stream /runtimes/R/exec` process is one command in the runtime. It runs without a shell
+// and with no environment of this process: the runtime's own environment applies.
+function runtimeExec(ko: string, runtime: string, opts: ExecOptions): Promise<{ exitCode: number | null }> {
+  return new Promise((resolve, reject) => {
+    if (opts.signal?.aborted) {
+      reject(new Error("aborted"));
+      return;
+    }
+    const child = openStream(ko, `/runtimes/${runtime}/exec`, "pipe", "pipe");
+    const stdin = child.stdin;
+    let ended: { exitCode: number | null } | Error | undefined;
+    let aborted = false;
+    const stderr: Buffer[] = [];
+    const onAbort = (): void => {
+      aborted = true;
+      child.kill();
+    };
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    const send = (message: Api["ExecClient"]): boolean => stdin?.write(JSON.stringify(message) + "\n") ?? false;
+    send({ type: "exec", argv: opts.argv, ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }), stdin: opts.input !== undefined });
+    const input = opts.input ?? Buffer.alloc(0);
+    void (async () => {
+      for (let at = 0; at < input.length && !stdin?.destroyed; at += EXEC_CHUNK) {
+        if (!send({ type: "stdin", data: input.subarray(at, at + EXEC_CHUNK).toString("base64") })) {
+          await new Promise<void>((done) => {
+            const resume = (): void => {
+              stdin?.off("drain", resume);
+              child.off("close", resume);
+              done();
+            };
+            stdin?.once("drain", resume);
+            child.once("close", resume);
+          });
+        }
+      }
+      if (opts.input !== undefined) send({ type: "eof" });
+      stdin?.end();
+    })();
+    child.stdout?.on(
+      "data",
+      lineReader({ partial: Buffer.alloc(0) }, (line) => {
+        let message: unknown;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          return;
+        }
+        if (!isExecServer(message)) return;
+        if ("data" in message) (message.type === "stdout" ? opts.onStdout : opts.onStderr)?.(Buffer.from(message.data, "base64"));
+        else if ("status" in message) ended = { exitCode: message.status };
+        else if ("signal" in message) ended = { exitCode: message.signal === "OTHER" ? null : 128 + SIGNAL_NUMBERS[message.signal] };
+        else if ("message" in message) ended = new Error(message.message);
+      }),
+    );
+    child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
+    const finish = (): void => opts.signal?.removeEventListener("abort", onAbort);
+    child.on("error", (error) => {
+      finish();
+      reject(error);
+    });
+    child.on("close", () => {
+      finish();
+      if (aborted) reject(new Error("aborted"));
+      else if (ended instanceof Error) reject(ended);
+      else if (ended) resolve(ended);
+      else reject(new Error(Buffer.concat(stderr).toString("utf8").trim() || "the exec session ended without an exit"));
+    });
+  });
+}
+
+async function execRun(r: Pick<Routed, "ko" | "name">, opts: ExecOptions): Promise<Run> {
+  const out: Buffer[] = [];
+  const err: Buffer[] = [];
+  const { exitCode } = await runtimeExec(r.ko, r.name, {
+    ...opts,
+    onStdout: (data) => {
+      out.push(data);
+      opts.onStdout?.(data);
+    },
+    onStderr: (data) => {
+      err.push(data);
+      opts.onStderr?.(data);
+    },
+  });
+  return { out: Buffer.concat(out), err: Buffer.concat(err), exitCode };
+}
+
+const commandFailure = (run: Pick<Run, "err" | "exitCode">, program: string): Error => new Error(run.err.toString("utf8").trim() || `${program} exited with ${run.exitCode}`);
+
+async function execChecked(r: Pick<Routed, "ko" | "name">, opts: ExecOptions): Promise<Run> {
+  const run = await execRun(r, opts);
+  if (run.exitCode !== 0) throw commandFailure(run, opts.argv[0] ?? "command");
+  return run;
+}
+
+// The runtime directory of the longest host prefix of `paths` that holds `path`, whole components only.
+export function mapHostPath(paths: PathMap[], path: string): string | undefined {
+  let best: { base: string; runtime: string } | undefined;
+  for (const entry of paths) {
+    const base = entry.host.replace(/\/+$/, "");
+    if ((path === base || path.startsWith(base + "/")) && (!best || base.length > best.base.length)) best = { base, runtime: entry.runtime };
+  }
+  return best && posix.join(best.runtime, path.slice(best.base.length));
+}
+
+const toRuntime = (r: Pick<Routed, "paths">, path: string): string => mapHostPath(r.paths, path) ?? path;
+
+// Prints the directory, then the nearest-first context file of each directory up to the root, as
+// path NUL content NUL records.
+const CONTEXT_SCRIPT = `d=\${1:-$(pwd)}
+printf '%s\\0' "$d"
+while :; do
+  for f in ${CONTEXT_FILE_NAMES.join(" ")}; do
+    if [ -f "$d/$f" ] && [ -r "$d/$f" ]; then printf '%s\\0' "$d/$f"; cat "$d/$f"; printf '\\0'; break; fi
+  done
+  [ "$d" = / ] || [ "$d" = . ] && break
+  d=$(dirname -- "$d")
+done`;
+
+async function readRuntimeContext(ko: string, name: string, cwd: string | undefined): Promise<{ cwd: string; contextFiles: Routed["contextFiles"] }> {
+  const run = await execChecked({ ko, name }, { argv: ["sh", "-c", CONTEXT_SCRIPT, "sh", ...(cwd === undefined ? [] : [cwd])], ...(cwd === undefined ? {} : { cwd }) });
+  const [dir = "", ...records] = run.out.toString("utf8").split("\0");
+  const contextFiles: Routed["contextFiles"] = [];
+  for (let at = 0; at + 1 < records.length; at += 2) contextFiles.unshift({ path: records[at] ?? "", content: (records[at + 1] ?? "").replace(/^\uFEFF/, "") });
+  return { cwd: dir, contextFiles };
+}
+
+async function probeFacts(ko: string, name: string): Promise<Facts> {
+  const run = await execRun({ ko, name }, { argv: ["sh", "-c", 'printf "%s\\n" "$HOME"; for p in bash fd rg; do command -v "$p" 2>/dev/null; done'] }).catch(() => undefined);
+  const [home = "", ...found] = (run?.out.toString("utf8") ?? "").split("\n");
+  return { home, programs: new Map(found.filter((line) => line.startsWith("/")).map((path) => [posix.basename(path), path])) };
+}
+
+async function homed<T extends string | undefined>(r: Routed, path: T, signal: AbortSignal | undefined): Promise<T | string> {
+  if (path === undefined || (path !== "~" && !path.startsWith("~/"))) return path;
+  const { home } = await abortable(r.facts(), signal);
+  return home ? home + path.slice(1) : path;
+}
+
+const ROUTED_TOOLS = ["bash", "read", "write", "edit", "ls", "find", "grep", "async_bash"];
+
+const readOperations = (r: Routed): ReadOperations => ({
+  readFile: async (path) => (await execChecked(r, { argv: ["cat", toRuntime(r, path)] })).out,
+  access: async () => {},
+  detectImageMimeType: async (path) => IMAGE_TYPES[extname(path).toLowerCase()] ?? null,
+});
+
+const writeOperations = (r: Routed): WriteOperations => ({
+  mkdir: async () => {},
+  writeFile: async (path, content) => {
+    await execChecked(r, { argv: ["sh", "-c", 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"', "sh", toRuntime(r, path)], input: Buffer.from(content, "utf8") });
+  },
+});
+
+const bashOperations = (r: Routed): BashOperations => ({
+  exec: async (command, cwd, { onData, signal, timeout }) => {
+    const controller = new AbortController();
+    const onAbort = (): void => controller.abort();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    let timedOut = false;
+    const timer = timeout
+      ? setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, timeout * 1000)
+      : undefined;
+    try {
+      const shell = (await abortable(r.facts(), controller.signal)).programs.get("bash") ?? "sh";
+      return await runtimeExec(r.ko, r.name, { argv: [shell, "-lc", command], cwd: toRuntime(r, cwd), signal: controller.signal, onStdout: onData, onStderr: onData });
+    } catch (error) {
+      if (timedOut) throw new Error(`timeout:${timeout}`);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    }
+  },
+});
+
+// One `ls -1Ap` answers exists, stat and readdir of a directory and the stat of each of its entries.
+const lsOperations = (r: Routed): LsOperations => {
+  const script = 'if [ ! -e "$1" ]; then exit 2; elif [ ! -d "$1" ]; then exit 3; fi; exec ls -1Ap -- "$1"';
+  const entries = new Map<string, boolean>();
+  const listed = new Map<string, Promise<Run>>();
+  const list = (path: string): Promise<Run> => {
+    let run = listed.get(path);
+    if (!run) {
+      run = execRun(r, { argv: ["sh", "-c", script, "sh", toRuntime(r, path)] }).then((found) => {
+        for (const line of found.exitCode === 0 ? found.out.toString("utf8").split("\n").filter(Boolean) : []) {
+          entries.set(posix.join(path, line.replace(/\/$/, "")), line.endsWith("/"));
+        }
+        return found;
+      });
+      listed.set(path, run);
+    }
+    return run;
+  };
+  return {
+    exists: async (path) => (await list(path)).exitCode !== 2,
+    stat: async (path) => {
+      const known = entries.get(path);
+      if (known !== undefined) return { isDirectory: () => known };
+      const { exitCode } = await list(path);
+      if (exitCode === 0 || exitCode === 3) return { isDirectory: () => exitCode === 0 };
+      throw new Error(`Path not found: ${path}`);
+    },
+    readdir: async (path) => {
+      const run = await list(path);
+      if (run.exitCode !== 0) throw commandFailure(run, "ls");
+      return run.out.toString("utf8").split("\n").filter(Boolean).map((line) => line.replace(/\/$/, ""));
+    },
+  };
+};
+
+const findOperations = (r: Routed): FindOperations => ({
+  exists: async (path) => (await execRun(r, { argv: ["test", "-e", toRuntime(r, path)] })).exitCode === 0,
+  glob: async (pattern, cwd, { limit }) => {
+    const root = toRuntime(r, cwd);
+    const fd = (await r.facts()).programs.get("fd");
+    const argv = fd
+      ? [fd, "--glob", "--color=never", "--hidden", "--no-require-git", "--exclude", ".git", "--exclude", "node_modules", "--max-results", String(limit), ...(pattern.includes("/") ? ["--full-path"] : []), "--", pattern.includes("/") && !pattern.startsWith("/") && !pattern.startsWith("**/") ? `**/${pattern}` : pattern, root]
+      : ["find", root, "(", "-name", ".git", "-o", "-name", "node_modules", ")", "-prune", "-o", ...(pattern.includes("/") ? ["-path", pattern.startsWith("/") ? pattern : `*/${pattern.replace(/^\*\*\//, "")}`] : ["-name", pattern]), "-print"];
+    const found: string[] = [];
+    const stderr: Buffer[] = [];
+    const stop = new AbortController();
+    const onLine = lineReader({ partial: Buffer.alloc(0) }, (line) => {
+      if (found.length < limit) found.push(line);
+      if (found.length >= limit) stop.abort();
+    });
+    const ended = await runtimeExec(r.ko, r.name, { argv, signal: stop.signal, onStdout: onLine, onStderr: (data) => stderr.push(data) }).catch((error: unknown) => {
+      if (stop.signal.aborted) return undefined;
+      throw error;
+    });
+    if (ended && ended.exitCode !== 0 && found.length === 0 && stderr.length > 0) throw commandFailure({ err: Buffer.concat(stderr), exitCode: ended.exitCode }, argv[0] ?? "find");
+    return found.filter((path) => path !== root).map((path) => (path.startsWith(root) ? cwd + path.slice(root.length) : path));
+  },
+});
+
+type GrepHit = { file: string; line: number; text: string; match: boolean };
+
+function ripgrepHit(line: string): GrepHit | undefined {
+  let event: unknown;
+  try {
+    event = JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(event) || (event.type !== "match" && event.type !== "context") || !isRecord(event.data)) return undefined;
+  const field = (value: unknown): string | undefined => (isRecord(value) ? (typeof value.text === "string" ? value.text : typeof value.bytes === "string" ? Buffer.from(value.bytes, "base64").toString("utf8") : undefined) : undefined);
+  const file = field(event.data.path);
+  const text = field(event.data.lines);
+  if (file === undefined || text === undefined || typeof event.data.line_number !== "number") return undefined;
+  return { file, line: event.data.line_number, text: text.replace(/\r?\n$/, ""), match: event.type === "match" };
+}
+
+function grepHit(line: string): GrepHit | undefined {
+  const at = line.indexOf("\0");
+  const found = at < 0 ? null : /^(\d+)([:-])(.*)$/s.exec(line.slice(at + 1));
+  return found ? { file: line.slice(0, at), line: Number(found[1]), text: found[3] ?? "", match: found[2] === ":" } : undefined;
+}
+
+async function routedGrep(r: Routed, params: GrepToolInput, signal: AbortSignal | undefined): Promise<{ content: Array<{ type: "text"; text: string }>; details: GrepToolDetails | undefined }> {
+  const given = (params.path ?? ".").replace(/^@/, "");
+  const root = given.startsWith("/") ? toRuntime(r, given) : posix.resolve(r.cwd, given);
+  const limit = Math.max(1, params.limit ?? GREP_DEFAULT_LIMIT);
+  const context = params.context && params.context > 0 ? params.context : 0;
+  const rg = (await abortable(r.facts(), signal)).programs.get("rg");
+  const argv = rg
+    ? [rg, "--no-config", "--json", "--hidden", "--color=never", ...(params.ignoreCase ? ["--ignore-case"] : []), ...(params.literal ? ["--fixed-strings"] : []), ...(params.glob ? ["--glob", params.glob] : []), ...(context ? ["--context", String(context)] : []), "--", params.pattern, root]
+    : ["grep", "-rnHI", "--null", "--color=never", "--exclude-dir=.git", "--exclude-dir=node_modules", ...(params.ignoreCase ? ["-i"] : []), ...(params.literal ? ["-F"] : ["-E"]), ...(params.glob ? [`--include=${params.glob.replace(/^\*\*\//, "")}`] : []), ...(context ? ["-C", String(context)] : []), "-e", params.pattern, "--", root];
+  const stop = new AbortController();
+  const onAbort = (): void => stop.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  const hits: GrepHit[] = [];
+  const stderr: Buffer[] = [];
+  const state = { matches: 0, limitReached: false, linesTruncated: false };
+  const onLine = lineReader({ partial: Buffer.alloc(0) }, (line) => {
+    const hit = state.limitReached ? undefined : rg ? ripgrepHit(line) : grepHit(line);
+    if (!hit) return;
+    const { text, wasTruncated } = truncateLine(hit.text.replace(/\r/g, ""), GREP_MAX_LINE_LENGTH);
+    if (wasTruncated) state.linesTruncated = true;
+    hits.push({ ...hit, text });
+    if (hit.match && ++state.matches >= limit) {
+      state.limitReached = true;
+      stop.abort();
+    }
+  });
+  let exitCode: number | null = 0;
+  try {
+    exitCode = (await runtimeExec(r.ko, r.name, { argv, signal: stop.signal, onStdout: onLine, onStderr: (data) => stderr.push(data) })).exitCode;
+  } catch (error) {
+    if (signal?.aborted || !state.limitReached) throw error;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
+  if (exitCode !== 0 && exitCode !== 1 && hits.length === 0) throw commandFailure({ err: Buffer.concat(stderr), exitCode }, argv[0] ?? "grep");
+  if (state.matches === 0) return { content: [{ type: "text", text: "No matches found" }], details: undefined };
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  const output = hits.map((hit) => {
+    const name = hit.file.startsWith(prefix) ? hit.file.slice(prefix.length) : posix.basename(hit.file);
+    const separator = hit.match ? ":" : "-";
+    return `${name}${separator}${hit.line}${separator} ${hit.text}`;
+  });
+  const truncation = truncateHead(output.join("\n"), { maxLines: Number.MAX_SAFE_INTEGER });
+  const details: GrepToolDetails = {};
+  const notices: string[] = [];
+  if (state.limitReached) {
+    notices.push(`${limit} matches limit reached. Use limit=${limit * 2} for more, or refine pattern`);
+    details.matchLimitReached = limit;
+  }
+  if (truncation.truncated) {
+    notices.push(`${formatSize(DEFAULT_MAX_BYTES)} limit reached`);
+    details.truncation = truncation;
+  }
+  if (state.linesTruncated) {
+    notices.push(`Some lines truncated to ${GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines`);
+    details.linesTruncated = true;
+  }
+  return { content: [{ type: "text", text: truncation.content + (notices.length ? `\n\n[${notices.join(". ")}]` : "") }], details: Object.keys(details).length ? details : undefined };
+}
+
 export default function (pi: ExtensionAPI) {
   if (!isFirstCopy()) return;
+  pi.registerFlag("runtime", { description: "Run the built-in tools and ! commands in a configured runtime (a container or an ssh host) by name", type: "string" });
   pi.on("project_trust", async (event) => {
     const trusted = process.env.KO_AGENT_TRUSTED_CWD;
     const want = trusted ? realpathOf(trusted) : undefined;
@@ -741,6 +1180,7 @@ export default function (pi: ExtensionAPI) {
   let active = false;
   let instance = "";
   let leaving: "control" | null = null;
+  let routed: Routed | { refusal: string } | null = null;
   const liveRunRule = (rule: string): string => rule + (edge ? SUBAGENT_RESULT_RULE : "");
 
   const written = new Map<string, string>();
@@ -753,22 +1193,24 @@ export default function (pi: ExtensionAPI) {
 
   const varPath = (key: string): string => `${varsPath()}/${key}`;
 
-  const writeVars = async (entries: Array<[string, string]>): Promise<void> => {
+  const writeVars = async (entries: Array<[string, unknown]>): Promise<void> => {
     if (!pane) return;
-    const fresh = entries.filter(([key, value]) => written.get(key) !== value);
+    const fresh = entries.filter(([key, value]) => written.get(key) !== JSON.stringify(value));
     for (const [key, value] of fresh) {
-      written.set(key, value);
+      written.set(key, JSON.stringify(value));
       await apiCall("PUT", varPath(key), value, 2000);
     }
   };
 
+  const varKeys = (): string[] => (routed && !("refusal" in routed) ? [...VAR_KEYS, VAR_RUNTIME, VAR_KO_RUNTIME] : VAR_KEYS);
+
   // The server deletes the names only while pi.session still holds this
   // session's id (412 otherwise), so a new owner of the pane keeps its variables.
-  const unsetVarsBody = (): Api["DeleteVars"] => ({ names: VAR_KEYS, if: { name: VAR_SESSION, value: ownSessionId } });
+  const unsetVarsBody = (): Api["DeleteVars"] => ({ names: varKeys(), if: { name: VAR_SESSION, value: ownSessionId } });
 
   const unsetVars = async (): Promise<void> => {
     if (!pane || !ownSessionId) return;
-    for (const key of VAR_KEYS) written.delete(key);
+    for (const key of varKeys()) written.delete(key);
     await apiCall("DELETE", varsPath(), unsetVarsBody(), 2000);
   };
 
@@ -803,7 +1245,9 @@ export default function (pi: ExtensionAPI) {
   const childOf = (data: Record<string, unknown>): ChildData | undefined => {
     const { name, session: id, model, cwd, pane: where } = data;
     if (typeof name !== "string" || typeof id !== "string" || typeof model !== "string" || typeof cwd !== "string" || !isRecord(where)) return undefined;
-    return { owner: ownSessionId ?? "", name, session: id, model, fork: data.fork === true, cwd, pane: { instance: str(where.instance), pane: str(where.pane) } };
+    const { runtime: recorded } = data;
+    const runtime = isRecord(recorded) && typeof recorded.name === "string" && (recorded.mode === "routed" || recorded.mode === "inside") ? { runtime: { name: recorded.name, mode: recorded.mode === "routed" ? ("routed" as const) : ("inside" as const) } } : {};
+    return { owner: ownSessionId ?? "", name, session: id, model, fork: data.fork === true, cwd, ...runtime, pane: { instance: str(where.instance), pane: str(where.pane) } };
   };
 
   const children = (all = entries()): ChildData[] => {
@@ -931,6 +1375,7 @@ export default function (pi: ExtensionAPI) {
         depth: ancestorsOf(p).length,
         self,
         cwd: p.cwd,
+        ...(p.runtime ? { runtime: p.runtime } : {}),
         canMessage: p.inbox,
         kind: parentPane && (isAgentPane(parentPane) || parentPane.pane === pane) ? "subagent" : "agent",
         relationship: self ? "own" : relationship.get(p.pane) ?? "other",
@@ -960,6 +1405,7 @@ export default function (pi: ExtensionAPI) {
         depth: (me ? ancestorsOf(me).length : 0) + 1,
         self: false,
         cwd: child.cwd,
+        ...(child.runtime ? { runtime: child.runtime.name } : {}),
         canMessage: false,
         kind: "subagent",
         relationship: "own",
@@ -1126,8 +1572,8 @@ export default function (pi: ExtensionAPI) {
 
   const labelOf = (from: Api["Sender"]): string => (from.type === "pane" ? from.name || from.session || from.pane : "the user");
 
-  const deliverAgentMessage = (from: string, relation: Relation, text: string, work: boolean): void => {
-    const header = senderHeader(from, relation);
+  const deliverAgentMessage = (from: string, relation: Relation, text: string, work: boolean, runtime?: string): void => {
+    const header = senderHeader(from, relation, runtime);
     pi.sendMessage(
       { customType: MESSAGE_CUSTOM_TYPE, content: `${header}\n${text}`, display: true, details: { from, header, relation, work } },
       { deliverAs: "followUp", triggerTurn: true },
@@ -1142,7 +1588,7 @@ export default function (pi: ExtensionAPI) {
       deliver(held.text);
       return;
     }
-    deliverAgentMessage(labelOf(from), relation, held.text, relation === "parent");
+    deliverAgentMessage(labelOf(from), relation, held.text, relation === "parent", held.runtime);
   };
 
   const interrupted: Held[] = [];
@@ -1201,7 +1647,7 @@ export default function (pi: ExtensionAPI) {
         if (m.text) deliver(m.text);
         return "ack";
       case "message":
-        deliverMessage({ from: m.from, relation: m.relation, text: m.text });
+        deliverMessage({ from: m.from, relation: m.relation, text: m.text, runtime: runtimeOf(m.data) });
         return "ack";
       case "steer": {
         if (!m.text) return "ack";
@@ -1219,7 +1665,7 @@ export default function (pi: ExtensionAPI) {
         const busy = !settled;
         // pi's extension abort returns void before the active tool and run end.
         session?.abort();
-        const held = { from: m.from, relation: m.relation, text: m.text };
+        const held = { from: m.from, relation: m.relation, text: m.text, runtime: runtimeOf(m.data) };
         if (busy) interrupted.push(held);
         else deliverMessage(held);
         return "ack";
@@ -1725,6 +2171,8 @@ export default function (pi: ExtensionAPI) {
     session: string;
     model: string;
     cwd: string;
+    runtime?: ChildRuntime;
+    runtimeInfo?: Api["RuntimeInfo"];
     task: string;
     mode: { kind: "fresh" } | { kind: "continue"; file: string } | { kind: "copy"; file: string };
     toplevel: boolean;
@@ -1737,9 +2185,14 @@ export default function (pi: ExtensionAPI) {
 
   const createPane = async (plan: Plan): Promise<{ placement: Api["Placement"] } | { error: string }> => {
     if (!ko) return { error: "ko is not on PATH" };
-    const trusted = await trustedCwd(plan.cwd);
+    let trusted = await trustedCwd(plan.cwd);
+    if (trusted && plan.runtime?.mode === "inside") {
+      const info = plan.runtimeInfo ?? (await fetchRuntime(plan.runtime.name));
+      trusted = "error" in info ? undefined : mapHostPath(info.paths, trusted) ?? info.cwd;
+    }
     const argv = [
-      ko, "shell", "--", "ko-pi",
+      plan.runtime?.mode === "inside" ? "ko" : ko, "shell", "--", "ko-pi",
+      ...(plan.runtime?.mode === "routed" ? ["--runtime", plan.runtime.name] : []),
       ...(plan.mode.kind === "continue" ? ["--session", plan.mode.file] : ["--session-id", plan.session]),
       "--name", plan.name,
       "--model", plan.model,
@@ -1753,6 +2206,7 @@ export default function (pi: ExtensionAPI) {
     const body: Api["NewWindow"] = {
       name: plan.name,
       cwd: plan.cwd,
+      ...(plan.runtime?.mode === "inside" ? { runtime: plan.runtime.name } : {}),
       command: { type: "argv", argv },
       env,
       ...(plan.toplevel ? { session: plan.koSession } : { parent: pane ?? undefined, close: "on_exit" as const }),
@@ -1770,6 +2224,7 @@ export default function (pi: ExtensionAPI) {
       model: plan.model,
       fork: plan.mode.kind === "copy",
       cwd: plan.cwd,
+      ...(plan.runtime ? { runtime: plan.runtime } : {}),
       pane: { instance, pane: placement.pane },
     });
     if (plan.task) append(ENTRY_WORK, { child: plan.session });
@@ -1781,7 +2236,7 @@ export default function (pi: ExtensionAPI) {
       if (!snapshot.ok) return { error: "could not read the layout" };
       const row = snapshot.all.find((a) => a.id === child.session);
       if (row && row.state === "running") return { running: row };
-      const plan: Plan = { name: child.name, session: child.session, model: child.model, cwd: child.cwd, task, mode: { kind: "fresh" }, toplevel: false, koSession: snapshot.me?.session ?? "" };
+      const plan: Plan = { name: child.name, session: child.session, model: child.model, cwd: child.cwd, runtime: child.runtime, task, mode: { kind: "fresh" }, toplevel: false, koSession: snapshot.me?.session ?? "" };
       const made = await createPane(plan);
       if ("error" in made) return made;
       recordChild(plan, made.placement);
@@ -2002,7 +2457,7 @@ export default function (pi: ExtensionAPI) {
       }
       if (child) markChildWork(child);
       const kind: SendKind = mode === "interrupt-and-steer" ? "interrupt" : mode;
-      const result = await sendIntent(target.pane, kind, params.message);
+      const result = await sendIntent(target.pane, kind, params.message, routed && !("refusal" in routed) ? { data: { runtime: routed.name } } : {});
       const sent = deliveryText(name, mode, result, target.status === "working", true);
       return reply(sent.ok ? sent.text : `could not message ${params.to}: ${sent.text}`);
     },
@@ -2014,7 +2469,7 @@ export default function (pi: ExtensionAPI) {
     description:
       "Start an agent in a new window. Resume a saved session or fork a copy of it; fork alone copies this session. Returns the pi session id for later resume_from. Children report by notice and stay alive. A toplevel agent is an independent peer: no report, notice, depth limit or descendant controls; fork is allowed, but an existing child cannot become a peer.",
     promptSnippet:
-      "spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?) - start, resume or copy an agent in a new window; returns its pi session id; toplevel starts an independent peer, not a child",
+      "spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?) - start, resume or copy an agent in a new window; returns its pi session id; toplevel starts an independent peer, not a child; runtime works in a configured runtime",
     promptGuidelines: [
       "A subagent's result arrives on its own as a notice when it finishes; never poll list_agents for it; list_agents lists the agent and stop_agent stops it.",
       "Trust but verify: a child's report says what it intended to do, not what it did - check the diff before relaying success.",
@@ -2042,6 +2497,12 @@ export default function (pi: ExtensionAPI) {
               "Copy resume_from, or this session when omitted. A copy requires a task. Defaults to false.",
           }),
         ),
+        runtime: Type.Optional(
+          Type.String({
+            description:
+              "Run the agent's tools in a configured runtime (a container or an ssh host) by name. Its pi runs here, so resume_from and fork work; a runtime that runs pi itself refuses them. Omitted: the runtime of the caller.",
+          }),
+        ),
       },
       { additionalProperties: false },
     ),
@@ -2057,6 +2518,20 @@ export default function (pi: ExtensionAPI) {
       const task = params.task.trim().length > 0 ? params.task : "";
       if (taskTooLarge(task)) return refuse(`the task does not fit the ${MAX_TASK_BYTES} byte limit of a pane variable`);
       if (!task && (!params.resume_from || params.fork)) return refuse("task is required unless resuming without fork");
+      let childRuntime: ChildRuntime | undefined;
+      let runtimeInfo: Api["RuntimeInfo"] | undefined;
+      if (params.runtime && process.env.KO_RUNTIME) {
+        if (params.runtime !== process.env.KO_RUNTIME) return refuse(`this agent runs inside runtime ${process.env.KO_RUNTIME}; its children run there too`);
+      } else if (params.runtime) {
+        const info = await fetchRuntime(params.runtime);
+        if ("error" in info) return refuse(info.error);
+        runtimeInfo = info;
+        childRuntime = { name: info.name, mode: info.pi === "runtime" ? "inside" : "routed" };
+      } else if (routed) {
+        if ("refusal" in routed) return refuse(routed.refusal);
+        childRuntime = { name: routed.name, mode: "routed" };
+      }
+      if (childRuntime?.mode === "inside" && (params.resume_from || params.fork)) return refuse("a saved session is a file of this filesystem: resume_from and fork need a runtime whose pi runs on the host");
       const model = params.model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}:${pi.getThinkingLevel()}` : null);
       if (!model) return refuse("caller has no model; specify model");
       if (params.model) {
@@ -2139,6 +2614,8 @@ export default function (pi: ExtensionAPI) {
             session: childSession,
             model,
             cwd,
+            runtime: childRuntime,
+            runtimeInfo,
             task,
             mode,
             toplevel,
@@ -2148,8 +2625,9 @@ export default function (pi: ExtensionAPI) {
           if ("error" in made) return refuse(made.error);
           if (!toplevel) recordChild(plan, made.placement);
           const { window, pane: childPane } = made.placement;
+          const inRuntime = childRuntime?.name ?? process.env.KO_RUNTIME;
           return reply(
-            `spawned ${name} (session ${childSession}, window ${window}, pane ${childPane})${mode.kind === "copy" ? `, forked from session ${source?.id ?? ownSessionId}` : ""}; session id is what resume_from takes later; ${toplevel ? "independent peer; no report or ending notice" : task ? liveRunRule(SPAWN_RESULT_RULE) : SPAWN_RESULT_RULE}`,
+            `spawned ${name} (session ${childSession}, window ${window}, pane ${childPane}${inRuntime ? `, in runtime ${inRuntime}` : ""})${mode.kind === "copy" ? `, forked from session ${source?.id ?? ownSessionId}` : ""}; session id is what resume_from takes later; ${toplevel ? "independent peer; no report or ending notice" : task ? liveRunRule(SPAWN_RESULT_RULE) : SPAWN_RESULT_RULE}`,
             { session: childSession, name, window, pane: childPane, fork: mode.kind === "copy" },
           );
         } finally { releaseName(name); }
@@ -2241,6 +2719,7 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params) {
       const command = ko;
       if (!command) return reply("could not start background command: ko is not on PATH");
+      if (routed && "refusal" in routed) return reply(`could not start background command: ${routed.refusal}`);
       if (!params.name) return reply("could not start background command: --name is required");
       const nameError = checkName(params.name);
       if (nameError) return reply(`could not start background command: ${nameError}`);
@@ -2251,13 +2730,19 @@ export default function (pi: ExtensionAPI) {
         const wanted = params.name.toLowerCase();
         const runs = (await ownRuns(true)) ?? [];
         if (runs.some((r) => (r.name ?? "").toLowerCase() === wanted) || children().some((c) => c.name.toLowerCase() === wanted)) return reply(taken);
-        const res = await runCommand(command, ["run-child", pane, "--name", params.name, "--", "bash", "-o", "pipefail", "-c", params.command], { timeoutMs: envMs("KO_SPAWN_TIMEOUT_MS", 5000) });
-        if (!res.ok) return reply(`could not start background command: ${res.error}`);
         let started: unknown;
-        try {
-          started = JSON.parse(res.out);
-        } catch {}
-        if (!isStarted(started)) return reply("could not start background command: ko printed no run");
+        if (routed) {
+          const answer = await apiCall("POST", "/runs", { name: params.name, argv: ["bash", "-o", "pipefail", "-c", params.command], cwd: routed.hostCwd, parent: pane, runtime: routed.name } satisfies Api["StartRun"], envMs("KO_SPAWN_TIMEOUT_MS", 5000));
+          started = apiJson(answer);
+          if (!isStarted(started)) return reply(`could not start background command: ${apiError(answer).message}`);
+        } else {
+          const res = await runCommand(command, ["run-child", pane, "--name", params.name, "--", "bash", "-o", "pipefail", "-c", params.command], { timeoutMs: envMs("KO_SPAWN_TIMEOUT_MS", 5000) });
+          if (!res.ok) return reply(`could not start background command: ${res.error}`);
+          try {
+            started = JSON.parse(res.out);
+          } catch {}
+          if (!isStarted(started)) return reply("could not start background command: ko printed no run");
+        }
         watchRun({ run: started.id, name: params.name, pane: started.pane, stream: !!params.stream });
         return reply(
           `started run ${started.id} (${params.name}) in window ${started.window}, pane ${started.pane}; list_async_bash lists it and stop_async_bash stops it; ` +
@@ -2308,10 +2793,112 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.on("before_agent_start", (event) => {
+  const liveRouted = async (signal: AbortSignal | undefined): Promise<Routed> => {
+    if (!routed) throw new Error("this session routes no tools");
+    if ("refusal" in routed) throw new Error(routed.refusal);
+    await routed.ready(signal);
+    return routed;
+  };
+
+  const route = <D extends Pick<ToolDefinition, "name" | "label" | "description" | "parameters"> & { execute: (...args: never[]) => Promise<unknown> }>(
+    local: D,
+    execute: (r: Routed, id: string, params: Parameters<D["execute"]>[1], signal: AbortSignal | undefined, onUpdate: Parameters<D["execute"]>[3]) => ReturnType<D["execute"]>,
+  ): void =>
+    pi.registerTool({
+      ...local,
+      async execute(id: string, params: Parameters<D["execute"]>[1], signal: AbortSignal | undefined, onUpdate: Parameters<D["execute"]>[3]) {
+        return execute(await liveRouted(signal), id, params, signal, onUpdate);
+      },
+    });
+
+  const registerRouted = (): void => {
+    const cwd = process.cwd();
+    route(createBashToolDefinition(cwd), (r, id, params, signal, onUpdate) => createBashTool(r.cwd, { operations: bashOperations(r), exposeSessionEnvironment: false }).execute(id, params, signal, onUpdate));
+    route(createReadToolDefinition(cwd), async (r, id, params, signal, onUpdate) => createReadTool(r.cwd, { operations: readOperations(r) }).execute(id, { ...params, path: await homed(r, params.path, signal) }, signal, onUpdate));
+    route(createWriteToolDefinition(cwd), async (r, id, params, signal, onUpdate) => createWriteTool(r.cwd, { operations: writeOperations(r) }).execute(id, { ...params, path: await homed(r, params.path, signal) }, signal, onUpdate));
+    route(createEditToolDefinition(cwd), async (r, id, params, signal, onUpdate) =>
+      createEditTool(r.cwd, { operations: { readFile: readOperations(r).readFile, writeFile: writeOperations(r).writeFile, access: async () => {} } }).execute(id, { ...params, path: await homed(r, params.path, signal) }, signal, onUpdate),
+    );
+    route(createLsToolDefinition(cwd), async (r, id, params, signal, onUpdate) => createLsTool(r.cwd, { operations: lsOperations(r) }).execute(id, { ...params, path: await homed(r, params.path, signal) }, signal, onUpdate));
+    route(createFindToolDefinition(cwd), async (r, id, params, signal, onUpdate) => createFindTool(r.cwd, { operations: findOperations(r) }).execute(id, { ...params, path: await homed(r, params.path, signal) }, signal, onUpdate));
+    route(createGrepToolDefinition(cwd), async (r, _id, params, signal) => routedGrep(r, { ...params, path: await homed(r, params.path, signal) }, signal));
+  };
+
+  pi.on("user_bash", async () => {
+    if (!routed) return undefined;
+    const r = await liveRouted(undefined);
+    const operations = bashOperations(r);
+    return { operations: { exec: (command, _hostCwd, options) => operations.exec(command, r.cwd, options) } };
+  });
+
+  const runtimeText = (r: Routed): string => {
+    const others = pi.getAllTools().map((tool) => tool.name).filter((name) => !ROUTED_TOOLS.includes(name));
+    return `The tools ${ROUTED_TOOLS.join(", ")} and the user's ! commands run in runtime ${r.name}, at ${r.cwd}. Every other tool${others.length ? ` (${others.join(", ")})` : ""} runs on the host, at ${r.hostCwd}, not in the runtime.`;
+  };
+
+  pi.on("before_agent_start", async (event) => {
     event.systemPromptOptions.promptGuidelines.push(NEVER_SLEEP_RULE);
     if (edge) event.systemPromptOptions.promptGuidelines.push(SUBAGENT_INSTRUCTION);
+    if (!routed || "refusal" in routed) return;
+    const r = routed;
+    try {
+      await r.ready();
+    } catch (error) {
+      session?.ui?.notify(error instanceof Error ? error.message : String(error), "error");
+      return;
+    }
+    const options = event.systemPromptOptions;
+    options.cwd = r.cwd;
+    options.contextFiles = [...options.contextFiles.filter((file) => resolve(dirname(file.path)) === resolve(getAgentDir())), ...r.contextFiles];
+    options.sections.runtime = runtimeText(r);
   });
+
+  const startRouted = async (ctx: ExtensionContext): Promise<void> => {
+    routed = null;
+    const flag = pi.getFlag("runtime");
+    const name = !process.env.KO_RUNTIME && typeof flag === "string" ? flag : "";
+    if (!name) return;
+    registerRouted();
+    const refuse = (message: string): void => {
+      routed = { refusal: message };
+      ctx.ui?.notify(message, "error");
+    };
+    if (!ko) return refuse(`runtime ${name}: ko is not on PATH`);
+    const info = await fetchRuntime(name);
+    if ("error" in info) return refuse(info.error);
+    if (info.pi === "runtime") return refuse(`runtime ${name} runs pi inside it: start ko-pi in a pane of that runtime`);
+    const found = mapHostPath(info.paths, ctx.cwd) ?? info.cwd;
+    const program = ko;
+    let facts: Promise<Facts> | undefined;
+    let attempt: Promise<void> | undefined;
+    const r: Routed = { name, ko: program, hostCwd: ctx.cwd, paths: info.paths, facts: () => (facts ??= probeFacts(program, name)), cwd: found ?? "", contextFiles: [], ready: (signal) => abortable((attempt ??= load()), signal) };
+    const announce = (): void => ctx.ui?.notify(runtimeText(r), "info");
+    const load = async (): Promise<void> => {
+      try {
+        const started = await readRuntimeContext(program, name, found);
+        r.cwd = started.cwd;
+        r.contextFiles = started.contextFiles;
+        if (found === undefined) {
+          announce();
+          await markRouted();
+        }
+      } catch (error) {
+        const message = `runtime ${name}: ${error instanceof Error ? error.message : String(error)}`;
+        if (found === undefined) {
+          attempt = undefined;
+          throw new Error(message);
+        }
+        ctx.ui?.notify(`${message}; its context files are not read`, "warning");
+      }
+    };
+    routed = r;
+    if (found !== undefined) announce();
+    void r.ready().catch((error: unknown) => ctx.ui?.notify(error instanceof Error ? error.message : String(error), "error"));
+  };
+
+  const markRouted = async (): Promise<void> => {
+    if (active && routed && !("refusal" in routed) && routed.cwd) await writeVars([[VAR_RUNTIME, { name: routed.name, cwd: routed.cwd }], [VAR_KO_RUNTIME, routed.name]]);
+  };
 
   // ---- the session ----
 
@@ -2371,6 +2958,7 @@ export default function (pi: ExtensionAPI) {
       }));
     }
 
+    await startRouted(ctx);
     active = false;
     if (!ctx.hasUI || !ownSessionId || !ko || !pane) return;
     active = true;
@@ -2380,6 +2968,7 @@ export default function (pi: ExtensionAPI) {
       [VAR_SESSION, ownSessionId],
       [VAR_NAME, pi.getSessionName() ?? ""],
     ]);
+    await markRouted();
     await readInstance();
     await deliverTask();
     const parked = globalThis.__koPiExtensionWatches;

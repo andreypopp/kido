@@ -229,10 +229,13 @@ fn a_runtime_connection_acts_as_a_pane_of_its_runtime_and_sees_only_its_scope() 
                 "cwd": "/",
                 "paths": [{"host": text_of(&maps.join("host")), "runtime": text_of(&maps.join("rt"))}],
             },
-            "other": {"kind": "command"},
+            "other": {"kind": "command", "pi": "runtime"},
         }),
         &[],
     );
+    let (dev, other) = (info(&s, "dev"), info(&s, "other"));
+    assert_eq!((&dev["pi"], &dev["cwd"]), (&json!("host"), &json!("/")));
+    assert_eq!((&other["pi"], other.get("cwd")), (&json!("runtime"), None));
     let host = s.token_pane("exec cat");
     let elsewhere = token_pane_in_new_session(&s, "elsewhere");
     let r1 = rt_token_pane(&s, "dev");

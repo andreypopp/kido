@@ -257,6 +257,8 @@ dependencies = [
 name = "fake_ko"
 version = "0.0.0"
 dependencies = [
+ "ko_pane_wire",
+ "ko_sys",
  "serde_json",
 ]
 

@@ -62,6 +62,12 @@ three pane variables, written with `ko api` (protocol.md, section 7):
 | `pi.name` | the session name | the row title of a local pi, a message's `from` |
 | `pi.activity` | the agent's activity text, one line | the caption fallback |
 
+A routed pi (design-runtimes.md, "Agents in a runtime") also writes
+`pi.runtime`, its runtime and the directory there, which only the
+harness reads, under the same trust rule, and the generic
+`ko.runtime`, the name of the runtime where the pane's program sends
+its work, which any program may set for clients.
+
 ko trusts them only while the pane has an OSC 7501 root with `app=pi`,
 as it trusts `ssh.dest` only while the foreground is `ssh`. The
 server drops the records on pane death, a shell prompt (non-final
@@ -139,6 +145,9 @@ The extension uses only these interfaces of ko:
   `/panes/pane_N/output` (protocol.md, sections 4 and 7).
 - The run commands `run-child`, `runs --json --all --parent P`,
   `run-wait ID --json` and `run-stop`.
+- In a routed pi, `GET /runtimes/NAME`, `ko api --stream
+  /runtimes/NAME/exec` for its tools and `POST /runs` for its
+  `async_bash` (design-runtimes.md, "Agents in a runtime").
 
 It never opens ko's socket itself and never reads ko's state
 directory. It has no state directory of its own: its registry is in
@@ -154,8 +163,9 @@ the pane that it runs in.
 `session_start`, after it opens its message stream, and `pi.name`
 again on `session_info_changed`. It writes no `pi.activity` value,
 but ko reads that variable and the extension deletes it with the
-others. Without `$KO_PANE`, nothing is written. At shutdown it
-deletes the three with one conditional `DELETE` whose condition is
+others. Without `$KO_PANE`, nothing is written. A routed pi writes
+`pi.runtime` and `ko.runtime` too. At shutdown it
+deletes them all with one conditional `DELETE` whose condition is
 `pi.session` equal to its own session, so it never removes another
 pi's variables: the pane can have a new owner before the old one
 cleans up. An uncaught crash exits through `process.exit`, so a

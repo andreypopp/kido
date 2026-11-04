@@ -776,7 +776,9 @@ without control
 characters, at most 256 bytes, percent-decoded from the path. A dead
 pane keeps its variables until it is removed. The server stores and announces
 variables and reads only the `pi.*` and `ssh.*` names under the
-trust rules of design-program-status.md. `ko ssh` sets `ssh.dest` and `ssh.args`
+trust rules of design-program-status.md. `ko.runtime` is a generic
+marker that the server does not read: a program in a host pane that
+runs its work in a runtime names the runtime there, for clients. `ko ssh` sets `ssh.dest` and `ssh.args`
 before it execs ssh, and the model believes them only while the
 pane's foreground process is `ssh`.
 
@@ -1153,8 +1155,9 @@ runtime and its agent scope; a hidden pane is `refused`, not
 views, search, `PUT /layout` and the `/runtimes` routes among them.
 
 **The `/runtimes` routes** are the host's. `GET /runtimes` lists the
-configured runtimes with their link state, and `GET /runtimes/NAME`
-one. `GET /runtimes/NAME/wait` is a long poll of the runtime's own
+configured runtimes with their link state, the effective `paths`,
+the default `cwd` and `pi`, where an agent's pi runs; `GET
+/runtimes/NAME` one. `GET /runtimes/NAME/wait` is a long poll of the runtime's own
 pane wrappers until the link is `Up` or `Failed`; its reply names the
 step to run for the one waiter elected to lead. The leader reports
 the step's end with `POST /runtimes/NAME/lead`. Both accept only a

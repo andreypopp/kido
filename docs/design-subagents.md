@@ -36,9 +36,9 @@ subcommand of its own.
 | `read_report(agent, which?)` | the own session's `ko-pi.report` entries |
 | `list_async_bash()` | `ko runs --json --all --parent $KO_PANE` |
 | `message_agent(to, message, mode?)` | `POST /panes/{t}/messages`; `POST /panes` to restart an ended child |
-| `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)` | pi's session directories, `pi --list-models`, `POST /panes` |
+| `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?)` | pi's session directories, `pi --list-models`, `GET /runtimes/NAME`, `POST /panes` |
 | `stop_agent(agent, force?)` | `POST /panes/{t}/messages` kind `stop`, then `POST /panes/{t}/stop` |
-| `async_bash(command, name, stream?)` | `ko run-child $KO_PANE --name N -- bash -o pipefail -c CMD`, `ko run-wait ID --json`, `ko api --stream /panes/P/output` |
+| `async_bash(command, name, stream?)` | `ko run-child $KO_PANE --name N -- bash -o pipefail -c CMD` (a routed pi: `POST /runs` with `runtime`), `ko run-wait ID --json`, `ko api --stream /panes/P/output` |
 | `stop_async_bash(run)` | `ko run-stop ID` |
 
 The parent of every run and every child is `$KO_PANE`. No agent has
@@ -61,7 +61,8 @@ orphan rule.
 row has `id` (the pi session), `name`, `pane`, `window`, `status`
 (the root's OSC 7501 state, `starting` before it has one, `ended`),
 `activity`, `parent` (the parent's pi session), `depth`, `cwd`,
-`canMessage` (the row's `inbox`: the pane's message stream is open),
+`runtime` (the row's field, else a trusted `pi.runtime`; a routed
+agent's `cwd` is that variable's), `canMessage` (the row's `inbox`: the pane's message stream is open),
 `kind` (`agent` or `subagent`), `relationship` (`own`, `parent`,
 `peer`, `relative`) and `state` (`running` or `ended`). An own child
 adds `model`, `reported` and `report`: the first 1000 bytes of its
@@ -504,7 +505,8 @@ an agent:
     ko run-child $KO_PANE --name N -- bash -o pipefail -c '<command>'
 
 The server starts the argv directly, so text from the model never
-reaches a shell other than that `bash`. There is no wrapper: the
+reaches a shell other than that `bash`. A routed pi starts the same
+argv in its runtime ("Agents in a runtime" in design-runtimes.md). There is no wrapper: the
 command's output is its pane's content. The depth ceiling does not
 apply.
 

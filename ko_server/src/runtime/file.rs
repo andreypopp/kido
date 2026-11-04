@@ -10,7 +10,7 @@ use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::RuntimeName;
-use crate::protocol::{AbsPath, PathMap, RuntimeKind, env_valid};
+use crate::protocol::{AbsPath, PathMap, RuntimeKind, RuntimePi, env_valid};
 use crate::ssh::{connection_only, has_syntax};
 
 /// The runtime configuration file: the runtimes that panes can run in, by name.
@@ -31,6 +31,9 @@ pub(crate) struct Runtime {
     /// longest matching host prefix.
     #[serde(default)]
     pub(crate) paths: Vec<PathMap>,
+    /// Where pi runs for an agent in this runtime.
+    #[serde(default)]
+    pub(crate) pi: RuntimePi,
     #[serde(flatten)]
     pub(crate) kind: Kind,
 }

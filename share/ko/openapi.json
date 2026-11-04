@@ -3167,6 +3167,9 @@
       },
       "RuntimeInfo": {
         "properties": {
+          "cwd": {
+            "$ref": "#/components/schemas/AbsPath"
+          },
           "kind": {
             "$ref": "#/components/schemas/RuntimeKind"
           },
@@ -3185,6 +3188,9 @@
             },
             "type": "array"
           },
+          "pi": {
+            "$ref": "#/components/schemas/RuntimePi"
+          },
           "socket": {
             "description": "The path of the runtime's listener on the host, bound while the link is up.",
             "type": "string"
@@ -3199,7 +3205,8 @@
           "state",
           "panes",
           "socket",
-          "paths"
+          "paths",
+          "pi"
         ],
         "type": "object"
       },
@@ -3215,6 +3222,21 @@
         "description": "One to 32 bytes of a to z, 0 to 9 and -. host is not a runtime name.",
         "pattern": "^[a-z0-9-]{1,32}$",
         "type": "string"
+      },
+      "RuntimePi": {
+        "description": "Where an agent's pi runs when it works in a runtime.",
+        "oneOf": [
+          {
+            "const": "host",
+            "description": "On the host. Its built-in tools and `!` commands run in the runtime through exec sessions.",
+            "type": "string"
+          },
+          {
+            "const": "runtime",
+            "description": "Inside the runtime, in a pane of the runtime.",
+            "type": "string"
+          }
+        ]
       },
       "RuntimeWait": {
         "description": "The reply of a wait on a runtime: its state when the wait ends. Only the one waiter that was\nelected to run the interactive step gets lead, with the argv of that step.",

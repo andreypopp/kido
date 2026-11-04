@@ -50,6 +50,10 @@ session id:
   delivers the `ko-pi.task` variable once, watches its parent's pane,
   and sends its report to the parent when a turn of its work settles.
 - at shutdown, stops its own live `async_bash` runs.
+- with `--runtime NAME` (the routed mode), runs its built-in tools,
+  `!` commands and `async_bash` in that runtime through exec sessions
+  and runs, reads the context files there, and writes `pi.runtime` and
+  `ko.runtime` (docs/design-runtimes.md, "Agents in a runtime").
 
 Outside ko, without a UI or without a session id, it writes nothing and
 opens no stream. The tools still register and report ko as
@@ -73,13 +77,15 @@ unavailable.
   new turn with the text. `to` takes a name, a session id, a unique id
   prefix of at least eight characters, or a mention such as
   `@impl (session 9702ddd1)`, which `@` completion inserts.
-- `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)`:
+- `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?)`:
   a child in a new window through `POST /panes`, as `ko shell -- ko-pi`
   in the user's login-shell environment and the caller's model unless
   `model` names one. `resume_from` continues a saved pi session by id
   or unique prefix; with `fork`, it starts a copy. `toplevel` starts a
-  peer with no parent, report or notice. A child's ending arrives as
-  a notice.
+  peer with no parent, report or notice. `runtime` works in a
+  configured runtime: a routed child (`ko-pi --runtime NAME` on the
+  host) or, for a runtime with `pi: "runtime"`, a child inside it. A
+  child's ending arrives as a notice.
 - `stop_agent(agent, force?)`: one agent in scope, by a stop message
   and then the pane stop; `force` kills an agent that is not receiving
   messages. A subagent that the caller stops sends no ending notice.
@@ -100,6 +106,8 @@ TypeScript support, on the fake `ko` of `testdata/fake_ko/` (a Rust
 binary that `make build-fake-ko` builds). The fake answers the routes
 that the extension calls with the real server's shapes, and serves the
 message and output streams from files that a test writes, reading the
-acks on stdin. A fake delay is a `KO_FAKE_*` gate that a test
+acks on stdin. It serves a runtime's exec session by running the argv
+on the host with only the requested environment; one test drives the
+same exec client against a real `ko server` with a `command` runtime. A fake delay is a `KO_FAKE_*` gate that a test
 releases. `testdata/ko-prompts.txt` is the snapshot of every prompt
 text the extension registers (`make prompts` regenerates it).

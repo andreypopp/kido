@@ -222,6 +222,11 @@
           "items": {
             "$ref": "#/$defs/PathMap"
           }
+        },
+        "pi": {
+          "description": "Where pi runs for an agent in this runtime.",
+          "$ref": "#/$defs/RuntimePi",
+          "default": "host"
         }
       },
       "oneOf": [
@@ -266,6 +271,21 @@
           "required": [
             "kind"
           ]
+        }
+      ]
+    },
+    "RuntimePi": {
+      "description": "Where an agent's pi runs when it works in a runtime.",
+      "oneOf": [
+        {
+          "description": "On the host. Its built-in tools and `!` commands run in the runtime through exec sessions.",
+          "type": "string",
+          "const": "host"
+        },
+        {
+          "description": "Inside the runtime, in a pane of the runtime.",
+          "type": "string",
+          "const": "runtime"
         }
       ]
     },

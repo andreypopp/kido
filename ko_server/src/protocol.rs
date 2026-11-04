@@ -2768,6 +2768,17 @@ pub struct PathMap {
     pub runtime: AbsPath,
 }
 
+/// Where an agent's pi runs when it works in a runtime.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimePi {
+    /// On the host. Its built-in tools and `!` commands run in the runtime through exec sessions.
+    #[default]
+    Host,
+    /// Inside the runtime, in a pane of the runtime.
+    Runtime,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeKind {
@@ -2798,6 +2809,10 @@ pub struct RuntimeInfo {
     pub socket: String,
     /// The effective host-to-runtime prefix list that maps a host cwd.
     pub paths: Vec<PathMap>,
+    /// The configured directory inside the runtime for a pane whose cwd does not map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<AbsPath>,
+    pub pi: RuntimePi,
 }
 
 /// The reply of a wait on a runtime: its state when the wait ends. Only the one waiter that was

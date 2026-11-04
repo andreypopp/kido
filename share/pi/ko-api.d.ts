@@ -1379,12 +1379,14 @@ export interface components {
             startedAt: components["schemas"]["Timestamp"];
         };
         RuntimeInfo: {
+            cwd?: components["schemas"]["AbsPath"];
             kind: components["schemas"]["RuntimeKind"];
             name: components["schemas"]["RuntimeName"];
             /** @description The panes of the document that the runtime runs, dead ones included. */
             panes: number;
             /** @description The effective host-to-runtime prefix list that maps a host cwd. */
             paths: components["schemas"]["PathMap"][];
+            pi: components["schemas"]["RuntimePi"];
             /** @description The path of the runtime's listener on the host, bound while the link is up. */
             socket: string;
             state: components["schemas"]["LinkState"];
@@ -1393,6 +1395,8 @@ export interface components {
         RuntimeKind: "ssh" | "command" | "container";
         /** @description One to 32 bytes of a to z, 0 to 9 and -. host is not a runtime name. */
         RuntimeName: string;
+        /** @description Where an agent's pi runs when it works in a runtime. */
+        RuntimePi: "host" | "runtime";
         /**
          * @description The reply of a wait on a runtime: its state when the wait ends. Only the one waiter that was
          *     elected to run the interactive step gets lead, with the argv of that step.

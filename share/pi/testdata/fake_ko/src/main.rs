@@ -1,12 +1,18 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, Read, Write};
-use std::path::Path;
+use std::os::fd::AsFd;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use ko_pane_wire::base64;
+use ko_sys::fd::Want;
+use ko_sys::pid::{Exit, Waited};
+use ko_sys::signal::{Signal, Signals};
+use ko_sys::spawn::Env;
 use serde_json::{Value, json};
 
 const GATE_DEADLINE: Duration = Duration::from_secs(10);
@@ -135,17 +141,15 @@ fn positional(argv: &[String]) -> String {
     argv.get(1).cloned().unwrap_or_default()
 }
 
-fn run(argv: &[String]) -> ExitCode {
-    log("KO_FAKE_RUN_LOG", argv);
+fn start_run(name: &str, parent: &str) -> Value {
     let run_id = std::env::var("KO_FAKE_RUN_ID").unwrap_or_else(|_| "fake-run-id".to_owned());
     let pane = std::env::var("KO_FAKE_RUN_PANE").unwrap_or_else(|_| "pane_9".to_owned());
-    let parent = positional(argv);
     if !runs_path().is_empty() {
         let _lock = Locked::take(&runs_path());
         let mut all = rows("KO_FAKE_RUNS_FILE");
         all.push(json!({
             "id": run_id,
-            "name": after(argv, "--name").unwrap_or_default(),
+            "name": name,
             "parent": parent,
             "pane": pane,
             "argv": [],
@@ -154,9 +158,23 @@ fn run(argv: &[String]) -> ExitCode {
         }));
         write_rows(&runs_path(), &all);
     }
+    json!({"id": run_id, "window": "window_9", "pane": pane})
+}
+
+fn run(argv: &[String]) -> ExitCode {
+    log("KO_FAKE_RUN_LOG", argv);
     println!(
         "{}",
-        json!({"id": run_id, "window": "window_9", "pane": pane})
+        start_run(after(argv, "--name").unwrap_or_default(), &positional(argv))
+    );
+    ExitCode::SUCCESS
+}
+
+fn post_run(body: &str) -> ExitCode {
+    let request: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+    println!(
+        "{}",
+        start_run(&text(&request, "name"), &text(&request, "parent"))
     );
     ExitCode::SUCCESS
 }
@@ -631,6 +649,217 @@ fn stream_output(query: &str) -> ExitCode {
     }
 }
 
+fn runtime_entry(name: &str) -> Option<Value> {
+    let raw = fs::read_to_string(env("KO_FAKE_RUNTIMES")).ok()?;
+    let mut all: Value = serde_json::from_str(&raw).ok()?;
+    all.as_object_mut()?.remove(name)
+}
+
+fn runtime_info(name: &str, entry: &Value) -> Value {
+    let mut info = entry.clone();
+    if let Some(fields) = info.as_object_mut() {
+        fields.remove("env");
+        fields.insert("name".to_owned(), json!(name));
+        fields.entry("kind").or_insert(json!("command"));
+        fields.entry("state").or_insert(json!({"type": "up"}));
+        fields.entry("panes").or_insert(json!(0));
+        fields.entry("socket").or_insert(json!(""));
+        fields.entry("paths").or_insert(json!([]));
+        fields.entry("pi").or_insert(json!("host"));
+    }
+    info
+}
+
+fn get_runtimes(name: Option<&str>) -> ExitCode {
+    let raw = fs::read_to_string(env("KO_FAKE_RUNTIMES")).unwrap_or_default();
+    let all: BTreeMap<String, Value> = serde_json::from_str(&raw).unwrap_or_default();
+    match name {
+        None => println!(
+            "{}",
+            Value::Array(
+                all.iter()
+                    .map(|(name, entry)| runtime_info(name, entry))
+                    .collect()
+            )
+        ),
+        Some(name) => match all.get(name) {
+            Some(entry) => println!("{}", runtime_info(name, entry)),
+            None => return http_error(404, "not_found", &format!("no runtime {name} in the fake")),
+        },
+    }
+    ExitCode::SUCCESS
+}
+
+fn exec_failed(message: &str) -> ExitCode {
+    emit(&json!({"type": "error", "message": message}).to_string());
+    eprintln!("ko api: closed: 1011 {message}");
+    ExitCode::FAILURE
+}
+
+fn signal_name(number: i32) -> &'static str {
+    match number {
+        1 => "HUP",
+        2 => "INT",
+        3 => "QUIT",
+        6 => "ABRT",
+        9 => "KILL",
+        11 => "SEGV",
+        13 => "PIPE",
+        15 => "TERM",
+        _ => "OTHER",
+    }
+}
+
+fn pump_output(
+    mut source: impl Read + Send + 'static,
+    kind: &'static str,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut chunk = vec![0u8; 64 << 10];
+        while let Ok(count) = source.read(&mut chunk) {
+            if count == 0 {
+                break;
+            }
+            emit(&json!({"type": kind, "data": base64::encode(&chunk[..count])}).to_string());
+        }
+    })
+}
+
+fn find_program(program: &str, path: &str) -> Option<PathBuf> {
+    if program.contains('/') {
+        return Some(PathBuf::from(program));
+    }
+    path.split(':')
+        .map(|dir| Path::new(dir).join(program))
+        .find(|candidate| candidate.is_file())
+}
+
+fn exec_session(name: &str) -> ExitCode {
+    let (lines, messages) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let request: Value = messages
+        .recv()
+        .ok()
+        .and_then(|line| serde_json::from_str(&line).ok())
+        .unwrap_or(Value::Null);
+    append(
+        "KO_FAKE_EXEC_LOG",
+        &json!({"runtime": name, "request": request}).to_string(),
+    );
+    wait_gate("KO_FAKE_EXEC_GATE");
+    let Some(entry) = runtime_entry(name) else {
+        return exec_failed(&format!("no runtime {name} in the fake"));
+    };
+    if entry["state"]["type"] == "failed" {
+        return exec_failed(entry["state"]["message"].as_str().unwrap_or("failed"));
+    }
+    let argv: Vec<String> = request["argv"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|word| word.as_str().map(str::to_owned))
+        .collect();
+    let Some((program, args)) = argv.split_first() else {
+        return exec_failed("argv needs a program");
+    };
+    let mut variables = BTreeMap::from([
+        ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+        ("HOME".to_owned(), "/var/empty".to_owned()),
+    ]);
+    for source in [&entry["env"], &request["env"]] {
+        for (key, value) in source.as_object().into_iter().flatten() {
+            variables.insert(key.clone(), value.as_str().unwrap_or_default().to_owned());
+        }
+    }
+    variables.insert("KO_RUNTIME".to_owned(), name.to_owned());
+    let Some(found) = find_program(program, &variables["PATH"]) else {
+        return exec_failed(&format!("{program}: No such file or directory"));
+    };
+    let environment: Vec<Vec<u8>> = variables
+        .iter()
+        .map(|(key, value)| format!("{key}={value}").into_bytes())
+        .collect();
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let dir = request["cwd"].as_str().or(entry["cwd"].as_str());
+    let (Ok((out_read, out_write)), Ok((err_read, err_write)), Ok((in_read, in_write))) =
+        (std::io::pipe(), std::io::pipe(), std::io::pipe())
+    else {
+        return exec_failed("pipe failed");
+    };
+    let null = std::fs::File::open("/dev/null");
+    let Ok(null) = null else {
+        return exec_failed("/dev/null");
+    };
+    let stdin = if request["stdin"] == true {
+        in_read.as_fd()
+    } else {
+        null.as_fd()
+    };
+    let started = ko_sys::spawn::program(
+        &found,
+        &words,
+        &[(stdin, 0), (out_write.as_fd(), 1), (err_write.as_fd(), 2)],
+        Env::Only(&environment),
+        dir.map(Path::new),
+    );
+    let pid = match started {
+        Ok(pid) => pid,
+        Err(error) => return exec_failed(&format!("{program}: {error}")),
+    };
+    drop((out_write, err_write, in_read));
+    if let Ok(signals) = Signals::install(&[Signal::Term]) {
+        std::thread::spawn(move || {
+            let _ = ko_sys::fd::wait(signals.fd(), Want::Read, None, None);
+            let _ = pid.signal(Signal::Kill);
+            std::process::exit(143);
+        });
+    }
+    let mut input = Some(in_write);
+    std::thread::spawn(move || {
+        for line in messages {
+            let message: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+            match message["type"].as_str() {
+                Some("stdin") => {
+                    let Some(bytes) = base64::decode(&text(&message, "data")) else {
+                        exec_failed("stdin data is not base64");
+                        std::process::exit(1);
+                    };
+                    if let Some(pipe) = input.as_mut() {
+                        let _ = pipe.write_all(&bytes);
+                    }
+                }
+                Some("eof") => input = None,
+                _ => {}
+            }
+        }
+    });
+    let pumps = [
+        pump_output(out_read, "stdout"),
+        pump_output(err_read, "stderr"),
+    ];
+    let ended = pid.wait();
+    for pump in pumps {
+        let _ = pump.join();
+    }
+    emit(
+        &match ended {
+            Ok(Waited::Ended(Exit::Exited(code))) => json!({"type": "exit", "status": code}),
+            Ok(Waited::Ended(Exit::Signaled(signal))) => {
+                json!({"type": "exit", "signal": signal_name(signal)})
+            }
+            _ => json!({"type": "exit", "status": 255}),
+        }
+        .to_string(),
+    );
+    ExitCode::SUCCESS
+}
+
 fn api(argv: &[String]) -> ExitCode {
     let mut method = "GET".to_owned();
     let (mut input, mut path, mut stream) = (false, String::new(), false);
@@ -666,6 +895,10 @@ fn api(argv: &[String]) -> ExitCode {
     match (method.as_str(), segments.as_slice()) {
         ("STREAM", ["", "panes", pane, "messages"]) => return stream_messages(pane),
         ("STREAM", ["", "panes", _, "output"]) => return stream_output(query),
+        ("STREAM", ["", "runtimes", name, "exec"]) => return exec_session(name),
+        ("GET", ["", "runtimes"]) => return get_runtimes(None),
+        ("GET", ["", "runtimes", name]) => return get_runtimes(Some(name)),
+        ("POST", ["", "runs"]) => return post_run(&body),
         ("GET", ["", "layout"]) => {
             if env("KO_FAKE_LAYOUT_FAIL") == "1" {
                 return ExitCode::FAILURE;

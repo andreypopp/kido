@@ -6,7 +6,7 @@ kind), an ssh host (the `ssh` kind), and the test-only `command` kind.
 The host is the implicit runtime of every other pane. This document
 describes the runtime core: the configuration, the link, the listener
 and the identity on it, how a pane starts in a runtime, the exec
-session, and the two kinds. [protocol.md](protocol.md), section 15,
+session, the two kinds, and agents in a runtime. [protocol.md](protocol.md), section 15,
 gives the routes. [design-ko.md](design-ko.md) describes the server,
 and [design.md](design.md) the agent features. This document does not
 repeat them.
@@ -55,7 +55,10 @@ The shape is the code's (`ko_server/src/runtime/file.rs`);
 `share/ko/runtimes-schema.json` is its JSON schema, which `ko
 api-schema --runtimes` prints and `make schemas` regenerates. The
 fields that every kind has are the runtime's `env`, its default
-`cwd` and the `paths` prefix list of the cwd mapping. The server
+`cwd`, the `paths` prefix list of the cwd mapping and `pi`, where an
+agent's pi runs ("Agents in a runtime"). `GET /runtimes/NAME` reports
+the effective `paths`, the `cwd` and `pi`, which a spawner and a
+routed pi read. The server
 validates the file with the API's newtypes (a name, an absolute
 path); a bad field is an error that names the runtime and the field.
 An unknown field is an error that names the runtime and the field
@@ -517,6 +520,123 @@ cleanup of every runtime, a runtime that is already down included,
 and leaves them and the running ones to finish after it is gone, so
 no master outlives a down.
 
+## Agents in a runtime
+
+An agent works in a runtime in one of two modes, by the runtime's
+`pi`. The harness side is `share/pi/ko-pi.ts`; ko's part of either
+mode is the configuration's `pi`, the `cwd` and `pi` of `GET
+/runtimes/NAME`, the exec session and the `runtime` body field.
+
+**Routed** (`pi: "host"`, the default). pi runs on the host in a host
+pane, as `ko-pi --runtime NAME`: its session file, extensions,
+skills, prompt templates and credentials are the host's. Its seven
+built-in tools (`bash`, `read`, `write`, `edit`, `ls`, `find`,
+`grep`), its `!` commands and its `async_bash` run in the runtime.
+The pane is a host pane in every row field.
+
+- **The tools** keep pi's names and schemas. The harness registers
+  them only with `--runtime`, at `session_start`, so a host pi runs
+  pi's own tools with the user's settings. `bash`, `read`, `write`, `edit`, `ls` and `find` are
+  pi's tools over operations of the harness; `grep` is the
+  harness's own tool with pi's schema and output form, because pi's
+  grep runs the host's `rg` whatever its operations say. Each
+  operation is one exec session through `ko api --stream
+  /runtimes/NAME/exec`. A path is always an argv word, never text in
+  a shell script; a write sends the content as `stdin`. `read` keeps
+  a file's bytes; `write` and `edit` are text, as pi's are on the
+  host. A path that starts with `~` means the runtime's home. A shell command runs
+  as `bash -lc`, else `sh -lc` when a first probe of the runtime
+  finds no bash; the same probe finds `fd` and `rg`, else `find` and
+  `grep` run. An exec carries no environment: pi offers the host's
+  to its bash operations, and the harness drops it, so the runtime's
+  login environment and its `env` apply (the credential boundary of
+  "The exec session"). A signal exit reads as 128 plus the signal's
+  Linux number, as pi's bash contract asks.
+- **`!`** goes through pi's `user_bash` event with the same
+  operations. A routed pi that cannot route throws there, so a `!`
+  command never falls back to the host.
+- **The cwd** inside the runtime is the longest `paths` match of the
+  host cwd, else the runtime's `cwd`, else the `pwd` of one exec. The
+  harness keeps its own copy of the server's mapping (`map_cwd` in
+  `ko_server/src/runtime/pane.rs`), because it maps every path
+  argument of a tool; the two must agree. A
+  relative path from the model resolves there. An absolute path
+  under a `paths` host prefix maps before the exec, so a host path
+  that the user typed through `@` on a mounted project works; any
+  other absolute path is a runtime path.
+- **The prompt.** `before_agent_start` sets pi's cwd line to the
+  runtime cwd and replaces the context files with the host's global
+  `AGENTS.md`, then the runtime's, from the root down to the cwd
+  (pi's order and pi's candidate names, the nearest last), read by one
+  exec at `session_start` and after `/reload`. That read runs in the
+  background, so pi starts at once, and the first prompt and the
+  first tool wait for it. A read that fails is tried again at the
+  next prompt or tool when it was the only way to learn the cwd. It is also the exec that starts a runtime that is down: the
+  harness itself never starts one, and `GET /runtimes/NAME` starts
+  nothing. A prompt section `runtime` says that the built-in tools
+  and `!` run in the runtime at its cwd and that every other tool runs
+  on the host at the host cwd, and names those tools; a notice at
+  `session_start` tells the user the same. Other extensions' tools,
+  MCP tools and codemode stay on the host: the harness cannot know
+  which of them touch files, and a refusal would break the user's
+  setup. Skills, prompt templates, project `.pi/` resources and `@`
+  completion stay the host's; on a mounted project they are the same
+  files, and on an ssh project they are absent.
+- **What refuses.** At `session_start` the harness reads `GET
+  /runtimes/NAME`. A missing runtime or one whose `pi` is `"runtime"`
+  leaves pi running with every routed tool, `!`, `async_bash` and a
+  `spawn_agent` without `runtime` refusing with the reason, and a
+  notice. A `Failed` runtime does not
+  refuse: the next exec starts it again, and a failed start reaches
+  the tool as the exec's `error`.
+- **`async_bash`** is `POST /runs` through `ko api` with `runtime`,
+  `parent` the own pane and `cwd` the host cwd, which the server maps
+  as for a new pane, because `ko run-child` has no runtime flag. Its pane is a runtime pane; the
+  wait, the stop, the output stream and the list are a host run's.
+- **The variables.** The harness writes `pi.runtime` (`{ name, cwd }`,
+  the runtime cwd) beside `pi.session`, believed under the same trust
+  rule, and `ko.runtime` (the name), and deletes both with the others
+  at shutdown. `ko.runtime` is a generic marker: any program that
+  sends its work into a runtime from a host pane may set it, for
+  clients; no client reads it yet, and ko itself reads neither.
+- **Messages.** A message from a routed pi carries `data.runtime`,
+  and the receiver's header adds `in runtime NAME`; the server never
+  reads a message's data.
+
+**Inside** (`pi: "runtime"`). pi runs in a runtime pane, through
+`ko enter`, with `KO_RUNTIME` in its environment, and the harness
+routes nothing. Its session is a file of the runtime, so a spawner
+refuses `resume_from` and `fork` into such a runtime.
+
+**Spawning.** `spawn_agent`'s `runtime` reads `GET /runtimes/NAME`
+and starts a routed child (a host pane whose command gains `--runtime
+NAME`) or an inside child (`POST /panes` with `runtime`; the server
+maps its host cwd). Without `runtime`, a routed spawner's child is
+routed in the same runtime, and an inside spawner's child is in its
+runtime by the server's inheritance; an inside spawner refuses another
+runtime. `KO_AGENT_TRUSTED_CWD` is the host cwd for a routed child
+and the mapped runtime path for an inside child, which is the
+directory that child's pi sees. The registry entry of a child
+records its runtime and mode, so a restart through a message starts
+it the same way. `list_agents` shows `runtime` from the row's field,
+else from a trusted `pi.runtime`, and a routed agent's `cwd` from
+that variable.
+
+**Cancel.** A tool's abort or timeout kills its `ko api --stream`
+process, which closes the session ("The exec session"). What that
+does to the command is the kind's, and the harness does not work
+around it:
+
+- `command`: the helper is the command, so `SIGTERM`, then `SIGKILL`,
+  ends the shell; its own children get no signal.
+- `container`: `container exec` passes no signal, so the command
+  keeps running with its stdin closed ("The container kind").
+- `ssh`: the passenger is `ssh -T` without a pty; the end of the
+  local client closes the channel, which sends the remote command no
+  signal, so it runs until a write to its closed output or a read of
+  its stdin ends it. A remote signal exit reads as ssh's 255, which
+  is the exec's `error`, not a status.
+
 ## Decisions
 
 2026-11-04:
@@ -546,6 +666,20 @@ no master outlives a down.
 - A live exec session keeps a runtime from going idle, as a pane does.
 - The `runtime` event on `/client` and the runtimes of the `Welcome`
   come with the clients' unit, not with the core.
+
+Agents in a runtime, 2026-11-04:
+
+- An agent in a runtime is routed unless the runtime says `pi:
+  "runtime"`; ko never copies pi into a runtime.
+- Other extensions' tools in a routed pi run on the host, with a
+  prompt section and a notice, not a refusal.
+- `@` completion in a routed pi lists host files.
+- A routed pi's `async_bash` is a run in the runtime, through `POST
+  /runs`, not an exec session: it keeps a pane, a screen and the
+  run's lifecycle.
+- A routed tool's cancel ends only what the kind's transport ends;
+  the gaps of the container and ssh kinds are the transports', and a
+  fix belongs to ko, not to the harness.
 
 Container kind, 2026-11-04:
 
