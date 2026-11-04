@@ -240,6 +240,12 @@ impl JsonSchema for Name {
     }
 }
 
+impl Name {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 impl TryFrom<String> for Name {
     type Error = &'static str;
 

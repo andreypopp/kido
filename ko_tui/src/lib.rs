@@ -2,6 +2,7 @@ pub mod client;
 mod clipboard;
 mod differ;
 mod input;
+mod keys;
 mod mirror;
 mod modes;
 mod renderer;

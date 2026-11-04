@@ -1,6 +1,10 @@
 # ko_tui: a tmux-like terminal client
 
-Status: plan (2026-11-04). Nothing of it is built.
+Status: plan (2026-11-04). Unit 1 is built: `ko_tui/src/keys.rs` with
+the prefix, the help overlay, the prompts and the chooser, the status
+line and the unit-1 bindings; the chords and the warning row are gone
+(docs/design-ko.md 4.11). The `Repeat` state moved to unit 3, with
+the first repeatable binding.
 
 The terminal client `ko` (`ko_tui/`) shows one pane at a time, lists
 the panes in a sidebar and takes Ctrl+Shift chords under the kitty
@@ -213,15 +217,13 @@ and `C-a C-a` sends one `C-a` to the inner, so the inner's prefix is
 
 ## 5. The key state machine
 
-A new module `ko_tui/src/keys.rs` holds a pure state machine:
-`Keys::feed(&mut self, event: &KeyEvent, now: Instant) -> Step`,
-where `Step` is one of `Pane(KeyEvent)` (send to the active pane),
-`Act(Action)` (one binding), `Swallow` (consumed, nothing to do) and
-`Pending`. `Keys::deadline(&self) -> Option<Instant>` gives the repeat
-deadline, which `Client::turn` arms as a `Deadline` like the escape
-timer (ko_tui/src/client.rs:936-940). `Client::key` becomes a match
-on `Step`. The state machine knows nothing of the layout, so a unit
-test drives it with key sequences and asserts the `Step` list.
+`ko_tui/src/keys.rs` (built in unit 1) is the pure state machine:
+`Keys::feed` turns a key into a key for the pane, an action or
+nothing, and the client matches on the result. The state machine knows
+nothing of the layout, so a unit test drives it with key sequences.
+Unit 3 adds the `Repeat` state and `Keys::deadline(&self) ->
+Option<Instant>`, the repeat deadline, which `Client::turn` arms as a
+`Deadline` like the escape timer.
 
 States:
 
@@ -618,7 +620,7 @@ AGENTS.md, in one worktree, in this order. Estimates are agent-days
 for the implementer, with review.
 
 1. **The prefix and the status line** (2 days). `keys.rs` with the
-   `Prefix`, `Repeat`, `Prompt` and `Chooser` states; the status
+   `Prefix`, `Prompt` and `Chooser` states; the status
    line; the bindings that need no splits: detach, redraw, help
    overlay, sidebar toggle and chooser, pager, new window, next and
    previous window and session, `0` to `9`, last window and session,
@@ -635,7 +637,10 @@ for the implementer, with review.
    design-ko.md text; the clip-or-pad rule for a non-sizing client;
    the reconnect hello with a window. Docs: protocol.md section 3,
    design-ko.md 4.5 and 4.11.
-3. **Pane and window commands** (2 days). Split, kill, zoom, `o`,
+3. **Pane and window commands** (2 days). The `Repeat` state of
+   `keys.rs` and `Keys::deadline`, with the first repeatable
+   bindings: directional select (arrows, `h/j/k/l`, `C-h/j/k/l`) and
+   the resize keys. Split, zoom, `o`,
    `;`, directional select, resize keys with repeat, swap, equalize;
    `Client::edit`; selection after a split and a zoom.
 4. **Resize mode and divider drag** (1 day). The `Resize` state and

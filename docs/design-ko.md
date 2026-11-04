@@ -35,8 +35,10 @@ Goals, in priority order:
    share its size, because a pty has one size.
 5. **Upgrade without losing panes** (not built; plans/ko-upgrade.md).
 6. **Remote** over SSH with the same protocol, with reconnect.
-7. **A thin terminal client** for a plain terminal: one pane at a
-   time, a list grouped by session.
+7. **A terminal client in tmux's shape** for a plain terminal: a
+   `C-a` prefix, a status line and a list grouped by session. It
+   shows one pane at a time; the window's splits, zoom and floats, a
+   copy mode and a resize mode are planned (plans/ko-tui.md).
 
 Non-goals:
 
@@ -44,7 +46,6 @@ Non-goals:
   files, plugins, hooks or key tables. ko has no configuration file.
 - Linked and grouped sessions. Per-client current window is what they
   were for.
-- Copy mode, splits, tabs or windows in the terminal client.
 - Scripting the server from the shell beyond the `ko` CLI and `ko api`.
 - Surviving a reboot.
 
@@ -408,31 +409,46 @@ rule needs a recorded decision before it is built.
 
 `ko` with no arguments is the terminal client (`ko_tui`). It shows one
 pane at a time and lists every pane in a sidebar grouped by session,
-with a subagent's pane one column deeper than its parent's. It never
-shows splits, tabs or windows; a pane in a split is shown clipped or
-padded at its size. It is a client like any other: it opens a view for
-the pane it shows and mirrors it in libghostty-vt.
+with a subagent's pane one column deeper than its parent's. A pane in
+a split is shown clipped or padded at its size (plans/ko-tui.md
+draws the window's splits). It is a client like any other: it opens
+a view for the pane it shows and mirrors it in libghostty-vt.
 
 One writer draws the screen: a direct cell differ (`ko_tui/src/differ.rs`)
-writes the composed cells of the pane region, the sidebar and one
-optional warning row. Input that changes the screen draws the next
+writes the composed cells of the pane region, the sidebar and the
+status line, the last row of the screen. The pane area that the
+client sends as its size is the screen without the sidebar and
+without that row. Input that changes the screen draws the next
 frame at once; continuous output is drawn at most once per 8 ms, in
 one write bracketed by synchronized output. The client emits indexed
 SGR for indexed cells, so the outer terminal's palette applies. The
 wheel scrolls the mirror; after a skip the first scroll-up resyncs with
 history.
 
-Its keys (`ko_tui/src/input.rs`) are Ctrl+Shift chords under the kitty
-keyboard protocol: `S` toggles the sidebar, `E` opens the scrollback in
-`$PAGER` (default `less -R +G -+F`), `N` adds a window to the shown
-pane's session, `Up` and `Down` show the previous and next pane across
-sessions, `Q` detaches. `Ctrl+D` on a dead pane removes it. Every
-other key goes to the pane. The client pushes kitty keyboard flag 1 on
-the outer terminal and queries the capability; a terminal that does
-not answer gets a warning row and the sidebar for mouse switching, with
-no prefix key fallback (decided 2026-10-30). Outer mouse reporting
-stays on while a pane is shown, so selecting text in the outer
-terminal needs its override modifier.
+Its keys follow tmux's default table under the prefix `C-a`, which is
+not configurable; README.md lists them. One pure state machine
+(`ko_tui/src/keys.rs`) owns every key mode (the pending prefix, the
+help overlay, the status-line prompts and the sidebar chooser) and
+turns each key into a key for the pane, an action or nothing. `C-a C-a`
+sends `C-a` to the pane, so a nested ko_tui or a tmux with `C-a`
+takes `C-a C-a` as its prefix. The prefix has no timeout, as in tmux,
+and an unbound key after it is discarded. `Ctrl+D` on a dead pane
+removes it without the prefix, because a dead pane takes no input.
+Every other key goes to the pane. `C-a` arrives as byte `0x01` from
+any terminal and as `CSI 97;5u` under the kitty keyboard protocol;
+both decode to the same key, so the client works the same in every
+terminal. It pushes kitty keyboard flag 1 on the outer terminal for
+the panes and requires nothing of it.
+
+The status line has tmux's default shape and colours: the session and
+its windows by position on the left, `*` on the shown window and `-`
+on the last one, and on the right the pending prefix, a prompt (a
+rename or a kill confirmation) or the reconnect notice. The window
+commands go to the server as `ClientRequest::Switch` (next and
+previous window or session) or `Select` (a position, the last window
+or session); renames are layout edits, and kills are `DELETE` of the
+window or pane. Outer mouse reporting stays on while a pane is shown,
+so selecting text in the outer terminal needs its override modifier.
 
 The client restores the outer terminal's modes exactly on every exit
 path, and never sends RIS or clears the screen. It queries the outer
@@ -727,6 +743,13 @@ Each decision names its date. The code states the rest.
 
 2026-11-04:
 
+- The terminal client becomes tmux-like (plans/ko-tui.md): a `C-a`
+  prefix with tmux's default bindings, which works in every terminal,
+  and a status line. The Ctrl+Shift chords, the kitty keyboard
+  requirement and its warning row go. This reverses the decisions of
+  2026-10-30 that the terminal client never shows splits, tabs or
+  windows and that a terminal without extended keys gets no chords
+  and no prefix fallback.
 - Runtimes get a configuration file, the `runtimes:` key of
   `config.yaml`, because a runtime cannot be derived. The file has one
   top-level key for each owner; Kido.app's settings join it

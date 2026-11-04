@@ -8,7 +8,7 @@ use crate::harness::{
     DEADLINE, Dir, Server, enabled, history_lines, ko, poll, run_ko, run_program, start,
     start_with, test_env, text_of,
 };
-use crate::outer::{CHORD_UP, Keys, Outer};
+use crate::outer::{Keys, Outer};
 use crate::sshd::{Forwarding, HOST, Options, Remote, first_file};
 
 impl Remote {
@@ -120,7 +120,7 @@ fn remote_forward_attach_reconnect_and_cleanup() {
     assert_eq!(mode & 0o777, 0o700, "private directory mode");
 
     // The client's own directory exists only on this machine, so a remote attach sends none.
-    outer.chord('n');
+    outer.prefix("c");
     poll("a second pane", || s.rows().len() == 2);
     let created = s
         .rows()
@@ -135,7 +135,7 @@ fn remote_forward_attach_reconnect_and_cleanup() {
         "the new pane has the cwd of the client: {created}"
     );
     outer.gone("READY");
-    outer.raw(CHORD_UP);
+    outer.prefix("p");
     outer.contains("READY");
 
     let pane_rows = |outer: &Outer| -> Vec<String> {

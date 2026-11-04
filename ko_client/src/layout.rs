@@ -41,7 +41,7 @@ pub struct Edited {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum EditError {
+pub enum EditError {
     Refused(Refusal),
     Rejected(Rejected),
     Exhausted,
@@ -150,7 +150,7 @@ pub(crate) fn edit_from(
     Err(EditError::Exhausted)
 }
 
-pub(crate) fn edit(socket: &Path, who: Who, edit: &Edit) -> Result<Edited, EditError> {
+pub fn edit(socket: &Path, who: Who, edit: &Edit) -> Result<Edited, EditError> {
     let first = fetch(socket, who.clone(), None).map_err(EditError::Rejected)?;
     edit_from(first, edit, |revision, layout| {
         send(socket, who.clone(), revision, layout, None)

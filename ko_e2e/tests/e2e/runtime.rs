@@ -854,7 +854,7 @@ fn the_terminal_client_marks_a_runtime_pane_in_the_sidebar_and_a_new_window_runs
             sidebar.trim_end().ends_with(" box")
         })
     });
-    o.chord('n');
+    o.prefix("c");
     poll("a second pane", || s.rows().len() == 2);
     let created = s
         .rows()

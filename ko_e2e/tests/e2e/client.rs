@@ -5,9 +5,7 @@ use ko_sys::pid::{Pid, signal_descendant};
 use ko_sys::signal::Signal;
 
 use crate::harness::{DEADLINE, Dir, HEAVY, Server, quote, run_ko, start, text_of};
-use crate::outer::{
-    CHORD_DOWN, CHORD_UP, DOWN_PRESS_RELEASE, FOCUS_IN, FOCUS_OUT, Keys, Outer, UP,
-};
+use crate::outer::{DOWN_PRESS_RELEASE, FOCUS_IN, FOCUS_OUT, Keys, Outer, UP};
 
 const PANE_X: usize = 25;
 
@@ -96,24 +94,24 @@ fn client_lifecycle() {
     o.wait("outer mouse reporting on", || o.mouse_reporting());
     o.contains("1  one");
 
-    o.chord('s');
+    o.prefix("\x13");
     o.gone("1  one");
-    o.chord('s');
+    o.prefix("s");
     o.contains("1  one");
 
     o.raw(DOWN_PRESS_RELEASE);
     o.enter();
     o.contains("pane-two");
-    o.raw(CHORD_UP);
+    o.prefix("p");
     o.contains("pane-one");
-    o.raw(CHORD_DOWN);
+    o.prefix("n");
     o.contains("pane-two");
-    o.raw(CHORD_UP);
+    o.prefix("p");
     o.contains("pane-one");
     o.click(3, 3);
     o.contains("pane-two");
 
-    o.chord('e');
+    o.prefix("e");
     o.contains("PAGER-OPEN");
     let file = PathBuf::from(std::fs::read_to_string(&record).unwrap());
     let mode =
@@ -123,7 +121,7 @@ fn client_lifecycle() {
     o.contains("pane-two");
     o.wait("pager file removed", || !file.exists());
 
-    o.chord('n');
+    o.prefix("c");
     o.wait("new pane listed", || s.pane_pids().len() == 4);
     o.ctrl('d');
     o.contains("†");
@@ -134,7 +132,7 @@ fn client_lifecycle() {
     s.text(&p1, "printf 'AFTER-DETACH\\n'\n");
     o.attach("");
     o.contains("AFTER-DETACH");
-    o.chord('e');
+    o.prefix("e");
     o.contains("(END)");
     o.raw("q");
     o.wait("outer mouse reporting on after the default pager", || {
@@ -202,18 +200,18 @@ fn client_grouped_list_crosses_sessions_and_adds_a_window_to_the_shown_session()
                 "",
             ]
     });
-    o.raw(CHORD_DOWN);
+    o.prefix(")");
     o.contains("pane-beta");
-    o.raw(CHORD_DOWN);
+    o.prefix(")");
     o.contains("pane-gamma");
-    o.raw(CHORD_DOWN);
+    o.prefix(")");
     o.contains("pane-alpha");
-    o.raw(CHORD_UP);
+    o.prefix("(");
     o.contains("pane-gamma");
-    o.raw(CHORD_DOWN);
+    o.prefix(")");
     o.contains("pane-alpha");
 
-    o.chord('n');
+    o.prefix("c");
     o.wait(
         "the new window's pane listed under the shown session",
         || {
@@ -269,7 +267,7 @@ fn client_history_and_alternate_screen() {
 
     o.attach(pager);
     o.contains("HISTORY-READY");
-    o.chord('e');
+    o.prefix("e");
     o.contains("PAGER-OPEN");
     let path = std::fs::read_to_string(&record).unwrap();
     let data = std::fs::read_to_string(path).unwrap();
@@ -303,7 +301,7 @@ fn client_history_and_alternate_screen() {
 
     let _ = std::fs::remove_file(&record);
     let before = o.shown_marks(b"PAGER-OPEN");
-    o.chord('e');
+    o.prefix("e");
     o.wait("pager started", || o.shown_marks(b"PAGER-OPEN") > before);
     let path = read_file(&record).unwrap_or_default();
     let data = read_file(Path::new(&path)).unwrap_or_default();
@@ -359,7 +357,7 @@ fn client_history_and_alternate_screen() {
     o.wheel_up(40, 5);
     o.contains("H19970");
 
-    o.chord('q');
+    o.prefix("d");
     o.wait("client exits before its shell resumes", || {
         client.has_ended()
     });
@@ -408,7 +406,7 @@ fn client_winch_and_outer_modes() {
 
     o.attach("cat");
     o.contains("WINCH-READY");
-    o.chord('s');
+    o.prefix("\x13");
     o.wait(
         "one real width change and no same-size attach resize",
         || count("2"),
@@ -439,11 +437,11 @@ impl Drop for KillOnDrop<'_> {
 }
 
 #[test]
-fn client_attach_or_start_and_warning() {
+fn client_attach_or_start() {
     let dir = Dir::new("ko-auto-");
     let stale = UnixListener::bind(dir.join("socket")).unwrap();
     drop(stale);
-    let o = Outer::new(&dir, Keys::Unconfirmed);
+    let o = Outer::new(&dir, Keys::Extended);
     let scratch = Dir::new("ko-run-");
     let _kill = KillOnDrop {
         dir: &dir,
@@ -453,15 +451,11 @@ fn client_attach_or_start_and_warning() {
     let peer = Outer::new(&dir, Keys::Extended);
     o.attach("cat");
     peer.attach("cat");
-    o.contains("ko: extended keys were not confirmed");
+    o.wait("the client attached", || o.mouse_reporting());
     peer.wait("the peer attached", || peer.mouse_reporting());
-    peer.chord('s');
-    peer.gone("extended keys were not confirmed");
     UnixStream::connect(dir.join("socket")).unwrap();
-    o.chord('q');
-    o.detached();
-    peer.chord('q');
-    peer.detached();
+    o.detach();
+    peer.detach();
     let run = run_ko(
         &scratch,
         &o.env,
@@ -612,7 +606,7 @@ fn client_sidebar_ownership() {
             "no bar left of the pane in row {y}: {line:?}"
         );
     }
-    o.chord('s');
+    o.prefix("\x13");
     s.text(&pane, "f");
     o.wait("pane draws across the hidden sidebar", || {
         o.raw("z");
@@ -623,14 +617,16 @@ fn client_sidebar_ownership() {
         !o.screen().contains('│'),
         "bar drawn while the sidebar is hidden"
     );
-    o.chord('s');
+    o.prefix("\x13");
     o.contains("1  fixture");
     for (y, line) in o.lines().iter().enumerate() {
+        if line.starts_with("[test]") {
+            continue;
+        }
         let bytes = line.as_bytes();
         let line = String::from_utf8_lossy(&bytes[..bytes.len().min(24)]).into_owned();
         let text = line.trim();
-        if (y == 0 && text == "test") || (y == 1 && text == "1  fixture") || text.starts_with("ko:")
-        {
+        if (y == 0 && text == "test") || (y == 1 && text == "1  fixture") {
             continue;
         }
         assert!(text.is_empty(), "stale sidebar cells in row {y}: {line:?}");
@@ -754,7 +750,7 @@ while True: os.read(0,4096)
 "#;
 
 #[test]
-fn client_warning_mouse_bounds() {
+fn client_mouse_bounds_exclude_the_status_line_and_the_prefix_works_without_extended_keys() {
     let s = start(&[]);
     for i in 1..=5 {
         s.pane(&format!(
@@ -762,13 +758,9 @@ fn client_warning_mouse_bounds() {
             quote(SELECTS_THEN_ECHOES_INPUT)
         ));
     }
-    let o = Outer::new(&s.dir, Keys::Unconfirmed);
-    o.resize(120, 1);
-    o.attach("cat");
-    o.contains("extended keys were not confirmed");
-    o.press(30, 1);
-
+    let o = Outer::new(&s.dir, Keys::Extended);
     o.resize(120, 5);
+    o.attach("cat");
     o.contains("SELECTED-1");
     o.press(1, 5);
     o.press(30, 5);
@@ -776,6 +768,16 @@ fn client_warning_mouse_bounds() {
     o.contains("INPUT:78");
     o.contains("SELECTED-1");
     o.detach();
+
+    let plain = Outer::new(&s.dir, Keys::Unconfirmed);
+    plain.attach("cat");
+    plain.contains("SELECTED-1");
+    plain.click(3, 3);
+    plain.contains("SELECTED-2");
+    plain.prefix("\x01");
+    plain.raw("x");
+    plain.contains("INPUT:0178");
+    plain.detach();
 }
 
 #[test]
@@ -933,11 +935,11 @@ fn sidebar_mark_column() {
             && mark(&o, 2) == ("\u{25fc}".into(), Colour::Indexed(1), false, false)
     });
 
-    o.raw(CHORD_DOWN);
+    o.prefix("n");
     o.wait("the visit clears the mark", || {
         o.lines()[2].starts_with("2  zsh") && mark(&o, 2).3
     });
-    o.raw(CHORD_UP);
+    o.prefix("p");
     o.wait("the first pane shown again", || {
         mark(&o, 1).3 && !mark(&o, 2).3
     });
@@ -974,7 +976,7 @@ fn client_a_signal_ends_it_while_the_pager_runs_and_removes_the_pager_file() {
     let (pager, record) = pager_fixture(&o.dir);
     o.attach(text_of(&pager));
     o.contains("pane-one");
-    o.chord('e');
+    o.prefix("e");
     o.contains("PAGER-OPEN");
     let file = PathBuf::from(std::fs::read_to_string(&record).unwrap());
     signal_descendant(o.shell_pid(), o.client_pid(), Signal::Term).unwrap();
@@ -989,7 +991,7 @@ fn client_a_new_window_starts_in_the_directory_of_the_focused_pane() {
     let o = Outer::new(&s.dir, Keys::Extended);
     o.attach("cat");
     o.contains("pane-one");
-    o.chord('n');
+    o.prefix("c");
     crate::harness::poll("a second pane", || s.rows().len() == 2);
     let created = s
         .rows()
@@ -998,5 +1000,81 @@ fn client_a_new_window_starts_in_the_directory_of_the_focused_pane() {
         .unwrap();
     assert_eq!(created["cwd"], "/tmp", "{created}");
     assert_eq!(created["runtime"], serde_json::Value::Null, "{created}");
+    o.detach();
+}
+
+#[test]
+fn client_status_line_windows_and_prompts() {
+    let s = start(&[]);
+    s.pane("printf 'pane-one\\n'; exec cat");
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.attach("cat");
+    o.contains("pane-one");
+    o.contains("[test] 0:test*");
+    let status = |o: &Outer| {
+        o.lines()
+            .into_iter()
+            .find(|line| line.starts_with("[test]"))
+            .unwrap_or_default()
+    };
+    let names = || -> Vec<String> {
+        s.doc()["layout"]["sessions"][0]["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|window| window["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    o.prefix("c");
+    o.wait("the new window is shown and marked", || {
+        status(&o).starts_with("[test] 0:test- 1:") && status(&o).contains('*')
+    });
+    let windows = names();
+    assert_eq!(windows.len(), 2);
+    let marked = |first: &str, second: &str| {
+        format!("[test] 0:{}{first} 1:{}{second}", windows[0], windows[1])
+    };
+    o.prefix("0");
+    o.wait("window 0 selected", || {
+        status(&o).starts_with(&marked("*", "-"))
+    });
+    o.prefix("l");
+    o.wait("the last window selected", || {
+        status(&o).starts_with(&marked("-", "*"))
+    });
+    o.prefix("0");
+    o.wait("window 0 selected again", || {
+        status(&o).starts_with(&marked("*", "-"))
+    });
+    o.prefix("1");
+    o.wait("window 1 selected", || {
+        status(&o).starts_with(&marked("-", "*"))
+    });
+
+    o.prefix("?");
+    o.contains("send C-a to the pane");
+    o.raw("z");
+    o.gone("send C-a to the pane");
+
+    o.prefix(",");
+    o.raw("two");
+    o.contains("(rename-window) two");
+    o.enter();
+    o.wait("the window renamed", || status(&o).contains(" 1:two*"));
+    assert_eq!(names()[1], "two");
+
+    o.prefix("&");
+    o.contains("kill-window two? (y/n)");
+    o.raw("y");
+    o.wait("only window 0 listed", || {
+        status(&o).starts_with("[test] 0:test*") && !status(&o).contains("two")
+    });
+
+    o.prefix("x");
+    o.contains("kill-pane? (y/n)");
+    o.raw("n");
+    o.gone("kill-pane?");
+    assert_eq!(s.pane_pids().len(), 1);
     o.detach();
 }

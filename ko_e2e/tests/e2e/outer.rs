@@ -23,8 +23,6 @@ const KITTY_QUERY: &[u8] = b"\x1b[?u";
 
 pub(crate) const UP: &str = "\x1b[A";
 pub(crate) const DOWN_PRESS_RELEASE: &str = "\x1b[1;1:1B\x1b[1;1:3B";
-pub(crate) const CHORD_UP: &str = "\x1b[1;6A";
-pub(crate) const CHORD_DOWN: &str = "\x1b[1;6B";
 pub(crate) const FOCUS_IN: &str = "\x1b[I";
 pub(crate) const FOCUS_OUT: &str = "\x1b[O";
 
@@ -409,8 +407,8 @@ impl Outer {
         self.enter();
     }
 
-    pub(crate) fn chord(&self, key: char) {
-        self.raw(&format!("\x1b[{};6u", u32::from(key)));
+    pub(crate) fn prefix(&self, key: &str) {
+        self.raw(&format!("\x01{key}"));
     }
 
     pub(crate) fn ctrl(&self, key: char) {
@@ -482,7 +480,7 @@ impl Outer {
     }
 
     pub(crate) fn detach(&self) {
-        self.chord('q');
+        self.prefix("d");
         self.detached();
     }
 

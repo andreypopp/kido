@@ -1,10 +1,63 @@
+use std::fmt::Write;
+
 use ko_client::status::Mark;
+use ko_server::ids::WindowId;
+use ko_server::protocol::{Session, Window};
 use ko_vt::render::{Attribute, Attributes, Cell, Colour, CursorShape, Frame, Style};
 use ko_vt::unicode::clusters;
 
 use crate::differ::Differ;
+use crate::keys::{HELP, Kill, Rename, State};
 use crate::modes::Modes;
 use crate::sidebar::Line;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Status {
+    pub(crate) left: String,
+    pub(crate) right: String,
+}
+
+pub(crate) fn status(
+    shown: Option<(&Session, &Window)>,
+    last: Option<WindowId>,
+    state: &State,
+    reconnect: Option<&str>,
+) -> Status {
+    let mut left = String::new();
+    if let Some((session, window)) = shown {
+        let _ = write!(left, "[{}]", session.name.as_str());
+        for (at, found) in session.windows.iter().enumerate() {
+            let flag = if found.id == window.id {
+                "*"
+            } else if Some(found.id) == last {
+                "-"
+            } else {
+                ""
+            };
+            let _ = write!(left, " {at}:{}{flag}", found.name.as_str());
+        }
+    }
+    let mut right = String::new();
+    let _ = match (reconnect, state) {
+        (Some(host), _) => write!(right, "[reconnecting to {host} \u{2014} C-a d to detach]"),
+        (None, State::Prefix) => right.write_str("C-a"),
+        (None, State::Rename { of, text }) => {
+            let what = match of {
+                Rename::Session => "rename-session",
+                Rename::Window => "rename-window",
+            };
+            write!(right, "({what}) {text}")
+        }
+        (None, State::Confirm(Kill::Window)) => write!(
+            right,
+            "kill-window {}? (y/n)",
+            shown.map_or("", |(_, window)| window.name.as_str())
+        ),
+        (None, State::Confirm(Kill::Pane)) => right.write_str("kill-pane? (y/n)"),
+        (None, State::Normal | State::Help | State::Chooser(_)) => Ok(()),
+    };
+    Status { left, right }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Layout {
@@ -12,7 +65,8 @@ pub(crate) struct Layout {
     pub(crate) rows: usize,
     pub(crate) pane_x: usize,
     pub(crate) pane_rows: usize,
-    pub(crate) warning: bool,
+    pub(crate) status: Status,
+    pub(crate) help: bool,
     pub(crate) dead: Option<String>,
     pub(crate) sidebar: Vec<Line>,
     pub(crate) choosing: Option<usize>,
@@ -55,17 +109,9 @@ fn draw_row(
     cols: usize,
     (x, y): (usize, usize),
     width: usize,
-    inverse: bool,
+    base: Style,
     parts: &[(&str, Style)],
 ) {
-    let base = Style {
-        attrs: if inverse {
-            Attributes::default().with(Attribute::Inverse)
-        } else {
-            Attributes::default()
-        },
-        ..Style::default()
-    };
     for at in 0..width {
         let blank = Cell {
             text: " ".to_owned(),
@@ -76,7 +122,6 @@ fn draw_row(
     }
     let mut at = x;
     for (text, style) in parts {
-        let style = if inverse { base } else { *style };
         for (cluster, wide) in clusters(text) {
             if at + usize::from(wide) > x + width {
                 return;
@@ -84,7 +129,7 @@ fn draw_row(
             let cell = |text: &str, width| Cell {
                 text: text.to_owned(),
                 width,
-                style,
+                style: *style,
             };
             put(grid, cols, at, y, cell(cluster, wide.max(1)));
             if wide == 2 {
@@ -95,15 +140,40 @@ fn draw_row(
     }
 }
 
+fn reversed() -> Style {
+    Style {
+        attrs: Attributes::default().with(Attribute::Inverse),
+        ..Style::default()
+    }
+}
+
 fn draw_line(
     grid: &mut [Cell],
     cols: usize,
     at: (usize, usize),
     width: usize,
-    inverse: bool,
+    base: Style,
     text: &str,
 ) {
-    draw_row(grid, cols, at, width, inverse, &[(text, Style::default())]);
+    draw_row(grid, cols, at, width, base, &[(text, base)]);
+}
+
+fn columns(text: &str) -> usize {
+    clusters(text)
+        .iter()
+        .map(|(_, wide)| usize::from(*wide))
+        .sum()
+}
+
+fn draw_status(grid: &mut [Cell], cols: usize, y: usize, status: &Status) {
+    let base = Style {
+        fg: Colour::Indexed(0),
+        bg: Colour::Indexed(2),
+        ..Style::default()
+    };
+    let right = columns(&status.right).min(cols);
+    draw_line(grid, cols, (0, y), cols - right, base, &status.left);
+    draw_line(grid, cols, (cols - right, y), right, base, &status.right);
 }
 
 fn glyph(mark: Mark) -> (&'static str, Style) {
@@ -129,7 +199,14 @@ fn draw_ui(l: &Layout) -> Vec<Cell> {
     let mut grid = vec![blank(); l.cols * l.rows];
     if l.pane_x > 0 {
         for y in 0..l.pane_rows {
-            draw_line(&mut grid, l.cols, (0, y), l.pane_x - 1, false, "");
+            draw_line(
+                &mut grid,
+                l.cols,
+                (0, y),
+                l.pane_x - 1,
+                Style::default(),
+                "",
+            );
             let bar = Cell {
                 text: "\u{2502}".to_owned(),
                 width: 1,
@@ -141,23 +218,27 @@ fn draw_ui(l: &Layout) -> Vec<Cell> {
     for (y, line) in l.sidebar.iter().enumerate().take(l.pane_rows) {
         let inverse = l.choosing.map_or(line.selected, |chosen| chosen == y);
         let (mark, style) = glyph(line.mark);
+        let base = if inverse {
+            reversed()
+        } else {
+            Style::default()
+        };
+        let part = |text, own| (text, if inverse { base } else { own });
+        let dim = Style {
+            attrs: Attributes::default().with(Attribute::Dim),
+            ..Style::default()
+        };
         draw_row(
             &mut grid,
             l.cols,
             (0, y),
             l.pane_x.saturating_sub(1),
-            inverse,
+            base,
             &[
-                (&line.lead, Style::default()),
-                (mark, style),
-                (&line.title, Style::default()),
-                (
-                    &line.runtime,
-                    Style {
-                        attrs: Attributes::default().with(Attribute::Dim),
-                        ..Style::default()
-                    },
-                ),
+                part(line.lead.as_str(), Style::default()),
+                part(mark, style),
+                part(line.title.as_str(), Style::default()),
+                part(line.runtime.as_str(), dim),
             ],
         );
     }
@@ -167,19 +248,25 @@ fn draw_ui(l: &Layout) -> Vec<Cell> {
             l.cols,
             (l.pane_x, l.pane_rows.saturating_sub(1)),
             l.cols.saturating_sub(l.pane_x),
-            true,
+            reversed(),
             dead,
         );
     }
-    if l.warning {
-        draw_line(
-            &mut grid,
-            l.cols,
-            (0, l.rows.saturating_sub(1)),
-            l.cols,
-            true,
-            "ko: extended keys were not confirmed; use sidebar mouse switching",
-        );
+    if l.help {
+        for (y, text) in HELP.iter().enumerate().take(l.pane_rows) {
+            let width = l.cols.saturating_sub(l.pane_x);
+            draw_line(
+                &mut grid,
+                l.cols,
+                (l.pane_x, y),
+                width,
+                Style::default(),
+                text,
+            );
+        }
+    }
+    if let Some(y) = l.rows.checked_sub(1) {
+        draw_status(&mut grid, l.cols, y, &l.status);
     }
     grid
 }
@@ -211,7 +298,7 @@ impl Renderer {
             self.layout = Some(l.clone());
             let mut ui = draw_ui(l);
             for (i, cell) in ui.iter_mut().enumerate() {
-                if i % l.cols.max(1) >= l.pane_x && i / l.cols.max(1) < live {
+                if !l.help && i % l.cols.max(1) >= l.pane_x && i / l.cols.max(1) < live {
                     *cell = blank();
                 }
             }
@@ -223,7 +310,8 @@ impl Renderer {
         let prefix = out.len();
         if let Some((_, f)) = frame {
             let (fcols, frows) = (usize::from(f.cols), usize::from(f.rows));
-            for y in 0..live.min(frows.saturating_sub(shift)) {
+            let covered = if l.help { 0 } else { live };
+            for y in 0..covered.min(frows.saturating_sub(shift)) {
                 for x in 0..l.cols.saturating_sub(l.pane_x).min(fcols) {
                     let Some(c) = f.cells.get((y + shift) * fcols + x) else {
                         continue;
@@ -249,6 +337,7 @@ impl Renderer {
             Some((_, f)) => match f.cursor {
                 Some(c)
                     if l.dead.is_none()
+                        && !l.help
                         && usize::from(c.x) < l.cols.saturating_sub(l.pane_x)
                         && usize::from(c.y) < l.pane_rows =>
                 {
@@ -286,6 +375,13 @@ mod tests {
 
     use super::*;
 
+    fn quiet() -> Status {
+        Status {
+            left: String::new(),
+            right: String::new(),
+        }
+    }
+
     fn line(number: u64, title: &str, selected: bool) -> Line {
         Line {
             pane: Some(format!("pane_{number}").parse().unwrap()),
@@ -301,10 +397,11 @@ mod tests {
     fn only_the_highlighted_row_is_reversed_and_the_bar_sits_left_of_the_pane() {
         let layout = Layout {
             cols: 30,
-            rows: 2,
+            rows: 3,
             pane_x: 25,
             pane_rows: 2,
-            warning: false,
+            status: quiet(),
+            help: false,
             dead: None,
             sidebar: vec![line(1, "\u{754c}", true), line(2, "/tmp", false)],
             choosing: Some(1),
@@ -337,10 +434,11 @@ mod tests {
         };
         let layout = Layout {
             cols: 30,
-            rows: 3,
+            rows: 4,
             pane_x: 25,
             pane_rows: 3,
-            warning: false,
+            status: quiet(),
+            help: false,
             dead: None,
             sidebar: vec![
                 marked(1, Mark::Running, false),
@@ -377,25 +475,30 @@ mod tests {
     fn a_one_column_terminal_draws_no_negative_width() {
         let layout = Layout {
             cols: 1,
-            rows: 1,
+            rows: 2,
             pane_x: crate::sidebar::pane_x(1),
             pane_rows: 1,
-            warning: true,
+            status: Status {
+                left: "kido".to_owned(),
+                ..quiet()
+            },
+            help: false,
             dead: Some("[exited 1]".to_owned()),
             sidebar: vec![line(1, "sh", true)],
             choosing: None,
         };
-        assert_eq!(draw_ui(&layout)[0].text, "k");
+        assert_eq!(draw_ui(&layout)[1].text, "k");
     }
 
     #[test]
     fn a_frame_and_a_cursor_paint_once_inside_synchronized_output() {
         let layout = Layout {
             cols: 4,
-            rows: 2,
+            rows: 3,
             pane_x: 0,
             pane_rows: 2,
-            warning: false,
+            status: quiet(),
+            help: false,
             dead: None,
             sidebar: Vec::new(),
             choosing: None,
@@ -440,10 +543,11 @@ mod tests {
     fn a_pane_larger_than_its_region_is_clipped_and_a_smaller_one_is_padded() {
         let layout = Layout {
             cols: 6,
-            rows: 3,
+            rows: 4,
             pane_x: 0,
             pane_rows: 3,
-            warning: false,
+            status: quiet(),
+            help: false,
             dead: None,
             sidebar: Vec::new(),
             choosing: None,
@@ -475,5 +579,148 @@ mod tests {
         };
         assert_eq!(drawn(&frame(8, 5)), (18, false));
         assert_eq!(drawn(&frame(2, 1)), (2, true));
+    }
+
+    #[test]
+    fn the_status_line_is_green_with_the_left_text_and_the_right_field_at_the_edge() {
+        let layout = Layout {
+            cols: 20,
+            rows: 3,
+            pane_x: 0,
+            pane_rows: 2,
+            status: Status {
+                left: "[s] 0:a* 1:b-".to_owned(),
+                right: "C-a".to_owned(),
+            },
+            help: false,
+            dead: None,
+            sidebar: Vec::new(),
+            choosing: None,
+        };
+        let grid = draw_ui(&layout);
+        let row = &grid[40..60];
+        let text: String = row.iter().map(|cell| cell.text.as_str()).collect();
+        assert_eq!(text, "[s] 0:a* 1:b-    C-a");
+        assert!(
+            row.iter()
+                .all(|cell| cell.style.bg == Colour::Indexed(2)
+                    && cell.style.fg == Colour::Indexed(0))
+        );
+        assert!(
+            grid[..40]
+                .iter()
+                .all(|cell| cell.style.bg == Colour::Default)
+        );
+    }
+
+    #[test]
+    fn the_help_covers_the_pane_and_the_pane_frame_is_not_drawn() {
+        let layout = Layout {
+            cols: 40,
+            rows: 20,
+            pane_x: 0,
+            pane_rows: 19,
+            status: quiet(),
+            help: true,
+            dead: None,
+            sidebar: Vec::new(),
+            choosing: None,
+        };
+        let frame = Frame {
+            cols: 40,
+            rows: 19,
+            cells: vec![
+                Cell {
+                    text: "Z".to_owned(),
+                    width: 1,
+                    style: Style::default(),
+                };
+                40 * 19
+            ],
+            cursor: None,
+            mouse: ko_vt::render::MouseTracking::Off,
+            keyboard: 0,
+        };
+        let (mut renderer, mut modes) = (Renderer::default(), Modes::default());
+        let mut out = String::new();
+        renderer.paint(&mut modes, &layout, Some((1, &frame)), &mut out);
+        assert!(out.contains("C-a C-a"), "{out:?}");
+        assert!(!out.contains('Z'), "{out:?}");
+    }
+
+    fn session() -> Session {
+        let window = |id: u32, name: &str| {
+            format!(
+                r#"{{"id":"window_{id}","name":"{name}","vars":{{}},"cols":80,"rows":24,"focus":"pane_{id}","tree":{{"pane":"pane_{id}","cols":80,"rows":24}},"floats":[]}}"#
+            )
+        };
+        let text = format!(
+            r#"{{"id":"session_1","name":"s","vars":{{}},"windows":[{},{},{}]}}"#,
+            window(1, "a"),
+            window(2, "b"),
+            window(3, "c")
+        );
+        ko_server::protocol::decode(text.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn the_status_names_the_windows_marks_shown_and_last_and_fills_the_right_field() {
+        let session = session();
+        let window = |at: usize| &session.windows[at];
+        let shown = Some((&session, window(0)));
+        let last = Some(window(1).id);
+        let right =
+            |state: &State, reconnect: Option<&str>| status(shown, last, state, reconnect).right;
+        assert_eq!(
+            status(shown, last, &State::Normal, None).left,
+            "[s] 0:a* 1:b- 2:c"
+        );
+        assert_eq!(status(None, last, &State::Normal, None).left, "");
+        assert_eq!(right(&State::Normal, None), "");
+        assert_eq!(right(&State::Prefix, None), "C-a");
+        assert_eq!(
+            right(
+                &State::Rename {
+                    of: Rename::Session,
+                    text: "x".to_owned()
+                },
+                None
+            ),
+            "(rename-session) x"
+        );
+        assert_eq!(
+            right(&State::Confirm(Kill::Window), None),
+            "kill-window a? (y/n)"
+        );
+        assert_eq!(right(&State::Confirm(Kill::Pane), None), "kill-pane? (y/n)");
+        assert_eq!(
+            right(&State::Prefix, Some("box")),
+            "[reconnecting to box \u{2014} C-a d to detach]"
+        );
+    }
+
+    #[test]
+    fn a_wide_name_that_meets_the_right_field_leaves_no_half_cell() {
+        let layout = Layout {
+            cols: 10,
+            rows: 2,
+            pane_x: 0,
+            pane_rows: 1,
+            status: Status {
+                left: "ab\u{754c}\u{754c}\u{754c}".to_owned(),
+                right: "C-a".to_owned(),
+            },
+            help: false,
+            dead: None,
+            sidebar: Vec::new(),
+            choosing: None,
+        };
+        let row: Vec<(String, u8)> = draw_ui(&layout)[10..]
+            .iter()
+            .map(|cell| (cell.text.clone(), cell.width))
+            .collect();
+        let text: String = row.iter().map(|(text, _)| text.as_str()).collect();
+        assert_eq!(text, "ab\u{754c}\u{754c} C-a");
+        assert_eq!(row[6], (" ".to_owned(), 1));
     }
 }

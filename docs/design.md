@@ -715,8 +715,8 @@ is absent, in another session or in the window itself leaves the
 window a root. The run meta's parent is not read for the tree.
 
 The terminal client draws the list as session headers and pane rows,
-indented by depth (`ko_tui/src/sidebar.rs`); `Ctrl+Shift+Up` and
-`Down` visit every row in that order. Kido.app draws its tree with
+indented by depth (`ko_tui/src/sidebar.rs`); its chooser (`C-a s`)
+visits every row in that order. Kido.app draws its tree with
 brackets and group glyphs (design-app.md, "Sidebar").
 
 The walk uses parent-first ordering and emits every item exactly once,

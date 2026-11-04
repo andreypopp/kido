@@ -40,12 +40,12 @@ impl Mods {
         self.0 & flag != 0
     }
 
-    pub(crate) fn shift(self) -> bool {
-        self.has(Mods::SHIFT)
+    pub(crate) fn only_ctrl(self) -> bool {
+        self.0 & !(Mods::CAPS | Mods::NUM) == Mods::CTRL
     }
 
-    pub(crate) fn ctrl(self) -> bool {
-        self.has(Mods::CTRL)
+    pub(crate) fn shift(self) -> bool {
+        self.has(Mods::SHIFT)
     }
 
     fn wire(self, shift: bool) -> u16 {
@@ -110,10 +110,27 @@ impl KeyEvent {
         }
     }
 
-    pub(crate) fn pressed(&self) -> KeyEvent {
-        KeyEvent {
-            kind: Kind::Press,
-            ..self.clone()
+    pub(crate) fn ctrl(&self) -> Option<char> {
+        match self.name {
+            Name::Char(c) if self.mods.only_ctrl() => Some(c),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn character(&self) -> Option<char> {
+        let Name::Char(named) = self.name else {
+            return None;
+        };
+        if self
+            .mods
+            .has(Mods::CTRL | Mods::ALT | Mods::SUPER | Mods::HYPER | Mods::META)
+        {
+            return None;
+        }
+        let mut text = self.text.chars();
+        match (text.next(), text.next()) {
+            (Some(typed), None) => Some(typed),
+            _ => Some(named),
         }
     }
 
@@ -145,9 +162,7 @@ pub(crate) struct MouseEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Reply {
     Modes(Vec<(u16, u16)>),
-    Kitty,
     Da1,
-    Xtversion(String),
     Clipboard(ko_pane_wire::frame::ClipboardLocation, Vec<u8>),
 }
 
@@ -158,39 +173,6 @@ pub(crate) enum Event {
     Paste(String),
     Focus(bool),
     Reply(Reply),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Command {
-    ToggleSidebar,
-    Pager,
-    New,
-    Remove,
-    Previous,
-    Next,
-    Detach,
-}
-
-pub(crate) fn command(event: &KeyEvent) -> Option<Command> {
-    let m = event.mods;
-    if !m.ctrl() || m.has(Mods::ALT | Mods::SUPER | Mods::HYPER | Mods::META) {
-        return None;
-    }
-    match (event.kind, event.name) {
-        (Kind::Release, _) => None,
-        (_, Name::Char('d')) if !m.shift() => Some(Command::Remove),
-        _ if !m.shift() => None,
-        (_, Name::Char(c)) => match c {
-            's' | 'S' => Some(Command::ToggleSidebar),
-            'e' | 'E' => Some(Command::Pager),
-            'n' | 'N' => Some(Command::New),
-            'q' | 'Q' => Some(Command::Detach),
-            _ => None,
-        },
-        (_, Name::Up) => Some(Command::Previous),
-        (_, Name::Down) => Some(Command::Next),
-        _ => None,
-    }
 }
 
 fn flip(up: bool, c: u32) -> u32 {
@@ -519,7 +501,6 @@ fn kitty_key(body: &[u8]) -> Option<KeyEvent> {
 #[derive(Debug, Default)]
 struct Collector {
     events: Vec<Event>,
-    dcs: Option<Vec<u8>>,
     pressed: Option<MouseButton>,
 }
 
@@ -805,24 +786,6 @@ impl Perform for Collector {
         }
     }
 
-    fn hook(&mut self, _params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
-        self.dcs = (intermediates == b">" && action == '|').then(Vec::new);
-    }
-
-    fn put(&mut self, byte: u8) {
-        if let Some(text) = self.dcs.as_mut() {
-            text.push(byte);
-        }
-    }
-
-    fn unhook(&mut self) {
-        if let Some(text) = self.dcs.take() {
-            self.events.push(Event::Reply(Reply::Xtversion(
-                String::from_utf8_lossy(&text).into_owned(),
-            )));
-        }
-    }
-
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
         if let [b"52", selector, data] = params
             && let Some(location) = frame::ClipboardLocation::of_selector(selector)
@@ -853,7 +816,6 @@ impl Perform for Collector {
                     .collect();
                 self.events.push(Event::Reply(Reply::Modes(modes)));
             }
-            (b"?", 'u') => self.events.push(Event::Reply(Reply::Kitty)),
             (b"?", 'c') => self.events.push(Event::Reply(Reply::Da1)),
             (b"", 'I') => self.events.push(Event::Focus(true)),
             (b"", 'O') => self.events.push(Event::Focus(false)),
@@ -1112,26 +1074,6 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_shift_commands_do_not_consume_ctrl_keys() {
-        let k = keys("\x1b[115;6u").remove(0);
-        assert_eq!(command(&k), Some(Command::ToggleSidebar));
-        let plain = KeyEvent {
-            mods: Mods::of(Mods::CTRL),
-            ..k.clone()
-        };
-        assert_eq!(command(&plain), None);
-        let released = KeyEvent {
-            kind: Kind::Release,
-            ..k.clone()
-        };
-        assert_eq!(command(&released), None);
-        assert_eq!(
-            input_json(&k),
-            r#"{"type":"input","input":{"type":"key","action":"press","key":38,"mods":3,"unshifted_codepoint":115,"text":"s","composing":false}}"#
-        );
-    }
-
-    #[test]
     fn shifted_printable_keys_carry_their_text() {
         let cases = [
             "A",
@@ -1184,12 +1126,12 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_d_legacy_or_csi_u_is_remove_and_ctrl_shift_w_is_no_command() {
-        let shown: Vec<Option<Command>> = ["\x04", "\x1b[100;5u", "\x1b[119;6u"]
+    fn a_ctrl_key_is_the_same_from_a_legacy_byte_and_from_csi_u() {
+        let shown: Vec<Option<char>> = ["\x01", "\x1b[97;5u", "\x04", "\x1b[100;5u", "\x1b[119;6u"]
             .iter()
-            .flat_map(|text| keys(text).into_iter().map(|k| command(&k)))
+            .flat_map(|text| keys(text).into_iter().map(|k| k.ctrl()))
             .collect();
-        assert_eq!(shown, [Some(Command::Remove), Some(Command::Remove), None]);
+        assert_eq!(shown, [Some('a'), Some('a'), Some('d'), Some('d'), None]);
     }
 
     #[test]
@@ -1201,14 +1143,7 @@ mod tests {
             b"1u\x1b[?62;22c\x1b_Gi=1;OK\x1b\\",
         ];
         for reads in [&[whole][..], &split[..]] {
-            assert_eq!(
-                parse(reads),
-                [
-                    Event::Reply(Reply::Xtversion("kitty(0.35.2)".to_owned())),
-                    Event::Reply(Reply::Kitty),
-                    Event::Reply(Reply::Da1),
-                ]
-            );
+            assert_eq!(parse(reads), [Event::Reply(Reply::Da1)]);
         }
     }
 

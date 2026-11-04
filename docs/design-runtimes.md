@@ -160,7 +160,7 @@ colour that the configuration does not have. It is for display only.
 **A new pane inherits** the runtime of the focused pane's row, not of
 a routed pi's variable: a split or a new window from a routed pi is a
 host pane, as the pi's own shell is. The terminal client's
-`Ctrl+Shift+N` and Kido.app's split and new-window commands follow
+`C-a c` and Kido.app's split and new-window commands follow
 this rule; Kido.app's command palette names a runtime or `Host`
 explicitly. Both clients name the source pane as the new pane's
 `cwd` (`{pane}`), and the server moves its directory into the new

@@ -115,7 +115,7 @@ pub enum Edit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Refusal {
+pub enum Refusal {
     Gone(String),
     Invalid(String),
 }

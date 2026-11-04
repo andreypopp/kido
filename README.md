@@ -36,22 +36,34 @@ status mark for each pane: a running agent or command, a waiting
 agent, an unseen success, an unseen failure. The mark clears when you
 visit the pane.
 
-The keys are Ctrl+Shift chords, which need a terminal with the kitty
-keyboard protocol (Ghostty, kitty, WezTerm, foot, Kido.app):
+The keys are tmux's defaults under the prefix `C-a`, in every
+terminal. A status line at the bottom shows the session, its windows
+(`*` the shown one, `-` the last one) and the pending prefix.
 
 | key | action |
 |-----|--------|
-| `Ctrl+Shift+S` | show or hide the list |
-| `Ctrl+Shift+Up` / `Down` | show the previous / next pane |
-| `Ctrl+Shift+N` | add a window to the shown pane's session |
-| `Ctrl+Shift+E` | open the pane's scrollback in `$PAGER` |
-| `Ctrl+Shift+Q` | detach |
+| `C-a C-a` | send `C-a` to the pane |
+| `C-a d` | detach |
+| `C-a ?` | show the keys; any key closes the list |
+| `C-a r` | redraw the screen |
+| `C-a c` | add a window to the shown pane's session |
+| `C-a n` / `p` | show the next / previous window |
+| `C-a 0` to `9` | show the window at that position in the session |
+| `C-a l` | show the last window |
+| `C-a )` / `(` | show the next / previous session |
+| `C-a L` | show the last session |
+| `C-a ,` / `$` | rename the window / session |
+| `C-a &` | kill the window, after `y` |
+| `C-a x` | kill the pane, after `y` |
+| `C-a s` or `w` | choose a pane from the list with `Up`, `Down`, `Enter`; `Escape` leaves |
+| `C-a C-s` | show or hide the list |
+| `C-a e` | open the pane's scrollback in `$PAGER` |
 | `Ctrl+D` on an exited pane | remove it |
 | click a row | show that pane |
 
-The wheel scrolls the shown pane. The terminal client shows no splits,
-tabs or windows and has no copy mode: the scrollback goes to `$PAGER`.
-Kido.app shows sessions, windows, splits and floats.
+The wheel scrolls the shown pane. The terminal client shows one pane
+of a window at a time and has no copy mode yet: the scrollback goes to
+`$PAGER`. Kido.app shows sessions, windows, splits and floats.
 
 `ko HOST` attaches to a ko server on another machine over ssh, and
 reconnects when the connection drops. It never starts a server there:

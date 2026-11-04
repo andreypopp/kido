@@ -7,26 +7,29 @@ use std::process::Child;
 use std::time::{Duration, Instant};
 
 use crate::clipboard;
+use ko_client::edit::Edit;
 use ko_client::launch::{self, BACKOFF_FIRST, PATIENCE, backoff_after};
-use ko_client::model::{Applied, Model, Notice, Rejoin};
+use ko_client::model::{Applied, Item, Model, Notice, Rejoin};
 use ko_client::remote::{Progress, Remote};
 use ko_client::wire::{self, Link, Next, WATCHDOG, silent, text};
 use ko_config::values::{AbsPath, RuntimeName};
 use ko_pane_wire::frame::{Dim, ScreenFormat, ScreenRows, Size};
 use ko_server::api::Route;
-use ko_server::ids::PaneId;
+use ko_server::ids::{Name, PaneId, SessionId, WindowId};
 use ko_server::protocol::{
-    self, ClientKind, ClientRequest, ClipboardContent, ClipboardServed, CreatePane, Cwd, Hello,
-    Input as Wire, Key as WireKey, Mouse as WireMouse, Paste, Selection, ViewRequest, json,
+    self, ClientKind, ClientRequest, ClipboardContent, ClipboardServed, CreatePane, Cwd, Direction,
+    Hello, Input as Wire, Key as WireKey, Mouse as WireMouse, Paste, Selection, Switch,
+    ViewRequest, json,
 };
 use ko_sys::event::{Due, Events, Interest, Mode, Poll, Ready, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
 use ko_vt::render::{Frame, MouseTracking};
 
-use crate::input::{self, Command, Event, Input, KeyEvent, Kind, MouseKind, Name, Reply};
+use crate::input::{self, Event, Input, KeyEvent, MouseKind, Reply};
+use crate::keys::{Action, Keys, Kill, Rename, State, Step};
 use crate::mirror::Mirror;
 use crate::modes::{self, Modes};
-use crate::renderer::{Layout, Renderer};
+use crate::renderer::{Layout, Renderer, status};
 use crate::sidebar;
 use crate::tty::{Geometry, Tty};
 
@@ -34,7 +37,7 @@ const PACE: Duration = Duration::from_millis(8);
 const PROBE: Duration = Duration::from_millis(500);
 const ENTER: &str = "\x1b[?1049h\x1b[?25l";
 const LEAVE: &str = "\x1b[?25h\x1b[0m\x1b[?1049l\x1b[?25h";
-const WARNING_ROWS: usize = 1;
+const STATUS_ROWS: usize = 1;
 const GIVE_UP: Duration = Duration::from_secs(60);
 const PAUSED: Duration = Duration::from_millis(100);
 const PROBE_TRANSPORT: Duration = Duration::from_secs(3);
@@ -58,16 +61,22 @@ fn dim(value: usize) -> Dim {
 enum Panel {
     Hidden,
     Visible,
-    Choosing(usize),
 }
 
 impl Panel {
     fn x(self, cols: usize) -> usize {
         match self {
             Panel::Hidden => 0,
-            _ => sidebar::pane_x(cols),
+            Panel::Visible => sidebar::pane_x(cols),
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct Last {
+    session: Option<SessionId>,
+    window: Option<WindowId>,
+    at: Option<(SessionId, WindowId)>,
 }
 
 #[derive(Debug)]
@@ -189,23 +198,7 @@ impl Drop for Session {
 
 struct Probed {
     modes: Modes,
-    kitty: bool,
     events: Vec<Event>,
-}
-
-fn environment_kitty(found: bool) -> bool {
-    let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
-    let term_kitty = std::env::var("TERM").is_ok_and(|term| term.to_lowercase().contains("kitty"));
-    let program_is = |value: &str| {
-        std::env::var("TERM_PROGRAM").is_ok_and(|program| program.to_lowercase() == value)
-    };
-    if set("KITTY_WINDOW_ID") {
-        true
-    } else if program_is("vscode") || set("VHS_RECORD") {
-        false
-    } else {
-        found || term_kitty || std::env::var_os("KITTY_WINDOW_ID").is_some()
-    }
 }
 
 fn probe(
@@ -214,12 +207,12 @@ fn probe(
     stdin: Token,
     input: &mut Input,
 ) -> Result<Probed, String> {
-    let queries = format!("{}\x1b[?u\x1b[>0q\x1b[c", modes::query());
+    let queries = format!("{}\x1b[c", modes::query());
     session.write(&queries)?;
     let deadline = Instant::now() + PROBE;
     let timer = poll.timer();
     let mut events = Events::default();
-    let (mut reports, mut kitty, mut answered) = (Vec::new(), false, false);
+    let (mut reports, mut answered) = (Vec::new(), false);
     let mut kept = Vec::new();
     let mut buffer = [0u8; 4096];
     loop {
@@ -250,10 +243,6 @@ fn probe(
         for event in parsed {
             match event {
                 Event::Reply(Reply::Modes(modes)) => reports.extend(modes),
-                Event::Reply(Reply::Kitty) => kitty = true,
-                Event::Reply(Reply::Xtversion(version)) => {
-                    kitty |= version.to_lowercase().contains("kitty");
-                }
                 Event::Reply(Reply::Da1) => answered = true,
                 Event::Mouse(_) => {}
                 other => kept.push(other),
@@ -265,7 +254,6 @@ fn probe(
     input.expire(Instant::now() + Duration::from_secs(1), &mut kept);
     Ok(Probed {
         modes: Modes::saved(&reports),
-        kitty: environment_kitty(kitty),
         events: kept,
     })
 }
@@ -302,8 +290,8 @@ struct Client {
     input: Input,
     renderer: Renderer,
     panel: Panel,
-    warning: bool,
-    kitty: bool,
+    keys: Keys,
+    last: Last,
     geometry: Geometry,
     focused: bool,
     immediate: bool,
@@ -340,13 +328,12 @@ impl Client {
         session.modes = probed.modes;
         session.write(ENTER)?;
         let geometry = session.tty.size();
-        let warning = !probed.kitty;
-        let panel = if warning || sidebar::visible(geometry.cols) {
+        let panel = if sidebar::visible(geometry.cols) {
             Panel::Visible
         } else {
             Panel::Hidden
         };
-        let hello = hello(geometry, panel, warning, true);
+        let hello = hello(geometry, panel, true);
         let model = Model::join(&mut link, hello)?;
         let link_token = link.watch(&mut poll).map_err(text)?;
         let (wake, escape, watchdog, retry) = (
@@ -372,8 +359,8 @@ impl Client {
             input,
             renderer: Renderer::default(),
             panel,
-            warning,
-            kitty: probed.kitty,
+            keys: Keys::new(),
+            last: Last::default(),
             geometry,
             focused: true,
             immediate: true,
@@ -417,10 +404,8 @@ impl Client {
         }
     }
 
-    fn leave_choosing(&mut self) {
-        if let Panel::Choosing(_) = self.panel {
-            self.panel = Panel::Visible;
-        }
+    fn shown(&self) -> Option<(&protocol::Session, &protocol::Window)> {
+        self.model.layout.layout.locate(self.pane()?)
     }
 
     fn layout(&self) -> Layout {
@@ -433,30 +418,29 @@ impl Client {
             cols,
             rows,
             pane_x: self.panel.x(cols),
-            pane_rows: rows.saturating_sub(usize::from(self.warning) * WARNING_ROWS),
-            warning: self.warning,
-            dead: match (&self.view, &self.remote) {
-                (_, Some(remote)) if self.reconnecting.is_some() => Some(format!(
-                    "[reconnecting to {} \u{2014} Ctrl+Shift+Q to detach]",
-                    remote.host()
-                )),
-                (
-                    View::Showing {
-                        mirror,
-                        serial: Some(_),
-                        ..
-                    },
-                    _,
-                ) => mirror.dead().map(sidebar::dead_line),
+            pane_rows: rows.saturating_sub(STATUS_ROWS),
+            status: status(
+                self.shown(),
+                self.last.window,
+                self.keys.state(),
+                self.remote
+                    .as_ref()
+                    .filter(|_| self.reconnecting.is_some())
+                    .map(Remote::host),
+            ),
+            help: *self.keys.state() == State::Help,
+            dead: match &self.view {
+                View::Showing {
+                    mirror,
+                    serial: Some(_),
+                    ..
+                } => mirror.dead().map(sidebar::dead_line),
                 _ => None,
             },
-            choosing: match self.panel {
-                Panel::Choosing(chosen) => outline
+            choosing: match self.keys.state() {
+                State::Chooser(chosen) => outline
                     .iter()
-                    .enumerate()
-                    .filter(|(_, item)| matches!(item, ko_client::model::Item::Pane { .. }))
-                    .nth(chosen)
-                    .map(|(row, _)| row),
+                    .position(|item| matches!(item, Item::Pane { id, .. } if id == chosen)),
                 _ => None,
             },
             sidebar: sidebar::lines(
@@ -489,7 +473,7 @@ impl Client {
     }
 
     fn resize(&mut self) -> Result<(), String> {
-        let size = pane_size(self.geometry, self.panel, self.warning);
+        let size = pane_size(self.geometry, self.panel);
         self.client_send(&ClientRequest::Size(protocol::Size(size)))
     }
 
@@ -504,11 +488,17 @@ impl Client {
         .map_err(String::from)
     }
 
-    fn switch(&mut self, pane: PaneId) -> Result<(), String> {
-        self.close_view();
-        self.leave_choosing();
+    fn redraw(&mut self) -> Result<(), String> {
         self.session.reset()?;
         self.renderer.invalidate();
+        self.immediate = true;
+        Ok(())
+    }
+
+    fn switch(&mut self, pane: PaneId) -> Result<(), String> {
+        self.close_view();
+        self.keys.end();
+        self.redraw()?;
         self.client_send(&ClientRequest::Select(Selection {
             pane: Some(pane),
             ..Selection::default()
@@ -522,8 +512,26 @@ impl Client {
         )?;
         self.view = View::open(pane, mirror);
         self.model.observe(&[pane], true);
-        self.immediate = true;
         Ok(())
+    }
+
+    fn track(&mut self) {
+        let now = self
+            .shown()
+            .map(|(session, window)| (session.id, window.id));
+        let Some((session, window)) = now else {
+            return;
+        };
+        if let Some((was_session, was_window)) = self.last.at.filter(|at| *at != (session, window))
+        {
+            if was_session != session {
+                self.last.session = Some(was_session);
+                self.last.window = None;
+            } else {
+                self.last.window = Some(was_window);
+            }
+        }
+        self.last.at = now;
     }
 
     fn create_pane(&mut self) -> Result<(), String> {
@@ -539,21 +547,6 @@ impl Client {
         match self.model.order().first().copied() {
             None => self.create_pane(),
             Some(pane) => self.switch(pane),
-        }
-    }
-
-    fn selected(&self) -> usize {
-        self.model
-            .order()
-            .iter()
-            .position(|id| Some(*id) == self.pane())
-            .unwrap_or(0)
-    }
-
-    fn choose(&mut self, step: isize) -> Result<(), String> {
-        match self.model.step(self.pane(), step) {
-            Some(pane) => self.switch(pane),
-            None => Ok(()),
         }
     }
 
@@ -585,12 +578,36 @@ impl Client {
         }
     }
 
-    fn remove(&mut self) -> Result<(), String> {
+    fn kill(&mut self, kill: Kill) -> Result<(), String> {
         let Some(pane) = self.pane() else {
             return Ok(());
         };
+        let route = match (kill, self.shown()) {
+            (Kill::Pane, _) => Route::DeletePane { id: pane },
+            (Kill::Window, Some((_, window))) => Route::DeleteWindow { id: window.id },
+            (Kill::Window, None) => return Ok(()),
+        };
         self.close_view();
-        self.request(&Route::DeletePane { id: pane }).map(drop)
+        self.request(&route).map(drop)
+    }
+
+    fn rename(&mut self, of: Rename, text: String) -> Result<(), String> {
+        let (Ok(name), Some((session, window))) = (Name::try_from(text), self.shown()) else {
+            return Ok(());
+        };
+        let edit = match of {
+            Rename::Session => Edit::RenameSession {
+                session: session.id,
+                name,
+            },
+            Rename::Window => Edit::RenameWindow {
+                window: window.id,
+                name,
+            },
+        };
+        ko_client::layout::edit(&self.socket, (Some(self.model.client), None), &edit)
+            .map(drop)
+            .map_err(|error| error.to_string())
     }
 
     fn pager(&mut self) -> Result<(), String> {
@@ -697,69 +714,96 @@ impl Client {
         if let View::Showing { mirror, .. } = &mut self.view {
             mirror.bottom()?;
         }
-        let dead = self.dead().is_some();
-        let effective = |event: &KeyEvent| match input::command(event) {
-            Some(Command::Remove) if !dead => None,
-            command => command,
+        match self.keys.feed(&key, self.dead().is_some()) {
+            Step::Pane(key) => match input::key(&key) {
+                Some(key) => self.input_send(Wire::Key(WireKey(key))),
+                None => Ok(()),
+            },
+            Step::Act(action) => self.act(action),
+            Step::Swallow => Ok(()),
+        }
+    }
+
+    fn act(&mut self, action: Action) -> Result<(), String> {
+        let selection = match action {
+            Action::LastSession => self
+                .last
+                .session
+                .filter(|session| self.model.layout.layout.session(*session).is_some())
+                .map(|session| Selection {
+                    session: Some(session),
+                    ..Selection::default()
+                }),
+            Action::LastWindow => self
+                .last
+                .window
+                .filter(|window| self.model.layout.layout.window(*window).is_some())
+                .map(|window| Selection {
+                    window: Some(window),
+                    ..Selection::default()
+                }),
+            Action::Window(at) => usize::try_from(at)
+                .ok()
+                .zip(self.shown())
+                .and_then(|(at, (session, _))| session.windows.get(at))
+                .map(|window| Selection {
+                    window: Some(window.id),
+                    ..Selection::default()
+                }),
+            other => return self.command(other),
         };
-        let action = effective(&key);
-        if self.warning && key.mods.ctrl() && key.mods.shift() {
-            self.warning = false;
-            if !matches!(action, Some(Command::ToggleSidebar | Command::Detach)) {
-                self.resize()?;
-            }
+        match selection {
+            Some(selection) => self.client_send(&ClientRequest::Select(selection)),
+            None => Ok(()),
         }
-        if key.kind == Kind::Release
-            && (effective(&key.pressed()).is_some() || matches!(self.panel, Panel::Choosing(_)))
-        {
-            return Ok(());
-        }
+    }
+
+    fn command(&mut self, action: Action) -> Result<(), String> {
         match action {
-            Some(Command::Detach) => self.quit = true,
-            Some(Command::ToggleSidebar) => {
+            Action::Detach => self.quit = true,
+            Action::Redraw => self.redraw()?,
+            Action::ToggleSidebar => {
                 self.panel = match self.panel {
-                    Panel::Hidden => Panel::Choosing(self.selected()),
-                    _ => Panel::Hidden,
+                    Panel::Hidden => Panel::Visible,
+                    Panel::Visible => Panel::Hidden,
                 };
                 self.resize()?;
             }
-            Some(Command::Pager) => self.pager()?,
-            Some(Command::New) => self.new_window()?,
-            Some(Command::Remove) => self.remove()?,
-            Some(Command::Previous) => self.choose(-1)?,
-            Some(Command::Next) => self.choose(1)?,
-            None => self.plain(&key)?,
+            Action::Chooser => {
+                if let Some(pane) = self.pane() {
+                    self.keys.choose(pane);
+                    if self.panel == Panel::Hidden {
+                        self.panel = Panel::Visible;
+                        self.resize()?;
+                    }
+                }
+            }
+            Action::Choose(direction) => {
+                if let State::Chooser(chosen) = *self.keys.state() {
+                    let steps = match direction {
+                        Direction::Next => 1,
+                        Direction::Previous => -1,
+                    };
+                    if let Some(next) = self.model.step(Some(chosen), steps) {
+                        self.keys.choose(next);
+                    }
+                }
+            }
+            Action::Select(pane) => {
+                if self.model.order().contains(&pane) {
+                    self.switch(pane)?;
+                }
+            }
+            Action::Pager => self.pager()?,
+            Action::NewWindow => self.new_window()?,
+            Action::Kill(kill) => self.kill(kill)?,
+            Action::Rename(of, text) => self.rename(of, text)?,
+            Action::Switch(over, direction) => {
+                self.client_send(&ClientRequest::Switch(Switch { over, direction }))?;
+            }
+            Action::LastSession | Action::LastWindow | Action::Window(_) => {}
         }
         Ok(())
-    }
-
-    fn plain(&mut self, key: &KeyEvent) -> Result<(), String> {
-        match (self.panel, key.name) {
-            (Panel::Choosing(chosen), Name::Up | Name::Down) => {
-                let count = self.model.order().len();
-                if count > 0 {
-                    let step = if key.name == Name::Up { count - 1 } else { 1 };
-                    self.panel = Panel::Choosing((chosen + step) % count);
-                }
-                Ok(())
-            }
-            (Panel::Choosing(chosen), Name::Enter) => match self.model.order().get(chosen).copied()
-            {
-                Some(pane) => self.switch(pane),
-                None => Ok(()),
-            },
-            (Panel::Choosing(_), Name::Escape) => {
-                self.panel = Panel::Visible;
-                Ok(())
-            }
-            _ => {
-                self.leave_choosing();
-                match input::key(key) {
-                    Some(key) => self.input_send(Wire::Key(WireKey(key))),
-                    None => Ok(()),
-                }
-            }
-        }
     }
 
     fn mouse(&mut self, event: input::MouseEvent) -> Result<(), String> {
@@ -800,11 +844,12 @@ impl Client {
     fn event(&mut self, event: Event) -> Result<(), String> {
         if self.reconnecting.is_some() {
             match event {
-                Event::Key(key)
-                    if key.kind != Kind::Release
-                        && matches!(input::command(&key), Some(Command::Detach)) =>
-                {
-                    self.quit = true;
+                Event::Key(key) => {
+                    let step = self.keys.feed(&key, self.dead().is_some());
+                    if !matches!(self.keys.state(), State::Normal | State::Prefix) {
+                        self.keys.end();
+                    }
+                    self.quit |= step == Step::Act(Action::Detach);
                 }
                 Event::Focus(focused) => self.focused = focused,
                 _ => {}
@@ -816,19 +861,18 @@ impl Client {
             Event::Mouse(mouse) => self.mouse(mouse),
             Event::Paste(body) => {
                 self.immediate = true;
-                self.input_send(Wire::Paste(Paste {
-                    text: body,
-                    check_safe: false,
-                    id: None,
-                }))
+                match self.keys.paste(body) {
+                    Some(text) => self.input_send(Wire::Paste(Paste {
+                        text,
+                        check_safe: false,
+                        id: None,
+                    })),
+                    None => Ok(()),
+                }
             }
             Event::Focus(focused) => {
                 self.focused = focused;
                 self.client_send(&ClientRequest::Focused { focused })
-            }
-            Event::Reply(Reply::Kitty) => {
-                self.kitty = true;
-                Ok(())
             }
             Event::Reply(Reply::Clipboard(location, text)) => {
                 match self.clipboard_reads.answered(location.into(), text) {
@@ -879,15 +923,7 @@ impl Client {
     }
 
     fn tick(&mut self) -> Result<(), String> {
-        if self.warning && self.kitty {
-            self.warning = false;
-            self.panel = if sidebar::visible(self.geometry.cols) {
-                Panel::Visible
-            } else {
-                Panel::Hidden
-            };
-            self.resize()?;
-        }
+        self.track();
         let now = Instant::now();
         let hold = match &self.view {
             View::None => None,
@@ -1077,6 +1113,7 @@ impl Client {
         if self.reconnecting.is_some() {
             return Ok(());
         }
+        self.keys.end();
         self.link.unwatch(&mut self.poll);
         if let View::Showing { mirror, .. } = &mut self.view {
             mirror.unwatch(&mut self.poll);
@@ -1131,7 +1168,7 @@ impl Client {
     fn reconnect(&mut self, left: Duration, mut restore: Restore) -> Result<(), String> {
         let mut link = Link::connect_within(&self.socket, None, &Route::Client {}, None, left)
             .map_err(text)?;
-        let hello = hello(self.geometry, self.panel, self.warning, self.focused);
+        let hello = hello(self.geometry, self.panel, self.focused);
         let rejoin = self.model.rejoin(&mut link, hello)?;
         let token = link.watch(&mut self.poll).map_err(text)?;
         self.link.unwatch(&mut self.poll);
@@ -1254,13 +1291,13 @@ impl Client {
     }
 }
 
-fn hello(geometry: Geometry, panel: Panel, warning: bool, focused: bool) -> Hello {
+fn hello(geometry: Geometry, panel: Panel, focused: bool) -> Hello {
     Hello {
         kind: ClientKind::Terminal,
         name: "ko".to_owned(),
         selection: Selection::default(),
         focused,
-        size: protocol::Size(pane_size(geometry, panel, warning)),
+        size: protocol::Size(pane_size(geometry, panel)),
         ignore_size: false,
     }
 }
@@ -1287,7 +1324,7 @@ fn new_pane(cwd: Option<Cwd>, runtime: Option<RuntimeName>) -> CreatePane {
     }
 }
 
-fn pane_size(geometry: Geometry, panel: Panel, warning: bool) -> Size {
+fn pane_size(geometry: Geometry, panel: Panel) -> Size {
     let Geometry {
         cols,
         rows,
@@ -1295,7 +1332,7 @@ fn pane_size(geometry: Geometry, panel: Panel, warning: bool) -> Size {
     } = geometry;
     Size {
         cols: dim(cols.saturating_sub(panel.x(cols))),
-        rows: dim(rows.saturating_sub(usize::from(warning) * WARNING_ROWS)),
+        rows: dim(rows.saturating_sub(STATUS_ROWS)),
         cell_px,
     }
 }

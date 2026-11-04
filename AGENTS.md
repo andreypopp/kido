@@ -350,7 +350,7 @@ Conventions:
   HTTP framing, exact statuses, hostile input and polling loops.
   WebSocket views and clients use tungstenite's client role; the hostile
   tests send raw frame bytes. The outer terminal's steps name keys and
-  text (`chord('s')`, `line("echo abc")`, `contains`, `gone`). Snapshots
+  text (`prefix("s")`, `line("echo abc")`, `contains`, `gone`). Snapshots
   decode in the test process through `ko_vt::Terminal::decode`. A client
   test is the outer terminal (`outer.rs`): an interactive `/bin/sh` on a
   pty from `ko_sys::pty::spawn`, with job control off (`set +m`;
@@ -585,7 +585,8 @@ Conventions:
   (docs/design-ko.md, "The loop rule").
 - **The terminal client.** `ko_tui`'s loop watches stdin, the
   `/client` link, the shown view and the signal pipe. Its plain
-  requests (create, delete, list, the pager's `/screen`) block with
+  requests (create, delete, list, layout edits, the pager's
+  `/screen`) block with
   the deadlines of `ko api`. While the pager runs, the loop keeps
   both links and stops reading stdin and painting until `SIGCHLD`
   reports the pager's exit, so pings get their answers. A turn
