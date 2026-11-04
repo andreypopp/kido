@@ -40,9 +40,8 @@ impl Mode {
 
     fn tracking(tracking: MouseTracking) -> Mode {
         match tracking {
-            MouseTracking::Button => Mode::ButtonMouse,
+            MouseTracking::Off | MouseTracking::Press | MouseTracking::Button => Mode::ButtonMouse,
             MouseTracking::Any => Mode::AnyMouse,
-            MouseTracking::Off | MouseTracking::Press => Mode::Mouse,
         }
     }
 

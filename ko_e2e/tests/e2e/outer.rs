@@ -336,7 +336,10 @@ impl Outer {
 
     pub(crate) fn mouse_reporting(&self) -> bool {
         let screen = self.lock();
-        screen.shown.modes.contains(&1000) && screen.shown.modes.contains(&1006)
+        [1000, 1002, 1003]
+            .iter()
+            .any(|mode| screen.shown.modes.contains(mode))
+            && screen.shown.modes.contains(&1006)
     }
 
     pub(crate) fn cursor(&self) -> (bool, usize, usize) {

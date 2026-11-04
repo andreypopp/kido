@@ -400,6 +400,11 @@ fn client_resize_mode_and_divider_drag() {
 
     let before = first_cols();
     let x = PANE_X + before;
+    let modes = o.modes();
+    assert!(
+        modes.split(',').any(|mode| matches!(mode, "1002" | "1003")),
+        "divider drag needs button-motion reports; outer modes: {modes}"
+    );
     o.press(x + 1, 3);
     o.raw(&format!("\x1b[<32;{};3M\x1b[<0;{};3m", x + 5, x + 5));
     o.wait("drag moves the divider four cells", || {

@@ -434,7 +434,10 @@ and clipped to the pane area. The module is pure, in `ko_tui` and not
 in `ko_client`, because it has one user: Kido.app computes its
 rectangles in Swift (`PaneGeometry`) and keeps them. A dead pane's
 line is the last row of its rectangle. Keys go to the active pane, the client's current pane;
-the outer terminal's cursor and modes follow it. A press in another
+the outer terminal's cursor and modes follow it, except that mouse
+tracking is always at least button motion (1002), so that a divider
+drag reports its motion; the pane still gets only the events that its
+own tracking asks for. A press in another
 pane selects that pane; a pane that tracks the mouse gets the press,
 drags and release in its own coordinates, and the wheel scrolls the
 mirror under the pointer or goes to that pane when it tracks the
