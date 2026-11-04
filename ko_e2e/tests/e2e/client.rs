@@ -1089,6 +1089,85 @@ fn client_initial_cursor_and_synchronized_output() {
 }
 
 #[test]
+fn client_sidebar_keyboard_focus_and_selection() {
+    let s = start(&[]);
+    let first = s.pane(&format!("exec python3 -u -c {} one", quote(SPLIT_ECHO)));
+    s.pane(&format!("exec python3 -u -c {} two", quote(SPLIT_ECHO)));
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.attach("cat");
+    o.contains("READY-one");
+    o.prefix("h");
+    o.contains("[sidebar]");
+    assert!(
+        o.cell(0, 1)
+            .style
+            .attrs
+            .has(ko_vt::render::Attribute::Inverse)
+    );
+    o.raw("X\x1b[27uY");
+    o.contains("one-KEY-59");
+    assert!(!s.screen(&first).contains("one-KEY-58"));
+    o.gone("[sidebar]");
+    o.prefix("\x1b[D");
+    o.contains("[sidebar]");
+    o.prefix("\x13");
+    o.gone("[sidebar]");
+    o.raw("Z");
+    o.contains("one-KEY-5a");
+    o.prefix("\x13");
+    o.prefix("\x1b[104;5u");
+    o.contains("[sidebar]");
+    o.raw("j\r");
+    o.contains("READY-two");
+    o.gone("[sidebar]");
+    o.raw("Q");
+    o.contains("two-KEY-51");
+    o.prefix("h");
+    o.contains("[sidebar]");
+    o.prefix("l");
+    o.gone("[sidebar]");
+    o.raw("S");
+    o.contains("two-KEY-53");
+    o.prefix("[");
+    o.contains("[copy]");
+    o.click(3, 3);
+    o.raw("q");
+    o.gone("[copy]");
+    o.raw("T");
+    o.contains("two-KEY-54");
+    o.resize(101, 25);
+    o.wait("initial pane area excludes the sidebar", || {
+        window_size(&s.doc(), 1) == (76, 24)
+    });
+    o.press(25, 3);
+    o.raw("\x1b[<32;35;3M\x1b[<32;41;3M\x1b[<0;41;3m");
+    o.wait("separator drag resizes the pane area", || {
+        window_size(&s.doc(), 1) == (60, 24)
+    });
+    o.wait("separator follows the pointer", || {
+        o.cell(40, 0).text == "│"
+    });
+    o.press(41, 3);
+    o.raw("\x1b[<32;1;3M\x1b[<0;1;3m");
+    o.wait("minimum sidebar width is ten", || {
+        window_size(&s.doc(), 1) == (90, 24)
+    });
+    o.press(11, 3);
+    o.raw("\x1b[<32;101;3M");
+    o.wait("maximum width rounds half down", || {
+        window_size(&s.doc(), 1) == (50, 24)
+    });
+    o.resize(61, 25);
+    o.wait("outer resize clamps an active drag", || {
+        window_size(&s.doc(), 1) == (30, 24)
+    });
+    o.raw("\x1b[<32;61;3M\x1b[<0;61;3mA");
+    o.contains("two-KEY-41");
+    assert_eq!(window_size(&s.doc(), 1), (30, 24));
+    o.detach();
+}
+
+#[test]
 fn client_sidebar_ownership() {
     let s = start(&[]);
     let pane = interactive_fixture(&s);

@@ -9,7 +9,7 @@ use ko_vt::unicode::{clusters, width};
 
 use crate::differ::Differ;
 use crate::geometry::{Connections, Geometry, Rect};
-use crate::keys::{HELP, Kill, Rename, State};
+use crate::keys::{HELP, Kill, Mode, Rename, State};
 use crate::modes::Modes;
 use crate::sidebar::Line;
 
@@ -23,6 +23,7 @@ pub(crate) fn status(
     shown: Option<(&Session, &Window)>,
     last: Option<WindowId>,
     state: &State,
+    mode: Mode,
     reconnect: Option<&str>,
 ) -> Status {
     let mut left = String::new();
@@ -40,24 +41,27 @@ pub(crate) fn status(
         }
     }
     let mut right = String::new();
-    let _ = match (reconnect, state) {
-        (Some(host), _) => write!(right, "[reconnecting to {host} \u{2014} C-a d to detach]"),
-        (None, State::Prefix) => right.write_str("C-a"),
-        (None, State::Resize) => right.write_str("[resize]"),
-        (None, State::Rename { of, text }) => {
+    let _ = match (reconnect, state, mode) {
+        (Some(host), _, _) => write!(right, "[reconnecting to {host} \u{2014} C-a d to detach]"),
+        (None, State::Prefix, _) => right.write_str("C-a"),
+        (None, State::Rename { of, text }, _) => {
             let what = match of {
                 Rename::Session => "rename-session",
                 Rename::Window => "rename-window",
             };
             write!(right, "({what}) {text}")
         }
-        (None, State::Confirm(Kill::Window)) => write!(
+        (None, State::Confirm(Kill::Window), _) => write!(
             right,
             "kill-window {}? (y/n)",
             shown.map_or("", |(_, window)| window.name.as_str())
         ),
-        (None, State::Confirm(Kill::Pane)) => right.write_str("kill-pane? (y/n)"),
-        (None, State::Normal | State::Repeat { .. } | State::Help | State::Chooser(_)) => Ok(()),
+        (None, State::Confirm(Kill::Pane), _) => right.write_str("kill-pane? (y/n)"),
+        (None, State::Normal | State::Repeat { .. }, Mode::Sidebar(_)) => {
+            right.write_str("[sidebar]")
+        }
+        (None, State::Normal | State::Repeat { .. }, Mode::Resize) => right.write_str("[resize]"),
+        (None, _, _) => Ok(()),
     };
     Status { left, right }
 }
@@ -660,7 +664,7 @@ mod tests {
             rows: 4,
             pane_x: 0,
             pane_rows: 3,
-            status: status(None, None, &State::Normal, None),
+            status: status(None, None, &State::Normal, Mode::Pane, None),
             help: false,
             resizing: false,
             copy: Some((pane_id(), copy)),
@@ -813,7 +817,7 @@ mod tests {
         let layout = Layout {
             cols: 1,
             rows: 2,
-            pane_x: crate::sidebar::pane_x(1),
+            pane_x: 0,
             pane_rows: 1,
             status: Status {
                 left: "kido".to_owned(),
@@ -1250,16 +1254,34 @@ mod tests {
         let window = |at: usize| &session.windows[at];
         let shown = Some((&session, window(0)));
         let last = Some(window(1).id);
-        let right =
-            |state: &State, reconnect: Option<&str>| status(shown, last, state, reconnect).right;
+        let right = |state: &State, reconnect: Option<&str>| {
+            status(shown, last, state, Mode::Pane, reconnect).right
+        };
         assert_eq!(
-            status(shown, last, &State::Normal, None).left,
+            status(shown, last, &State::Normal, Mode::Pane, None).left,
             "[s] 0:a* 1:b- 2:c"
         );
-        assert_eq!(status(None, last, &State::Normal, None).left, "");
+        assert_eq!(
+            status(None, last, &State::Normal, Mode::Pane, None).left,
+            ""
+        );
         assert_eq!(right(&State::Normal, None), "");
         assert_eq!(right(&State::Prefix, None), "C-a");
-        assert_eq!(right(&State::Resize, None), "[resize]");
+        assert_eq!(
+            status(shown, last, &State::Normal, Mode::Resize, None).right,
+            "[resize]"
+        );
+        assert_eq!(
+            status(
+                shown,
+                last,
+                &State::Normal,
+                Mode::Sidebar("pane_1".parse().unwrap()),
+                None
+            )
+            .right,
+            "[sidebar]"
+        );
         assert_eq!(
             right(
                 &State::Rename {
@@ -1275,6 +1297,21 @@ mod tests {
             "kill-window a? (y/n)"
         );
         assert_eq!(right(&State::Confirm(Kill::Pane), None), "kill-pane? (y/n)");
+        for mode in [Mode::Resize, Mode::Sidebar("pane_1".parse().unwrap())] {
+            for (state, expected) in [
+                (State::Prefix, "C-a"),
+                (
+                    State::Rename {
+                        of: Rename::Session,
+                        text: "x".to_owned(),
+                    },
+                    "(rename-session) x",
+                ),
+                (State::Confirm(Kill::Pane), "kill-pane? (y/n)"),
+            ] {
+                assert_eq!(status(shown, last, &state, mode, None).right, expected);
+            }
+        }
         assert_eq!(
             right(&State::Prefix, Some("box")),
             "[reconnecting to box \u{2014} C-a d to detach]"

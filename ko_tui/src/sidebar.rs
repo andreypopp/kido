@@ -5,7 +5,7 @@ use ko_client::status::{self, Mark};
 use ko_server::ids::PaneId;
 use ko_server::protocol::{Cause, ClientRuntime, Dead, LinkState};
 
-const WIDTH: usize = 24;
+pub(crate) const DEFAULT_WIDTH: usize = 24;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Line {
@@ -21,8 +21,12 @@ pub(crate) fn visible(cols: usize) -> bool {
     cols >= 100
 }
 
-pub(crate) fn pane_x(cols: usize) -> usize {
-    (WIDTH + 1).min(cols.saturating_sub(1))
+pub(crate) fn pane_x(width: usize, cols: usize) -> usize {
+    (width + 1).min(cols.saturating_sub(1))
+}
+
+pub(crate) fn width(requested: usize, cols: usize) -> usize {
+    requested.max(10).min((cols / 2).max(1))
 }
 
 fn signal_name(signal: i32) -> String {
@@ -254,12 +258,26 @@ mod tests {
     }
 
     #[test]
+    fn widths_clamp_to_ten_and_half_the_terminal_rounded_down() {
+        for (requested, cols, expected) in [
+            (0, 100, 10),
+            (24, 100, 24),
+            (100, 101, 50),
+            (50, 60, 30),
+            (10, 19, 9),
+            (24, 1, 1),
+        ] {
+            assert_eq!(width(requested, cols), expected);
+        }
+    }
+
+    #[test]
     fn dead_lines_name_the_cause() {
         let dead = Dead {
             at: 0,
             cause: Cause::Exited { code: 7 },
         };
-        assert_eq!((WIDTH, visible(99), visible(100)), (24, false, true));
+        assert_eq!((visible(99), visible(100)), (false, true));
         let causes = [
             Cause::Exited { code: 0 },
             Cause::Signaled { signal: 15 },

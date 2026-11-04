@@ -30,7 +30,8 @@ use crate::copy::Outcome;
 use crate::geometry;
 use crate::input::{self, Event, Input, KeyEvent, MouseKind, Reply};
 use crate::keys::{
-    Action, Amount, Context, Keys, Kill, PaneCommand, PaneEdit, PaneSelect, Rename, State, Step,
+    Action, Amount, Context, Keys, Kill, Mode as KeyMode, PaneCommand, PaneEdit, PaneSelect,
+    Rename, State, Step,
 };
 use crate::mirror::Mirror;
 use crate::modes::{self, Modes};
@@ -75,11 +76,23 @@ enum Panel {
     Visible,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Drag {
+    button: ko_pane_wire::frame::MouseButton,
+    target: Target,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    Divider(geometry::Grip, protocol::Cells),
+    Sidebar,
+}
+
 impl Panel {
-    fn x(self, cols: usize) -> usize {
+    fn x(self, cols: usize, width: usize) -> usize {
         match self {
             Panel::Hidden => 0,
-            Panel::Visible => sidebar::pane_x(cols),
+            Panel::Visible => sidebar::pane_x(width, cols),
         }
     }
 }
@@ -357,15 +370,12 @@ struct Client {
     input: Input,
     renderer: Renderer,
     panel: Panel,
+    sidebar_width: usize,
     keys: Keys,
     last: Last,
     pending_selection: Option<PaneId>,
     mouse_down: Option<PaneId>,
-    divider_drag: Option<(
-        geometry::Grip,
-        protocol::Cells,
-        ko_pane_wire::frame::MouseButton,
-    )>,
+    drag: Option<Drag>,
     geometry: Geometry,
     focused: bool,
     immediate: bool,
@@ -410,7 +420,8 @@ impl Client {
         } else {
             Panel::Hidden
         };
-        let hello = hello(geometry, panel, true);
+        let sidebar_width = sidebar::width(sidebar::DEFAULT_WIDTH, geometry.cols);
+        let hello = hello(geometry, panel, sidebar_width, true);
         let model = Model::join(&mut link, hello)?;
         let link_token = link.watch(&mut poll).map_err(text)?;
         let (wake, escape, repeat, watchdog, retry) = (
@@ -437,11 +448,12 @@ impl Client {
             input,
             renderer: Renderer::default(),
             panel,
+            sidebar_width,
             keys: Keys::new(),
             last: Last::default(),
             pending_selection: None,
             mouse_down: None,
-            divider_drag: None,
+            drag: None,
             geometry,
             focused: true,
             immediate: true,
@@ -510,19 +522,20 @@ impl Client {
         Layout {
             cols,
             rows,
-            pane_x: self.panel.x(cols),
+            pane_x: self.panel.x(cols, self.sidebar_width),
             pane_rows: rows.saturating_sub(STATUS_ROWS),
             status: status(
                 self.shown(),
                 self.last.window,
                 self.keys.state(),
+                self.keys.mode(),
                 self.remote
                     .as_ref()
                     .filter(|_| self.reconnecting.is_some())
                     .map(Remote::host),
             ),
             help: *self.keys.state() == State::Help,
-            resizing: *self.keys.state() == State::Resize,
+            resizing: self.keys.mode() == KeyMode::Resize,
             copy: panes(&self.view)
                 .find_map(|pane| pane.mirror.copy().map(|copy| (pane.pane, copy.clone()))),
             geometry: self
@@ -531,12 +544,11 @@ impl Client {
                 .map(|shown| shown.geometry.clone())
                 .unwrap_or_default(),
             active: self.pane(),
-            choosing: match self.keys.state() {
-                State::Chooser(chosen) => outline
+            choosing: self.keys.cursor().and_then(|chosen| {
+                outline
                     .iter()
-                    .position(|item| matches!(item, Item::Pane { id, .. } if id == chosen)),
-                _ => None,
-            },
+                    .position(|item| matches!(item, Item::Pane { id, .. } if *id == chosen))
+            }),
             sidebar: sidebar::lines(
                 self.pane(),
                 &outline,
@@ -576,7 +588,7 @@ impl Client {
     }
 
     fn resize(&mut self) -> Result<(), String> {
-        let size = pane_size(self.geometry, self.panel);
+        let size = pane_size(self.geometry, self.panel, self.sidebar_width);
         self.client_send(&ClientRequest::Size(protocol::Size(size)))
     }
 
@@ -607,7 +619,7 @@ impl Client {
     }
 
     fn switch(&mut self, pane: PaneId) -> Result<(), String> {
-        self.keys.end();
+        self.keys.leave();
         if let Some((_, window)) = self
             .model
             .locate(pane)
@@ -650,15 +662,22 @@ impl Client {
         let window_id = window.id;
         let zoom = window.zoom;
         let geometry = geometry::window(window);
-        if let Some((grip, _, button)) = self.divider_drag {
-            self.divider_drag = geometry
+        if let Some(Drag {
+            button,
+            target: Target::Divider(grip, _),
+        }) = self.drag
+        {
+            self.drag = geometry
                 .dividers
                 .iter()
                 .find(|line| line.grip.first == grip.first && line.grip.second == grip.second)
                 .and_then(|line| {
                     line.grip
                         .first_size(line.rect.x, line.rect.y)
-                        .map(|size| (line.grip, size, button))
+                        .map(|size| Drag {
+                            button,
+                            target: Target::Divider(line.grip, size),
+                        })
                 });
         }
         let resized = self.view.as_ref().is_some_and(|shown| {
@@ -799,9 +818,9 @@ impl Client {
     }
 
     fn close_view(&mut self) {
-        self.divider_drag = None;
-        if *self.keys.state() == State::Resize {
-            self.keys.end();
+        self.drag = None;
+        if matches!(self.keys.mode(), KeyMode::Resize) {
+            self.keys.leave();
         }
         if let Some(shown) = self.view.take() {
             for pane in shown.panes {
@@ -944,6 +963,9 @@ impl Client {
             pane.mirror.thaw(&mut self.poll)?;
         }
         self.copy_click = None;
+        if self.key_context() == Context::Copying {
+            self.keys.leave();
+        }
         self.immediate = true;
         Ok(())
     }
@@ -1049,10 +1071,16 @@ impl Client {
                     Panel::Hidden => Panel::Visible,
                     Panel::Visible => Panel::Hidden,
                 };
+                if self.panel == Panel::Hidden && matches!(self.keys.mode(), KeyMode::Sidebar(_)) {
+                    self.keys.leave();
+                }
                 self.resize()?;
             }
+            Action::LeaveSidebar => self.keys.leave(),
             Action::Chooser => {
                 if let Some(pane) = self.pane() {
+                    self.leave_copy()?;
+                    self.keys.leave();
                     self.keys.choose(pane);
                     if self.panel == Panel::Hidden {
                         self.panel = Panel::Visible;
@@ -1061,7 +1089,7 @@ impl Client {
                 }
             }
             Action::Choose(direction) => {
-                if let State::Chooser(chosen) = *self.keys.state() {
+                if let Some(chosen) = self.keys.cursor() {
                     let steps = direction_steps(direction);
                     if let Some(next) = self.model.step(Some(chosen), steps) {
                         self.keys.choose(next);
@@ -1074,6 +1102,7 @@ impl Client {
                 }
             }
             Action::EnterCopy(entry) => {
+                self.keys.leave();
                 if let Some(pane) = self.active() {
                     pane.mirror.freeze(entry)?;
                 }
@@ -1117,6 +1146,14 @@ impl Client {
         let Some((_, window)) = self.shown() else {
             return Ok(());
         };
+        if command == PaneSelect::Edge(Edge::Left)
+            && self.panel == Panel::Visible
+            && geometry::left_edge(window, pane)
+        {
+            self.leave_copy()?;
+            self.keys.focus_sidebar(pane);
+            return Ok(());
+        }
         let target = match command {
             PaneSelect::Next => cycle(
                 &window.panes(),
@@ -1238,7 +1275,10 @@ impl Client {
             && let Some(grip) = geometry.divider(x, event.y)
             && let Some(size) = grip.first_size(x, event.y)
         {
-            self.divider_drag = Some((grip, size, button));
+            self.drag = Some(Drag {
+                button,
+                target: Target::Divider(grip, size),
+            });
             self.mouse_down = None;
             return true;
         }
@@ -1246,29 +1286,45 @@ impl Client {
     }
 
     fn drag(&mut self, event: &input::MouseEvent) -> Result<bool, String> {
-        let Some((grip, last, button)) = self.divider_drag else {
+        let Some(drag) = self.drag else {
             return Ok(false);
         };
+        let button = drag.button;
         match event.kind {
             MouseKind::Down(_) => {
-                self.divider_drag = None;
+                self.drag = None;
                 return Ok(false);
             }
-            MouseKind::Up(_) | MouseKind::Move => self.divider_drag = None,
-            MouseKind::Drag(held) if held == button => {
-                let x = event.x.saturating_sub(self.panel.x(self.geometry.cols));
-                if let Some(size) = grip.first_size(x, event.y)
-                    && size != last
-                {
-                    self.divider_drag = Some((grip, size, button));
-                    self.edit(Edit::ResizePair {
-                        first: grip.first,
-                        second: grip.second,
-                        first_size: size,
-                    })?;
+            MouseKind::Up(_) | MouseKind::Move => self.drag = None,
+            MouseKind::Drag(held) if held == button => match drag.target {
+                Target::Sidebar => {
+                    let width = sidebar::width(event.x, self.geometry.cols);
+                    if width != self.sidebar_width {
+                        self.sidebar_width = width;
+                        self.resize()?;
+                        self.immediate = true;
+                    }
                 }
-            }
-            MouseKind::Drag(_) => self.divider_drag = None,
+                Target::Divider(grip, last) => {
+                    let x = event
+                        .x
+                        .saturating_sub(self.panel.x(self.geometry.cols, self.sidebar_width));
+                    if let Some(size) = grip.first_size(x, event.y)
+                        && size != last
+                    {
+                        self.drag = Some(Drag {
+                            button,
+                            target: Target::Divider(grip, size),
+                        });
+                        self.edit(Edit::ResizePair {
+                            first: grip.first,
+                            second: grip.second,
+                            first_size: size,
+                        })?;
+                    }
+                }
+            },
+            MouseKind::Drag(_) => self.drag = None,
             MouseKind::Scroll { .. } => {}
         }
         Ok(true)
@@ -1294,6 +1350,16 @@ impl Client {
                 return Ok(());
             }
             if event.x < layout.pane_x {
+                if event.x + 1 == layout.pane_x
+                    && let MouseKind::Down(button) = event.kind
+                {
+                    self.drag = Some(Drag {
+                        button,
+                        target: Target::Sidebar,
+                    });
+                    self.mouse_down = None;
+                    return Ok(());
+                }
                 if matches!(event.kind, MouseKind::Down(_))
                     && event.x + 1 < layout.pane_x
                     && let Some(pane) = layout.sidebar.get(event.y).and_then(|line| line.pane)
@@ -1320,6 +1386,9 @@ impl Client {
         let rect = placement.rect;
         let origin = (layout.pane_x + rect.x, rect.y);
         if matches!(event.kind, MouseKind::Down(_)) {
+            if matches!(self.keys.mode(), KeyMode::Sidebar(_)) {
+                self.keys.leave();
+            }
             self.mouse_down = Some(pane);
             if Some(pane) != self.pane() {
                 self.switch(pane)?;
@@ -1403,7 +1472,7 @@ impl Client {
             }
             Event::Focus(focused) => {
                 if !focused {
-                    self.divider_drag = None;
+                    self.drag = None;
                 }
                 self.focused = focused;
                 self.client_send(&ClientRequest::Focused { focused })
@@ -1523,6 +1592,7 @@ impl Client {
         if size != self.geometry {
             self.leave_copy()?;
             self.geometry = size;
+            self.sidebar_width = sidebar::width(self.sidebar_width, size.cols);
             self.resize()?;
             self.immediate = true;
         }
@@ -1669,7 +1739,7 @@ impl Client {
         if self.reconnecting.is_some() {
             return Ok(());
         }
-        self.keys.end();
+        self.keys.leave();
         self.pending_selection = None;
         self.link.unwatch(&mut self.poll);
         for pane in panes_mut(&mut self.view) {
@@ -1725,7 +1795,7 @@ impl Client {
     fn reconnect(&mut self, left: Duration, mut restore: Restore) -> Result<(), String> {
         let mut link = Link::connect_within(&self.socket, None, &Route::Client {}, None, left)
             .map_err(text)?;
-        let mut hello = hello(self.geometry, self.panel, self.focused);
+        let mut hello = hello(self.geometry, self.panel, self.sidebar_width, self.focused);
         hello.selection.window = self.view.as_ref().map(|shown| shown.window);
         let rejoin = self.model.rejoin(&mut link, hello)?;
         let token = link.watch(&mut self.poll).map_err(text)?;
@@ -1786,6 +1856,31 @@ impl Client {
         Ok(())
     }
 
+    fn apply(&mut self, event: protocol::ClientEvent) -> Applied {
+        let cursor = match self.keys.mode() {
+            KeyMode::Sidebar(pane) => Some((
+                pane,
+                self.model
+                    .order()
+                    .iter()
+                    .position(|id| *id == pane)
+                    .unwrap_or(0),
+            )),
+            _ => None,
+        };
+        let applied = self.model.apply(event);
+        if let Some((pane, at)) = cursor
+            && self.model.locate(pane).is_none()
+        {
+            let order = self.model.order();
+            match order.get(at.min(order.len().saturating_sub(1))) {
+                Some(pane) => self.keys.focus_sidebar(*pane),
+                None => self.keys.leave(),
+            }
+        }
+        applied
+    }
+
     fn client(&mut self, ready: Ready, now: Instant) -> Result<(), String> {
         if ready.write {
             self.link.settle(&mut self.poll).map_err(text)?;
@@ -1799,19 +1894,19 @@ impl Client {
                     }
                     Next::Text(event) => {
                         let event = protocol::decode(event.as_bytes()).map_err(text)?;
-                        let resizing = (*self.keys.state() == State::Resize)
+                        let resizing = (self.keys.mode() == KeyMode::Resize)
                             .then(|| {
                                 self.pane().and_then(|pane| {
                                     self.model.locate(pane).map(|(_, window)| (pane, window))
                                 })
                             })
                             .flatten();
-                        let applied = self.model.apply(event);
+                        let applied = self.apply(event);
                         if let Some((pane, window)) = resizing
                             && (self.model.locate(pane).map(|(_, id)| id) != Some(window)
                                 || self.shown().map(|(_, shown)| shown.id) != Some(window))
                         {
-                            self.keys.end();
+                            self.keys.leave();
                         }
                         match applied {
                             Applied::Nothing | Applied::State => {}
@@ -1822,10 +1917,7 @@ impl Client {
                                 self.pending_selection = None;
                                 if !matches!(
                                     self.keys.state(),
-                                    State::Normal
-                                        | State::Prefix
-                                        | State::Repeat { .. }
-                                        | State::Resize
+                                    State::Normal | State::Prefix | State::Repeat { .. }
                                 ) {
                                     self.keys.end();
                                 }
@@ -1891,12 +1983,12 @@ fn coalesce_drag(events: Vec<Event>) -> Vec<Event> {
     out
 }
 
-fn hello(geometry: Geometry, panel: Panel, focused: bool) -> Hello {
+fn hello(geometry: Geometry, panel: Panel, width: usize, focused: bool) -> Hello {
     Hello {
         name: "ko".to_owned(),
         selection: Selection::default(),
         focused,
-        size: protocol::Size(pane_size(geometry, panel)),
+        size: protocol::Size(pane_size(geometry, panel, width)),
         ignore_size: false,
     }
 }
@@ -1923,14 +2015,14 @@ fn new_pane(cwd: Option<Cwd>, runtime: Option<RuntimeName>) -> CreatePane {
     }
 }
 
-fn pane_size(geometry: Geometry, panel: Panel) -> Size {
+fn pane_size(geometry: Geometry, panel: Panel, width: usize) -> Size {
     let Geometry {
         cols,
         rows,
         cell_px,
     } = geometry;
     Size {
-        cols: dim(cols.saturating_sub(panel.x(cols))),
+        cols: dim(cols.saturating_sub(panel.x(cols, width))),
         rows: dim(rows.saturating_sub(STATUS_ROWS)),
         cell_px,
     }

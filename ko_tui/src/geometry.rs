@@ -177,6 +177,10 @@ impl Grip {
     }
 }
 
+pub(crate) fn left_edge(shown: &Window, pane: PaneId) -> bool {
+    shown.tree.contains(pane) && neighbour(shown, pane, Edge::Left, (0, 0)).is_none()
+}
+
 pub(crate) fn neighbour(
     window: &Window,
     active: PaneId,
@@ -334,6 +338,31 @@ mod tests {
 
     fn sample() -> Window {
         ko_server::protocol::decode(br#"{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"focus":"pane_1","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"split":"v","children":[{"pane":"pane_2","cols":39,"rows":12},{"pane":"pane_3","cols":39,"rows":11}]}]},"floats":[]}"#).unwrap()
+    }
+
+    #[test]
+    fn left_edge_uses_the_unzoomed_tree_and_excludes_floats() {
+        let mut w = sample();
+        let panes = w.panes();
+        assert!(left_edge(&w, panes[0]));
+        assert!(!left_edge(&w, panes[1]));
+        assert!(!left_edge(&w, panes[2]));
+        if let Node::Split { children, .. } = &mut w.tree {
+            children.swap(0, 1);
+        }
+        assert!(!left_edge(&w, panes[0]));
+        assert!(left_edge(&w, panes[1]));
+        assert!(left_edge(&w, panes[2]));
+        let float = "pane_4".parse().unwrap();
+        w.floats.push(ko_server::protocol::decode(br#"{"pane":"pane_4","x":0,"y":0,"cols":5,"rows":4,"z":0,"border":false,"title":""}"#).unwrap());
+        assert!(!left_edge(&w, float));
+        if let Node::Split { children, .. } = &mut w.tree {
+            children.swap(0, 1);
+        }
+        for pane in panes.iter().copied().chain([float]) {
+            w.zoom = Some(pane);
+            assert_eq!(left_edge(&w, pane), pane == panes[0]);
+        }
     }
 
     #[test]

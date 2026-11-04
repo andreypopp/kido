@@ -66,7 +66,8 @@ terminal. A status line at the bottom shows the session, its windows
 | `C-a !` | move the pane into a new window after the shown one |
 | `C-a R` | resize mode: `h` `j` `k` `l` or arrows move the pane's divider by 1, `H` `J` `K` `L` or Shift+arrows by 5, `=` equal sizes, `z` zoom; `Enter`, `Escape` or `q` leaves |
 | `C-a s` or `w` | choose a pane from the list with `Up`, `Down`, `Enter`; `Escape` leaves |
-| `C-a C-s` | show or hide the list |
+| `C-a C-s` | show or hide the list; focus stays where it is, and a hide while the list has focus returns focus to the pane |
+| `C-a h`, `C-h` or `Left` on a pane at the left edge | move focus into the shown list (r): `j` `k` or `Up` `Down` move the cursor over the panes, `Enter` shows that pane, `Escape` or `C-a l`, `C-l` or `Right` returns to the pane; other keys do nothing |
 | `C-a e` | open the pane's scrollback in `$PAGER` |
 | `C-a [` | enter copy mode on the active pane |
 | `C-a PageUp` | enter copy mode one page up |
@@ -74,6 +75,7 @@ terminal. A status line at the bottom shows the session, its windows
 | `Ctrl+D` on an exited pane | remove it |
 | click a row | show that pane |
 | drag a divider | move it |
+| drag the list's right border | change the list's width, from 10 columns to half the screen |
 
 A key marked (r) repeats: for 500 ms after it, another key marked (r)
 acts without the prefix, and each one restarts the 500 ms. Without

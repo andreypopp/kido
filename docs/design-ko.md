@@ -595,6 +595,48 @@ terminal can lose the release outside its window; that new press then
 acts as usual. A zoomed window has no dividers, and a float's border
 is not one.
 
+The sidebar's separator, the column just left of the pane area, is a
+drag target too, under the same rules for its end. Its drag changes
+the sidebar's width: the pointer's column becomes the width, so the
+separator stays under the pointer, and the pane area that the client
+sends as its size follows at once, with no layout edit. A pane
+divider is inside the pane area, so a press never has both targets.
+The width is at least 10 columns and at most half the terminal's
+columns, rounded down; on a terminal of fewer than 20 columns the
+half wins. An outer resize clamps it again. The width lives in the
+client process for its life, as the paste buffer does: it is not
+saved, it is no configuration (the non-goal below), only the pane
+area that follows from it goes to the server, and Kido.app has its
+own list.
+
+The sidebar is also a place for focus, a mode of the key machine
+beside resize mode, which it excludes. Copy mode stays the mirror's
+state, and entering the sidebar or resize mode leaves it, so the
+three never overlap. A left move (`C-a h`, `C-a C-h`,
+`C-a Left`, or one of them in the repeat window) from a pane on the
+window's left edge moves focus into the shown sidebar, and does
+nothing when the sidebar is hidden, as a move with no neighbour does.
+A tiled pane is on the edge when its rectangle in the unzoomed tree
+starts at the pane area's first column, so a zoomed pane with a left
+neighbour still ends the zoom and selects it; a float is never on
+the edge, because a float has no neighbours. Focus in the
+sidebar is a cursor on a pane, kept as the pane's id, never a row:
+it starts on the active pane, `j` `k` and the vertical arrows move it
+over pane rows only, with wrap, as the chooser does, and when a
+layout change removes its pane it takes the row at the same position
+in the new list, else the last one. `Enter` shows the pane as a click
+on its row does, in any window or session and through a zoom, and
+returns focus to it. `Escape` and a right move (`C-a l`, `C-a C-l`,
+`C-a Right`, or one in the repeat window) return focus to the pane
+unchanged. Every other key is swallowed, so nothing reaches a program
+while the program cannot be seen to have focus, and a paste is
+dropped. The prefix keeps its table, so `C-a d` detaches from the
+sidebar, except that `C-a C-a` sends nothing, because no program has
+focus. `C-a C-s` never moves focus, except that hiding the sidebar
+returns focus to the pane. The cursor's row is drawn in reverse
+video, and the status line shows `[sidebar]`. A press in a pane
+returns focus to that pane; a click on a sidebar row acts as before.
+
 The client restores the outer terminal's modes exactly on every exit
 path, and never sends RIS or clears the screen. It queries the outer
 terminal at start, so replies arrive on stdin among keystrokes; the
