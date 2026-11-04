@@ -960,14 +960,20 @@ Not designed here; this section shows that the model and the stream
 layer hold for each, with the facts measured or read on 2026-11-03.
 
 - **ko ships pi into the runtime (idea, 2026-11-04).** "pi inside"
-  without an installed pi: pi's npm package already runs from a 9 MB
-  esbuild bundle (`dist/bundle`) with a few external packages
-  (photon-node, typebox, WASM files; its native module is optional on
-  Linux), so a bundle plus Node, or a standalone Bun build of pi if
-  one exists for Linux, could be copied as the static ko is. Open:
-  whether `ko-pi.ts` loads in it, and credentials, since pi inside
-  needs the model key there unless ko proxies model requests on the
-  host. Not investigated yet.
+  without an installed pi. pi's GitHub releases (earendil-works/pi,
+  read for v1.5.0 on 2026-11-04) ship standalone Bun builds for
+  darwin, linux and windows on arm64 and x64, with `SHA256SUMS`.
+  `pi-linux-arm64.tar.gz` is 59 MB: one 123 MB ELF `pi` built with
+  Bun v1.4.4, linked against glibc (`/lib/ld-linux-aarch64.so.1`),
+  so it runs on Debian-like images but not on musl images such as
+  Alpine; beside it `photon_rs_bg.wasm`, an X11 clipboard addon that
+  a headless runtime does not need, and pi's docs, themes and
+  examples. No Node is needed, so ko could copy the archive into the
+  runtime as it does the static ko. Open: whether `--extension
+  ko-pi.ts` loads in the standalone binary, the 59 MB copy per
+  runtime and pi version, and credentials, since pi inside needs the
+  model key in the runtime unless ko proxies model requests on the
+  host. Not probed.
 
 - **podman on Linux.** The link is a running container with the
   runtime *directory* bind-mounted (`-v <rt dir>:/run/ko`; a file
