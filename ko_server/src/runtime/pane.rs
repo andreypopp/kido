@@ -13,17 +13,45 @@ pub(crate) fn directory(root: &Path, name: &RuntimeName) -> PathBuf {
     root.join(name.as_str())
 }
 
+pub(crate) fn clear_directory(root: &Path, name: &RuntimeName) -> std::io::Result<()> {
+    let io = io_directory(root, name);
+    for entry in std::fs::read_dir(directory(root, name))? {
+        let entry = entry?;
+        if entry.path() != io {
+            if entry.file_type()?.is_dir() {
+                std::fs::remove_dir_all(entry.path())?;
+            } else {
+                std::fs::remove_file(entry.path())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn io_directory(root: &Path, name: &RuntimeName) -> PathBuf {
+    directory(root, name).join("io")
+}
+
+pub(crate) fn control_path(root: &Path, name: &RuntimeName) -> PathBuf {
+    directory(root, name).join(crate::ssh::CONTROL)
+}
+
 pub(crate) fn socket_path(root: &Path, name: &RuntimeName) -> PathBuf {
-    directory(root, name).join("socket")
+    io_directory(root, name).join("socket")
 }
 
 pub(crate) fn token_directory(root: &Path, name: &RuntimeName) -> PathBuf {
     directory(root, name).join("panes")
 }
 
-pub(crate) fn token_path(socket: &Path, runtime: &Runtime, pane: PaneId) -> Option<PathBuf> {
+pub(crate) fn token_path(
+    root: &Path,
+    name: &RuntimeName,
+    runtime: &Runtime,
+    pane: PaneId,
+) -> Option<PathBuf> {
     match super::tokens(runtime, pane) {
-        Tokens::File { name, .. } => Some(socket.with_file_name("panes").join(name)),
+        Tokens::File { name: file, .. } => Some(token_directory(root, name).join(file)),
         Tokens::Remote => None,
     }
 }
@@ -130,6 +158,7 @@ pub(crate) fn wrapper(wrap: &Wrap<'_>, inner: Option<&[Vec<u8>]>) -> Vec<Vec<u8>
         runtime,
         *pane,
         &Ctx {
+            root,
             name,
             env: server_env,
             socket: &socket,

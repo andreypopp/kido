@@ -433,7 +433,7 @@ impl From<&VolumePath> for AbsPath {
     }
 }
 
-const OWNED_OPTIONS: [&str; 10] = [
+const OWNED_OPTIONS: [&str; 13] = [
     "-v",
     "--volume",
     "--mount",
@@ -444,6 +444,9 @@ const OWNED_OPTIONS: [&str; 10] = [
     "--remove",
     "--publish-socket",
     "--ssh",
+    "--init",
+    "--security-opt",
+    "--http-proxy",
 ];
 
 fn owned_option(arg: &str) -> Option<&'static str> {
@@ -499,7 +502,7 @@ list!(
 list!(
     #[derive(Default)]
     RunArgs,
-    "arguments of `container run` without an option that ko owns",
+    "arguments of the container engine's `run` without an option that ko owns",
     run_args_valid
 );
 list!(Init, "a command", init_valid);

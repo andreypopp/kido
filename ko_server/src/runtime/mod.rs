@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ko_config::config::{self as settings, LoadError};
-use ko_config::runtime::{Kind, Runtime};
+use ko_config::runtime::{Engine, Kind, Runtime};
 use ko_config::server::Idle;
 use ko_config::values::{RuntimeColor, RuntimeName};
 use ko_sys::event::{Poll, Ready, Timer, Token};
@@ -31,7 +31,7 @@ pub(crate) mod pane;
 pub(crate) mod ssh;
 
 use exec::{Helper, Launch, Mode, Source};
-use pane::{directory, socket_path, token_directory, token_path};
+use pane::{socket_path, token_directory, token_path};
 
 const UP_LIMIT: Duration = Duration::from_secs(120);
 const QUICK_LIMIT: Duration = Duration::from_secs(15);
@@ -91,6 +91,7 @@ pub(crate) struct Ctx<'a> {
     pub(crate) name: &'a RuntimeName,
     pub(crate) env: &'a [Vec<u8>],
     pub(crate) socket: &'a Path,
+    pub(crate) root: &'a Path,
     pub(crate) exe: &'a Path,
 }
 
@@ -132,7 +133,8 @@ pub(crate) fn kind(runtime: &Runtime) -> RuntimeKind {
     match runtime.kind {
         Kind::Ssh(_) => RuntimeKind::Ssh,
         Kind::Command(_) => RuntimeKind::Command,
-        Kind::Container(_) => RuntimeKind::Container,
+        Kind::Container(Engine::Apple(_)) => RuntimeKind::Container,
+        Kind::Container(Engine::Podman(_)) => RuntimeKind::Podman,
     }
 }
 
@@ -154,12 +156,12 @@ pub(crate) fn tokens(runtime: &Runtime, pane: PaneId) -> Tokens {
 pub(crate) fn entry(runtime: &Runtime, pane: PaneId, cx: &Ctx<'_>) -> Entry {
     match &runtime.kind {
         Kind::Command(command) => {
-            let token = token_path(cx.socket, runtime, pane).unwrap_or_default();
+            let token = token_path(cx.root, cx.name, runtime, pane).unwrap_or_default();
             command::entry(command, (cx.exe, cx.socket.to_path_buf()), &token)
         }
-        Kind::Container(container) => {
-            let token = token_path(cx.socket, runtime, pane).unwrap_or_default();
-            container::entry(cx.name, container, (cx.env, &token))
+        Kind::Container(engine) => {
+            let token = token_path(cx.root, cx.name, runtime, pane).unwrap_or_default();
+            container::entry(cx.name, engine, (cx.env, &token))
         }
         Kind::Ssh(remote) => ssh::entry(remote, cx),
     }
@@ -214,7 +216,7 @@ pub(crate) fn exec_launch(
     match &runtime.kind {
         Kind::Ssh(remote) => ssh::exec_launch(remote, cx),
         Kind::Command(command) => command::exec_launch(runtime, command, (request, cx)),
-        Kind::Container(container) => container::exec_launch(container, cx),
+        Kind::Container(engine) => container::exec_launch(engine, cx),
     }
 }
 
@@ -228,7 +230,7 @@ pub(crate) fn ending(runtime: &Runtime, exit: Exit, stderr: &[u8]) -> Ending {
 pub(crate) fn cleanup(runtime: &Runtime, cx: &Ctx<'_>, what: Cleanup) -> Option<Launch> {
     match &runtime.kind {
         Kind::Command(_) => None,
-        Kind::Container(container) => container::cleanup(container, (cx.name, cx.env), what),
+        Kind::Container(engine) => container::cleanup(engine, (cx.name, cx.env), what),
         Kind::Ssh(remote) => ssh::cleanup(remote, cx, what),
     }
 }
@@ -246,7 +248,10 @@ impl Start {
     fn new(settings: &Runtime) -> Start {
         match &settings.kind {
             Kind::Command(_) => Start::Command,
-            Kind::Container(_) => Start::Container(container::Stage::System),
+            Kind::Container(engine) => Start::Container(match engine {
+                Engine::Apple(_) => container::Stage::System,
+                Engine::Podman(_) => container::Stage::Inspect,
+            }),
             Kind::Ssh(_) => Start::Ssh(ssh::Link::new()),
         }
     }
@@ -254,8 +259,8 @@ impl Start {
     fn first(&self, settings: &Runtime, cx: &Ctx<'_>) -> Result<Option<Launch>, String> {
         match (&settings.kind, self) {
             (Kind::Command(command), Start::Command) => Ok(command::first(command, cx.env)),
-            (Kind::Container(container), Start::Container(_)) => {
-                container::first(container, cx).map(Some)
+            (Kind::Container(engine), Start::Container(_)) => {
+                container::first(engine, cx).map(Some)
             }
             (Kind::Ssh(remote), Start::Ssh(_)) => ssh::first(remote, cx).map(Some),
             _ => Err(MISMATCH.to_owned()),
@@ -274,8 +279,8 @@ impl Start {
     fn next(&mut self, settings: &Runtime, cx: &Ctx<'_>, out: &Outcome<'_>) -> Next {
         match (&settings.kind, self) {
             (Kind::Command(_), Start::Command) => command::next(out),
-            (Kind::Container(container), Start::Container(stage)) => {
-                container::next(container, stage, cx, out)
+            (Kind::Container(engine), Start::Container(stage)) => {
+                container::next(engine, stage, cx, out)
             }
             (Kind::Ssh(remote), Start::Ssh(link)) => ssh::next(remote, link, cx, out),
             _ => Next::Fail(MISMATCH.to_owned()),
@@ -285,8 +290,8 @@ impl Start {
     fn watch(&self, settings: &Runtime, cx: &Ctx<'_>) -> Result<Option<Launch>, String> {
         match (&settings.kind, self) {
             (Kind::Command(_), Start::Command) => Ok(None),
-            (Kind::Container(container), Start::Container(_)) => {
-                container::watch(container, cx).map(Some)
+            (Kind::Container(engine), Start::Container(_)) => {
+                container::watch(engine, cx).map(Some)
             }
             (Kind::Ssh(_), Start::Ssh(_)) => Ok(None),
             _ => Err(MISMATCH.to_owned()),
@@ -457,7 +462,7 @@ fn bind(root: &Path, name: &RuntimeName, poll: &mut Poll) -> Result<Listener, St
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o755)
-        .create(directory(root, name))
+        .create(pane::io_directory(root, name))
         .map_err(failed("runtime directory"))?;
     match fs::remove_file(&socket) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => {
@@ -522,6 +527,7 @@ impl Registry {
     ) -> Result<(Launch, ExecStart), String> {
         let socket = socket_path(&self.root, name);
         let cx = Ctx {
+            root: &self.root,
             name,
             env: &self.env,
             socket: &socket,
@@ -699,6 +705,7 @@ impl Registry {
         let start = Start::new(&settings);
         let socket = socket_path(&self.root, name);
         let cx = Ctx {
+            root: &self.root,
             name,
             env: &self.env,
             socket: &socket,
@@ -740,6 +747,7 @@ impl Registry {
             return;
         };
         let cx = Ctx {
+            root: &self.root,
             name,
             env: &self.env,
             socket: &socket,
@@ -834,7 +842,7 @@ impl Registry {
             .collect();
         for name in removable {
             self.deleting.remove(&name);
-            let _ = fs::remove_dir_all(directory(&self.root, &name));
+            let _ = pane::clear_directory(&self.root, &name);
         }
         let ready: Vec<RuntimeName> = self
             .links
@@ -882,6 +890,7 @@ impl Registry {
         }
         let socket = socket_path(&self.root, name);
         let cx = Ctx {
+            root: &self.root,
             name,
             env: &self.env,
             socket: &socket,
@@ -1048,6 +1057,7 @@ impl Registry {
     pub(crate) fn delete(&mut self, name: &RuntimeName, settings: &Runtime) {
         let socket = socket_path(&self.root, name);
         let cx = Ctx {
+            root: &self.root,
             name,
             env: &self.env,
             socket: &socket,
@@ -1077,7 +1087,7 @@ impl Registry {
         if self.cleanups.contains_key(name) {
             self.deleting.insert(name.clone());
         } else {
-            let _ = fs::remove_dir_all(directory(&self.root, name));
+            let _ = pane::clear_directory(&self.root, name);
         }
     }
 
@@ -1122,6 +1132,7 @@ impl Registry {
             .ok_or_else(|| format!("runtime {name} is down"))?;
         let socket = socket_path(&self.root, name);
         let cx = Ctx {
+            root: &self.root,
             name,
             env: &self.env,
             socket: &socket,
@@ -1226,7 +1237,7 @@ impl Registry {
         let Tokens::File { text, .. } = tokens(&link.settings, pane) else {
             return Ok(());
         };
-        let Some(path) = token_path(&socket_path(&self.root, name), &link.settings, pane) else {
+        let Some(path) = token_path(&self.root, name, &link.settings, pane) else {
             return Ok(());
         };
         fs::DirBuilder::new()
@@ -1247,11 +1258,10 @@ impl Registry {
     }
 
     pub(crate) fn remove_token(&self, name: &RuntimeName, pane: PaneId) {
-        let socket = socket_path(&self.root, name);
         if let Some(path) = self
             .links
             .get(name)
-            .and_then(|link| token_path(&socket, &link.settings, pane))
+            .and_then(|link| token_path(&self.root, name, &link.settings, pane))
         {
             let _ = fs::remove_file(path);
         }
@@ -1397,6 +1407,7 @@ impl Registry {
             None => Next::Fail("the up step vanished".to_owned()),
             Some(exit) => {
                 let cx = Ctx {
+                    root: &self.root,
                     name,
                     env: &self.env,
                     socket: &socket,
@@ -1450,6 +1461,7 @@ impl Registry {
             return;
         };
         let cx = Ctx {
+            root: &self.root,
             name,
             env: &self.env,
             socket,

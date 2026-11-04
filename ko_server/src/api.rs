@@ -818,7 +818,7 @@ routes! {
         send: ExecClient,
         recv: ExecServer,
     }
-    /// Takes the runtime down, as down without force does, and removes its directory.
+    /// Takes the runtime down, as down without force does, and removes its files except the empty io directory.
     DeleteRuntime { method: DELETE, path: /runtimes/{name: RuntimeName}, reply: Empty }
     /// The agents that a prompt can reach from the pane `from`. A pane identity may name only itself.
     PromptResolve {

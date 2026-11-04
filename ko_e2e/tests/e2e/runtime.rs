@@ -124,7 +124,7 @@ fn via(
     who: Option<(&str, &str)>,
     body: &Value,
 ) -> (u16, Value) {
-    let socket = s.dir.join("runtimes").join(runtime).join("socket");
+    let socket = s.dir.join("runtimes").join(runtime).join("io/socket");
     let extra: Vec<(&str, &str)> = who
         .map(|(pane, token)| vec![("Ko-Pane", pane), ("Ko-Pane-Token", token)])
         .unwrap_or_default();
@@ -169,7 +169,7 @@ runtimes:
     assert_eq!(mode(&file), 0o600);
     assert_eq!(mode(file.parent().unwrap()), 0o700);
     assert_eq!(mode(&s.dir.join("runtimes/dev")), 0o755);
-    assert_eq!(mode(&s.dir.join("runtimes/dev/socket")), 0o666);
+    assert_eq!(mode(&s.dir.join("runtimes/dev/io/socket")), 0o666);
     let written = fs::read_to_string(&file).unwrap();
     assert_eq!(written.len(), 32);
     let row = s.row(&pane);
@@ -283,7 +283,7 @@ runtimes:
         &format!("/panes/{r1}/view"),
         &format!("/panes/{r1}/search?needle=x"),
     ] {
-        let socket = s.dir.join("runtimes/dev/socket");
+        let socket = s.dir.join("runtimes/dev/io/socket");
         let mut sent = s.headers();
         sent.push(("Ko-Pane".to_owned(), r1.clone()));
         sent.push(("Ko-Pane-Token".to_owned(), t1.clone()));
@@ -534,7 +534,7 @@ runtimes:
         "the host cwd maps: {screen}"
     );
     assert!(screen.contains("V=runtime/request/1/dev"), "{screen}");
-    let socket = s.dir.join("runtimes/dev/socket");
+    let socket = s.dir.join("runtimes/dev/io/socket");
     assert!(
         screen.contains(&format!("S={}", socket.display())),
         "{screen}"
@@ -554,7 +554,7 @@ runtimes:
     // A parent in the host and its child in the runtime exchange messages through their own
     // sockets, and the child reads the output of its own child only.
     let child_creds = headers(&s, &[("Ko-Pane", &child), ("Ko-Pane-Token", &child_token)]);
-    let runtime_socket = s.dir.join("runtimes/dev/socket");
+    let runtime_socket = s.dir.join("runtimes/dev/io/socket");
     let message =
         |text: &str| json!({"id": format!("msg-{text}"), "kind": "message", "text": text});
     let up = via(
@@ -815,7 +815,7 @@ runtimes:
         !has_pane(&s, &p3) && !has_pane(&s, &p4),
         "the live panes were removed"
     );
-    assert!(!s.dir.join("runtimes/lead/socket").exists());
+    assert!(!s.dir.join("runtimes/lead/io/socket").exists());
 
     let leader = rt_pane(&s, "lead", "exec cat");
     poll("a third leader", || lines() == 3);
@@ -837,7 +837,12 @@ runtimes:
         &Value::Null,
     );
     assert_eq!(deleted.0, 200, "{}", deleted.1);
-    assert!(!s.dir.join("runtimes/lead").exists());
+    assert_eq!(
+        fs::read_dir(s.dir.join("runtimes/lead/io"))
+            .unwrap()
+            .count(),
+        0
+    );
 }
 
 #[test]
@@ -974,7 +979,7 @@ runtimes:
     wait_state(&s, "idle", "up");
     stop_pane(&s, &pane);
     wait_state(&s, "idle", "down");
-    assert!(!s.dir.join("runtimes/idle/socket").exists());
+    assert!(!s.dir.join("runtimes/idle/io/socket").exists());
     assert_eq!(
         state(&s, "kept"),
         "up",
@@ -1077,7 +1082,7 @@ fn a_configuration_that_cannot_be_used_fails_the_runtime_requests_and_not_the_se
 fn a_runtime_socket_path_over_the_limit_fails_the_start_with_advice() {
     let long = Dir::new(&"x".repeat(64));
     let socket = long.join("socket").as_os_str().len();
-    let runtime = long.join("runtimes/dev/socket").as_os_str().len();
+    let runtime = long.join("runtimes/dev/io/socket").as_os_str().len();
     assert!(socket <= 103 && runtime > 103, "{socket} {runtime}");
     let s = serve_in(long, "runtimes:\n  dev: {command: {}}\n", &[]);
     let pane = rt_pane(&s, "dev", "exec cat");

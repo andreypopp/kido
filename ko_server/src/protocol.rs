@@ -2770,6 +2770,7 @@ pub enum RuntimeKind {
     Ssh,
     Command,
     Container,
+    Podman,
 }
 
 /// The state of a runtime's link. The first pane of a runtime starts it, and the idle rule or a

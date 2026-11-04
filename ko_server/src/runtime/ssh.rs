@@ -7,10 +7,10 @@ use crate::config::{SUN_PATH_MAX, env_path, program_path};
 use crate::ids::PaneId;
 use crate::runtime::exec::Launch;
 use crate::runtime::{
-    Cleanup, Ctx, Ending, Entry, Next, Outcome, last_line, text, version_next, words,
+    Cleanup, Ctx, Ending, Entry, Next, Outcome, last_line, pane, text, version_next, words,
 };
 use crate::ssh::{
-    CONTROL, MASTER_OPTIONS, MASTER_SUFFIX, QueryFailure, SOCKET, control_args, forwarding_refused,
+    MASTER_OPTIONS, MASTER_SUFFIX, QueryFailure, SOCKET, control_args, forwarding_refused,
     no_remote_ko, query_failure, quote, reported_path, token_name,
 };
 use ko_config::runtime::Ssh;
@@ -42,10 +42,6 @@ impl Link {
     }
 }
 
-fn control(socket: &Path) -> PathBuf {
-    socket.with_file_name(CONTROL)
-}
-
 fn program(env: &[Vec<u8>]) -> Result<PathBuf, String> {
     let path = String::from_utf8_lossy(env_path(env));
     program_path(&path, "ssh").ok_or_else(|| "ssh: command not found".to_owned())
@@ -74,32 +70,28 @@ fn through(ctl: &Path) -> Vec<String> {
     args
 }
 
-fn passenger(
-    ssh: &Ssh,
-    (socket, env): (&Path, &[Vec<u8>]),
-    remote: Vec<String>,
-) -> Result<Launch, String> {
+fn passenger(ssh: &Ssh, cx: &Ctx<'_>, remote: Vec<String>) -> Result<Launch, String> {
     let mut args = words(&["-T"]);
-    args.extend(through(&control(socket)));
+    args.extend(through(&pane::control_path(cx.root, cx.name)));
     args.extend(["--".to_owned(), ssh.destination.as_str().to_owned()]);
     args.extend(remote);
-    launch(env, args)
+    launch(cx.env, args)
 }
 
-fn operation(
-    ssh: &Ssh,
-    (socket, env): (&Path, &[Vec<u8>]),
-    operation: &[&str],
-) -> Result<Launch, String> {
+fn operation(ssh: &Ssh, cx: &Ctx<'_>, operation: &[&str]) -> Result<Launch, String> {
     launch(
-        env,
-        control_args(&control(socket), operation, ssh.destination.as_str()),
+        cx.env,
+        control_args(
+            &pane::control_path(cx.root, cx.name),
+            operation,
+            ssh.destination.as_str(),
+        ),
     )
 }
 
-fn check_paths(socket: &Path) -> Result<(), String> {
-    let dir = socket.parent().unwrap_or(socket);
-    let shown = text(dir);
+fn check_paths(cx: &Ctx<'_>) -> Result<(), String> {
+    let dir = pane::directory(cx.root, cx.name);
+    let shown = text(&dir);
     if dir.as_os_str().len() + MASTER_SUFFIX > SUN_PATH_MAX {
         Err(format!(
             "runtime control path under {shown} exceeds {SUN_PATH_MAX} bytes; set KO_STATE_DIR to a shorter path"
@@ -114,18 +106,21 @@ fn check_paths(socket: &Path) -> Result<(), String> {
 }
 
 pub(crate) fn first(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Launch, String> {
-    check_paths(cx.socket)?;
+    check_paths(cx)?;
     check(ssh, cx)
 }
 
 pub(crate) fn check(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Launch, String> {
-    operation(ssh, (cx.socket, cx.env), &["-O", "check"])
+    operation(ssh, cx, &["-O", "check"])
 }
 
 fn lead(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Vec<String>, String> {
     let mut argv = vec![text(&program(cx.env)?)];
     argv.extend(words(&["-M", "-N", "-f", "-o"]));
-    argv.push(format!("ControlPath={}", text(&control(cx.socket))));
+    argv.push(format!(
+        "ControlPath={}",
+        text(&pane::control_path(cx.root, cx.name))
+    ));
     for option in ["ControlMaster=yes", "ControlPersist=yes"]
         .into_iter()
         .chain(MASTER_OPTIONS)
@@ -144,11 +139,7 @@ fn prepare(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Launch, String> {
         words.extend(["--dir", dir]);
     }
     words.extend(["--runtime", cx.name.as_str()]);
-    passenger(
-        ssh,
-        (cx.socket, cx.env),
-        words.iter().map(|word| quote(word)).collect(),
-    )
+    passenger(ssh, cx, words.iter().map(|word| quote(word)).collect())
 }
 
 /// The step after the leader's login: the master answers now.
@@ -197,11 +188,7 @@ fn forward(ssh: &Ssh, link: &Link, cx: &Ctx<'_>, operation_name: &str) -> Result
         .as_deref()
         .ok_or_else(|| "the remote directory is not known".to_owned())?;
     let spec = format!("{dir}/{SOCKET}:{}", text(cx.socket));
-    operation(
-        ssh,
-        (cx.socket, cx.env),
-        &["-O", operation_name, "-R", &spec],
-    )
+    operation(ssh, cx, &["-O", operation_name, "-R", &spec])
 }
 
 pub(crate) fn next(ssh: &Ssh, link: &mut Link, cx: &Ctx<'_>, out: &Outcome<'_>) -> Next {
@@ -216,7 +203,7 @@ pub(crate) fn next(ssh: &Ssh, link: &mut Link, cx: &Ctx<'_>, out: &Outcome<'_>) 
         }
         Stage::Check => {
             link.adopted = false;
-            let _ = fs::remove_file(control(cx.socket));
+            let _ = fs::remove_file(pane::control_path(cx.root, cx.name));
             match lead(ssh, cx) {
                 Ok(argv) => Next::Lead(argv),
                 Err(message) => Next::Fail(message),
@@ -268,18 +255,14 @@ pub(crate) fn token(ssh: &Ssh, link: &Link, cx: &Ctx<'_>, pane: PaneId) -> Resul
         .as_deref()
         .ok_or_else(|| "the remote directory is not known".to_owned())?;
     let file = quote(&format!("{dir}/{}", token_name(pane)));
-    passenger(
-        ssh,
-        (cx.socket, cx.env),
-        vec![format!("umask 077 && cat > {file}")],
-    )
+    passenger(ssh, cx, vec![format!("umask 077 && cat > {file}")])
 }
 
 /// The master is nobody's child: down asks it to exit, and the next `ko enter --prepare`
 /// clears what it leaves on the remote.
 pub(crate) fn cleanup(ssh: &Ssh, cx: &Ctx<'_>, what: Cleanup) -> Option<Launch> {
     match what {
-        Cleanup::Stop => operation(ssh, (cx.socket, cx.env), &["-O", "exit"]).ok(),
+        Cleanup::Stop => operation(ssh, cx, &["-O", "exit"]).ok(),
         Cleanup::Delete => None,
     }
 }
@@ -291,7 +274,7 @@ pub(crate) fn exec_launch(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Launch, String> {
     // sends, PATH or HOME), and the command would keep it. ssh finds the program by the
     // server's PATH, here, and runs without an environment; the remote login environment is
     // the command's.
-    let mut launch = passenger(ssh, (cx.socket, cx.env), vec![command])?;
+    let mut launch = passenger(ssh, cx, vec![command])?;
     launch.env.clear();
     Ok(launch)
 }
@@ -312,7 +295,7 @@ pub(crate) fn ending(exit: Exit, stderr: &[u8]) -> Ending {
 }
 
 pub(crate) fn entry(ssh: &Ssh, cx: &Ctx<'_>) -> Entry {
-    let ctl = control(cx.socket);
+    let ctl = pane::control_path(cx.root, cx.name);
     let prefix: Vec<Vec<u8>> = words(&["ssh", "-t"])
         .into_iter()
         .chain(through(&ctl))
@@ -347,6 +330,7 @@ mod tests {
 
     fn context<'a>(name: &'a RuntimeName, env: &'a [Vec<u8>], socket: &'a Path) -> Ctx<'a> {
         Ctx {
+            root: Path::new("/r"),
             name,
             env,
             socket,
@@ -400,7 +384,7 @@ mod tests {
             panic!("not ssh");
         };
         let name: RuntimeName = "box".parse().unwrap();
-        let socket = PathBuf::from("/r/box/socket");
+        let socket = PathBuf::from("/r/box/io/socket");
         let env = [b"PATH=/usr/bin:/bin".to_vec()];
         let own = version();
         let prepared = |protocol: &str, vt: &str| {
@@ -465,10 +449,12 @@ mod tests {
         };
         let name: RuntimeName = "box".parse().unwrap();
         let env = [b"PATH=/usr/bin:/bin".to_vec()];
-        let socket = PathBuf::from("/r/box/socket");
+        let socket = PathBuf::from("/r/box/io/socket");
         let cx = context(&name, &env, &socket);
         let launch = exec_launch(ssh, &cx).unwrap_or_else(|why| panic!("{why}"));
         assert_eq!(launch.args.last().unwrap(), "exec 'ko' 'enter' '--exec'");
+        assert!(launch.args.iter().any(|arg| arg == "/r/box/ctl"));
+        assert!(!launch.args.iter().any(|arg| arg == "/r/box/io/ctl"));
         assert!(
             launch
                 .args
@@ -485,7 +471,7 @@ mod tests {
         let token = token(
             ssh,
             &link,
-            &context(&name, &env, Path::new("/r/box/socket")),
+            &context(&name, &env, Path::new("/r/box/io/socket")),
             "pane_3".parse().unwrap(),
         )
         .unwrap();
@@ -503,7 +489,7 @@ mod tests {
         };
         let name: RuntimeName = "box".parse().unwrap();
         let env = [];
-        let socket = PathBuf::from("/r/box/socket");
+        let socket = PathBuf::from("/r/box/io/socket");
         let entry = entry(ssh, &context(&name, &env, &socket));
         assert_eq!(entry.prefix.last().unwrap(), b"box");
         assert_eq!(entry.ko, [b"exec".to_vec(), b"ko".to_vec()]);

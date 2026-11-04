@@ -343,7 +343,15 @@ Conventions:
   is its own, and a drop guard deletes that container on every exit;
   it never touches another container and pulls no image. It needs
   `make build-linux` first; with the variable set, a missing layout
-  or `container` CLI is a failure. CI does not set it. The suite drives `build/ko/bin/ko`,
+  or `container` CLI is a failure. CI does not set it.
+  The podman test (also in `container.rs`) runs only with `KO_E2E_PODMAN=1`, on
+  a Linux host with podman and the image
+  `docker.io/library/debian:trixie`: it drives a `podman` runtime
+  through one server with the host's static ko, under the same
+  naming, drop-guard and no-pull rules as the container test; with the
+  variable set, a missing `podman`, image or layout is a failure. CI
+  sets it on the Ubuntu runner only, after a pull of the image.
+  The suite drives `build/ko/bin/ko`,
   which `make e2e` builds first; a test never runs make or cargo.
   A test reads like command-line use: a step that a `ko` command can
   do (`ko api`, `ko kill-server`, `ko version`) runs that command
@@ -837,10 +845,14 @@ most easily:
   only the runtime's `env`, the request's `env` and `KO_RUNTIME`.
 - The server signals only an exec helper or a step that it spawned.
 - The `command` kind is test-only, behind `KO_RUNTIME_COMMAND_KIND=1`.
-- The container kind stops and deletes only the container `ko-<name>`
-  that it created from an image, never a `from.container`. Its cleanup
-  children never get `SIGTERM`, so a stop completes after the link
-  is gone.
+- The container and podman kinds stop and delete only the container
+  `ko-<name>` that they created from an image, never a
+  `from.container`. Their cleanup children never get `SIGTERM`, so a
+  stop completes after the link is gone. A runtime's socket is alone
+  in `io/`, which the podman kind mounts and ko never removes.
+- The podman kind runs only on Linux: its refusal on another OS
+  (`cfg!(target_os = "linux")` in `container.rs`) is the one platform
+  branch outside `ko_sys` that is not an OS call.
 
 **Native agent status.** Only OSC 7501 root apps `pi` and
 `claude-code` identify agent panes. Three pane variables supply local pi

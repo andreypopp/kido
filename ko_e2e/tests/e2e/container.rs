@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -24,17 +24,7 @@ fn the_static_linux_ko_runs_in_a_container() {
     if !enabled("KO_E2E_CONTAINER") {
         return;
     }
-    let host_ko = ko();
-    let layout = host_ko
-        .parent()
-        .and_then(Path::parent)
-        .unwrap()
-        .join("share/ko/linux/aarch64");
-    assert!(
-        layout.join("bin/ko").exists(),
-        "{} is missing: run make build-linux first",
-        layout.display()
-    );
+    let layout = layout(EngineKind::Apple);
     let container = which("container").expect("KO_E2E_CONTAINER needs the container CLI");
     let scratch = Dir::new("ko-container-");
     let env = test_env(&scratch);
@@ -56,7 +46,70 @@ fn the_static_linux_ko_runs_in_a_container() {
     assert_eq!(inside, host);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EngineKind {
+    Apple,
+    Podman,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EngineSpec {
+    program: &'static str,
+    arch: &'static str,
+    image: &'static str,
+    inspect: &'static [&'static str],
+    missing_exit: Exit,
+    missing_text: &'static str,
+    state_path: [&'static str; 2],
+    remove: &'static str,
+    stopped: &'static str,
+}
+
+impl EngineKind {
+    fn spec(self) -> EngineSpec {
+        match self {
+            Self::Apple => EngineSpec {
+                program: "container",
+                arch: "aarch64",
+                image: "debian:trixie",
+                inspect: &["inspect"],
+                missing_exit: Exit::Exited(1),
+                missing_text: "not found",
+                state_path: ["status", "state"],
+                remove: "delete",
+                stopped: "stopped",
+            },
+            Self::Podman => EngineSpec {
+                program: "podman",
+                arch: std::env::consts::ARCH,
+                image: "docker.io/library/debian:trixie",
+                inspect: &["container", "inspect"],
+                missing_exit: Exit::Exited(125),
+                missing_text: "no such container",
+                state_path: ["State", "Status"],
+                remove: "rm",
+                stopped: "exited",
+            },
+        }
+    }
+}
+
+fn layout(kind: EngineKind) -> PathBuf {
+    let layout = ko()
+        .parent()
+        .and_then(Path::parent)
+        .unwrap()
+        .join(format!("share/ko/linux/{}", kind.spec().arch));
+    assert!(
+        layout.join("bin/ko").exists(),
+        "{} is missing: run make build-linux first",
+        layout.display()
+    );
+    layout
+}
+
 struct Engine {
+    kind: EngineKind,
     container: PathBuf,
     scratch: Dir,
     name: String,
@@ -76,13 +129,22 @@ impl Engine {
     }
 
     fn state(&self) -> Option<String> {
-        let run = self.run(&["inspect", &format!("ko-{}", self.name)]);
-        if run.exit == Exit::Exited(1) && run.stderr.contains("not found") {
+        let target = format!("ko-{}", self.name);
+        let spec = self.kind.spec();
+        let mut args = spec.inspect.to_vec();
+        args.push(&target);
+        let run = self.run(&args);
+        if run.exit == spec.missing_exit && run.stderr.contains(spec.missing_text) {
             return None;
         }
         assert_eq!(run.exit, Exit::Exited(0), "{run:?}");
         let found: Value = serde_json::from_str(&run.stdout).unwrap();
-        Some(found[0]["status"]["state"].as_str().unwrap().to_owned())
+        Some(
+            found[0][spec.state_path[0]][spec.state_path[1]]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        )
     }
 
     fn wait_state(&self, want: Option<&str>) {
@@ -96,8 +158,9 @@ impl Engine {
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        let run = self.run(&["delete", "--force", &format!("ko-{}", self.name)]);
-        let gone = run.stderr.contains("not found");
+        let remove = self.kind.spec().remove;
+        let run = self.run(&[remove, "--force", &format!("ko-{}", self.name)]);
+        let gone = run.stderr.contains(self.kind.spec().missing_text);
         if std::thread::panicking() {
             eprintln!("container delete: {run:?}");
         } else {
@@ -128,19 +191,6 @@ impl Drop for Showing<'_> {
     }
 }
 
-fn screen_has(s: &Server, pane: &str, needle: &str) {
-    let last = RefCell::new(String::new());
-    let _showing = Showing(&last);
-    poll_for(
-        &format!("{needle} on the screen of {pane}"),
-        LINK_POLL,
-        || {
-            *last.borrow_mut() = s.screen(pane);
-            last.borrow().contains(needle)
-        },
-    );
-}
-
 fn shell_in(name: &str, script: &str) -> Value {
     json!({"runtime": name, "command": {"type": "shell", "command": script}})
 }
@@ -150,53 +200,122 @@ fn a_container_runtime_starts_on_the_first_pane_and_follows_its_container() {
     if !enabled("KO_E2E_CONTAINER") {
         return;
     }
-    let layout = ko()
-        .parent()
-        .and_then(Path::parent)
-        .unwrap()
-        .join("share/ko/linux/aarch64");
-    assert!(
-        layout.join("bin/ko").exists(),
-        "{} is missing: run make build-linux first",
-        layout.display()
-    );
-    let container = which("container").expect("KO_E2E_CONTAINER needs the container CLI");
-    let name = format!("ctr{}", std::process::id());
+    runtime_lifecycle(EngineKind::Apple);
+}
+
+#[test]
+fn a_podman_runtime_starts_on_the_first_pane_and_follows_its_container() {
+    if !enabled("KO_E2E_PODMAN") {
+        return;
+    }
+    if cfg!(target_os = "linux") {
+        runtime_lifecycle(EngineKind::Podman);
+    } else {
+        panic!("KO_E2E_PODMAN needs a Linux server");
+    }
+}
+
+fn runtime_lifecycle(kind: EngineKind) {
+    let spec = kind.spec();
+    let layout = layout(kind);
+    let program = spec.program;
+    let cli = which(program).expect("the enabled engine test needs its CLI");
+    let scratch = Dir::new("ko-e2e-engine-");
+    let container = match kind {
+        EngineKind::Apple => cli,
+        EngineKind::Podman => {
+            let wrapper = scratch.join("podman");
+            let mut script = String::from("#!/bin/sh\n");
+            for key in [
+                "HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_DATA_HOME",
+                "XDG_RUNTIME_DIR",
+            ] {
+                match std::env::var(key) {
+                    Ok(value) => script
+                        .push_str(&format!("export {key}={}\n", crate::harness::quote(&value))),
+                    Err(_) => script.push_str(&format!("unset {key}\n")),
+                }
+            }
+            script.push_str(&format!(
+                "exec {} \"$@\"\n",
+                crate::harness::quote(text_of(&cli))
+            ));
+            fs::write(&wrapper, script).unwrap();
+            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+            wrapper
+        }
+    };
+    let name = format!("e2e-{program}-{}", std::process::id());
     let engine = Engine {
+        kind,
         container: container.clone(),
-        scratch: Dir::new("ko-ctr-"),
+        scratch,
         name: name.clone(),
     };
+    if matches!(kind, EngineKind::Podman) {
+        let present = engine.run(&["image", "exists", spec.image]);
+        assert_eq!(
+            present.exit,
+            Exit::Exited(0),
+            "KO_E2E_PODMAN needs docker.io/library/debian:trixie already present: {present:?}"
+        );
+    }
     let volume = Dir::new("ko-vol-");
     fs::write(volume.join("hello.txt"), "from-the-host").unwrap();
     let host_volume = fs::canonicalize(&*volume).unwrap();
+    let user_name = format!("{name}-user");
+    let user_config = match kind {
+        EngineKind::Apple => String::new(),
+        EngineKind::Podman => format!(
+            "  {user_name}:\n    podman:\n      from: {{container: ko-{user_name}}}\n      podman: {}\n",
+            text_of(&container)
+        ),
+    };
     let text = format!(
         r#"
 runtimes:
   {name}:
-    container:
-      from: {{image: "debian:trixie"}}
-      container: {container}
+    {program}:
+      from: {{image: "{image}"}}
+      {program}: {container}
+      {run_args}
       volumes:
         - host: {host}
           runtime: /work
     env:
       FROM_CONFIG: "yes"
-"#,
+{user_config}"#,
+        run_args = match kind {
+            EngineKind::Apple => "",
+            EngineKind::Podman => "run_args: ['--pull=never']",
+        },
+        image = spec.image,
         container = text_of(&container),
         host = text_of(&host_volume),
     );
-    let s = serve_in(Dir::new("ko-"), &text, &[("KO_STOP_ESCALATION_MS", "2000")]);
+    let s = serve_in(
+        Dir::new("ko-"),
+        &text,
+        &[
+            ("KO_STOP_ESCALATION_MS", "2000"),
+            ("HOST_ONLY_SENTINEL", "secret"),
+            ("HTTP_PROXY", "http://ko-e2e-proxy.invalid:1234"),
+        ],
+    );
 
-    let script = "stty raw -echo; echo up-$KO_RUNTIME; echo S=$KO_SOCKET; echo T=$TERM; \
+    let script = "stty -echo; echo up-$KO_RUNTIME; echo S=$KO_SOCKET; echo T=$TERM; \
         echo D=$TERMINFO_DIRS; echo F=$FROM_CONFIG; echo H=$(cat /work/hello.txt); \
         echo V=$(/opt/ko/bin/ko api /version | grep -o '\"protocol\":\"[0-9.]*\"'); \
         echo P=$(/opt/ko/bin/ko api /panes | grep -o -m1 '\"runtime\":\"'$KO_RUNTIME'\"'); \
-        echo W=$PWD; exec cat";
+        echo I=$(test ! -e /run/ko/panes && echo private); \
+        echo E=${HOST_ONLY_SENTINEL-unset}/${HTTP_PROXY-unset}; echo W=$PWD; exec cat";
     let mut request = shell_in(&name, script);
     request["cwd"] = json!(text_of(&host_volume));
     let first = s.new_pane(request);
     let second = s.new_pane(shell_in(&name, "echo second-$KO_RUNTIME; exec cat"));
+    wait_link(&s, &name, "up");
     for needle in [
         format!("up-{name}"),
         "S=/run/ko/socket".to_owned(),
@@ -207,11 +326,15 @@ runtimes:
         "V=\"protocol\":\"1.0\"".to_owned(),
         format!("P=\"runtime\":\"{name}\""),
         "W=/work".to_owned(),
+        "I=private".to_owned(),
+        "E=unset/unset".to_owned(),
     ] {
-        screen_has(&s, &first, &needle);
+        s.screen_has(&first, &needle);
     }
-    screen_has(&s, &second, &format!("second-{name}"));
+    s.screen_has(&second, &format!("second-{name}"));
     assert_eq!(engine.state().as_deref(), Some("running"));
+    let io = s.dir.join(format!("runtimes/{name}/io"));
+    let inode = fs::metadata(&io).unwrap().ino();
 
     let env_file = s.dir.join(format!("runtimes/{name}/panes/{first}.env"));
     assert_eq!(
@@ -233,12 +356,12 @@ runtimes:
         CONTAINER_DEADLINE,
     )
     .ok();
-    assert!(ps.contains("container exec"), "{ps}");
+    assert!(ps.contains(&format!("{program} exec")), "{ps}");
     assert!(!ps.contains(&token), "the token is in an argv");
 
     let shell = s.new_pane(json!({"runtime": name}));
     s.text(&shell, "echo shell-$KO_RUNTIME\n");
-    screen_has(&s, &shell, &format!("shell-{name}"));
+    s.screen_has(&shell, &format!("shell-{name}"));
 
     let mut ws = start_exec(
         &s,
@@ -309,10 +432,12 @@ runtimes:
         200,
     );
     assert_eq!(state_of(&s, &name), "down");
-    engine.wait_state(Some("stopped"));
+    engine.wait_state(Some(spec.stopped));
 
-    let again = s.new_pane(shell_in(&name, "echo again-$KO_RUNTIME; exec cat"));
-    screen_has(&s, &again, &format!("again-{name}"));
+    let again = s.new_pane(shell_in(&name, "echo again-$KO_RUNTIME; echo API=$(/opt/ko/bin/ko api /version | grep -o '\"protocol\":\"[0-9.]*\"'); exec cat"));
+    wait_link(&s, &name, "up");
+    s.screen_has(&again, &format!("again-{name}"));
+    s.screen_has(&again, "API=\"protocol\":\"1.0\"");
     wait_link(&s, &name, "up");
     assert_eq!(
         engine.run(&["stop", &format!("ko-{name}")]).exit,
@@ -320,7 +445,7 @@ runtimes:
     );
     wait_link(&s, &name, "down");
     let revived = s.new_pane(shell_in(&name, "echo revived-$KO_RUNTIME; exec cat"));
-    screen_has(&s, &revived, &format!("revived-{name}"));
+    s.screen_has(&revived, &format!("revived-{name}"));
 
     s.request(
         "POST",
@@ -330,7 +455,74 @@ runtimes:
     );
     s.request("DELETE", &format!("/runtimes/{name}"), None, 200);
     engine.wait_state(None);
-    assert!(!s.dir.join(format!("runtimes/{name}")).exists());
+    assert_eq!(fs::metadata(&io).unwrap().ino(), inode);
+    assert_eq!(
+        fs::read_dir(s.dir.join(format!("runtimes/{name}/io")))
+            .unwrap()
+            .count(),
+        0
+    );
+    if kind == EngineKind::Podman {
+        let user = Engine {
+            kind,
+            container: engine.container.clone(),
+            scratch: Dir::new("ko-e2e-user-"),
+            name: user_name.clone(),
+        };
+        let user_io = s.dir.join(format!("runtimes/{user_name}/io"));
+        fs::create_dir_all(&user_io).unwrap();
+        let user_inode = fs::metadata(&user_io).unwrap().ino();
+        let target = format!("ko-{user_name}");
+        let socket_mount = format!("{}:/run/ko", text_of(&user_io));
+        let ko_mount = format!(
+            "type=bind,source={},target=/opt/ko,readonly",
+            text_of(&layout.canonicalize().unwrap())
+        );
+        user.run(&[
+            "run",
+            "-d",
+            "--name",
+            &target,
+            "--init",
+            "--security-opt",
+            "label=disable",
+            "--http-proxy=false",
+            "-v",
+            &socket_mount,
+            "--mount",
+            &ko_mount,
+            "--pull=never",
+            spec.image,
+            "sleep",
+            "infinity",
+        ])
+        .ok();
+        let command = "echo API=$(/opt/ko/bin/ko api /version | grep -o '\"protocol\":\"[0-9.]*\"'); exec cat";
+        let first = s.new_pane(shell_in(&user_name, command));
+        wait_link(&s, &user_name, "up");
+        s.screen_has(&first, "API=\"protocol\":\"1.0\"");
+        s.request(
+            "POST",
+            &format!("/runtimes/{user_name}/down"),
+            Some(&json!({"force": true})),
+            200,
+        );
+        assert_eq!(user.state().as_deref(), Some("running"));
+        s.request("DELETE", &format!("/runtimes/{user_name}"), None, 200);
+        assert_eq!(user.state().as_deref(), Some("running"));
+        assert_eq!(fs::metadata(&user_io).unwrap().ino(), user_inode);
+        let again = s.new_pane(shell_in(&user_name, command));
+        wait_link(&s, &user_name, "up");
+        s.screen_has(&again, "API=\"protocol\":\"1.0\"");
+        s.request(
+            "POST",
+            &format!("/runtimes/{user_name}/down"),
+            Some(&json!({"force": true})),
+            200,
+        );
+        s.request("DELETE", &format!("/runtimes/{user_name}"), None, 200);
+        assert_eq!(user.state().as_deref(), Some("running"));
+    }
 }
 
 #[test]
@@ -341,18 +533,24 @@ fn a_container_runtime_that_cannot_start_fails_and_leaves_no_socket() {
 runtimes:
   nocli:
     container: {from: {image: x}, container: no-such-container-cli}
+  linuxonly:
+    podman: {from: {image: x}, podman: no-such-podman-cli}
   gone:
     container: {from: {image: x}, container: /nonexistent/container}
 ",
         &[],
     );
-    for (name, message) in [
+    let mut cases = vec![
         (
             "nocli",
             "no-such-container-cli: command not found on the PATH of the server",
         ),
         ("gone", "the up step did not start:"),
-    ] {
+    ];
+    if !cfg!(target_os = "linux") {
+        cases.push(("linuxonly", "the podman kind runs only on a Linux server"));
+    }
+    for (name, message) in cases {
         s.new_pane(shell_in(name, "exec cat"));
         wait_link(&s, name, "failed");
         let info: Value =
@@ -360,6 +558,6 @@ runtimes:
                 .unwrap();
         let shown = info["state"]["message"].as_str().unwrap();
         assert!(shown.starts_with(message), "{name}: {shown}");
-        assert!(!s.dir.join(format!("runtimes/{name}/socket")).exists());
+        assert!(!s.dir.join(format!("runtimes/{name}/io/socket")).exists());
     }
 }

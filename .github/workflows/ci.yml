@@ -178,7 +178,14 @@ jobs:
               *) exit 1 ;;
             esac'
 
+      - name: Pull the Podman test image
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        run: podman pull docker.io/library/debian:trixie
+
       - name: Verify
+        env:
+          KO_E2E_PODMAN: ${{ runner.os == 'Linux' && '1' || '0' }}
         timeout-minutes: 35
         run: KO_VERUS_REQUIRED=1 KO_E2E_HOST_SSH=1 make verify
 

@@ -103,6 +103,7 @@ mod tests {
         let name: RuntimeName = "dev".parse().unwrap();
         let socket = PathBuf::from("/s");
         let cx = Ctx {
+            root: Path::new("/state/runtimes"),
             name: &name,
             env: &[],
             socket: &socket,

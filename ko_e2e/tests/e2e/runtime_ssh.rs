@@ -237,13 +237,15 @@ fn an_ssh_pane_rides_the_master_and_a_dead_master_ends_its_panes_and_never_recon
         "the directory stays until the farewell ends"
     );
     release(&s.scratch, &hold, "go");
-    poll("the directory to go with the farewell", || {
-        !s.dir.join("runtimes/box").exists()
+    poll("the control socket to go with the farewell", || {
+        !boxed.ctl().exists()
     });
+    assert_eq!(
+        fs::read_dir(s.dir.join("runtimes/box/io")).unwrap().count(),
+        0
+    );
     poll("the master to end", || !boxed.master("check"));
 
-    // A pane that comes while a delete waits for the farewell starts after it, in the directory
-    // that the delete would have removed.
     let led = boxed.leads();
     let before = calls("-O exit");
     let first = up_pane(s, "printf 'FIRST'");
@@ -616,7 +618,7 @@ fn a_master_that_still_holds_the_forward_is_adopted_with_the_forward_made_again(
     let spec = format!(
         "{}:{}",
         text_of(&boxed.dir.join("socket")),
-        text_of(&s.dir.join("runtimes/box/socket"))
+        text_of(&s.dir.join("runtimes/box/io/socket"))
     );
     let forwarded = boxed.ssh(&["-S", text_of(&ctl), "-O", "forward", "-R", &spec, HOST]);
     assert_eq!(

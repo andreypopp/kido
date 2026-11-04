@@ -1136,7 +1136,7 @@ active screen changed after a write.
 [design-runtimes.md](design-runtimes.md) gives the design. A runtime
 is a named place where panes and exec sessions run, from the server's
 configuration file. Each runtime has one listener at
-`<dir>/runtimes/<name>/socket`, bound while its link is up, which is
+`<dir>/runtimes/<name>/io/socket`, bound while its link is up, which is
 `KO_SOCKET` inside the runtime. Section 1 gives the identity rule on
 it.
 
@@ -1193,7 +1193,8 @@ host-connection pane whose `runtime` is NAME. `POST /runtimes/NAME/down`
 takes the link down; it refuses while the runtime has live panes or
 exec sessions unless `force`, which removes the panes first.
 `DELETE /runtimes/NAME` refuses in the same way and also removes the
-runtime's directory. The server takes an idle runtime down on its own
+runtime's directory, except its empty `io/`, which a container may
+mount. The server takes an idle runtime down on its own
 (design-runtimes.md, "Down").
 
 **Clients** learn the runtimes from `/client`, not from a pane row:

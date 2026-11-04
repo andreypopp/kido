@@ -1760,6 +1760,7 @@ public enum KoSchema {
         case ssh
         case command
         case container
+        case podman
     }
 
     public typealias RuntimeName = String

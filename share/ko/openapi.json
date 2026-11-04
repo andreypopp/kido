@@ -3290,7 +3290,8 @@
         "enum": [
           "ssh",
           "command",
-          "container"
+          "container",
+          "podman"
         ],
         "type": "string"
       },
@@ -5849,7 +5850,7 @@
     },
     "/runtimes/{name}": {
       "delete": {
-        "description": "Takes the runtime down, as down without force does, and removes its directory.",
+        "description": "Takes the runtime down, as down without force does, and removes its files except the empty io directory.",
         "operationId": "DeleteRuntime",
         "parameters": [
           {

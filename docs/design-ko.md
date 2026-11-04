@@ -790,7 +790,7 @@ only the rules around them.
 `deny_unknown_fields` on every record, and schemars' derive gives its
 schema. A rule that serde cannot state, such as an absolute path, a
 name, a range, a connection-only `ssh_args` or an option of
-`container run` that ko owns, is the `TryFrom` of a newtype. Only the
+a container engine's `run` that ko owns, is the `TryFrom` of a newtype. Only the
 format is written by hand (`ko_config/src/yaml.rs`): saphyr-parser's
 events become a tree with positions, and one serde `Deserializer`
 reads it. It resolves scalars by the type that asks:

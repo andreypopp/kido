@@ -302,7 +302,7 @@
           "default": "shipped"
         },
         "run_args": {
-          "description": "More arguments of `container run`. ko refuses the options it owns.",
+          "description": "More arguments of the engine's `run`. ko refuses the options it owns.",
           "$ref": "#/$defs/RunArgs",
           "default": []
         },
@@ -311,7 +311,7 @@
           "default": "none"
         },
         "user": {
-          "description": "The user of every exec, as `container exec -u` takes it. Default: the image's.",
+          "description": "The user of every exec, as the engine's `exec -u` takes it. Default: the image's.",
           "anyOf": [
             {
               "$ref": "#/$defs/User"
@@ -535,6 +535,64 @@
         "runtime"
       ]
     },
+    "Podman": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/Source"
+        },
+        "init": {
+          "description": "The command that keeps the container alive.",
+          "$ref": "#/$defs/Init",
+          "default": [
+            "sleep",
+            "infinity"
+          ]
+        },
+        "ko": {
+          "$ref": "#/$defs/Ko",
+          "default": "shipped"
+        },
+        "podman": {
+          "description": "The `podman` program. Default: `podman` on the PATH of the server.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Program"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "run_args": {
+          "description": "More arguments of the engine's `run`. ko refuses the options it owns.",
+          "$ref": "#/$defs/RunArgs",
+          "default": []
+        },
+        "user": {
+          "description": "The user of every exec, as the engine's `exec -u` takes it. Default: the image's.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/User"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "volumes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Volume"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from"
+      ]
+    },
     "PrecisionScroll": {
       "description": "A number of at least 0.01 and at most 100.",
       "type": "number",
@@ -559,7 +617,7 @@
       "pattern": "^/[^:%\\n\\u0000]*$"
     },
     "RunArgs": {
-      "description": "arguments of `container run` without an option that ko owns",
+      "description": "arguments of the container engine's `run` without an option that ko owns",
       "type": "array",
       "items": {
         "type": "string"
@@ -630,6 +688,17 @@
           "$ref": "#/$defs/RuntimePi",
           "default": "host"
         },
+        "podman": {
+          "description": "A Podman container on a Linux server.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Podman"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "ssh": {
           "description": "A runtime on an ssh host, reached through one ssh master that the first pane logs in.\nko must be installed there, on the PATH of ssh commands.",
           "anyOf": [
@@ -672,6 +741,16 @@
           },
           "required": [
             "command"
+          ]
+        },
+        {
+          "properties": {
+            "podman": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "podman"
           ]
         }
       ]
@@ -793,7 +872,7 @@
           ]
         },
         {
-          "description": "A container that the user created with `-v <runtime socket>:/run/ko/socket` and manages.",
+          "description": "A container that the user created with the runtime socket shared and manages.",
           "type": "object",
           "properties": {
             "container": {

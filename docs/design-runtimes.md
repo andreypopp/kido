@@ -2,7 +2,8 @@
 
 A **runtime** is a named place where a pane's program runs and where
 an exec session runs a command: an Apple container (the `container`
-kind), an ssh host (the `ssh` kind), and the test-only `command` kind.
+kind), a Podman container on a Linux server (the `podman` kind), an
+ssh host (the `ssh` kind), and the test-only `command` kind.
 The host is the implicit runtime of every other pane. This document
 describes the runtime core: the configuration, the link, the listener
 and the identity on it, how a pane starts in a runtime, the exec
@@ -27,7 +28,8 @@ file"). The coordinator's modules are `ko_server/src/runtime/`: `mod.rs` (the re
 one dispatch over the kinds), `pane.rs` (the runtime directory's
 layout, the cwd mapping and a pane's host-side argv), `command.rs`
 (what only the `command` kind does), `container.rs` (the container
-kind: its start stages, its argvs and its cleanup), `ssh.rs` (the ssh
+and podman kinds: one stage machine, its argvs and its cleanup, with
+a table of facts for each engine), `ssh.rs` (the ssh
 kind: its start stages, its argvs, the remote quoting and the
 classification of ssh's exits), `exec.rs` (the helper process,
 the session's stages and the session limiter) and `leaving.rs` (the
@@ -79,8 +81,8 @@ and the ssh option classifier (`ssh_args.rs`). The fields that every runtime has
 are its `env`, its default `cwd`, the `paths` prefix list of the cwd
 mapping, `pi`, where an agent's pi runs ("Agents in a runtime"), and
 `color`, an sRGB `#rrggbb` that clients draw the runtime in
-("Clients"). The kind is one key beside them, `ssh`, `container` or
-`command`, whose value holds the kind's fields; an entry gives exactly
+("Clients"). The kind is one key beside them, `ssh`, `container`,
+`podman` or `command`, whose value holds the kind's fields; an entry gives exactly
 one. `GET /runtimes/NAME` reports the effective `paths`, the `cwd`,
 `pi` and the `color`; a spawner and a routed pi read the first three.
 
@@ -186,16 +188,24 @@ the rule; read when the timer starts), on a loop timer.
 `POST /runtimes/NAME/down` refuses while the runtime has live panes or
 exec sessions, unless `force`, which removes them first as a stop
 does. `DELETE /runtimes/NAME` refuses in the same way, takes the link
-down and removes the runtime directory. Down unbinds the listener,
+down and removes the runtime directory but its empty `io/` ("The
+runtime directory"). Down unbinds the listener,
 removes the socket and the token files and closes the runtime's
 connections. At its exit the server takes every link down after the
 panes. Nothing reconnects on its own: the next pane or exec starts
 the link again.
 
-**The runtime directory** is `<state>/runtimes/<name>/`, mode `0755`,
-with the listener's `socket` in it, mode `0666`, so a process of any
+**The runtime directory** is `<state>/runtimes/<name>/`. The
+listener's `socket`, mode `0666`, is alone in its subdirectory `io/`,
+mode `0755`, so a process of any
 uid inside a container can connect through a relay, inside the `0700`
-state directory that no other host user traverses. A socket path over
+state directory that no other host user traverses. `io/` holds nothing
+else, because the podman kind mounts it into the container, and the
+token files are in the sibling `panes/`. ko creates `io/` once and
+never removes it: down removes the socket, and `DELETE` removes every
+other entry of the runtime directory, so a container that mounts
+`io/` keeps a valid mount across a down, a `DELETE` and a server
+restart. A socket path over
 103 bytes fails the start with `runtime socket path exceeds 103
 bytes; set KO_STATE_DIR to a shorter path`.
 
@@ -279,19 +289,19 @@ The server keeps no host path for a runtime pane that never reported
 a pwd: its start directory is the wrapper's, on the host.
 
 **The token** never appears in an argv, because `ps` shows every
-user's arguments. For the `command` and `container` kinds, the server
+user's arguments. For the `command`, `container` and `podman` kinds, the server
 writes the pane's token file in `<state>/runtimes/<name>/panes/`
 (directory `0700`, file `0600`) before it answers `Up` to that pane's
 wait, and removes it when the pane leaves the document and at down.
 The kind chooses the file's name and text: `pane_N.token` with the
 bare token, which `ko enter` reads, or the container kind's
 `pane_N.env`, an env file with `KO_PANE_TOKEN=...`, which `container
-exec --env-file` reads. The ssh kind's token file is on the remote
+exec --env-file` and `podman exec --env-file` read. The ssh kind's token file is on the remote
 ("The ssh kind").
 `ko enter --token-file F` reads and unlinks it; a file that is missing
 or not private is `ko enter: no token`, exit 1. Without
 `--token-file`, `ko enter` takes `KO_PANE_TOKEN` from its environment,
-which the container kind uses. Where the token is readable: on the
+which the container and podman kinds use. Where the token is readable: on the
 host, in the wrapper's environment (`ps -E` shows only the caller's
 own processes on macOS, and `/proc/PID/environ` is `0400` on Linux)
 and in the `0600` files; inside the runtime, in the pane's
@@ -352,7 +362,7 @@ three non-blocking pipes on the loop and reaps on `SIGCHLD`. On every
 kind the helper's transport runs `ko enter --exec` of the ko inside
 the runtime, which runs the command: for `command`, the `prefix`,
 then the server's own ko; for `container`, `container exec` ("The
-container kind"); for ssh, a passenger ("The ssh kind"). The argv is
+container kind"); for `podman`, `podman exec` ("The podman kind"); for ssh, a passenger ("The ssh kind"). The argv is
 only `ko enter --exec`: the command, its cwd, its environment and the
 escalation go in the first frame, so no value of the runtime's `env`
 appears in an argv, which `ps` shows to every user.
@@ -551,6 +561,100 @@ stage only when the queue is empty, so an old stop never stops a new
 start's container. The reply to `DELETE` does not wait for the
 removal. At the server's exit the stops start without the queue's
 order and finish after the server is gone.
+
+## The podman kind
+
+The `podman` kind runs a runtime's panes and exec sessions in one
+Podman container on the same Linux host as the server, through the
+`podman` CLI (measured with podman 6.0.2, rootless, SELinux
+enforcing, in Fedora CoreOS). The fields are `Podman` in
+`ko_config/src/runtime.rs`: those of the container kind without
+`ssh_agent`, and `podman` for the program; the configuration holds
+both kinds as one `Kind::Container` with an `Engine`, so the server
+dispatches them as one kind. They share `container.rs`: the stages, the target
+`ko-<name>` or the user's container, the inner ko, the env-file
+token, the watch and the cleanup queue are the same, and only the
+argvs and the classification of the CLI's output differ. The podman
+kind runs only on a Linux server: on another OS the first stage
+fails with `the podman kind runs only on a Linux server`, and no
+podman command runs, the cleanup included. The refusal is at the
+link start, not at the decode, so one `config.yaml` decodes on every
+host and `GET /runtimes` lists the entry; it is the one platform
+branch outside `ko_sys` that is a rule, not an OS call.
+
+```yaml
+runtimes:
+  box:
+    podman:
+      from: {image: docker.io/library/debian:trixie}
+      volumes:
+        - {host: /home/me/src, runtime: /src}
+      user: "1000"
+    cwd: /src
+```
+
+**The socket.** The container mounts the runtime's `io/` directory at
+`/run/ko` (`-v <runtime>/io:/run/ko`), so `KO_SOCKET` inside is
+`/run/ko/socket`. A bind mount of the socket file pins its inode, and a
+connect after a re-bind is `ECONNREFUSED`; a directory mount follows
+the new socket. The container runs with `--security-opt
+label=disable`, because under SELinux a connect to a host socket in a
+bind-mounted directory is `EACCES` (a `:z` relabel does not help). A
+user's container (`from: {container}`) must have been created with
+`--security-opt label=disable -v <dir>:/run/ko`, where `<dir>` is the
+parent of the `socket` that `GET /runtimes/{name}` reports; else the
+start fails and names that `-v`. Because ko never removes `io/`, the
+user's container keeps working after a down or a `DELETE`.
+
+**Rootless and rootful.** The kind runs the `podman` that the server
+finds, as the server's user: rootless for a user's server, rootful for
+a server that runs as root. The runtime listener admits any peer uid
+("Identity on a runtime connection"): rootless, container root reaches
+the host as the user's uid and `--user 1000` as a subuid (`100999`
+measured), and the token is the identity.
+
+**The ko inside.** `ko: shipped` mounts the static Linux ko of
+`share/ko/linux/<arch>` read-only at `/opt/ko`, where `<arch>` is the
+server's own architecture (`aarch64` or `x86_64`), because the
+container shares the host's kernel; another architecture fails the
+start. `{mount: DIR}` and `path` are as for the container kind.
+
+**The start stages** have no system check, because podman has no
+service to start; a broken podman fails the inspect with its own
+error:
+
+1. `podman container inspect <target>`. A missing
+   container of an image runtime goes to `podman run -d --name
+   ko-<name> --init --security-opt label=disable --http-proxy=false`,
+   the `io/` mount, each volume as `-v`, the `/opt/ko` mount,
+   `run_args`, the image and `init`. A stopped container goes to
+   `podman start`, a running one to the next stage; for a user's
+   container this stage checks the `/run/ko` mount.
+2. `podman exec <target> <ko> version`, the container kind's version
+   check; a missing executable is exit 127.
+
+`--http-proxy=false` because `podman run` otherwise copies the
+server's proxy variables into the container's environment, and every
+later exec sees them, which breaks the rule that nothing of the
+server's environment reaches a runtime ("The exec session").
+`run_args` refuses the options that ko sets (`ko_config/src/values.rs`).
+
+**A pane** runs `podman exec -t -i [-u USER] --env-file
+<panes>/pane_N.env <target> <ko> enter --socket /run/ko/socket ...`,
+the container kind's argv with the other program. `podman exec` copies
+no variable of the host without an explicit `-e` (podman-exec(1)), and
+ko gives none and no `-w`. **An exec session** runs `podman exec -i
+[-u USER] <target> <ko> enter --exec`, **the watch** `podman exec -i
+<target> <ko> enter --watch`, with the container kind's semantics: an
+outside `podman stop` ends the watch and takes the link `Down`.
+
+**Down and cleanup** are the container kind's, with `podman stop` and
+`podman rm --force`, only for a container that ko created.
+
+**No `ssh_agent`.** The host agent's socket path belongs to a login
+session, and the container outlives it. A user who keeps an agent at a
+stable path (a systemd user socket under `$XDG_RUNTIME_DIR`) mounts
+its directory through `volumes` and sets `SSH_AUTH_SOCK` in `env`.
 
 ## The ssh kind
 
@@ -774,7 +878,8 @@ left the group survives.
 Fixed before the design, 2026-11-03:
 
 - The first kinds are `ssh` and Apple's `container`, both validated on
-  this Mac; podman on Linux and Firecracker are later ("Not built").
+  this Mac; podman on Linux followed ("The podman kind"), and
+  Firecracker is later ("Not built").
   The podman-machine transport of macOS is out of scope.
 - A pane in a runtime gets a `KO_SOCKET` that belongs to that runtime
   only, and every pane, run and agent that a runtime pane creates is
@@ -799,6 +904,17 @@ Fixed before the design, 2026-11-03:
   `ko ssh` pane.
 - `starting runtime NAME` is the whole text of a waiting pane; a
   container image pull shows no progress there.
+
+Podman kind, 2026-11-04:
+
+- A `podman` kind for a server on Linux with podman on the same host;
+  the podman-machine transport of macOS stays out of scope, and the
+  kind refuses at the link start on another OS, not at the decode.
+- The container mounts the directory of the socket, not the socket
+  file, and every kind's socket moves into `io/`, which holds only
+  the socket and which ko never removes.
+- No `ssh_agent` for podman (see "The podman kind").
+- The podman e2e runs on CI's Ubuntu runner, behind `KO_E2E_PODMAN=1`.
 
 The configuration file, 2026-11-04:
 
@@ -826,7 +942,7 @@ The configuration file, 2026-11-04:
   `deny_unknown_fields`. A derived raw record with the three optional
   keys converts through `try_from` into the runtime, whose kind is an
   enum; the schema states the rule as a `oneOf` of `required` keys.
-- The error for zero or two kinds names `ssh` and `container` only:
+- The error for zero or two kinds names `ssh`, `container` and `podman` only:
   `command` is a test kind, and the server's knob check explains it.
 
 2026-11-04:
@@ -978,18 +1094,6 @@ scheduled.
   an argument of `ko enter`, the version check runs through whatever
   carries the first exec, and the status model reads only the inner
   records. About 7 agent-days with `ko guest` and a Firecracker kind.
-- **podman on Linux.** The link is a running container with the
-  runtime directory bind-mounted (`-v <rt dir>:/run/ko`), because a
-  file mount pins the old inode (`ECONNREFUSED` after a re-bind) while
-  a directory mount follows it; the pane is `podman exec -it -e -w ...
-  ko enter`. Measured in the `podman machine` VM (Fedora CoreOS,
-  podman 6.0.2, rootless, SELinux enforcing): a host unix socket in a
-  bind-mounted directory is `EACCES` until the container runs with
-  `--security-opt label=disable` (`:z` does not help); the peer uid
-  that the host sees is the user's for container root and a subuid
-  (`100999`) for `--user 1000`, which the runtime listener ignores by
-  design. The kind is the container kind's module with a second argv
-  table, about 2 agent-days.
 - **Firecracker on Linux (KVM).** Its vsock device forwards a guest
   connection to CID 2 port P to the host unix socket `<uds_path>_P`,
   so the runtime listener is bound at that name and nothing on the

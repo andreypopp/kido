@@ -429,7 +429,7 @@ export interface paths {
         get: operations["GetRuntime"];
         put?: never;
         post?: never;
-        /** @description Takes the runtime down, as down without force does, and removes its directory. */
+        /** @description Takes the runtime down, as down without force does, and removes its files except the empty io directory. */
         delete: operations["DeleteRuntime"];
         options?: never;
         head?: never;
@@ -1416,7 +1416,7 @@ export interface components {
             state: components["schemas"]["LinkState"];
         };
         /** @enum {string} */
-        RuntimeKind: "ssh" | "command" | "container";
+        RuntimeKind: "ssh" | "command" | "container" | "podman";
         /** @description One to 32 bytes of a to z, 0 to 9 and -. host is not a runtime name. */
         RuntimeName: string;
         /** @description Where an agent's pi runs when it works in a runtime. */

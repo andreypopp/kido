@@ -27,7 +27,7 @@ pub enum RuntimePi {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(extend("oneOf" = [{"required": ["ssh"], "properties": {"ssh": {"type": "object"}}}, {"required": ["container"], "properties": {"container": {"type": "object"}}}, {"required": ["command"], "properties": {"command": {"type": "object"}}}]))]
+#[schemars(extend("oneOf" = [{"required": ["ssh"], "properties": {"ssh": {"type": "object"}}}, {"required": ["container"], "properties": {"container": {"type": "object"}}}, {"required": ["command"], "properties": {"command": {"type": "object"}}}, {"required": ["podman"], "properties": {"podman": {"type": "object"}}}]))]
 struct RawRuntime {
     /// Variables for every pane of the runtime, applied before the variables of the request.
     #[serde(default)]
@@ -52,6 +52,9 @@ struct RawRuntime {
     /// A container of Apple's `container`, which ko creates from an image or finds by name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     container: Option<Container>,
+    /// A Podman container on a Linux server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    podman: Option<Podman>,
     /// A runtime on the host, for the tests of the link machinery. The server accepts it only
     /// with KO_RUNTIME_COMMAND_KIND=1 in its environment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -73,7 +76,7 @@ pub struct Runtime {
 pub enum Kind {
     Ssh(Ssh),
     Command(Command),
-    Container(Container),
+    Container(Engine),
 }
 
 impl Runtime {
@@ -87,7 +90,7 @@ impl Runtime {
     pub fn paths(&self) -> Vec<PathMap> {
         let volumes: &[Volume] = match &self.kind {
             Kind::Command(_) | Kind::Ssh(_) => &[],
-            Kind::Container(container) => &container.volumes,
+            Kind::Container(engine) => engine.options().volumes,
         };
         volumes
             .iter()
@@ -114,11 +117,12 @@ impl TryFrom<RawRuntime> for Runtime {
     type Error = &'static str;
 
     fn try_from(raw: RawRuntime) -> Result<Runtime, &'static str> {
-        let kind = match (raw.ssh, raw.container, raw.command) {
-            (Some(ssh), None, None) => Kind::Ssh(ssh),
-            (None, Some(container), None) => Kind::Container(container),
-            (None, None, Some(command)) => Kind::Command(command),
-            _ => return Err("give exactly one of ssh, container"),
+        let kind = match (raw.ssh, raw.container, raw.podman, raw.command) {
+            (Some(ssh), None, None, None) => Kind::Ssh(ssh),
+            (None, Some(container), None, None) => Kind::Container(Engine::Apple(container)),
+            (None, None, Some(podman), None) => Kind::Container(Engine::Podman(podman)),
+            (None, None, None, Some(command)) => Kind::Command(command),
+            _ => return Err("give exactly one of ssh, container, podman"),
         };
         Ok(Runtime {
             env: raw.env,
@@ -133,10 +137,11 @@ impl TryFrom<RawRuntime> for Runtime {
 
 impl From<Runtime> for RawRuntime {
     fn from(runtime: Runtime) -> RawRuntime {
-        let (mut ssh, mut container, mut command) = (None, None, None);
+        let (mut ssh, mut container, mut podman, mut command) = (None, None, None, None);
         match runtime.kind {
             Kind::Ssh(kind) => ssh = Some(kind),
-            Kind::Container(kind) => container = Some(kind),
+            Kind::Container(Engine::Apple(kind)) => container = Some(kind),
+            Kind::Container(Engine::Podman(kind)) => podman = Some(kind),
             Kind::Command(kind) => command = Some(kind),
         }
         RawRuntime {
@@ -147,6 +152,7 @@ impl From<Runtime> for RawRuntime {
             color: runtime.color,
             ssh,
             container,
+            podman,
             command,
         }
     }
@@ -157,7 +163,7 @@ impl From<Runtime> for RawRuntime {
 pub enum Source {
     /// A container that ko creates from the image and owns: down stops it and DELETE removes it.
     Image(Operand),
-    /// A container that the user created with `-v <runtime socket>:/run/ko/socket` and manages.
+    /// A container that the user created with the runtime socket shared and manages.
     Container(Operand),
 }
 
@@ -208,10 +214,10 @@ pub struct Container {
     pub container: Option<Program>,
     #[serde(default)]
     pub volumes: Vec<Volume>,
-    /// The user of every exec, as `container exec -u` takes it. Default: the image's.
+    /// The user of every exec, as the engine's `exec -u` takes it. Default: the image's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user: Option<User>,
-    /// More arguments of `container run`. ko refuses the options it owns.
+    /// More arguments of the engine's `run`. ko refuses the options it owns.
     #[serde(default)]
     pub run_args: RunArgs,
     /// The command that keeps the container alive.
@@ -219,6 +225,28 @@ pub struct Container {
     pub init: Init,
     #[serde(default)]
     pub ssh_agent: SshAgent,
+    #[serde(default)]
+    pub ko: Ko,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Podman {
+    pub from: Source,
+    /// The `podman` program. Default: `podman` on the PATH of the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub podman: Option<Program>,
+    #[serde(default)]
+    pub volumes: Vec<Volume>,
+    /// The user of every exec, as the engine's `exec -u` takes it. Default: the image's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<User>,
+    /// More arguments of the engine's `run`. ko refuses the options it owns.
+    #[serde(default)]
+    pub run_args: RunArgs,
+    /// The command that keeps the container alive.
+    #[serde(default)]
+    pub init: Init,
     #[serde(default)]
     pub ko: Ko,
 }
@@ -252,4 +280,43 @@ pub struct Command {
     /// A step of the start that the server runs as its own child. Exit 0 continues the start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub up: Option<Argv>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Engine {
+    Apple(Container),
+    Podman(Podman),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerOptions<'a> {
+    pub from: &'a Source,
+    pub ko: &'a Ko,
+    pub user: &'a Option<User>,
+    pub volumes: &'a [Volume],
+    pub run_args: &'a RunArgs,
+    pub init: &'a Init,
+}
+
+impl Engine {
+    pub fn options(&self) -> ContainerOptions<'_> {
+        match self {
+            Engine::Apple(s) => ContainerOptions {
+                from: &s.from,
+                ko: &s.ko,
+                user: &s.user,
+                volumes: &s.volumes,
+                run_args: &s.run_args,
+                init: &s.init,
+            },
+            Engine::Podman(s) => ContainerOptions {
+                from: &s.from,
+                ko: &s.ko,
+                user: &s.user,
+                volumes: &s.volumes,
+                run_args: &s.run_args,
+                init: &s.init,
+            },
+        }
+    }
 }

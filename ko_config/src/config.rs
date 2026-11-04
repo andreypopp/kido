@@ -147,15 +147,15 @@ runtimes:
             ),
             (
                 "runtimes:\n  dev:\n    podman: {}\n",
-                "runtimes: dev: unknown field `podman`, expected one of `env`, `cwd`, `paths`, `pi`, `color`, `ssh`, `container`, `command` at line 3 column 5",
+                "runtimes: dev: podman: missing field `from` at line 3 column 13",
             ),
             (
                 "runtimes:\n  dev:\n    env: {A: b}\n",
-                "runtimes: dev: give exactly one of ssh, container at line 3 column 5",
+                "runtimes: dev: give exactly one of ssh, container, podman at line 3 column 5",
             ),
             (
                 "runtimes:\n  dev:\n    ssh: {destination: h}\n    container: {from: {image: x}}\n",
-                "runtimes: dev: give exactly one of ssh, container at line 3 column 5",
+                "runtimes: dev: give exactly one of ssh, container, podman at line 3 column 5",
             ),
             (
                 "runtimes:\n  dev:\n    ssh: {}\n",
@@ -301,7 +301,8 @@ runtimes:
     fn a_container_runtime_has_defaults_and_refuses_the_options_that_ko_owns() {
         let found =
             parse("runtimes:\n  c:\n    container: {from: {image: 'debian:trixie'}}\n").unwrap();
-        let Kind::Container(container) = runtime(&found, "c").kind else {
+        let Kind::Container(crate::runtime::Engine::Apple(container)) = runtime(&found, "c").kind
+        else {
             panic!("not a container");
         };
         assert_eq!(container.init.as_slice(), ["sleep", "infinity"]);
@@ -339,6 +340,60 @@ runtimes:
     }
 
     #[test]
+    fn podman_has_container_options_but_no_ssh_agent_and_is_one_kind() {
+        let found = parse("runtimes:\n  dev:\n    podman:\n      from: {image: x}\n      podman: /usr/bin/podman\n      volumes: [{host: /src, runtime: /work}]\n").unwrap();
+        let dev = runtime(&found, "dev");
+        let Kind::Container(crate::runtime::Engine::Podman(podman)) = &dev.kind else {
+            panic!("not podman")
+        };
+        assert_eq!(podman.init.as_slice(), ["sleep", "infinity"]);
+        assert_eq!(podman.ko, Ko::Shipped);
+        assert_eq!(dev.paths()[0].runtime.as_str(), "/work");
+        for key in ["ssh_agent: forward", "unknown: x"] {
+            assert!(
+                parse(&format!(
+                    "runtimes:\n  dev:\n    podman: {{from: {{image: x}}, {key}}}\n"
+                ))
+                .is_err()
+            );
+        }
+        for kind in [
+            "ssh: {destination: host}",
+            "container: {from: {image: x}}",
+            "command: {}",
+        ] {
+            assert!(
+                parse(&format!(
+                    "runtimes:\n  dev:\n    podman: {{from: {{image: x}}}}\n    {kind}\n"
+                ))
+                .is_err()
+            );
+        }
+        for arg in [
+            "--name=x",
+            "-d",
+            "--detach",
+            "--init=false",
+            "-v/a:/b",
+            "--volume",
+            "--mount",
+            "--security-opt=label=nested",
+            "--http-proxy=true",
+            "--rm",
+        ] {
+            let error = parse(&format!(
+                "runtimes:\n  dev:\n    podman: {{from: {{image: x}}, run_args: ['{arg}']}}\n"
+            ))
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("is set by ko"), "{arg}: {error}");
+        }
+        let encoded = serde_json::to_value(dev).unwrap();
+        assert_eq!(encoded["podman"]["podman"], "/usr/bin/podman");
+        assert!(encoded["podman"].get("ssh_agent").is_none());
+    }
+
+    #[test]
     fn an_empty_file_comments_and_a_file_without_runtimes_are_an_empty_config() {
         for text in ["", "# one\n# two\n", "runtimes:\n", "runtimes: {}\n"] {
             assert_eq!(parse(text), Ok(Config::default()), "{text:?}");
@@ -370,7 +425,10 @@ runtimes:
         };
         assert_eq!(
             verdict("    env: {A: b}\n"),
-            Err("runtimes: dev: give exactly one of ssh, container at line 3 column 5".to_owned())
+            Err(
+                "runtimes: dev: give exactly one of ssh, container, podman at line 3 column 5"
+                    .to_owned()
+            )
         );
         assert!(verdict("    ssh: {destination: h}\n    command: {}\n").is_err());
         assert_eq!(
