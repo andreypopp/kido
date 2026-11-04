@@ -1,8 +1,15 @@
+use std::time::{Duration, Instant};
+
 use ko_sys::event::{Events, Interest, Mode, Poll, Token};
 use ko_vt::compress::Tick;
 
 use crate::io::Stop;
 use crate::pane::Pane;
+
+const SMALL_READ_BYTES: usize = 128;
+const SMALL_READ_GAP: Duration = Duration::from_millis(1);
+const SMALL_READS: u8 = 3;
+const DELAY: Duration = Duration::from_micros(50);
 
 #[derive(Debug)]
 pub enum Outcome {
@@ -50,6 +57,38 @@ pub fn run(pane: &mut Pane) -> Outcome {
     outcome
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Pace {
+    #[default]
+    Immediate,
+    Small {
+        at: Instant,
+        count: u8,
+    },
+    Delayed,
+}
+
+impl Pace {
+    fn observe(&mut self, bytes: usize, now: Instant) {
+        if bytes == 0 || bytes >= SMALL_READ_BYTES {
+            *self = Self::Immediate;
+            return;
+        }
+        *self = match *self {
+            Self::Delayed => Self::Delayed,
+            Self::Small { at, count } if now.saturating_duration_since(at) < SMALL_READ_GAP => {
+                let count = count.saturating_add(1);
+                if count >= SMALL_READS {
+                    Self::Delayed
+                } else {
+                    Self::Small { at: now, count }
+                }
+            }
+            _ => Self::Small { at: now, count: 1 },
+        };
+    }
+}
+
 fn turns(pane: &mut Pane) -> Outcome {
     let mut poll = Poll::new();
     let input = poll.watch(pane.input_fd(), Interest::Read);
@@ -58,6 +97,8 @@ fn turns(pane: &mut Pane) -> Outcome {
     let mut master: Option<Token> = None;
     let timer = poll.timer();
     let foreground = poll.timer();
+    let coalesce = poll.timer();
+    let mut pace = Pace::default();
     let mut events = Events::default();
     let mut mode = Mode::Wait;
     loop {
@@ -66,8 +107,12 @@ fn turns(pane: &mut Pane) -> Outcome {
         }
         poll.interest(output, Interest::of(false, pane.output_pending()));
         if let Some((fd, interest)) = pane.pty() {
+            let delayed = poll.is_active(coalesce);
             let token = *master.get_or_insert_with(|| poll.watch(fd, Interest::Idle));
-            poll.interest(token, interest);
+            poll.interest(
+                token,
+                Interest::of(interest.reads() && !delayed, interest.writes()),
+            );
         }
         if let Err(error) = poll.turn(mode, &mut events) {
             return Outcome::Failed(Failure::call("poll")(error));
@@ -78,6 +123,7 @@ fn turns(pane: &mut Pane) -> Outcome {
                 .iter()
                 .any(|ready| ready.token == token && ready.read)
         };
+        let due = |timer| events.due().iter().any(|due| due.timer == timer);
         let activity = !events.ready().is_empty() || !events.due().is_empty();
         if ready(input)
             && let Err(stop) = pane.control()
@@ -90,11 +136,28 @@ fn turns(pane: &mut Pane) -> Outcome {
         {
             return Outcome::Failed(Failure::call("read the signal pipe")(error));
         }
-        if events.due().iter().any(|due| due.timer == foreground) {
+        if due(foreground) {
             pane.foreground_due();
         }
         pane.settle_child();
-        let committed = (master.is_some_and(ready) || pane.exit_pending()) && pane.read_pty();
+        let urgent = ready(input) || signals.is_some_and(ready) || pane.exit_pending();
+        if urgent {
+            pace = Pace::Immediate;
+        }
+        let committed = if master.is_some_and(ready) || urgent || due(coalesce) {
+            let bytes = pane.read_pty();
+            pace.observe(bytes, Instant::now());
+            if pace == Pace::Delayed {
+                if let Err(error) = poll.start(coalesce, DELAY, None) {
+                    return Outcome::Failed(Failure::call("arm the coalescing timer")(error));
+                }
+            } else {
+                poll.stop(coalesce);
+            }
+            bytes > 0
+        } else {
+            false
+        };
         let dead = pane.dead();
         pane.clear_history();
         pane.search_step();
@@ -126,5 +189,64 @@ fn turns(pane: &mut Pane) -> Outcome {
         if pane.searching() {
             mode = Mode::Peek;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn isolated_output_never_arms_a_delay() {
+        let start = Instant::now();
+        let mut pace = Pace::default();
+        for millis in [0, 10, 20, 30] {
+            let at = start + Duration::from_millis(millis);
+            pace.observe(3, at);
+            assert_eq!(pace, Pace::Small { at, count: 1 });
+        }
+    }
+
+    #[test]
+    fn only_sustained_small_output_is_coalesced() {
+        let start = Instant::now();
+        let mut pace = Pace::default();
+        pace.observe(3, start);
+        pace.observe(6, start + Duration::from_micros(10));
+        assert_eq!(
+            pace,
+            Pace::Small {
+                at: start + Duration::from_micros(10),
+                count: 2
+            }
+        );
+        pace.observe(3, start + Duration::from_micros(20));
+        assert_eq!(pace, Pace::Delayed);
+        pace.observe(1024, start + Duration::from_micros(70));
+        assert_eq!(pace, Pace::Immediate);
+        pace.observe(3, start + Duration::from_micros(80));
+        assert_eq!(
+            pace,
+            Pace::Small {
+                at: start + Duration::from_micros(80),
+                count: 1
+            }
+        );
+    }
+
+    #[test]
+    fn drained_output_returns_to_immediate_reads() {
+        let start = Instant::now();
+        let mut pace = Pace::Delayed;
+        pace.observe(0, start);
+        assert_eq!(pace, Pace::Immediate);
+        pace.observe(3, start);
+        assert_eq!(
+            pace,
+            Pace::Small {
+                at: start,
+                count: 1
+            }
+        );
     }
 }

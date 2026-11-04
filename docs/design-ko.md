@@ -207,7 +207,26 @@ at most 1 KiB for each pty read); parse that region in place, which
 runs the callbacks; publish the record; send the queued frames, and a
 `head` frame only if the coordinator is idle. A busy coordinator
 scans the ring on its 2 ms output tick, which runs only while output
-continues. The coordinator copies nothing: for each attached view it
+continues.
+
+A program that writes a few bytes for each `write` (`yes | head`,
+which writes each line alone) makes every read small: without a delay,
+`ko-pane` reads about 6 bytes each time, a million read attempts and
+half a million polls each second, and the syscalls, not the parse, use
+its whole core. So `ko-pane` paces its pty reads (`Pace` in
+`ko_pane/src/run.rs`, which holds the thresholds): after a few small
+reads in a row, close together, it stops watching the pty and reads
+again when a 50 µs timer expires, while the reads stay small. A
+large read, an empty read, a full ring, typed or control input, a
+signal and the program's exit return it to immediate reads. A quiet
+pane's first read, thus a keystroke's echo, is never delayed, and
+input reaches the pty without waiting for the timer. 50 µs is below
+the time that a flood of 3-byte writes takes to fill the macOS pty's
+1 KiB (about 250 µs), so the program never blocks on a full pty
+because of the delay. Each later read then gets a few hundred bytes.
+macOS `poll` takes whole milliseconds, so `ko_sys::event` waits with
+`select`, which takes microseconds, for a deadline below 1 ms; Linux
+waits with `ppoll`. The coordinator copies nothing: for each attached view it
 writes the ring region with one `write_vectored` (AGENTS.md, "The
 view write path"), and it allocates nothing on the heap for each
 record in steady state.
@@ -968,9 +987,11 @@ under 2. A change that moves a row past its rule names the new
 reference commit with the reason.
 
 Measurements on an M5 Max that fix the design: the pty read and the
-parse share one thread in `ko-pane`, and each 1 KiB read waits for the
-parse of the one before, so ingest is bound by the parser, and the
-ring and the coordinator hop cost nothing measurable; a 100k-line
+parse share one thread in `ko-pane`, and under bulk output (`cat`)
+each 1 KiB read waits for the parse of the one before, so ingest is
+bound by the parser, and the ring and the coordinator hop cost nothing
+measurable; under output of tiny writes, ingest is bound by the
+syscalls, which the read pacing of section 4.3 removes; a 100k-line
 history encodes in a few milliseconds and decodes in under ten, so
 snapshots go over the socket and need no file path; the hop from a pty byte to the coordinator's socket write
 is tens of microseconds; the coordinator idles under 15 MiB and an
@@ -978,6 +999,23 @@ idle `ko-pane` under 2 MiB of footprint; and on macOS the memory rows
 are judged by `phys_footprint`, because libghostty-vt frees compressed
 pages to the OS, which takes them back lazily, so RSS stays at its
 peak.
+
+The read pacing, measured in a 69x31 pane on a private server, one
+run at a time (CPU in seconds; key-to-frame for a quiet pane, and for
+a quiet pane beside a `yes` pane, both shown in the terminal client):
+
+| measurement | no pacing | pacing |
+|---|---|---|
+| `yes \| head -n 20000000`, terminal client, wall | 18.60 s | 15.07 s |
+| the same, `ko-pane` / coordinator CPU | 18.52 / 0.63 | 2.92 / 0.14 |
+| `cat` of 212 MB, wall | 1.62 s | 1.57 s |
+| key-to-frame, quiet pane, p50 / p99 | 0.38 / 1.20 ms | 0.29 / 0.90 ms |
+| key-to-frame beside `yes`, p50 / p99 | 8.38 / 9.01 ms | 8.26 / 9.37 ms |
+
+kitty 0.49.2 takes 18.9 s for the same `yes` at about 92 percent CPU
+for the whole terminal. A rule that returns to `poll` after each small
+read, with no delay, saved CPU but cost 0.8 to 1.5 s of wall time, because
+each small write then woke `ko-pane` again.
 
 ## 7. Decisions
 

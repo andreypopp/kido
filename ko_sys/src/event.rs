@@ -30,11 +30,11 @@ impl Interest {
         }
     }
 
-    fn reads(self) -> bool {
+    pub fn reads(self) -> bool {
         matches!(self, Interest::Read | Interest::ReadWrite)
     }
 
-    fn writes(self) -> bool {
+    pub fn writes(self) -> bool {
         matches!(self, Interest::Write | Interest::ReadWrite)
     }
 
@@ -314,13 +314,62 @@ pub struct Poll {
     arms: u64,
 }
 
-// macOS has no ppoll, so a sub-millisecond deadline rounds up to a whole millisecond.
+// macOS poll takes whole milliseconds, so sub-ms waits round up; select takes microseconds.
+// Select only waits. A first poll detects pending hangups that the sets cannot express;
+// a poll after readiness reports revents. Descriptors at or above FD_SETSIZE use poll.
 #[cfg(target_os = "macos")]
 fn wait_for(
     fds: &mut [libc::pollfd],
     count: libc::nfds_t,
     timeout: Option<Duration>,
 ) -> io::Result<libc::c_int> {
+    if let Some(left) = timeout.filter(|left| {
+        !left.is_zero()
+            && *left < Duration::from_millis(1)
+            && fds
+                .iter()
+                .all(|fd| usize::try_from(fd.fd).map_or(true, |fd| fd < libc::FD_SETSIZE))
+    }) {
+        // SAFETY: fds holds count initialized pollfd entries.
+        let ready = check(unsafe { libc::poll(fds.as_mut_ptr(), count, 0) })?;
+        if ready != 0 {
+            return Ok(ready);
+        }
+        // SAFETY: a zeroed fd_set has no descriptors set.
+        let (mut reads, mut writes): (libc::fd_set, libc::fd_set) = unsafe { std::mem::zeroed() };
+        let mut highest = 0;
+        for fd in fds.iter().filter(|fd| fd.fd >= 0) {
+            highest = highest.max(fd.fd + 1);
+            // SAFETY: fd is nonnegative and below FD_SETSIZE; both sets are initialized.
+            unsafe {
+                if fd.events & libc::POLLIN != 0 {
+                    libc::FD_SET(fd.fd, &mut reads);
+                }
+                if fd.events & libc::POLLOUT != 0 {
+                    libc::FD_SET(fd.fd, &mut writes);
+                }
+            }
+        }
+        let mut limit = libc::timeval {
+            tv_sec: 0,
+            tv_usec: left.subsec_nanos().div_ceil(1000) as libc::suseconds_t,
+        };
+        // SAFETY: the sets contain only open descriptors below highest; limit is valid.
+        if check(unsafe {
+            libc::select(
+                highest,
+                &mut reads,
+                &mut writes,
+                std::ptr::null_mut(),
+                &mut limit,
+            )
+        })? == 0
+        {
+            return Ok(0);
+        }
+        // SAFETY: fds holds count initialized pollfd entries.
+        return check(unsafe { libc::poll(fds.as_mut_ptr(), count, 0) });
+    }
     let millis = timeout.map_or(-1, |left| {
         let millis = left.as_nanos().div_ceil(1_000_000);
         libc::c_int::try_from(millis).unwrap_or(libc::c_int::MAX)
@@ -603,6 +652,26 @@ mod tests {
     use std::io::Write;
     use std::os::fd::AsFd;
     use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn a_fine_deadline_does_not_treat_unread_data_as_a_hangup() {
+        let (a, mut b) = UnixStream::pair().unwrap();
+        b.write_all(b"buffered").unwrap();
+        let mut poll = Poll::new();
+        poll.watch(a.as_fd(), Interest::Hangup);
+        let timer = poll.timer();
+        poll.start(timer, Duration::from_micros(500), None).unwrap();
+        let mut events = Events::default();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(Instant::now() < deadline);
+            poll.turn(Mode::Wait, &mut events).unwrap();
+            assert!(events.ready().is_empty());
+            if events.due().iter().any(|due| due.timer == timer) {
+                break;
+            }
+        }
+    }
 
     #[test]
     fn a_wake_makes_a_watched_pipe_readable_from_another_thread_until_it_is_drained() {

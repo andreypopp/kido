@@ -676,7 +676,7 @@ impl Pane {
         )
     }
 
-    pub(crate) fn read_pty(&mut self) -> bool {
+    pub(crate) fn read_pty(&mut self) -> usize {
         let out = &mut self.io.out;
         let Some(Live {
             vt,
@@ -689,12 +689,12 @@ impl Pane {
             ..
         }) = &mut self.live
         else {
-            return false;
+            return 0;
         };
         let room = out.available();
         if room == 0 {
             out.announce_full();
-            return false;
+            return 0;
         }
         let (mut used, mut reads) = (0, 0);
         while used < room && reads < MAX_READS {
@@ -712,7 +712,7 @@ impl Pane {
             }
         }
         if used == 0 {
-            return false;
+            return 0;
         }
         if let Some(bytes) = out.writer.pending(used) {
             vt.write(bytes);
@@ -749,7 +749,7 @@ impl Pane {
         collect(vt, pty_input);
         out.publish(RecordKind::Bytes, used);
         watch.after_read(process.master.as_fd(), out, event, Instant::now());
-        true
+        used
     }
 
     pub(crate) fn foreground_arm(&mut self) -> Option<Duration> {

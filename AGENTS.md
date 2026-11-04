@@ -575,7 +575,8 @@ Conventions:
   `scripts/lint.sh` refuses the other signal calls in `bench/`:
   `killpg`, a C `kill(-` and Python `os.kill`.
 - **Syscalls.** Every own libc call that can return `EINTR` goes
-  through `ko_sys::retry`. An `EINTR` from the loop's wait (`poll`, or `ppoll` on Linux) is a turn with no
+  through `ko_sys::retry`. An `EINTR` from the loop's wait (`poll`, `select` on macOS for a
+  deadline below 1 ms, or `ppoll` on Linux) is a turn with no
   events. A read of zero bytes is the end; `WouldBlock` is "not
   ready". Signal handlers have `SA_RESTART`, but no call relies on it.
 - **The loop.** Every ko process is one thread on `ko_sys::event`,
