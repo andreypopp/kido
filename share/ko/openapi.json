@@ -566,6 +566,26 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "properties": {
+              "inbox": {
+                "type": "boolean"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "inbox",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane",
+              "inbox"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -820,6 +840,9 @@
         },
         "type": "object"
       },
+      "Data": {
+        "description": "Any JSON value of at most 4096 bytes when encoded."
+      },
       "Dead": {
         "properties": {
           "at": {
@@ -1024,6 +1047,40 @@
       },
       "Empty": {
         "type": "object"
+      },
+      "End": {
+        "description": "How a pane that has a parent ended.",
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Dead"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "dead",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "gone",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "Error": {
         "oneOf": [
@@ -1622,6 +1679,10 @@
           "id": {
             "$ref": "#/components/schemas/PaneId"
           },
+          "inbox": {
+            "description": "True while the pane has its message stream open.",
+            "type": "boolean"
+          },
           "parent": {
             "$ref": "#/components/schemas/PaneId"
           },
@@ -1796,6 +1857,164 @@
           "file",
           "temp_file",
           "shared_mem"
+        ],
+        "type": "string"
+      },
+      "Message": {
+        "description": "A message on the message stream of a pane. The id is the sender's, so the receiver can drop a\nrepeat.",
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Payload"
+              }
+            ],
+            "properties": {
+              "kind": {
+                "const": "message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Payload"
+              }
+            ],
+            "properties": {
+              "kind": {
+                "const": "steer",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Payload"
+              }
+            ],
+            "properties": {
+              "kind": {
+                "const": "interrupt",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Payload"
+              }
+            ],
+            "properties": {
+              "kind": {
+                "const": "stop",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Payload"
+              }
+            ],
+            "properties": {
+              "kind": {
+                "const": "notice",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Payload"
+              }
+            ],
+            "properties": {
+              "kind": {
+                "const": "user",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "end": {
+                "$ref": "#/components/schemas/End"
+              },
+              "kind": {
+                "const": "ended",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "end"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
+          "from": {
+            "$ref": "#/components/schemas/Sender"
+          },
+          "id": {
+            "$ref": "#/components/schemas/MessageId"
+          },
+          "relation": {
+            "$ref": "#/components/schemas/Relation"
+          },
+          "seq": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seq",
+          "id",
+          "from"
+        ],
+        "type": "object"
+      },
+      "MessageId": {
+        "description": "The sender's id of a message: 8 to 64 characters of A-Z, a-z, 0-9, _ and -.",
+        "pattern": "^[A-Za-z0-9_-]{8,64}$",
+        "type": "string"
+      },
+      "MessageState": {
+        "description": "What a message is to the sender's knowledge: queued is in the pane's queue and not written,\ndelivered is written to the stream and not acked, acked is received.",
+        "enum": [
+          "queued",
+          "delivered",
+          "acked"
         ],
         "type": "string"
       },
@@ -2166,6 +2385,20 @@
         ],
         "type": "object"
       },
+      "Payload": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Data"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
       "Phase": {
         "oneOf": [
           {
@@ -2242,6 +2475,26 @@
           "session",
           "window",
           "pane"
+        ],
+        "type": "object"
+      },
+      "Posted": {
+        "description": "The state of a sent message. The seq counts the messages of the pane in arrival order. A\nrepeat of an id that the pane has seen is a duplicate and gets the state of the original.",
+        "properties": {
+          "duplicate": {
+            "type": "boolean"
+          },
+          "seq": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/MessageState"
+          }
+        },
+        "required": [
+          "state",
+          "seq"
         ],
         "type": "object"
       },
@@ -2422,6 +2675,17 @@
           "pwd"
         ],
         "type": "object"
+      },
+      "Relation": {
+        "description": "What the sender of a message is to its receiver, from the `parent` edges of the panes.",
+        "enum": [
+          "parent",
+          "child",
+          "sibling",
+          "descendant",
+          "sibling_descendant"
+        ],
+        "type": "string"
       },
       "Remote": {
         "oneOf": [
@@ -2674,8 +2938,59 @@
         },
         "type": "object"
       },
-      "SendPrompt": {
+      "SendKind": {
+        "description": "The kinds that a sender may give. The server reads none of them.",
+        "enum": [
+          "message",
+          "steer",
+          "interrupt",
+          "stop",
+          "notice"
+        ],
+        "type": "string"
+      },
+      "SendMessage": {
+        "description": "A message to the pane in the path. The server stamps the sender.",
         "properties": {
+          "data": {
+            "$ref": "#/components/schemas/Data"
+          },
+          "id": {
+            "$ref": "#/components/schemas/MessageId"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SendKind"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "text"
+        ],
+        "type": "object"
+      },
+      "SendPrompt": {
+        "description": "A prompt for the agent in a pane. The scope is the window of `from`, else its session.",
+        "properties": {
+          "from": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PaneId"
+              }
+            ],
+            "description": "The pane that the prompt comes from. A pane identity may name only itself."
+          },
+          "id": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MessageId"
+              }
+            ],
+            "description": "The id of the message when the prompt goes through the agent's message stream."
+          },
           "target": {
             "$ref": "#/components/schemas/PaneId"
           },
@@ -2684,10 +2999,51 @@
           }
         },
         "required": [
+          "from",
+          "id",
           "target",
           "text"
         ],
         "type": "object"
+      },
+      "Sender": {
+        "description": "The sender of a message, as the server knows it. The session and the name are those of a\npane that has a pi root.",
+        "oneOf": [
+          {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "session": {
+                "type": "string"
+              },
+              "type": {
+                "const": "pane",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "user",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "Sent": {
         "properties": {
@@ -2965,6 +3321,43 @@
         ],
         "type": "object"
       },
+      "StreamRequest": {
+        "description": "What the receiver says about a message of its stream. A message that is neither acked nor\nrefused is written again to the next stream.",
+        "oneOf": [
+          {
+            "properties": {
+              "id": {
+                "$ref": "#/components/schemas/MessageId"
+              },
+              "type": {
+                "const": "ack",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "id": {
+                "$ref": "#/components/schemas/MessageId"
+              },
+              "type": {
+                "const": "refuse",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "Switch": {
         "properties": {
           "direction": {
@@ -3079,11 +3472,49 @@
         "type": "object"
       },
       "Via": {
-        "enum": [
-          "inbox",
-          "paste"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "inbox",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "paste",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Posted"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "message",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "ViewEvent": {
         "oneOf": [
@@ -3750,6 +4181,129 @@
         }
       }
     },
+    "/panes/{id}/messages": {
+      "get": {
+        "description": "The messages that other panes and the user send to a pane, one text message each, in the order of the pane's queue. The receiver answers each with an ack or a refuse. Only the pane itself may open the stream, and a pane has one stream at most.",
+        "operationId": "Messages",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        },
+        "x-ko-websocket": {
+          "recv": {
+            "$ref": "#/components/schemas/Message"
+          },
+          "send": {
+            "$ref": "#/components/schemas/StreamRequest"
+          }
+        }
+      },
+      "post": {
+        "description": "Sends a message to a pane. The server stamps the sender and keeps the message in the pane's queue until the pane's stream gets it. A message that is written at once waits up to two seconds for its ack. An id that the pane has seen is not queued again: the reply is the state of the original, with duplicate set.",
+        "operationId": "PostMessage",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessage"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Posted"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
     "/panes/{id}/output": {
       "get": {
         "description": "The raw output of a pane: the bytes of its pty, from the ring, as text messages. Without offset the stream starts at the end of the output so far. An offset older than the oldest byte of the ring starts the stream with a skip record, and the bytes follow from the oldest one. An offset past the end is invalid. When the pane died and the stream sent every byte, a dead record ends the stream, and the server closes the socket. The server writes only to a connection that has drained: a reader that is too slow gets a skip record, never a snapshot. The caller is the user, the pane itself or its parent.",
@@ -4311,7 +4865,7 @@
             "example": "pane_1",
             "in": "header",
             "name": "Ko-Pane",
-            "required": true,
+            "required": false,
             "schema": {
               "$ref": "#/components/schemas/PaneId"
             }
@@ -4362,9 +4916,18 @@
     },
     "/prompt/resolve": {
       "get": {
-        "description": "The agents that a prompt can reach from the calling pane.",
+        "description": "The agents that a prompt can reach from the pane `from`. A pane identity may name only itself.",
         "operationId": "PromptResolve",
         "parameters": [
+          {
+            "example": "pane_1",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
           {
             "example": "true",
             "in": "query",
@@ -4378,7 +4941,7 @@
             "example": "pane_1",
             "in": "header",
             "name": "Ko-Pane",
-            "required": true,
+            "required": false,
             "schema": {
               "$ref": "#/components/schemas/PaneId"
             }

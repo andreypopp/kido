@@ -17,7 +17,7 @@ use crate::protocol::{
     IMAGE_GAP_HEADER, IMAGE_GENERATION_HEADER, IMAGE_HEIGHT_HEADER, IMAGE_WIDTH_HEADER, ImageShm,
     InputResult, PROTOCOL_HEADER, PasteResult, ServerVersion, VT_HEADER, check_version,
 };
-use crate::route::{self, Alt, Caller, Endpoint, Invalid};
+use crate::route::{self, Alt, Endpoint, Invalid};
 use crate::state::{Owner, PutFailure, State};
 use crate::tail::Tail;
 use crate::view::View;
@@ -67,6 +67,18 @@ fn error(conn: &mut Conn, kind: ErrorKind, message: impl Into<String>) {
     respond(conn, status, &body);
 }
 
+fn handshake(state: &mut State, index: usize, head: &http::Head) -> Option<Vec<u8>> {
+    let response = ws::handshake(head);
+    if response.is_none() {
+        error(
+            &mut state.conns[index],
+            ErrorKind::Invalid,
+            "Didn't pass scrutiny",
+        );
+    }
+    response
+}
+
 fn upgrade(state: &mut State, poll: &mut Poll, index: usize, response: Vec<u8>, role: Role) {
     let Some(conn) = state.conns.get_mut(index) else {
         return;
@@ -91,7 +103,6 @@ fn upgrade(state: &mut State, poll: &mut Poll, index: usize, response: Vec<u8>, 
 fn acting(
     state: &State,
     (pane, token): (Option<&str>, Option<&str>),
-    prompting: bool,
 ) -> Result<Option<PaneId>, Error> {
     let refuse = |message: &str| Err(Error::new(ErrorKind::Refused, message));
     let Some(pane) = pane else {
@@ -105,11 +116,7 @@ fn acting(
         .parse()
         .map_err(|_| Error::new(ErrorKind::Invalid, "invalid Ko-Pane"))?;
     let Some(token) = token else {
-        return if prompting {
-            Ok(Some(pane))
-        } else {
-            refuse("Ko-Pane needs Ko-Pane-Token")
-        };
+        return refuse("Ko-Pane needs Ko-Pane-Token");
     };
     let matches = token
         .parse::<PaneToken>()
@@ -168,7 +175,6 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
     let caller = match acting(
         state,
         (head.header("ko-pane"), head.header("ko-pane-token")),
-        route.as_ref().map(Route::caller) == Some(Caller::Named),
     ) {
         Ok(caller) => caller,
         Err(Error { kind, message }) => {
@@ -251,18 +257,30 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             state.clear_history(poll, id);
             ok::<routes::ClearHistory>(&mut state.conns[index], &Empty {});
         }
-        Request::Client {} => match ws::handshake(&head) {
-            None => error(
-                &mut state.conns[index],
-                ErrorKind::Invalid,
-                "Didn't pass scrutiny",
-            ),
-            Some(response) => {
-                let id = state.client_id();
-                upgrade(state, poll, index, response, Role::Client(Client::new(id)));
-                state.read_ws(poll, index);
+        Request::Client {} => {
+            let Some(response) = handshake(state, index, &head) else {
+                return;
+            };
+            let id = state.client_id();
+            upgrade(state, poll, index, response, Role::Client(Client::new(id)));
+            state.read_ws(poll, index);
+        }
+        Request::PostMessage { id, body } => {
+            if let Some(result) = state.post_message(poll, index, caller, id, body) {
+                reply::<routes::PostMessage>(&mut state.conns[index], result);
             }
-        },
+        }
+        Request::Messages { id } => {
+            if let Err(Error { kind, message }) = state.admit_stream(caller, id) {
+                return error(&mut state.conns[index], kind, message);
+            }
+            let Some(response) = handshake(state, index, &head) else {
+                return;
+            };
+            upgrade(state, poll, index, response, Role::Messages(id));
+            state.open_stream(id, token);
+            state.read_ws(poll, index);
+        }
         Request::DeletePane { id } => {
             state.delete_pane(poll, id);
             ok::<routes::DeletePane>(&mut state.conns[index], &Empty {});
@@ -358,8 +376,8 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                 reply::<routes::StopRun>(&mut state.conns[index], result);
             }
         }
-        Request::PromptResolve { window } => {
-            let result = state.resolve_prompt(caller, window.is_some());
+        Request::PromptResolve { from, window } => {
+            let result = state.resolve_prompt(caller, from, window.is_some());
             reply::<routes::PromptResolve>(&mut state.conns[index], result);
         }
         Request::SendPrompt { body } => {
@@ -382,12 +400,8 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             state.fetch_image(poll, index, id, key, shm);
         }
         Request::Search { id, needle } => {
-            let Some(response) = ws::handshake(&head) else {
-                return error(
-                    &mut state.conns[index],
-                    ErrorKind::Invalid,
-                    "Didn't pass scrutiny",
-                );
+            let Some(response) = handshake(state, index, &head) else {
+                return;
             };
             match state.start_search(poll, token, id, needle.as_str()) {
                 Some(search) => {
@@ -427,12 +441,8 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                     );
                 }
             };
-            let Some(response) = ws::handshake(&head) else {
-                return error(
-                    &mut state.conns[index],
-                    ErrorKind::Invalid,
-                    "Didn't pass scrutiny",
-                );
+            let Some(response) = handshake(state, index, &head) else {
+                return;
             };
             upgrade(state, poll, index, response, Role::Tail(tail));
             state.pump_tail(index);
@@ -457,12 +467,8 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                     Refusal::Ended.to_string(),
                 );
             };
-            let Some(response) = ws::handshake(&head) else {
-                return error(
-                    &mut state.conns[index],
-                    ErrorKind::Invalid,
-                    "Didn't pass scrutiny",
-                );
+            let Some(response) = handshake(state, index, &head) else {
+                return;
             };
             upgrade(state, poll, index, response, Role::View(view));
             state.open_view(poll, index, offset.map(Offset::get));
@@ -1828,10 +1834,7 @@ mod tests {
         };
         let reply = server.reply(
             request,
-            &format!(
-                "Ko-Pane: pane_1\r\nContent-Length: {}\r\n\r\n{body}",
-                body.len()
-            ),
+            &format!("Content-Length: {}\r\n\r\n{body}", body.len()),
         );
         let json = reply
             .split_once("\r\n\r\n")
@@ -1843,7 +1846,8 @@ mod tests {
     fn wait_for_root(server: &mut Harness, pane: &str) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            let (_, candidates) = prompt_call(server, "GET /prompt/resolve", &json!(null));
+            let (_, candidates) =
+                prompt_call(server, "GET /prompt/resolve?from=pane_1", &json!(null));
             if candidates
                 .as_array()
                 .unwrap()
@@ -1886,7 +1890,8 @@ mod tests {
         wait_for_root(&mut server, &inbox);
         wait_for_root(&mut server, &dead_inbox);
 
-        let (status, candidates) = prompt_call(&mut server, "GET /prompt/resolve", &json!(null));
+        let (status, candidates) =
+            prompt_call(&mut server, "GET /prompt/resolve?from=pane_1", &json!(null));
         assert_eq!(status, "200");
         let panes: Vec<&str> = candidates
             .as_array()
@@ -1900,8 +1905,11 @@ mod tests {
             "pane_1 is a terminal"
         );
         assert_eq!(candidates[0]["title"], "Paster");
-        let (_, narrowed) =
-            prompt_call(&mut server, "GET /prompt/resolve?window=true", &json!(null));
+        let (_, narrowed) = prompt_call(
+            &mut server,
+            "GET /prompt/resolve?from=pane_1&window=true",
+            &json!(null),
+        );
         assert_eq!(narrowed, json!([]), "the caller's window holds no agent");
         assert_eq!(candidates[0]["session"], "session_1");
 
@@ -1909,12 +1917,12 @@ mod tests {
             prompt_call(
                 server,
                 "POST /prompt",
-                &json!({"target": target, "text": text}),
+                &json!({"from": "pane_1", "id": "prompt-0001", "target": target, "text": text}),
             )
         };
         assert_eq!(
             send(&mut server, &paste, "one two"),
-            ("200".to_owned(), json!({"via": "paste"}))
+            ("200".to_owned(), json!({"via": {"type": "paste"}}))
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -1927,7 +1935,7 @@ mod tests {
         }
         assert_eq!(
             send(&mut server, &inbox, "hello inbox"),
-            ("200".to_owned(), json!({"via": "inbox"}))
+            ("200".to_owned(), json!({"via": {"type": "inbox"}}))
         );
         assert_eq!(peer.join().unwrap(), "hello inbox");
         let (status, refused) = send(&mut server, &dead_inbox, "x");

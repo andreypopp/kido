@@ -32,7 +32,8 @@ documents cite them.
 
 The server listens on `<dir>/socket`. Every connection is HTTP/1.1
 with keep-alive. The long-lived streams upgrade to WebSocket: the
-client connection, a pane's view, a pane's search. Everything
+client connection, a pane's view, a pane's search, a pane's output
+stream (section 4) and its message stream (section 7). Everything
 request-shaped stays plain HTTP. A client opens as many connections as
 it has concurrent streams: one for `/client`, one per open view, one
 for each control request, one per image fetch in flight. There is no
@@ -93,9 +94,10 @@ everything. A request that acts as a pane sends `Ko-Pane: pane_N` and
 made when the pane is created and given only to the pane's
 environment. The server compares the token with the live pane's in
 constant time. A token without `Ko-Pane`, a `Ko-Pane` without a token
-and a token that does not match are `refused`; the one exception is
-the prompt routes (section 11), which take `Ko-Pane` alone, because
-Kido.app names the pane that its user prompts from and has no token.
+and a token that does not match are `refused`, on every route. The
+headers are identity only: a route that needs a pane for its scope,
+as the prompt routes do (section 11), takes it as a parameter, and a
+pane identity may name only itself there.
 Every process of a pane inherits the token, so the pane is one trust
 unit. The `ko` CLI sends both headers from `KO_PANE` and
 `KO_PANE_TOKEN` on the requests of every command, but only to the
@@ -502,7 +504,7 @@ in the order the server produced them. The kinds, as `ClientEvent` in
 change, with the rows of the panes that the change adds (section 7);
 a window's new `focus` when only the focus changed (section 7); a
 pane's title, pwd, foreground, status, variable, death, bell,
-notification and progress; a pane's clipboard write and clipboard
+notification, progress and message stream (`inbox`, section 7); a pane's clipboard write and clipboard
 read (section 9), a run's outcome (section 10), and this client's
 own state when a `switch` or a removal moved it. The OSC 133 steps
 and the OSC 7501 records reach a client only through `status`.
@@ -524,7 +526,8 @@ Pane state and pane events:
 
 - A pane's row (`Listing` in `ko_server/src/protocol.rs`) carries
   its title, pwd, foreground process, death, status, variables,
-  progress (OSC 9;4) and, for a run's pane, its run. The pid is
+  progress (OSC 9;4), `inbox` while its message stream is open
+  (section 7) and, for a run's pane, its run. The pid is
   absent until the coordinator accepts the `ready` pid (section 14),
   and absent when that pid had no process. The status is
   absent until the model has run once for the pane; the progress is
@@ -655,10 +658,86 @@ invariants.
   in the caller's session, its children and its siblings, and each
   ancestor with that ancestor's siblings; the roots of a session are
   siblings (`scope` in `ko_server/src/panes.rs`).
+- A stop whose reply connection closes before the wait ends removes
+  the pane at once: the caller asked for the end and went away. The
+  server reads a connection while its request waits, so it sees the
+  hangup; a client that half-closes its socket while a request waits
+  gets no answer, and one that sends more than the 16 KiB read buffer
+  behind a waiting request is closed.
 - `POST /panes/pane_N/clear_history` clears the pane's scrollback.
   `ko-pane` puts the clear into the ring at its position in the
   stream, so every mirror, live or resumed,
   stays equal to the pane's terminal.
+**Messages.** A pane receives messages on one WebSocket, `GET
+/panes/pane_N/messages`; `POST /panes/pane_N/messages`
+(`SendMessage`) sends one. `ko_server/src/protocol.rs` defines the
+bodies (`SendMessage`, `Message`, `StreamRequest`, `Posted`);
+`ko_server/src/inbox.rs` owns the queue and `state/messages.rs` the
+routes. The server does not read a message's `kind` or `text`: it
+stamps the sender, enforces the scope and carries the bytes.
+
+- Only the pane itself (or the user) opens the stream, and a pane has
+  at most one: a second upgrade is `refused`, "the pane already has a
+  message stream", so a program that a tool starts inside the pane
+  cannot take the pane's messages. A dead pane's upgrade is `gone`.
+  The row's `inbox` is true while the stream is open, with an `inbox`
+  event on each change (section 6). A close, a ping timeout and the
+  pane's death close the stream.
+- A caller that acts as a pane sends only to a pane in its scope (the
+  scope of the stop above); the user sends to any pane. A dead target
+  is `gone` ("pane_N is dead"), an unknown one `missing`. `data` is
+  any JSON of at most 4 KiB encoded; `text` is bounded by the body
+  limit.
+- The server stamps `from` from the caller's identity: a pane, with
+  its `pi.session` and `pi.name` under the trust rule of section 7,
+  or the user. `relation` is what the sender is to the receiver, from
+  the `parent` edges (`relation` in `ko_server/src/panes.rs`):
+  because a pane reaches only its scope, a receiver sees a pane
+  sender only as its parent, child, sibling, descendant or a
+  sibling's descendant. The user, and a prompt's pane that is not
+  related to its target, have none.
+- **Ids.** The sender gives each message an id: 8 to 64 characters
+  of `[A-Za-z0-9_-]` (`MessageId` in `ko_server/src/ids.rs`), with at
+  least 96 random bits; `ko` mints 128 bits. The server enqueues each
+  `(pane, id)` once. A repeat is not compared with the original; it
+  is answered from it with `duplicate`: a queued one at once, a
+  written one after waiting for the ack as the first request did, an
+  acked one as `acked`, a refused one as `refused`. A sender may thus
+  resend after a timeout, an `io` error or a dropped connection and
+  learn the truth. The ids of queued and written messages live in the
+  queue; an acked or refused id stays in a ring of the pane's last
+  4096 settled ids. A repeat older than the ring is a new message.
+  The ids go with the pane.
+- **The queue.** Each pane has one FIFO; `seq` counts its messages in
+  arrival order from 1. While the stream is open and fewer than 16
+  written messages wait for an ack, the server writes the head. A
+  receiver that connects gets the queue in order, then the live sends.
+  The receiver answers `ack` or `refuse` with the message's id; an
+  answer for an id that was not written is ignored, and any other
+  text message closes the stream as `invalid`. A stream that closes
+  puts its written, unanswered messages back at the head in `seq`
+  order, and the next stream gets them again: the receiver drops a
+  repeat by its id. The queue holds at most 64 MiB of `text` and
+  `data` and at most 65,536 messages; a send past either is
+  `refused`, "the pane's message queue is full". A pane's death or
+  removal drops its queue, and no sender learns it.
+- **The reply.** A message that is written at once waits up to 2 s
+  (`KO_MESSAGE_ACK_MS`) for its answer, as a stored waiter: an ack is `acked`, a refuse is
+  `refused`, the deadline is `delivered` (written, not yet acked; the
+  sender resends with the same id to learn more). A stream that closes
+  during the wait answers `queued`, and the pane's death `gone`. A
+  message that is not written at once (no stream, or 16 unanswered
+  ahead) answers `queued` at once. A reply connection that closes
+  leaves the message where it is.
+- **`ended`.** When a pane with a `parent` dies, or leaves the
+  document alive, the server enqueues on the parent a message with
+  the id `ended-pane_N`, kind `ended`, the child as `from`, relation
+  `child` and `end`: the death's time and cause, or `gone` for a
+  child removed alive. A dead child's removal sends nothing more. A
+  parent that is
+  dead or gone gets none, and a full queue drops it. A parent whose
+  stream is down reads it when its stream returns.
+
 Session and window variables are the `vars` objects inside the
 document. Pane variables are part of the pane's row (section 6), and
 they are written under `/panes/pane_N/vars`: `PUT` one name with one
@@ -860,15 +939,22 @@ the history at the time of the search, for display only; a client
 jumps to a match by taking a full snapshot and searching its mirror,
 since server rows move with output.
 
-`GET /prompt/resolve` lists the candidate agent panes for the caller
-of the `Ko-Pane` header (with or without its token, section 1), with
-the scope rule applied in the server:
+`GET /prompt/resolve?from=pane_N` lists the candidate agent panes
+for a prompt from pane `from`, with the scope rule applied in the
+server:
 the candidates of the caller's window, else, when that window has
 none, those of the other windows of its session. With `window=true`
-it never widens. Run windows and terminal panes are not candidates. `POST /prompt` sends text to one candidate
-and reports whether it went over the inbox or as a paste
-(`ko_server/src/state/prompt.rs`):
+it never widens. Run windows and terminal panes are not candidates. `POST /prompt`
+(`SendPrompt`) sends text to one candidate of its `from` and reports
+how it went (`ko_server/src/state/prompt.rs`). A pane identity may
+name only itself as `from`; the user (`ko` outside a pane, Kido.app)
+names any pane. The first that applies delivers:
 
+- A pane with an open message stream, or whose queue knows the
+  body's `id` (a repeat), gets the text as a message of
+  kind `user` with the body's `id` (section 7, "Messages"), stamped
+  with the caller's identity; the reply carries the message's state
+  and `seq`.
 - A pane whose trusted `pi.inbox` names an inbox gets the text over
   that socket (`ko_server/src/msg.rs`, the protocol of
   `share/pi/README.md`), with a 2 s deadline as a stored send in the
@@ -878,7 +964,8 @@ and reports whether it went over the inbox or as a paste
 - Any other candidate gets one `paste` input and one Enter key through
   its `ko-pane`; the pane's bracketed paste mode decides the wrapping.
 
-`ko prompt` exits with 0 sent, 1 empty text or an
+`ko prompt` sends its own pane as `from` and mints the id. It does
+not resend: the `pi.inbox` path has no ids. It exits with 0 sent (acked, delivered or queued), 1 empty text or an
 error, 4 no agent in scope, 5 several); its `--window` sends
 `window=true`.
 

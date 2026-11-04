@@ -12,7 +12,7 @@ use crate::harness::{
 use crate::layout::windows;
 use crate::runs::{caller, code, has_pane, id_of, ko_as, pane_of, run_of, wait_pane_gone};
 
-type Headers = Vec<(String, String)>;
+pub(crate) type Headers = Vec<(String, String)>;
 
 fn tuned() -> Server {
     start_with(
@@ -26,22 +26,43 @@ fn tuned() -> Server {
     )
 }
 
-fn api(s: &Server, who: Option<&str>, method: &str, path: &str, body: &Value) -> Run {
+pub(crate) fn api(s: &Server, who: Option<&str>, method: &str, path: &str, body: &Value) -> Run {
     let args = ["api", "-X", method, "--input", "-", path];
     ko_as(s, who, &args, &body.to_string())
 }
 
-fn post(s: &Server, who: Option<&str>, path: &str, body: &Value) -> Value {
+pub(crate) fn post(s: &Server, who: Option<&str>, path: &str, body: &Value) -> Value {
     api(s, who, "POST", path, body).json()
 }
 
-fn refused(run: Run, status: u16, kind: &str, why: &str) {
+pub(crate) fn refused(run: Run, status: u16, kind: &str, why: &str) {
     let body: Value = serde_json::from_str(&run.http_error(status)).unwrap();
     assert_eq!(body["kind"], kind, "{body}");
     assert!(body["message"].as_str().unwrap().contains(why), "{body}");
 }
 
-fn raw(s: &Server, method: &str, path: &str, headers: &Headers, body: &Value) -> (u16, Value) {
+pub(crate) fn headers(s: &Server, extra: &[(&str, &str)]) -> Headers {
+    let mut headers = s.headers();
+    headers.extend(
+        extra
+            .iter()
+            .map(|(n, v)| ((*n).to_owned(), (*v).to_owned())),
+    );
+    headers
+}
+
+pub(crate) fn as_pane(s: &Server, pane: &str) -> Headers {
+    let token = s.token(pane).expect("the pane printed its token");
+    headers(s, &[("Ko-Pane", pane), ("Ko-Pane-Token", &token)])
+}
+
+pub(crate) fn raw(
+    s: &Server,
+    method: &str,
+    path: &str,
+    headers: &Headers,
+    body: &Value,
+) -> (u16, Value) {
     let body = if body.is_null() {
         String::new()
     } else {
@@ -64,15 +85,15 @@ fn window_names(s: &Server, session: usize) -> Vec<String> {
         .collect()
 }
 
-fn cat() -> Value {
+pub(crate) fn cat() -> Value {
     json!({"type": "shell", "command": "exec cat"})
 }
 
-fn dies() -> Value {
+pub(crate) fn dies() -> Value {
     json!({"type": "shell", "command": "exit 0"})
 }
 
-fn token_pane_in_new_session(s: &Server, session: &str) -> String {
+pub(crate) fn token_pane_in_new_session(s: &Server, session: &str) -> String {
     let command = format!("stty raw -echo; {PRINT_TOKEN}; exec cat");
     let put = s.edit(|layout| {
         layout["sessions"].as_array_mut().unwrap().push(json!({
@@ -351,6 +372,24 @@ fn escalation(s: &Server) {
     );
 }
 
+// A stop request whose reply connection closes during the wait removes the pane at once: the
+// caller went away, and a wait with nobody to answer would leave the pane for its whole length.
+fn abandoned_stop(s: &Server) {
+    let pane = s.pane("trap '' HUP; while :; do sleep 1; done");
+    let body = json!({"wait_ms": 3_600_000}).to_string();
+    let stream = s.send_request(
+        "POST",
+        &format!("/panes/{pane}/stop"),
+        &s.headers(),
+        body.as_bytes(),
+    );
+    // The server accepts connections in order: once it answers this one, it has accepted the
+    // stop request's connection, which it could not do after the peer left.
+    s.request("GET", "/version", None, 200);
+    drop(stream);
+    wait_pane_gone(s, &pane);
+}
+
 fn closing(s: &Server) {
     let new = |body: Value| {
         post(s, None, "/panes", &body)["pane"]
@@ -588,6 +627,7 @@ fn panes_are_made_stopped_swept_and_acted_for_by_their_token() {
     refusals_leave_the_document(&s);
     stops(&s);
     escalation(&s);
+    abandoned_stop(&s);
     closing(&s);
     captured_screen(&s);
     identity(&s);

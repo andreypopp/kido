@@ -444,6 +444,7 @@ pub(crate) mod tests {
             stop_escalation: crate::config::STOP_ESCALATION,
             run_screen_bytes: crate::config::RUN_SCREEN_BYTES,
             clipboard_wait: crate::config::CLIPBOARD_WAIT,
+            message_ack: crate::config::MESSAGE_ACK,
             view_queue: crate::config::ViewQueue::default(),
         };
         let timing = Timing {

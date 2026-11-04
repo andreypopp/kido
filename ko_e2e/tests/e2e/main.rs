@@ -12,6 +12,7 @@ mod hostile;
 mod idle;
 mod images;
 mod layout;
+mod messages;
 mod outer;
 mod output;
 mod panes;

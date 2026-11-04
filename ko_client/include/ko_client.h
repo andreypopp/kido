@@ -577,22 +577,24 @@ enum {
 ko_code ko_client_runs(const ko_client *client, int show, ko_buffer *out);
 
 /*
- * The agents that a prompt from the pane `caller` can reach: `out` holds the JSON array of
- * Candidate. Those of the caller's window come alone when it has any, or always with
- * `window_only`; else those of its session.
+ * The agents that a prompt from the pane `from` can reach: `out` holds the JSON array of
+ * Candidate. Those of the window of `from` come alone when it has any, or always with
+ * `window_only`; else those of its session. The request carries no pane identity: it is the
+ * user's, who may name any pane.
  */
 ko_code ko_client_prompt_resolve(const ko_client *client,
-                                 const char *caller,
+                                 const char *from,
                                  bool window_only,
                                  ko_buffer *out);
 
 /*
- * Sends `text` from the pane `caller` to the agent pane `target`, which must be one of its
- * candidates; `out` holds the JSON answer ({"via": ...}). KO_ERR_UNKNOWN: the send failed
- * partway, or no answer came after the request was written, so the text may have arrived.
+ * Sends `text` as the user, from the pane `from`, to the agent pane `target`, which must be one
+ * of its candidates; `out` holds the JSON answer ({"via": ...}). The core mints the id of the
+ * message. KO_ERR_UNKNOWN: the send failed partway, or no answer came after the request was
+ * written, so the text may have arrived.
  */
 ko_code ko_client_prompt(const ko_client *client,
-                         const char *caller,
+                         const char *from,
                          const char *target,
                          const uint8_t *text,
                          size_t len,

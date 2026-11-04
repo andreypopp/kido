@@ -15,7 +15,9 @@ use serde_json::Value;
 use crate::api::WaitMs;
 use crate::config::BUILD;
 use crate::http::Status;
-use crate::ids::{ClientId, Instance, Name, PaneId, RunId, SessionId, VarName, WindowId};
+use crate::ids::{
+    ClientId, Instance, MessageId, Name, PaneId, RunId, SessionId, VarName, WindowId,
+};
 use crate::pane_proc::{self, Death};
 use crate::route::{Body, Invalid};
 use crate::runs::{Meta, Parent, RunName, RunOutcome, RunResult};
@@ -485,6 +487,9 @@ pub struct Row {
     pub parent: Option<PaneId>,
     #[serde(default, skip_serializing_if = "Close::is_keep")]
     pub close: Close,
+    /// True while the pane has its message stream open.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inbox: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1593,6 +1598,10 @@ pub enum ClientEvent {
         progress: Option<Progress>,
     },
     Run(RunRow),
+    Inbox {
+        pane: PaneId,
+        inbox: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1866,22 +1875,208 @@ pub struct Candidate {
     pub title: String,
 }
 
+/// A prompt for the agent in a pane. The scope is the window of `from`, else its session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SendPrompt {
+    /// The pane that the prompt comes from. A pane identity may name only itself.
+    pub from: PaneId,
+    /// The id of the message when the prompt goes through the agent's message stream.
+    pub id: MessageId,
     pub target: PaneId,
     pub text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Via {
     Inbox,
     Paste,
+    Message(Posted),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Sent {
     pub via: Via,
+}
+
+impl From<Posted> for Sent {
+    fn from(posted: Posted) -> Sent {
+        Sent {
+            via: Via::Message(posted),
+        }
+    }
+}
+
+/// What a message is to the sender's knowledge: queued is in the pane's queue and not written,
+/// delivered is written to the stream and not acked, acked is received.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageState {
+    Queued,
+    Delivered,
+    Acked,
+}
+
+/// The state of a sent message. The seq counts the messages of the pane in arrival order. A
+/// repeat of an id that the pane has seen is a duplicate and gets the state of the original.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Posted {
+    pub state: MessageState,
+    pub seq: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub duplicate: bool,
+}
+
+/// Any JSON value of at most 4096 bytes when encoded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Value", into = "Value")]
+pub struct Data(Value, usize);
+
+const MAX_DATA: usize = 4096;
+
+impl TryFrom<Value> for Data {
+    type Error = &'static str;
+
+    fn try_from(value: Value) -> Result<Data, &'static str> {
+        let length = json(&value).len();
+        if length <= MAX_DATA {
+            Ok(Data(value, length))
+        } else {
+            Err("data exceeds 4 KiB")
+        }
+    }
+}
+
+impl From<Data> for Value {
+    fn from(Data(value, _): Data) -> Value {
+        value
+    }
+}
+
+impl Data {
+    pub(crate) fn len(&self) -> usize {
+        self.1
+    }
+}
+
+impl JsonSchema for Data {
+    fn schema_name() -> Cow<'static, str> {
+        "Data".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"description": "Any JSON value of at most 4096 bytes when encoded."})
+    }
+}
+
+/// What the sender of a message is to its receiver, from the `parent` edges of the panes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Relation {
+    Parent,
+    Child,
+    Sibling,
+    Descendant,
+    SiblingDescendant,
+}
+
+/// The kinds that a sender may give. The server reads none of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SendKind {
+    Message,
+    Steer,
+    Interrupt,
+    Stop,
+    Notice,
+}
+
+/// A message to the pane in the path. The server stamps the sender.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SendMessage {
+    pub id: MessageId,
+    pub kind: SendKind,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Data>,
+}
+
+/// The sender of a message, as the server knows it. The session and the name are those of a
+/// pane that has a pi root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Sender {
+    Pane {
+        pane: PaneId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
+    User,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Payload {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Data>,
+}
+
+/// How a pane that has a parent ended.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum End {
+    Dead(Dead),
+    Gone,
+}
+
+/// The kinds of a received message: those of the senders, user for a prompt of `ko prompt`, and
+/// ended, which the server makes when a pane with a parent dies or leaves the layout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Content {
+    Message(Payload),
+    Steer(Payload),
+    Interrupt(Payload),
+    Stop(Payload),
+    Notice(Payload),
+    User(Payload),
+    Ended { end: End },
+}
+
+impl Content {
+    pub(crate) fn sent(kind: SendKind, payload: Payload) -> Content {
+        match kind {
+            SendKind::Message => Content::Message(payload),
+            SendKind::Steer => Content::Steer(payload),
+            SendKind::Interrupt => Content::Interrupt(payload),
+            SendKind::Stop => Content::Stop(payload),
+            SendKind::Notice => Content::Notice(payload),
+        }
+    }
+}
+
+/// A message on the message stream of a pane. The id is the sender's, so the receiver can drop a
+/// repeat.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Message {
+    pub seq: u64,
+    pub id: MessageId,
+    pub from: Sender,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relation: Option<Relation>,
+    #[serde(flatten)]
+    pub content: Content,
+}
+
+/// What the receiver says about a message of its stream. A message that is neither acked nor
+/// refused is written again to the next stream.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum StreamRequest {
+    Ack { id: MessageId },
+    Refuse { id: MessageId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -2060,8 +2255,55 @@ mod tests {
         same::<ClientEvent>(
             r#"{"type":"run","id":"0123456789abcdef0123456789abcdef","name":"w","pane":"pane_3","argv":["/bin/sh"],"cwd":"/tmp","startedAt":"2023-11-14T22:13:20Z"}"#,
         );
-        same::<SendPrompt>(r#"{"target":"pane_2","text":"hi\nthere"}"#);
-        same::<Sent>(r#"{"via":"inbox"}"#);
+        same::<SendPrompt>(
+            r#"{"from":"pane_1","id":"abcdefgh","target":"pane_2","text":"hi\nthere"}"#,
+        );
+        same::<Sent>(r#"{"via":{"type":"inbox"}}"#);
+        same::<Sent>(r#"{"via":{"type":"message","state":"acked","seq":3,"duplicate":true}}"#);
+        same::<SendMessage>(
+            r#"{"id":"abcdefgh","kind":"notice","text":"x","data":{"list":[1,2],"report":true}}"#,
+        );
+        same::<Message>(
+            r#"{"seq":1,"id":"abcdefgh","from":{"type":"pane","pane":"pane_3","name":"w"},"relation":"sibling_descendant","kind":"steer","text":"x"}"#,
+        );
+        same::<Message>(
+            r#"{"seq":2,"id":"abcdefgh","from":{"type":"user"},"kind":"user","text":"x"}"#,
+        );
+        same::<Message>(
+            r#"{"seq":3,"id":"ended-pane_3","from":{"type":"pane","pane":"pane_3"},"relation":"child","kind":"ended","end":{"type":"dead","at":5,"cause":{"type":"exited","code":0}}}"#,
+        );
+        same::<Message>(
+            r#"{"seq":4,"id":"ended-pane_3","from":{"type":"pane","pane":"pane_3"},"kind":"ended","end":{"type":"gone"}}"#,
+        );
+        same::<StreamRequest>(r#"{"type":"ack","id":"abcdefgh"}"#);
+        same::<StreamRequest>(r#"{"type":"refuse","id":"abcdefgh"}"#);
+        same::<ClientEvent>(r#"{"type":"inbox","pane":"pane_3","inbox":true}"#);
+        for bad in [
+            r#"{"id":"abcdefg","kind":"message","text":"x"}"#,
+            r#"{"id":"abcdefgh","kind":"user","text":"x"}"#,
+            r#"{"id":"abcdefgh","kind":"ended","text":"x"}"#,
+            r#"{"id":"abcdefgh","kind":"message"}"#,
+        ] {
+            assert!(decode::<SendMessage>(bad.as_bytes()).is_err(), "{bad}");
+        }
+        let big = format!(
+            r#"{{"id":"abcdefgh","kind":"message","text":"x","data":"{}"}}"#,
+            "d".repeat(4095)
+        );
+        assert!(decode::<SendMessage>(big.as_bytes()).is_err());
+        let fits = format!(
+            r#"{{"id":"abcdefgh","kind":"message","text":"x","data":"{}"}}"#,
+            "d".repeat(4094)
+        );
+        assert!(decode::<SendMessage>(fits.as_bytes()).is_ok());
+        for bad in [
+            r#"{"type":"ack"}"#,
+            r#"{"type":"ack","id":"short"}"#,
+            r#"{"type":"nack","id":"abcdefgh"}"#,
+            r#"["ack","abcdefgh"]"#,
+        ] {
+            assert!(decode::<StreamRequest>(bad.as_bytes()).is_err(), "{bad}");
+        }
         same::<Candidate>(
             r#"{"pane":"pane_2","session":"session_1","window":"window_3","title":"Worker"}"#,
         );

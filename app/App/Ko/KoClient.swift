@@ -349,18 +349,18 @@ private final class ClientHandle: @unchecked Sendable {
         return try JSONDecoder().decode(KoSchema.Edited.self, from: document)
     }
 
-    // The agents that a prompt from `caller` reaches; those of its window when it has any.
-    nonisolated func promptCandidates(from caller: PaneID, windowOnly: Bool = false) throws -> [KoSchema.Candidate] {
+    // The agents that a prompt from `from` reaches; those of its window when it has any.
+    nonisolated func promptCandidates(from: PaneID, windowOnly: Bool = false) throws -> [KoSchema.Candidate] {
         var buffer = ko_buffer()
         return try JSONDecoder().decode([KoSchema.Candidate].self, from: handle.call {
-            try take(ko_client_prompt_resolve($0, caller.description, windowOnly, &buffer), &buffer)
+            try take(ko_client_prompt_resolve($0, from.description, windowOnly, &buffer), &buffer)
         })
     }
 
-    nonisolated func prompt(from caller: PaneID, to target: PaneID, _ text: String) throws {
+    nonisolated func prompt(from: PaneID, to target: PaneID, _ text: String) throws {
         var buffer = ko_buffer()
         let bytes = Array(text.utf8)
-        _ = try handle.call { try take(ko_client_prompt($0, caller.description, target.description, bytes, bytes.count, &buffer), &buffer) }
+        _ = try handle.call { try take(ko_client_prompt($0, from.description, target.description, bytes, bytes.count, &buffer), &buffer) }
     }
 
     func answerClipboard(id: UInt64, contents: [KoClipboardContent]?, available: [String] = []) {

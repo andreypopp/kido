@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use ko_server::api::{Route, WaitMs, WindowOnly};
-use ko_server::ids::RunId;
+use ko_server::ids::{PaneId, RunId};
 use ko_server::protocol::{
     self, Candidate, Empty, Error, Info, ReportOutcome, SendPrompt, Sent, Show, StartRun, Started,
     StopRun, Waited,
@@ -145,11 +145,13 @@ pub fn stop(
 pub fn resolve(
     dir: &Path,
     caller: Option<Caller>,
+    from: PaneId,
     window_only: bool,
 ) -> Result<Vec<Candidate>, Failure> {
     plain(
         dir,
         &Route::PromptResolve {
+            from,
             window: window_only.then_some(WindowOnly),
         },
         caller,

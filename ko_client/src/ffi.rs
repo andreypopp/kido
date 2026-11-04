@@ -2575,6 +2575,7 @@ mod tests {
             run: None,
             parent: None,
             close: Default::default(),
+            inbox: false,
         };
         Listing {
             row,
@@ -3083,8 +3084,8 @@ mod tests {
             (code, out)
         };
         for (window_only, expected) in [
-            (false, "/prompt/resolve"),
-            (true, "/prompt/resolve?window=true"),
+            (false, "/prompt/resolve?from=pane_1"),
+            (true, "/prompt/resolve?from=pane_1&window=true"),
         ] {
             let mut out = empty_buffer();
             // SAFETY: the client is live, the caller is NUL-terminated and out is writable.
@@ -3108,17 +3109,32 @@ mod tests {
             (Code::Ok, r#"{"via":"paste"}"#)
         );
         freed_once(&mut out);
+        let bodies = server.bodies("POST", "/prompt");
+        let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
         assert_eq!(
-            server.bodies("POST", "/prompt"),
-            [r#"{"target":"pane_3","text":"hi\nthere é"}"#]
+            (
+                sent["from"].as_str(),
+                sent["target"].as_str(),
+                sent["text"].as_str(),
+                sent["id"].as_str().map(str::len)
+            ),
+            (
+                Some("pane_1"),
+                Some("pane_3"),
+                Some("hi\nthere é"),
+                Some(22)
+            )
         );
+        let heads: Vec<String> = server
+            .heads("POST", "/prompt")
+            .into_iter()
+            .chain(server.heads("GET", "/prompt/resolve?from=pane_1"))
+            .chain(server.heads("GET", "/prompt/resolve?from=pane_1&window=true"))
+            .collect();
+        assert!(heads.len() >= 3);
         assert!(
-            server
-                .heads("POST", "/prompt")
-                .iter()
-                .chain(&server.heads("GET", "/prompt/resolve"))
-                .all(|head| head.contains("Ko-Pane: pane_1")),
-            "the prompt routes name their caller"
+            heads.iter().all(|head| !head.contains("Ko-Pane")),
+            "the prompt routes name their pane in the request, not as an identity"
         );
         let (code, mut out) = prompt(c"pane_3", b"boom!");
         assert_eq!(

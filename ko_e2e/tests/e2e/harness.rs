@@ -888,10 +888,27 @@ impl Server {
         headers: &Headers,
         body: &[u8],
     ) -> (u16, Vec<u8>) {
+        self.read_reply(self.send_request(method, path, headers, body))
+    }
+
+    // The send half of `exchange`: the reply stays unread, so a test can act while the server
+    // holds the request, or drop the stream.
+    pub(crate) fn send_request(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &Headers,
+        body: &[u8],
+    ) -> Steady {
         let mut stream = self.dial().unwrap();
+        within(&stream, Instant::now() + DEADLINE);
+        self.write_request(&mut stream, method, path, headers, body);
+        stream
+    }
+
+    pub(crate) fn read_reply(&self, mut stream: Steady) -> (u16, Vec<u8>) {
         let deadline = Instant::now() + DEADLINE;
         within(&stream, deadline);
-        self.write_request(&mut stream, method, path, headers, body);
         let mut buffer = Vec::new();
         let Head {
             status,
@@ -922,10 +939,7 @@ impl Server {
             read_within(&stream, deadline);
             let count = stream.read(&mut chunk).unwrap();
             if count == 0 {
-                assert!(
-                    matches!(framing, Framing::Close),
-                    "{method} {path}: body cut short"
-                );
+                assert!(matches!(framing, Framing::Close), "reply: body cut short");
                 break;
             }
             body.extend_from_slice(&chunk[..count]);

@@ -12,6 +12,7 @@ pub mod fuzz;
 mod harness;
 pub mod http;
 pub mod ids;
+mod inbox;
 mod layout;
 mod link;
 mod model;

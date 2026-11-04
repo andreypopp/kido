@@ -6,7 +6,7 @@ use std::time::Duration;
 use clap::{Args, ValueEnum};
 use ko_client::runs::{self, Failure};
 use ko_server::api::WaitMs;
-use ko_server::ids::RunId;
+use ko_server::ids::{MessageId, RunId};
 use ko_server::protocol::{
     self, Error, ErrorKind, Info, ReportOutcome, Reported, SendPrompt, SessionRef, Show, StartRun,
     StopResult, StopRun, Variable,
@@ -531,7 +531,8 @@ pub(crate) fn prompt(args: PromptArgs) -> ExitCode {
     let Some(caller) = caller else {
         return fail("prompt", "pane \"\" not found");
     };
-    let found = match runs::resolve(&dir, Some(caller.clone()), args.window) {
+    let from = caller.pane;
+    let found = match runs::resolve(&dir, Some(caller.clone()), from, args.window) {
         Ok(found) => found,
         Err(failure) => return failed("prompt", &dir, failure),
     };
@@ -541,7 +542,13 @@ pub(crate) fn prompt(args: PromptArgs) -> ExitCode {
             exit(4)
         }
         [one] => {
+            let id = match MessageId::mint() {
+                Ok(id) => id,
+                Err(error) => return fail("prompt", error),
+            };
             let request = SendPrompt {
+                from,
+                id,
                 target: one.pane,
                 text,
             };

@@ -5,6 +5,7 @@ use ko_pane_wire::frame::Size;
 use crate::config::Config;
 use crate::delivery::Stamps;
 use crate::ids::{PaneId, PaneToken, RunId};
+use crate::inbox::Inbox;
 use crate::model::PaneModel;
 use crate::pane_proc::{Input, Io, Launch, PaneProc};
 use crate::protocol::Close;
@@ -33,6 +34,7 @@ pub(crate) struct Pane {
     close: Close,
     token: PaneToken,
     model: PaneModel,
+    inbox: Inbox,
 }
 
 impl Pane {
@@ -57,6 +59,7 @@ impl Pane {
             close: birth.close,
             token,
             model: PaneModel::default(),
+            inbox: Inbox::default(),
         })
     }
 
@@ -98,6 +101,14 @@ impl Pane {
 
     pub(crate) fn token(&self) -> &PaneToken {
         &self.token
+    }
+
+    pub(crate) fn inbox(&self) -> &Inbox {
+        &self.inbox
+    }
+
+    pub(crate) fn inbox_mut(&mut self) -> &mut Inbox {
+        &mut self.inbox
     }
 
     pub(crate) fn vars_mut(&mut self) -> &mut Vars {

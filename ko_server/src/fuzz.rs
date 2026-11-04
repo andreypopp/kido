@@ -31,7 +31,8 @@ use crate::ids::Instance;
 use crate::ids::PaneId;
 use crate::pane_proc::{Cause, Event, Io, Life, PaneProc, discard};
 use crate::protocol::{
-    self, ClientRequest, Command, CreatePane, Input, ViewRequest, version_headers,
+    self, ClientRequest, Command, CreatePane, Input, SendMessage, SendPrompt, StreamRequest,
+    ViewRequest, version_headers,
 };
 use crate::server::Verified;
 use crate::state::{State, Wake};
@@ -50,6 +51,9 @@ pub fn decode(data: &[u8]) {
     roundtrip::<ClientRequest>(data);
     roundtrip::<ViewRequest>(data);
     roundtrip::<Input>(data);
+    roundtrip::<SendMessage>(data);
+    roundtrip::<SendPrompt>(data);
+    roundtrip::<StreamRequest>(data);
     let text = String::from_utf8_lossy(data);
     let (method, target) = text.split_once(' ').unwrap_or((&text, &text));
     if let Ok(route) = Route::of_request(method, target) {
@@ -464,6 +468,7 @@ impl Rig {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut sent = 0;
         let mut shut = false;
+        let mut progress_seen = false;
         self.reply.clear();
         loop {
             assert!(
@@ -481,7 +486,12 @@ impl Rig {
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                     Err(_) => shut = true,
                 }
-                if sent == data.len() {
+                let waiting = self
+                    .state
+                    .conns
+                    .iter()
+                    .any(|conn| matches!(conn.phase, crate::conn::Phase::Handling));
+                if sent == data.len() && progress_seen && !waiting {
                     let _ = theirs.shutdown(std::net::Shutdown::Write);
                     shut = true;
                 }
@@ -496,6 +506,7 @@ impl Rig {
                 Err(_) => break,
             }
             self.step(if progress { Mode::Peek } else { Mode::Wait });
+            progress_seen = sent == data.len();
         }
         self.step(Mode::Peek);
         &self.reply

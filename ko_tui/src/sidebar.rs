@@ -123,6 +123,7 @@ mod tests {
                 run: None,
                 parent: None,
                 close: Default::default(),
+                inbox: false,
             },
             vars: Default::default(),
         }

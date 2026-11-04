@@ -94,27 +94,16 @@ fn write_until(
     stream.set_nonblocking(false)
 }
 
-// Who sends a request: a pane with its token, or a pane that is only named. The server accepts
-// the second only for the prompts of Kido.app.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Caller {
-    Pane { pane: PaneId, token: PaneToken },
-    Named(PaneId),
-}
-
-impl Caller {
-    pub fn pane(&self) -> PaneId {
-        match self {
-            Caller::Pane { pane, .. } | Caller::Named(pane) => *pane,
-        }
-    }
+pub struct Caller {
+    pub pane: PaneId,
+    pub token: PaneToken,
 }
 
 fn identity(caller: Option<&Caller>) -> Vec<(&'static str, String)> {
     match caller {
         None => Vec::new(),
-        Some(Caller::Named(pane)) => vec![("Ko-Pane", pane.to_string())],
-        Some(Caller::Pane { pane, token }) => vec![
+        Some(Caller { pane, token }) => vec![
             ("Ko-Pane", pane.to_string()),
             ("Ko-Pane-Token", token.to_string()),
         ],

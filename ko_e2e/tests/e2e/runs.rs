@@ -10,6 +10,16 @@ use crate::harness::{
 };
 
 pub(crate) fn ko_as(s: &Server, pane: Option<&str>, args: &[&str], stdin: &str) -> Run {
+    let (env, argv) = ko_command(s, pane, args);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    run_ko(&s.scratch, &env, &argv, stdin)
+}
+
+pub(crate) fn ko_command(
+    s: &Server,
+    pane: Option<&str>,
+    args: &[&str],
+) -> (Vec<Vec<u8>>, Vec<String>) {
     let mut env = test_env(&s.dir);
     if let Some(pane) = pane {
         env.push(format!("KO_PANE={pane}").into_bytes());
@@ -20,7 +30,7 @@ pub(crate) fn ko_as(s: &Server, pane: Option<&str>, args: &[&str], stdin: &str) 
     }
     let mut argv = vec![args[0], "--server", text_of(&s.dir)];
     argv.extend_from_slice(&args[1..]);
-    run_ko(&s.scratch, &env, &argv, stdin)
+    (env, argv.into_iter().map(str::to_owned).collect())
 }
 
 pub(crate) fn code(run: &Run) -> i32 {

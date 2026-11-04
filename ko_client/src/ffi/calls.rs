@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ko_server::api::{Route, WindowOnly};
-use ko_server::ids::{ClientId, PaneId};
+use ko_server::ids::{ClientId, MessageId, PaneId};
 use ko_server::protocol::{self, Revision, SendPrompt, Show};
 use ko_sys::event::Wake;
 
@@ -14,7 +14,7 @@ use super::engine::{mismatch_of, probe};
 use super::{Buffer, Client, Code, bytes_of, client, empty, hand_over, locked, text_of};
 use crate::edit::{Edit, Refusal};
 use crate::layout::{self, Document, EditError};
-use crate::wire::{self, Caller};
+use crate::wire;
 
 pub(super) fn call(
     client: &Client,
@@ -147,28 +147,33 @@ pub unsafe extern "C" fn ko_client_runs(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_prompt(
     client_: *const Client,
-    caller: *const c_char,
+    from: *const c_char,
     target: *const c_char,
     text: *const u8,
     len: usize,
     out: *mut Buffer,
 ) -> Code {
-    let (Some(client), Some(caller), Some(target), Some(text)) = (
+    let (Some(client), Some(from), Some(target), Some(text)) = (
         client(client_).filter(|_| !out.is_null()),
-        text_of(caller).and_then(|caller| caller.parse::<PaneId>().ok()),
+        text_of(from).and_then(|from| from.parse::<PaneId>().ok()),
         text_of(target).and_then(|target| target.parse().ok()),
         bytes_of(text, len).and_then(|text| std::str::from_utf8(text).ok()),
     ) else {
         return Code::Argument;
     };
+    let Ok(message) = MessageId::mint() else {
+        return Code::Io;
+    };
     let body = protocol::json(&SendPrompt {
+        from,
+        id: message,
         target,
         text: text.to_owned(),
     });
     call(client, out, |socket, id, cancel| {
         wire::request(
             socket,
-            (id, Some(Caller::Named(caller))),
+            (id, None),
             &Route::SendPrompt {},
             body.as_bytes(),
             Some(cancel),
@@ -179,33 +184,27 @@ pub unsafe extern "C" fn ko_client_prompt(
 
 /// # Safety
 ///
-/// `client` is a live handle. `caller` is a NUL-terminated string. `out` is
+/// `client` is a live handle. `from` is a NUL-terminated string. `out` is
 /// writable for one `ko_buffer`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_prompt_resolve(
     client_: *const Client,
-    caller: *const c_char,
+    from: *const c_char,
     window_only: bool,
     out: *mut Buffer,
 ) -> Code {
-    let (Some(client), Some(caller)) = (
+    let (Some(client), Some(from)) = (
         client(client_).filter(|_| !out.is_null()),
-        text_of(caller).and_then(|caller| caller.parse::<PaneId>().ok()),
+        text_of(from).and_then(|from| from.parse::<PaneId>().ok()),
     ) else {
         return Code::Argument;
     };
     let route = Route::PromptResolve {
+        from,
         window: window_only.then_some(WindowOnly),
     };
     call(client, out, |socket, id, cancel| {
-        wire::request(
-            socket,
-            (id, Some(Caller::Named(caller))),
-            &route,
-            b"",
-            Some(cancel),
-        )
-        .map_err(rejected)
+        wire::request(socket, (id, None), &route, b"", Some(cancel)).map_err(rejected)
     })
 }
 

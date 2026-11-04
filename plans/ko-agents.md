@@ -228,10 +228,12 @@ session?, name?, runtime? }`, where `session` and `name` are the
 sender pane's `pi.session` and `pi.name` under the trust rule,
 `runtime` the sender pane's runtime field, so a receiver's header can
 say `(in runtime dev)` (a routed sender, 5.13, has none and names its
-runtime in its own header text), and `relation`, which
-the server computes from the `parent` edges: `parent`, `child`,
-`sibling`, `ancestor`, `ancestor_sibling`. The user (no pane identity)
-sends with `from: { user: true }`; `ko prompt` sends `kind: user`
+runtime in its own header text), and `relation`, what the sender is to
+the receiver, which the server computes from the `parent` edges:
+`parent`, `child`, `sibling`, `descendant`, `sibling_descendant` (a
+pane reaches only its scope, so no other value occurs). U1b: `from` is
+tagged, `{ type: "pane", pane, session?, name? }` or `{ type: "user" }`;
+the user (no pane identity) sends as the latter; `ko prompt` sends `kind: user`
 through the same path, and a non-pi candidate still gets a paste. The
 receiver gets one text message:
 

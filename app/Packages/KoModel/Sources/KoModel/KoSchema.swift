@@ -1074,6 +1074,7 @@ public enum KoSchema {
         public var dead: Dead?
         public var foreground: Foreground?
         public var id: PaneId
+        public var inbox: Bool?
         public var label: String
         public var mark: Mark
         public var parent: PaneId?
@@ -1084,13 +1085,14 @@ public enum KoSchema {
         public var status: PaneStatus?
         public var title: String
         public var vars: [String: JSONValue]
-        public init(close: Close? = nil, command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, label: String, mark: Mark, parent: PaneId? = nil, pid: Int? = nil, progress: Progress? = nil, recordsSeen: Bool, run: RunRow? = nil, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
+        public init(close: Close? = nil, command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, inbox: Bool? = nil, label: String, mark: Mark, parent: PaneId? = nil, pid: Int? = nil, progress: Progress? = nil, recordsSeen: Bool, run: RunRow? = nil, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
             self.close = close
             self.command = command
             self.cwd = cwd
             self.dead = dead
             self.foreground = foreground
             self.id = id
+            self.inbox = inbox
             self.label = label
             self.mark = mark
             self.parent = parent
@@ -1109,6 +1111,7 @@ public enum KoSchema {
             case dead
             case foreground
             case id
+            case inbox
             case label
             case mark
             case parent

@@ -10,9 +10,10 @@ use serde_json::Value;
 use crate::ids::{ClientId, PaneId, RunId, SessionId, VarName, WindowId};
 use crate::protocol::{
     Candidate, ClientEvent, ClientRequest, DeleteVars, Empty, HistoryDef, Images, Info, Input,
-    InputResult, LayoutPanes, Listing, NewWindow, OutputEvent, Placement, PutLayout, ReportOutcome,
-    SearchEvent, SendPrompt, Sent, ServerVersion, Show, Snapshot, StartRun, Started, StopPane,
-    StopRun, VarValue, ViewEvent, ViewRequest, Waited,
+    InputResult, LayoutPanes, Listing, Message, NewWindow, OutputEvent, Placement, Posted,
+    PutLayout, ReportOutcome, SearchEvent, SendMessage, SendPrompt, Sent, ServerVersion, Show,
+    Snapshot, StartRun, Started, StopPane, StopRun, StreamRequest, VarValue, ViewEvent,
+    ViewRequest, Waited,
 };
 use crate::route::{Invalid, Param, binary, pixels, routes, text};
 
@@ -599,6 +600,27 @@ routes! {
         caller: optional,
         reply: Empty,
     }
+    /// The messages that other panes and the user send to a pane, one text message each, in the
+    /// order of the pane's queue. The receiver answers each with an ack or a refuse. Only the pane
+    /// itself may open the stream, and a pane has one stream at most.
+    Messages {
+        method: WS,
+        path: /panes/{id: PaneId}/messages,
+        caller: optional,
+        send: StreamRequest,
+        recv: Message,
+    }
+    /// Sends a message to a pane. The server stamps the sender and keeps the message in the pane's
+    /// queue until the pane's stream gets it. A message that is written at once waits up to two
+    /// seconds for its ack. An id that the pane has seen is not queued again: the reply is the
+    /// state of the original, with duplicate set.
+    PostMessage {
+        method: POST,
+        path: /panes/{id: PaneId}/messages,
+        body: SendMessage,
+        caller: optional,
+        reply: Posted,
+    }
     /// Closes a pane.
     DeletePane { method: DELETE, path: /panes/{id: PaneId}, reply: Empty }
     /// Closes every pane of a window.
@@ -730,12 +752,12 @@ routes! {
         body: StopRun,
         reply: Empty,
     }
-    /// The agents that a prompt can reach from the calling pane.
+    /// The agents that a prompt can reach from the pane `from`. A pane identity may name only itself.
     PromptResolve {
         method: GET,
         path: /prompt/resolve,
-        query: { window: Option<WindowOnly> },
-        caller: named,
+        query: { from: PaneId, window: Option<WindowOnly> },
+        caller: optional,
         reply: Vec<Candidate>,
     }
     /// Sends a prompt to an agent.
@@ -743,7 +765,7 @@ routes! {
         method: POST,
         path: /prompt,
         body: SendPrompt,
-        caller: named,
+        caller: optional,
         reply: Sent,
     }
 }
@@ -889,10 +911,16 @@ mod tests {
             },
             Route::RunOutcome { id: run.clone() },
             Route::StopRun { id: run },
-            Route::PromptResolve { window: None },
             Route::PromptResolve {
+                from: id,
+                window: None,
+            },
+            Route::PromptResolve {
+                from: id,
                 window: Some(WindowOnly),
             },
+            Route::Messages { id },
+            Route::PostMessage { id },
             Route::SendPrompt {},
             Route::View {
                 id,
@@ -966,7 +994,7 @@ mod tests {
             ("POST", "/panes/pane_1/clear_history/x"),
             ("GET", "/panes?x=1"),
             ("GET", "/runs?show=some"),
-            ("GET", "/prompt/resolve?window=1"),
+            ("GET", "/prompt/resolve?from=pane_1&window=1"),
             ("GET", "/runs?parent=nope"),
             ("GET", "/version?a=1?b=2"),
             ("GET", &format!("{wait}?timeout_ms=3600001")),

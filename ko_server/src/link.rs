@@ -14,6 +14,7 @@ pub(crate) enum Role {
     View(View),
     Tail(Tail),
     Search(Searching),
+    Messages(PaneId),
 }
 
 #[derive(Debug, Clone, Copy)]

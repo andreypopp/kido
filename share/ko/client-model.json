@@ -589,6 +589,10 @@
           "id": {
             "$ref": "#/components/schemas/PaneId"
           },
+          "inbox": {
+            "description": "True while the pane has its message stream open.",
+            "type": "boolean"
+          },
           "label": {
             "type": "string"
           },

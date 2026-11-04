@@ -148,8 +148,9 @@ the connection, the framing and the slice codec; `api.rs`, `route.rs`,
 and the OpenAPI document. The status model is `telemetry.rs`,
 `program_status.rs`, `pane_kind.rs`, `pane_status.rs` and `model.rs`
 ([design-program-status.md](design-program-status.md)); `vars.rs`,
-`runs.rs`, `msg.rs`, `clipboard.rs`, `shm.rs` and `agent.rs` own the
-variables, the runs, the inbox send, the clipboard answerer, the
+`runs.rs`, `msg.rs`, `inbox.rs`, `clipboard.rs`, `shm.rs` and
+`agent.rs` own the variables, the runs, the `pi.inbox` send, a pane's
+message queue (its routes in `state/messages.rs`), the clipboard answerer, the
 shared-memory leak record and the `agent.sock` link; `config.rs` the
 state directory, the options and the knobs.
 
@@ -393,7 +394,9 @@ implementation.
 
 **The loop rule.** Coordinator state changes only on the loop thread.
 A long poll or a deadline is a stored waiter in the state plus a loop
-timer, never a thread. A thread is permitted only for blocking work
+timer, never a thread. The loop reads a waiting connection for its
+hangup, and a waiter whose connection closes is forgotten (a pane
+stop then removes its pane at once). A thread is permitted only for blocking work
 that touches no coordinator state. An endpoint that does not fit this
 rule needs a recorded decision before it is built.
 

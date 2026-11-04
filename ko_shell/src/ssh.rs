@@ -162,14 +162,14 @@ fn mark(pane: &Pane, parsed: Option<&SshArgs>) {
         match parsed {
             Some(parsed) => (
                 Route::SetVar {
-                    id: pane.caller.pane(),
+                    id: pane.caller.pane,
                     name: dest,
                 },
                 json!(parsed.dest).to_string().into_bytes(),
             ),
             None => (
                 Route::DeleteVar {
-                    id: pane.caller.pane(),
+                    id: pane.caller.pane,
                     name: dest,
                 },
                 Vec::new(),
@@ -178,14 +178,14 @@ fn mark(pane: &Pane, parsed: Option<&SshArgs>) {
         match parsed.and_then(connection_args) {
             Some(connection) => (
                 Route::SetVar {
-                    id: pane.caller.pane(),
+                    id: pane.caller.pane,
                     name: extra,
                 },
                 json!(connection).to_string().into_bytes(),
             ),
             None => (
                 Route::DeleteVar {
-                    id: pane.caller.pane(),
+                    id: pane.caller.pane,
                     name: extra,
                 },
                 Vec::new(),
@@ -470,7 +470,10 @@ mod tests {
         let args = [OsString::from("host"), OsString::from_vec(vec![0xff])];
         let pane = Pane {
             dir: PathBuf::from("/nonexistent"),
-            caller: Caller::Named("pane_1".parse().unwrap()),
+            caller: Caller {
+                pane: "pane_1".parse().unwrap(),
+                token: "0123456789abcdef0123456789abcdef".parse().unwrap(),
+            },
         };
         let argv = prepare(true, Some(&pane), &args);
         assert_eq!(

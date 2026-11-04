@@ -283,13 +283,10 @@ pub(crate) struct RouteInfo {
     pub(crate) kind: Kind,
 }
 
-// Whether the route reads the calling pane from the Ko-Pane headers. Named takes Ko-Pane alone
-// and requires it: Kido.app has no token, and names the pane that its user prompts from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Caller {
     Absent,
     Optional,
-    Named,
 }
 
 macro_rules! caller_of {
@@ -298,9 +295,6 @@ macro_rules! caller_of {
     };
     (optional) => {
         $crate::route::Caller::Optional
-    };
-    (named) => {
-        $crate::route::Caller::Named
     };
 }
 pub(crate) use caller_of;
@@ -534,14 +528,6 @@ macro_rules! routes {
                 ROUTES.iter().any(|info| {
                     info.name == name && matches!(info.kind, $crate::route::Kind::Ws { .. })
                 })
-            }
-
-            pub(crate) fn caller(&self) -> $crate::route::Caller {
-                let name = self.name();
-                ROUTES
-                    .iter()
-                    .find(|info| info.name == name)
-                    .map_or($crate::route::Caller::Absent, |info| info.caller)
             }
 
             fn name(&self) -> &'static str {

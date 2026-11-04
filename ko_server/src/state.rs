@@ -24,7 +24,7 @@ use crate::pane::{Birth, Pane};
 use crate::pane_proc::{self, Event, Io, Refusal, discard};
 use crate::panes::{AddError, Panes};
 use crate::protocol::{
-    self, CellPixels, ClientEvent, ClientKind, ClientRequest, CreatePane, DeleteVars, Input,
+    self, CellPixels, ClientEvent, ClientKind, ClientRequest, CreatePane, DeleteVars, End, Input,
     Layout, LayoutPanes, Limits, Listing, PaneDead, PasteResult, PutLayout, Pwd, Row, Selection,
     Snapshot, StatusChange, Title, VarCondition, ViewEvent, ViewRequest, Welcome,
 };
@@ -37,6 +37,7 @@ use crate::view::View;
 use crate::ws::{Next, Ping};
 
 mod media;
+mod messages;
 mod pane_ops;
 mod prompt;
 mod run_ops;
@@ -99,6 +100,7 @@ pub(crate) struct State {
     runs: run_ops::RunState,
     stops: pane_ops::Stops,
     prompts: prompt::PromptState,
+    messages: messages::Waits,
     leaks: Leaks,
     next_object: u32,
     clipboard: clipboard::Reads,
@@ -117,14 +119,14 @@ pub(crate) enum Wake {
 pub(crate) fn client_of(conn: &Conn) -> Option<&Client> {
     match conn.role()? {
         Role::Client(client) => Some(client),
-        Role::View(_) | Role::Tail(_) | Role::Search(_) => None,
+        Role::View(_) | Role::Tail(_) | Role::Search(_) | Role::Messages(_) => None,
     }
 }
 
 fn view_of(conn: &Conn) -> Option<&View> {
     match conn.role()? {
         Role::View(view) => Some(view),
-        Role::Client(_) | Role::Tail(_) | Role::Search(_) => None,
+        Role::Client(_) | Role::Tail(_) | Role::Search(_) | Role::Messages(_) => None,
     }
 }
 
@@ -132,7 +134,7 @@ fn streamed_pane(conn: &Conn) -> Option<PaneId> {
     match conn.role()? {
         Role::View(view) => Some(view.pane),
         Role::Tail(tail) => Some(tail.pane),
-        Role::Client(_) | Role::Search(_) => None,
+        Role::Client(_) | Role::Search(_) | Role::Messages(_) => None,
     }
 }
 
@@ -153,6 +155,7 @@ fn pane_listing(pane: &Pane, root: &Path) -> Listing {
             run: run_ops::run_row(root, pane),
             parent: pane.parent(),
             close: pane.close(),
+            inbox: pane.inbox().stream().is_some(),
         },
         vars: pane.vars().clone(),
     }
@@ -222,6 +225,7 @@ impl State {
             runs,
             stops,
             prompts: prompt::PromptState::default(),
+            messages: messages::Waits::default(),
             leaks,
             next_object: 0,
             clipboard: clipboard::Reads::default(),
@@ -499,6 +503,7 @@ impl State {
         };
         for pane in panes {
             self.close_views(pane);
+            self.tell_parent_gone(pane);
             self.stop_pane(poll, pane);
         }
         self.runs_changed(poll);
@@ -698,6 +703,7 @@ impl State {
     }
 
     fn stop_pane(&mut self, poll: &mut Poll, id: PaneId) {
+        self.pane_ended(poll, id);
         self.clipboard.drop_where(poll, |read| read.pane == id);
         if let Some(timer) = self
             .panes
@@ -859,6 +865,8 @@ impl State {
             }
             Event::Dead(death) => {
                 self.pump_views(poll, id);
+                self.tell_parent(id, End::Dead((&death).into()));
+                self.pane_ended(poll, id);
                 if let Some(pane) = self.panes.find_mut(id) {
                     pane.telemetry_mut().records.clear();
                     self.model.mark(poll, pane);
@@ -1277,6 +1285,7 @@ impl State {
                 } else if self.prompt_due(poll, due.timer)
                     || self.wait_due(poll, due.timer)
                     || self.stop_due(poll, due.timer)
+                    || self.message_due(poll, due.timer)
                     || self.image_due(poll, due.timer)
                     || self.clipboard_due(poll, due.timer)
                 {
@@ -1319,6 +1328,9 @@ impl State {
         if ready.read {
             match self.conns[index].phase {
                 Phase::Ws(_) => self.read_ws(poll, index),
+                Phase::Handling => {
+                    self.conns[index].read(poll, &mut Reads::new());
+                }
                 _ => self.read_http(poll, index),
             }
         }
@@ -1363,6 +1375,7 @@ impl State {
                 Role::Client(_) => self.client_text(poll, index, text.as_bytes()),
                 Role::View(_) => self.view_text(poll, index, text.as_bytes()),
                 Role::Tail(_) | Role::Search(_) => link.ws.reject(out, "invalid"),
+                Role::Messages(pane) => self.stream_text(poll, index, pane, text.as_bytes()),
             }
         }
     }
@@ -1558,6 +1571,7 @@ impl State {
             self.runs.forget(conn.token);
             self.forget_stops(poll, conn.token);
             self.prompts.forget(conn.token);
+            self.messages.forget(conn.token);
             if let Phase::Ws(link) = conn.phase {
                 match link.role {
                     Role::Client(client) => {
@@ -1573,6 +1587,7 @@ impl State {
                         self.clipboard_forget(poll, |read| read.client == client.id);
                     }
                     Role::Search(search) => self.cancel_search(poll, search),
+                    Role::Messages(pane) => self.stream_closed(poll, pane, conn.token),
                     Role::View(_) | Role::Tail(_) => {}
                 }
             }
@@ -1590,7 +1605,8 @@ impl State {
 mod tests {
     use crate::config::DEFAULT_LIMITS;
     use crate::fuzz::Rig;
-    use crate::protocol::{Command, CreatePane};
+    use crate::ids::{MessageId, PaneId};
+    use crate::protocol::{Command, CreatePane, NewWindow};
     use crate::server::tests::scratch;
     use ko_sys::event::Mode;
     use std::path::PathBuf;
@@ -1621,5 +1637,71 @@ mod tests {
             assert!(Instant::now() < deadline, "the pane never became ready");
             rig.step(Mode::Wait);
         }
+    }
+
+    #[test]
+    fn a_removed_pane_tells_its_parent_it_is_gone_only_when_it_was_alive() {
+        let exe = PathBuf::from(
+            std::env::var_os("KO_PANE_EXE")
+                .expect("KO_PANE_EXE names the Rust ko-pane; make test-ko builds it and sets it"),
+        );
+        let mut rig = Rig::new(scratch("state-gone"), exe, DEFAULT_LIMITS, "exec cat");
+        let request = |command: &str, parent: Option<PaneId>| CreatePane {
+            cwd: None,
+            command: Some(Command::Argv {
+                argv: ["/bin/sh", "-c", command].map(str::to_owned).to_vec(),
+            }),
+            env: Vec::new(),
+            vars: Default::default(),
+            parent,
+            close: Default::default(),
+        };
+        let parent = rig
+            .state
+            .new_session(&mut rig.poll, &request("exec cat", None))
+            .unwrap();
+        let mut child = |command: &str| {
+            let window = NewWindow {
+                session: None,
+                name: None,
+                pane: request(command, Some(parent)),
+            };
+            rig.state
+                .new_pane(&mut rig.poll, None, window)
+                .unwrap()
+                .pane
+        };
+        let died = child("exit 0");
+        let lives = child("exec cat");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while rig.state.pane_listing(died).unwrap().row.dead.is_none() {
+            assert!(Instant::now() < deadline, "the child never died");
+            rig.step(Mode::Wait);
+        }
+        let told = |rig: &Rig, child| {
+            rig.state
+                .panes
+                .find(parent)
+                .unwrap()
+                .inbox()
+                .seen(&MessageId::ended(child))
+                .is_some()
+        };
+        assert!(told(&rig, died), "the death was told");
+        rig.state
+            .panes
+            .find_mut(parent)
+            .unwrap()
+            .inbox_mut()
+            .clear();
+        assert!(!told(&rig, died), "the id left the ring");
+        rig.state.delete_pane(&mut rig.poll, died);
+        assert!(
+            !told(&rig, died),
+            "a pane that died is not told again as gone"
+        );
+        rig.state.delete_pane(&mut rig.poll, lives);
+        assert!(told(&rig, lives), "a pane removed alive is told as gone");
     }
 }

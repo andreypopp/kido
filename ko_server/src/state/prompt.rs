@@ -5,7 +5,12 @@ use crate::api::routes;
 use crate::ids::WindowId;
 use crate::msg::{self, Delivery, Step};
 use crate::pane_kind::{self, Kind, RemoteKind};
-use crate::protocol::{Candidate, Error, ErrorKind, SendPrompt, Sent, Via, Window};
+use crate::panes::acts_as;
+use crate::protocol::{
+    Candidate, Content, Error, ErrorKind, Payload, SendPrompt, Sent, Via, Window,
+};
+
+use super::messages::{Posting, Reply};
 
 const INBOX_TIMEOUT: Duration = Duration::from_secs(2);
 const ENTER: u16 = 58;
@@ -41,6 +46,7 @@ impl PromptState {
 #[derive(Debug)]
 struct Reachable {
     candidate: Candidate,
+    stream: bool,
     inbox: Option<String>,
     name: String,
 }
@@ -57,12 +63,16 @@ fn enter() -> Option<Key> {
 }
 
 impl State {
-    fn reachable(&self, caller: Option<PaneId>) -> Result<(Vec<Reachable>, WindowId), Error> {
-        let caller = caller.ok_or_else(|| Error::new(ErrorKind::Invalid, "no caller pane"))?;
+    fn reachable(
+        &self,
+        caller: Option<PaneId>,
+        from: PaneId,
+    ) -> Result<(Vec<Reachable>, WindowId), Error> {
+        acts_as(caller, from, "prompt only from itself")?;
         let layout = self.document.layout();
         let (session, own) = layout
-            .locate(caller)
-            .ok_or_else(|| Error::new(ErrorKind::Invalid, format!("pane {caller} not found")))?;
+            .locate(from)
+            .ok_or_else(|| Error::new(ErrorKind::Invalid, format!("pane {from} not found")))?;
         let run_window = |window: &Window| {
             window.panes().iter().any(|pane| {
                 self.panes
@@ -97,6 +107,7 @@ impl State {
                         window: window.id,
                         title: pane_kind::title(&kind, &title).unwrap_or_default(),
                     },
+                    stream: pane.inbox().stream().is_some(),
                     inbox,
                     name,
                 });
@@ -108,9 +119,10 @@ impl State {
     pub(crate) fn resolve_prompt(
         &self,
         caller: Option<PaneId>,
+        from: PaneId,
         window_only: bool,
     ) -> Result<Vec<Candidate>, Error> {
-        let (found, own) = self.reachable(caller)?;
+        let (found, own) = self.reachable(caller, from)?;
         let candidates: Vec<Candidate> = found
             .into_iter()
             .map(|reachable| reachable.candidate)
@@ -137,7 +149,7 @@ impl State {
         if request.text.is_empty() {
             return Some(Err(Error::new(ErrorKind::Invalid, "no prompt given")));
         }
-        let reachable = match self.reachable(caller) {
+        let reachable = match self.reachable(caller, request.from) {
             Ok((reachable, _)) => reachable,
             Err(failure) => return Some(Err(failure)),
         };
@@ -149,11 +161,28 @@ impl State {
                 ErrorKind::Invalid,
                 format!(
                     "pane {} is not a candidate of pane {}",
-                    request.target,
-                    caller.map(|pane| pane.to_string()).unwrap_or_default()
+                    request.target, request.from
                 ),
             )));
         };
+        let known = self
+            .pane(request.target)
+            .is_ok_and(|pane| pane.inbox().seen(&request.id).is_some());
+        if target.stream || known {
+            let posting = Posting {
+                caller,
+                target: request.target,
+                id: request.id,
+                content: Content::User(Payload {
+                    text: request.text,
+                    data: None,
+                }),
+                reply: Reply::Prompt,
+            };
+            return self
+                .submit(poll, index, posting, &self.edges())
+                .map(|result| result.map(Sent::from));
+        }
         let token = self.conns[index].token;
         let Some(inbox) = target.inbox else {
             return self.paste_prompt(poll, index, request.target, &request.text);

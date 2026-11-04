@@ -817,13 +817,20 @@ lifecycle", gives the rules. The ones a change breaks most easily:
   removes a `close: on_exit` pane dead for the linger grace, and a
   pane whose immutable `parent` pane is gone or dead. A run's pane
   gets `close: on_exit` and its parent's pane as `parent`.
-- `ko prompt` uses the pane's trusted `pi.inbox`, and a paste only for
-  a pane without one. An advertised but unavailable inbox is an error,
-  not permission to paste. A failure after the connect may have
-  delivered the message, so nothing retries it. Exit codes: 0 sent,
+- `ko prompt` uses the pane's message stream when it is open, else
+  the trusted `pi.inbox`, and a paste only for a pane with neither.
+  An advertised but unavailable inbox is an error, not permission to
+  paste. A failure after the connect may have delivered the message
+  over `pi.inbox`, which has no ids, so nothing retries a prompt
+  while that path exists. Exit codes: 0 sent,
   1 empty stdin or an error, 4 no agent in scope, 5 several. Scope is
   the caller's window, widened to the session only when the window
-  has no agents; `--window` never widens.
+  has no agents; `--window` never widens. The prompt routes take the
+  scope pane as `from`; the identity headers are identity only.
+- A message (`/panes/{id}/messages`) is enqueued once for each
+  `(pane, id)`; a repeat answers from the original. The queue drops
+  with its pane, and nothing tells its senders. The server never
+  reads a message's kind or text.
 
 **Shell integrations** (`share/ko/bash`, `share/ko/zsh`) blank
 control characters, limit the command line to 1024 characters, and

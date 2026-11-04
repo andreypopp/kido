@@ -307,6 +307,12 @@ impl Model {
                     return Applied::State;
                 }
             }
+            ClientEvent::Inbox { pane, inbox } => {
+                if let Some(pane) = self.pane_mut(pane) {
+                    pane.row.inbox = inbox;
+                    return Applied::State;
+                }
+            }
             ClientEvent::Dead(dead) => {
                 if let Some(pane) = self.pane_mut(dead.pane) {
                     pane.row.dead = Some(dead.dead);

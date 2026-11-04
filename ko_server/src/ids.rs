@@ -162,6 +162,60 @@ impl PaneToken {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct MessageId(String);
+
+impl MessageId {
+    pub fn mint() -> io::Result<MessageId> {
+        let text = ko_pane_wire::base64::encode(&ko_sys::entropy::bytes()?);
+        Ok(MessageId(
+            text.trim_end_matches('=')
+                .replace('+', "-")
+                .replace('/', "_"),
+        ))
+    }
+
+    pub(crate) fn ended(pane: PaneId) -> MessageId {
+        MessageId(format!("ended-{pane}"))
+    }
+}
+
+impl JsonSchema for MessageId {
+    fn schema_name() -> Cow<'static, str> {
+        "MessageId".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{8,64}$",
+            "description": "The sender's id of a message: 8 to 64 characters of A-Z, a-z, 0-9, _ and -."
+        })
+    }
+}
+
+impl TryFrom<String> for MessageId {
+    type Error = &'static str;
+
+    fn try_from(text: String) -> Result<MessageId, &'static str> {
+        let plain = text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'));
+        if plain && (8..=64).contains(&text.len()) {
+            Ok(MessageId(text))
+        } else {
+            Err("invalid message id")
+        }
+    }
+}
+
+impl From<MessageId> for String {
+    fn from(MessageId(text): MessageId) -> String {
+        text
+    }
+}
+
 const MAX_NAME: usize = 256;
 
 fn plain(text: &str) -> bool {
@@ -276,6 +330,31 @@ mod tests {
         assert!(VarName::new("a\nb").is_err());
         assert!(VarName::new("pi.session é").is_ok());
         assert!(VarName::new(&"é".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn a_message_id_is_8_to_64_url_safe_characters() {
+        let parse = |text: &str| MessageId::try_from(text.to_owned());
+        assert!(parse("abcdefgh").is_ok());
+        assert!(parse(&"A-_9".repeat(16)).is_ok());
+        for bad in [
+            "",
+            "abcdefg",
+            "abcdefgh+",
+            "abcdefg=",
+            "abcdefgé",
+            &"a".repeat(65),
+        ] {
+            assert_eq!(parse(bad), Err("invalid message id"), "{bad}");
+        }
+        let minted = MessageId::mint().unwrap();
+        assert_eq!(String::from(minted.clone()).len(), 22);
+        assert_eq!(parse(&String::from(minted.clone())), Ok(minted));
+        assert_eq!(
+            String::from(MessageId::ended(PaneId::new(3))),
+            "ended-pane_3"
+        );
+        assert!(parse(&String::from(MessageId::ended(PaneId::new(0)))).is_ok());
     }
 
     #[test]

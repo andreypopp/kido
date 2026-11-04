@@ -293,14 +293,9 @@ pub(crate) fn target(server: Option<PathBuf>) -> Target {
         .ok()
         .and_then(|pane| pane.parse::<PaneId>().ok())
         .filter(|_| own.as_deref().map(same) == Some(same(&dir)));
-    let caller = pane.map(|pane| {
-        match std::env::var("KO_PANE_TOKEN")
-            .ok()
-            .and_then(|token| token.parse().ok())
-        {
-            Some(token) => Caller::Pane { pane, token },
-            None => Caller::Named(pane),
-        }
+    let caller = pane.and_then(|pane| {
+        let token = std::env::var("KO_PANE_TOKEN").ok()?.parse().ok()?;
+        Some(Caller { pane, token })
     });
     Target { dir, caller }
 }

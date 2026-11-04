@@ -126,6 +126,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/panes/{id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The messages that other panes and the user send to a pane, one text message each, in the order of the pane's queue. The receiver answers each with an ack or a refuse. Only the pane itself may open the stream, and a pane has one stream at most. */
+        get: operations["Messages"];
+        put?: never;
+        /** @description Sends a message to a pane. The server stamps the sender and keeps the message in the pane's queue until the pane's stream gets it. A message that is written at once waits up to two seconds for its ack. An id that the pane has seen is not queued again: the reply is the state of the original, with duplicate set. */
+        post: operations["PostMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/panes/{id}/output": {
         parameters: {
             query?: never;
@@ -270,7 +288,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description The agents that a prompt can reach from the calling pane. */
+        /** @description The agents that a prompt can reach from the pane `from`. A pane identity may name only itself. */
         get: operations["PromptResolve"];
         put?: never;
         post?: never;
@@ -567,7 +585,12 @@ export interface components {
         } | ({
             /** @constant */
             type: "run";
-        } & components["schemas"]["RunRow"]);
+        } & components["schemas"]["RunRow"]) | {
+            inbox: boolean;
+            pane: components["schemas"]["PaneId"];
+            /** @constant */
+            type: "inbox";
+        };
         ClientId: string;
         /** @enum {string} */
         ClientKind: "terminal" | "app";
@@ -631,6 +654,8 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** @description Any JSON value of at most 4096 bytes when encoded. */
+        Data: unknown;
         Dead: {
             at: number;
             cause: components["schemas"]["Cause"];
@@ -690,6 +715,14 @@ export interface components {
             zoom?: components["schemas"]["PaneId"];
         };
         Empty: Record<string, never>;
+        /** @description How a pane that has a parent ended. */
+        End: ({
+            /** @constant */
+            type: "dead";
+        } & components["schemas"]["Dead"]) | {
+            /** @constant */
+            type: "gone";
+        };
         Error: {
             message: string;
         } & ({
@@ -829,6 +862,8 @@ export interface components {
             dead: components["schemas"]["Dead"] | null;
             foreground?: components["schemas"]["Foreground"];
             id: components["schemas"]["PaneId"];
+            /** @description True while the pane has its message stream open. */
+            inbox?: boolean;
             parent?: components["schemas"]["PaneId"];
             pid?: number;
             progress?: components["schemas"]["Progress"];
@@ -872,6 +907,46 @@ export interface components {
         } & components["schemas"]["Dead"]);
         /** @enum {string} */
         Medium: "file" | "temp_file" | "shared_mem";
+        /**
+         * @description A message on the message stream of a pane. The id is the sender's, so the receiver can drop a
+         *     repeat.
+         */
+        Message: {
+            from: components["schemas"]["Sender"];
+            id: components["schemas"]["MessageId"];
+            relation?: components["schemas"]["Relation"];
+            seq: number;
+        } & (({
+            /** @constant */
+            kind: "message";
+        } & components["schemas"]["Payload"]) | ({
+            /** @constant */
+            kind: "steer";
+        } & components["schemas"]["Payload"]) | ({
+            /** @constant */
+            kind: "interrupt";
+        } & components["schemas"]["Payload"]) | ({
+            /** @constant */
+            kind: "stop";
+        } & components["schemas"]["Payload"]) | ({
+            /** @constant */
+            kind: "notice";
+        } & components["schemas"]["Payload"]) | ({
+            /** @constant */
+            kind: "user";
+        } & components["schemas"]["Payload"]) | {
+            end: components["schemas"]["End"];
+            /** @constant */
+            kind: "ended";
+        });
+        /** @description The sender's id of a message: 8 to 64 characters of A-Z, a-z, 0-9, _ and -. */
+        MessageId: string;
+        /**
+         * @description What a message is to the sender's knowledge: queued is in the pane's queue and not written,
+         *     delivered is written to the stream and not acked, acked is received.
+         * @enum {string}
+         */
+        MessageState: "queued" | "delivered" | "acked";
         Mouse: {
             action: components["schemas"]["MouseAction"];
             button: components["schemas"]["MouseButton"];
@@ -967,6 +1042,10 @@ export interface components {
             pasted: boolean;
             unsafe: boolean;
         };
+        Payload: {
+            data?: components["schemas"]["Data"];
+            text: string;
+        };
         Phase: {
             /** @constant */
             type: "unknown";
@@ -986,6 +1065,15 @@ export interface components {
             pane: components["schemas"]["PaneId"];
             session: components["schemas"]["SessionId"];
             window: components["schemas"]["WindowId"];
+        };
+        /**
+         * @description The state of a sent message. The seq counts the messages of the pane in arrival order. A
+         *     repeat of an id that the pane has seen is a duplicate and gets the state of the original.
+         */
+        Posted: {
+            duplicate?: boolean;
+            seq: number;
+            state: components["schemas"]["MessageState"];
         };
         /** @enum {string} */
         ProgramKind: "permission" | "question" | "auth";
@@ -1031,6 +1119,11 @@ export interface components {
             pane: components["schemas"]["PaneId"];
             pwd: string;
         };
+        /**
+         * @description What the sender of a message is to its receiver, from the `parent` edges of the panes.
+         * @enum {string}
+         */
+        Relation: "parent" | "child" | "sibling" | "descendant" | "sibling_descendant";
         Remote: {
             interactive: boolean;
             status: components["schemas"]["Shell"];
@@ -1094,9 +1187,40 @@ export interface components {
             session?: components["schemas"]["SessionId"];
             window?: components["schemas"]["WindowId"];
         };
+        /**
+         * @description The kinds that a sender may give. The server reads none of them.
+         * @enum {string}
+         */
+        SendKind: "message" | "steer" | "interrupt" | "stop" | "notice";
+        /** @description A message to the pane in the path. The server stamps the sender. */
+        SendMessage: {
+            data?: components["schemas"]["Data"];
+            id: components["schemas"]["MessageId"];
+            kind: components["schemas"]["SendKind"];
+            text: string;
+        };
+        /** @description A prompt for the agent in a pane. The scope is the window of `from`, else its session. */
         SendPrompt: {
+            /** @description The pane that the prompt comes from. A pane identity may name only itself. */
+            from: components["schemas"]["PaneId"];
+            /** @description The id of the message when the prompt goes through the agent's message stream. */
+            id: components["schemas"]["MessageId"];
             target: components["schemas"]["PaneId"];
             text: string;
+        };
+        /**
+         * @description The sender of a message, as the server knows it. The session and the name are those of a
+         *     pane that has a pi root.
+         */
+        Sender: {
+            name?: string;
+            pane: components["schemas"]["PaneId"];
+            session?: string;
+            /** @constant */
+            type: "pane";
+        } | {
+            /** @constant */
+            type: "user";
         };
         Sent: {
             via: components["schemas"]["Via"];
@@ -1173,6 +1297,19 @@ export interface components {
             /** @default 0 */
             wait_ms?: components["schemas"]["WaitMs"];
         };
+        /**
+         * @description What the receiver says about a message of its stream. A message that is neither acked nor
+         *     refused is written again to the next stream.
+         */
+        StreamRequest: {
+            id: components["schemas"]["MessageId"];
+            /** @constant */
+            type: "ack";
+        } | {
+            id: components["schemas"]["MessageId"];
+            /** @constant */
+            type: "refuse";
+        };
         Switch: {
             direction: components["schemas"]["Direction"];
             over: components["schemas"]["Over"];
@@ -1204,8 +1341,16 @@ export interface components {
             protocol: string;
             vt: string;
         };
-        /** @enum {string} */
-        Via: "inbox" | "paste";
+        Via: {
+            /** @constant */
+            type: "inbox";
+        } | {
+            /** @constant */
+            type: "paste";
+        } | ({
+            /** @constant */
+            type: "message";
+        } & components["schemas"]["Posted"]);
         ViewEvent: ({
             /** @constant */
             type: "marked";
@@ -1609,6 +1754,82 @@ export interface operations {
             };
         };
     };
+    Messages: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Switching Protocols */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    PostMessage: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendMessage"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Posted"];
+                };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     Output: {
         parameters: {
             query?: {
@@ -1930,9 +2151,9 @@ export interface operations {
     SendPrompt: {
         parameters: {
             query?: never;
-            header: {
+            header?: {
                 /** @example pane_1 */
-                "Ko-Pane": components["schemas"]["PaneId"];
+                "Ko-Pane"?: components["schemas"]["PaneId"];
                 /** @example 0123456789abcdef0123456789abcdef */
                 "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
             };
@@ -1968,12 +2189,14 @@ export interface operations {
     PromptResolve: {
         parameters: {
             query?: {
+                /** @example pane_1 */
+                from?: components["schemas"]["PaneId"];
                 /** @example true */
                 window?: components["schemas"]["WindowOnly"];
             };
-            header: {
+            header?: {
                 /** @example pane_1 */
-                "Ko-Pane": components["schemas"]["PaneId"];
+                "Ko-Pane"?: components["schemas"]["PaneId"];
                 /** @example 0123456789abcdef0123456789abcdef */
                 "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
             };

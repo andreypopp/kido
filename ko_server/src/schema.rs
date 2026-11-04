@@ -136,7 +136,6 @@ fn operation(generator: &mut SchemaGenerator, route: &RouteInfo) -> Value {
     let caller: Vec<_> = match route.caller {
         Caller::Absent => Vec::new(),
         Caller::Optional => vec![(&caller, "header", false), (&token, "header", false)],
-        Caller::Named => vec![(&caller, "header", true), (&token, "header", false)],
     };
     let parameters: Vec<Value> = route
         .path_params

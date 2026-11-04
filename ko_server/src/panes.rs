@@ -14,7 +14,7 @@ use crate::delivery::{Stamps, mint_stamps};
 use crate::ids::{PaneId, PaneToken, RunId, SessionId};
 use crate::pane::{Birth, Pane};
 use crate::pane_proc::{Cause, Io, Launch, Life};
-use crate::protocol::{Close, Command, CreatePane, Error, ErrorKind, Variable};
+use crate::protocol::{Close, Command, CreatePane, Error, ErrorKind, Relation, Variable};
 
 #[derive(Debug)]
 pub(crate) enum AddError {
@@ -376,6 +376,22 @@ pub(crate) fn reads_output(edges: &[Edge], caller: PaneId, target: PaneId) -> bo
             .is_some_and(|me| children(edges, me).any(|edge| edge.pane == target))
 }
 
+fn ancestors(edges: &[Edge], of: &Edge) -> Vec<Edge> {
+    let mut found: Vec<Edge> = Vec::new();
+    let mut at = *of;
+    for _ in edges {
+        let Some(above) = at
+            .parent
+            .and_then(|parent| edges.iter().find(|edge| edge.pane == parent))
+        else {
+            break;
+        };
+        found.push(*above);
+        at = *above;
+    }
+    found
+}
+
 pub(crate) fn scope(edges: &[Edge], caller: PaneId) -> BTreeSet<PaneId> {
     let Some(me) = edges.iter().find(|edge| edge.pane == caller) else {
         return BTreeSet::new();
@@ -392,37 +408,54 @@ pub(crate) fn scope(edges: &[Edge], caller: PaneId) -> BTreeSet<PaneId> {
         .map(|edge| edge.pane)
         .chain(siblings(me))
         .collect();
-    let mut at = me;
-    for _ in edges {
-        let Some(above) = at
-            .parent
-            .and_then(|parent| edges.iter().find(|edge| edge.pane == parent))
-        else {
-            break;
-        };
-        if above.session == me.session {
-            reach.insert(above.pane);
-            reach.extend(siblings(above));
-        }
-        at = above;
+    for above in ancestors(edges, me)
+        .iter()
+        .filter(|above| above.session == me.session)
+    {
+        reach.insert(above.pane);
+        reach.extend(siblings(above));
     }
     reach
+}
+
+pub(crate) fn relation(edges: &[Edge], sender: PaneId, receiver: PaneId) -> Option<Relation> {
+    let find = |pane| edges.iter().find(|edge| edge.pane == pane);
+    let (from, to) = (find(sender)?, find(receiver)?);
+    if from.session != to.session || sender == receiver {
+        return None;
+    }
+    let above = ancestors(edges, from);
+    if to.parent == Some(sender) {
+        Some(Relation::Parent)
+    } else if from.parent == Some(receiver) {
+        Some(Relation::Child)
+    } else if from.parent == to.parent {
+        Some(Relation::Sibling)
+    } else if above.iter().any(|edge| edge.pane == receiver) {
+        Some(Relation::Descendant)
+    } else if above
+        .iter()
+        .any(|edge| edge.session == from.session && edge.parent == to.parent)
+    {
+        Some(Relation::SiblingDescendant)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_scope_is_children_siblings_ancestors_and_their_siblings_in_one_session() {
+    // 1 and 2 are roots; 3 and 4 are children of 1; 5 is a child of 3;
+    // 6 is a root of another session; 7 is a child of 1 in another session.
+    fn fixture() -> [Edge; 7] {
         let edge = |pane, parent: Option<u64>, session| Edge {
             pane: PaneId::new(pane),
             parent: parent.map(PaneId::new),
             session: SessionId::new(session),
         };
-        // 1 and 2 are roots; 3 and 4 are children of 1; 5 is a child of 3;
-        // 6 is a root of another session; 7 is a child of 1 in another session.
-        let edges = [
+        [
             edge(1, None, 1),
             edge(2, None, 1),
             edge(3, Some(1), 1),
@@ -430,7 +463,44 @@ mod tests {
             edge(5, Some(3), 1),
             edge(6, None, 2),
             edge(7, Some(1), 2),
-        ];
+        ]
+    }
+
+    #[test]
+    fn the_relation_is_what_the_sender_is_to_the_receiver() {
+        let edges = fixture();
+        let of = |sender, receiver| relation(&edges, PaneId::new(sender), PaneId::new(receiver));
+        assert_eq!(of(1, 3), Some(Relation::Parent));
+        assert_eq!(of(3, 5), Some(Relation::Parent));
+        assert_eq!(of(3, 1), Some(Relation::Child));
+        assert_eq!(of(5, 3), Some(Relation::Child));
+        assert_eq!(of(3, 4), Some(Relation::Sibling));
+        assert_eq!(of(1, 2), Some(Relation::Sibling));
+        assert_eq!(of(5, 1), Some(Relation::Descendant));
+        assert_eq!(of(5, 4), Some(Relation::SiblingDescendant));
+        assert_eq!(of(5, 2), Some(Relation::SiblingDescendant));
+        assert_eq!(of(3, 2), Some(Relation::SiblingDescendant));
+        assert_eq!(of(1, 5), None, "a pane cannot reach its descendants");
+        assert_eq!(of(4, 5), None);
+        assert_eq!(of(6, 1), None, "another session");
+        assert_eq!(of(7, 1), None, "another session");
+        assert_eq!(of(3, 3), None);
+        assert_eq!(of(9, 1), None);
+        for sender in 1..=7 {
+            for receiver in 1..=7 {
+                let reaches = scope(&edges, PaneId::new(sender)).contains(&PaneId::new(receiver));
+                assert_eq!(
+                    of(sender, receiver).is_some(),
+                    reaches,
+                    "{sender} to {receiver}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_scope_is_children_siblings_ancestors_and_their_siblings_in_one_session() {
+        let edges = fixture();
         let scope_of = |pane| {
             scope(&edges, PaneId::new(pane))
                 .into_iter()
@@ -465,6 +535,7 @@ mod tests {
             stop_escalation: crate::config::STOP_ESCALATION,
             run_screen_bytes: crate::config::RUN_SCREEN_BYTES,
             clipboard_wait: crate::config::CLIPBOARD_WAIT,
+            message_ack: crate::config::MESSAGE_ACK,
             view_queue: crate::config::ViewQueue::default(),
         }
     }

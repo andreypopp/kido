@@ -788,7 +788,8 @@ impl Conn {
                 !self.eof && !self.out.backed_up()
             }
             Phase::Ws(_) => !self.eof,
-            Phase::Handling | Phase::Streaming | Phase::Closing => false,
+            Phase::Handling => !self.eof,
+            Phase::Streaming | Phase::Closing => false,
         };
         match self.out.life() {
             Life::Open => Interest::of(read, self.out.waiting()),
@@ -955,6 +956,9 @@ impl Conn {
 
     pub(crate) fn settle(&mut self) {
         if matches!(self.phase, Phase::Closing) && !self.out.waiting() {
+            self.out.close();
+        }
+        if matches!(self.phase, Phase::Handling) && self.eof {
             self.out.close();
         }
     }
@@ -1301,7 +1305,7 @@ pub(crate) mod tests {
         assert_eq!(
             (waiting, bodies.into_inner(), statuses),
             (
-                (vec![100_000], data.len(), true, Interest::Idle, false),
+                (vec![100_000], data.len(), true, Interest::Read, false),
                 vec![100_000, 0],
                 1
             )

@@ -5,11 +5,12 @@ use std::thread;
 
 use serde_json::{Value, json};
 
-use crate::harness::{Server, poll, start, start_with, which};
-use crate::runs::{caller, code, ko_as, run_of};
+use crate::harness::{Server, poll, run_ko, start, start_with, which};
+use crate::messages::{ack, answer, open, received};
+use crate::panes::as_pane;
+use crate::runs::{caller, code, ko_as, ko_command, run_of};
 
-const AGENT: &str =
-    "printf '\\033]7501;state=idle:app=pi\\007'; while read line; do echo \"got: $line\"; done";
+const AGENT: &str = "printf '\\033]7501;state=idle:app=pi\\007'; printf 'TOKEN<%s>' \"$KO_PANE_TOKEN\"; while read line; do echo \"got: $line\"; done";
 
 fn agent_of(name: &str, inbox: Option<&str>) -> Value {
     let mut vars = json!({"pi.session": format!("session-{name}"), "pi.name": name});
@@ -151,13 +152,14 @@ fn the_scope_is_the_callers_window_then_its_session_and_never_a_run() {
         "command": {"type": "shell", "command": "while read line; do echo \"got: $line\"; done"},
         "vars": {"pi.session": "stale", "pi.name": "stale"}
     }));
-    let headers = {
-        let mut headers = s.headers();
-        headers.push(("Ko-Pane".to_owned(), from.clone()));
-        headers
-    };
+    let headers = as_pane(&s, &from);
     let resolve = |query: &str| -> Vec<String> {
-        let (status, body) = s.exchange("GET", &format!("/prompt/resolve{query}"), &headers, b"");
+        let (status, body) = s.exchange(
+            "GET",
+            &format!("/prompt/resolve?from={from}{query}"),
+            &headers,
+            b"",
+        );
         assert_eq!(status, 200);
         let candidates: Value = serde_json::from_slice(&body).unwrap();
         candidates
@@ -201,7 +203,7 @@ fn the_scope_is_the_callers_window_then_its_session_and_never_a_run() {
     assert_eq!((status, stderr.as_str()), (5, "multiple agents found\n"));
     assert_eq!(prompt(&s, &from, "several", true).0, 4);
     assert_eq!(resolve(""), [elsewhere.as_str(), second.as_str()]);
-    assert_eq!(resolve("?window=true"), Vec::<String>::new());
+    assert_eq!(resolve("&window=true"), Vec::<String>::new());
 
     let here = split_into(&s, &from, agent_of("here", None));
     rooted(&s, &here);
@@ -221,15 +223,22 @@ fn the_scope_is_the_callers_window_then_its_session_and_never_a_run() {
         [here.as_str()],
         "the window's candidates come alone"
     );
-    assert_eq!(resolve("?window=true"), [here.as_str()]);
-    let (status, body) = s.exchange("GET", "/prompt/resolve", &headers, b"");
+    assert_eq!(resolve("&window=true"), [here.as_str()]);
+    let (status, body) = s.exchange(
+        "GET",
+        &format!("/prompt/resolve?from={from}"),
+        &headers,
+        b"",
+    );
     assert_eq!(status, 200);
     let candidates: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(candidates[0]["title"], "here");
-    let send = |target: &str, text: &str| {
-        let body = json!({"target": target, "text": text}).to_string();
-        s.exchange("POST", "/prompt", &headers, body.as_bytes()).0
+    let send_as = |who: &crate::panes::Headers, from: &str, target: &str, text: &str| {
+        let body =
+            json!({"from": from, "id": "prompt-0001", "target": target, "text": text}).to_string();
+        s.exchange("POST", "/prompt", who, body.as_bytes()).0
     };
+    let send = |target: &str, text: &str| send_as(&headers, &from, target, text);
     assert_eq!(send(&from, "x"), 400, "a terminal is no candidate");
     assert_eq!(
         send(run["pane"].as_str().unwrap(), "x"),
@@ -240,7 +249,105 @@ fn the_scope_is_the_callers_window_then_its_session_and_never_a_run() {
     assert_eq!(
         s.exchange("GET", "/prompt/resolve", &s.headers(), b"").0,
         400,
-        "no caller"
+        "no pane to prompt from"
+    );
+
+    let forged = format!("/prompt/resolve?from={second}");
+    assert_eq!(
+        s.exchange("GET", &forged, &headers, b"").0,
+        409,
+        "a pane identity names only itself"
+    );
+    assert_eq!(send_as(&headers, &second, &here, "x"), 409);
+    assert_eq!(
+        s.exchange("GET", &forged, &s.headers(), b"").0,
+        200,
+        "the user names any pane"
+    );
+    let mut claim = s.headers();
+    claim.push(("Ko-Pane".to_owned(), from.clone()));
+    assert_eq!(
+        s.exchange("GET", &format!("/prompt/resolve?from={from}"), &claim, b"")
+            .0,
+        409,
+        "Ko-Pane without its token is a claim, not an identity"
+    );
+}
+
+#[test]
+fn a_prompt_goes_through_the_message_queue_when_the_agent_has_a_stream() {
+    let s = start(&[]);
+    let from = caller(&s);
+    let pane = agent(&s, "streamer");
+    let mut stream = open(&s, &pane);
+    let stale = stale_socket(&s);
+    s.set_var(&pane, "pi.inbox", &json!(stale));
+    let mut next = || {
+        let message = received(&mut stream);
+        ack(&mut stream, message["id"].as_str().unwrap());
+        message
+    };
+
+    let (env, argv) = ko_command(&s, Some(&from), &["prompt"]);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let scratch = &s.scratch;
+    let (sent, message) = thread::scope(|scope| {
+        let sending = scope.spawn(|| run_ko(scratch, &env, &argv, "over the stream"));
+        let message = next();
+        (sending.join().unwrap(), message)
+    });
+    assert_eq!((code(&sent), sent.stderr.as_str()), (0, ""));
+    assert_eq!(
+        (
+            message["kind"].as_str(),
+            message["text"].as_str(),
+            message["from"].clone(),
+            message["relation"].as_str()
+        ),
+        (
+            Some("user"),
+            Some("over the stream"),
+            json!({"type": "pane", "pane": from}),
+            Some("sibling")
+        ),
+        "an open stream wins over a trusted inbox, and a pane sender is stamped"
+    );
+    assert!(
+        silent(&s, &pane, "over the stream"),
+        "a queued prompt types nothing"
+    );
+
+    let body = json!({"from": from, "id": "prompt-user-1", "target": pane, "text": "as the user"});
+    let waiting = s.send_request("POST", "/prompt", &s.headers(), body.to_string().as_bytes());
+    let message = next();
+    assert_eq!(
+        answer(&s, waiting),
+        (
+            200,
+            json!({"via": {"type": "message", "state": "acked", "seq": 2}})
+        )
+    );
+    assert_eq!(message["from"], json!({"type": "user"}));
+    assert_eq!(message.get("relation"), None);
+
+    let lost_body =
+        json!({"from": from, "id": "prompt-lost-1", "target": pane, "text": "lost reply"})
+            .to_string();
+    let lost = s.send_request("POST", "/prompt", &s.headers(), lost_body.as_bytes());
+    assert_eq!(received(&mut stream)["id"], "prompt-lost-1");
+    drop(lost);
+    drop(stream);
+    s.wait_row(&pane, "its stream to close", |row| {
+        row.get("inbox").is_none()
+    });
+    let (status, repeat) = s.exchange("POST", "/prompt", &s.headers(), lost_body.as_bytes());
+    assert_eq!(
+        (status, serde_json::from_slice::<Value>(&repeat).unwrap()),
+        (
+            200,
+            json!({"via": {"type": "message", "state": "queued", "seq": 3, "duplicate": true}})
+        ),
+        "a repeat of a prompt id that the queue knows goes by the queue, not by the stale inbox"
     );
 }
 

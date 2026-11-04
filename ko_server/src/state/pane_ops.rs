@@ -54,7 +54,7 @@ impl Stops {
 }
 
 impl State {
-    fn edges(&self) -> Vec<Edge> {
+    pub(super) fn edges(&self) -> Vec<Edge> {
         let layout = self.document.layout();
         self.panes
             .iter()
@@ -69,9 +69,14 @@ impl State {
             .collect()
     }
 
-    fn may_stop(&self, caller: Option<PaneId>, target: PaneId) -> Result<(), Error> {
+    pub(super) fn may_reach(
+        &self,
+        edges: &[Edge],
+        caller: Option<PaneId>,
+        target: PaneId,
+    ) -> Result<(), Error> {
         match caller {
-            Some(caller) if !scope(&self.edges(), caller).contains(&target) => Err(Error::new(
+            Some(caller) if !scope(edges, caller).contains(&target) => Err(Error::new(
                 ErrorKind::Refused,
                 format!("{target} is not a child, sibling or ancestor of {caller}"),
             )),
@@ -227,8 +232,9 @@ impl State {
         wait: WaitMs,
         via: Via,
     ) -> Option<Result<Empty, Error>> {
-        let Some(found) = self.panes.find(pane) else {
-            return Some(Err(Error::new(ErrorKind::Missing, "pane not found")));
+        let found = match self.pane(pane) {
+            Ok(found) => found,
+            Err(error) => return Some(Err(error)),
         };
         if found.proc().dead().is_some() || wait == WaitMs::NONE {
             self.kill_pane(poll, pane);
@@ -247,7 +253,7 @@ impl State {
         pane: PaneId,
         wait: WaitMs,
     ) -> Option<Result<Empty, Error>> {
-        if let Err(error) = self.may_stop(caller, pane) {
+        if let Err(error) = self.may_reach(&self.edges(), caller, pane) {
             return Some(Err(error));
         }
         self.stop_after(poll, index, pane, wait, Via::Pane)

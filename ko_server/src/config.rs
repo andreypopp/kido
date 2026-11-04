@@ -30,6 +30,7 @@ pub struct Config {
     pub stop_escalation: Duration,
     pub run_screen_bytes: usize,
     pub clipboard_wait: Duration,
+    pub message_ack: Duration,
     pub view_queue: ViewQueue,
 }
 
@@ -55,6 +56,7 @@ pub const LINGER: Duration = Duration::from_secs(30);
 pub const STOP_ESCALATION: Duration = Duration::from_secs(5);
 pub const RUN_SCREEN_BYTES: usize = 64 << 20;
 pub const CLIPBOARD_WAIT: Duration = Duration::from_secs(8);
+pub const MESSAGE_ACK: Duration = Duration::from_secs(2);
 
 pub const DEFAULT_LIMITS: Limits = Limits {
     scrollback: Scrollback::Bounded {
@@ -83,6 +85,7 @@ pub fn scratch(dir: &Path, pane_exe: PathBuf, limits: Limits) -> Config {
         stop_escalation: STOP_ESCALATION,
         run_screen_bytes: RUN_SCREEN_BYTES,
         clipboard_wait: CLIPBOARD_WAIT,
+        message_ack: MESSAGE_ACK,
         view_queue: ViewQueue::default(),
     }
 }
@@ -238,6 +241,7 @@ impl Config {
                 .unwrap_or(RUN_SCREEN_BYTES),
             clipboard_wait: positive("KO_CLIPBOARD_TIMEOUT_MS")
                 .map_or(CLIPBOARD_WAIT, Duration::from_millis),
+            message_ack: positive("KO_MESSAGE_ACK_MS").map_or(MESSAGE_ACK, Duration::from_millis),
             view_queue: ViewQueue {
                 cap_bytes: positive("KO_VIEW_QUEUE_BYTES")
                     .and_then(|bytes| usize::try_from(bytes).ok())

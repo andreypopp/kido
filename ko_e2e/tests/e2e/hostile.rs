@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use crate::harness::{DEADLINE, Hello, size_request, start, within};
+use crate::messages::{open, path, received};
+use crate::panes::raw;
 
 #[test]
 fn hostile_clients_do_not_affect_others() {
@@ -113,4 +115,71 @@ fn hostile_clients_do_not_affect_others() {
     let mut c = hello(4097, 24);
     c.closed("hello 4097 accepted");
     s.request("GET", "/version", None, 200);
+}
+
+#[test]
+fn hostile_message_input_is_refused_and_leaves_other_streams_alone() {
+    let s = start(&[]);
+    let user = s.headers();
+    let a = s.token_pane("exec cat");
+    let b = s.token_pane("exec cat");
+    let mut good = open(&s, &b);
+
+    let fits = "d".repeat(4094);
+    let large = "d".repeat(4095);
+    let sent = raw(
+        &s,
+        "POST",
+        &path(&a),
+        &user,
+        &json!({"id": "abcdefgh", "kind": "message", "text": "x", "data": fits}),
+    );
+    assert_eq!(sent.0, 200, "{sent:?}");
+    for body in [
+        json!({"id": "short", "kind": "message", "text": "x"}),
+        json!({"id": "has space!", "kind": "message", "text": "x"}),
+        json!({"id": "a".repeat(65), "kind": "message", "text": "x"}),
+        json!({"id": "abcdefgh", "kind": "user", "text": "x"}),
+        json!({"id": "abcdefgh", "kind": "message"}),
+        json!({"id": "bcdefghi", "kind": "message", "text": "x", "data": large}),
+        json!(["abcdefgh", "message", "x"]),
+    ] {
+        let (status, reply) = raw(&s, "POST", &path(&a), &user, &body);
+        assert_eq!(
+            (status, reply["kind"].as_str()),
+            (400, Some("invalid")),
+            "{body}"
+        );
+    }
+    let (status, _) = s.exchange("POST", &path(&a), &user, b"not json");
+    assert_eq!(status, 400);
+
+    for text in [
+        json!("not an object"),
+        json!([]),
+        json!({"type": "nope"}),
+        json!({"type": "ack"}),
+        json!({"type": "ack", "id": "x"}),
+        json!({"type": "refuse", "id": ["abcdefgh"]}),
+    ] {
+        let mut stream = open(&s, &a);
+        assert_eq!(received(&mut stream)["id"], "abcdefgh");
+        stream.send(&text);
+        stream.closed(&format!("the stream to close on {text}"));
+        assert_eq!(
+            stream.close_frame(),
+            Some(&(1008, "invalid".to_owned())),
+            "{text}"
+        );
+        s.request("GET", "/version", None, 200);
+    }
+    let sent = raw(
+        &s,
+        "POST",
+        &path(&b),
+        &user,
+        &json!({"id": "bcdefghi", "kind": "message", "text": "alive"}),
+    );
+    assert_eq!(sent.0, 200, "{sent:?}");
+    assert_eq!(received(&mut good)["id"], "bcdefghi");
 }

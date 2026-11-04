@@ -376,9 +376,14 @@ envelope that claims any identity.
 ## Delivery, and when a paste is allowed
 
 `ko prompt` reads its text from stdin and sends it to the server with
-its pane in `Ko-Pane`; the server resolves the scope and delivers
-(protocol.md, section 11). A `PiAgent` whose trusted `pi.inbox` names
-an inbox gets the text over that socket. An inbox that cannot be
+its pane identity and its pane as `from`; the server resolves the
+scope and delivers (protocol.md, section 11). A pane whose message
+stream is open gets the text as a queued message of kind `user`
+(protocol.md, section 7, "Messages"). Else a `PiAgent` whose trusted
+`pi.inbox` names an inbox gets the text over that socket. The
+harness opens no message stream yet, so its panes take the inbox
+path; the message path replaces the inbox when the harness reads its
+stream. An inbox that cannot be
 reached is `refused` and nothing was sent. A timeout or another
 failure after the connect is `io`: the message can already have
 arrived, so a retry could deliver it twice. Neither falls back to a
@@ -922,7 +927,8 @@ that the process under test reads when it uses it:
 - `KO_LINGER_SECONDS` (the sweep's grace, with an optional fraction),
   `KO_STOP_ESCALATION_MS`, `KO_RUN_SCREEN_BYTES` (a size, not a
   duration, so that a test reaches the capture's cap),
-  `KO_CLIPBOARD_TIMEOUT_MS`,
+  `KO_CLIPBOARD_TIMEOUT_MS`, `KO_MESSAGE_ACK_MS` (a message's wait
+  for its ack),
   `KO_VIEW_QUEUE_BYTES` and `KO_VIEW_SPILL_BYTES`, read by `ko server`
   (`ko_server/src/config.rs`);
 - `KO_PARENT_POLL_MS`, `KO_SPAWN_TIMEOUT_MS`, `KO_INBOX_WAIT_MS`,
