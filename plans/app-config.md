@@ -69,7 +69,7 @@ Non-goals:
 - Migration of `kido-app.conf`. The old file stops being read
   (AGENTS.md, "No backward compatibility"). Section 9 says what the
   user does once.
-- `kido.conf` (the tmux-era file that `website/src/pages/index.astro:99`
+- `kido.conf` (the old kido file that `website/src/pages/index.astro:99`
   and `:107` still describe). Nothing reads it today; the website
   text is stale and section 9 removes it.
 
@@ -592,7 +592,7 @@ file (AGENTS.md "No backward compatibility"). The user does this once:
    A `font.features` item without a sign is `+`, as Ghostty reads it.
 2. Move `~/.config/kido/themes/*` to `~/.config/ko/themes/`.
 3. Delete `~/.config/kido`. The directory has nothing else that is
-   read: `kido.conf` is the tmux-era file.
+   read: `kido.conf` is the old kido file.
 
 The website's two sentences about `kido.conf` (`index.astro:99,107`)
 go, and one sentence names `~/.config/ko/config.yaml` with a link to
@@ -649,7 +649,7 @@ Swift (`app/`):
     `ClipboardTests.swift:222,254`, `CopyModeTests.swift:231`,
     `RendererTests.swift:22`) write YAML instead. The visual suite's
     `keybind = super+e=text:X` and `super+shift+c=text:Y`
-    (`VisualTests.swift:184`) become a `KIDO_VISUAL`-only extra string
+    (`VisualTests.swift:184`) become an extra string only for the visual tests
     that `GhosttyRuntime.init` loads after `/kido`: the key-bytes tests
     need a binding, and the product has none.
   - The reload test with an included file (`ToolbarTests.swift:540`)
