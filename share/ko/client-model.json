@@ -327,6 +327,22 @@
           },
           {
             "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "break_pane",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
               "after": {
                 "$ref": "#/components/schemas/WindowId"
               },

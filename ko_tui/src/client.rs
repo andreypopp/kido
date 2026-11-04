@@ -8,7 +8,7 @@ use std::process::Child;
 use std::time::{Duration, Instant};
 
 use crate::clipboard;
-use ko_client::edit::Edit;
+use ko_client::edit::{Edge, Edit};
 use ko_client::launch::{self, BACKOFF_FIRST, PATIENCE, backoff_after};
 use ko_client::layout::{EditError, Edited};
 use ko_client::model::{Applied, Item, Model, Notice, Rejoin, cycle};
@@ -1192,13 +1192,43 @@ impl Client {
                 Edit::Swap { pane, other }
             }
             PaneEdit::Equalize => Edit::Equalize { pane },
+            PaneEdit::Break => Edit::BreakPane { pane },
+            PaneEdit::Float => {
+                if window.tree.contains(pane) {
+                    Edit::Float {
+                        pane,
+                        x: None,
+                        y: None,
+                        cols: None,
+                        rows: None,
+                        z: None,
+                        border: Some(true),
+                        title: None,
+                    }
+                } else {
+                    let Some(target) =
+                        [Some(window.focus), self.last.panes.get(&window.id).copied()]
+                            .into_iter()
+                            .flatten()
+                            .chain(window.panes())
+                            .find(|id| window.tree.contains(*id))
+                    else {
+                        return Ok(());
+                    };
+                    Edit::Unfloat {
+                        pane,
+                        target,
+                        edge: Edge::Right,
+                    }
+                }
+            }
         };
-        if let Some(Edited {
-            created: Some(ko_client::layout::Created::Pane { pane }),
-            ..
-        }) = self.edit(edit)?
-        {
-            self.select(pane)?;
+        if let Some(edited) = self.edit(edit)? {
+            match (command, edited.created) {
+                (PaneEdit::Break, _) => self.select(pane)?,
+                (_, Some(ko_client::layout::Created::Pane { pane })) => self.select(pane)?,
+                _ => {}
+            }
         }
         Ok(())
     }

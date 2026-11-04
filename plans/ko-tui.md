@@ -19,7 +19,9 @@ select, the resize keys, `{` `}` `E`) and `geometry::neighbour`
 freeze and resync in `ko_tui/src/mirror.rs`, and the viewport,
 wrap and selection-text calls of ko_vt
 (docs/design-ko.md 4.11). The client refuses copy mode while a mirror
-restores a snapshot or holds synchronized output.
+restores a snapshot or holds synchronized output. Unit 7 is built: `C-a *` toggles a float
+and `C-a !` breaks the pane with the new shared `Edit::BreakPane`
+(docs/design-ko.md 4.11).
 
 The terminal client `ko` (`ko_tui/`) shows one pane at a time, lists
 the panes in a sidebar and takes Ctrl+Shift chords under the kitty

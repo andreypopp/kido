@@ -1052,6 +1052,16 @@ impl DraftWindow {
     }
 
     pub fn single(request: &CreatePane) -> DraftWindow {
+        Self::leaf(DraftLeaf {
+            pane: PaneRef::New {
+                new: request.clone(),
+            },
+            cols: None,
+            rows: None,
+        })
+    }
+
+    pub fn leaf(leaf: DraftLeaf) -> DraftWindow {
         DraftWindow {
             id: None,
             name: None,
@@ -1060,13 +1070,7 @@ impl DraftWindow {
             rows: None,
             cell_px: None,
             zoom: None,
-            tree: Node::Leaf(DraftLeaf {
-                pane: PaneRef::New {
-                    new: request.clone(),
-                },
-                cols: None,
-                rows: None,
-            }),
+            tree: Node::Leaf(leaf),
             floats: Vec::new(),
         }
     }

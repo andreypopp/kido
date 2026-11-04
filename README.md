@@ -62,6 +62,8 @@ terminal. A status line at the bottom shows the session, its windows
 | `C-a C-`arrow / `M-`arrow | move the pane's divider by 1 / 5 cells (r) |
 | `C-a {` / `}` | swap the pane with the previous / next pane |
 | `C-a E` | give the panes of the split equal sizes |
+| `C-a *` | float the pane over the window, or dock a float back into the window's split |
+| `C-a !` | move the pane into a new window after the shown one |
 | `C-a R` | resize mode: `h` `j` `k` `l` or arrows move the pane's divider by 1, `H` `J` `K` `L` or Shift+arrows by 5, `=` equal sizes, `z` zoom; `Enter`, `Escape` or `q` leaves |
 | `C-a s` or `w` | choose a pane from the list with `Up`, `Down`, `Enter`; `Escape` leaves |
 | `C-a C-s` | show or hide the list |

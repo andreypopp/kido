@@ -61,7 +61,7 @@ pub(crate) enum Step {
     Swallow,
 }
 
-pub(crate) const HELP: [&str; 29] = [
+pub(crate) const HELP: [&str; 31] = [
     "C-a C-a  send C-a to the pane",
     "d        detach",
     "r        redraw",
@@ -72,6 +72,8 @@ pub(crate) const HELP: [&str; 29] = [
     "n p      next / previous window",
     "% / \"    split left/right / top/bottom",
     "z        toggle zoom",
+    "*        toggle float",
+    "!        break pane into a new window",
     "R        resize mode",
     "o ;      next / last pane",
     "arrows   select neighbour (repeatable)",
@@ -113,6 +115,8 @@ pub(crate) enum PaneEdit {
     Resize(Edge, Amount),
     Swap(Direction),
     Equalize,
+    Float,
+    Break,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +159,8 @@ fn pane_command(event: &KeyEvent) -> Option<PaneCommand> {
         '%' => PaneCommand::Edit(PaneEdit::Split(Axis::Horizontal)),
         '"' => PaneCommand::Edit(PaneEdit::Split(Axis::Vertical)),
         'z' => PaneCommand::Edit(PaneEdit::Zoom),
+        '*' => PaneCommand::Edit(PaneEdit::Float),
+        '!' => PaneCommand::Edit(PaneEdit::Break),
         'o' => PaneCommand::Select(PaneSelect::Next),
         ';' => PaneCommand::Select(PaneSelect::Last),
         '{' => PaneCommand::Edit(PaneEdit::Swap(Direction::Previous)),
@@ -743,6 +749,8 @@ mod tests {
     #[test]
     fn every_binding_of_the_prefix_table() {
         let table = [
+            ("*", act(Action::Pane(PaneCommand::Edit(PaneEdit::Float)))),
+            ("!", act(Action::Pane(PaneCommand::Edit(PaneEdit::Break)))),
             ("d", act(Action::Detach)),
             ("r", act(Action::Redraw)),
             ("e", act(Action::Pager)),

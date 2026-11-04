@@ -522,6 +522,16 @@ Enter, so directly after the prefix those two keys also select; in
 the repeat window they go to the program. Outer mouse reporting stays on while a pane is shown,
 so selecting text in the outer terminal needs its override modifier.
 
+`C-a *` is a toggle, not tmux's new floating pane, because it reuses
+`Edit::Float` and `Edit::Unfloat` and needs no float geometry keys: a
+new float is `C-a %` then `C-a *`. The server places a float with no
+geometry, and a float docks on the right of a tiled pane of its
+window. `C-a !` is `Edit::BreakPane`, an edit of `ko_client`, so
+Kido.app and `ko layout edit` share it: the pane, tiled or a float,
+leaves its window and becomes the tree of a new window after it,
+which takes the old window's name. After a break the client selects
+the pane, so it shows the new window.
+
 Resize mode (`C-a R`) is a state of the key machine: each key is one
 layout edit of the active pane, sent at once, so two fast keys are two
 steps, as in Kido.app. A resize of a zoomed pane ends the zoom, which

@@ -189,6 +189,53 @@ fn client_split_dividers_input_mouse_wheel_and_zoom() {
 }
 
 #[test]
+fn client_float_toggle_and_break_pane() {
+    let s = start(&[]);
+    s.pane(&format!("exec python3 -u -c {} one", quote(SPLIT_ECHO)));
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.resize(105, 25);
+    o.attach("cat");
+    o.contains("READY-one");
+    o.prefix("%");
+    o.line(&format!("exec python3 -u -c {} two", quote(SPLIT_ECHO)));
+    o.contains("READY-two");
+    o.prefix("*");
+    o.wait("the active pane floats with a border", || {
+        let d = s.doc();
+        let w = &windows(&d)[0];
+        let f = &w["floats"][0];
+        if f["pane"] != "pane_2" || f["border"] != true {
+            return false;
+        }
+        let x = PANE_X + (f["x"].as_u64().unwrap() as usize).saturating_sub(1);
+        let y = (f["y"].as_u64().unwrap() as usize).saturating_sub(1);
+        o.cell(x, y).text == "┌"
+    });
+    o.raw("a");
+    o.contains("two-KEY-61");
+    o.prefix("*");
+    o.wait("the float docks beside the tiled pane", || {
+        let d = s.doc();
+        let w = &windows(&d)[0];
+        w["floats"].as_array().unwrap().is_empty() && w["tree"]["children"][1]["pane"] == "pane_2"
+    });
+    o.prefix("!");
+    o.wait("break selects the new window after the old one", || {
+        let d = s.doc();
+        let ws = windows(&d);
+        ws.len() == 2
+            && ws[0]["tree"]["pane"] == "pane_1"
+            && ws[1]["tree"]["pane"] == "pane_2"
+            && ws[1]["name"] == ws[0]["name"]
+            && o.lines()
+                .iter()
+                .any(|line| line.starts_with("[test] 0:test- 1:test*"))
+    });
+    o.raw("b");
+    o.contains("two-KEY-62");
+}
+
+#[test]
 fn client_splits_zoom_and_directional_select() {
     let s = start(&[]);
     s.pane(&format!("exec python3 -u -c {} one", quote(SPLIT_ECHO)));

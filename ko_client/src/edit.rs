@@ -88,6 +88,9 @@ pub enum Edit {
         target: PaneId,
         edge: Edge,
     },
+    BreakPane {
+        pane: PaneId,
+    },
     AddWindow {
         session: SessionId,
         after: WindowId,
@@ -145,6 +148,10 @@ fn leaf_count(node: &Tree) -> usize {
         Node::Leaf(_) => 1,
         Node::Split { children, .. } => children.iter().map(leaf_count).sum(),
     }
+}
+
+fn alone(window: &DraftWindow) -> bool {
+    leaf_count(&window.tree) == 1 && window.floats.is_empty()
 }
 
 fn cells(count: usize) -> Option<Cells> {
@@ -687,8 +694,7 @@ pub(crate) fn apply(layout: &mut DraftLayout, edit: &Edit) -> Done {
         Edit::DockWindow { pane, window, edge } => {
             let id = *window;
             let target = window_by_id(layout, id)?;
-            let alone = leaf_count(&target.tree) == 1 && target.floats.is_empty();
-            if alone && target.holds(*pane) {
+            if alone(target) && target.holds(*pane) {
                 return invalid("the pane is alone in the window");
             }
             layout
@@ -713,6 +719,22 @@ pub(crate) fn apply(layout: &mut DraftLayout, edit: &Edit) -> Done {
                     vec![old, new]
                 },
             };
+            Ok(())
+        }
+        Edit::BreakPane { pane } => {
+            let (s, w) = layout
+                .locate(*pane)
+                .ok_or_else(|| Refusal::Gone(pane.to_string()))?;
+            let window = window_at(layout, (s, w), *pane)?;
+            if alone(window) {
+                return invalid("the pane is alone in the window");
+            }
+            let (leaf, _) = take(layout, *pane)?;
+            let session = layout
+                .sessions
+                .get_mut(s)
+                .ok_or_else(|| Refusal::Gone(pane.to_string()))?;
+            session.windows.insert(w + 1, DraftWindow::leaf(leaf));
             Ok(())
         }
         Edit::Float { .. } => float(layout, edit),
@@ -1453,6 +1475,34 @@ mod tests {
         layout(&refs)
     }
 
+    #[test]
+    fn break_pane_keeps_the_other_leaves_and_inserts_after_its_window() {
+        let mut draft = layout(&["h(1@40x24,2@39x24)", "3@80x24"]);
+        draft.sessions[0].windows[0].zoom = Some(pane(2));
+        apply(&mut draft, &Edit::BreakPane { pane: pane(2) }).unwrap();
+        assert_eq!(show(&draft), ["1@40x24", "2", "3@80x24"]);
+        assert_eq!(draft.sessions[0].windows[0].zoom, None);
+        assert_eq!(
+            applied(
+                &["1@80x24 | 2@1,2,20x10,0", "3@80x24"],
+                Edit::BreakPane { pane: pane(2) }
+            ),
+            ["1@80x24", "2", "3@80x24"]
+        );
+        let mut alone = layout(&["1@80x24"]);
+        let before = alone.clone();
+        assert_eq!(
+            apply(&mut alone, &Edit::BreakPane { pane: pane(1) }),
+            invalid("the pane is alone in the window")
+        );
+        assert_eq!(alone, before);
+        let mut floats = layout(&["1@80x24 | 2@1,2,20x10,0"]);
+        assert_eq!(
+            apply(&mut floats, &Edit::BreakPane { pane: pane(1) }),
+            invalid("the window keeps its floats on the last tiled pane")
+        );
+    }
+
     fn edits(total: u64) -> impl Strategy<Value = Edit> {
         let any_pane = move || (1..=total + 1).prop_map(pane);
         let edge = prop_oneof![
@@ -1481,6 +1531,7 @@ mod tests {
                 }
             }),
             any_pane().prop_map(|pane| Edit::Equalize { pane }),
+            any_pane().prop_map(|pane| Edit::BreakPane { pane }),
             (1u64..4, prop::option::of(any_pane())).prop_map(|(window, pane)| Edit::Zoom {
                 window: window_id(window),
                 pane
