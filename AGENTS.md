@@ -1139,16 +1139,47 @@ and a fix. It does not edit files.
 
 ## Working here as a spawned agent
 
-These rules apply to every agent that Kido spawns into this repo.
-A brief does not repeat them.
+These rules apply to every agent in this repo: the top-level session,
+the manager of a unit of work, and the implementers, investigators
+and reviewers that a manager spawns. A brief names your role and does
+not repeat these rules. Your role limits what you do: an implementer,
+an investigator or a reviewer does its task itself, spawns no
+subagents and makes no git writes. A reviewer is read-only. A manager
+delegates as its brief says and does not write code.
 
-- **One manager for each unit of work.** The top-level session gives a
-  unit of work to one manager. The manager does not write code. It does
-  these steps:
+- **The top-level session orchestrates.** It plans the work and gives
+  each unit of work to one manager. It creates the unit's worktree. It
+  is the one integrator: only it commits, merges and pushes, and only
+  it moves a submodule pin. It never runs test suites, builds or other
+  long blocking commands itself, so it stays free to answer the user.
+  When verification is missing after a demo or a late edit, it sends
+  the work back to the manager. macOS is the platform that counts: a
+  failure that occurs only on Linux CI gets no unit unless the user
+  asks, and a brief asks for no Linux checks.
+- **Models.** Name a model by its fully qualified name:
+  - A manager runs on `claude-bridge/claude-opus-5-5`.
+  - An implementer, a builder, and investigation or reproduction work
+    run on `openai-codex/gpt-6.1-sol:low`.
+  - A simplify reviewer runs on `claude-bridge/claude-opus-5-5` or
+    `openai-codex/gpt-6-astra`, mixed across the four. The correctness
+    reviewer runs on `openai-codex/gpt-6-astra`. The modules reviewer
+    runs on `claude-bridge/claude-opus-5-5`.
+  - A planner and design work run on `claude-bridge/claude-fable-5-1`,
+    never on Sol. Fable also takes a complex task or review when the
+    user asks for it.
+- **Size the process to what the change is for,** not to its line
+  count. Local tooling (the pi extensions in `.pi/`, a script that only
+  agents use, a brief, a plan or other prose) gets one agent, a quick
+  check such as `scripts/lint.sh`, and no tests, reviewers or full
+  verification. A small product change may use fewer reviewers when
+  the manager says which ones.
+- **One manager for each unit of work.** The manager does not write
+  code. It does these steps:
   1. It spawns one implementer.
   2. When the implementer reports, the manager writes the docs that the
-     change needs itself, in `docs/`, this file and READMEs. The
-     implementer reports the facts.
+     change needs itself, in `docs/`, this file and READMEs, before
+     review. The implementer reports the facts that the docs need and
+     never writes them, so a smart model writes every doc.
   3. The manager spawns the four read-only reviewers of a simplify pass,
      one angle each, one correctness reviewer and one modules
      reviewer, so that review has fresh context. They review the code
@@ -1157,42 +1188,58 @@ A brief does not repeat them.
      changes the docs that the findings affect.
   5. It gives the findings to apply to the same implementer with
      `message_agent`. The implementer keeps its context. The
-     implementer's final `make verify` runs after the last docs edit,
+     implementer's final verification runs after the last docs edit,
      because `scripts/lint.sh` checks the references in the docs.
-  6. It reports to the top-level session: the result, and each finding
-     with the reason it was applied or rejected. Then it stops the
+  6. The manager reads the diff of every fix itself before it hands
+     the fix back or starts a demo. For a visual change, it opens the
+     changed snapshots, crops and zooms the affected area, and
+     compares it with the reference state (windowed and fullscreen,
+     light and dark) for seams, missing or extra lines and steps. The
+     implementer's own inspection is not sufficient. The user must
+     never be the first to find a visible bug in a demo.
+  7. It owns the final verification. It reports to the top-level
+     session: the result of the verification, and each finding with
+     the reason it was applied or rejected. Then it stops the
      implementer.
-
-  When the work follows a mockup, the implementer adds visual snapshot
-  tests for every state of the mockup. Tests that only read state or
-  frames are not sufficient. The manager reads each recorded snapshot,
-  compares it with the mockup and sends every difference to the
-  implementer. The work is not complete until the snapshots agree with
-  the mockup.
-- **Do the task yourself.** An implementer or reviewer does not spawn
-  subagents.
+- **Subagents.** Only a manager spawns subagents, for its own unit:
+  its implementer, its reviewers, and parallel workers only when the
+  work has a real parallelization opportunity. By default one
+  implementer edits the code in the unit's worktree and builds in its
+  normal `target/`. Implementers that run in parallel each get their
+  own worktree. Read-only reviewers and researchers can share a
+  checkout.
+- **Mockups.** When the work follows a mockup, the implementer adds
+  visual snapshot tests for every state of the mockup. Tests that only
+  read state or frames are not sufficient. The manager reads each
+  recorded snapshot, compares it with the screenshots of the mockup's
+  states and sends every difference to the implementer. The work is
+  not complete until the snapshots agree with the mockup.
+- **Demos.** The user closes a demo that exits. Never start it again
+  on your own, attached or detached. A crash is a new crash report for
+  the demo's pid in `~/Library/Logs/DiagnosticReports` or a crash or
+  panic in the demo's `app.log`. Report a crash. Start a demo again
+  only when asked.
 - **No git writes.** Do not commit, push, reset, add, checkout or stash.
-  The top-level session commits, merges and pushes.
-  Leave work uncommitted.
-  Never use `git stash`.
-  If `KO_AGENT_PARENT_SESSION` is set,
-  `.pi/extensions/no-git-writes` guards bash tool calls.
-- **Other agents' uncommitted changes are expected.**
-  Work runs in parallel.
-  The brief identifies your files.
-  Do not revert, clean or fix anything outside those files.
-  Report it instead.
+  Leave work uncommitted. Never use `git stash`. If
+  `KO_AGENT_PARENT_SESSION` is set, `.pi/extensions/no-git-writes`
+  guards bash tool calls.
+- **Other agents' uncommitted changes are expected.** Work runs in
+  parallel. The brief identifies your files. Do not revert, clean or
+  fix anything outside those files. Report it instead.
 - **You are inside the user's live ko server.**
   Every command runs against the pane's own server unless `--server`
   names another. `ko kill-server` without `--server DIR` and your own
   scratch directory kills the user's server. Start every test server
   on its own state directory under `/tmp`. Never touch the running
   demo or the user's servers.
-- **Worktrees.** A worktree is `~/Workspace/kido-<name>`:
-  `git worktree add --detach ~/Workspace/kido-<name> <base>`.
-  `.pi/extensions/no-git-writes/policy.ts` permits
-  `git worktree add --detach` only to an absolute path there or
-  under `/tmp`. The submodule makes `git worktree remove` refuse.
+- **Worktrees.** Each unit works in its own worktree
+  `~/Workspace/kido-<unit>`, which the top-level session creates with
+  `git worktree add --detach ~/Workspace/kido-<unit> <base>`. Agents
+  start in that worktree and stay there. The top-level session merges
+  the result, pushes, and removes the worktree only after every agent
+  that ran in it has stopped. `.pi/extensions/no-git-writes/policy.ts`
+  permits `git worktree add --detach` only to an absolute path there
+  or under `/tmp`. The submodule makes `git worktree remove` refuse.
   Remove the worktree directory with `rm -rf`. Then use `git worktree
   prune`.
 - **Every wait has a deadline.**
@@ -1202,7 +1249,13 @@ A brief does not repeat them.
   can take more than 10 seconds runs through `async_bash` under
   `scripts/quiet-limit 60 -- <command>`, which kills the command's
   process group and exits 124 when the command prints nothing for
-  60 seconds.
+  60 seconds, so a stuck test or a deadlock ends instead of hanging
+  the agent. The one exception is the cold GhosttyKit build,
+  `app/scripts/build-ghosttykit.sh`, which prints nothing for about a
+  minute, so it runs under `scripts/quiet-limit 600`.
+- **Do not block on `sleep`.**
+  While a background run works, end your turn.
+  Continue when its notice arrives.
 - **No signal to a pid from untrusted input.**
   No code, test, fuzzer or script gives a pid from fuzzed, synthetic
   or untrusted input to a signal call. A signal goes only through the
@@ -1210,9 +1263,6 @@ A brief does not repeat them.
   Its types refuse such pids. A test checks the validation. It never
   sends a signal to prove it. When you change a fuzz target or a kill
   path, use grep to examine the kill paths.
-- **Do not block on `sleep`.**
-  While a background run works, end your turn.
-  Continue when its notice arrives.
 - **Verify what you touched; CI runs the whole.**
   If a bug's cause is not clear from the code, write the test first.
   This includes a race, a flake, or an incorrect assumption about
@@ -1232,28 +1282,33 @@ A brief does not repeat them.
   that a defect would change. Do not break the code to prove that a
   test can fail.
 
-  After the last edit, run the verification once: `make verify`
-  ("Which verification" under "Tests"). It controls environment
-  scrubbing. Use `E2E=name` to limit the e2e stage to the changed
-  behaviour. Do not also run the top-level `make test` or `make e2e`.
-  Report PASS/FAIL/SKIP as printed.
-  If a failure is in a file you do not own, report it.
-  Do not fix it.
-- **A flake has a time box.**
-  When a test fails only sometimes, run one bounded loop to reproduce
-  it, such as a shell loop of `make cargo ARGS='test -p ko_e2e NAME'`
-  with a fixed count, and stop at the first failure. Quote it. Then
-  look for the cause for at most half an agent-day. First suspect the
-  test: a race in its waits, a read that discards what it waits for
-  later, a wall-clock bound. If the cause is still not known, report
-  the failure, the loop counts and the best hypothesis, and stop. The
-  manager or the user decides on more work. When the cause is a class
-  of fault, such as an inherited descriptor, fix the class once, not
-  each test.
-- **Docs are not per task.**
-  An implementer or reviewer does not edit `docs/`, this file or
-  READMEs. Put prose that a change needs in your report.
-  The manager writes the docs.
+  Batch the work and verify once at the end. Make all edits without
+  intermediate suite runs: no repeated `make test`, `make verify` or
+  the app's `make visual-fast` while you iterate. Run only the
+  specific tests that you add or change. After the last edit, and
+  after the review findings are applied and the last docs edit, run
+  the verification once ("Which verification" under "Tests": `make
+  verify` for ko, `share/` and `scripts/`; the app's `make test`, plus
+  `make visual` for a visible change, for `app/` or the Ghostty pin).
+  It controls environment scrubbing. Use `E2E=name` to limit the e2e
+  stage to the changed behaviour. Do not also run the top-level `make
+  test` or `make e2e`. Report PASS/FAIL/SKIP as printed. An unrelated
+  failure gets one run of that test alone, not a suite rerun. If a
+  failure is in a file you do not own, report it. Do not fix it.
+- **A flake has a time box of 5 minutes.** When a test fails only
+  sometimes, run one bounded loop to reproduce it, such as a shell
+  loop of `make cargo ARGS='test -p ko_e2e NAME'` with a fixed count,
+  one run after another, and stop at the first failure. Quote it.
+  Never run a load loop that saturates the CPU: other agents work on
+  the same machine. First suspect the test: a race in its waits, a
+  read that discards what it waits for later, a wall-clock bound. A
+  flaky test is rewritten to wait for the event, or dropped if it
+  repeats another test. When the cause is a class of fault, such as
+  an inherited descriptor, fix the class once, not each test. When
+  the 5 minutes end without a cause, report the failure, the loop
+  counts and the best hypothesis, and stop. The manager or the user
+  decides on more work. A fuzz run or a long property-test run that
+  an agent starts has the same time box of 5 minutes.
 - **Your last message is your report. Keep it under 4000 characters**.
   Start with what you built and the pre-fix failures.
 
@@ -1312,116 +1367,3 @@ Use recent history as the reference:
     Quitting an editor no longer flashes the row green
     A program that has taken the terminal is not a running job
     One status vocabulary for agents and shells
-
-## Orchestration
-
-**Your role comes from your brief, and it limits what you do.** This
-section is for the top-level session and for a unit's manager. If your
-brief makes you an implementer, an investigator or a reviewer, do your
-task yourself: spawn no subagents, make no git writes, and do not apply
-the rules below that tell a session to delegate or to orchestrate.
-A reviewer is read-only. A manager delegates as its brief says and does
-not write code.
-
-The top-level session orchestrates the planning and development and
-delegates to subagents, by these rules:
-- when spawning subagents, implementers/builders and investigation/repro work
-  run on GPT-6.1 Sol at low thinking (openai-codex/gpt-6.1-sol:low),
-  reviewers on Opus 5.5
-  (claude-bridge/claude-opus-5-5) or GPT-6 Astra (openai-codex/gpt-6-astra),
-  sometimes one and sometimes the other (always the fully qualified name); planners
-  and design work run on Fable (claude-bridge/claude-fable-5-1), never on
-  Sol; Fable also when asked for complex tasks or reviews
-- the top level session tries to do work in subagents and orchestrates them
-  (schedules follow ups and etc), this is because top level session needs to be
-  able to respond to user always
-- subagents spawn subagents only in case there's some parallelization
-  opportunity, otherwise they should just do the work themselves (you need to
-  include this in the subagent prompt so it follows)
-- each unit of work gets one manager on Opus 5.5
-  (claude-bridge/claude-opus-5-5); it spawns one implementer, then
-  four read-only simplify reviewers (claude-bridge/claude-opus-5-5 or
-  openai-codex/gpt-6-astra, mixed, one angle
-  each) plus one read-only correctness reviewer on
-  openai-codex/gpt-6-astra that hunts bugs, not style: it traces every user
-  gesture and input end to end with real event sequences, checks every
-  coordinate/unit conversion, checks that each test can fail (no copy of the
-  production formula, no fake that accepts everything) and compares protocol
-  use with its contract; plus one read-only modules reviewer on
-  claude-bridge/claude-opus-5-5 that checks module interfaces, cohesion
-  and single purpose ("Review"); the manager merges their findings, sends
-  the ones to apply back to the same implementer, and reports to the top
-  level session ("One manager for each unit of work")
-- size the process to what the change is for, not to its line count:
-  local tooling (the pi extensions in .pi/, scripts that only agents use,
-  briefs, plans and other prose) gets one agent, a quick check such as
-  scripts/lint.sh, and no tests, reviewers or full verification; a small
-  product change may use fewer reviewers if the manager says which ones
-- docs (docs/, AGENTS.md, READMEs) are written by a smart model, usually the
-  manager of the unit of work, never by the Sol implementer; the
-  implementer reports the facts the docs need; the manager writes them after
-  the implementation and before review, so the implementer's final make verify
-  (lint checks doc references) runs after the last docs edit
-- batch work and verify once at the end: implementers make all edits
-  without intermediate suite runs (no repeated make test, make visual-fast
-  or make verify while iterating); they run only the specific tests they add
-  or change, and make sure each test checks the intended behaviour (no
-  negative controls: do not break the code to prove a test fails); the
-  full verification (make verify, or make test plus the whole make visual
-  for Kido.app) runs once, after the review findings are applied and after
-  the last docs edit; an unrelated failure gets one run of that test alone,
-  not a suite rerun
-- the full verification is make verify for a change of ko, share/ or
-  scripts/; the app's make test in app/ (plus make visual for a visible
-  change) when the change touches app/ or the shared third_party/ghostty
-  pin; nobody runs make fuzz, long fuzzing runs only in CI
-- a build or test run that can take more than 10 seconds runs through
-  async_bash under `scripts/quiet-limit 60 -- <command>`: it kills the
-  command's process group and exits 124 when the command prints nothing
-  for 60 seconds, so a stuck test or a deadlock ends instead of hanging
-  the agent
-  (one exception: the cold GhosttyKit build, `app/scripts/build-ghosttykit.sh`,
-  prints nothing for about a minute, so it runs under `quiet-limit 600`)
-- flakes and fuzzing have a time box: a flake investigation gets 5
-  minutes, and a fuzz or long property-test run gets 5 minutes; then the
-  agent reports what it has; first suspect the test (a race in its waits,
-  a read that discards what it waits for later, a wall-clock bound): a
-  flaky test is rewritten to wait for the event, or dropped if it repeats
-  another test; no load loops that saturate the CPU, because other agents
-  work on the same machine
-- macOS is the platform that counts for now: a failure that occurs only on
-  Linux CI gets no unit unless the user asks, and briefs ask for no Linux
-  checks
-- `main` is the one branch of ko and Kido.app; each unit works in its own
-  worktree under ~/Workspace/kido-<unit>, which the top level session
-  creates; agents start in that worktree and stay there; the top level
-  session merges the result, pushes, and removes the worktree only after
-  every agent that ran in it has stopped
-- the manager owns the final verification and reports its result; the top
-  level session never runs test suites, builds or other long blocking
-  commands itself, so it stays free to answer the user; if verification is
-  missing after a demo or a late edit, send it back to the manager
-- always instruct subagents not to perform git write operations (no commit, no
-  push, no reset etc), only top level session is allowed to do that
-- some subagents get confused there are already some git changes, you need to
-  instruct them it's ok as the work is done in parallel
-- by default one implementer edits code in a checkout and builds in its
-  normal target/. Run implementers in parallel only when needed, each in
-  its own worktree; read-only reviewers and researchers may share a
-  checkout
-- the manager reviews every fix itself before it hands it back or starts a
-  demo: it reads the diff and, for visual changes, opens the changed
-  snapshots, crops and zooms the affected area, and compares it with the
-  reference state (e.g. windowed vs fullscreen, light vs dark) for seams,
-  missing or extra lines and steps; the implementer's own inspection is not
-  enough; the user must never be the first to find a visible bug in a demo
-- a demo that exits is closed by the user, unless it crashed: never relaunch
-  it on your own (attached or detached); a crash means a new crash report
-  for that pid in ~/Library/Logs/DiagnosticReports or a crash/panic in the
-  demo's app.log; report a crash, do not relaunch; start a demo again only
-  when asked
-- work that follows a mockup gets visual snapshot tests for every state of
-  the mockup (state/frame probes alone are not enough); the manager looks at
-  every recorded snapshot, compares it with the mockup (screenshots of the
-  mockup's states) and sends each difference back to the implementer; the
-  unit of work is not done until the snapshots match the mockup

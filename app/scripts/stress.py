@@ -15,7 +15,7 @@ ap.add_argument('--out', required=True)
 args = ap.parse_args()
 
 out = os.path.abspath(args.out)
-os.makedirs(out + '/config/kido', exist_ok=True)
+os.makedirs(out + '/config/ko', exist_ok=True)
 server = tempfile.mkdtemp(prefix='ko-stress-', dir='/tmp')
 try:
     os.unlink(out + '/ui.lock')
@@ -23,7 +23,7 @@ except FileNotFoundError:
     pass
 rng = random.Random(args.seed)
 counts = collections.Counter()
-open(out + '/config/kido/kido-app.conf', 'w').write('scrollback-limit = 8388608\n')
+open(out + '/config/ko/config.yaml', 'w').write('server:\n  scrollback: {bytes: 8388608}\n')
 actions = open(out + '/actions.jsonl', 'w', buffering=1)
 
 
