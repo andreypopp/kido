@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
-use ko_client::model::{Item, Pane};
+use ko_client::model::{Item, Pane, Place};
 use ko_client::status::{self, Mark};
 use ko_server::ids::PaneId;
-use ko_server::protocol::{Cause, Dead};
+use ko_server::protocol::{Cause, ClientRuntime, Dead, LinkState};
 
 const WIDTH: usize = 24;
 
@@ -13,6 +13,7 @@ pub(crate) struct Line {
     pub(crate) lead: String,
     pub(crate) mark: Mark,
     pub(crate) title: String,
+    pub(crate) runtime: String,
     pub(crate) selected: bool,
 }
 
@@ -54,11 +55,28 @@ pub(crate) fn dead_line(dead: &Dead) -> String {
     format!("[{what} \u{2014} Ctrl+D to remove]")
 }
 
+fn runtime_suffix(place: Option<Place>, runtimes: &[ClientRuntime]) -> String {
+    let Some(place) = place else {
+        return String::new();
+    };
+    let name = place.name();
+    let state = runtimes
+        .iter()
+        .find(|runtime| runtime.name == *name)
+        .map(|runtime| &runtime.state);
+    match state {
+        Some(LinkState::Starting) => format!(" {name} \u{2026}"),
+        Some(LinkState::Failed { .. }) => format!(" {name} \u{2717}"),
+        _ => format!(" {name}"),
+    }
+}
+
 pub(crate) fn lines(
     selected: Option<PaneId>,
     items: &[Item],
     panes: &[Pane],
     mark: impl Fn(&Pane) -> Mark,
+    (runtimes, place): (&[ClientRuntime], impl Fn(&Pane) -> Option<Place>),
 ) -> Vec<Line> {
     let mut number = 0;
     let by_id: BTreeMap<PaneId, &Pane> = panes.iter().map(|pane| (pane.row.id, pane)).collect();
@@ -70,6 +88,7 @@ pub(crate) fn lines(
                 lead: String::new(),
                 mark: Mark::None,
                 title: name.clone(),
+                runtime: String::new(),
                 selected: false,
             },
             Item::Pane { id, depth, .. } => {
@@ -91,6 +110,8 @@ pub(crate) fn lines(
                         "{}{suffix}",
                         pane.map_or_else(|| id.to_string(), status::title)
                     ),
+                    runtime: pane
+                        .map_or_else(String::new, |pane| runtime_suffix(place(pane), runtimes)),
                     selected: selected == Some(*id),
                 }
             }
@@ -162,13 +183,19 @@ mod tests {
                 depth: 1,
             },
         ];
-        let shown: Vec<String> = lines(Some(id(2)), &items, &panes, |pane| {
-            if pane.row.id == id(2) {
-                Mark::Done
-            } else {
-                Mark::None
-            }
-        })
+        let shown: Vec<String> = lines(
+            Some(id(2)),
+            &items,
+            &panes,
+            |pane| {
+                if pane.row.id == id(2) {
+                    Mark::Done
+                } else {
+                    Mark::None
+                }
+            },
+            (&[], |_: &Pane| None),
+        )
         .iter()
         .map(|line| {
             format!(
@@ -187,6 +214,43 @@ mod tests {
                 "Some(PaneId(3)) false None 3  pane_3",
             ]
         );
+    }
+
+    #[test]
+    fn a_runtime_follows_the_title_with_a_mark_for_a_link_that_is_starting_or_failed() {
+        let runtime = |state| ClientRuntime {
+            name: "buildbox".parse().unwrap(),
+            kind: ko_server::protocol::RuntimeKind::Ssh,
+            color: None,
+            state,
+        };
+        let place = || {
+            Some(Place::Routed {
+                name: "buildbox".parse().unwrap(),
+            })
+        };
+        let suffixes: Vec<String> = [
+            LinkState::Down,
+            LinkState::Starting,
+            LinkState::Up,
+            LinkState::Failed {
+                message: "no".to_owned(),
+            },
+        ]
+        .into_iter()
+        .map(|state| runtime_suffix(place(), &[runtime(state)]))
+        .collect();
+        assert_eq!(
+            suffixes,
+            [
+                " buildbox",
+                " buildbox \u{2026}",
+                " buildbox",
+                " buildbox \u{2717}"
+            ]
+        );
+        assert_eq!(runtime_suffix(None, &[]), "");
+        assert_eq!(runtime_suffix(place(), &[]), " buildbox");
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import AppKit
+import KoModel
 import PaneGeometry
 import SidebarFeed
 
@@ -367,6 +368,12 @@ import SidebarFeed
             panel.palette.prompt?.sourceChanged(gone: !source.paneExists)
             return
         }
+        if case .runtime(let shown) = panel.palette.mode {
+            if let shown, let runtime = paletteFocus?.owner.runtimes.first(where: { $0.name == shown.name }) {
+                panel.palette.refreshRuntime(RuntimeMark(runtime))
+            }
+            return
+        }
         guard panel.palette.mode == .root else { return }
         withPaletteBusy {
             updateMenu(paletteFocus?.owner, responder: paletteFocus?.responder)
@@ -424,6 +431,9 @@ import SidebarFeed
             guard let self else { return [] }
             updateMenu(paletteFocus?.owner, responder: paletteFocus?.responder)
             return paletteEntries(owner: paletteFocus?.owner, responder: paletteFocus?.responder)
+        }
+        panel.palette.runtimeEntries = { [weak self] mark in
+            PaletteEntry.runtimeStep(mark, owner: self?.paletteFocus?.owner, responder: self?.paletteFocus?.responder)
         }
         panel.palette.modeEntries = { [weak self] query, invalid in self?.connectEntries(query: query, invalid: invalid) ?? [] }
         panel.palette.sessionName = { [weak self, weak panel] text in

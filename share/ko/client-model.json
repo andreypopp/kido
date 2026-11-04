@@ -546,6 +546,12 @@
             },
             "type": "array"
           },
+          "runtimes": {
+            "items": {
+              "$ref": "#/components/schemas/ClientRuntime"
+            },
+            "type": "array"
+          },
           "selection": {
             "$ref": "#/components/schemas/Selection"
           }
@@ -555,6 +561,7 @@
           "selection",
           "layout",
           "panes",
+          "runtimes",
           "outline"
         ],
         "type": "object"
@@ -605,6 +612,9 @@
           "pid": {
             "type": "integer"
           },
+          "place": {
+            "$ref": "#/components/schemas/Place"
+          },
           "progress": {
             "$ref": "#/components/schemas/Progress"
           },
@@ -640,6 +650,45 @@
           "dead"
         ],
         "type": "object"
+      },
+      "Place": {
+        "description": "Where a pane's program runs, when not on the host.",
+        "oneOf": [
+          {
+            "description": "A pane of the runtime.",
+            "properties": {
+              "name": {
+                "$ref": "#/components/schemas/RuntimeName"
+              },
+              "type": {
+                "const": "pane",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "name"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A host pane of a pi agent whose tools run in the runtime.",
+            "properties": {
+              "name": {
+                "$ref": "#/components/schemas/RuntimeName"
+              },
+              "type": {
+                "const": "routed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "name"
+            ],
+            "type": "object"
+          }
+        ]
       }
     }
   },

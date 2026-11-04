@@ -1003,5 +1003,6 @@ fn client_a_new_pane_of_a_local_attach_has_the_cwd_of_the_client() {
             .contains("ko-tui-"),
         "{created}"
     );
+    assert_eq!(created["runtime"], serde_json::Value::Null, "{created}");
     o.detach();
 }

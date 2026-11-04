@@ -790,7 +790,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         XCTAssertEqual(model.select(.number(1)), Navigation.selectWindow(SessionID(number: 3), WindowID(number: 7)), "selection must target the tab's session")
         let lone = KoSchema.Window(cols: 80, floats: [], focus: PaneID(number: 0), id: WindowID(number: 0), name: "w", rows: 24,
                                      tree: .leaf(KoSchema.Leaf(cols: 80, pane: PaneID(number: 0), rows: 24)), vars: [:])
-        XCTAssertNil(PaneCommand.window(.number(1)).action(PaneID(number: 0), in: lone, cwd: nil, cell: .zero))
+        XCTAssertNil(PaneCommand.window(.number(1)).action(PaneID(number: 0), in: lone, new: KoSchema.CreatePane(), cell: .zero))
         XCTAssertEqual(model.select(.next), .switchWindow(next: true))
         XCTAssertEqual(model.select(.previous), .switchWindow(next: false))
         XCTAssertEqual(SessionModel().select(.next), .switchWindow(next: true))
@@ -824,7 +824,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         XCTAssertFalse(view?.items.contains { ["j", "k"].contains($0.keyEquivalent) && $0.keyEquivalentModifierMask == [.command, .control] } == true)
         let lone = KoSchema.Window(cols: 80, floats: [], focus: PaneID(number: 0), id: WindowID(number: 0), name: "w", rows: 24,
                                      tree: .leaf(KoSchema.Leaf(cols: 80, pane: PaneID(number: 0), rows: 24)), vars: [:])
-        XCTAssertNil(PaneCommand.newWindow.action(PaneID(number: 0), in: lone, cwd: nil, cell: .zero))
+        XCTAssertNil(PaneCommand.newWindow.action(PaneID(number: 0), in: lone, new: KoSchema.CreatePane(), cell: .zero))
     }
 
     func testSessionShortcutsNavigateOnce() {

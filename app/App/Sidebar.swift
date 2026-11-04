@@ -125,6 +125,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         listBackground = shade
         separatorColor = runtime.sidebarSeparator
         list.appearance = NSAppearance(named: shade.luminance < 0.179 ? .darkAqua : .aqua)
+        list.terminalDark = background.isDark
     }
 
     init() {

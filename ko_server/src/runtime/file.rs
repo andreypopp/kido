@@ -10,7 +10,7 @@ use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::RuntimeName;
-use crate::protocol::{AbsPath, PathMap, RuntimeKind, RuntimePi, env_valid};
+use crate::protocol::{AbsPath, PathMap, RuntimeColor, RuntimeKind, RuntimePi, env_valid};
 use crate::ssh::{connection_only, has_syntax};
 
 /// The runtime configuration file: the runtimes that panes can run in, by name.
@@ -34,6 +34,9 @@ pub(crate) struct Runtime {
     /// Where pi runs for an agent in this runtime.
     #[serde(default)]
     pub(crate) pi: RuntimePi,
+    /// How clients draw the runtime. Default: a colour that each client derives from the name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) color: Option<RuntimeColor>,
     #[serde(flatten)]
     pub(crate) kind: Kind,
 }
@@ -439,12 +442,16 @@ mod tests {
     #[test]
     fn a_command_runtime_has_the_common_fields_and_its_own() {
         let found = parsed(
-            r#"{"runtimes":{"dev":{"kind":"command","env":{"A":"1"},"cwd":"/work",
+            r##"{"runtimes":{"dev":{"kind":"command","env":{"A":"1"},"cwd":"/work",
             "paths":[{"host":"/h","runtime":"/r"}],"prefix":["/usr/bin/env"],
-            "socket":"/run/ko","lead":["/bin/true"],"up":["/bin/true"]}}}"#,
+            "socket":"/run/ko","lead":["/bin/true"],"up":["/bin/true"],"color":"#D08a2A"}}}"##,
         )
         .unwrap();
         let runtime = &found.runtimes[&"dev".parse().unwrap()];
+        assert_eq!(
+            runtime.color.clone().map(String::from).as_deref(),
+            Some("#D08a2A")
+        );
         assert_eq!(runtime.env["A"], "1");
         assert_eq!(
             runtime.cwd.as_ref().map(AbsPath::as_path),
@@ -519,6 +526,18 @@ mod tests {
                 "runtime dev: lead: must start with an absolute program path",
             ),
             (
+                r##"{"runtimes":{"dev":{"kind":"command","color":"#abc"}}}"##,
+                "invalid color: expected #rrggbb",
+            ),
+            (
+                r#"{"runtimes":{"dev":{"kind":"command","color":"d08a2a"}}}"#,
+                "invalid color: expected #rrggbb",
+            ),
+            (
+                r#"{"runtimes":{"dev":{"kind":"command","color":"orange"}}}"#,
+                "invalid color: expected #rrggbb",
+            ),
+            (
                 r#"{"runtimes":"#,
                 "EOF while parsing a value at line 1 column 12",
             ),
@@ -571,6 +590,7 @@ mod tests {
             runtime["env"] = serde_json::json!({});
             runtime["cwd"] = serde_json::json!("/c");
             runtime["paths"] = serde_json::json!([]);
+            runtime["color"] = serde_json::json!("#000000");
             let runtime: Runtime = serde_json::from_value(runtime).unwrap();
             let written = serde_json::to_value(&runtime).unwrap();
             let mut keys: Vec<String> = written.as_object().unwrap().keys().cloned().collect();

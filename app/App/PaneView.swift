@@ -87,7 +87,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var canPrompt: () -> Bool = { false }
     var selectionQuote: String? { hasSelection ? readSelection() : nil }
     var onPrompt: (PaneView, String?) -> Void = { _, _ in }
-    var chromeViews: [NSView] { [copyLabel] + [find].compactMap { $0 } }
+    var chromeViews: [NSView] { [copyLabel, runtimePill] + [find].compactMap { $0 } }
     enum CopyMode { case entering(DispatchWorkItem), cursor, selecting, lines(anchor: (x: Int, y: Int), cursor: (x: Int, y: Int)) }
     private(set) var copyMode: CopyMode?
     private enum MouseDrag {
@@ -175,6 +175,12 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     private let terminal = TerminalView()
     private let copyLabel: Overlay
+    private let runtimePill: RuntimePill
+    // Where the pane runs, from the model; the pill shows it and the chrome draws its stripe.
+    var runtimeMark: RuntimeMark? { didSet { if runtimeMark != oldValue { showRuntime() } } }
+    var runtimeFocused = true { didSet { if runtimeFocused != oldValue { showRuntime() } } }
+    // The hover toolbar covers the pill's corner, so the pill gives way to it.
+    var toolbarShown = false { didSet { if toolbarShown != oldValue { needsLayout = true } } }
     private var pressed: Set<Int> = []
     private struct ScrollGeometry {
         var position = ScrollPosition(retainedHistoryRows: 0, offset: 0, rows: 1)
@@ -439,6 +445,15 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         let copy = copyLabel.subviews[0]
         copy.frame = NSRect(origin: NSPoint(x: 7, y: 4), size: copy.fittingSize)
         copyLabel.frame = NSRect(x: 8, y: y, width: copy.frame.width + 14, height: 22)
+        let width = runtimePill.fittingWidth
+        runtimePill.frame = NSRect(x: chrome.width - 8 - width, y: 8, width: width, height: RuntimePill.height)
+        runtimePill.isHidden = runtimeMark == nil || find != nil || toolbarShown
+            || (copyMode != nil && runtimePill.frame.minX < copyLabel.frame.maxX + 8)
+    }
+
+    private func showRuntime() {
+        runtimePill.show(runtimeMark, focused: runtimeFocused)
+        needsLayout = true
     }
 
     // Freed in deinit, so the last reference must be dropped on the main
@@ -595,6 +610,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         self.pane = pane
         self.host = host
         copyLabel = Overlay(runtime: runtime, radius: 8)
+        runtimePill = RuntimePill(runtime: runtime)
         super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         wantsLayer = true
         layer?.masksToBounds = true
@@ -657,6 +673,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         scroller.jump = { [weak self] in self?.requestScroll($0) }
         copyLabel.addSubview(NSTextField(labelWithString: ""))
         copyLabel.isHidden = true
+        runtimePill.pane = self
+        runtimePill.isHidden = true
         ghostty_surface_set_color_scheme(surface, runtime.colorScheme)
         // The callback must not reenter the surface (ghostty.h).
         _ = ghostty_surface_set_font_size_action_callback(surface, { userdata, _, _, points, _, _ in

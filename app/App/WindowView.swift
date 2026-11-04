@@ -339,6 +339,9 @@ final class WindowView: NSView {
             chrome.treatment = tiled
                 ? (multiple && !unfocused && chrome.pane == active ? .edge : .plain)
                 : (chrome.pane == active && !notKey ? .plain : .overlay)
+            let focused = tiled ? !shifted : chrome.pane == active && !notKey
+            chrome.runtimeFocused = focused
+            pane.runtimeFocused = focused
             let changed = shifted != pane.shiftedBackground
             if changed { pane.shiftedBackground = shifted }
             else if forcePaper { pane.updatePaper() }
@@ -346,7 +349,21 @@ final class WindowView: NSView {
         }
     }
 
+    // A pane that gains or loses its mark gains or loses the stripe's band, which places the window again. A
+    // change of colour, state or name only redraws the pane's stripe and pill.
+    func marksChanged(_ changed: Set<PaneID>, banded: Bool) {
+        if banded { return isHidden ? () : place() }
+        for chrome in subviews.compactMap({ $0 as? PaneChrome }) where changed.contains(chrome.pane) {
+            let mark = session?.marks[chrome.pane]
+            chrome.runtimeMark = mark
+            panes.first { $0.pane == chrome.pane }?.runtimeMark = mark
+        }
+    }
+
     private func place(_ chrome: PaneChrome, _ view: PaneView, _ g: Geometry, _ placement: PaneLayout, floating: Bool) {
+        let mark = session?.marks[chrome.pane]
+        view.runtimeMark = mark
+        chrome.runtimeMark = mark
         let frame: CGRect, grid: CGRect, content: CGRect, insets: PaneLayout.RenderInsets
         if floating {
             frame = floatFrame(chrome.pane, g, placement)
@@ -355,7 +372,7 @@ final class WindowView: NSView {
             content = grid
             insets = .init()
         } else {
-            let tiled = placement.tiled(g, alternate: view.alternate)
+            let tiled = placement.tiled(g, alternate: view.alternate, band: mark == nil ? 0 : PaneChrome.stripeBand)
             (frame, grid, content, insets) = (tiled.chrome, tiled.grid, tiled.content, tiled.insets)
         }
         if chrome.frame != frame { chrome.frame = frame; view.needsLayout = true }
@@ -388,6 +405,7 @@ final class WindowView: NSView {
     private func hover(_ chrome: PaneChrome, _ point: NSPoint?) {
         guard !isHidden else { return }
         let show = point.map { chrome.hotZone.contains($0) } ?? false
+        for view in panes { view.toolbarShown = show && view.pane == chrome.pane }
         if show, let view = panes.first(where: { $0.pane == chrome.pane }) {
             let toolbar = self.toolbar ?? PaneToolbar(runtime: runtime)
             self.toolbar = toolbar

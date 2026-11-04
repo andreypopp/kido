@@ -106,15 +106,35 @@ extension Side {
     }
 }
 
+// Where a new pane runs: the runtime of the pane that it is made from, the host, or a named runtime.
+enum NewPaneRuntime: Equatable {
+    case inherit, host, named(String)
+}
+
+extension KoModel {
+    // The pane that a command makes from `pane`. A host pane's directory is a host path, which the server maps into
+    // a runtime; a runtime pane's directory is a path inside the runtime, which means nothing as a host path, so
+    // a pane made from a runtime pane starts in the default of its own place.
+    func newPane(from pane: PaneID?, _ choice: NewPaneRuntime = .inherit) -> KoSchema.CreatePane {
+        let source = pane.flatMap(self.pane)
+        let runtime: String? = switch choice {
+        case .inherit: source?.runtime
+        case .host: nil
+        case .named(let name): name
+        }
+        return KoSchema.CreatePane(cwd: source?.runtime == nil ? source?.cwd : nil, runtime: runtime)
+    }
+}
+
 extension PaneCommand {
     // The layout action of a command on `pane` of `window`; nil for the commands of the owner and
     // for a select with no pane on that side. Ghostty's resize amount is in points.
-    func action(_ pane: PaneID, in window: KoSchema.Window, cwd: String?, cell: CGSize) -> PaneAction? {
+    func action(_ pane: PaneID, in window: KoSchema.Window, new: KoSchema.CreatePane, cell: CGSize) -> PaneAction? {
         let panes = Layout(window, visible: true).root.panes
         switch self {
         case .split(let side):
             return .edit(.split(KoSchema.EditSplit(axis: side == .left || side == .right ? .h : .v, before: side == .left || side == .up,
-                                                   new: KoSchema.CreatePane(cwd: cwd), pane: pane)))
+                                                   new: new, pane: pane)))
         case .select(let side):
             guard let from = panes.first(where: { $0.id == pane })?.geometry else { return nil }
             func overlap(_ a: Int, _ al: Int, _ b: Int, _ bl: Int) -> Bool { a < b + bl && b < a + al }
@@ -153,10 +173,10 @@ extension KoModel {
     }
 
     // After `window` of the session, else after its last window.
-    func newWindow(in id: SessionID, after window: WindowID?) -> KoSchema.Edit? {
+    func newWindow(in id: SessionID, after window: WindowID?, _ choice: NewPaneRuntime = .inherit) -> KoSchema.Edit? {
         guard let session = layout.layout.session(id),
               let current = session.windows.first(where: { $0.id == window }) ?? session.windows.last else { return nil }
-        return .addWindow(KoSchema.EditAddWindow(after: current.id, new: KoSchema.CreatePane(cwd: pane(current.focus)?.cwd), session: session.id))
+        return .addWindow(KoSchema.EditAddWindow(after: current.id, new: newPane(from: source(in: current), choice), session: session.id))
     }
 }
 

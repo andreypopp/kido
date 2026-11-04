@@ -5,7 +5,7 @@ use crate::api::{Route, WaitMs, routes};
 use crate::pane::Birth;
 use crate::panes::{AddError, is_descendant, program, scope};
 use crate::protocol::{
-    Empty, Error, ErrorKind, Info, LeadReport, LinkState, RuntimeInfo, RuntimeWait,
+    ClientRuntime, Empty, Error, ErrorKind, Info, LeadReport, LinkState, RuntimeInfo, RuntimeWait,
 };
 use crate::runtime::pane::{self, Wrap as Entering, socket_path};
 use crate::runtime::{CLEANUP_LIMIT, Due, PASS_HOLD, Wait, Who};
@@ -29,7 +29,7 @@ pub(super) fn resolve_runtime(
 
 impl State {
     pub(super) fn choose_runtimes<'a>(
-        &self,
+        &mut self,
         requests: impl Iterator<Item = &'a CreatePane>,
     ) -> Result<BTreeMap<RuntimeName, Runtime>, Error> {
         let mut chosen = BTreeMap::new();
@@ -91,6 +91,18 @@ impl State {
         self.runtimes.occupy(poll, name, occupied);
     }
 
+    pub(super) fn client_runtimes(&mut self) -> Vec<ClientRuntime> {
+        let listed = self.runtimes.listed();
+        self.announce_runtimes();
+        listed
+    }
+
+    pub(super) fn announce_runtimes(&mut self) {
+        for event in self.runtimes.take_changes() {
+            self.broadcast(&event);
+        }
+    }
+
     pub(super) fn runtimes_changed(&mut self, poll: &mut Poll) {
         for pid in self.runtimes.take_dying() {
             self.leaving
@@ -109,6 +121,7 @@ impl State {
             let reply = Ok(RuntimeWait { state, lead: None });
             router::answer::<routes::WaitRuntime>(self, poll, conn, reply);
         }
+        self.announce_runtimes();
     }
 
     fn pass_token(&mut self, poll: &mut Poll, name: &RuntimeName, conn: Token, pane: PaneId) {
@@ -196,9 +209,12 @@ impl State {
 
     fn runtime_info(&self, name: &RuntimeName, runtime: &Runtime) -> RuntimeInfo {
         RuntimeInfo {
-            name: name.clone(),
-            kind: runtime.kind(),
-            state: self.runtimes.state(name),
+            runtime: ClientRuntime {
+                name: name.clone(),
+                kind: runtime.kind(),
+                color: runtime.color.clone(),
+                state: self.runtimes.state(name),
+            },
             panes: u32::try_from(self.panes.in_runtime(name).count()).unwrap_or(u32::MAX),
             socket: socket_path(self.runtimes.root(), name)
                 .to_string_lossy()
@@ -209,7 +225,7 @@ impl State {
         }
     }
 
-    pub(crate) fn list_runtimes(&self) -> Result<Vec<RuntimeInfo>, Error> {
+    pub(crate) fn list_runtimes(&mut self) -> Result<Vec<RuntimeInfo>, Error> {
         Ok(self
             .runtimes
             .known()?
@@ -218,8 +234,9 @@ impl State {
             .collect())
     }
 
-    pub(crate) fn get_runtime(&self, name: &RuntimeName) -> Result<RuntimeInfo, Error> {
-        Ok(self.runtime_info(name, &self.runtimes.settings(name)?))
+    pub(crate) fn get_runtime(&mut self, name: &RuntimeName) -> Result<RuntimeInfo, Error> {
+        let settings = self.runtimes.settings(name)?;
+        Ok(self.runtime_info(name, &settings))
     }
 
     fn runtime_pane(&self, caller: Option<PaneId>, name: &RuntimeName) -> Result<PaneId, Error> {

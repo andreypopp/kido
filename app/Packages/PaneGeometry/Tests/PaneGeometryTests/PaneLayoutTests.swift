@@ -305,3 +305,49 @@ func pixelAlignedBottomMargin(pixel: CGFloat) {
         if !line.isEmpty { #expect(bounds.contains(line)) }
     }
 }
+
+// The band of a runtime pane's stripe, in numbers. A 17pt cell at pixel 1 has an 8pt gap above an inner pane's
+// grid and an 8pt gap below it; a window that is 353pt high has 20 rows and no slack above the root.
+@Test func theBandOfARuntimePaneMovesTheGridOnlyAsFarAsItsGapIsShort() {
+    let cell = CGSize(width: 8, height: 17)
+    func pane(_ id: UInt32, _ y: Int, _ height: Int) -> Node {
+        .pane(Pane(id: PaneID(number: id), index: Int(id), geometry: Geometry(x: 0, y: y, width: 40, height: height), active: false, layer: .tiled))
+    }
+    let bounds = CGRect(x: 0, y: 0, width: 400, height: 353)
+    let rootOnly = Node.pane(Pane(id: PaneID(number: 0), index: 0, geometry: Geometry(x: 0, y: 0, width: 40, height: 20), active: false, layer: .tiled))
+    let alone = PaneLayout(root: rootOnly, bounds: bounds, cell: cell, pixel: 1)
+    #expect(alone.client.height == 20)
+    let host = alone.tiled(Geometry(x: 0, y: 0, width: 40, height: 20), alternate: false)
+    #expect(host.grid.minY == 1 && host.insets == .init(top: 0, bottom: 12) && host.content.minY == 1 && host.content.height == 352)
+    let runtime = alone.tiled(Geometry(x: 0, y: 0, width: 40, height: 20), alternate: false, band: 3)
+    #expect(runtime.grid.minY == 4, "no slack above the root: the grid moves down the whole band")
+    #expect(runtime.insets == .init(top: 3, bottom: 9) && runtime.content == host.content && runtime.chrome == host.chrome)
+    let alternate = alone.tiled(Geometry(x: 0, y: 0, width: 40, height: 20), alternate: true, band: 3)
+    #expect(alternate.insets == .init() && alternate.content.minY == 4 && alternate.grid.minY == 4)
+
+    let split = Node.split(.topBottom, Geometry(x: 0, y: 0, width: 40, height: 20), [pane(1, 0, 9), pane(2, 10, 10)])
+    let layout = PaneLayout(root: split, bounds: bounds, cell: cell, pixel: 1)
+    let below = Geometry(x: 0, y: 10, width: 40, height: 10)
+    #expect(layout.tiled(below, alternate: false).insets.top == 8, "an inner pane has 8pt above its grid")
+    #expect(layout.tiled(below, alternate: false, band: 3) == layout.tiled(below, alternate: false), "which is room enough for the band")
+    #expect(layout.tiled(Geometry(x: 0, y: 0, width: 40, height: 9), alternate: false, band: 3).insets == .init(top: 3, bottom: 5), "the top pane of a split: no slack above it, 8pt below shortened by 3pt")
+}
+
+// Ghostty's smallest font is 1pt, which makes a cell about 2pt high. The band cannot fit above or below the grid of an
+// inner pane then: the gaps are 0.5pt above and 1pt below at pixel 0.5, so the stripe covers 0.5pt of the first row.
+// The band holds, with the lift taken from the gap below, for a cell of about 4pt or more.
+@Test func theBandOfAnInnerPaneFitsOnlyForACellOfAboutFourPointsOrMore() {
+    func gap(_ height: CGFloat) -> (above: CGFloat, lift: CGFloat) {
+        func pane(_ id: UInt32, _ y: Int) -> Node {
+            .pane(Pane(id: PaneID(number: id), index: Int(id), geometry: Geometry(x: 0, y: y, width: 40, height: 6), active: false, layer: .tiled))
+        }
+        let split = Node.split(.topBottom, Geometry(x: 0, y: 0, width: 40, height: 20), [pane(1, 0), pane(2, 7), pane(3, 14)])
+        let layout = PaneLayout(root: split, bounds: CGRect(x: 0, y: 0, width: 100, height: 12 + 20 * height + 1), cell: CGSize(width: 1, height: height), pixel: 0.5)
+        let middle = Geometry(x: 0, y: 7, width: 40, height: 6)
+        let plain = layout.tiled(middle, alternate: false), banded = layout.tiled(middle, alternate: false, band: 3)
+        return (plain.grid.minY - plain.chrome.minY, banded.grid.minY - plain.grid.minY)
+    }
+    #expect(gap(2) == (0.5, 1.0), "a 2pt cell: 0.5pt above and 1pt below: 1.5pt of the 3pt band")
+    #expect(gap(4) == (1.5, 1.5), "a 4pt cell: 1.5pt above and the 1.5pt that is missing from below: the band fits")
+    #expect(gap(17) == (8, 0))
+}

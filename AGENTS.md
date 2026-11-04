@@ -828,9 +828,10 @@ identity, never detection: `pi.session`, `pi.name` and
 `pi.activity`. ko trusts them only while the pane has an OSC 7501 root
 with `app=pi`. ssh panes use `ssh.dest` and `ssh.args`, trusted only
 while the foreground is `ssh` (docs/design-program-status.md).
-A routed pi's `pi.runtime` follows the same rule in the harness; ko
-does not read it or the generic `ko.runtime` (docs/design-runtimes.md,
-"Agents in a runtime").
+A routed pi's `pi.runtime` follows the same rule in the harness and
+in the clients, where only `ko_client`'s `Model::place` reads it; the
+server does not read it, and nothing reads the generic `ko.runtime`
+(docs/design-runtimes.md, "Agents in a runtime" and "Clients").
 
 Claude Code 2.1.295 queries OSC 7501. Then it emits a root
 `app=claude-code` record: idle, working, done, or blocked with

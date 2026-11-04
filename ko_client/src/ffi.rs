@@ -1340,7 +1340,7 @@ mod tests {
 
     fn welcome(instance: &str, continuation: usize) -> String {
         format!(
-            r#"{{"type":"welcome","client":"client_7","limits":{{"terminal":{{"scrollback":{{"type":"disabled"}},"apc_max_bytes":1,"kitty_images_max_bytes":1,"continuation_max_bytes":{continuation}}},"media":[]}},"instance":"{instance}","now":42}}"#
+            r#"{{"type":"welcome","client":"client_7","limits":{{"terminal":{{"scrollback":{{"type":"disabled"}},"apc_max_bytes":1,"kitty_images_max_bytes":1,"continuation_max_bytes":{continuation}}},"media":[]}},"instance":"{instance}","now":42,"runtimes":[]}}"#
         )
     }
 

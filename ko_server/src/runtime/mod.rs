@@ -13,8 +13,8 @@ use crate::config::{Config, RuntimeIdle, SUN_PATH_MAX};
 use crate::exec_wire::Start as ExecStart;
 use crate::ids::{PaneId, PaneToken, RuntimeName};
 use crate::protocol::{
-    Error, ErrorKind, ExecRequest, LeadReport, LinkState, PathMap, Variable, Version,
-    check_version, version,
+    ClientEvent, ClientRuntime, Error, ErrorKind, ExecRequest, LeadReport, LinkState, PathMap,
+    RuntimeColor, RuntimeKind, Variable, Version, check_version, version,
 };
 use crate::server::{Listener, Origin, Timing, Verified};
 use crate::ssh::token_name;
@@ -409,6 +409,8 @@ pub(crate) enum Due {
     Idle(RuntimeName),
 }
 
+type Configured = BTreeMap<RuntimeName, (RuntimeKind, Option<RuntimeColor>)>;
+
 #[derive(Debug)]
 pub(crate) struct Registry {
     file: PathBuf,
@@ -425,6 +427,10 @@ pub(crate) struct Registry {
     released: Vec<Pid>,
     children: Vec<Child>,
     passed: Vec<(Token, LinkState)>,
+    announced: BTreeMap<RuntimeName, ClientRuntime>,
+    pending: Vec<ClientEvent>,
+    configured: Option<Configured>,
+    dirty: bool,
     exe: PathBuf,
     escalation: Duration,
 }
@@ -511,6 +517,10 @@ impl Registry {
             released: Vec::new(),
             children: Vec::new(),
             passed: Vec::new(),
+            announced: BTreeMap::new(),
+            pending: Vec::new(),
+            configured: None,
+            dirty: false,
             exe: config.exe.clone(),
             escalation: config.stop_escalation / 2,
         }
@@ -545,11 +555,20 @@ impl Registry {
         std::mem::take(&mut self.cleaning)
     }
 
-    fn load(&self) -> Result<Runtimes, Error> {
-        file::load(&self.file, self.command_kind).map_err(|error| match error {
+    fn load(&mut self) -> Result<Runtimes, Error> {
+        let loaded = file::load(&self.file, self.command_kind).map_err(|error| match error {
             LoadError::Invalid(message) => Error::new(ErrorKind::Invalid, message),
             LoadError::Io(message) => Error::new(ErrorKind::Io, message),
-        })
+        })?;
+        self.configured = Some(
+            loaded
+                .runtimes
+                .iter()
+                .map(|(name, runtime)| (name.clone(), (runtime.kind(), runtime.color.clone())))
+                .collect(),
+        );
+        self.dirty = true;
+        Ok(loaded)
     }
 
     fn missing(&self, name: &RuntimeName) -> Error {
@@ -559,7 +578,7 @@ impl Registry {
         )
     }
 
-    pub(crate) fn settings(&self, name: &RuntimeName) -> Result<Runtime, Error> {
+    pub(crate) fn settings(&mut self, name: &RuntimeName) -> Result<Runtime, Error> {
         if let Some(link) = self.links.get(name)
             && matches!(link.phase, Phase::Starting(_) | Phase::Up)
         {
@@ -571,7 +590,7 @@ impl Registry {
             .ok_or_else(|| self.missing(name))
     }
 
-    pub(crate) fn known(&self) -> Result<Vec<(RuntimeName, Runtime)>, Error> {
+    pub(crate) fn known(&mut self) -> Result<Vec<(RuntimeName, Runtime)>, Error> {
         let mut known = self.load()?.runtimes;
         for (name, link) in &self.links {
             if matches!(link.phase, Phase::Starting(_) | Phase::Up) {
@@ -592,11 +611,62 @@ impl Registry {
         }
     }
 
+    // The runtimes that clients hear of are the ones that the registry last announced. The configuration
+    // that it last read and the live links decide what is listed; a quiet turn changes neither.
+    pub(crate) fn take_changes(&mut self) -> Vec<ClientEvent> {
+        if std::mem::take(&mut self.dirty) {
+            self.sync();
+        }
+        std::mem::take(&mut self.pending)
+    }
+
+    fn sync(&mut self) {
+        let mut desired: Configured = self.configured.clone().unwrap_or_default();
+        for (name, link) in &self.links {
+            if matches!(link.phase, Phase::Starting(_) | Phase::Up) {
+                desired.insert(
+                    name.clone(),
+                    (link.settings.kind(), link.settings.color.clone()),
+                );
+            }
+        }
+        let gone: Vec<RuntimeName> = self
+            .announced
+            .keys()
+            .filter(|name| !desired.contains_key(*name))
+            .cloned()
+            .collect();
+        for name in gone {
+            self.announced.remove(&name);
+            self.pending.push(ClientEvent::RuntimeDeleted { name });
+        }
+        for (name, (kind, color)) in desired {
+            let entry = ClientRuntime {
+                state: self.state(&name),
+                name: name.clone(),
+                kind,
+                color,
+            };
+            if self.announced.get(&name) != Some(&entry) {
+                self.announced.insert(name, entry.clone());
+                self.pending.push(ClientEvent::Runtime(entry));
+            }
+        }
+    }
+
+    pub(crate) fn listed(&mut self) -> Vec<ClientRuntime> {
+        let _ = self.load();
+        self.sync();
+        self.dirty = false;
+        self.announced.values().cloned().collect()
+    }
+
     pub(crate) fn is_live(&self, name: &RuntimeName) -> bool {
         self.links.contains_key(name)
     }
 
     pub(crate) fn begin(&mut self, poll: &mut Poll, name: &RuntimeName, settings: Runtime) {
+        self.dirty = true;
         if matches!(
             self.links.get(name).map(|link| &link.phase),
             Some(Phase::Starting(_) | Phase::Up)
@@ -646,6 +716,7 @@ impl Registry {
     }
 
     fn start_steps(&mut self, poll: &mut Poll, name: &RuntimeName, from_start: bool) {
+        self.dirty = true;
         let socket = socket_path(&self.root, name);
         let Some(link) = self.links.get_mut(name) else {
             return;
@@ -696,6 +767,7 @@ impl Registry {
     }
 
     fn fail(&mut self, poll: &mut Poll, name: &RuntimeName, message: String) {
+        self.dirty = true;
         let Some(mut link) = self.links.remove(name) else {
             return;
         };
@@ -934,6 +1006,7 @@ impl Registry {
     }
 
     pub(crate) fn down(&mut self, poll: &mut Poll, name: &RuntimeName, detach: bool) {
+        self.dirty = true;
         let Some(mut link) = self.links.remove(name) else {
             return;
         };
@@ -943,6 +1016,7 @@ impl Registry {
 
     // A master that died unseen: the link starts again, and the pane that found out may lead.
     fn restart(&mut self, poll: &mut Poll, name: &RuntimeName) {
+        self.dirty = true;
         let Some(mut link) = self.links.remove(name) else {
             return;
         };
@@ -1289,6 +1363,7 @@ impl Registry {
     }
 
     fn advance(&mut self, poll: &mut Poll, name: &RuntimeName) {
+        self.dirty = true;
         let socket = socket_path(&self.root, name);
         let Some(link) = self.links.get_mut(name) else {
             return;

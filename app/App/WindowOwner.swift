@@ -926,13 +926,14 @@ private class AlertEscape: NSView {
             try? client.select(KO_SELECT_SESSION, first.id)
         }
         let model = SessionModel(ko)
-        received = Received(ko: ko, model: model, snapshot: Snapshot(model: ko))
+        let marks = ko.runtimeMarks
+        received = Received(ko: ko, model: model, snapshot: Snapshot(model: ko, marks: marks))
         if pendingNewSession {
             pendingNewSession = false
             newSession()
         }
         session?.update(model.session.flatMap { ko.layout.layout.session($0) }?.windows ?? [],
-                        alive: Set(ko.layout.layout.windows.map(\.id)), selected: ko.selection.pane)
+                        alive: Set(ko.layout.layout.windows.map(\.id)), selected: ko.selection.pane, marks: marks)
         guard let snapshot else {
             sidebar.list.offline("No sessions")
             if let session { present(session) } else { updateTabs() }
@@ -1015,6 +1016,22 @@ private class AlertEscape: NSView {
                             windowName: windowName(window), quote: quote, preselect: preselect)
     }
 
+    // The runtimes that the server offers, and the runtime of the pane in focus.
+    var runtimes: [KoSchema.ClientRuntime] {
+        #if KIDO_VISUAL
+        if let testRuntimes { return testRuntimes.list }
+        #endif
+        return koModel?.runtimes ?? []
+    }
+
+    // The runtime of the pane that this client selected: the host has none.
+    var focusedRuntime: String? {
+        #if KIDO_VISUAL
+        if let testRuntimes { return testRuntimes.focused }
+        #endif
+        return koModel.flatMap { model in model.current.flatMap { model.pane($0.pane)?.runtime } }
+    }
+
     var currentSession: SessionNodes? {
         snapshot?.sessions.first { $0.id == navigation.session }
     }
@@ -1064,8 +1081,8 @@ private class AlertEscape: NSView {
         createSession(name) { [weak self] error in if let error { self?.sidebar.list.failed(error) } }
     }
 
-    func newWindow(in target: SessionID? = nil) {
-        guard let id = target ?? model.session, let edit = koModel?.newWindow(in: id, after: model.window) else { return }
+    func newWindow(in target: SessionID? = nil, _ runtime: NewPaneRuntime = .inherit) {
+        guard let id = target ?? model.session, let edit = koModel?.newWindow(in: id, after: model.window, runtime) else { return }
         create(edit)
     }
 
@@ -1101,17 +1118,17 @@ private class AlertEscape: NSView {
         }
     }
 
-    private func paneCommand(_ command: PaneCommand, _ pane: PaneID) {
+    func paneCommand(_ command: PaneCommand, _ pane: PaneID, _ runtime: NewPaneRuntime = .inherit) {
         switch command {
         case .close:
             let name = sidebarRows(snapshot).first { $0.target?.pane == pane }?.title ?? pane.description
             return confirmClose(.pane(pane), name: name)
         case .window(let step): return selectWindow(step)
-        case .newWindow: return newWindow()
+        case .newWindow: return newWindow(in: nil, runtime)
         default: break
         }
-        guard let window = koModel?.layout.layout.locate(pane)?.window,
-              let action = command.action(pane, in: window, cwd: koModel?.pane(pane)?.cwd, cell: session?.cell ?? .zero) else { return }
+        guard let koModel, let window = koModel.layout.layout.locate(pane)?.window,
+              let action = command.action(pane, in: window, new: koModel.newPane(from: pane, runtime), cell: session?.cell ?? .zero) else { return }
         switch action {
         case .edit(let edit):
             editor?.submit(edit) { [weak self] result in
@@ -1329,6 +1346,8 @@ private class AlertEscape: NSView {
 
     #if KIDO_VISUAL || KIDO_STRESS
     var testServerDir: String?
+    // The runtimes of an owner without a server, and the runtime of its selected pane.
+    var testRuntimes: (list: [KoSchema.ClientRuntime], focused: String?)?
     var testSSH: ((SSH) -> Void)?
     var testUploadBase: String?
     var testBanner: Banner { banner }

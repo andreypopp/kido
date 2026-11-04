@@ -751,6 +751,53 @@ pane in a key window goes to the terminal as before. The pane hover
 toolbar's buttons do not accept first mouse either, so a first click on
 the grip, zoom, split or close button only activates the window.
 
+### Runtime marks
+
+A pane that runs in a runtime, or a routed pi's host pane whose tools
+run in one, shows where it runs (design-runtimes.md, "Clients"; the
+approved mockup is `app/design/runtime/`, `mockup.html` with its
+`NOTES.md`). `RuntimeMark` (`KoModel/Runtime.swift`) is derived for
+each pane from the model's `place` and the runtimes list once for each
+model, and never stored: the name, the kind, the configured colour,
+the link state and whether the pane is routed. The app turns it into
+a colour (`App/RuntimeTint.swift`). A change of the panes that have a
+mark moves grids and lays the window out again; a change of a mark's
+state or colour only redraws its chrome and pill. A pane whose runtime is not in the list keeps the
+name and the hashed colour and shows no state.
+
+- **The stripe.** `PaneChrome` draws a 3pt band in the runtime's
+  colour across the top of the chrome, over the top side of the focus
+  edge. It is at 55% in an unfocused pane, dashed (8pt on, 6pt at 35%
+  of it, still) while the runtime starts, and at full colour when it
+  failed: the pane's screen shows the message. A float's band is its
+  card's top, clipped by the card's corners; a zoomed pane keeps its
+  band.
+- **The label pill.** `RuntimePill`, in the COPY pill's family, at the
+  chrome's top-right (8pt in, 22pt high): a 6pt swatch, the name, then
+  ` · tools` for a routed pi, ` · starting` with a spinner, or
+  ` · failed: <message>` in red with the whole message as its tooltip.
+  It is at most 300pt wide; the state text truncates, never the name.
+  It is at 70% in an unfocused pane. It hides while the hover toolbar
+  or the find capsule shows, and in copy mode when it would meet the
+  COPY pill. It is not in the toolbar's hot zone.
+- **The band is reserved** only for a runtime pane:
+  `PaneLayout.tiled(_:alternate:band:)` moves the grid down by what the
+  gap above it lacks of 3pt, through the render insets, so the band
+  never covers a cell. The content frame, the chrome, the cell count
+  and every coordinate conversion stay those of the grid, so a host
+  pane's geometry is unchanged, and a runtime pane loses no row: the
+  shortfall comes from the padding below the grid.
+- **The colour** is the configured `color` as given, else the hue
+  `FNV-1a-32(name) mod 360` with saturation 0.73 and brightness 0.66
+  on a light terminal background, 0.47 and 0.84 on a dark one
+  (`Chrome.runtimeTint`). The stripe, both swatches and the palette's
+  dot use it.
+- **The limit of the band.** The band fits a pane whose cell is at
+  least about 4pt high. Below that (Ghostty's 1pt minimum font gives a
+  cell of about 2pt), the gaps above and below an inner pane's grid
+  are less than 3pt together, and the stripe covers up to 0.5pt of
+  the first row.
+
 ### Clipboard
 
 A program's clipboard access (OSC 52 and the kitty protocol, OSC 5522)
@@ -1111,6 +1158,14 @@ current session, window and pane: the selection, else the first
 session. A node's identity is scoped
 to its session.
 
+A pane row of a runtime pane or a routed pi has a suffix after its
+title ([Runtime marks](#runtime-marks)): 6pt gap, a 6pt swatch, 4pt
+gap and the name in secondary colour, then ` · starting`, or
+` · failed` in red with the message as the tooltip. The title
+truncates first; the suffix keeps 96pt. A nested row omits the suffix
+when its runtime equals that of the nearest ancestor pane row, so a
+routed pi's runs and children in its runtime show none.
+
 `Sidebar` is an `NSSplitViewController` with a sidebar item, which
 supplies the floating glass, collapse animation and saved width (236pt,
 200-360pt). The window has an icon-only unified toolbar only because the
@@ -1334,8 +1389,18 @@ has the dial cause `newSession`: it makes a session on its first model,
 once, also on an empty server. The intent belongs to that window. Closing
 it before its model drops the intent, and a later ordinary open does not
 make a session. Each session header plus and Command-T add a window after
-that session's current window, in the cwd of its focus pane, with an
-`add_window` edit, and select it from the resulting layout. In the table,
+that session's current window, made from its source pane, with an
+`add_window` edit, and select it from the resulting layout. The
+source pane is the pane that this client selected when the session's
+current window is the client's, else that window's `focus`: another
+client can move the document's focus. The menu's splits make the new
+pane from the pane they act on. The new pane takes the source row's
+`runtime` (`KoModel.newPane`), so a routed pi's pane gives a host
+pane. It takes the source's cwd only when the source is a host pane:
+the server reads a request's cwd as a host path and maps it into a
+runtime, and a runtime pane's directory is a path inside the
+runtime, so a pane made from a runtime pane starts in the runtime's
+default directory, or the home directory on the host. In the table,
 arrows and j/k move pane-only selection, Return activates with exactly one
 select, and Escape releases side focus and returns to the pane, also
 without a connection. Left/Right do nothing; headers do not activate or
@@ -1415,6 +1480,13 @@ The root list is built from live state, in this order:
   anchor's window comes to the front first. The detail is the session name,
   after the host for a remote owner. An anchor that is offline or
   reconnecting adds no rows.
+- `Host` (`desktopcomputer`, detail "this Mac"), only when the focused
+  pane's row has a runtime, then one row for each runtime of the
+  anchor's `Welcome` ([Runtime marks](#runtime-marks)): the title
+  "Runtime: NAME", a 6pt swatch in the icon slot and the detail
+  `kind · state` at the right, in the shortcut column; a failed
+  runtime's detail is `kind · failed · <message>` in red, the message
+  cut at 300pt. With an empty query, `Host` is selected.
 - Each recent host that has no open Kido window, newest first, with the
   `globe` symbol and the detail "Connect". This holds also when windows are
   open.
@@ -1455,11 +1527,26 @@ characters gets a fill of the terminal foreground at 14% with a 3pt radius;
 the text keeps its colour and weight. With no match, the list shows "No
 matches".
 
-The palette has four modes besides the root. A mode shows a chip left of the
+The palette has five modes besides the root. A mode shows a chip left of the
 field (22pt, the mode's symbol and name) and a foot that names its keys.
 Entering a mode clears the query and the error. An error is a red line between
 the field and the list; an edit clears it.
 
+- **Runtime** (`PaletteMode.runtime`, nil for `Host`; the chip is the swatch and the
+  name, or "Host" without a swatch; the field reads "Open as…"). A
+  runtime or `Host` row of the root enters it. Its rows are New Window
+  (in the anchor's current session) and, with a live focused pane,
+  Split Right and Split Down; the detail follows the title. Return
+  sends one layout edit whose new pane names the runtime, or none for
+  `Host`; a runtime that is down starts with that pane. The foot names
+  the kind and state and where the new pane runs. For a failed runtime
+  a red line above the foot repeats the message and says "The new pane
+  starts it again."; an edit of the query does not clear it. Each
+  model change resolves the runtime again by name, so the chip, the
+  foot and the red line follow its state while the step is open, and
+  the query and the selection stay. There is
+  no New Session row: a session holds host and runtime windows
+  together.
 - **Connect** (`globe`, "user@hostname or SSH alias"). The root row Connect
   to Remote Host…, File → Connect to Remote Host… and Shift-Command-K enter it.
   With text, the first row is "Connect to <text>", selected. The recent hosts
@@ -1675,7 +1762,7 @@ Shift-Command-K (Connect) and Command-O (Prompt, in the root only) before the
 field editor. With the palette closed, these keys keep their pane behaviour. Other Command keys go to the
 main menu. The field's `control(_:textView:doCommandBy:)` handles the rest:
 Up, Down, Control-P and Control-N move the selection with wraparound; Return
-runs it; Escape returns from Connect or Rename to the root and closes at
+runs it; Escape returns from Connect, Rename or Runtime to the root and closes at
 the root;
 Backspace on an empty field in a mode returns to the root. Command-P has no
 Ghostty default. From a pane, `PaneView.performKeyEquivalent` offers an
@@ -1913,6 +2000,28 @@ conf lives in the visual scheme's private `HOME` (`XDG_CONFIG_HOME` is
 `HOME` is that private directory before it writes. theme-err-file removes the
 built app's bundled theme file and restores its bytes in a `defer`.
 `ThemeConfTests` tests the conf text functions and the writer.
+
+`RuntimeTests.swift` records one image for each decided state of the
+runtime mockup, `app/design/runtime/`, in light and dark:
+`runtime.<theme>-<state>.png` for window, window-hover, zoomed,
+label-find, starting, failed, float, colour-hash and colour-config
+(the terminal area, against a private server), and rows, routed,
+palette-root, palette-step, palette-step-failed, palette-step-host and
+palette-step-nofocus (a model fixture). The mockup's alternatives
+(stripe-2pt, label-left, label-tag, tui-stripe) were rejected and
+have no image. The server's runtimes are `command` runtimes: the
+Visual scheme sets `KO_RUNTIME_COMMAND_KIND=1`, and a test writes
+`runtimes.json` into the scheme's private `XDG_CONFIG_HOME` and
+removes it at teardown. A runtime is held `Starting` by an `up` step
+that reads a FIFO, and made to fail by an `up` step that exits 255. A
+test never sets or unsets its own environment: `setenv` in the test
+process races Ghostty's threads, which read `environ`, and crashed
+the host in `ghostty_config_finalize`.
+
+`RuntimeActionTests` in the same file runs the runtime step's rows,
+the menu's splits and New Window against a private server and checks
+each new pane's runtime and cwd. `KoTests/RuntimeTintTests` checks the
+hash's hues against the mockup's and the hex parse.
 `palette.light-window-root.png` records the card over a real two-pane window
 at the mockup's 1100x740pt, with the panes' cursors hollow. The fixture
 runs on a private ko server. It lays the window out completely before the

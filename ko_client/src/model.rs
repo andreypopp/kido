@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use ko_pane_wire::frame::Limits;
-use ko_server::ids::{ClientId, Instance, PaneId, SessionId, VarName, WindowId};
+use ko_server::ids::{ClientId, Instance, PaneId, RuntimeName, SessionId, VarName, WindowId};
 use ko_server::protocol::{
-    self, ClientEvent, ClientRequest, ClipboardContent, ClipboardLocation, Hello, LayoutPanes,
-    Listing, Row, Selection, Snapshot,
+    self, ClientEvent, ClientRequest, ClientRuntime, ClipboardContent, ClipboardLocation, Hello,
+    LayoutPanes, Listing, Live, Row, Selection, Snapshot,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -16,6 +16,8 @@ use crate::status;
 use crate::status::{Mark, Seen};
 use crate::tree;
 use crate::wire::{Link, Next, text};
+
+const PI_RUNTIME: VarName = VarName::known("pi.runtime");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Notice {
@@ -53,10 +55,28 @@ pub struct Model {
     pub layout: Snapshot,
     pub selection: Selection,
     pub panes: Vec<Pane>,
+    pub runtimes: Vec<ClientRuntime>,
     anchor: (u64, Instant),
     seen: Seen,
     // What the caller shows, and whether the user looks: the panes that each change acknowledges.
     watched: (Vec<PaneId>, bool),
+}
+
+/// Where a pane's program runs, when not on the host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Place {
+    /// A pane of the runtime.
+    Pane { name: RuntimeName },
+    /// A host pane of a pi agent whose tools run in the runtime.
+    Routed { name: RuntimeName },
+}
+
+impl Place {
+    pub fn name(&self) -> &RuntimeName {
+        let (Place::Pane { name } | Place::Routed { name }) = self;
+        name
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -78,6 +98,8 @@ pub(crate) struct PaneJson<'a> {
     label: String,
     mark: Mark,
     records_seen: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    place: Option<Place>,
     #[serde(flatten)]
     row: &'a Row,
     vars: &'a BTreeMap<VarName, Value>,
@@ -89,6 +111,7 @@ pub(crate) struct ModelJson<'a> {
     selection: &'a Selection,
     layout: &'a Snapshot,
     panes: Vec<PaneJson<'a>>,
+    runtimes: &'a [ClientRuntime],
     outline: Vec<Item>,
 }
 
@@ -134,6 +157,7 @@ impl Model {
             layout: snapshot,
             selection: Selection::default(),
             panes: Vec::new(),
+            runtimes: welcome.runtimes,
             anchor: (welcome.now, Instant::now()),
             seen: Seen::new(welcome.now),
             watched: (Vec::new(), false),
@@ -170,10 +194,12 @@ impl Model {
                     label: status::title(pane),
                     mark: self.mark(pane),
                     records_seen: self.seen.records_seen(pane),
+                    place: self.place(pane),
                     row: &pane.row,
                     vars: &pane.vars,
                 })
                 .collect(),
+            runtimes: &self.runtimes,
             outline: self.outline(),
         }
     }
@@ -201,6 +227,23 @@ impl Model {
     fn acknowledge(&mut self) {
         let (shown, attending) = &self.watched;
         self.seen.observe(shown, *attending, &self.panes);
+    }
+
+    // A pi agent's `pi.runtime` counts only while ko reads the pane as that agent, as `pi.session`
+    // does. `ko.runtime` is a marker that any program may set, so it is never read.
+    pub fn place(&self, pane: &Pane) -> Option<Place> {
+        if let Some(name) = &pane.row.runtime {
+            return Some(Place::Pane { name: name.clone() });
+        }
+        if !matches!(
+            pane.row.status.as_ref().map(|status| &status.kind),
+            Some(Live::PiAgent { .. })
+        ) {
+            return None;
+        }
+        let named = pane.vars.get(&PI_RUNTIME)?["name"].as_str()?;
+        let name = RuntimeName::try_from(named.to_owned()).ok()?;
+        Some(Place::Routed { name })
     }
 
     pub fn mark(&self, pane: &Pane) -> Mark {
@@ -366,6 +409,21 @@ impl Model {
                     mimes,
                     list,
                 });
+            }
+            ClientEvent::Runtime(runtime) => {
+                match self
+                    .runtimes
+                    .iter_mut()
+                    .find(|known| known.name == runtime.name)
+                {
+                    Some(known) => *known = runtime,
+                    None => self.runtimes.push(runtime),
+                }
+                return Applied::State;
+            }
+            ClientEvent::RuntimeDeleted { name } => {
+                self.runtimes.retain(|known| known.name != name);
+                return Applied::State;
             }
             ClientEvent::Welcome(_) => {}
         }
@@ -562,7 +620,8 @@ mod tests {
             "limits": {"terminal": {"scrollback": {"type": "disabled"}, "apc_max_bytes": 0,
                 "kitty_images_max_bytes": 0, "continuation_max_bytes": 0}, "media": []},
             "instance": "0123456789abcdef0123456789abcdef",
-            "now": 1000
+            "now": 1000,
+            "runtimes": []
         }))
         .unwrap();
         let snapshot = Snapshot {
@@ -974,6 +1033,109 @@ mod tests {
             vars_in(&model, 1),
             Some(plain(&[("a", json!(2)), ("b", json!(5))]))
         );
+    }
+
+    #[test]
+    fn a_pane_shows_its_runtime_or_a_routed_pi_agents_and_a_runtime_event_changes_the_state() {
+        let mut model = model(Layout { sessions: vec![] });
+        model.runtimes = serde_json::from_value(json!([
+            {"name": "box", "kind": "ssh", "state": {"type": "up"}},
+            {"name": "other", "kind": "command", "state": {"type": "down"}},
+        ]))
+        .unwrap();
+        let routed = |name: &str| (("pi.runtime"), json!({"name": name, "cwd": "/w"}));
+        let pi_status = serde_json::from_value::<protocol::PaneStatus>(json!({
+            "kind": {"type": "pi_agent", "session": "s", "status":
+                {"since": 0, "state": {"type": "idle"}}},
+            "program_status": {"serial": 0, "records": []}, "title": "pi", "since": 0}))
+        .unwrap();
+        let mut entries = vec![
+            entry(1, &[]),
+            entry(2, &[routed("box")]),
+            entry(3, &[routed("box")]),
+            entry(4, &[routed("gone")]),
+            entry(5, &[routed("box")]),
+            entry(6, &[("ko.runtime", json!("box"))]),
+        ];
+        entries[0].row.runtime = Some("other".parse().unwrap());
+        entries[4].row.runtime = Some("other".parse().unwrap());
+        for number in [1, 2, 4, 5, 6] {
+            entries[number - 1].row.status = Some(pi_status.clone());
+        }
+        model.apply(announced(one_pane_layout(&[1, 2, 3, 4, 5, 6]), entries));
+        let place = |number: usize| model.place(&model.panes[number - 1]);
+        let box_name = || "box".parse::<RuntimeName>().unwrap();
+        assert_eq!(
+            [1, 2, 3, 4, 5, 6].map(place),
+            [
+                Some(Place::Pane {
+                    name: "other".parse().unwrap()
+                }),
+                Some(Place::Routed { name: box_name() }),
+                None,
+                Some(Place::Routed {
+                    name: "gone".parse().unwrap()
+                }),
+                Some(Place::Pane {
+                    name: "other".parse().unwrap()
+                }),
+                None,
+            ],
+            "the row first; a variable only on a pi agent, whether or not the runtime is listed; never ko.runtime"
+        );
+    }
+
+    #[test]
+    fn a_runtime_event_adds_or_replaces_an_entry_and_a_deleted_event_drops_it() {
+        let mut model = model(Layout { sessions: vec![] });
+        let entry = |name: &str, color: Option<&str>, state: &str| -> ClientRuntime {
+            let mut value = json!({"name": name, "kind": "ssh", "state": {"type": state}});
+            if let Some(color) = color {
+                value["color"] = json!(color);
+            }
+            serde_json::from_value(value).unwrap()
+        };
+        let names = |model: &Model| -> Vec<String> {
+            model
+                .runtimes
+                .iter()
+                .map(|runtime| runtime.name.to_string())
+                .collect()
+        };
+        for runtime in [entry("a", None, "down"), entry("b", None, "up")] {
+            assert_eq!(model.apply(ClientEvent::Runtime(runtime)), Applied::State);
+        }
+        model.apply(ClientEvent::Runtime(entry(
+            "a",
+            Some("#d08a2a"),
+            "starting",
+        )));
+        assert_eq!(names(&model), ["a", "b"]);
+        assert_eq!(model.runtimes[0], entry("a", Some("#d08a2a"), "starting"));
+        assert_eq!(
+            model.apply(ClientEvent::RuntimeDeleted {
+                name: "a".parse().unwrap()
+            }),
+            Applied::State
+        );
+        assert_eq!(names(&model), ["b"]);
+        let welcome = serde_json::from_value::<protocol::Welcome>(json!({
+            "client": "client_1",
+            "limits": {"terminal": {"scrollback": {"type": "disabled"}, "apc_max_bytes": 0,
+                "kitty_images_max_bytes": 0, "continuation_max_bytes": 0}, "media": []},
+            "instance": "0123456789abcdef0123456789abcdef",
+            "now": 1000,
+            "runtimes": [{"name": "c", "kind": "command", "state": {"type": "up"}}]
+        }))
+        .unwrap();
+        let rejoined = Model::new(
+            welcome,
+            LayoutPanes {
+                snapshot: model.layout.clone(),
+                panes: Vec::new(),
+            },
+        );
+        assert_eq!(names(&rejoined), ["c"], "the new Welcome replaces the list");
     }
 
     #[test]

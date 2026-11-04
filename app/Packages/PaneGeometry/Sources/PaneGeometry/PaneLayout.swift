@@ -61,8 +61,11 @@ public struct PaneLayout: Equatable {
                       width: grid.width + before.width + after.width, height: grid.height + before.height + after.height)
     }
 
-    public func tiled(_ g: Geometry, alternate: Bool) -> TiledPlacement {
-        let grid = grid(g)
+    // `band` is the height at the chrome top that a runtime pane's stripe covers. The grid moves down
+    // only as far as its gap above the chrome top lacks, by shifting the render insets: the content
+    // frame, the chrome and the cell lattice stay as they are.
+    public func tiled(_ g: Geometry, alternate: Bool, band: CGFloat = 0) -> TiledPlacement {
+        var grid = grid(g)
         var chrome = frame(g)
         let left = g.x == 0 ? bounds.minX : chrome.minX
         let right = grid.maxX == rightEdge ? bounds.maxX : chrome.maxX
@@ -71,10 +74,19 @@ public struct PaneLayout: Equatable {
         chrome.origin.y = max(topLine.maxY, g.y == rootTop ? topLine.maxY : chrome.minY)
         chrome.size.height = (grid.maxY == bottom ? bounds.maxY : min(grid.maxY + after.height, bounds.maxY)) - chrome.minY
         chrome = clip(chrome)
-        let insets = alternate ? RenderInsets() : RenderInsets(
-            top: max(0, grid.minY - chrome.minY),
+        let gap = max(0, grid.minY - chrome.minY)
+        let lift = min(max(0, band - gap), max(0, chrome.maxY - grid.maxY))
+        var insets = alternate ? RenderInsets() : RenderInsets(
+            top: gap,
             bottom: grid.maxY == bottom ? bounds.maxY - grid.maxY : after.height)
-        let content = CGRect(x: grid.minX, y: grid.minY - insets.top, width: grid.width, height: grid.height + insets.top + insets.bottom)
+        var content = CGRect(x: grid.minX, y: grid.minY - insets.top, width: grid.width, height: grid.height + insets.top + insets.bottom)
+        if alternate {
+            content.origin.y += lift
+        } else {
+            insets.top += lift
+            insets.bottom = max(0, insets.bottom - lift)
+        }
+        grid.origin.y += lift
         return TiledPlacement(grid: grid, content: content, chrome: chrome, insets: insets)
     }
 

@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
@@ -156,7 +156,11 @@ pub(crate) fn runtime_exec(args: RuntimeExecArgs) -> ExitCode {
     let RuntimeExecArgs { name, argv } = args;
     let Target { dir, caller } = target(None);
     let stop = |message: String| {
-        complain(format_args!("runtime {name}: {message}"));
+        if io::stderr().is_terminal() {
+            complain(format_args!("\x1b[31mruntime {name}: {message}\x1b[0m"));
+        } else {
+            complain(format_args!("runtime {name}: {message}"));
+        }
         ExitCode::FAILURE
     };
     let mut shown = |event: Shown<'_>| match event {

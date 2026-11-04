@@ -1,4 +1,5 @@
 import AppKit
+import KoModel
 import SidebarFeed
 
 func drawStatusMark(_ status: SidebarRow.Status, at center: NSPoint, flipped: Bool) {
@@ -77,6 +78,8 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     static let id = NSUserInterfaceItemIdentifier("cell")
     private let fonts: SidebarFonts
     private var row: SidebarRow?
+    var terminalDark = false
+    private var runtimeText: NSAttributedString?
     private var clock = ""
     #if KIDO_VISUAL
     private(set) var visualClockDirtyRect = NSRect.zero
@@ -128,7 +131,9 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
         addWindow.setAccessibilityLabel("New window in " + row.title)
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
-        setAccessibilityLabel([row.title, row.tail, row.indicatorDescription].filter { !$0.isEmpty }.joined(separator: ", "))
+        toolTip = row.runtime?.failure
+        runtimeText = row.runtime.map(Self.suffixText)
+        setAccessibilityLabel([row.title, row.runtime.map { "runtime " + $0.name }, row.tail, row.indicatorDescription].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", "))
         setAccessibilityValue(nil)
         updateClock()
         needsLayout = true
@@ -210,12 +215,26 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             let end = header ? bounds.width - 30 : bounds.width - 12 - (clock.isEmpty ? 0 : clockWidth + 6)
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byTruncatingTail
-            let titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: 18)
+            var titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: 18)
+            let titleFont = header ? fonts.section : row.agent ? fonts.agent : fonts.regular
+            var suffix = NSRect.zero
+            if let text = runtimeText, !header {
+                // The title gives way first; the suffix is cut only when the row has no room for it alone.
+                let natural = 16 + ceil(text.size().width)
+                let titleNatural = ceil((row.title as NSString).size(withAttributes: [.font: titleFont]).width)
+                let width = min(natural, titleRect.width)
+                titleRect.size.width = max(0, min(titleNatural, titleRect.width - width))
+                suffix = NSRect(x: titleRect.maxX, y: y, width: width, height: 18)
+            }
             if dirtyRect.intersects(titleRect), !header || nameField.isHidden {
                 (row.title as NSString).draw(in: titleRect,
-                                       withAttributes: [.font: header ? fonts.section : row.agent ? fonts.agent : fonts.regular,
+                                       withAttributes: [.font: titleFont,
                                                         .foregroundColor: header || row.quietShell ? Chrome.inkSecondary : Chrome.ink,
                                                         .paragraphStyle: paragraph])
+            }
+            if let mark = row.runtime, let text = runtimeText, !header, suffix.width > 6 {
+                Chrome.drawRuntimeSwatch(mark, at: NSPoint(x: suffix.minX + 9, y: y + 9), dark: terminalDark)
+                text.draw(in: NSRect(x: suffix.minX + 16, y: y, width: max(0, suffix.width - 16), height: 18))
             }
             let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, bounds.width - leading - 12), height: 15)
             if dirtyRect.intersects(tailRect) {
@@ -228,6 +247,20 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
                 drawStatusMark(row.status, at: NSPoint(x: dotX, y: y + 9), flipped: true)
             }
         }
+    }
+}
+
+extension SidebarCell {
+    // The runtime's name after the title, with its state when it is not up.
+    fileprivate static func suffixText(_ mark: RuntimeMark) -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: Chrome.inkSecondary, .paragraphStyle: paragraph]
+        let text = NSMutableAttributedString(string: mark.name + (mark.state == .starting ? " · " + mark.stateWord : ""), attributes: attributes)
+        if mark.failure != nil {
+            text.append(NSAttributedString(string: " · " + mark.stateWord, attributes: attributes.merging([.foregroundColor: Chrome.errorText]) { $1 }))
+        }
+        return text
     }
 }
 

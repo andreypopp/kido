@@ -11,6 +11,7 @@ use crate::harness::{
     DEADLINE, Dir, Message, PRINT_TOKEN, Server, Ws, base64, poll, quote, run_ko, run_program, sh,
     start_in, start_with, stays, test_env, text_of, wait_gone,
 };
+use crate::outer::{Keys, Outer};
 use crate::panes::{as_pane, headers, post, raw, raw_on, refuses, token_pane_in_new_session};
 use crate::runs::{has_pane, ids};
 
@@ -679,7 +680,7 @@ fn the_first_pane_starts_a_runtime_and_a_failed_start_ends_it_with_its_message_a
     let log = files.join("lead.log");
     let s = serve(
         &json!({
-            "gate": {"kind": "command", "up": [
+            "gate": {"kind": "command", "color": "#d08a2a", "up": [
                 "/bin/sh", "-c",
                 format!("read code < {}; echo boom >&2; exit $code", quote(text_of(&up))),
             ]},
@@ -695,10 +696,26 @@ fn the_first_pane_starts_a_runtime_and_a_failed_start_ends_it_with_its_message_a
         &[],
     );
     let lines = || fs::read_to_string(&log).map_or(0, |text| text.lines().count());
+    assert_eq!(info(&s, "gate")["color"], "#d08a2a");
+    assert_eq!(info(&s, "lead").get("color"), None);
+    let (mut client, welcome) = s.client(None);
+    assert_eq!(
+        welcome["runtimes"],
+        json!([
+            {"name": "gate", "kind": "command", "color": "#d08a2a", "state": {"type": "down"}},
+            {"name": "lead", "kind": "command", "state": {"type": "down"}},
+        ])
+    );
+    let mut announced = |name: &str| {
+        let event = client.event("runtime");
+        assert_eq!(event["name"], name, "{event}");
+        event["state"].clone()
+    };
 
     let first = rt_pane(&s, "gate", "echo ran; exec cat");
     s.screen_has(&first, "starting runtime gate");
     assert_eq!(state(&s, "gate"), "starting");
+    assert_eq!(announced("gate"), json!({"type": "starting"}));
     release(&s.scratch, &up, "3");
     s.screen_has(&first, "runtime gate: boom");
     let row = dead(&s, &first);
@@ -706,6 +723,10 @@ fn the_first_pane_starts_a_runtime_and_a_failed_start_ends_it_with_its_message_a
     assert!(!s.screen(&first).contains("ran"), "{}", s.screen(&first));
     let failed = wait_state(&s, "gate", "failed");
     assert_eq!(failed["state"]["message"], "boom");
+    assert_eq!(
+        announced("gate"),
+        json!({"type": "failed", "message": "boom"})
+    );
 
     let retry = rt_pane(&s, "gate", "echo ran; exec cat");
     s.screen_has(&retry, "starting runtime gate");
@@ -714,9 +735,11 @@ fn the_first_pane_starts_a_runtime_and_a_failed_start_ends_it_with_its_message_a
         "starting",
         "the next pane starts the runtime again"
     );
+    assert_eq!(announced("gate"), json!({"type": "starting"}));
     release(&s.scratch, &up, "0");
     s.screen_has(&retry, "ran");
     wait_state(&s, "gate", "up");
+    assert_eq!(announced("gate"), json!({"type": "up"}));
 
     let (p1, p2) = (
         rt_pane(&s, "lead", "echo up-$KO_RUNTIME; exec cat"),
@@ -795,6 +818,116 @@ fn the_first_pane_starts_a_runtime_and_a_failed_start_ends_it_with_its_message_a
     );
     assert_eq!(deleted.0, 200, "{}", deleted.1);
     assert!(!s.dir.join("runtimes/lead").exists());
+}
+
+#[test]
+fn the_terminal_client_marks_a_runtime_pane_in_the_sidebar_and_a_new_window_runs_in_the_same_runtime()
+ {
+    let s = serve(&json!({"box": {"kind": "command"}}), &[]);
+    let first = rt_pane(&s, "box", "printf 'pane-one\\n'; exec cat");
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.attach("cat");
+    o.contains("pane-one");
+    o.wait("the runtime after the title", || {
+        o.lines().iter().any(|line| {
+            let sidebar: String = line.chars().take(24).collect();
+            sidebar.trim_end().ends_with(" box")
+        })
+    });
+    o.chord('n');
+    poll("a second pane", || s.rows().len() == 2);
+    let created = s
+        .rows()
+        .into_iter()
+        .find(|row| row["id"] != first.as_str())
+        .unwrap();
+    assert_eq!(created["runtime"], "box", "{created}");
+    o.detach();
+}
+
+#[test]
+fn a_client_link_hears_of_a_runtime_that_the_configuration_gains_changes_or_loses() {
+    let s = serve(
+        &json!({"a": {"kind": "command"}, "b": {"kind": "command"}}),
+        &[],
+    );
+    let (mut client, welcome) = s.client(None);
+    assert_eq!(welcome["runtimes"].as_array().map(Vec::len), Some(2));
+    s.rewrite(&json!({
+        "a": {"kind": "command", "color": "#d08a2a"},
+        "c": {"kind": "command"},
+    }));
+    let listed = info(&s, "c");
+    assert_eq!(listed["state"]["type"], "down");
+    client.within(DEADLINE);
+    let mut seen = Vec::new();
+    while seen.len() < 3 {
+        let Message::Text(text) = client.read() else {
+            continue;
+        };
+        if let Some((tag, event)) = crate::harness::tagged(&text)
+            && tag.starts_with("runtime")
+        {
+            seen.push((tag, event));
+        }
+    }
+    assert_eq!(seen[0].0, "runtime_deleted");
+    assert_eq!(seen[0].1["name"], "b");
+    assert_eq!(seen[1].0, "runtime");
+    assert_eq!(seen[1].1["name"], "a");
+    assert_eq!(seen[1].1["color"], "#d08a2a");
+    assert_eq!(seen[2].1["name"], "c");
+    assert_eq!(seen[2].1["state"], json!({"type": "down"}));
+}
+
+#[test]
+fn a_runtime_that_leaves_the_configuration_while_up_is_deleted_for_clients_when_its_link_ends() {
+    let s = serve(
+        &json!({"a": {"kind": "command"}, "b": {"kind": "command"}}),
+        &[],
+    );
+    let (mut client, _) = s.client(None);
+    let pane = rt_pane(&s, "a", "exec cat");
+    wait_state(&s, "a", "up");
+    s.rewrite(&json!({"b": {"kind": "command"}}));
+    let listed: Value = serde_json::from_str(&s.request("GET", "/runtimes", None, 200)).unwrap();
+    assert_eq!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["name"].clone())
+            .collect::<Vec<_>>(),
+        [json!("a"), json!("b")],
+        "a live link keeps its runtime listed after the file dropped it"
+    );
+    stop_pane(&s, &pane);
+    let forced = raw(
+        &s,
+        "POST",
+        "/runtimes/a/down",
+        &headers(&s, &[]),
+        &json!({"force": true}),
+    );
+    assert_eq!(forced.0, 200, "{}", forced.1);
+    client.within(DEADLINE);
+    let mut states = Vec::new();
+    loop {
+        let Message::Text(text) = client.read() else {
+            continue;
+        };
+        match crate::harness::tagged(&text) {
+            Some((tag, event)) if tag == "runtime" && event["name"] == "a" => {
+                states.push(event["state"]["type"].as_str().unwrap().to_owned());
+            }
+            Some((tag, event)) if tag == "runtime_deleted" => {
+                assert_eq!(event["name"], "a");
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(states.last().map(String::as_str), Some("up"), "{states:?}");
 }
 
 #[test]

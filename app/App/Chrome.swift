@@ -1,4 +1,5 @@
 import AppKit
+import KoModel
 
 enum Chrome {
     static var fieldInk: NSColor { .controlTextColor }
@@ -53,6 +54,22 @@ enum Chrome {
     static func bannerVeil(_ background: NSColor) -> NSColor { background.withAlphaComponent(0.85) }
     static func floatingOverlay(_ background: NSColor) -> NSColor { background.withAlphaComponent(0.45) }
     static func matchHighlight(_ foreground: NSColor) -> NSColor { foreground.withAlphaComponent(0.14) }
+    // A runtime's colour: the configured one as given, else the hue of its name at the saturation and
+    // brightness of the terminal's light or dark theme.
+    static func runtimeTint(_ mark: RuntimeMark, dark: Bool) -> NSColor {
+        if let rgb = mark.color.flatMap(RuntimeTint.rgb(hex:)) { return NSColor(srgbRed: rgb.r, green: rgb.g, blue: rgb.b, alpha: 1) }
+        return NSColor(hue: CGFloat(RuntimeTint.hue(mark.name)) / 360, saturation: dark ? 0.47 : 0.73, brightness: dark ? 0.84 : 0.66, alpha: 1)
+    }
+    // The 6pt dot of a runtime: in the pill, the palette and the sidebar.
+    static func drawRuntimeSwatch(_ mark: RuntimeMark, at center: NSPoint, dark: Bool) {
+        runtimeTint(mark, dark: dark).setFill()
+        NSBezierPath(ovalIn: NSRect(x: center.x - 3, y: center.y - 3, width: 6, height: 6)).fill()
+    }
+    // The stripe at full strength in the focused pane and dimmed in the others; a starting runtime's gaps
+    // between the dashes are at a third of that.
+    static func runtimeStripe(_ tint: NSColor, focused: Bool) -> NSColor { tint.withAlphaComponent(focused ? 1 : 0.55) }
+    static func runtimeStripeGap(_ stripe: NSColor) -> NSColor { stripe.withAlphaComponent(stripe.alphaComponent * 0.35) }
+    static var runtimePillUnfocusedAlpha: CGFloat { 0.7 }
     static func treeGuide(dark: Bool) -> NSColor {
         dark ? NSColor(srgbRed: 79 / 255, green: 85 / 255, blue: 92 / 255, alpha: 1)
              : NSColor(srgbRed: 191 / 255, green: 186 / 255, blue: 177 / 255, alpha: 1)

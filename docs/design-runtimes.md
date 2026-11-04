@@ -55,10 +55,11 @@ The shape is the code's (`ko_server/src/runtime/file.rs`);
 `share/ko/runtimes-schema.json` is its JSON schema, which `ko
 api-schema --runtimes` prints and `make schemas` regenerates. The
 fields that every kind has are the runtime's `env`, its default
-`cwd`, the `paths` prefix list of the cwd mapping and `pi`, where an
-agent's pi runs ("Agents in a runtime"). `GET /runtimes/NAME` reports
-the effective `paths`, the `cwd` and `pi`, which a spawner and a
-routed pi read. The server
+`cwd`, the `paths` prefix list of the cwd mapping, `pi`, where an
+agent's pi runs ("Agents in a runtime"), and `color`, an sRGB
+`#rrggbb` that clients draw the runtime in ("Clients"). `GET
+/runtimes/NAME` reports the effective `paths`, the `cwd`, `pi` and
+the `color`; a spawner and a routed pi read the first three. The server
 validates the file with the API's newtypes (a name, an absolute
 path); a bad field is an error that names the runtime and the field.
 An unknown field is an error that names the runtime and the field
@@ -77,6 +78,39 @@ interactive step that one waiting pane runs on its own pty (the ssh
 master's login), and `up`, a step that the server runs as its own
 child (the ssh forward). The fields of the other kinds are in their
 sections below.
+
+## Clients
+
+A client shows where a pane runs: Kido.app with a stripe and a label
+on the pane and a suffix on its sidebar row (design-app.md, "Panes"
+and "Sidebar"), the terminal client with the suffix only. The
+protocol is protocol.md, section 15: the `Welcome` lists the
+runtimes, and the `runtime` and `runtime_deleted` events follow
+them, because the pane row carries no link state.
+
+**Where a pane runs** is one function, `Model::place` in
+`ko_client/src/model.rs`, which both clients use (Kido.app through
+the model JSON's `place`): the row's `runtime`, else, only while the
+pane's status is a pi agent, the `name` of its `pi.runtime`
+("Agents in a runtime"), which is a routed pi. `ko.runtime` is not
+read: any program can set it, and no rule makes it trusted. A pane
+whose runtime is not in the list still shows the name, without a
+state.
+
+**The colour** is the configured `color`, else a hue from the name
+(FNV-1a of the UTF-8 name, mod 360) with a saturation and brightness
+for each theme; the client computes it, so the server stores no
+colour that the configuration does not have. It is for display only.
+
+**A new pane inherits** the runtime of the focused pane's row, not of
+a routed pi's variable: a split or a new window from a routed pi is a
+host pane, as the pi's own shell is. The terminal client's
+`Ctrl+Shift+N` and Kido.app's split and new-window commands follow
+this rule; Kido.app's command palette names a runtime or `Host`
+explicitly. Kido.app sends the source pane's cwd only from a host
+pane, which the server maps into a runtime ("The cwd"): a runtime
+pane's directory is not a host path. The terminal client sends its
+own host cwd.
 
 ## The link
 
@@ -638,8 +672,9 @@ The pane is a host pane in every row field.
   the runtime cwd) beside `pi.session`, believed under the same trust
   rule, and `ko.runtime` (the name), and deletes both with the others
   at shutdown. `ko.runtime` is a generic marker: any program that
-  sends its work into a runtime from a host pane may set it, for
-  clients; no client reads it yet, and ko itself reads neither.
+  sends its work into a runtime from a host pane may set it; no
+  client reads it, because nothing makes it trusted ("Clients"), and
+  ko itself reads neither.
 - **Messages.** A message from a routed pi carries `data.runtime`,
   and the receiver's header adds `in runtime NAME`; the server never
   reads a message's data.
@@ -695,8 +730,6 @@ left the group survives.
 - A runtime connection is deny by default: `PUT /layout` and the
   `/runtimes` routes are refused there.
 - A live exec session keeps a runtime from going idle, as a pane does.
-- The `runtime` event on `/client` and the runtimes of the `Welcome`
-  come with the clients' unit, not with the core.
 
 Agents in a runtime, 2026-11-04:
 
@@ -737,3 +770,18 @@ Container kind, 2026-11-04:
   runs only after its wait returned `Up`.
 - The link learns that its container stopped from a watch child, not
   from a poll and not only from the next pane.
+
+Clients, 2026-11-04:
+
+- A runtime's `color` is an optional configuration field, with a hue
+  from the name as the fallback: a hash alone cannot be corrected when
+  two names collide.
+- Clients get a narrow `ClientRuntime` (name, kind, colour, state),
+  not `RuntimeInfo`: a pane count in it would go stale between events.
+- The `runtime` event carries the whole entry, and `runtime_deleted`
+  removes one, because the configuration file can change while a
+  client is connected.
+- `ko.runtime` marks no pane in a client; only the row's `runtime` and
+  a trusted pi's `pi.runtime` do.
+- A new pane takes the focused row's `runtime`; a routed pi's host
+  pane gives a host pane.

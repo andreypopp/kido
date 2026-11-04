@@ -1,16 +1,20 @@
 import AppKit
 import GhosttyKit
+import KoModel
 import SidebarFeed
 import PaneGeometry
 
 enum PaletteMode: Equatable {
     case root, connect
+    // The step that opens a pane in a runtime; nil is the host.
+    case runtime(RuntimeMark?)
     case theme(ThemeStep)
     case prompt(PromptSource)
     case sessionName(WindowOwner, ServerInstance, SessionName.Operation)
     static func == (lhs: Self, rhs: Self) -> Bool {
         switch (lhs, rhs) {
         case (.root, .root), (.connect, .connect): true
+        case let (.runtime(a), .runtime(b)): a == b
         case let (.prompt(a), .prompt(b)): a == b
         case let (.theme(a), .theme(b)): a == b
         case let (.sessionName(a, ai, action), .sessionName(b, bi, other)): a === b && ai == bi && action == other
@@ -21,19 +25,26 @@ enum PaletteMode: Equatable {
 
 private final class PaletteChip: NSView {
     var mode: PaletteMode = .root
-    var title: String { switch mode { case .prompt: "Prompt"; case .connect: "Connect"; case .theme: "Theme"; case .sessionName(_, _, .create): "New session"; default: "Rename session" } }
+    var dark = false
+    var title: String { switch mode { case .prompt: "Prompt"; case .connect: "Connect"; case .theme: "Theme"; case .runtime(let mark): mark?.name ?? "Host"; case .sessionName(_, _, .create): "New session"; default: "Rename session" } }
     private var symbol: String { switch mode { case .prompt: "bubble.left"; case .connect: "globe"; case .theme: "paintpalette"; case .sessionName(_, _, .create): "plus"; default: "pencil" } }
-    var width: CGFloat { 33 + (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)]).width }
+    private var swatch: RuntimeMark? { if case .runtime(let mark) = mode { mark } else { nil } }
+    private var inset: CGFloat { if case .runtime = mode { swatch == nil ? 8 : 20 } else { 25 } }
+    var width: CGFloat { inset + 8 + (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)]).width }
 
     override func draw(_ dirtyRect: NSRect) {
         Chrome.modeChipFill.setFill()
         NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill()
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)!
-            .withSymbolConfiguration(.init(pointSize: 12, weight: .regular).applying(.init(hierarchicalColor: Chrome.modeChipInk)))!
-        image.draw(in: NSRect(x: 8, y: 5, width: 12, height: 12), from: .zero, operation: .sourceOver, fraction: 1)
+        if case .runtime = mode {
+            if let swatch { Chrome.drawRuntimeSwatch(swatch, at: NSPoint(x: 11, y: bounds.height / 2), dark: dark) }
+        } else {
+            let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)!
+                .withSymbolConfiguration(.init(pointSize: 12, weight: .regular).applying(.init(hierarchicalColor: Chrome.modeChipInk)))!
+            image.draw(in: NSRect(x: 8, y: 5, width: 12, height: 12), from: .zero, operation: .sourceOver, fraction: 1)
+        }
         let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: Chrome.ink]
         let size = (title as NSString).size(withAttributes: attributes)
-        (title as NSString).draw(at: NSPoint(x: 25, y: (bounds.height - size.height) / 2), withAttributes: attributes)
+        (title as NSString).draw(at: NSPoint(x: inset, y: (bounds.height - size.height) / 2), withAttributes: attributes)
     }
 }
 
@@ -55,6 +66,14 @@ private final class PaletteFoot: NSView {
         if case .theme(let step) = mode, let theme {
             let left = if case .save(let row) = step { theme.foot(row) } else { "↑↓ preview    ↩ use    esc back, restores" }
             let right = if case .save = step { "esc back" } else { theme.foot() }
+            (left as NSString).draw(at: NSPoint(x: 16, y: 8), withAttributes: attributes)
+            let size = (right as NSString).size(withAttributes: attributes)
+            (right as NSString).draw(at: NSPoint(x: bounds.width - 16 - size.width, y: 8), withAttributes: attributes)
+            return
+        }
+        if case .runtime(let mark) = mode {
+            let right = "⌫ back    esc back"
+            let left = mark.map { "\($0.kind?.rawValue ?? "runtime") · \($0.stateWord) · the new pane runs in \($0.name)" } ?? "host · the new pane runs on this Mac"
             (left as NSString).draw(at: NSPoint(x: 16, y: 8), withAttributes: attributes)
             let size = (right as NSString).size(withAttributes: attributes)
             (right as NSString).draw(at: NSPoint(x: bounds.width - 16 - size.width, y: 8), withAttributes: attributes)
@@ -83,7 +102,8 @@ private final class PaletteError: NSView {
     var message = ""
     var theme: PaletteTheme?
     private var isError: Bool { theme == nil || theme?.status?.isError == true }
-    private var topBorder: Bool { theme != nil }
+    var bordered = false
+    private var topBorder: Bool { theme != nil || bordered }
     private var canReveal: Bool { theme?.status?.canReveal == true }
     override func mouseDown(with event: NSEvent) {
         if canReveal, convert(event.locationInWindow, from: nil).x > bounds.width - 105 { theme?.reveal() }
@@ -136,6 +156,7 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
         var entry: PaletteEntry?
         var highlightColor = Chrome.ink
         var offsets: [[Int]] = [[], []]
+        var dark = false
         var selected = false
         override var isFlipped: Bool { true }
 
@@ -144,6 +165,7 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
             NSGraphicsContext.saveGraphicsState()
             defer { NSGraphicsContext.restoreGraphicsState() }
             if let status = entry.status { drawStatusMark(status, at: NSPoint(x: 24, y: bounds.midY), flipped: true) }
+            if let swatch = entry.swatch { Chrome.drawRuntimeSwatch(swatch, at: NSPoint(x: 24, y: bounds.midY), dark: dark) }
             if let symbol = entry.symbol.flatMap({ NSImage(systemSymbolName: $0, accessibilityDescription: nil) }) {
                 let image = symbol.withSymbolConfiguration(.init(pointSize: 12, weight: .regular).applying(.init(hierarchicalColor: Chrome.inkSecondary))) ?? symbol
                 image.draw(in: NSRect(x: 24 - image.size.width / 2, y: (bounds.height - image.size.height) / 2, width: image.size.width, height: image.size.height),
@@ -161,7 +183,7 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
                 ring.stroke()
             }
             var right = bounds.maxX - 16
-            let shortcut = entry.radio ? (selected ? "↩" : "") : selected && entry.promptable ? "⌘O prompt" : entry.shortcut
+            let shortcut = entry.radio ? (selected ? "↩" : "") : entry.inline ? (selected ? "↩" : "") : selected && entry.promptable ? "⌘O prompt" : entry.shortcut
             if !shortcut.isEmpty {
                 let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: Chrome.inkSecondary]
                 let size = (shortcut as NSString).size(withAttributes: attributes)
@@ -171,6 +193,22 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
             }
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byTruncatingTail
+            if entry.detailAtRight {
+                let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .paragraphStyle: paragraph,
+                                                                  .foregroundColor: entry.failed ? Chrome.errorText : Chrome.inkSecondary]
+                // Only a failure's message is cut, at 300pt; what comes before it stays whole.
+                let whole = entry.cutDetail.map { String(entry.detail.dropLast($0.count)) } ?? entry.detail
+                let wholeWidth = (whole as NSString).size(withAttributes: attributes).width
+                let cut = entry.cutDetail ?? ""
+                let cutSize = (cut as NSString).size(withAttributes: attributes)
+                let cutWidth = min(cutSize.width, 300)
+                right -= cutWidth
+                (cut as NSString).draw(with: NSRect(x: right, y: (bounds.height - cutSize.height) / 2, width: cutWidth, height: cutSize.height),
+                                       options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: attributes)
+                right -= wholeWidth
+                (whole as NSString).draw(at: NSPoint(x: right, y: (bounds.height - cutSize.height) / 2), withAttributes: attributes)
+                right -= 12
+            }
             if let problem = entry.theme?.problem?.text {
                 let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: Chrome.errorText, .paragraphStyle: paragraph]
                 let size = (problem as NSString).size(withAttributes: attributes)
@@ -183,7 +221,7 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
                 NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
             }
             let line = NSMutableAttributedString()
-            if !entry.detail.isEmpty && !entry.radio {
+            if !entry.detail.isEmpty && !entry.radio && !entry.inline && !entry.detailAtRight {
                 line.append(part(entry.detail, .systemFont(ofSize: 13), Chrome.inkSecondary))
                 line.append(part(" › ", .systemFont(ofSize: 13), Chrome.inkTertiary))
             }
@@ -196,6 +234,7 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
             }
             line.append(title)
             if entry.radio { line.append(part(entry.detail, .systemFont(ofSize: 13), Chrome.inkSecondary)) }
+            if entry.inline { line.append(part(" · " + entry.detail, .systemFont(ofSize: 13), Chrome.inkSecondary)) }
             if let theme = entry.theme, theme.problem == nil {
                 let tag = theme.background.isDark ? "dark" : "light"
                 let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10), .foregroundColor: Chrome.inkSecondary]
@@ -230,8 +269,8 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
             }
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: NSRect(x: left - 1, y: 0, width: max(0, right - left + 1), height: bounds.height)).addClip()
-            highlight(entry.detail, offsets: offsets[1], font: .systemFont(ofSize: 13), x: left)
-            let prefix = entry.detail.isEmpty || entry.radio ? "" : entry.detail + " › "
+            if !entry.detailAtRight && !entry.inline { highlight(entry.detail, offsets: offsets[1], font: .systemFont(ofSize: 13), x: left) }
+            let prefix = entry.detail.isEmpty || entry.radio || entry.inline || entry.detailAtRight ? "" : entry.detail + " › "
             highlight(entry.title, offsets: offsets[0], font: titleFont,
                       x: left + (prefix as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width)
             line.draw(with: NSRect(x: left, y: (bounds.height - height) / 2, width: max(0, right - left), height: height),
@@ -252,6 +291,7 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
             }
         }
     }
+    var dark = false
     var choose: (Int) -> Void = { _ in }
     var hover: (Int?) -> Void = { _ in }
     private var hovered: Int? { didSet { if oldValue != hovered { hover(hovered) } } }
@@ -321,6 +361,7 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
         cell.entry = shown[row].entry
         cell.selected = selectedRow == row
         cell.highlightColor = highlightColor
+        cell.dark = dark
         cell.offsets = shown[row].offsets
         cell.setAccessibilityElement(true)
         cell.setAccessibilityRole(.staticText)
@@ -339,6 +380,8 @@ final class PaletteView: NSView, NSTextFieldDelegate {
     func themeChanged() {
         appearance = NSAppearance(named: runtime.background.isDark ? .darkAqua : .aqua)
         table.highlightColor = runtime.foreground
+        table.dark = runtime.background.isDark
+        chip.dark = runtime.background.isDark
         if case .theme(let step) = mode {
             if theme?.configChanged() == true {
                 shown = theme?.entries(step) ?? []
@@ -369,6 +412,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
     private(set) var error: String?
     var modeEntries: (String, Bool) -> [(entry: PaletteEntry, offsets: [[Int]])] = { _, _ in [] }
     var rootEntries: () -> [PaletteEntry] = { [] }
+    var runtimeEntries: (RuntimeMark?) -> [PaletteEntry] = { _ in [] }
     var sessionName: (String) -> Void = { _ in }
     private let card: PaneCapsule
     private let separator = NSBox()
@@ -405,6 +449,8 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         separator.boxType = .separator
         footSeparator.boxType = .separator
         table.highlightColor = runtime.foreground
+        table.dark = runtime.background.isDark
+        chip.dark = runtime.background.isDark
         table.choose = { [weak self] in self?.choose($0) }
         table.hover = { [weak self] index in
             guard let self, case .theme(.pick) = mode else { return }
@@ -456,7 +502,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
             field.frame.size.width = width - field.frame.minX - 16
         }
         separator.frame = NSRect(x: 0, y: list + footer + errorHeight, width: width, height: 1)
-        let themeMode: Bool = if case .theme = mode { true } else { false }
+        let themeMode: Bool = switch mode { case .theme, .runtime: true; default: false }
         scroll.frame = NSRect(x: 0, y: footer + (themeMode ? errorHeight : 0), width: width, height: list)
         errorLine.frame = NSRect(x: 0, y: footer + (themeMode ? 0 : list), width: width, height: errorHeight)
         footSeparator.frame = NSRect(x: 0, y: footer, width: width, height: 1)
@@ -512,6 +558,10 @@ final class PaletteView: NSView, NSTextFieldDelegate {
                 self?.needsLayout = true
                 (self?.window as? PalettePanel)?.resizeCard()
             }
+        case .runtime(let mark):
+            field.placeholderString = "Open as…"
+            field.setAccessibilityLabel("Open as")
+            showRuntimeFailure(mark)
         case .root:
             entries = rootEntries()
             field.placeholderString = "Search panes and commands"
@@ -525,6 +575,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
             field.placeholderString = ""
             field.stringValue = original
         }
+        errorLine.bordered = { if case .runtime = mode { true } else { false } }()
         chip.mode = mode
         if case .sessionName = mode { field.setAccessibilityLabel(chip.title) }
         foot.mode = mode
@@ -543,6 +594,30 @@ final class PaletteView: NSView, NSTextFieldDelegate {
             editor.insertionPointColor = saving ? .clear : Chrome.insertion
             if saving { editor.setSelectedRange(NSRange(location: 0, length: 0)) }
         }
+    }
+
+    // The status line of a failed runtime: the new pane starts it again.
+    private func showRuntimeFailure(_ mark: RuntimeMark?) {
+        error = mark?.failure.map { "\(mark?.name ?? "") failed: \($0.trimmingCharacters(in: CharacterSet(charactersIn: ". "))). The new pane starts it again." }
+        errorLine.message = error ?? ""
+        errorLine.setAccessibilityElement(true)
+        errorLine.setAccessibilityRole(.staticText)
+        errorLine.setAccessibilityLabel(error ?? "")
+        errorLine.needsDisplay = true
+    }
+
+    // The model changed: the step shows the runtime as it is now, keeping the query and the row.
+    func refreshRuntime(_ mark: RuntimeMark?) {
+        guard case .runtime(let shownMark) = mode, shownMark?.name == mark?.name, shownMark != mark else { return }
+        let selected = selectedEntry?.id
+        mode = .runtime(mark)
+        showRuntimeFailure(mark)
+        chip.mode = mode
+        foot.mode = mode
+        chip.needsDisplay = true
+        foot.needsDisplay = true
+        filter()
+        if let selected, let index = shown.firstIndex(where: { $0.entry.id == selected }) { select(index) }
     }
 
     func reject(_ message: String) {
@@ -571,6 +646,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         case .root: shown = PaletteEntry.ranked(entries, query: field.stringValue)
         case .connect:
             shown = modeEntries(field.stringValue, error != nil)
+        case .runtime(let mark): shown = PaletteEntry.ranked(runtimeEntries(mark), query: field.stringValue)
         case .sessionName, .prompt: shown = []
         case .theme(let step):
             shown = theme?.entries(step) ?? []
@@ -586,6 +662,10 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         else { empty.isHidden = !shown.isEmpty || (mode == .connect && !field.stringValue.isEmpty) }
         scroll.isHidden = shown.isEmpty
         if case .theme = mode { table.selectRowIndexes([], byExtendingSelection: false) }
+        else if mode == .root, field.stringValue.isEmpty, let host = shown.firstIndex(where: { $0.entry.id == .runtime(nil) }) {
+            table.selectRowIndexes([host], byExtendingSelection: false)
+            DispatchQueue.main.async { [weak self] in self?.table.scrollRowToVisible(host) }
+        }
         else { select(0) }
         needsLayout = true
         if let panel = window as? PalettePanel { panel.resizeCard() }
@@ -649,7 +729,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
 
     func controlTextDidChange(_ notification: Notification) {
         if case .theme(.save) = mode { field.stringValue = "Use for…"; return }
-        error = nil
+        if case .runtime = mode {} else { error = nil }
         if case .theme(.pick) = mode { theme?.query = field.stringValue }
         filter()
         if case .theme(.pick) = mode { select(0); themeStatus() }

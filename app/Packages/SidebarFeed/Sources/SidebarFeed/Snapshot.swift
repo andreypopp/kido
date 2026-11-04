@@ -17,7 +17,6 @@ public struct Snapshot: Equatable, Sendable {
     public var client: Position
     public var serverInstance: ServerInstance
     public var sessions: [SessionNodes]
-
     public init(client: Position, serverInstance: ServerInstance, sessions: [SessionNodes]) {
         self.client = client
         self.serverInstance = serverInstance
@@ -104,8 +103,10 @@ public struct Item: Equatable, Sendable {
     public var recordsSeen: Bool
     // The pi agent has an inbox, so a prompt reaches it.
     public var inbox: Bool
+    // Where the pane works, when not on the host.
+    public var runtime: RuntimeMark?
     public init(id: PaneID, window: WindowID, title: String, lifecycle: Lifecycle, program_status: ProgramStatus, run: String?, started: Date?,
-                children: [Node], mark: KoSchema.Mark, recordsSeen: Bool = false, inbox: Bool = false) {
+                children: [Node], mark: KoSchema.Mark, recordsSeen: Bool = false, inbox: Bool = false, runtime: RuntimeMark? = nil) {
         self.id = id
         self.window = window
         self.title = title
@@ -117,6 +118,7 @@ public struct Item: Equatable, Sendable {
         self.mark = mark
         self.recordsSeen = recordsSeen
         self.inbox = inbox
+        self.runtime = runtime
     }
 }
 

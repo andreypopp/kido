@@ -697,6 +697,13 @@ export interface components {
             pane: components["schemas"]["PaneId"];
             /** @constant */
             type: "inbox";
+        } | ({
+            /** @constant */
+            type: "runtime";
+        } & components["schemas"]["ClientRuntime"]) | {
+            name: components["schemas"]["RuntimeName"];
+            /** @constant */
+            type: "runtime_deleted";
         };
         ClientId: string;
         /** @enum {string} */
@@ -723,6 +730,13 @@ export interface components {
             id: number;
             /** @constant */
             type: "clipboard_answer";
+        };
+        /** @description What a client needs of a runtime to mark its panes and offer it for a new pane. */
+        ClientRuntime: {
+            color?: components["schemas"]["RuntimeColor"];
+            kind: components["schemas"]["RuntimeKind"];
+            name: components["schemas"]["RuntimeName"];
+            state: components["schemas"]["LinkState"];
         };
         ClipboardContent: {
             data: components["schemas"]["Base64"];
@@ -1378,7 +1392,11 @@ export interface components {
             runtime?: components["schemas"]["RuntimeName"];
             startedAt: components["schemas"]["Timestamp"];
         };
+        /** @description An sRGB colour as #rrggbb. */
+        RuntimeColor: string;
+        /** @description What a client needs of a runtime to mark its panes and offer it for a new pane. */
         RuntimeInfo: {
+            color?: components["schemas"]["RuntimeColor"];
             cwd?: components["schemas"]["AbsPath"];
             kind: components["schemas"]["RuntimeKind"];
             name: components["schemas"]["RuntimeName"];
@@ -1626,6 +1644,8 @@ export interface components {
             instance: components["schemas"]["Instance"];
             limits: components["schemas"]["Limits"];
             now: number;
+            /** @description The configured runtimes in configuration order, with their link states. */
+            runtimes: components["schemas"]["ClientRuntime"][];
         };
         Window: {
             cell_px?: components["schemas"]["CellPixels"];

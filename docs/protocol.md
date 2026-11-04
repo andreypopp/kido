@@ -191,9 +191,9 @@ does not pass unseen.
 or terminal client process. The client's first message is its hello:
 kind, name, what it currently shows, focus, size and
 whether it takes part in sizing. The server answers with the
-`Welcome` event, which carries the client's id and the terminal
-limits, then the full layout document with every pane's row (section
-7), then events
+`Welcome` event, which carries the client's id, the terminal
+limits and the runtimes with their link states (section 15), then the
+full layout document with every pane's row (section 7), then events
 (section 6). Later the client sends a selection, a relative switch, a size, a
 focus change or a clipboard answer, all on this connection.
 A size has at least one column and row and at most
@@ -517,7 +517,8 @@ change, with the rows of the panes that the change adds (section 7);
 a window's new `focus` when only the focus changed (section 7); a
 pane's title, pwd, foreground, status, variable, death, bell,
 notification, progress and message stream (`inbox`, section 7); a pane's clipboard write and clipboard
-read (section 9), a run's outcome (section 10), and this client's
+read (section 9), a run's outcome (section 10), a runtime's entry and
+its removal (section 15), and this client's
 own state when a `switch` or a removal moved it. The OSC 133 steps
 and the OSC 7501 records reach a client only through `status`.
 
@@ -1155,7 +1156,7 @@ runtime and its agent scope; a hidden pane is `refused`, not
 views, search, `PUT /layout` and the `/runtimes` routes among them.
 
 **The `/runtimes` routes** are the host's. `GET /runtimes` lists the
-configured runtimes with their link state, the effective `paths`,
+configured runtimes with their link state, the `color`, the effective `paths`,
 the default `cwd` and `pi`, where an agent's pi runs; `GET
 /runtimes/NAME` one. `GET /runtimes/NAME/wait` is a long poll of the runtime's own
 pane wrappers until the link is `Up` or `Failed`; its reply names the
@@ -1167,6 +1168,23 @@ exec sessions unless `force`, which removes the panes first.
 `DELETE /runtimes/NAME` refuses in the same way and also removes the
 runtime's directory. The server takes an idle runtime down on its own
 (design-runtimes.md, "Down").
+
+**Clients** learn the runtimes from `/client`, not from a pane row:
+the row carries only the pane's `runtime` name (decided 2026-11-03).
+The `Welcome` lists every runtime as a `ClientRuntime` (name, kind,
+the configured `color` and the link state), in name order. A `runtime`
+event carries a whole entry when one is added or its kind, colour or
+link state changes, and the client replaces its entry by name or adds
+it; `runtime_deleted` names a runtime that left the configuration and
+has no live link. The server reads the configuration file on each
+request that needs it, not on a change of the file, so an edit shows
+in these events after the next such request (`GET /runtimes`, or a new
+pane). A runtime that leaves the file while its link is `Starting` or
+`Up` stays listed until the link ends. The registry keeps the one list
+that it last announced and compares each read and each state change
+with it, so every client hears each change once, in order with the
+other events. The colour is for display only: `ko panes`, the
+rows and `list_agents` do not carry it.
 
 **The exec session**, `GET /runtimes/NAME/exec`, is a WebSocket of
 JSON text messages that runs one command in the runtime without a

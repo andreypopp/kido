@@ -196,6 +196,17 @@
     "Runtime": {
       "type": "object",
       "properties": {
+        "color": {
+          "description": "How clients draw the runtime. Default: a colour that each client derives from the name.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeColor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "cwd": {
           "description": "The directory inside the runtime for a pane whose request names none that maps.",
           "anyOf": [
@@ -273,6 +284,11 @@
           ]
         }
       ]
+    },
+    "RuntimeColor": {
+      "description": "An sRGB colour as #rrggbb.",
+      "type": "string",
+      "pattern": "^#[0-9A-Fa-f]{6}$"
     },
     "RuntimePi": {
       "description": "Where an agent's pi runs when it works in a runtime.",

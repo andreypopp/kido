@@ -53,6 +53,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private var rendering = false
 
     private var items: [SidebarRow] = []
+    // A runtime's swatch takes its colour for the terminal's light or dark theme, not the sidebar's own.
+    var terminalDark = false { didSet { if terminalDark != oldValue { table.reloadData() } } }
     private func entry(_ row: Int) -> SidebarRow? { items.indices.contains(row) ? items[row] : nil }
 
     var newSession: () -> Void = {}
@@ -572,6 +574,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
                 resizeRows([index])
             }
         }
+        cell.terminalDark = terminalDark
         cell.configure(item)
         cell.close.invoke = { [weak self] in self?.closePane(item) }
         cell.addWindow.invoke = { [weak self] in self?.newWindow(item.id.session) }

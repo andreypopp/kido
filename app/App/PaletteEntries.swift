@@ -1,10 +1,12 @@
 import AppKit
+import KoModel
 import SidebarFeed
 import PaneGeometry
 
 struct PaletteEntry {
     enum ID: Equatable {
         case pane(Snapshot.Position), host(String), command(Int), connectTyped, clearRecent, theme(String), themeUse(Int)
+        case runtime(String?), runtimeOpen(Int)
     }
     let id: ID
     var order = 0
@@ -15,6 +17,13 @@ struct PaletteEntry {
     var symbol: String?
     var theme: ThemeRow?
     var radio: Bool { if case .themeUse = id { true } else { false } }
+    // A runtime row has its swatch in the icon slot, its detail at the right, and a failed link's message in red, cut
+    // at 300pt. A row of the runtime step has its detail after the title and the return key when selected.
+    var swatch: RuntimeMark?
+    var detailAtRight: Bool { if case .runtime = id { true } else { false } }
+    var inline: Bool { if case .runtimeOpen = id { true } else { false } }
+    var cutDetail: String? { swatch?.failure }
+    var failed: Bool { cutDetail != nil }
     var agent = false
     var promptable = false
     var check: @MainActor () -> String? = { nil }
@@ -39,6 +48,39 @@ struct PaletteEntry {
             guard let target = row.topLevel else { return nil }
             return PaletteEntry(id: .pane(target), title: row.title, detail: (host + [session]).joined(separator: " › "), status: row.status, agent: row.agent, promptable: reachable.contains(target.pane), check: { resolve(row) == nil ? "That pane is gone" : nil }, operation: .run { let owner = resolve(row); owner?.reveal(); owner?.perform(.jump(target)) })
         }
+    }
+
+    // `Host` when the pane in focus runs in a runtime, then one row for each runtime of the server.
+    @MainActor static func runtimes(_ owner: WindowOwner) -> [PaletteEntry] {
+        guard owner.canNavigate else { return [] }
+        let host: [PaletteEntry] = owner.focusedRuntime == nil ? [] : [
+            PaletteEntry(id: .runtime(nil), title: "Host", detail: "this Mac", symbol: "desktopcomputer", operation: .enter(.runtime(nil)))
+        ]
+        return host + owner.runtimes.map { runtime in
+            let mark = RuntimeMark(runtime)
+            let detail = ["\(runtime.kind.rawValue)", mark.stateWord, mark.failure].compactMap { $0 }.joined(separator: " · ")
+            return PaletteEntry(id: .runtime(runtime.name), title: "Runtime: " + runtime.name, detail: detail, swatch: mark, operation: .enter(.runtime(mark)))
+        }
+    }
+
+    // The ways to open a pane in a runtime. The splits need a live pane in focus, as the split commands do.
+    @MainActor static func runtimeStep(_ mark: RuntimeMark?, owner: WindowOwner?, responder: NSResponder?) -> [PaletteEntry] {
+        guard let owner, owner.canNavigate else { return [] }
+        let target: NewPaneRuntime = mark.map { .named($0.name) } ?? .host
+        var rows = [PaletteEntry(id: .runtimeOpen(0), title: "New Window", detail: "in session " + (owner.snapshot?.sessions.first { $0.current }?.name ?? ""),
+                                 check: { [weak owner] in owner?.canNavigate == true ? nil : "Not available now" },
+                                 operation: .run { [weak owner] in owner?.newWindow(in: nil, target) })]
+        if let pane = livePane(owner, responder) {
+            for (index, (title, detail, side)) in [("Split Right", "beside the focused pane", Side.right), ("Split Down", "below the focused pane", Side.down)].enumerated() {
+                rows.append(PaletteEntry(id: .runtimeOpen(index + 1), title: title, detail: detail,
+                                         check: { [weak owner, weak pane] in owner?.canNavigate == true && pane?.window === owner?.window ? nil : "Not available now" },
+                                         operation: .run { [weak owner, weak pane] in
+                    guard let owner, let pane else { return }
+                    owner.paneCommand(.split(side), pane.pane, target)
+                }))
+            }
+        }
+        return rows
     }
 
     private enum Scope { case always, window, pane }
@@ -156,7 +198,7 @@ extension AppDelegate {
     func paletteEntries(owner: WindowOwner?, responder: NSResponder?) -> [PaletteEntry] {
         let open = owners.filter(\.alive)
         let hosts = routes.recent.entries.map(\.host).filter { alias in !open.contains { $0.host == .remote(alias) } }
-        return (owner.map { PaletteEntry.panes($0) } ?? [])
+        return (owner.map { PaletteEntry.panes($0) + PaletteEntry.runtimes($0) } ?? [])
             + hosts.map { hostEntry($0, detail: "Connect") }
             + (NSApp.mainMenu.map { PaletteEntry.commands($0, owner: owner, responder: responder) } ?? [])
     }

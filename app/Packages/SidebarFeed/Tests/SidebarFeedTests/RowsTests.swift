@@ -263,3 +263,23 @@ func elapsed(_ seconds: Int, _ expected: String) {
     #expect(zip(before, after).filter { $0 != $1 }.count == 1)
     #expect(makeSnapshot([pane(0)]) != makeSnapshot([pane(0)], instance: "1/1780000000"))
 }
+
+@Test func aNestedRowOmitsItsRuntimeWhenItIsTheOneOfThePaneRowAboveAndTheTopLevelAlwaysShowsIt() {
+    func mark(_ name: String, routed: Bool = false, state: KoSchema.LinkState = .up) -> RuntimeMark {
+        RuntimeMark(name: name, kind: .ssh, color: nil, state: state, routed: routed)
+    }
+    func item(_ id: Int, _ runtime: RuntimeMark?, _ children: [Node] = []) -> Node {
+        guard case .item(var item) = pane(id, title: "pane-\(id)", children: children) else { preconditionFailure() }
+        item.runtime = runtime
+        return .item(item)
+    }
+    let tree = item(0, mark("buildbox"), [
+        item(1, mark("buildbox", routed: true)),
+        item(2, mark("py311"), [item(3, mark("py311")), item(4, nil, [item(5, mark("buildbox"))])]),
+        item(6, nil),
+    ])
+    let rows = sidebarRows(makeSnapshot([tree, item(7, mark("buildbox", state: .starting))])).filter { $0.target != nil }
+    #expect(rows.map { $0.target?.pane.number } == Array(0...7))
+    #expect(rows.map { $0.runtime?.name } == ["buildbox", nil, "py311", nil, nil, "buildbox", nil, "buildbox"])
+    #expect(rows.last?.runtime?.state == .starting)
+}

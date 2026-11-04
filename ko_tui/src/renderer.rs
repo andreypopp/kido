@@ -151,6 +151,13 @@ fn draw_ui(l: &Layout) -> Vec<Cell> {
                 (&line.lead, Style::default()),
                 (mark, style),
                 (&line.title, Style::default()),
+                (
+                    &line.runtime,
+                    Style {
+                        attrs: Attributes::default().with(Attribute::Dim),
+                        ..Style::default()
+                    },
+                ),
             ],
         );
     }
@@ -285,6 +292,7 @@ mod tests {
             lead: format!("{number} "),
             mark: Mark::None,
             title: title.to_owned(),
+            runtime: String::new(),
             selected,
         }
     }

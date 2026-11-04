@@ -596,6 +596,41 @@
               "inbox"
             ],
             "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ClientRuntime"
+              }
+            ],
+            "description": "A runtime was added to the list, or its kind, colour or link state changed.",
+            "properties": {
+              "type": {
+                "const": "runtime",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A runtime left the configuration and has no live link.",
+            "properties": {
+              "name": {
+                "$ref": "#/components/schemas/RuntimeName"
+              },
+              "type": {
+                "const": "runtime_deleted",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "name"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -726,6 +761,29 @@
             "type": "object"
           }
         ]
+      },
+      "ClientRuntime": {
+        "description": "What a client needs of a runtime to mark its panes and offer it for a new pane.",
+        "properties": {
+          "color": {
+            "$ref": "#/components/schemas/RuntimeColor"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/RuntimeKind"
+          },
+          "name": {
+            "$ref": "#/components/schemas/RuntimeName"
+          },
+          "state": {
+            "$ref": "#/components/schemas/LinkState"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "state"
+        ],
+        "type": "object"
       },
       "ClipboardContent": {
         "properties": {
@@ -3165,8 +3223,17 @@
         ],
         "type": "object"
       },
+      "RuntimeColor": {
+        "description": "An sRGB colour as #rrggbb.",
+        "pattern": "^#[0-9A-Fa-f]{6}$",
+        "type": "string"
+      },
       "RuntimeInfo": {
+        "description": "What a client needs of a runtime to mark its panes and offer it for a new pane.",
         "properties": {
+          "color": {
+            "$ref": "#/components/schemas/RuntimeColor"
+          },
           "cwd": {
             "$ref": "#/components/schemas/AbsPath"
           },
@@ -4073,13 +4140,21 @@
           "now": {
             "minimum": 0,
             "type": "integer"
+          },
+          "runtimes": {
+            "description": "The configured runtimes in configuration order, with their link states.",
+            "items": {
+              "$ref": "#/components/schemas/ClientRuntime"
+            },
+            "type": "array"
           }
         },
         "required": [
           "client",
           "limits",
           "instance",
-          "now"
+          "now",
+          "runtimes"
         ],
         "type": "object"
       },

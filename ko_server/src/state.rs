@@ -1443,6 +1443,11 @@ impl State {
 
     fn client_text(&mut self, poll: &mut Poll, index: usize, text: &[u8]) {
         let request = protocol::decode::<ClientRequest>(text);
+        let runtimes = if matches!(request, Ok(ClientRequest::Hello(_))) {
+            self.client_runtimes()
+        } else {
+            Vec::new()
+        };
         let State {
             document,
             conns,
@@ -1478,6 +1483,7 @@ impl State {
                     limits: Limits::of(self.config.limits, &self.config.media),
                     instance: self.instance.clone(),
                     now: ko_sys::clock::Mono::now().nanos(),
+                    runtimes,
                 });
                 wire.ws.send(wire.out, protocol::json(&welcome));
                 let announced =
@@ -1630,6 +1636,7 @@ impl State {
     }
 
     fn settle(&mut self, poll: &mut Poll) {
+        self.announce_runtimes();
         let mut client_closed = false;
         loop {
             for conn in &mut self.conns {

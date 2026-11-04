@@ -280,7 +280,7 @@ impl VarName {
         }
     }
 
-    pub(crate) const fn known(name: &'static str) -> VarName {
+    pub const fn known(name: &'static str) -> VarName {
         VarName(Cow::Borrowed(name))
     }
 

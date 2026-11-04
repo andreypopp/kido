@@ -3,9 +3,9 @@ import KoModel
 
 extension Snapshot {
     /// The sidebar tree of the model, in the core's outline. Nil when the model holds no pane.
-    public init?(model: KoModel) {
+    public init?(model: KoModel, marks: [PaneID: RuntimeMark]? = nil) {
         guard let (session, window, pane) = model.current else { return nil }
-        let projection = Projection(model)
+        let projection = Projection(model, marks: marks ?? model.runtimeMarks)
         self.init(client: Position(session: session.id, window: window.id, pane: pane), serverInstance: ServerInstance(model.instance),
                   sessions: projection.sessions(current: session.id))
     }
@@ -15,9 +15,11 @@ private struct Projection {
     let model: KoModel
     let panes: [PaneID: KoSchema.PaneJson]
     let windows: [WindowID: KoSchema.Window]
+    let marks: [PaneID: RuntimeMark]
 
-    init(_ model: KoModel) {
+    init(_ model: KoModel, marks: [PaneID: RuntimeMark]) {
         self.model = model
+        self.marks = marks
         panes = Dictionary(model.panes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         windows = Dictionary(model.layout.layout.windows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
@@ -74,7 +76,8 @@ private struct Projection {
             program_status: programStatus(pane.status?.programStatus),
             run: run?.id,
             started: pane.dead == nil && run?.outcome == nil ? run.flatMap { Self.wallClock($0.startedAt) } : nil,
-            children: children, mark: pane.mark, recordsSeen: pane.recordsSeen, inbox: pane.inbox == true)
+            children: children, mark: pane.mark, recordsSeen: pane.recordsSeen, inbox: pane.inbox == true,
+            runtime: marks[entry.id])
     }
 
     private func lifecycle(_ pane: KoSchema.PaneJson) -> Lifecycle {

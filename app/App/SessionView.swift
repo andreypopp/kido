@@ -51,6 +51,8 @@ final class SessionView: NSView {
     let runtime: GhosttyRuntime
     var canPrompt: () -> Bool = { false }
     var onPrompt: (PaneView, String?) -> Void = { _, _ in }
+    // Where the panes run, from the model.
+    private(set) var marks: [PaneID: RuntimeMark] = [:]
     // The current session's windows, and the hot windows of other sessions.
     private(set) var windows: [WindowID: WindowView] = [:]
     private var others: [WindowID: WindowView] = [:]
@@ -91,9 +93,12 @@ final class SessionView: NSView {
     }
 
     // The windows of the current session, the ids of every window of the server, and the client's selected pane.
-    func update(_ listing: [KoSchema.Window], alive: Set<WindowID>, selected: PaneID?) {
+    func update(_ listing: [KoSchema.Window], alive: Set<WindowID>, selected: PaneID?, marks: [PaneID: RuntimeMark]) {
         updating = true
         defer { updating = false }
+        let marked = self.marks
+        self.marks = marks
+        let changed = Set(marked.keys).union(marks.keys).filter { marked[$0] != marks[$0] }
         let old = windows.merging(others) { $1 }
         windows = [:]
         for w in listing {
@@ -113,6 +118,7 @@ final class SessionView: NSView {
         others = old.filter { windows[$0.key] == nil && $0.value.hot && alive.contains($0.key) }
         for (id, gone) in old where windows[id] == nil && others[id] == nil { gone.close() }
         recent.removeAll { windows[$0] == nil && others[$0] == nil }
+        if !changed.isEmpty { (Array(windows.values) + Array(others.values)).forEach { $0.marksChanged(changed, banded: Set(marked.keys) != Set(marks.keys)) } }
     }
 
     func editsSettled() {

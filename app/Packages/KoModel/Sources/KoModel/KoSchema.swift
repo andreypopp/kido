@@ -225,6 +225,19 @@ public enum KoSchema {
 
     public typealias Cells = Int
 
+    public struct ClientRuntime: Codable, Equatable, Sendable {
+        public var color: RuntimeColor?
+        public var kind: RuntimeKind
+        public var name: RuntimeName
+        public var state: LinkState
+        public init(color: RuntimeColor? = nil, kind: RuntimeKind, name: RuntimeName, state: LinkState) {
+            self.color = color
+            self.kind = kind
+            self.name = name
+            self.state = state
+        }
+    }
+
     public enum Close: String, Codable, Equatable, Sendable {
         case keep
         case onExit = "on_exit"
@@ -916,6 +929,42 @@ public enum KoSchema {
         }
     }
 
+    public enum LinkState: Codable, Equatable, Sendable {
+        case down
+        case starting
+        case up
+        case failed(LinkStateFailed)
+        private enum Tag: String, CodingKey { case type = "type" }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: Tag.self)
+            switch try container.decode(String.self, forKey: .type) {
+            case "down": self = .down
+            case "starting": self = .starting
+            case "up": self = .up
+            case "failed": self = .failed(try LinkStateFailed(from: decoder))
+            case let other: throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "unknown LinkState \(other)")
+            }
+        }
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: Tag.self)
+            switch self {
+            case .down: try container.encode("down", forKey: .type)
+            case .starting: try container.encode("starting", forKey: .type)
+            case .up: try container.encode("up", forKey: .type)
+            case .failed(let value):
+                try container.encode("failed", forKey: .type)
+                try value.encode(to: encoder)
+            }
+        }
+    }
+
+    public struct LinkStateFailed: Codable, Equatable, Sendable {
+        public var message: String
+        public init(message: String) {
+            self.message = message
+        }
+    }
+
     public enum Live: Codable, Equatable, Sendable {
         case terminal(Shell)
         case someAgent(LiveSomeAgent)
@@ -991,12 +1040,14 @@ public enum KoSchema {
         public var layout: Snapshot
         public var outline: [Item]
         public var panes: [PaneJson]
+        public var runtimes: [ClientRuntime]
         public var selection: Selection
-        public init(instance: String, layout: Snapshot, outline: [Item], panes: [PaneJson], selection: Selection) {
+        public init(instance: String, layout: Snapshot, outline: [Item], panes: [PaneJson], runtimes: [ClientRuntime], selection: Selection) {
             self.instance = instance
             self.layout = layout
             self.outline = outline
             self.panes = panes
+            self.runtimes = runtimes
             self.selection = selection
         }
     }
@@ -1083,6 +1134,7 @@ public enum KoSchema {
         public var mark: Mark
         public var parent: PaneId?
         public var pid: Int?
+        public var place: Place?
         public var progress: Progress?
         public var recordsSeen: Bool
         public var run: RunRow?
@@ -1090,7 +1142,7 @@ public enum KoSchema {
         public var status: PaneStatus?
         public var title: String
         public var vars: [String: JSONValue]
-        public init(close: Close? = nil, command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, inbox: Bool? = nil, label: String, mark: Mark, parent: PaneId? = nil, pid: Int? = nil, progress: Progress? = nil, recordsSeen: Bool, run: RunRow? = nil, runtime: RuntimeName? = nil, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
+        public init(close: Close? = nil, command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, inbox: Bool? = nil, label: String, mark: Mark, parent: PaneId? = nil, pid: Int? = nil, place: Place? = nil, progress: Progress? = nil, recordsSeen: Bool, run: RunRow? = nil, runtime: RuntimeName? = nil, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
             self.close = close
             self.command = command
             self.cwd = cwd
@@ -1102,6 +1154,7 @@ public enum KoSchema {
             self.mark = mark
             self.parent = parent
             self.pid = pid
+            self.place = place
             self.progress = progress
             self.recordsSeen = recordsSeen
             self.run = run
@@ -1122,6 +1175,7 @@ public enum KoSchema {
             case mark
             case parent
             case pid
+            case place
             case progress
             case recordsSeen = "records_seen"
             case run
@@ -1213,6 +1267,45 @@ public enum KoSchema {
         public init(fullscreen: Bool, origin: Origin) {
             self.fullscreen = fullscreen
             self.origin = origin
+        }
+    }
+
+    public enum Place: Codable, Equatable, Sendable {
+        case pane(PlacePane)
+        case routed(PlaceRouted)
+        private enum Tag: String, CodingKey { case type = "type" }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: Tag.self)
+            switch try container.decode(String.self, forKey: .type) {
+            case "pane": self = .pane(try PlacePane(from: decoder))
+            case "routed": self = .routed(try PlaceRouted(from: decoder))
+            case let other: throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "unknown Place \(other)")
+            }
+        }
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: Tag.self)
+            switch self {
+            case .pane(let value):
+                try container.encode("pane", forKey: .type)
+                try value.encode(to: encoder)
+            case .routed(let value):
+                try container.encode("routed", forKey: .type)
+                try value.encode(to: encoder)
+            }
+        }
+    }
+
+    public struct PlacePane: Codable, Equatable, Sendable {
+        public var name: RuntimeName
+        public init(name: RuntimeName) {
+            self.name = name
+        }
+    }
+
+    public struct PlaceRouted: Codable, Equatable, Sendable {
+        public var name: RuntimeName
+        public init(name: RuntimeName) {
+            self.name = name
         }
     }
 
@@ -1504,6 +1597,14 @@ public enum KoSchema {
             self.runtime = runtime
             self.startedAt = startedAt
         }
+    }
+
+    public typealias RuntimeColor = String
+
+    public enum RuntimeKind: String, Codable, Equatable, Sendable {
+        case ssh
+        case command
+        case container
     }
 
     public typealias RuntimeName = String

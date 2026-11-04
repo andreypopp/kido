@@ -227,7 +227,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
         session.paneCommand = { [weak self] command, pane in
             guard let self, let window = koModel?.layout.layout.locate(pane)?.window,
-                  let action = command.action(pane, in: window, cwd: nil, cell: session.cell ?? .zero) else { return }
+                  let action = command.action(pane, in: window, new: KoSchema.CreatePane(), cell: session.cell ?? .zero) else { return }
             switch action {
             case .edit(let edit):
                 editor.submit(edit) { result in
@@ -261,7 +261,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         model = SessionModel(next)
         let windows = next.layout.layout.windows
         session.update(model.session.flatMap { next.layout.layout.session($0) }?.windows ?? [],
-                       alive: Set(windows.map(\.id)), selected: next.selection.pane)
+                       alive: Set(windows.map(\.id)), selected: next.selection.pane, marks: next.runtimeMarks)
         session.show(model.window)
         (window.contentViewController as? Sidebar)?.tabs.entries = model.navigation(Snapshot(model: next), activePanes: session.windows.compactMapValues(\.active)).tabs
     }

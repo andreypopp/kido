@@ -458,9 +458,13 @@ impl Client {
                     .map(|(row, _)| row),
                 _ => None,
             },
-            sidebar: sidebar::lines(self.pane(), &outline, &self.model.panes, |pane| {
-                self.model.mark(pane)
-            }),
+            sidebar: sidebar::lines(
+                self.pane(),
+                &outline,
+                &self.model.panes,
+                |pane| self.model.mark(pane),
+                (&self.model.runtimes, |pane| self.model.place(pane)),
+            ),
         }
     }
 
@@ -560,7 +564,13 @@ impl Client {
             &self.socket,
             (Some(self.model.client), None),
             place,
-            &new_pane(self.remote.is_some()),
+            &CreatePane {
+                runtime: self
+                    .pane()
+                    .and_then(|pane| self.model.panes.iter().find(|shown| shown.row.id == pane))
+                    .and_then(|shown| shown.row.runtime.clone()),
+                ..new_pane(self.remote.is_some())
+            },
         )?;
         self.switch(pane)
     }

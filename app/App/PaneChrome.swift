@@ -51,6 +51,10 @@ final class PaneChrome: NSView {
     var content = CGRect.zero
     enum Treatment { case plain, edge, overlay }
     var treatment = Treatment.plain { didSet { if treatment != oldValue { needsDisplay = true } } }
+    // Where the pane runs: its stripe is the top band of the chrome, over the top side of the focus edge.
+    static let stripeBand: CGFloat = 3
+    var runtimeMark: RuntimeMark? { didSet { if runtimeMark != oldValue { needsDisplay = true } } }
+    var runtimeFocused = true { didSet { if runtimeFocused != oldValue { needsDisplay = true } } }
     var toolbarFrame: CGRect {
         NSRect(x: max(0, bounds.width - 153), y: subviews.contains { $0 is PaneFind } ? 48 : 8, width: min(145, bounds.width), height: 32)
     }
@@ -76,6 +80,27 @@ final class PaneChrome: NSView {
                 Chrome.floatingOverlay(runtime.background).setFill()
                 bounds.fill()
             }
+            if let runtimeMark { drawStripe(runtimeMark) }
+        }
+    }
+
+    // A starting runtime's stripe is dashed: 8pt of colour and 6pt at a third of it, still.
+    private func drawStripe(_ mark: RuntimeMark) {
+        let tint = Chrome.runtimeStripe(Chrome.runtimeTint(mark, dark: runtime.background.isDark), focused: runtimeFocused)
+        let band = NSRect(x: 0, y: 0, width: bounds.width, height: Self.stripeBand)
+        guard mark.state == .starting else {
+            tint.setFill()
+            return band.fill()
+        }
+        var x: CGFloat = 0
+        while x < bounds.width {
+            tint.setFill()
+            NSRect(x: x, y: 0, width: min(8, bounds.width - x), height: Self.stripeBand).fill()
+            if x + 8 < bounds.width {
+                Chrome.runtimeStripeGap(tint).setFill()
+                NSRect(x: x + 8, y: 0, width: min(6, bounds.width - x - 8), height: Self.stripeBand).fill()
+            }
+            x += 14
         }
     }
     override func viewDidChangeEffectiveAppearance() {

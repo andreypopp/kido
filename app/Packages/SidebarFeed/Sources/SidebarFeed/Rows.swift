@@ -26,6 +26,8 @@ public struct SidebarRow: Equatable, Sendable {
     public var height: Double
     public let title: String
     public var tail: String
+    // The runtime after the title; a nested row omits the one of the pane row above it.
+    public var runtime: RuntimeMark?
     public let status: Status
     public var indicatorDescription = ""
     public let started: Date?
@@ -148,7 +150,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                 offset += rows[index].height
             }
         }
-        func windows(_ nodes: [Node], depth: Int, root: WindowID?) {
+        func windows(_ nodes: [Node], depth: Int, root: WindowID?, above: String? = nil) {
             for node in nodes {
                 let root = root ?? node.window
                 let start = rows.count
@@ -165,7 +167,8 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                     rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
                                            height: height,
                                            title: title,
-                                           tail: tail, status: status, indicatorDescription: description,
+                                           tail: tail, runtime: item.runtime.flatMap { $0.name == above ? nil : $0 },
+                                           status: status, indicatorDescription: description,
                                            started: item.started,
                                            focused: target == snapshot.client,
                                            quietShell: quietShell,
@@ -208,7 +211,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                         }
                     }
                     if !item.children.isEmpty {
-                        windows(item.children, depth: depth + 1, root: root)
+                        windows(item.children, depth: depth + 1, root: root, above: item.runtime?.name)
                     }
                     if rows.count > parent + 1 {
                         guide(parent, x: rows[parent].indicatorX, topInset: 22)

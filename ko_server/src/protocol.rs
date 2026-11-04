@@ -1519,6 +1519,18 @@ pub struct Welcome {
     pub limits: Limits,
     pub instance: Instance,
     pub now: u64,
+    /// The configured runtimes in configuration order, with their link states.
+    pub runtimes: Vec<ClientRuntime>,
+}
+
+/// What a client needs of a runtime to mark its panes and offer it for a new pane.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ClientRuntime {
+    pub name: RuntimeName,
+    pub kind: RuntimeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<RuntimeColor>,
+    pub state: LinkState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1608,6 +1620,12 @@ pub enum ClientEvent {
     Inbox {
         pane: PaneId,
         inbox: bool,
+    },
+    /// A runtime was added to the list, or its kind, colour or link state changed.
+    Runtime(ClientRuntime),
+    /// A runtime left the configuration and has no live link.
+    RuntimeDeleted {
+        name: RuntimeName,
     },
 }
 
@@ -2287,6 +2305,13 @@ mod tests {
         same::<StreamRequest>(r#"{"type":"ack","id":"abcdefgh"}"#);
         same::<StreamRequest>(r#"{"type":"refuse","id":"abcdefgh"}"#);
         same::<ClientEvent>(r#"{"type":"inbox","pane":"pane_3","inbox":true}"#);
+        same::<ClientEvent>(
+            r#"{"type":"runtime","name":"gpu-1","kind":"ssh","state":{"type":"failed","message":"refused"}}"#,
+        );
+        same::<ClientEvent>(r#"{"type":"runtime_deleted","name":"gpu-1"}"#);
+        same::<ClientEvent>(
+            r##"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":1,"kitty_images_max_bytes":1,"continuation_max_bytes":1},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":1,"runtimes":[{"name":"buildbox","kind":"ssh","color":"#d08a2a","state":{"type":"up"}},{"name":"e2e","kind":"command","state":{"type":"starting"}}]}"##,
+        );
         for bad in [
             r#"{"id":"abcdefg","kind":"message","text":"x"}"#,
             r#"{"id":"abcdefgh","kind":"user","text":"x"}"#,
@@ -2349,10 +2374,10 @@ mod tests {
             same::<ViewRequest>(json);
         }
         for json in [
-            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":50000000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789}"#,
-            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":["file","temp_file","shared_mem"]},"instance":"0123456789abcdef0123456789abcdef","now":123456789}"#,
-            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":83886080,"max_lines":5000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789}"#,
-            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789}"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":50000000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789,"runtimes":[]}"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":["file","temp_file","shared_mem"]},"instance":"0123456789abcdef0123456789abcdef","now":123456789,"runtimes":[]}"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":83886080,"max_lines":5000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789,"runtimes":[]}"#,
+            r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789,"runtimes":[]}"#,
             r#"{"type":"layout","revision":3,"layout":{"sessions":[{"id":"session_1","name":"s","vars":{"a":1},"windows":[{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"cell_px":{"width":8,"height":16},"zoom":"pane_1","focus":"pane_2","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"pane":"pane_2","cols":39,"rows":24}]},"floats":[{"pane":"pane_3","x":6,"y":4,"cols":28,"rows":8,"z":0,"border":false,"title":""}]}]}]},"panes":[{"id":"pane_3","pid":7,"command":["/bin/sh"],"cwd":"/tmp","title":"t","dead":null,"foreground":{"pid":7,"name":"sh"},"run":{"id":"0123456789abcdef0123456789abcdef","name":"w","pane":"pane_3","argv":["/bin/sh"],"cwd":"/tmp","startedAt":"2023-11-14T22:13:20Z"},"vars":{}}]}"#,
             r#"{"type":"layout","revision":0,"layout":{"sessions":[]},"panes":[]}"#,
             r#"{"type":"foreground","pane":"pane_3","foreground":{"pid":7,"name":"sh"}}"#,
@@ -2722,6 +2747,63 @@ mod tests {
     }
 }
 
+/// An sRGB colour as `#rrggbb`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct RuntimeColor(String);
+
+impl JsonSchema for RuntimeColor {
+    fn schema_name() -> Cow<'static, str> {
+        "RuntimeColor".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "type": "string",
+            "pattern": "^#[0-9A-Fa-f]{6}$",
+            "description": "An sRGB colour as #rrggbb."
+        })
+    }
+}
+
+impl TryFrom<String> for RuntimeColor {
+    type Error = &'static str;
+
+    fn try_from(text: String) -> Result<RuntimeColor, &'static str> {
+        let valid = text.len() == 7
+            && text.starts_with('#')
+            && text[1..].bytes().all(|byte| byte.is_ascii_hexdigit());
+        if valid {
+            Ok(RuntimeColor(text))
+        } else {
+            Err("invalid color: expected #rrggbb")
+        }
+    }
+}
+
+impl From<RuntimeColor> for String {
+    fn from(RuntimeColor(text): RuntimeColor) -> String {
+        text
+    }
+}
+
+#[cfg(test)]
+mod runtime_color_tests {
+    use super::RuntimeColor;
+
+    #[test]
+    fn a_runtime_color_is_a_hash_and_six_hex_digits() {
+        for good in ["#000000", "#d08a2a", "#D08A2A"] {
+            assert!(RuntimeColor::try_from(good.to_owned()).is_ok(), "{good}");
+        }
+        for bad in [
+            "", "#abc", "d08a2a", "#d08a2", "#d08a2ab", "#gggggg", "red", "#é08a2a",
+        ] {
+            assert!(RuntimeColor::try_from(bad.to_owned()).is_err(), "{bad}");
+        }
+    }
+}
+
 /// An absolute path, as the runtime configuration and the API name it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -2800,9 +2882,8 @@ pub enum LinkState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeInfo {
-    pub name: RuntimeName,
-    pub kind: RuntimeKind,
-    pub state: LinkState,
+    #[serde(flatten)]
+    pub runtime: ClientRuntime,
     /// The panes of the document that the runtime runs, dead ones included.
     pub panes: u32,
     /// The path of the runtime's listener on the host, bound while the link is up.
