@@ -1,5 +1,8 @@
+use std::time::{Duration, Instant};
+
+use ko_client::edit::Edge;
 use ko_server::ids::PaneId;
-use ko_server::protocol::{Direction, Over};
+use ko_server::protocol::{Axis, Direction, Over};
 
 use crate::input::{KeyEvent, Kind, Name};
 
@@ -19,6 +22,7 @@ pub(crate) enum Kill {
 pub(crate) enum State {
     Normal,
     Prefix,
+    Repeat { until: Instant },
     Help,
     Rename { of: Rename, text: String },
     Confirm(Kill),
@@ -35,6 +39,7 @@ pub(crate) enum Action {
     Switch(Over, Direction),
     LastSession,
     LastWindow,
+    Pane(PaneCommand),
     Window(u32),
     Chooser,
     Choose(Direction),
@@ -50,15 +55,23 @@ pub(crate) enum Step {
     Swallow,
 }
 
-pub(crate) const HELP: [&str; 17] = [
+pub(crate) const HELP: [&str; 25] = [
     "C-a C-a  send C-a to the pane",
     "d        detach",
     "r        redraw",
     "?        this help",
     "( )      previous / next session",
     "L        last session",
+    "Tab      last window",
     "n p      next / previous window",
-    "l        last window",
+    "% / \"    split left/right / top/bottom",
+    "z        toggle zoom",
+    "o ;      next / last pane",
+    "arrows   select neighbour (repeatable)",
+    "hjkl C-hjkl select neighbour (repeatable)",
+    "C-arrows resize by 1 (repeatable)",
+    "M-arrows resize by 5 (repeatable)",
+    "{ } E    swap previous / next; equalize",
     "0-9      window by number",
     "s w      choose from the sidebar list",
     "C-s      show or hide the sidebar",
@@ -69,6 +82,77 @@ pub(crate) const HELP: [&str; 17] = [
     "&        kill window",
     "x        kill pane",
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaneSelect {
+    Next,
+    Last,
+    Edge(Edge),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Amount {
+    One,
+    Five,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaneEdit {
+    Split(Axis),
+    Zoom,
+    Resize(Edge, Amount),
+    Swap(Direction),
+    Equalize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaneCommand {
+    Select(PaneSelect),
+    Edit(PaneEdit),
+}
+
+fn repeatable(event: &KeyEvent) -> Option<PaneCommand> {
+    let arrow = match event.name {
+        Name::Left => Some(Edge::Left),
+        Name::Down => Some(Edge::Bottom),
+        Name::Up => Some(Edge::Top),
+        Name::Right => Some(Edge::Right),
+        _ => None,
+    };
+    if let Some(edge) = arrow {
+        return if event.mods.only_ctrl() {
+            Some(PaneCommand::Edit(PaneEdit::Resize(edge, Amount::One)))
+        } else if event.mods.only_alt() {
+            Some(PaneCommand::Edit(PaneEdit::Resize(edge, Amount::Five)))
+        } else if event.mods == Default::default() {
+            Some(PaneCommand::Select(PaneSelect::Edge(edge)))
+        } else {
+            None
+        };
+    }
+    let edge = match event.ctrl().or_else(|| event.character())? {
+        'h' => Edge::Left,
+        'j' => Edge::Bottom,
+        'k' => Edge::Top,
+        'l' => Edge::Right,
+        _ => return None,
+    };
+    Some(PaneCommand::Select(PaneSelect::Edge(edge)))
+}
+
+fn pane_command(event: &KeyEvent) -> Option<PaneCommand> {
+    Some(match event.character()? {
+        '%' => PaneCommand::Edit(PaneEdit::Split(Axis::Horizontal)),
+        '"' => PaneCommand::Edit(PaneEdit::Split(Axis::Vertical)),
+        'z' => PaneCommand::Edit(PaneEdit::Zoom),
+        'o' => PaneCommand::Select(PaneSelect::Next),
+        ';' => PaneCommand::Select(PaneSelect::Last),
+        '{' => PaneCommand::Edit(PaneEdit::Swap(Direction::Previous)),
+        '}' => PaneCommand::Edit(PaneEdit::Swap(Direction::Next)),
+        'E' => PaneCommand::Edit(PaneEdit::Equalize),
+        _ => return None,
+    })
+}
 
 #[derive(Debug)]
 pub(crate) struct Keys {
@@ -111,7 +195,21 @@ impl Keys {
         }
     }
 
-    pub(crate) fn feed(&mut self, event: &KeyEvent, dead: bool) -> Step {
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        match self.state {
+            State::Repeat { until } => Some(until),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn expire(&mut self, now: Instant) {
+        if self.deadline().is_some_and(|until| now >= until) {
+            self.end();
+        }
+    }
+
+    pub(crate) fn feed(&mut self, event: &KeyEvent, dead: bool, now: Instant) -> Step {
+        self.expire(now);
         let consumed = self.consumed.iter().position(|name| *name == event.name);
         if event.kind == Kind::Release {
             return match consumed {
@@ -125,7 +223,11 @@ impl Keys {
         }
         let step = match std::mem::replace(&mut self.state, State::Normal) {
             State::Normal => self.normal(event, dead),
-            State::Prefix => self.prefixed(event),
+            State::Prefix => self.prefixed(event, now),
+            State::Repeat { .. } => match repeatable(event) {
+                Some(command) => self.repeat(command, now),
+                None => self.normal(event, dead),
+            },
             State::Help => Step::Swallow,
             State::Rename { of, text } => self.renaming(of, text, event),
             State::Confirm(kill) => match event.character() {
@@ -155,7 +257,31 @@ impl Keys {
         }
     }
 
-    fn prefixed(&mut self, event: &KeyEvent) -> Step {
+    fn repeat(&mut self, command: PaneCommand, now: Instant) -> Step {
+        self.state = State::Repeat {
+            until: now + Duration::from_millis(500),
+        };
+        Step::Act(Action::Pane(command))
+    }
+
+    fn prefixed(&mut self, event: &KeyEvent, now: Instant) -> Step {
+        if event.name == Name::Tab && event.mods == Default::default() {
+            return Step::Act(Action::LastWindow);
+        }
+        let legacy = match event.name {
+            Name::Backspace => Some(Edge::Left),
+            Name::Enter => Some(Edge::Bottom),
+            _ => None,
+        };
+        if let Some(edge) = legacy {
+            return self.repeat(PaneCommand::Select(PaneSelect::Edge(edge)), now);
+        }
+        if let Some(command) = repeatable(event) {
+            return self.repeat(command, now);
+        }
+        if let Some(command) = pane_command(event) {
+            return Step::Act(Action::Pane(command));
+        }
         match event.ctrl() {
             Some('a') => return Step::Pane(event.clone()),
             Some('s') => return Step::Act(Action::ToggleSidebar),
@@ -178,7 +304,6 @@ impl Keys {
             'p' => act(Action::Switch(Over::Window, Direction::Previous)),
             'n' => act(Action::Switch(Over::Window, Direction::Next)),
             'L' => act(Action::LastSession),
-            'l' => act(Action::LastWindow),
             's' | 'w' => act(Action::Chooser),
             '?' => self.enter(State::Help),
             '$' => self.enter(State::Rename {
@@ -252,7 +377,7 @@ mod tests {
     fn steps(keys: &mut Keys, text: &str) -> Vec<Step> {
         events(text)
             .iter()
-            .map(|event| keys.feed(event, false))
+            .map(|event| keys.feed(event, false, Instant::now()))
             .collect()
     }
 
@@ -269,10 +394,124 @@ mod tests {
     }
 
     #[test]
+    fn repeats_reset_the_deadline_and_other_keys_return_to_normal() {
+        let now = Instant::now();
+        let mut keys = Keys::new();
+        let prefix = events("\x01").remove(0);
+        let up = events("\x1b[A").remove(0);
+        keys.feed(&prefix, false, now);
+        for ms in [0, 400, 800] {
+            let at = now + Duration::from_millis(ms);
+            assert_eq!(
+                keys.feed(&up, false, at),
+                act(Action::Pane(PaneCommand::Select(PaneSelect::Edge(
+                    Edge::Top
+                ))))
+            );
+            assert_eq!(keys.deadline(), Some(at + Duration::from_millis(500)));
+        }
+        assert_eq!(
+            keys.feed(&up, false, now + Duration::from_millis(1300)),
+            Step::Pane(up.clone())
+        );
+        assert_eq!(keys.deadline(), None);
+        keys.feed(&prefix, false, now);
+        keys.feed(&up, false, now);
+        let x = events("x").remove(0);
+        assert_eq!(keys.feed(&x, false, now), Step::Pane(x));
+        assert_eq!(keys.state(), &State::Normal);
+        keys.feed(&prefix, false, now);
+        keys.feed(&up, false, now);
+        keys.feed(&prefix, false, now);
+        assert_eq!(keys.state(), &State::Prefix);
+        keys.feed(&up, false, now);
+        keys.expire(now + Duration::from_millis(500));
+        assert_eq!(keys.state(), &State::Normal);
+    }
+
+    #[test]
+    fn legacy_movement_aliases_only_act_after_the_prefix() {
+        for (text, edge) in [("\x08", Edge::Left), ("\r", Edge::Bottom)] {
+            let mut keys = Keys::new();
+            assert_eq!(
+                steps(&mut keys, &format!("\x01{text}"))[1],
+                act(Action::Pane(PaneCommand::Select(PaneSelect::Edge(edge))))
+            );
+            let event = events(text).remove(0);
+            assert_eq!(keys.feed(&event, false, Instant::now()), Step::Pane(event));
+            assert_eq!(keys.state(), &State::Normal);
+        }
+    }
+
+    #[test]
+    fn pane_movement_and_resize_bindings_need_a_prefix() {
+        for (text, command) in [
+            ("h", PaneCommand::Select(PaneSelect::Edge(Edge::Left))),
+            ("j", PaneCommand::Select(PaneSelect::Edge(Edge::Bottom))),
+            ("k", PaneCommand::Select(PaneSelect::Edge(Edge::Top))),
+            ("l", PaneCommand::Select(PaneSelect::Edge(Edge::Right))),
+            ("\x08", PaneCommand::Select(PaneSelect::Edge(Edge::Left))),
+            ("\x0a", PaneCommand::Select(PaneSelect::Edge(Edge::Bottom))),
+            ("\x0b", PaneCommand::Select(PaneSelect::Edge(Edge::Top))),
+            ("\x0c", PaneCommand::Select(PaneSelect::Edge(Edge::Right))),
+            ("\x1b[D", PaneCommand::Select(PaneSelect::Edge(Edge::Left))),
+            (
+                "\x1b[B",
+                PaneCommand::Select(PaneSelect::Edge(Edge::Bottom)),
+            ),
+            ("\x1b[A", PaneCommand::Select(PaneSelect::Edge(Edge::Top))),
+            ("\x1b[C", PaneCommand::Select(PaneSelect::Edge(Edge::Right))),
+            (
+                "\x1b[1;5D",
+                PaneCommand::Edit(PaneEdit::Resize(Edge::Left, Amount::One)),
+            ),
+            (
+                "\x1b[1;5B",
+                PaneCommand::Edit(PaneEdit::Resize(Edge::Bottom, Amount::One)),
+            ),
+            (
+                "\x1b[1;5A",
+                PaneCommand::Edit(PaneEdit::Resize(Edge::Top, Amount::One)),
+            ),
+            (
+                "\x1b[1;5C",
+                PaneCommand::Edit(PaneEdit::Resize(Edge::Right, Amount::One)),
+            ),
+            (
+                "\x1b[1;3D",
+                PaneCommand::Edit(PaneEdit::Resize(Edge::Left, Amount::Five)),
+            ),
+            (
+                "\x1b[1;3B",
+                PaneCommand::Edit(PaneEdit::Resize(Edge::Bottom, Amount::Five)),
+            ),
+            (
+                "\x1b[1;3A",
+                PaneCommand::Edit(PaneEdit::Resize(Edge::Top, Amount::Five)),
+            ),
+            (
+                "\x1b[1;3C",
+                PaneCommand::Edit(PaneEdit::Resize(Edge::Right, Amount::Five)),
+            ),
+        ] {
+            let mut keys = Keys::new();
+            assert!(
+                matches!(steps(&mut keys, text)[0], Step::Pane(_)),
+                "{text:?}"
+            );
+            assert_eq!(
+                steps(&mut keys, &format!("\x01{text}"))[1],
+                act(Action::Pane(command)),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_plain_key_goes_to_the_pane_and_the_prefix_is_a_pending_mode() {
         let mut keys = Keys::new();
         let x = events("x").remove(0);
-        assert_eq!(keys.feed(&x, false), Step::Pane(x));
+        assert_eq!(keys.feed(&x, false, Instant::now()), Step::Pane(x));
         assert_eq!(steps(&mut keys, "\x01"), [Step::Swallow]);
         assert_eq!(keys.state(), &State::Prefix);
     }
@@ -321,7 +560,7 @@ mod tests {
     #[test]
     fn an_unbound_key_after_the_prefix_is_swallowed_and_ends_it() {
         let mut keys = Keys::new();
-        assert_eq!(steps(&mut keys, "\x01z\x01\x1b[A"), swallowed(4));
+        assert_eq!(steps(&mut keys, "\x01t\x01\x1b[H"), swallowed(4));
         assert_eq!(keys.state(), &State::Normal);
     }
 
@@ -336,7 +575,50 @@ mod tests {
             ("n", act(Action::Switch(Over::Window, Direction::Next))),
             ("p", act(Action::Switch(Over::Window, Direction::Previous))),
             ("L", act(Action::LastSession)),
-            ("l", act(Action::LastWindow)),
+            ("\t", act(Action::LastWindow)),
+            (
+                "l",
+                act(Action::Pane(PaneCommand::Select(PaneSelect::Edge(
+                    Edge::Right,
+                )))),
+            ),
+            (
+                "%",
+                act(Action::Pane(PaneCommand::Edit(PaneEdit::Split(
+                    Axis::Horizontal,
+                )))),
+            ),
+            (
+                "\"",
+                act(Action::Pane(PaneCommand::Edit(PaneEdit::Split(
+                    Axis::Vertical,
+                )))),
+            ),
+            ("z", act(Action::Pane(PaneCommand::Edit(PaneEdit::Zoom)))),
+            (
+                "o",
+                act(Action::Pane(PaneCommand::Select(PaneSelect::Next))),
+            ),
+            (
+                ";",
+                act(Action::Pane(PaneCommand::Select(PaneSelect::Last))),
+            ),
+            (
+                "{",
+                act(Action::Pane(PaneCommand::Edit(PaneEdit::Swap(
+                    Direction::Previous,
+                )))),
+            ),
+            (
+                "}",
+                act(Action::Pane(PaneCommand::Edit(PaneEdit::Swap(
+                    Direction::Next,
+                )))),
+            ),
+            (
+                "E",
+                act(Action::Pane(PaneCommand::Edit(PaneEdit::Equalize))),
+            ),
             ("0", act(Action::Window(0))),
             ("9", act(Action::Window(9))),
             ("s", act(Action::Chooser)),
@@ -406,7 +688,10 @@ mod tests {
     fn ctrl_d_kills_only_a_dead_pane() {
         let mut keys = Keys::new();
         let ctrl_d = events("\x04").remove(0);
-        assert_eq!(keys.feed(&ctrl_d, true), act(Action::Kill(Kill::Pane)));
+        assert_eq!(
+            keys.feed(&ctrl_d, true, Instant::now()),
+            act(Action::Kill(Kill::Pane))
+        );
         assert!(matches!(steps(&mut keys, "\x1b[100;5u")[0], Step::Pane(_)));
     }
 
@@ -478,7 +763,7 @@ mod tests {
         let mut keys = Keys::new();
         keys.choose(pane(1));
         let x = events("x").remove(0);
-        assert_eq!(keys.feed(&x, false), Step::Pane(x));
+        assert_eq!(keys.feed(&x, false, Instant::now()), Step::Pane(x));
         assert_eq!(keys.state(), &State::Normal);
         keys.choose(pane(1));
         assert_eq!(steps(&mut keys, "\x01"), [Step::Swallow]);

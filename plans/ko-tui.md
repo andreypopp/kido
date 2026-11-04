@@ -9,7 +9,11 @@ mirror for each visible pane, the server's sizing gate and the hello's
 client kind removed (docs/design-ko.md 4.5 and 4.11). A zoomed window's
 zoomed pane is the active one, as in Kido.app. The neighbour function
 and the divider hit test of section 6.2 move to units 3 and 4, with
-their first callers.
+their first callers. Unit 3 is built: the `Repeat` state and
+`Keys::deadline`, the pane commands (`%` `"` `z` `o` `;`, directional
+select, the resize keys, `{` `}` `E`) and `geometry::neighbour`
+(docs/design-ko.md 4.11). `C-a l` selects the right neighbour (section
+12), so the last window is `C-a Tab`. The divider hit test is unit 4.
 
 The terminal client `ko` (`ko_tui/`) shows one pane at a time, lists
 the panes in a sidebar and takes Ctrl+Shift chords under the kitty
@@ -94,7 +98,7 @@ Non-goals:
 - Preset layouts (`M-1` to `M-7`, `Space`), pane marks (`m`, `M`),
   pane titles (`T`), the clock (`t`), the information popups (`i`,
   `~`, `q`), window index prompts (`'`, `.`), the fuzzy chooser
-  (`Tab`), buffer lists (`#`, `-`, `=`), activity markers (`M-n`,
+  (tmux's `Tab`; ko's `C-a Tab` is the last window), buffer lists (`#`, `-`, `=`), activity markers (`M-n`,
   `M-p`), rotate (`C-o`, `M-o`), detach another client (`D`:
   protocol.md section 3, no route moves another client), suspend
   (`C-z`: a signal to the own pid, which ko_sys::pid refuses).
@@ -165,7 +169,8 @@ the next key of a repeatable binding acts without the prefix for
 | `C-a &` | kill window | status-line prompt `kill-window NAME? (y/n)`; `DELETE /windows/{id}` | |
 | `C-a ,` | rename window | status-line prompt; `Edit::RenameWindow` | |
 | `C-a n` / `p` | next/previous window | `ClientRequest::Switch` over windows (document order, wraps) | |
-| `C-a l` | last window | select the window the client showed before, in the same session | |
+| `C-a l` | last window | select the pane on the right (section 12) | the user's choice |
+| `C-a Tab` | unbound | select the window the client showed before, in the same session | the user's choice, as `l` selects a pane |
 | `C-a 0` to `9` | select window 0 to 9 | the window at that position in the current session, from 0 as tmux's `base-index` | |
 | `C-a !` | break pane | a new `Edit::BreakPane { pane }` (section 6.4): the pane becomes a new window after the current one | a new edit, which Kido.app may use later |
 

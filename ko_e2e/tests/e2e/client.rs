@@ -127,6 +127,122 @@ fn client_split_dividers_input_mouse_wheel_and_zoom() {
 }
 
 #[test]
+fn client_splits_zoom_and_directional_select() {
+    let s = start(&[]);
+    s.pane(&format!("exec python3 -u -c {} one", quote(SPLIT_ECHO)));
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.resize(105, 25);
+    o.attach("cat");
+    o.contains("READY-one");
+    o.prefix("%");
+    o.line(&format!("exec python3 -u -c {} two", quote(SPLIT_ECHO)));
+    o.contains("READY-two");
+    o.prefix("\"");
+    o.line(&format!("exec python3 -u -c {} three", quote(SPLIT_ECHO)));
+    o.contains("READY-three");
+    let d = s.doc();
+    let tree = &windows(&d)[0]["tree"];
+    assert_eq!(crate::layout::tree(&d), "h[1:40x24 v[2:39x12 3:39x11]]");
+    let x = PANE_X + tree["children"][0]["cols"].as_u64().unwrap() as usize;
+    let y = tree["children"][1]["children"][0]["rows"].as_u64().unwrap() as usize;
+    o.wait("the new splits have joined dividers", || {
+        o.cell(x, 0).text == "│" && o.cell(x, y).text == "├" && o.cell(x + 1, y).text == "─"
+    });
+    for (key, label, letter) in [
+        ("\x1b[D", "one", "a"),
+        ("\x1b[C", "three", "b"),
+        ("h", "one", "c"),
+        ("l", "three", "d"),
+        ("\x1b[104;5u", "one", "e"),
+        ("\x1b[108;5u", "three", "f"),
+    ] {
+        o.prefix(key);
+        o.raw(letter);
+        o.contains(&format!("{label}-KEY-{}", hex(letter)));
+    }
+    let inactive = o.cell(x, 0).style.fg;
+    o.prefix("\x1b[A");
+    o.wait(
+        "the first selection reply changes the active divider",
+        || o.cell(x, 0).style.fg != inactive,
+    );
+    o.raw("\x1b[D");
+    o.raw("g");
+    o.contains("one-KEY-67");
+    o.prefix(";");
+    o.raw("i");
+    o.contains("two-KEY-69");
+    o.prefix("o");
+    o.raw("m");
+    o.contains("three-KEY-6d");
+    o.prefix("z");
+    o.wait("zoom hides the dividers", || {
+        windows(&s.doc())[0]["zoom"] == "pane_3" && o.cell(x, y).text != "├"
+    });
+    o.prefix("h");
+    o.raw("n");
+    o.contains("one-KEY-6e");
+    o.wait("directional selection ends zoom", || {
+        windows(&s.doc())[0]["zoom"].is_null() && o.cell(x, y).text == "├"
+    });
+    o.prefix("z");
+    o.wait("zoom the first pane", || {
+        windows(&s.doc())[0]["zoom"] == "pane_1"
+    });
+    o.prefix("z");
+    o.wait("unzoom", || windows(&s.doc())[0]["zoom"].is_null());
+    o.prefix("}");
+    o.wait("swap with next pane", || {
+        windows(&s.doc())[0]["tree"]["children"][0]["pane"] == "pane_2"
+    });
+    o.prefix("{");
+    o.wait("swap back", || {
+        windows(&s.doc())[0]["tree"]["children"][0]["pane"] == "pane_1"
+    });
+    let first_cols = || {
+        windows(&s.doc())[0]["tree"]["children"][0]["cols"]
+            .as_u64()
+            .unwrap()
+    };
+    o.prefix("\x1b[1;5D");
+    o.raw("\x1b[1;5D");
+    o.wait("two resize presses move the divider twice", || {
+        first_cols() == (x - PANE_X - 2) as u64
+    });
+    o.prefix("\x1b[1;3D");
+    o.wait("alt resize moves the divider five cells", || {
+        first_cols() == (x - PANE_X - 7) as u64
+    });
+    o.prefix("E");
+    o.wait("equalize restores the divider", || {
+        first_cols() == (x - PANE_X) as u64
+    });
+    o.prefix("z");
+    o.wait("zoom before splitting", || {
+        windows(&s.doc())[0]["zoom"] == "pane_1"
+    });
+    o.prefix("%");
+    o.line(&format!("exec python3 -u -c {} four", quote(SPLIT_ECHO)));
+    o.contains("READY-four");
+    o.raw("p");
+    o.contains("four-KEY-70");
+    assert!(windows(&s.doc())[0]["zoom"].is_null());
+    put_edit(&s, &serde_json::json!({"type":"float", "pane":"pane_4"}));
+    o.wait("the selected pane is floating", || {
+        !windows(&s.doc())[0]["floats"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    });
+    let before = crate::layout::tree(&s.doc());
+    o.prefix("%");
+    o.raw("q");
+    o.contains("four-KEY-71");
+    assert_eq!(crate::layout::tree(&s.doc()), before);
+    o.detach();
+}
+
+#[test]
 fn client_mouse_release_stays_with_the_pressed_pane() {
     use serde_json::json;
     let s = start(&[]);
@@ -1192,8 +1308,8 @@ fn client_status_line_windows_and_prompts() {
     o.wait("window 0 selected", || {
         status(&o).starts_with(&marked("*", "-"))
     });
-    o.prefix("l");
-    o.wait("the last window selected", || {
+    o.prefix("\t");
+    o.wait("Tab selects the last window", || {
         status(&o).starts_with(&marked("-", "*"))
     });
     o.prefix("0");

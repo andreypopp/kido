@@ -31,7 +31,7 @@ ko
 ```
 
 `ko` connects to your server, and starts one if none runs. It shows one
-pane at a time, with every pane in a list grouped by session, and one
+window at a time, with every pane in a list grouped by session, and one
 status mark for each pane: a running agent or command, a waiting
 agent, an unseen success, an unseen failure. The mark clears when you
 visit the pane.
@@ -49,21 +49,36 @@ terminal. A status line at the bottom shows the session, its windows
 | `C-a c` | add a window to the shown pane's session |
 | `C-a n` / `p` | show the next / previous window |
 | `C-a 0` to `9` | show the window at that position in the session |
-| `C-a l` | show the last window |
+| `C-a Tab` | show the last window |
 | `C-a )` / `(` | show the next / previous session |
 | `C-a L` | show the last session |
 | `C-a ,` / `$` | rename the window / session |
 | `C-a &` | kill the window, after `y` |
 | `C-a x` | kill the pane, after `y` |
+| `C-a %` / `"` | split the pane left and right / top and bottom; the new pane is selected |
+| `C-a z` | zoom the pane, or end the zoom |
+| `C-a o` / `;` | select the next pane of the window / the pane selected before |
+| `C-a` arrow, `h` `j` `k` `l`, `C-h` `C-j` `C-k` `C-l` | select the pane on that side (r) |
+| `C-a C-`arrow / `M-`arrow | move the pane's divider by 1 / 5 cells (r) |
+| `C-a {` / `}` | swap the pane with the previous / next pane |
+| `C-a E` | give the panes of the split equal sizes |
 | `C-a s` or `w` | choose a pane from the list with `Up`, `Down`, `Enter`; `Escape` leaves |
 | `C-a C-s` | show or hide the list |
 | `C-a e` | open the pane's scrollback in `$PAGER` |
 | `Ctrl+D` on an exited pane | remove it |
 | click a row | show that pane |
 
-The wheel scrolls the shown pane. The terminal client shows one pane
-of a window at a time and has no copy mode yet: the scrollback goes to
-`$PAGER`. Kido.app shows sessions, windows, splits and floats.
+A key marked (r) repeats: for 500 ms after it, another key marked (r)
+acts without the prefix, and each one restarts the 500 ms. Without
+the prefix, `h` `j` `k` `l` and `C-h` `C-j` `C-k` `C-l` go to the
+program. `C-a l` selects the pane on the right, so the last window
+is `C-a Tab`.
+
+The terminal client shows the window's splits, zoom and floats as
+Kido.app does, and both edit the same layout. A click in a pane
+selects it, and the wheel scrolls the pane under the pointer. The
+terminal client has no copy mode yet: the scrollback goes to
+`$PAGER`.
 
 `ko HOST` attaches to a ko server on another machine over ssh, and
 reconnects when the connection drops. It never starts a server there:

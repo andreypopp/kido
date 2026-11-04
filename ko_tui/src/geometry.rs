@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use ko_client::edit::Edge;
 use ko_server::ids::PaneId;
 use ko_server::protocol::{Axis, Leaf, Node, Window, pick};
 
@@ -133,6 +134,49 @@ fn walk(
     }
 }
 
+pub(crate) fn neighbour(
+    window: &Window,
+    active: PaneId,
+    edge: Edge,
+    cursor: (usize, usize),
+) -> Option<PaneId> {
+    let mut panes = Vec::new();
+    walk(&window.tree, 0, 0, &mut panes, &mut Vec::new());
+    let rect = panes.iter().find(|pane| pane.pane == active)?.rect;
+    let axis = match edge {
+        Edge::Left | Edge::Right => Axis::Horizontal,
+        Edge::Top | Edge::Bottom => Axis::Vertical,
+    };
+    let start = pick(axis, rect.y, rect.x);
+    let len = pick(axis, rect.rows, rect.cols);
+    let position = start + pick(axis, cursor.1, cursor.0).min(len.saturating_sub(1));
+    panes
+        .iter()
+        .filter_map(|pane| {
+            let other = pane.rect;
+            let across = match edge {
+                Edge::Left => other.x + other.cols + 1 == rect.x,
+                Edge::Right => rect.x + rect.cols + 1 == other.x,
+                Edge::Top => other.y + other.rows + 1 == rect.y,
+                Edge::Bottom => rect.y + rect.rows + 1 == other.y,
+            };
+            let other_start = pick(axis, other.y, other.x);
+            let other_len = pick(axis, other.rows, other.cols);
+            let overlap = (start + len)
+                .min(other_start + other_len)
+                .saturating_sub(start.max(other_start));
+            (across && overlap > 0).then_some((
+                pane.pane,
+                (
+                    other.contains(pick(axis, other.x, position), pick(axis, position, other.y)),
+                    overlap,
+                ),
+            ))
+        })
+        .max_by_key(|(_, rank)| *rank)
+        .map(|(pane, _)| pane)
+}
+
 pub(crate) fn window(window: &Window) -> Geometry {
     if let Some(pane) = window.zoom {
         return Geometry {
@@ -245,6 +289,36 @@ mod tests {
 
     fn sample() -> Window {
         ko_server::protocol::decode(br#"{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"focus":"pane_1","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"split":"v","children":[{"pane":"pane_2","cols":39,"rows":12},{"pane":"pane_3","cols":39,"rows":11}]}]},"floats":[]}"#).unwrap()
+    }
+
+    #[test]
+    fn neighbours_follow_the_cursor_and_ignore_zoom_and_floats() {
+        let mut w = sample();
+        let panes = w.panes();
+        assert_eq!(neighbour(&w, panes[0], Edge::Right, (0, 3)), Some(panes[1]));
+        assert_eq!(
+            neighbour(&w, panes[0], Edge::Right, (0, 20)),
+            Some(panes[2])
+        );
+        assert_eq!(
+            neighbour(&w, panes[0], Edge::Right, (0, 12)),
+            Some(panes[1])
+        );
+        assert_eq!(neighbour(&w, panes[0], Edge::Left, (0, 3)), None);
+        assert_eq!(
+            neighbour(&w, panes[1], Edge::Bottom, (3, 0)),
+            Some(panes[2])
+        );
+        assert_eq!(neighbour(&w, panes[2], Edge::Top, (3, 0)), Some(panes[1]));
+        w.zoom = Some(panes[0]);
+        assert_eq!(
+            neighbour(&w, panes[0], Edge::Right, (0, 20)),
+            Some(panes[2])
+        );
+        let float = "pane_4".parse().unwrap();
+        w.floats.push(ko_server::protocol::decode(format!(r#"{{"pane":"{float}","x":0,"y":0,"cols":10,"rows":10,"z":0,"border":false,"title":""}}"#).as_bytes()).unwrap());
+        assert_eq!(neighbour(&w, float, Edge::Right, (0, 0)), None);
+        assert_eq!(neighbour(&w, panes[0], Edge::Right, (0, 3)), Some(panes[1]));
     }
 
     #[test]

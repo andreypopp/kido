@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -9,8 +10,8 @@ use std::time::{Duration, Instant};
 use crate::clipboard;
 use ko_client::edit::Edit;
 use ko_client::launch::{self, BACKOFF_FIRST, PATIENCE, backoff_after};
-use ko_client::layout::Edited;
-use ko_client::model::{Applied, Item, Model, Notice, Rejoin};
+use ko_client::layout::{EditError, Edited};
+use ko_client::model::{Applied, Item, Model, Notice, Rejoin, cycle};
 use ko_client::remote::{Progress, Remote};
 use ko_client::wire::{self, Link, Next, WATCHDOG, silent, text};
 use ko_config::values::{AbsPath, RuntimeName};
@@ -27,7 +28,9 @@ use ko_vt::render::{Frame, MouseTracking};
 
 use crate::geometry;
 use crate::input::{self, Event, Input, KeyEvent, MouseKind, Reply};
-use crate::keys::{Action, Keys, Kill, Rename, State, Step};
+use crate::keys::{
+    Action, Amount, Keys, Kill, PaneCommand, PaneEdit, PaneSelect, Rename, State, Step,
+};
 use crate::mirror::Mirror;
 use crate::modes::{self, Modes};
 use crate::renderer::{Layout, PaneFrame, Renderer, status};
@@ -50,6 +53,13 @@ const SIGNALS: [Signal; 6] = [
     Signal::Winch,
     Signal::Child,
 ];
+
+fn direction_steps(direction: Direction) -> isize {
+    match direction {
+        Direction::Next => 1,
+        Direction::Previous => -1,
+    }
+}
 
 fn dim(value: usize) -> Dim {
     u16::try_from(value.max(1))
@@ -77,7 +87,8 @@ impl Panel {
 struct Last {
     session: Option<SessionId>,
     window: Option<WindowId>,
-    at: Option<(SessionId, WindowId)>,
+    at: Option<(SessionId, WindowId, PaneId)>,
+    panes: BTreeMap<WindowId, PaneId>,
 }
 
 #[derive(Debug)]
@@ -329,6 +340,7 @@ struct Client {
     clipboard_reads: clipboard::Pending,
     wake: Deadline,
     escape: Deadline,
+    repeat: Deadline,
     watchdog: Deadline,
     retry: Deadline,
     remote: Option<Remote>,
@@ -363,7 +375,8 @@ impl Client {
         let hello = hello(geometry, panel, true);
         let model = Model::join(&mut link, hello)?;
         let link_token = link.watch(&mut poll).map_err(text)?;
-        let (wake, escape, watchdog, retry) = (
+        let (wake, escape, repeat, watchdog, retry) = (
+            Deadline::new(&mut poll),
             Deadline::new(&mut poll),
             Deadline::new(&mut poll),
             Deadline::new(&mut poll),
@@ -400,6 +413,7 @@ impl Client {
             clipboard_reads: clipboard::Pending::default(),
             wake,
             escape,
+            repeat,
             watchdog,
             retry,
             remote,
@@ -419,13 +433,17 @@ impl Client {
         self.view.as_mut()?.pane_mut(pane)
     }
 
-    fn dead(&self) -> Option<protocol::Dead> {
-        let pane = self.pane()?;
+    fn row(&self, pane: PaneId) -> Option<&protocol::Row> {
         self.model
             .panes
             .iter()
             .find(|found| found.row.id == pane)
-            .and_then(|found| found.row.dead.clone())
+            .map(|found| &found.row)
+    }
+
+    fn dead(&self) -> Option<protocol::Dead> {
+        let pane = self.pane()?;
+        self.row(pane).and_then(|row| row.dead.clone())
     }
 
     fn received(&self) -> Instant {
@@ -536,20 +554,29 @@ impl Client {
         Ok(())
     }
 
-    fn edit(&mut self, edit: Edit) -> Result<Edited, String> {
-        ko_client::layout::edit(&self.socket, (Some(self.model.client), None), &edit)
-            .map_err(|error| error.to_string())
+    fn edit(&mut self, edit: Edit) -> Result<Option<Edited>, String> {
+        match ko_client::layout::edit(&self.socket, (Some(self.model.client), None), &edit) {
+            Ok(edited) => Ok(Some(edited)),
+            Err(EditError::Refused(_)) => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     fn switch(&mut self, pane: PaneId) -> Result<(), String> {
         self.keys.end();
-        if self
+        if let Some((_, window)) = self
             .model
             .locate(pane)
             .and_then(|(_, window)| self.model.layout.layout.window(window))
-            .is_some_and(|(_, window)| window.zoom.is_some_and(|zoom| zoom != pane))
+            && window.zoom.is_some_and(|zoom| zoom != pane)
+            && self
+                .edit(Edit::Zoom {
+                    window: window.id,
+                    pane: None,
+                })?
+                .is_none()
         {
-            self.edit(Edit::ToggleZoom { pane })?;
+            return Ok(());
         }
         self.select(pane)?;
         self.sync_views()
@@ -633,22 +660,27 @@ impl Client {
     }
 
     fn track(&mut self) {
-        let now = self
-            .shown()
-            .map(|(session, window)| (session.id, window.id));
-        let Some((session, window)) = now else {
+        self.last
+            .panes
+            .retain(|window, _| self.model.layout.layout.window(*window).is_some());
+        let Some(pane) = self.pane() else {
             return;
         };
-        if let Some((was_session, was_window)) = self.last.at.filter(|at| *at != (session, window))
-        {
+        let Some((session, window)) = self.model.locate(pane) else {
+            return;
+        };
+        if let Some((was_session, was_window, was_pane)) = self.last.at {
             if was_session != session {
                 self.last.session = Some(was_session);
                 self.last.window = None;
-            } else {
+            } else if was_window != window {
                 self.last.window = Some(was_window);
             }
+            if was_window == window && was_pane != pane {
+                self.last.panes.insert(window, was_pane);
+            }
         }
-        self.last.at = now;
+        self.last.at = Some((session, window, pane));
     }
 
     fn create_pane(&mut self) -> Result<(), String> {
@@ -677,12 +709,7 @@ impl Client {
         else {
             return self.create_pane();
         };
-        let runtime = self
-            .model
-            .panes
-            .iter()
-            .find(|shown| shown.row.id == source)
-            .and_then(|shown| shown.row.runtime.clone());
+        let runtime = self.row(source).and_then(|row| row.runtime.clone());
         let pane = ko_client::layout::add_window(
             &self.socket,
             (Some(self.model.client), None),
@@ -834,7 +861,7 @@ impl Client {
         if let Some(pane) = self.active() {
             pane.mirror.bottom()?;
         }
-        match self.keys.feed(&key, self.dead().is_some()) {
+        match self.keys.feed(&key, self.dead().is_some(), Instant::now()) {
             Step::Pane(key) => match input::key(&key) {
                 Some(key) => self.input_send(Wire::Key(WireKey(key))),
                 None => Ok(()),
@@ -846,20 +873,20 @@ impl Client {
 
     fn act(&mut self, action: Action) -> Result<(), String> {
         let selection = match action {
-            Action::LastSession => self
-                .last
-                .session
-                .filter(|session| self.model.layout.layout.session(*session).is_some())
-                .map(|session| Selection {
-                    session: Some(session),
-                    ..Selection::default()
-                }),
             Action::LastWindow => self
                 .last
                 .window
                 .filter(|window| self.model.layout.layout.window(*window).is_some())
                 .map(|window| Selection {
                     window: Some(window),
+                    ..Selection::default()
+                }),
+            Action::LastSession => self
+                .last
+                .session
+                .filter(|session| self.model.layout.layout.session(*session).is_some())
+                .map(|session| Selection {
+                    session: Some(session),
                     ..Selection::default()
                 }),
             Action::Window(at) => usize::try_from(at)
@@ -900,10 +927,7 @@ impl Client {
             }
             Action::Choose(direction) => {
                 if let State::Chooser(chosen) = *self.keys.state() {
-                    let steps = match direction {
-                        Direction::Next => 1,
-                        Direction::Previous => -1,
-                    };
+                    let steps = direction_steps(direction);
                     if let Some(next) = self.model.step(Some(chosen), steps) {
                         self.keys.choose(next);
                     }
@@ -921,7 +945,113 @@ impl Client {
             Action::Switch(over, direction) => {
                 self.client_send(&ClientRequest::Switch(Switch { over, direction }))?;
             }
+            Action::Pane(command) => self.pane_command(command)?,
             Action::LastSession | Action::LastWindow | Action::Window(_) => {}
+        }
+        Ok(())
+    }
+
+    fn pane_command(&mut self, command: PaneCommand) -> Result<(), String> {
+        match command {
+            PaneCommand::Select(command) => self.pane_select(command),
+            PaneCommand::Edit(command) => self.pane_edit(command),
+        }
+    }
+
+    fn pane_select(&mut self, command: PaneSelect) -> Result<(), String> {
+        let Some(pane) = self.pane() else {
+            return Ok(());
+        };
+        let cursor = self
+            .active()
+            .and_then(|active| active.frame.cursor)
+            .map(|cursor| (usize::from(cursor.x), usize::from(cursor.y)))
+            .unwrap_or((0, 0));
+        let Some((_, window)) = self.shown() else {
+            return Ok(());
+        };
+        let target = match command {
+            PaneSelect::Next => cycle(
+                &window.panes(),
+                Some(pane),
+                direction_steps(Direction::Next),
+            ),
+            PaneSelect::Last => self.last.panes.get(&window.id).copied().filter(|id| {
+                self.model
+                    .locate(*id)
+                    .is_some_and(|(_, id)| id == window.id)
+            }),
+            PaneSelect::Edge(edge) => geometry::neighbour(window, pane, edge, cursor),
+        };
+        if let Some(target) = target {
+            if window.zoom.is_some_and(|zoom| zoom != target)
+                && self
+                    .edit(Edit::Zoom {
+                        window: window.id,
+                        pane: None,
+                    })?
+                    .is_none()
+            {
+                return Ok(());
+            }
+            self.select(target)?;
+        }
+        Ok(())
+    }
+
+    fn pane_edit(&mut self, command: PaneEdit) -> Result<(), String> {
+        let Some(pane) = self.pane() else {
+            return Ok(());
+        };
+        let Some((_, window)) = self.shown() else {
+            return Ok(());
+        };
+        let edit = match command {
+            PaneEdit::Split(axis) => {
+                if window.zoom.is_some()
+                    && self
+                        .edit(Edit::Zoom {
+                            window: window.id,
+                            pane: None,
+                        })?
+                        .is_none()
+                {
+                    return Ok(());
+                }
+                let runtime = self.row(pane).and_then(|row| row.runtime.clone());
+                Edit::Split {
+                    pane,
+                    axis,
+                    before: false,
+                    new: new_pane(Some(Cwd::Pane { pane }), runtime),
+                }
+            }
+            PaneEdit::Zoom => Edit::ToggleZoom { pane },
+            PaneEdit::Resize(edge, amount) => Edit::ResizeBy {
+                pane,
+                edge,
+                delta: dim(match amount {
+                    Amount::One => 1,
+                    Amount::Five => 5,
+                })
+                .into(),
+            },
+            PaneEdit::Swap(direction) => {
+                let Some(other) = cycle(&window.panes(), Some(pane), direction_steps(direction))
+                    .filter(|other| *other != pane)
+                else {
+                    return Ok(());
+                };
+                Edit::Swap { pane, other }
+            }
+            PaneEdit::Equalize => Edit::Equalize { pane },
+        };
+        if let Some(Edited {
+            created: Some(ko_client::layout::Created::Pane { pane }),
+            ..
+        }) = self.edit(edit)?
+        {
+            self.select(pane)?;
         }
         Ok(())
     }
@@ -1003,7 +1133,7 @@ impl Client {
         if self.reconnecting.is_some() {
             match event {
                 Event::Key(key) => {
-                    let step = self.keys.feed(&key, self.dead().is_some());
+                    let step = self.keys.feed(&key, self.dead().is_some(), Instant::now());
                     if !matches!(self.keys.state(), State::Normal | State::Prefix) {
                         self.keys.end();
                     }
@@ -1150,6 +1280,7 @@ impl Client {
 
     fn turn(&mut self, events: &mut Events) -> Result<(), String> {
         self.escape.set(&mut self.poll, self.input.deadline())?;
+        self.repeat.set(&mut self.poll, self.keys.deadline())?;
         if self.reconnecting.is_none() && self.watchdog.at.is_none() {
             let at = self.received() + WATCHDOG;
             self.watchdog.set(&mut self.poll, Some(at))?;
@@ -1193,6 +1324,9 @@ impl Client {
             }
         }
         let due = events.due();
+        if self.repeat.fired(&self.poll, due) {
+            self.keys.expire(now);
+        }
         if self.escape.fired(&self.poll, due) {
             self.input.expire(now, &mut incoming);
         }
@@ -1414,7 +1548,12 @@ impl Client {
                             Applied::Notice(notice) => self.notice(notice)?,
                             Applied::Selected => {
                                 self.pending_selection = None;
-                                self.keys.end();
+                                if !matches!(
+                                    self.keys.state(),
+                                    State::Normal | State::Prefix | State::Repeat { .. }
+                                ) {
+                                    self.keys.end();
+                                }
                                 if self.reconnecting.is_none() {
                                     self.sync_views()?;
                                 }

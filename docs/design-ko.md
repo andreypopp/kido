@@ -479,7 +479,28 @@ rename or a kill confirmation) or the reconnect notice. The window
 commands go to the server as `ClientRequest::Switch` (next and
 previous window or session) or `Select` (a position, the last window
 or session); renames are layout edits, and kills are `DELETE` of the
-window or pane. Outer mouse reporting stays on while a pane is shown,
+window or pane.
+
+The pane commands (split, zoom, swap, equalize and the resize keys)
+are layout edits through `ko_client::layout::edit`, the call of
+`ko layout edit`, which applies each edit to the newest document and
+retries on a `409`; the layout event that follows redraws the window.
+A refused edit (a float cannot be split, the pane is gone) does not
+end the client. After a split the client selects the new pane, as
+Kido.app does; a split of a zoomed pane ends the zoom, so the new
+pane is visible. Selection commands only send `Select`: `o` takes the
+next pane in document order, floats after the tree; `;` the pane the
+client showed before in that window; a direction the neighbour across
+the divider on that side whose span holds the active pane's cursor
+row or column, else the one with the largest overlap, with no wrap.
+Floats are never neighbours, and a float has none. A direction to a
+pane that a zoom hides ends the zoom first. Selection and resize keys
+repeat as tmux's `bind -r` does: for 500 ms after one, another
+repeatable key acts without the prefix. `C-a l` selects the right
+neighbour, the user's choice over tmux's last window, which is
+`C-a Tab`. Under the legacy encoding `C-h` and `C-j` arrive as Backspace and
+Enter, so directly after the prefix those two keys also select; in
+the repeat window they go to the program. Outer mouse reporting stays on while a pane is shown,
 so selecting text in the outer terminal needs its override modifier.
 
 The client restores the outer terminal's modes exactly on every exit

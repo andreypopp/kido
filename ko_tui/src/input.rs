@@ -44,6 +44,10 @@ impl Mods {
         self.0 & !(Mods::CAPS | Mods::NUM) == Mods::CTRL
     }
 
+    pub(crate) fn only_alt(self) -> bool {
+        self.0 & !(Mods::CAPS | Mods::NUM) == Mods::ALT | Mods::META
+    }
+
     pub(crate) fn shift(self) -> bool {
         self.has(Mods::SHIFT)
     }

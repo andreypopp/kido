@@ -481,18 +481,7 @@ impl Model {
     }
 
     pub fn step(&self, from: Option<PaneId>, steps: isize) -> Option<PaneId> {
-        let order = self.order();
-        let count = isize::try_from(order.len())
-            .ok()
-            .filter(|count| *count > 0)?;
-        let at = match from.and_then(|pane| order.iter().position(|found| *found == pane)) {
-            Some(at) => isize::try_from(at).ok()? + steps,
-            None if steps >= 0 => 0,
-            None => count - 1,
-        };
-        order
-            .get(usize::try_from(at.rem_euclid(count)).ok()?)
-            .copied()
+        cycle(&self.order(), from, steps)
     }
 
     pub fn locate(&self, pane: PaneId) -> Option<(SessionId, WindowId)> {
@@ -501,6 +490,20 @@ impl Model {
             .locate(pane)
             .map(|(session, window)| (session.id, window.id))
     }
+}
+
+pub fn cycle(order: &[PaneId], from: Option<PaneId>, steps: isize) -> Option<PaneId> {
+    let count = isize::try_from(order.len())
+        .ok()
+        .filter(|count| *count > 0)?;
+    let at = match from.and_then(|pane| order.iter().position(|found| *found == pane)) {
+        Some(at) => isize::try_from(at).ok()? + steps,
+        None if steps >= 0 => 0,
+        None => count - 1,
+    };
+    order
+        .get(usize::try_from(at.rem_euclid(count)).ok()?)
+        .copied()
 }
 
 #[cfg(test)]

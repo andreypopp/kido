@@ -55,7 +55,7 @@ pub(crate) fn status(
             shown.map_or("", |(_, window)| window.name.as_str())
         ),
         (None, State::Confirm(Kill::Pane)) => right.write_str("kill-pane? (y/n)"),
-        (None, State::Normal | State::Help | State::Chooser(_)) => Ok(()),
+        (None, State::Normal | State::Repeat { .. } | State::Help | State::Chooser(_)) => Ok(()),
     };
     Status { left, right }
 }
