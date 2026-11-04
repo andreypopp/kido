@@ -1,15 +1,15 @@
-# HTML panes and inline HTML blocks
+# HTML panes
 
 A plan. Nothing of it is built. When the work is complete, the agreed
 design moves into `docs/design-html.md` and the sections of the docs
 that it touches, and this file is deleted.
 
 The idea: a program in a Kido pane shows HTML. It sends one escape
-sequence to switch its pane into HTML mode, or to put one HTML block
-into the grid among its text lines. Its page and data come from the
-program itself, through ko. Kido.app renders the page with WKWebView.
-Use cases: a markdown viewer, a diff viewer, pi's own UI, a log or a
-table viewer, a form that an agent shows to the user.
+sequence to switch its pane into HTML mode, and the page fills the
+pane. Its page and data come from the program itself, through ko.
+Kido.app renders the page with WKWebView. Use cases: a markdown
+viewer, a diff viewer, pi's own UI, a log or a table viewer, a form
+that an agent shows to the user.
 
 ## 1. Goals and non-goals
 
@@ -18,20 +18,17 @@ Goals, in priority order:
 1. **A pane mode.** A program switches its pane to a page that fills
    the pane. The mode is pane state in the server: every client and a
    reattach see it, and it ends when the program ends.
-2. **Inline blocks.** A program puts a page into the grid, N rows
-   tall, between its text lines. The block scrolls with the history,
-   as an inline image does.
-3. **Live content without the pty.** The program serves its page and
+2. **Live content without the pty.** The program serves its page and
    its data over HTTP, through ko. A page updates from a streaming
    response. The same path works for a remote server and for a pane
    in a runtime.
-4. **A strict sandbox.** Any program, local or remote, runs JavaScript
+3. **A strict sandbox.** Any program, local or remote, runs JavaScript
    inside Kido.app. The page gets only its own pane's resources: no
    file access, no network, no other pane, no persistence.
-5. **Kido's keys stay Kido's.** The app's Command keys, the sidebar
+4. **Kido's keys stay Kido's.** The app's Command keys, the sidebar
    and the palette work while a page has focus. `ko_tui` keeps its
    `C-a` table.
-6. **Small for authors.** One escape with the grammar of OSC 7501, a
+5. **Small for authors.** One escape with the grammar of OSC 7501, a
    plain HTTP server on a unix socket, and a `ko html` command that
    emits the escapes and bridges the socket.
 
@@ -41,13 +38,15 @@ Non-goals:
   download, or reach the network. Links to `http(s)` are a decision
   of the user's configuration, not of the page (section 8).
 - HTML in `ko_tui`. The terminal client shows the pane's terminal
-  content and a hint (section 11).
+  content and a status word (section 10).
 - A DOM-based terminal, as DomTerm is. The grid stays libghostty-vt's.
-  A page lives beside the grid, never inside a cell.
+  A page lives over the grid, never inside a cell.
 - WebSockets from a page. WKURLSchemeHandler does not intercept `ws:`
   (section 7). A page streams with `fetch`.
 - A page that outlives its program, or survives a server restart.
 - Pages of one pane that talk to pages of another pane.
+- Inline HTML blocks in the grid among text lines. Deferred; see
+  "Not built" at the end.
 
 ## 2. Prior art
 
@@ -55,10 +54,10 @@ Non-goals:
   earlier fragment with `OSC 721 ; key ; html BEL`, after a
   safety scrub of elements and attributes
   ([wire protocol](https://domterm.org/Wire-byte-protocol.html)).
-  It is a DOM terminal: every cell is a DOM node. Kido takes the idea
-  of a replace key (a block id) and rejects the DOM terminal and the
-  scrubbed-HTML model: a scrub is a security boundary that moves with
-  every browser release; a process boundary with no network is not.
+  It is a DOM terminal: every cell is a DOM node. Kido rejects the
+  DOM terminal and the scrubbed-HTML model: a scrub is a security
+  boundary that moves with every browser release; a process boundary
+  with no network is not.
 - **Wave Terminal** shows files and HTML in blocks of its layout
   through its `wsh` command (`wsh view`, `wsh web open`), not through
   an escape in the pty stream
@@ -69,7 +68,7 @@ Non-goals:
 - **Extraterm** frames each command's output with OSC 133 and shows
   files and images in frames through its `show` command
   ([guide](https://extraterm.org/guide.html)). Frames are a layout
-  concept of the client, as Kido's blocks are an overlay of the client.
+  concept of the client; Kido's page is an overlay of the client.
 - **iTerm2** added a browser pane on WKWebView and keeps inline
   content to images (`OSC 1337 ; File=`)
   ([escape codes](https://iterm2.com/3.4/documentation-escape-codes.html)).
@@ -80,11 +79,8 @@ Non-goals:
   its own HTML renderer ([euporie](https://github.com/joouha/euporie)).
   This is the `ko_tui` question in reverse: Kido does not render HTML
   in a grid.
-- **kitty's graphics protocol** gives the escape style (key=value
-  pairs, base64 payload in chunks with `m=1`, a query with a reply)
-  and the placement machinery that inline blocks reuse: a placement
-  at a cell that scrolls with the history, and a virtual placement
-  whose position comes from U+10EEEE placeholder cells
+- **kitty's graphics protocol** gives the escape style: key=value
+  pairs, a base64 payload in chunks with `m=1`, a query with a reply
   ([kitty graphics](https://sw.kovidgoyal.net/kitty/graphics-protocol/)).
 - **OSC 7501** (program status) gives the pair grammar, the base64
   text values and the `?` query
@@ -99,9 +95,9 @@ Non-goals:
 `ko-pane`'s terminal reports the sequence through libghostty-vt's
 unknown-sequence callback (`GHOSTTY_TERMINAL_OPT_UNKNOWN_SEQUENCE`
 with `GHOSTTY_TERMINAL_OPT_UNKNOWN_MAX_BYTES`), so the Ghostty fork
-does not change for the parse. The callback gives the bytes between
-`ESC ]` and the terminator, and may write a reply to the pty in order
-with the terminal's own replies.
+does not change. The callback gives the bytes between `ESC ]` and the
+terminator, and may write a reply to the pty in order with the
+terminal's own replies.
 
     OSC 7502 ; pairs ST        a command
     OSC 7502 ; ? ST            feature detection
@@ -119,10 +115,9 @@ that the terminal does not know, is ignored whole.
 
 | key | value | meaning |
 |---|---|---|
-| `a` | `enter`, `leave`, `block`, `delete`, `clear` | the action (required) |
+| `a` | `enter`, `leave` | the action (required) |
 | `t` | `serve` (default), `doc` | where the page comes from |
-| `p` | a URL path, base64 | for `t=serve`: the path that the page loads, default `/` for the pane and `/blocks/<i>/` for a block |
-| `i` | integer 1 to 4294967295 | the block id; also the kitty image id of its placement |
+| `p` | a URL path, base64 | for `t=serve`: the path that the page loads, default `/` |
 | `d` | base64 | for `t=doc`: a chunk of the document |
 | `m` | `0` (default), `1` | more chunks of `d` follow |
 
@@ -133,85 +128,63 @@ Actions:
   `d` carries. A second `enter` replaces the first.
 - **`a=leave`**: the pane leaves HTML mode. The terminal content under
   the page shows again, as the alternate screen does on exit.
-- **`a=block`**: a block with id `i`. The program also sends the
-  block's placement as a kitty image (section 10): a 1 by 1
-  transparent RGBA image with image id `i`, placed with `c=<cols>`
-  and `r=<rows>` at the cursor, or as a virtual placement with
-  placeholder cells. A `block` with an id that exists replaces its
-  content: this is the update. The order of the escape and the kitty
-  placement does not matter.
-- **`a=delete`**: removes the record of block `i`. The program deletes
-  the kitty image with the protocol's own `a=d`; a placement without a
-  record shows nothing, and a record without a placement is not seen.
-- **`a=clear`**: removes every block record and leaves HTML mode.
 
 Chunks: a `d` value is at most 4096 bytes of base64 for each
 command, with `m=1` on every chunk but the last, as a kitty image is
-sent. `ko-pane` joins the chunks of one `enter` or `block` and refuses
-a document over 1 MiB with no record change. A chunk sequence that
-another command interrupts is dropped.
+sent. `ko-pane` joins the chunks of one `enter` and refuses a
+document over 1 MiB with no record change (decided: 1 MiB inline). A
+chunk sequence that another command interrupts is dropped.
 
-Size and placement: in HTML mode the page fills the pane's content
-rectangle. A block covers the cells of its placement: `c` columns
-by `r` rows of the kitty placement. The pixel size follows the
-client's cell size, as an image's does. A page lays itself out in CSS
-and reads nothing about cells unless it wants to (section 9).
+Size: the page fills the pane's content rectangle. The pixel size
+follows the client's cell size and grid, as the surface's does. A
+page lays itself out in CSS and reads nothing about cells unless it
+wants to (section 9).
 
 Query: `OSC 7502 ; ? ST` is answered by `ko-pane`, through the
-callback's reply path, with `OSC 7502 ; ? : actions=enter,leave,block,delete,clear ST`,
+callback's reply path, with `OSC 7502 ; ? : actions=enter,leave ST`,
 with the terminator of the query. A program sends `CSI c` after the
 query, as OSC 7501 recommends; the DA reply first means no support.
 The answer says that the server keeps the mode; it does not say that
 the client renders it, as kitty's reply under tmux does not.
 
 Through `ko ssh` the escape reaches the local pane's terminal as any
-byte does, so `enter` with `t=doc`, `block` with `t=doc`, `leave` and
-`clear` work on a host without ko. `t=serve` needs the serve stream
-(section 5), which needs `ko` beside the program.
+byte does, so `enter` with `t=doc` and `leave` work on a host without
+ko. `t=serve` needs the serve stream (section 5), which needs `ko`
+beside the program.
 
 The parse lives in `ko-pane` (`ko_pane/src/html.rs`): the pair
 grammar, the base64 decode, the chunk join and the limits. It is the
 one place that parses text of this escape; the coordinator gets a
 typed frame `FromPane::Html(HtmlReport)` with the decoded action,
-the id, the source and the document bytes. The grammar functions are
-pure and unit-tested; a fuzz target `html` replays the corpus on
-stable, as the other targets do.
+the source and the document bytes. The grammar functions are pure and
+unit-tested; a fuzz target `html` replays the corpus on stable, as
+the other targets do.
 
 ## 4. The pane field and its lifecycle
 
 The coordinator keeps one `Html` record for each pane
 (`ko_server/src/html.rs`), as it keeps the OSC 7501 record set:
 
-    Html { page: Option<Page>, blocks: Vec<Block>, serving: bool }
+    Html { page: Option<Page>, serving: bool }
     Page { content: Content }
-    Block { id: u32, content: Content }
     Content = Serve { path: String } | Doc
 
-The row (`Row.html: Option<Html>`, absent when the pane has no page,
-no block and no serve stream) carries it, so the welcome's layout event
-and `GET /panes` give it to every client, and a `html` event on
-`/client` carries the whole record of the pane on each change, as
-`progress` does. A document's bytes are not in the row: a client
-fetches a document through the proxy route (section 5), and the row
-only says `Doc`. The server holds at most 1 MiB for each document
-and 8 MiB of documents for each pane; a `block` over the pane's
-limit evicts the block updated longest ago. A pane holds at most 256
-block records, with the same eviction.
+The row (`Row.html: Option<Html>`, absent when the pane has no page
+and no serve stream) carries it, so the welcome's layout event and
+`GET /panes` give it to every client, and a `html` event on `/client`
+carries the whole record of the pane on each change, as `progress`
+does. A document's bytes are not in the row: a client fetches the
+document through the proxy route (section 5), and the row only says
+`Doc`. The server holds at most 1 MiB for the document of a pane.
 
 Lifecycle:
 
-- `enter` sets `page`; `leave` and `clear` remove it.
-- The pane's death removes `page` and closes the serve stream. The
-  blocks stay: they are history, and a `Doc` block still renders. A
-  `Serve` block of a dead pane shows its last snapshot or the paper.
-- RIS removes everything, as it does for the OSC 7501 records.
+- `enter` sets `page`; `leave` removes it.
+- The pane's death removes `page` and closes the serve stream.
+- RIS removes `page`, as it does for the OSC 7501 records.
 - A primary prompt start (OSC 133 `A`) removes `page`: the program
-  that entered the mode has ended. It keeps the blocks.
-- `clear_history` and a kitty image delete remove nothing from the
-  record; the placement decides what is seen.
-- The alternate screen is independent of the mode. A block in the
-  alternate screen is seen while that screen is active, because the
-  render state places it.
+  that entered the mode has ended.
+- The alternate screen is independent of the mode.
 - The record goes with its pane. Nothing persists.
 
 `serving` is true while the pane's serve stream is open, as `inbox`
@@ -259,17 +232,15 @@ identity is `refused`; a runtime connection is `refused` (the route is
 not in the gate's list). The request body is at most 1 MiB. The
 server answers:
 
-- From the record, when the path names a `Doc`: `/` in HTML mode with
-  a `Doc` page, and `/blocks/<i>/` for a `Doc` block, with
-  `text/html; charset=utf-8`. Any other path of a `Doc` source is
-  `404`.
-- Through the serve stream, when the path's source is `Serve`: it
-  sends `request` and the body, then streams the program's `response`
-  and `body` messages into the proxy connection as they arrive. The
-  pane has no serve stream: `503` with `kind: unavailable`, which the
+- From the record, when the page is a `Doc`: `/` with the document as
+  `text/html; charset=utf-8`. Any other path of a `Doc` page is `404`.
+- Through the serve stream, when the page is `Serve`: it sends
+  `request` and the body, then streams the program's `response` and
+  `body` messages into the proxy connection as they arrive. The pane
+  has no serve stream: `503` with `kind: unavailable`, which the
   client shows as "the program is not serving".
-- `404` when the pane has no page and no block for the path, `gone`
-  for a dead pane's `Serve` path, `not_found` for an unknown pane.
+- `404` when the pane has no page, `gone` for a dead pane,
+  `not_found` for an unknown pane.
 
 Backpressure: the proxy connection is one connection, so its queue
 and cap are those of any other control reply, and the server stops
@@ -307,10 +278,6 @@ cancellation.
 
 - `ko html enter [--path P | --doc FILE]`
 - `ko html leave`
-- `ko html block --id N --rows R [--cols C] [--path P | --doc FILE]`:
-  emits the kitty placeholder image with the placement, then the
-  escape. `--cols` defaults to the pane's width, as a full-width block.
-- `ko html delete --id N`, `ko html clear`.
 - `ko html serve --socket PATH`: opens the pane's serve stream with
   the pane's identity and forwards each request to the unix socket
   `PATH` as HTTP/1.1, one connection for each request, and streams
@@ -327,7 +294,7 @@ cancellation.
 A page talks to its program with HTTP only:
 
 - Program to page: a streaming response body. The page reads it with
-  `fetch` and a `ReadableStream`. The spike (section 14) measured the
+  `fetch` and a `ReadableStream`. The spike (section 13) measured the
   first chunk at 2 ms after the request through the scheme handler.
   A page that wants events uses a `text/event-stream` body and an
   `EventSource`-like reader on the body; the app does nothing special.
@@ -349,11 +316,10 @@ Every page runs in a WKWebView of Kido.app with these settings, which
 no page and no configuration key can loosen:
 
 - `WKWebsiteDataStore.nonPersistent()`, one store for the whole app,
-  so views can share WebKit's processes (the spike shows that they do
-  not; section 14), and nothing of a page reaches the disk: no
-  cookies, no cache, no local storage after the view goes.
+  so nothing of a page reaches the disk: no cookies, no cache, no
+  local storage after the view goes.
 - The one scheme is `ko:`, through a WKURLSchemeHandler that calls
-  `ko_client_html_fetch` (section 12). The origin of a page is
+  `ko_client_html_fetch` (section 11). The origin of a page is
   `ko://pane_N`, so the pages of two panes are two origins, and a
   page fetches only its own pane's paths. The handler refuses a
   request whose host is not the view's pane.
@@ -372,7 +338,7 @@ no page and no configuration key can loosen:
 - Media does not autoplay. No microphone, camera, geolocation,
   notifications or clipboard API: a custom scheme is not a secure
   context, so these APIs do not exist in the page; the plan relies on
-  this and tests it (section 17, "Risks of the whole").
+  this and tests it (section 16, "Risks of the whole").
 - A page from a remote server gets the same sandbox. There is no
   trust by host.
 
@@ -380,17 +346,16 @@ Configuration, the `app:` key of `config.yaml` (`ko_config`):
 
     app:
       html:
-        enabled: true            # false: a pane in HTML mode shows the hint of ko_tui
+        enabled: true            # false: a pane in HTML mode shows the terminal content
         links: deny              # or `open`: an http(s) link opens in the default browser
-        live_blocks: 4           # live WKWebViews for blocks for each window
         inspector: false
 
-`links: open` is the one way out of the sandbox: the link opens in the
-user's browser, outside the app, through `NSWorkspace`, after the
-first-time sheet of the clipboard family ("Allow pages on HOST to
-open links in your browser?"), with the same grant store. The page
-never learns whether the link opened. A link with another scheme
-does nothing.
+Decided: `enabled` is true by default, because the sandbox is the
+same for a local and a remote program. `links` is `deny` by default;
+`open` is a configuration key only, with no consent sheet: the user
+who writes it has decided. With `open`, the link opens in the user's
+browser, outside the app, through `NSWorkspace`; the page never learns
+whether the link opened. A link with another scheme does nothing.
 
 ## 9. Keys, focus, copy, find, theme and font
 
@@ -410,7 +375,7 @@ view's and offers every Command key to the main menu first, as
 `PaneView.performKeyEquivalent` does, so Kido's keys (the palette,
 the sidebar, the windows, copy mode's toggle, find) win over the page.
 The spike confirms that a Command key reaches the menu while the web
-view is first responder (section 14). Every other key goes to the
+view is first responder (section 13). Every other key goes to the
 page, through WebKit. Escape goes to the page; the sidebar's keys
 return focus to Kido. `ko_tui` is not affected: the page does not
 exist there.
@@ -423,10 +388,9 @@ pasteboard by itself (no clipboard API without a secure context).
 The pane's copy mode is not available while the page has focus; the
 Shift-click gesture of the surface is not seen under the page.
 
-**Find.** Cmd-F opens the pane's find bar; in HTML mode it drives
-`WKWebView.find(_:configuration:)` instead of Ghostty's search, with
-"i of N" from the find result's count. Blocks do not take part in a
-find of the pane's terminal.
+**Find.** Decided: Cmd-F opens the pane's find bar; in HTML mode it
+drives `WKWebView.find(_:configuration:)` instead of Ghostty's
+search, with "i of N" from the find result's count.
 
 **Theme and font.** A user script at document start sets CSS custom
 properties on `:root` and `window.ko`:
@@ -443,96 +407,23 @@ so `prefers-color-scheme` agrees with `--ko-appearance`, and
 shows the pane's paper and no white flash. A theme or font change
 runs one `evaluateJavaScript` that sets the properties again and
 dispatches `ko-theme`. The spike shows the properties applied at
-document start and switched live (section 14).
+document start and switched live (section 13).
 
-## 10. Inline blocks
+**Memory.** One live WKWebView for each shown pane in HTML mode, and
+none for a hidden pane: a hidden pane's web view is removed with its
+surface's renderer, and a pane that is shown again loads its page
+again. A page's state is its program's, so it must be reloadable.
 
-**The placement is a kitty image.** The program sends a 1 by 1
-transparent RGBA image (`f=32,s=1,v=1`, 4 bytes, `t=d`) with image id
-`i`, and places it with `c=<cols>,r=<rows>` at the cursor, or as a
-virtual placement (`U=1`) with U+10EEEE placeholder cells. Then it
-sends `OSC 7502 ; a=block:i=<i>… ST`. Everything about position is
-the kitty protocol's, which libghostty-vt already implements in the
-pane's terminal and in every mirror: the placement moves with the
-cursor, scrolls into the history, reflows with the placeholder cells
-of a virtual placement, is in every snapshot, and goes with the
-scrollback. The 4-byte image costs nothing in the ring, the snapshot
-or the image storage. The mirror contract is unchanged: a block's
-placement is bytes that the mirror parses as the server does. Nothing
-is synthesized into the ring.
+## 10. `ko_tui`
 
-**What the app does.** `PaneBlocks` (`app/App/PaneBlocks.swift`), a
-controller of each pane view beside `PaneImages`:
+Decided: the terminal client draws the mirror as before. A pane in
+HTML mode shows the terminal content under the page, which the
+program may prepare ("HTML view: open this pane in Kido.app"), and
+the status line shows `[html]` for the active pane, as it shows
+`[resize]`. Nothing else changes; the row's `html` is read for the
+status word only.
 
-- After each feed and each viewport move, on the pane's serial scroll
-  queue, it reads the surface's render-state placements through a new
-  fork API, `ghostty_surface_image_placements`, which lists each
-  Kitty placement that the render state shows, with the image id, the
-  viewport column and row, the columns and rows, and the clip
-  (section 12 names the fork change). A virtual placement arrives as
-  one placement for each row of placeholder cells; the controller
-  joins consecutive rows of one image id into one rectangle.
-- It keeps the pane's `Html.blocks` from the model and intersects: an
-  image id that is a block id is a block on screen, at the cell
-  rectangle that `PaneLayout` maps to points, clipped to the grid.
-  Every other placement is an image, which Ghostty draws.
-- For each block on screen it places one overlay view at that
-  rectangle in the pane's chrome: a live WKWebView or an `NSImageView`
-  of its last snapshot. The overlay moves with the rows on the same
-  main hop that moves the scroller, so a block scrolls with the text
-  at the publish cadence of output. Between hops a block can trail
-  its row by one hop; the known limit of the scroller's thumb.
-- The Ghostty renderer draws the 1 by 1 image under the overlay,
-  scaled to the placement, transparent.
-
-**The budget.** `app.html.live_blocks` (4) live web views for blocks
-for each window, over all its panes, by visibility and then by the
-time of the last scroll into view. A block past the budget, or
-scrolled out of the viewport, is snapshotted (`takeSnapshot`, 7 ms
-for a 300 by 200 view in the spike) and its web view is removed; its
-`NSImageView` shows the snapshot at the placement. A block that comes
-back gets a web view again and loads `ko://pane_N/blocks/<i>/` again:
-a block's page must be reloadable, and its state is its program's.
-A block that was never live shows the pane's paper until its page
-loads. The pane-mode page counts as one live view of the window and
-is never evicted while the pane is shown. Hidden windows keep no live
-block views, and an evicted window keeps no snapshots.
-
-Memory: the spike measured about 27 MB of resident memory for each
-extra live web view, in its own WebContent process (section 14), so
-the default budget costs about 110 MB for a window with every slot
-full, and a window with no block costs nothing.
-
-**What the server keeps.** The pane's terminal keeps the 4-byte
-images and their placements in the kitty storage, under the existing
-limit. The coordinator keeps the block records (section 4). A
-snapshot carries the placements; the welcome carries the records. The
-server never reads the placements for blocks: it does not know where
-a block is, and it does not need to.
-
-**Order of arrival.** The block's escape and its placement arrive in
-either order, and the record's `html` event and the view's bytes have
-no order across the two links. The app shows a block when it has
-both; until then the placement is a transparent image. A `delete`
-removes the record at once; the placement stays blank until the
-program deletes the image.
-
-**Why not a pixel snapshot into the mirror.** The app cannot add
-bytes to a mirror: a mirror that differs from the server's terminal
-breaks the contract and every resync. The overlay is the client's
-own, as the scroller and the pills are.
-
-## 11. `ko_tui`
-
-The terminal client draws the mirror as before. A pane in HTML mode
-shows the terminal content under the page, which the program may
-prepare ("HTML view: open this pane in Kido.app"), and the status line
-shows `[html]` for the active pane, as it shows `[resize]`. A block's
-placeholder cells draw as blank cells, as a kitty image does in the
-terminal client today. Nothing else changes; the row's `html` is read
-for the status word only.
-
-## 12. The client core and the fork
+## 11. The client core
 
 `ko_client`:
 
@@ -546,16 +437,9 @@ for the status word only.
   under the same cancellation wake as every other blocking call.
 - `ko_tui` reads `html` for the status word.
 
-The Ghostty fork (`third_party/ghostty`, `kido-upstream`): one commit,
-`ghostty_surface_image_placements`, the surface twin of the render
-state's image iterator (`render.h`, "Images"): it fills a caller's
-array with the placements of the last render-state update under the
-renderer lock, as `ghostty_surface_kitty_pending_frames` does for
-frames. A pin bump moves `Ko-Vt`, so this unit ships with a
-coordinated release (AGENTS.md, "One Ghostty"). The pane mode needs
-no fork change.
+The Ghostty fork does not change: the pane mode needs no fork API.
 
-## 13. Remote servers and runtimes
+## 12. Remote servers and runtimes
 
 - **A remote server.** The app's proxy request goes through the
   forwarded client link, as an image fetch does, to the remote server,
@@ -569,12 +453,12 @@ no fork change.
   listener, with its pane identity, which the gate allows. The proxy
   route is a host route, on the host listener, as `/client` is. A
   routed pi's host pane serves from the host.
-- **`ko ssh` without ko.** Only `t=doc`, `leave` and `clear` work
-  (section 3). `ko html` is not there.
+- **`ko ssh` without ko.** Only `t=doc` and `leave` work (section 3).
+  `ko html` is not there.
 - **A pane with a `parent`.** No rule changes: a page is the pane's
   own.
 
-## 14. The spike
+## 13. The spike
 
 `~/Workspace/kido-html-spike-1/` holds `spike.swift` (an AppKit app
 with no activation, a window far off screen, one WKWebView and a
@@ -601,86 +485,69 @@ the system):
 
 Conclusions that the design uses: the scheme handler streams, so the
 live channel needs no WebSocket; the menu rule gives Kido its keys;
-one data store does not make WebKit share content processes, so a
-budget of live views is the memory control; a snapshot is cheap, so
-eviction to an image is the right fallback; the chunked decoder of a
-proxy must handle a chunk split over reads (the first run of the
-spike crashed on that in its own code, not in WebKit).
+one data store does not make WebKit share content processes, so each
+live view costs its own process, which is why a hidden pane keeps no
+web view; the chunked decoder of a proxy must handle a chunk split
+over reads (the first run of the spike crashed on that in its own
+code, not in WebKit).
 
 Not measured: the view over a real Ghostty surface in Kido.app, the
 latency through a ko server and the SSH forward, and a page's memory
-when it holds a large DOM. The first unit of the app measures them
-in the visual suite.
+when it holds a large DOM. The app unit measures them in the visual
+suite.
 
-## 15. pi
+## 14. pi
 
-Two uses, after the core units:
+After the core units: pi's UI as a page. pi has an RPC mode (JSON
+records on stdio, `docs/rpc.md`) and an HTML export of a session. A
+`/html` command of `ko-pi` starts a small HTTP server on a unix
+socket inside the extension, opens the serve stream through `ko html
+serve`, and sends `enter`: the page is the transcript, rendered from
+the session's events as a streaming response, and a prompt field
+whose `POST` becomes `sendUserMessage`. `/html` again sends `leave`.
+The TUI keeps running under the page, so `leave` shows it at once.
+The dialogs of the extension UI (`select`, `confirm`, `input`) go on
+in the TUI: this unit moves only the transcript and the prompt, and
+the RPC extension-UI protocol is the reference for the rest.
 
-- **Inline blocks from pi-tui.** pi already shows kitty images
-  through its `Image` component when `PI_IMAGE_PROTOCOL=kitty`, which
-  `ko-pi` sets. An `HtmlBlock` component is an `Image` component whose
-  image is the 1 by 1 placeholder and that emits the `block` escape
-  with a document: a tool renderer (`pi.registerToolRenderer`) can
-  show a diff or a table as a block in the transcript, which scrolls
-  with the transcript as an image does. `ko-pi` serves nothing for
-  this: the block is a `Doc`.
-- **pi's UI as a page.** pi has an RPC mode (JSON records on stdio,
-  `docs/rpc.md`) and an HTML export of a session. A `/html` command
-  of `ko-pi` starts a small HTTP server on a unix socket inside the
-  extension, opens the serve stream through `ko html serve`, and
-  sends `enter`: the page is the transcript, rendered from the
-  session's events as a streaming response, and a prompt field whose
-  `POST` becomes `sendUserMessage`. `/html` again sends `leave`. The
-  TUI keeps running under the page, so `leave` shows it at once. The
-  dialogs of the extension UI (`select`, `confirm`, `input`) go on in
-  the TUI: this unit moves only the transcript and the prompt, and
-  the RPC extension-UI protocol is the reference for the rest.
-
-Both are pi-side work in `share/pi/`, with the fake ko of the
+This is pi-side work in `share/pi/`, with the fake ko of the
 TypeScript suite teaching `ko html` a stub.
 
-## 16. Open questions for the user
+## 15. Decisions
 
-1. **The number.** OSC 7502, beside 7501, in the Rex range. Agreed?
-2. **Default on.** `app.html.enabled: true` by default, because the
-   sandbox is the same for a local and a remote program. Or off until
-   the user enables it?
-3. **Links.** `links: deny` by default, `open` after a consent sheet.
-   Or no `open` at all in the first release?
-4. **The proxy's callers.** Only a client link (`Ko-Client`). A pane
-   can never fetch a page, also not its own. Agreed?
-5. **The budget.** 4 live block views for each window, and the pane
-   page always live. Agreed, or a global budget?
-6. **pi first.** Inline blocks from tool renderers (small) or the
-   transcript page (large)? The plan proposes the blocks first.
-7. **`ko_tui`.** Only the `[html]` word, or also a dim box with the
-   block's id over its placeholder cells?
-8. **Documents.** 1 MiB for each document and 8 MiB for each pane,
-   the variable limits. Enough for a rendered markdown file with
-   inline images as `data:`?
-9. **Find.** WebKit's find for the page in HTML mode, with the pane's
-   find bar. Agreed?
+2026-11-04, with the user:
 
-## 17. Units, estimates and risks
+- Pane apps only: `enter` and `leave`, a page that fills the pane.
+  Inline HTML blocks are not built ("Not built" below).
+- The escape is OSC 7502, beside 7501, with its grammar.
+- `app.html.enabled` is true by default.
+- `app.html.links` is `deny` by default; `open` is a configuration
+  key only, with no prompt.
+- The proxy route takes only a client link (`Ko-Client`). A pane
+  never fetches a page, also not its own.
+- `ko_tui` shows only the `[html]` status word.
+- A `t=doc` document is at most 1 MiB.
+- The page's find in HTML mode is WebKit's, through the pane's find
+  bar.
+
+## 16. Units, estimates and risks
 
 Each unit is one manager with one implementer and the reviewers of
 AGENTS.md; the estimate is agent-days of one implementer.
 
 | unit | what | days | risk |
 |---|---|---|---|
-| 1. The escape and the record | `ko_vt`'s unknown-sequence callback and option; `ko_pane/src/html.rs` (grammar, chunks, limits, the query reply); the `Html` frame; `ko_server/src/html.rs` (the record, eviction, lifecycle); `Row.html` and the `html` event; e2e tests through `text` input, as the OSC 7501 tests go; the `html` fuzz target | 2 | the callback's truncation rule (a 2 KiB buffer, allocations above it) sets the chunk size; a pane that sends only chunks never completes: the join has a limit |
+| 1. The escape and the record | `ko_vt`'s unknown-sequence callback and option; `ko_pane/src/html.rs` (grammar, chunks, limits, the query reply); the `Html` frame; `ko_server/src/html.rs` (the record, lifecycle); `Row.html` and the `html` event; e2e tests through `text` input, as the OSC 7501 tests go; the `html` fuzz target | 1.5 | the callback's truncation rule (a 2 KiB buffer, allocations above it) sets the chunk size; a pane that sends only chunks never completes: the join has a limit |
 | 2. The serve stream and the proxy route | the `Rest` parameter of `routes!`; both routes in `api.rs` and `router.rs`; the stream's reader with the per-pane backpressure; the in-flight waiters under the loop rule; `cancel`; the CSP and `no-store` headers; hostile tests; `make schemas` | 3 | a long streaming response holds a `Phase::Handling` connection: the 16-request cap and the cancel on close must be exact, or a page leaks connections |
-| 3. `ko html` | the clap command, the escapes, the placeholder image, `ko html serve` with the head reader of `ko_server::http`; e2e tests against a toy socket | 1 | none |
+| 3. `ko html` | the clap command, the escapes, `ko html serve` with the head reader of `ko_server::http`; e2e tests against a toy socket | 1 | none |
 | 4. `ko_client` and `ko_tui` | the model's `html`; `ko_client_html_fetch` with streaming callbacks and cancellation in `ffi::engine`; the header and `exports.txt`; `ko_tui`'s `[html]` | 1.5 | the first streaming call of the ABI: its cancellation must join the I/O thread's request as `ko_view_close` does |
-| 5. Kido.app, pane mode | `HtmlPaneView` and the scheme handler over `ko_client_html_fetch`; the data store, the content rule list, the navigation and UI delegates, the CSP; keys through the host view; find; the theme script and `ko-theme`; `app.html` keys in `ko_config` and `GhosttyConf`'s neighbours; visual tests of the page over a pane, light and dark, with a toy server in the VISUAL build | 3 | WebKit's first-responder behaviour under the pane's event monitors; a key that WebKit consumes before `performKeyEquivalent` of the host view (the spike covered the menu path, not every key) |
-| 6. Kido.app, inline blocks | the fork API `ghostty_surface_image_placements` and the pin bump; `PaneBlocks`; the overlay placement on the scroll hop; the budget, the snapshots, the reload; visual tests with scrolled blocks, a virtual placement, a split and a zoom | 4 | the fork: a wrong lock in the render-state read deadlocks the renderer (design-app.md, "Threads"); overlay trailing during a fast scroll; a block in the alternate screen |
-| 7. pi, blocks | the `HtmlBlock` component on `Image`, a diff renderer as the first user; the fake ko stub; tests of the TypeScript suite | 2 | pi-tui's image handling of a re-rendered transcript re-sends the placement: the escape must be re-sent with it |
-| 8. pi, the transcript page | the `/html` command, the HTTP server on a unix socket in the extension, the transcript as a stream, the prompt field | 3 | the pi session's event stream as the page's source: a long session re-sends everything on each load |
+| 5. Kido.app, pane mode | `HtmlPaneView` and the scheme handler over `ko_client_html_fetch`; the data store, the content rule list, the navigation and UI delegates, the CSP; keys through the host view; find; the theme script and `ko-theme`; the hidden-pane release and reload; `app.html` keys in `ko_config` and `GhosttyConf`'s neighbours; visual tests of the page over a pane, light and dark, with a toy server in the VISUAL build | 3 | WebKit's first-responder behaviour under the pane's event monitors; a key that WebKit consumes before `performKeyEquivalent` of the host view (the spike covered the menu path, not every key) |
+| 6. pi, the transcript page | the `/html` command, the HTTP server on a unix socket in the extension, the transcript as a stream, the prompt field | 3 | the pi session's event stream as the page's source: a long session re-sends everything on each load |
 | Docs | `docs/design-html.md`; protocol.md's new section; design-app.md's "HTML panes"; design.md's "Knobs" and AGENTS.md's rules | with each unit | |
 
-Units 1 to 4 are ko and ship together in one release. Units 5 and 6
-are Kido.app; 6 bumps the Ghostty pin. Units 7 and 8 come after 5.
-Total: about 20 agent-days of implementation, plus review and docs.
+Units 1 to 4 are ko and ship together in one release. Unit 5 is
+Kido.app, with no Ghostty pin change. Unit 6 comes after 5. Total:
+about 13 agent-days of implementation, plus review and docs.
 
 Risks of the whole:
 
@@ -692,8 +559,23 @@ Risks of the whole:
   makes a custom scheme a secure context would enable APIs that the
   plan assumes absent; the tests catch that at the next macOS.
 - **Memory.** Each live web view is a WebContent process of about 27
-  MB and more with its DOM. The budget and the snapshots bound it;
-  the stress harness gains a block action and a window with many
-  blocks.
-- **The fork.** One API for the render state. It is small, but it is
-  a pin bump and a coordinated release.
+  MB and more with its DOM. One view for each shown pane in HTML mode
+  bounds it to the shown panes; the stress harness gains an HTML-mode
+  action.
+
+## Not built: inline blocks
+
+An inline HTML block, N rows tall among the text lines and scrolling
+with the history as an inline image does, was in the first draft:
+the placement as a 1 by 1 transparent kitty image with the block's
+id, so libghostty-vt handles position, scroll, reflow and snapshots
+unchanged, and the app overlays a web view or a snapshot image at the
+placement's rectangle, read through a new fork API for the render
+state's placements. The user deferred it on 2026-11-04: pane apps
+cover the use cases first, and blocks add a Ghostty pin bump, an
+overlay that trails the rows by one publish hop, and a memory
+problem. The spike measured about 27 MB of resident memory for each
+live WKWebView, each in its own WebContent process, and one data
+store did not make WebKit share them, so a transcript with many
+blocks needs a budget of live views with snapshot eviction. When
+blocks come back, that draft is the starting point.
