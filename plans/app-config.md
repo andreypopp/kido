@@ -690,45 +690,30 @@ after it lands.
 
 Total about 3.5 agent-days.
 
-## 12. Open questions, each with a recommendation
+## 12. Decisions (user, 2026-11-04)
 
-1. **Keybinds.** Add `app.keys:` now? Recommendation: no. If wanted
-   later: `keys: {"super+e": "text:X"}`, a map from a Ghostty trigger
-   to a Ghostty action, with a `Trigger` newtype (`modifier+key`
-   syntax) and an `Action` enum of the actions Kido names (`text:`,
-   `csi:`, `esc:`, `unbind`, `paste_from_clipboard`,
-   `copy_to_clipboard`, the three font-size actions), refusing the
-   keys that the app's menus own. About 0.75 agent-day on its own.
-2. **Theme files in Ghostty syntax with the check of 6.2, or themes in
-   YAML (`themes/<name>.yaml`, decoded by `ko_config`, with the bundled
-   six converted)?** Recommendation: Ghostty syntax with the check.
-   Every published theme collection exports Ghostty's format; a YAML
-   theme would make Kido the only consumer of its own format, and the
-   check reuses Ghostty's parser with no parser of Kido's own. The
-   cost: the check lives in Swift, because only the app links
-   libghostty.
-3. **A `server:` section** for the scrollback limits and the knobs,
-   read by `ko server` at start? Recommendation: not in this plan.
-   Nobody asked for a limit other than the default, and a knob is a
-   test's tool. If wanted, it is a 0.5 agent-day unit after
-   ko-rt-yaml, with the flags removed (one source of truth: file or
-   flag, not both).
-4. **The editor schema line.** Recommendation: the docs give the
-   `yaml-language-server` line with the raw GitHub URL of
-   `share/ko/config-schema.json` on `main`, and `ko api-schema` for a
-   local copy. The app does not write the line.
-5. **`font.family` default.** Leave Ghostty's default (Menlo) when the
-   key is absent, or pin one in Kido? Recommendation: leave Ghostty's:
-   the string omits the line, and the visual references stay on Menlo
-   13 as today.
-6. **A one-time hint** when `~/.config/kido/kido-app.conf` exists and
-   `~/.config/ko/config.yaml` does not? Recommendation: no. AGENTS.md
-   forbids fallbacks for old state, and a hint is code that reads the
-   old path. The release note and section 9 tell the user. The author
-   is the one user of the old file today.
-7. **The theme writer's place.** The decision gives the file one
-   owner, so the writer is in `ko_config` (6.3). The alternative, a
-   writer in Swift as today, would keep `ko_config` read-only and the
-   atomic-write code where it is. Recommendation: `ko_config`, so the
-   writer can decode its own result before the rename, which a Swift
-   writer could only do through a second ABI round trip.
+1. **Keybinds are in the first version.** `app.keys:` as section 12's
+   earlier proposal gave it: a map from a Ghostty trigger to an action,
+   with a `Trigger` newtype and an `Action` enum of the actions Kido
+   names, refusing the keys that the app's menus own. UA1 adds the
+   types, UA2 the mapping. About 0.75 agent-day more.
+2. **User themes use Ghostty's syntax,** with the check of 6.2.
+3. **A `server:` section is in this plan,** read by `ko server` from
+   the file on its own host at each use, as `runtimes:` is, so a change
+   applies to new panes without a restart. Its keys:
+   `scrollback: {bytes, lines}` or `scrollback: none` (the default 50 MB
+   and unlimited lines), `shell`, `kitty_images_max_bytes`,
+   `linger_seconds` and `runtime_idle_seconds`. The flags
+   `--scrollback-bytes`, `--scrollback-lines`, `--no-scrollback` and
+   `--shell` and the environment variables `KO_KITTY_IMAGES_MAX_BYTES`,
+   `KO_LINGER_SECONDS` and `KO_RUNTIME_IDLE_SECONDS` are removed: one
+   source for each setting. The test and tuning knobs (the view queue
+   and spill sizes, the message ack, the exec wait, the stop
+   escalation, the clipboard timeout, the run screen size) stay
+   environment variables. Part of UA1, about 0.5 agent-day.
+4. **The editor schema line:** the docs give the `yaml-language-server`
+   line; the app does not write it.
+5. **The `font.family` default is the system's monospaced font,** not
+   Ghostty's default. The visual references change once.
+6. **No hint** about the old file.
+7. **The theme writer is in `ko_config`.**
