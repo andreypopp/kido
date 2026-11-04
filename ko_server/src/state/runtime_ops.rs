@@ -8,7 +8,7 @@ use crate::protocol::{
     Empty, Error, ErrorKind, Info, LeadReport, LinkState, RuntimeInfo, RuntimeWait,
 };
 use crate::runtime::pane::{self, Wrap as Entering, socket_path};
-use crate::runtime::{CLEANUP_LIMIT, Due, Wait, Who};
+use crate::runtime::{CLEANUP_LIMIT, Due, PASS_HOLD, Wait, Who};
 use crate::server::Origin;
 use crate::vars::Vars;
 
@@ -99,13 +99,42 @@ impl State {
         for pid in self.runtimes.take_cleaning() {
             self.leaving.track(poll, pid, CLEANUP_LIMIT);
         }
+        for pid in self.runtimes.take_released() {
+            self.leaving.release(pid);
+        }
         for (name, wait, state) in self.runtimes.take_settled() {
             self.answer_wait(poll, &name, wait, state);
+        }
+        for (conn, state) in self.runtimes.take_passed() {
+            let reply = Ok(RuntimeWait { state, lead: None });
+            router::answer::<routes::WaitRuntime>(self, poll, conn, reply);
+        }
+    }
+
+    fn pass_token(&mut self, poll: &mut Poll, name: &RuntimeName, conn: Token, pane: PaneId) {
+        let started = match self.panes.find(pane) {
+            Some(found) => {
+                let token = found.token().to_string();
+                self.runtimes.pass(poll, name, (conn, pane), token)
+            }
+            None => Err(format!("{pane} is gone")),
+        };
+        if let Err(message) = started {
+            let reply = Ok(RuntimeWait {
+                state: LinkState::Failed { message },
+                lead: None,
+            });
+            router::answer::<routes::WaitRuntime>(self, poll, conn, reply);
         }
     }
 
     fn answer_wait(&mut self, poll: &mut Poll, name: &RuntimeName, wait: Wait, state: LinkState) {
         match wait.who {
+            Who::Pane(pane)
+                if state == LinkState::Up && self.runtimes.remote_tokens(name, pane) =>
+            {
+                self.pass_token(poll, name, wait.conn, pane);
+            }
             Who::Pane(pane) => {
                 let reply = self.runtime_reply(name, pane, state);
                 router::answer::<routes::WaitRuntime>(self, poll, wait.conn, reply);
@@ -155,13 +184,10 @@ impl State {
                 let Some(token) = self.token_of_timer(timer) else {
                     return false;
                 };
-                let Some(name) = self.runtimes.expire_pane_wait(token) else {
+                let Some(state) = self.runtimes.expire_pane_wait(poll, token) else {
                     return false;
                 };
-                let reply = Ok(RuntimeWait {
-                    state: self.runtimes.state(&name),
-                    lead: None,
-                });
+                let reply = Ok(RuntimeWait { state, lead: None });
                 router::answer::<routes::WaitRuntime>(self, poll, token, reply);
                 true
             }
@@ -218,6 +244,11 @@ impl State {
             Err(error) => return Some(Err(error)),
         };
         let state = self.runtimes.state(&name);
+        if state == LinkState::Up && self.runtimes.remote_tokens(&name, pane) {
+            let conn = self.hold(poll, index, PASS_HOLD);
+            self.pass_token(poll, &name, conn, pane);
+            return None;
+        }
         if state != LinkState::Starting {
             return Some(self.runtime_reply(&name, pane, state));
         }

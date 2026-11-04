@@ -169,7 +169,7 @@ The variables stay after ssh exits. The server trusts them only while
 the pane's foreground process is `ssh`. The next `ko ssh` in the pane
 replaces them.
 
-`ko_shell/src/ssh.rs` classes each option letter: an option that
+`ko_server/src/ssh.rs` classes each option letter: an option that
 names the connection target (port, jump hosts, configuration,
 identity, user, address family, ciphers, a control socket) is kept
 with its value; an option that controls the terminal, forwarding,

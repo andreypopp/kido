@@ -1390,7 +1390,7 @@ export interface components {
             state: components["schemas"]["LinkState"];
         };
         /** @enum {string} */
-        RuntimeKind: "command" | "container";
+        RuntimeKind: "ssh" | "command" | "container";
         /** @description One to 32 bytes of a to z, 0 to 9 and -. host is not a runtime name. */
         RuntimeName: string;
         /**

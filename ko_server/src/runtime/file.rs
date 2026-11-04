@@ -1,14 +1,17 @@
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 
 use crate::ids::RuntimeName;
 use crate::protocol::{AbsPath, PathMap, RuntimeKind, env_valid};
+use crate::ssh::{connection_only, has_syntax};
 
 /// The runtime configuration file: the runtimes that panes can run in, by name.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -35,6 +38,9 @@ pub(crate) struct Runtime {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum Kind {
+    /// A runtime on an ssh host, reached through one ssh master that the first pane logs in.
+    /// ko must be installed there, on the PATH of ssh commands.
+    Ssh(Ssh),
     /// A runtime on the host, for the tests of the link machinery. The server accepts it only
     /// with KO_RUNTIME_COMMAND_KIND=1 in its environment.
     Command(Command),
@@ -197,6 +203,19 @@ fn default_init() -> Vec<String> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub(crate) struct Ssh {
+    /// The ssh destination as typed: `host` or `user@host`.
+    pub(crate) destination: String,
+    /// Connection options for the master (`-p`, `-J`, `-F`, `-i`, `-l`, `-o`, ...).
+    #[serde(default)]
+    pub(crate) ssh_args: Vec<String>,
+    /// The directory on the remote for the forwarded socket and the token files. Default:
+    /// `$XDG_RUNTIME_DIR/ko-rt/NAME`, else `/tmp/ko-rt-UID/NAME`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) dir: Option<AbsPath>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub(crate) struct Command {
     /// The argv that goes before `ko enter` in a pane's program.
     #[serde(default)]
@@ -222,6 +241,7 @@ pub(crate) enum LoadError {
 impl Runtime {
     pub(crate) fn kind(&self) -> RuntimeKind {
         match self.kind {
+            Kind::Ssh(_) => RuntimeKind::Ssh,
             Kind::Command(_) => RuntimeKind::Command,
             Kind::Container(_) => RuntimeKind::Container,
         }
@@ -269,6 +289,20 @@ fn check(name: &RuntimeName, runtime: &Runtime, command_kind: bool) -> Result<()
         }
     }
     match &runtime.kind {
+        Kind::Ssh(ssh) => {
+            if ssh.destination.contains('\0') || ssh.ssh_args.iter().any(|arg| arg.contains('\0')) {
+                return bad("destination", "contains a NUL");
+            }
+            if let Err(why) = connection_only(&ssh.ssh_args, &ssh.destination) {
+                return bad("ssh_args", &why);
+            }
+            if let Some(dir) = &ssh.dir {
+                let shown = dir.as_path().to_string_lossy();
+                if has_syntax(&shown) || shown.contains('\n') {
+                    return bad("dir", "contains a colon, a percent sign or a newline");
+                }
+            }
+        }
         Kind::Command(command) => {
             if !command_kind {
                 return bad(
@@ -318,8 +352,63 @@ fn check(name: &RuntimeName, runtime: &Runtime, command_kind: bool) -> Result<()
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct Keys {
+    runtimes: BTreeMap<String, BTreeMap<String, IgnoredAny>>,
+}
+
+// The fields of each kind, with the common ones, from the schema of a runtime: the kinds are
+// the variants of its `oneOf`, and the fields of a kind are the properties of the type it names.
+fn known_fields() -> &'static BTreeMap<String, BTreeSet<String>> {
+    static KNOWN: OnceLock<BTreeMap<String, BTreeSet<String>>> = OnceLock::new();
+    KNOWN.get_or_init(|| {
+        let schema = serde_json::to_value(schemars::schema_for!(Runtime)).unwrap_or_default();
+        let properties = |schema: &serde_json::Value| -> BTreeSet<String> {
+            schema["properties"]
+                .as_object()
+                .into_iter()
+                .flat_map(|fields| fields.keys().cloned())
+                .collect()
+        };
+        let common = properties(&schema);
+        schema["oneOf"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|variant| {
+                let kind = variant["properties"]["kind"]["const"].as_str()?;
+                let own = variant["$ref"].as_str()?.rsplit('/').next()?;
+                let mut fields = properties(&schema["$defs"][own]);
+                fields.extend(common.iter().cloned());
+                fields.insert("kind".to_owned());
+                Some((kind.to_owned(), fields))
+            })
+            .collect()
+    })
+}
+
+fn unknown_field(text: &[u8], file: &Runtimes) -> Result<(), String> {
+    let keys: Keys = serde_json::from_slice(text).map_err(|error| error.to_string())?;
+    for (name, runtime) in &file.runtimes {
+        let kind = serde_json::to_value(runtime.kind()).unwrap_or_default();
+        let known = kind.as_str().and_then(|kind| known_fields().get(kind));
+        let given = keys
+            .runtimes
+            .get(name.as_str())
+            .into_iter()
+            .flat_map(BTreeMap::keys);
+        for field in given {
+            if !known.is_some_and(|known| known.contains(field)) {
+                return Err(format!("runtime {name}: unknown field {field:?}"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn parse(text: &[u8], command_kind: bool) -> Result<Runtimes, String> {
     let file: Runtimes = crate::protocol::decode(text).map_err(|error| error.to_string())?;
+    unknown_field(text, &file)?;
     for (name, runtime) in &file.runtimes {
         check(name, runtime, command_kind)?;
     }
@@ -375,8 +464,40 @@ mod tests {
                 "invalid runtime name",
             ),
             (
+                r#"{"runtimes":{"dev":{"kind":"podman"}}}"#,
+                "unknown variant `podman`",
+            ),
+            (
                 r#"{"runtimes":{"dev":{"kind":"ssh"}}}"#,
-                "unknown variant `ssh`",
+                "missing field `destination`",
+            ),
+            (
+                r#"{"runtimes":{"dev":{"kind":"ssh","destination":"h","ssh_args":["-N"]}}}"#,
+                "runtime dev: ssh_args: -N is not a connection option",
+            ),
+            (
+                r#"{"runtimes":{"dev":{"kind":"ssh","destination":"h","ssh_args":["-p"]}}}"#,
+                "runtime dev: ssh_args: is not a list of ssh options",
+            ),
+            (
+                r#"{"runtimes":{"dev":{"kind":"ssh","destination":"-h"}}}"#,
+                "runtime dev: ssh_args:",
+            ),
+            (
+                r#"{"runtimes":{"dev":{"kind":"ssh","destination":"h","dir":"/a:b"}}}"#,
+                "runtime dev: dir: contains a colon",
+            ),
+            (
+                r#"{"runtimes":{"dev":{"kind":"ssh","destination":"h","destinaton":"x"}}}"#,
+                "runtime dev: unknown field \"destinaton\"",
+            ),
+            (
+                r#"{"runtimes":{"dev":{"kind":"command","prefx":[]}}}"#,
+                "runtime dev: unknown field \"prefx\"",
+            ),
+            (
+                r#"{"runtimes":{"dev":{"kind":"container","from":{"image":"x"},"imag":1}}}"#,
+                "runtime dev: unknown field \"imag\"",
             ),
             (
                 r#"{"runtimes":{"dev":{"kind":"command","cwd":"rel"}}}"#,
@@ -402,6 +523,60 @@ mod tests {
         for (text, message) in cases {
             let error = parsed(text).unwrap_err();
             assert!(error.contains(message), "{text}: {error}");
+        }
+    }
+
+    #[test]
+    fn an_ssh_runtime_has_a_destination_connection_options_and_a_remote_directory() {
+        let found = parsed(
+            r#"{"runtimes":{"dev":{"kind":"ssh","destination":"me@host","ssh_args":["-p","2222","-i","key"],
+            "dir":"/srv/ko","cwd":null,"env":{"A":"1"}}}}"#,
+        )
+        .unwrap();
+        let runtime = &found.runtimes[&"dev".parse().unwrap()];
+        assert_eq!(runtime.kind(), RuntimeKind::Ssh);
+        assert_eq!(runtime.cwd, None);
+        let Kind::Ssh(ssh) = &runtime.kind else {
+            panic!("not an ssh runtime");
+        };
+        assert_eq!(ssh.destination, "me@host");
+        assert_eq!(ssh.ssh_args, ["-p", "2222", "-i", "key"]);
+        assert_eq!(
+            ssh.dir.as_ref().map(AbsPath::as_path),
+            Some(Path::new("/srv/ko"))
+        );
+        assert_eq!(
+            parsed(r#"{"runtimes":{"d":{"kind":"ssh","destination":"h"}}}"#)
+                .unwrap()
+                .runtimes
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_known_fields_are_the_fields_that_a_runtime_writes() {
+        let full = |kind: &str| -> Vec<String> {
+            let runtime = match kind {
+                "ssh" => r#"{"kind":"ssh","destination":"h","ssh_args":[],"dir":"/d"}"#,
+                "container" => {
+                    r#"{"kind":"container","from":{"image":"x"},"container":"c","volumes":[],"user":"u","run_args":[],"init":["a"],"ssh_agent":"forward","ko":"path"}"#
+                }
+                _ => r#"{"kind":"command","prefix":[],"socket":"/s","lead":[],"up":[]}"#,
+            };
+            let mut runtime: serde_json::Value = serde_json::from_str(runtime).unwrap();
+            runtime["env"] = serde_json::json!({});
+            runtime["cwd"] = serde_json::json!("/c");
+            runtime["paths"] = serde_json::json!([]);
+            let runtime: Runtime = serde_json::from_value(runtime).unwrap();
+            let written = serde_json::to_value(&runtime).unwrap();
+            let mut keys: Vec<String> = written.as_object().unwrap().keys().cloned().collect();
+            keys.sort();
+            keys
+        };
+        for kind in ["ssh", "command", "container"] {
+            let known: Vec<String> = known_fields()[kind].iter().cloned().collect();
+            assert_eq!(full(kind), known, "{kind}");
         }
     }
 

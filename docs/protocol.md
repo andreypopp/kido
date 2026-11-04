@@ -1171,8 +1171,9 @@ pane. The first client message is `exec`; nothing else is read before
 it. The server sends `stdout` and `stderr` records, then `exit` with a
 status or a signal and closes with 1000; `error` closes with 1011 and
 is the one way a session ends without `exit`: the runtime failed to
-start, it needs a pane to log in, the command could not start, no
-session slot came free in time, or a message did not parse. A `data`
+start, it needs a pane to log in, the command could not start, the
+transport failed (ssh's own exit 255), no session slot came free in
+time, or a message did not parse. A `data`
 payload is at most 64 KiB before its encoding. `argv` runs without a
 shell. Nothing of the caller's environment crosses: the runtime's
 `env`, then the request's, apply. The server reads the WebSocket only

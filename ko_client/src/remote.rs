@@ -6,7 +6,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use ko_server::config::{self, Dir, SUN_PATH_MAX};
+use ko_server::config::{self, Dir};
+use ko_server::ssh::{self, QueryFailure, control_args};
 use ko_sys::fd::{self, Want};
 use ko_sys::pid::{Exit, Pid, Waited};
 use ko_sys::signal::{Signal, Signals};
@@ -18,10 +19,6 @@ const COMMAND_WITHIN: Duration = Duration::from_secs(20);
 const STOP_WITHIN: Duration = Duration::from_secs(2);
 const TICK: Duration = Duration::from_millis(5);
 const LOG_TAIL: usize = 400;
-
-// ssh creates the master's socket as "<ControlPath>." and 16 random characters before it renames
-// the file into place, and that name must fit in sun_path too.
-const MAX_DIR: usize = SUN_PATH_MAX - "/ctl.".len() - 16;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Error {
@@ -47,18 +44,12 @@ impl fmt::Display for Error {
             Error::Master { host, log } if log.is_empty() => write!(f, "ssh to {host} failed"),
             Error::Master { host, log } => write!(f, "ssh to {host} failed: {log}"),
             Error::Timeout { host } => write!(f, "ssh to {host} did not answer in time"),
-            Error::NoRemoteKo { host } => write!(
-                f,
-                "ko was not found on {host}; install it there, on the PATH of ssh commands"
-            ),
+            Error::NoRemoteKo { host } => f.write_str(&ssh::no_remote_ko(host)),
             Error::Query { host, message } => {
                 write!(f, "cannot find the ko socket on {host}: {message}")
             }
             Error::Forward(message) => write!(f, "ssh cannot forward the socket: {message}"),
-            Error::Refused { host } => write!(
-                f,
-                "{host} refuses unix-socket forwarding, and ko needs it (sshd AllowStreamLocalForwarding)"
-            ),
+            Error::Refused { host } => f.write_str(&ssh::forwarding_refused(host)),
             Error::NoServer { host } => write!(
                 f,
                 "no ko server is running on {host}; start one there with: ssh {host} ko server"
@@ -109,31 +100,20 @@ fn master_args(ctl: &Path, host: &str, batch: bool) -> Vec<String> {
         "ControlMaster=yes",
         "-o",
         "ControlPersist=no",
-        "-o",
-        "ExitOnForwardFailure=yes",
-        "-o",
-        "ServerAliveInterval=5",
-        "-o",
-        "ServerAliveCountMax=3",
-        "-o",
-        "StreamLocalBindUnlink=yes",
     ]
     .map(str::to_owned)
     .to_vec();
+    for option in ssh::MASTER_OPTIONS
+        .into_iter()
+        .chain(["StreamLocalBindUnlink=yes"])
+    {
+        args.extend(["-o".to_owned(), option.to_owned()]);
+    }
     if batch {
         args.extend(["-o", "BatchMode=yes"].map(str::to_owned));
     }
     args.push(host.to_owned());
     args
-}
-
-fn control_args(ctl: &Path, operation: &[&str], host: &str) -> Vec<String> {
-    ["-S", utf8(ctl)]
-        .into_iter()
-        .chain(operation.iter().copied())
-        .chain([host])
-        .map(str::to_owned)
-        .collect()
 }
 
 fn forward_args(ctl: &Path, local: &Path, remote: &str, host: &str) -> Vec<String> {
@@ -158,26 +138,25 @@ pub(crate) fn remote_socket(
     stdout: &[u8],
     stderr: &[u8],
 ) -> Result<String, Error> {
-    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).trim().to_owned();
     let query = |message: String| Error::Query {
         host: host.to_owned(),
         message,
     };
-    match exit {
-        Exit::Exited(0) => {
-            let path = text(stdout);
-            if path.starts_with('/') && !path.contains([':', '%', '\n', '\0']) {
-                Ok(path)
-            } else {
-                Err(query(format!("invalid socket path {path:?}")))
-            }
+    match ssh::query_failure(exit, stderr) {
+        None => {
+            let text = String::from_utf8_lossy(stdout);
+            ssh::reported_path(&text)
+                .map(str::to_owned)
+                .ok_or_else(|| query(format!("invalid socket path {:?}", text.trim())))
         }
-        Exit::Exited(127) => Err(Error::NoRemoteKo {
+        Some(QueryFailure::NoKo) => Err(Error::NoRemoteKo {
             host: host.to_owned(),
         }),
-        Exit::Exited(255) => Err(Error::Ssh(text(stderr))),
-        Exit::Exited(code) => Err(query(format!("{} (exit {code})", text(stderr)))),
-        Exit::Signaled(signal) => Err(query(format!("ssh died of signal {signal}"))),
+        Some(QueryFailure::Ssh(message)) => Err(Error::Ssh(message)),
+        Some(QueryFailure::Exit { code, message }) => {
+            Err(query(format!("{message} (exit {code})")))
+        }
+        Some(QueryFailure::Signal(signal)) => Err(query(format!("ssh died of signal {signal}"))),
     }
 }
 
@@ -203,12 +182,13 @@ fn private_dir(base: &Path, name: &str) -> Result<PathBuf, Error> {
     let text = dir
         .to_str()
         .ok_or_else(|| Error::Dir("the private directory is not UTF-8".to_owned()))?;
-    if text.len() > MAX_DIR {
+    if text.len() > ssh::MAX_DIR {
         return Err(Error::DirTooLong(format!(
-            "private directory {text} exceeds {MAX_DIR} bytes"
+            "private directory {text} exceeds {} bytes",
+            ssh::MAX_DIR
         )));
     }
-    if text.contains([',', '%', ':']) {
+    if text.contains(',') || ssh::has_syntax(text) {
         return Err(Error::Dir(format!(
             "private directory {text} contains a comma, a colon or a percent sign"
         )));
@@ -293,7 +273,7 @@ impl Remote {
     }
 
     fn ctl(&self) -> PathBuf {
-        self.dir.join("ctl")
+        self.dir.join(ssh::CONTROL)
     }
 
     fn log(&self) -> String {
@@ -364,7 +344,7 @@ impl Remote {
     }
 
     fn start_master(&mut self) -> Result<(), Error> {
-        for stale in ["ctl", "socket"] {
+        for stale in [ssh::CONTROL, "socket"] {
             let _ = fs::remove_file(self.dir.join(stale));
         }
         let log = self.scratch("master.log")?;
@@ -591,7 +571,7 @@ mod tests {
         let dir = private_dir(&base, "remote-1").unwrap();
         let mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
-        let long = private_dir(&base, &"x".repeat(MAX_DIR)).unwrap_err();
+        let long = private_dir(&base, &"x".repeat(ssh::MAX_DIR)).unwrap_err();
         assert!(matches!(&long, Error::DirTooLong(_)), "{long}");
         let odd = private_dir(&base, "a:b").unwrap_err();
         assert!(matches!(odd, Error::Dir(_)));

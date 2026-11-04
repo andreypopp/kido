@@ -8,7 +8,7 @@ use crate::ids::{PaneToken, RuntimeName};
 use crate::protocol::ExecRequest;
 use crate::runtime::exec::Launch;
 use crate::runtime::file::{Access, Container, Ko, Runtime, Source, SshAgent};
-use crate::runtime::{Cleanup, Ctx, Entry, Next, Outcome, version_next};
+use crate::runtime::{Cleanup, Ctx, Entry, Next, Outcome, text, version_next, words};
 
 const PROGRAM: &str = "container";
 const SOCKET: &str = "/run/ko/socket";
@@ -44,14 +44,6 @@ struct Mounted {
 #[derive(Debug, Deserialize)]
 struct Status {
     state: String,
-}
-
-fn text(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
-
-fn words(words: &[&str]) -> Vec<String> {
-    words.iter().map(|word| (*word).to_owned()).collect()
 }
 
 fn program(settings: &Container) -> &str {
@@ -134,9 +126,10 @@ pub(crate) fn entry(
     ]);
     Entry {
         prefix: prefix.into_iter().map(String::into_bytes).collect(),
-        ko: inner_ko(settings).as_bytes().to_vec(),
-        socket: SOCKET.as_bytes().to_vec(),
+        ko: vec![inner_ko(settings).as_bytes().to_vec()],
+        location: vec![b"--socket".to_vec(), SOCKET.as_bytes().to_vec()],
         token: Vec::new(),
+        quoted: false,
     }
 }
 
@@ -377,7 +370,7 @@ mod tests {
     fn args(next: Next) -> Vec<String> {
         match next {
             Next::Run(launch) => launch.args,
-            Next::Up => panic!("up"),
+            Next::Up | Next::Lead(_) => panic!("up"),
             Next::Fail(message) => panic!("{message}"),
         }
     }
@@ -386,7 +379,7 @@ mod tests {
         match next {
             Next::Fail(message) => message,
             Next::Run(launch) => panic!("run {:?}", launch.args),
-            Next::Up => panic!("up"),
+            Next::Up | Next::Lead(_) => panic!("up"),
         }
     }
 
@@ -602,8 +595,11 @@ mod tests {
                 "ko-dev",
             ]
         );
-        assert_eq!(entry.ko, b"/opt/ko/bin/ko");
-        assert_eq!(entry.socket, b"/run/ko/socket");
+        assert_eq!(entry.ko, [b"/opt/ko/bin/ko".to_vec()]);
+        assert_eq!(
+            entry.location,
+            [b"--socket".to_vec(), b"/run/ko/socket".to_vec()]
+        );
         assert!(entry.token.is_empty());
         let token: PaneToken = "0123456789abcdef0123456789abcdef".parse().unwrap();
         assert_eq!(token_text(&token), format!("KO_PANE_TOKEN={token}\n"));

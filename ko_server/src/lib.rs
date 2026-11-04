@@ -31,6 +31,7 @@ pub mod schema;
 pub mod server;
 mod shm;
 mod spill;
+pub mod ssh;
 mod state;
 mod tail;
 mod telemetry;

@@ -33,6 +33,7 @@ pub(crate) enum Retry {
 pub(crate) struct Limiter {
     cap: usize,
     running: usize,
+    ends: u64,
     waiting: VecDeque<Token>,
     parked: Vec<Token>,
 }
@@ -42,6 +43,7 @@ impl Limiter {
         Limiter {
             cap,
             running: 0,
+            ends: 0,
             waiting: VecDeque::new(),
             parked: Vec::new(),
         }
@@ -81,16 +83,23 @@ impl Limiter {
         start
     }
 
+    // How many sessions have ended: a refused session that started before the latest end can
+    // try again at once.
+    pub(crate) fn ends(&self) -> u64 {
+        self.ends
+    }
+
     pub(crate) fn leave(&mut self) -> Vec<Token> {
+        self.ends = self.ends.saturating_add(1);
         self.running = self.running.saturating_sub(1);
         self.fill(true)
     }
 
-    pub(crate) fn retry(&mut self, ticket: Token) -> (Retry, Vec<Token>) {
+    pub(crate) fn retry(&mut self, ticket: Token, started: u64) -> (Retry, Vec<Token>) {
         self.running = self.running.saturating_sub(1);
-        if self.running == 0 {
-            let mut start = self.fill(false);
+        if self.running == 0 || self.ends > started {
             self.running = self.running.saturating_add(1);
+            let mut start = self.fill(false);
             start.insert(0, ticket);
             return (Retry::Now, start);
         }
@@ -126,7 +135,7 @@ impl Launch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mode {
     Exec { stdin: bool },
-    Capture,
+    Capture { stdin: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,7 +202,7 @@ pub(crate) fn spawn(poll: &mut Poll, launch: &Launch, mode: Mode) -> io::Result<
     let args: Vec<&str> = launch.args.iter().map(String::as_str).collect();
     let (stdin, stdout) = match mode {
         Mode::Exec { stdin } => (stdin, true),
-        Mode::Capture => (false, true),
+        Mode::Capture { stdin } => (stdin, true),
     };
     let pid = spawn::program(
         &launch.program,
@@ -364,7 +373,15 @@ impl Helper {
             .get_mut(..wanted)
             .map(|buffer| ko_sys::fd::read(reader.fd.as_fd(), buffer))
         {
-            Some(Ok(count)) if count > 0 => Chunk::Data(count),
+            Some(Ok(count)) if count > 0 => {
+                if stream == Stream::Stderr {
+                    self.tail
+                        .extend_from_slice(scratch.get(..count).unwrap_or_default());
+                    let excess = self.tail.len().saturating_sub(STDERR_TAIL);
+                    self.tail.drain(..excess);
+                }
+                Chunk::Data(count)
+            }
             Some(Err(error)) if error.kind() == io::ErrorKind::WouldBlock => Chunk::Wait,
             _ => {
                 reader.open = false;
@@ -382,17 +399,10 @@ impl Helper {
                     break;
                 };
                 let data = buffer.get(..count).unwrap_or_default();
-                match stream {
-                    Stream::Stdout => {
-                        let room = CAPTURE_LIMIT.saturating_sub(self.out.len());
-                        self.out
-                            .extend_from_slice(data.get(..room.min(count)).unwrap_or_default());
-                    }
-                    Stream::Stderr => {
-                        self.tail.extend_from_slice(data);
-                        let excess = self.tail.len().saturating_sub(STDERR_TAIL);
-                        self.tail.drain(..excess);
-                    }
+                if stream == Stream::Stdout {
+                    let room = CAPTURE_LIMIT.saturating_sub(self.out.len());
+                    self.out
+                        .extend_from_slice(data.get(..room.min(count)).unwrap_or_default());
                 }
             }
         }
@@ -463,6 +473,8 @@ pub(crate) struct Running {
     pub(crate) request: ExecRequest,
     pub(crate) retried: bool,
     pub(crate) output: bool,
+    pub(crate) fed: bool,
+    pub(crate) started: u64,
 }
 
 #[derive(Debug)]
@@ -562,15 +574,39 @@ mod tests {
         limiter.join(t[1]);
         limiter.join(t[2]);
         limiter.join(t[3]);
-        assert_eq!(limiter.retry(t[1]), (Retry::Later, vec![t[3]]));
+        assert_eq!(limiter.retry(t[1], 0), (Retry::Later, vec![t[3]]));
         assert_eq!(limiter.sessions(), 3);
         assert_eq!(limiter.leave(), vec![t[1]]);
         assert_eq!(limiter.leave(), Vec::<Token>::new());
         assert_eq!(limiter.leave(), Vec::<Token>::new());
         let mut alone = Limiter::new(2);
         alone.join(t[7]);
-        assert_eq!(alone.retry(t[7]), (Retry::Now, vec![t[7]]));
+        assert_eq!(alone.retry(t[7], 0), (Retry::Now, vec![t[7]]));
         assert_eq!(alone.sessions(), 1);
+    }
+
+    #[test]
+    fn a_refused_session_retries_at_once_when_a_session_ended_since_it_started() {
+        let t = tickets(4);
+        let mut limiter = Limiter::new(3);
+        limiter.join(t[1]);
+        limiter.join(t[2]);
+        limiter.join(t[3]);
+        let started = limiter.ends();
+        limiter.leave();
+        assert_eq!(limiter.retry(t[3], started), (Retry::Now, vec![t[3]]));
+        assert_eq!(limiter.sessions(), 2);
+
+        let t = tickets(6);
+        let mut capped = Limiter::new(2);
+        for ticket in [t[1], t[2], t[3], t[4]] {
+            capped.join(ticket);
+        }
+        let started = capped.ends();
+        assert_eq!(capped.leave(), vec![t[3]]);
+        assert_eq!(capped.retry(t[2], started), (Retry::Now, vec![t[2]]));
+        assert_eq!(capped.running, 2, "t[4] stays queued");
+        assert_eq!(capped.sessions(), 3);
     }
 
     #[test]

@@ -2,11 +2,11 @@
 
 A **runtime** is a named place where a pane's program runs and where
 an exec session runs a command: an Apple container (the `container`
-kind), an ssh host later, and the test-only `command` kind. The host
-is the implicit runtime of every other pane. This document describes
-the runtime core: the configuration, the link, the listener and the
-identity on it, how a pane starts in a runtime, the exec session, and
-the container kind. The `ssh` kind does not exist yet. [protocol.md](protocol.md), section 15,
+kind), an ssh host (the `ssh` kind), and the test-only `command` kind.
+The host is the implicit runtime of every other pane. This document
+describes the runtime core: the configuration, the link, the listener
+and the identity on it, how a pane starts in a runtime, the exec
+session, and the two kinds. [protocol.md](protocol.md), section 15,
 gives the routes. [design-ko.md](design-ko.md) describes the server,
 and [design.md](design.md) the agent features. This document does not
 repeat them.
@@ -27,7 +27,9 @@ The coordinator's modules are `ko_server/src/runtime/`: `file.rs`
 one dispatch over the kinds), `pane.rs` (the runtime directory's
 layout, the cwd mapping and a pane's host-side argv), `command.rs`
 (what only the `command` kind does), `container.rs` (the container
-kind: its start stages, its argvs and its cleanup), `exec.rs` (the helper process,
+kind: its start stages, its argvs and its cleanup), `ssh.rs` (the ssh
+kind: its start stages, its argvs, the remote quoting and the
+classification of ssh's exits), `exec.rs` (the helper process,
 the session's stages and the session limiter) and `leaving.rs` (the
 children that the server ended, until they are reaped).
 `state/runtime_ops.rs` holds the routes, the identity gate and the
@@ -56,19 +58,22 @@ fields that every kind has are the runtime's `env`, its default
 `cwd` and the `paths` prefix list of the cwd mapping. The server
 validates the file with the API's newtypes (a name, an absolute
 path); a bad field is an error that names the runtime and the field.
-Unknown fields are ignored: the kind's fields are flattened into the
-entry, and serde refuses `deny_unknown_fields` with `flatten`.
+An unknown field is an error that names the runtime and the field
+(`runtime NAME: unknown field "X"`). The kind's fields are flattened
+into the entry, and serde refuses `deny_unknown_fields` with
+`flatten`, so `file.rs` compares the entry's keys with the fields of
+its kind after the typed decode.
 
 **The `command` kind** exists for the e2e suite only. The server
 accepts it only with `KO_RUNTIME_COMMAND_KIND=1` in its environment;
 without the knob, a `command` entry is a configuration error. Its
 transport is a `prefix` argv put in front of `ko enter` and of an
-exec's argv, on the host. Two optional steps model what the ssh and
-container kinds will do, so that the link machinery is tested before
-they exist: `lead`, an interactive step that one waiting pane runs on
-its own pty (the ssh master's login), and `up`, a step that the
-server runs as its own child (the ssh forward). The `container` kind's
-fields are in "The container kind" below.
+exec's argv, on the host. Two optional steps model the other kinds,
+so that the link machinery is tested without them: `lead`, an
+interactive step that one waiting pane runs on its own pty (the ssh
+master's login), and `up`, a step that the server runs as its own
+child (the ssh forward). The fields of the other kinds are in their
+sections below.
 
 ## The link
 
@@ -208,17 +213,19 @@ host prefix matches whole components; no match gives the runtime's
 transport's directory.
 
 **The token** never appears in an argv, because `ps` shows every
-user's arguments. The server writes the pane's token file in
-`<state>/runtimes/<name>/panes/` (directory `0700`, file `0600`)
-before it answers `Up` to that pane's wait, and removes it when the
-pane leaves the document and at down. The kind chooses the file's
-name and text: `pane_N.token` with the bare token, which `ko enter`
-reads, or the container kind's `pane_N.env`, an env file with
-`KO_PANE_TOKEN=...`, which `container exec --env-file` reads.
+user's arguments. For the `command` and `container` kinds, the server
+writes the pane's token file in `<state>/runtimes/<name>/panes/`
+(directory `0700`, file `0600`) before it answers `Up` to that pane's
+wait, and removes it when the pane leaves the document and at down.
+The kind chooses the file's name and text: `pane_N.token` with the
+bare token, which `ko enter` reads, or the container kind's
+`pane_N.env`, an env file with `KO_PANE_TOKEN=...`, which `container
+exec --env-file` reads. The ssh kind's token file is on the remote
+("The ssh kind").
 `ko enter --token-file F` reads and unlinks it; a file that is missing
 or not private is `ko enter: no token`, exit 1. Without
 `--token-file`, `ko enter` takes `KO_PANE_TOKEN` from its environment,
-which the container kind will use.
+which the container kind uses.
 
 **`ko enter`** (`ko_shell/src/enter.rs`) is the inner side. It sets
 `KO_SOCKET`, `KO_PANE`, `KO_PANE_TOKEN`, `KO_RUNTIME`,
@@ -275,15 +282,18 @@ helper's exit is the command's. For `command`, the helper is the
 `prefix` and the argv, with no shell. For `container`, it is
 `container exec` ("The container kind"). The kinds still to come plug
 in at the launch and at the classification of an exit
-(`Runtime::refused`, "the transport refused a channel before any
-output"); a bridge kind can serve the session by frames with no
-process.
+(`Runtime::ending`: the command's exit, a refused channel, or the
+transport's own error); a bridge kind can serve the session by frames
+with no process. The ssh kind's helper is described in "The ssh kind".
 
 **The environment** of the command is the runtime's `env`, then the
 request's, then the forced `KO_RUNTIME`. Nothing of the caller's or
 the server's environment crosses, which is the credential boundary of
-a routed agent's tools. `PATH` is the runtime's, else `/usr/bin:/bin`,
-and the program is searched there.
+a routed agent's tools. Inside the runtime, the command starts from
+the environment that the kind's transport gives: an ssh host's login
+environment, an image's environment in a container, and nothing for
+the `command` kind, whose `PATH` is the runtime's, else
+`/usr/bin:/bin`.
 
 **Backpressure, both ways.** The server reads the WebSocket only
 while the child's stdin pipe takes bytes, and reads a stdout or
@@ -306,8 +316,8 @@ whose master carries panes and sessions as channels of one
 connection, which sshd's `MaxSessions` bounds; the other kinds keep
 it for one behaviour. A helper exit that the kind classifies as a
 refused channel is retried once, after the next session of that
-runtime ends, then reported as `error`. Neither the `command` nor the
-`container` kind classifies one.
+runtime ends (at once when one ended since it started), then reported
+as `error`. Only the ssh kind classifies one.
 
 ## The container kind
 
@@ -414,12 +424,120 @@ start's container. The reply to `DELETE` does not wait for the
 removal. At the server's exit the stops start without the queue's
 order and finish after the server is gone.
 
+## The ssh kind
+
+An `ssh` entry names a `destination`, `ssh_args` and an optional
+remote `dir` (`ko_server/src/runtime/file.rs`). `ssh_args` takes
+only connection options, the kept class of the option classifier in
+`ko_server/src/ssh.rs`, which `ko ssh` and the remote attach also
+use; a control-socket option (`-S`, `ControlPath`, `ControlMaster`,
+`ControlPersist`) is refused too, because it would replace ko's.
+Every pane, passenger and exec session of the runtime is one channel
+of one master connection, whose control socket is `ctl` in the
+runtime directory. `ko_server/src/runtime/ssh.rs` builds every argv
+of the kind.
+
+**The start.** The steps run in this order:
+
+1. A check of the control socket. When a master answers, the server
+   adopts it and skips the lead step. Thus a server that restarted
+   does not log in again, and an exec session can start a link whose
+   master is alive.
+2. Otherwise the server removes a stale `ctl`, and the lead step is
+   the master, with `ControlPersist=yes`. The leader runs it on its
+   pane's pty, so a passphrase, a password or a security key's touch
+   reaches the user. ssh forks to the background when the master is
+   up. The master is not the server's child: the checks are the
+   server's only source for its state.
+3. The prepare passenger, `ko enter --prepare` through the master
+   (`ko_shell/src/enter.rs`). It resolves the remote directory
+   (`dir`, else a private default of the remote user), refuses a
+   directory that is not private and the user's, removes a stale
+   socket and every token file, and prints the directory and its
+   `ko version`. A missing remote ko fails the start, and so does
+   another protocol major or `Ko-Vt`, with both builds, by the check
+   that every kind shares. The server keeps the directory for
+   the link's life.
+4. For an adopted master, a cancel of the old forward, whose failure
+   is ignored: OpenSSH skips a forward that is identical to one it
+   has, and prepare removed that forward's remote socket.
+5. The forward of the remote socket to the runtime's listener.
+   Success is `Up`. A refused forward fails with the text of a
+   remote attach whose host refuses unix-socket forwarding.
+
+**Through the master.** With `ControlMaster=no`, ssh connects
+directly when the control socket does not answer. Every passenger,
+pane and exec session sets a proxy command that always fails, so
+none of them runs without the master and its forward. Every remote
+word is single-quoted, because sshd hands the command line to the
+remote user's login shell.
+
+**A pane.** Before a pane's wait gets `Up`, the server checks the
+master, then writes the pane's token file on the remote through a
+passenger that gets the token on its stdin. A dead master restarts
+the link from `Down`, and the pane waits in the new start and may
+lead it. The pane's program is `ssh -t` through the master, then `ko
+enter` without `--socket`: it resolves the remote directory as
+`--prepare` does and reads the socket and the token file there,
+because the pane's argv is fixed before the link knows the
+directory.
+
+**A dead master** ends every pane of the runtime, as a lost ssh
+connection does. The link stays `Up` until a check shows the death:
+the next pane's check, or the check that follows an exec session
+that ended with ssh's own failure.
+
+**The exec helper** is a passenger that runs `env(1)` with the
+variables as words, because sshd accepts no other variables and
+`env` takes any name in every login shell. The server finds `ssh`
+on its own `PATH` and runs the passenger with an empty environment,
+because a `SendEnv` of the user's ssh configuration would carry the
+server's variables to the command, and a `SendEnv` on the command
+line cannot clear it. A program whose name
+contains `=` is refused, because `env` would read it as a variable.
+ssh's exit is the command's status, except 255, which is `error` with
+ssh's stderr; a remote signal also ends as 255. A 255 whose stderr
+says that sshd refused the channel (its `MaxSessions`) is retried
+once, only when no output reached the client and no stdin or EOF
+reached the helper, because the refused helper's input is lost.
+Otherwise it is `error` with the refusal line. The stderr of the
+refused attempt reaches the client.
+
+**Down**, the idle rule, a failed start and the server's exit end
+the master with `-O exit`, a cleanup command of the runtime's queue
+("Down and cleanup" of the container kind), and the forward ends
+with it. A failed start thus asks for the login again. A link whose
+master died queues the same exit before it starts again. The remote
+socket and token files stay until the next `--prepare`; the tokens
+are dead with their panes. A start that begins while the exit is
+queued waits for it, and `DELETE` removes the runtime directory,
+`ctl` with it, only after the queue is empty; a start in between
+keeps the directory. At its exit the server starts every queued
+cleanup of every runtime, a runtime that is already down included,
+and leaves them and the running ones to finish after it is gone, so
+no master outlives a down.
+
 ## Decisions
 
 2026-11-04:
 
+- The ssh master is the leader pane's process, with
+  `ControlPersist=yes`, not the server's child: a headless server
+  cannot answer ssh's prompts, and a batch-mode master would need a
+  login command.
+- The remote directory is resolved on the remote by `ko enter`, both
+  for `--prepare` and for a pane, so the pane's argv needs no fact
+  of the link.
+- The exec passes variables as words of `env(1)`, not `SetEnv`,
+  which a default sshd's `AcceptEnv` refuses.
+- The option classifier and the ssh facts that the remote attach
+  shares live in `ko_server::ssh`, because the server validates
+  `ssh_args` and `ko_shell` and `ko_client` depend on `ko_server`.
+- Down does not clean the remote files: the next `--prepare` does,
+  and a dead pane's token buys nothing.
+
 - The configuration's kinds are a closed enum that holds only what is
-  built: `command` until the ssh and container units add theirs.
+  built.
 - The interactive step's report is `POST /runtimes/{name}/lead`, one
   name for every kind, and the wait's reply carries the step's argv
   only for the leader, as one optional field.

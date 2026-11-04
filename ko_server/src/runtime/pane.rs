@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use crate::ids::{PaneId, RuntimeName};
 use crate::protocol::{PathMap, Variable};
 use crate::runtime::file::Runtime;
+use crate::runtime::{Ctx, Tokens};
+use crate::ssh::quote_bytes;
 
 pub(crate) fn directory(root: &Path, name: &RuntimeName) -> PathBuf {
     root.join(name.as_str())
@@ -16,13 +18,11 @@ pub(crate) fn token_directory(root: &Path, name: &RuntimeName) -> PathBuf {
     directory(root, name).join("panes")
 }
 
-pub(crate) fn token_path(
-    root: &Path,
-    name: &RuntimeName,
-    runtime: &Runtime,
-    pane: PaneId,
-) -> PathBuf {
-    token_directory(root, name).join(runtime.token_file(pane))
+pub(crate) fn token_path(socket: &Path, runtime: &Runtime, pane: PaneId) -> Option<PathBuf> {
+    match runtime.tokens(pane) {
+        Tokens::File { name, .. } => Some(socket.with_file_name("panes").join(name)),
+        Tokens::Remote => None,
+    }
 }
 
 fn map_cwd(paths: &[PathMap], default: Option<&Path>, host_cwd: &Path) -> Option<PathBuf> {
@@ -78,7 +78,16 @@ pub(crate) fn wrapper(wrap: &Wrap<'_>, inner: Option<&[Vec<u8>]>) -> Vec<Vec<u8>
         ),
         (None, _) => runtime.cwd.as_ref().map(|cwd| cwd.as_path().to_path_buf()),
     };
-    let entry = runtime.entry(name, *pane, (exe, root, server_env));
+    let socket = socket_path(root, name);
+    let entry = runtime.entry(
+        *pane,
+        &Ctx {
+            name,
+            env: server_env,
+            socket: &socket,
+            exe,
+        },
+    );
     let mut argv = vec![
         bytes(exe),
         text("runtime-exec"),
@@ -86,27 +95,27 @@ pub(crate) fn wrapper(wrap: &Wrap<'_>, inner: Option<&[Vec<u8>]>) -> Vec<Vec<u8>
         text("--"),
     ];
     argv.extend(entry.prefix);
-    argv.extend([
-        entry.ko,
-        text("enter"),
-        text("--socket"),
-        entry.socket,
-        text("--pane"),
-        text(&pane.to_string()),
-    ]);
-    argv.extend(entry.token);
-    argv.extend([text("--runtime"), text(name.as_str())]);
+    let mut enter = entry.ko;
+    enter.push(text("enter"));
+    enter.extend(entry.location);
+    enter.extend([text("--pane"), text(&pane.to_string())]);
+    enter.extend(entry.token);
+    enter.extend([text("--runtime"), text(name.as_str())]);
     if let Some(cwd) = cwd {
-        argv.extend([text("--cwd"), bytes(&cwd)]);
+        enter.extend([text("--cwd"), bytes(&cwd)]);
     }
     let requested = env.iter().map(|Variable { name, value }| (name, value));
     for (variable, value) in runtime.env.iter().chain(requested) {
-        argv.extend([text("--env"), text(&format!("{variable}={value}"))]);
+        enter.extend([text("--env"), text(&format!("{variable}={value}"))]);
     }
     if let Some(inner) = inner {
-        argv.push(text("--"));
-        argv.extend(inner.iter().cloned());
+        enter.push(text("--"));
+        enter.extend(inner.iter().cloned());
     }
+    if entry.quoted {
+        enter = enter.iter().map(|word| quote_bytes(word)).collect();
+    }
+    argv.extend(enter);
     argv
 }
 

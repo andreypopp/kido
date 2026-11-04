@@ -39,6 +39,11 @@ impl Leaving {
         self.arm(poll);
     }
 
+    // The process finishes after the server: nothing signals it any more.
+    pub(crate) fn release(&mut self, pid: Pid) {
+        self.doomed.retain(|doomed| doomed.pid != pid);
+    }
+
     pub(crate) fn is_timer(&self, timer: Timer) -> bool {
         self.timer == timer
     }

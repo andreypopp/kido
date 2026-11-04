@@ -1,183 +1,17 @@
-use std::fs::File;
-use std::net::{TcpListener, TcpStream};
-use std::os::fd::AsFd;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::time::Duration;
 
 use ko_sys::pid::{Exit, Pid, signal_descendant};
 use ko_sys::signal::Signal;
 
 use crate::harness::{
-    Child, DEADLINE, Dir, Server, enabled, history_lines, ko, poll, quote, run_ko, run_program,
-    start, start_with, test_env, text_of, which,
+    DEADLINE, Dir, Server, enabled, history_lines, ko, poll, run_ko, run_program, start,
+    start_with, test_env, text_of,
 };
 use crate::outer::{CHORD_UP, Keys, Outer};
-
-const HOST: &str = "koremote";
-
-// These tests run a private sshd of their own, so a test can refuse forwarding with its own
-// configuration and nothing touches the user's ~/.ssh. sshd still starts the real user's shell for
-// the remote command, which reads that user's dotfiles whatever HOME the test sets. They run only
-// with KO_E2E_HOST_SSH=1; then a missing sshd is a failure, not a skip.
-fn first_file(candidates: &[&str], name: &str) -> PathBuf {
-    candidates
-        .iter()
-        .map(PathBuf::from)
-        .find(|path| path.is_file())
-        .or_else(|| which(name))
-        .unwrap_or_else(|| panic!("KO_E2E_HOST_SSH needs {name}"))
-}
-
-// Generated once for the process and shared by every sshd and client of these tests. The
-// directory stays in /tmp, because a static is never dropped.
-fn keys() -> &'static Path {
-    static KEYS: OnceLock<Dir> = OnceLock::new();
-    KEYS.get_or_init(|| {
-        let dir = Dir::new("ko-ssh-keys-");
-        let keygen = first_file(&["/usr/bin/ssh-keygen"], "ssh-keygen");
-        for name in ["host_key", "client_key"] {
-            let file = dir.join(name);
-            let args = ["-q", "-t", "ed25519", "-N", "", "-f", text_of(&file)];
-            run_program(&dir, &keygen, &test_env(&dir), &args, "", DEADLINE).ok();
-        }
-        dir
-    })
-}
-
-struct Remote {
-    dir: Dir,
-    bin: PathBuf,
-    block: PathBuf,
-    _sshd: Child,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Forwarding {
-    Allowed,
-    Refused,
-}
+use crate::sshd::{Forwarding, HOST, Options, Remote, first_file};
 
 impl Remote {
-    fn start(state: &Path, path: &str, forwarding: Forwarding) -> Remote {
-        let dir = Dir::new("ko-ssh-");
-        let env = test_env(&dir);
-        for name in ["host_key", "client_key", "client_key.pub"] {
-            std::fs::copy(keys().join(name), dir.join(name)).unwrap();
-        }
-        std::fs::copy(dir.join("client_key.pub"), dir.join("authorized_keys")).unwrap();
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let user = std::env::var("USER")
-            .or_else(|_| std::env::var("LOGNAME"))
-            .unwrap_or_else(|_| {
-                let id = first_file(&["/usr/bin/id"], "id");
-                run_program(&dir, &id, &env, &["-un"], "", DEADLINE)
-                    .ok()
-                    .trim()
-                    .to_owned()
-            });
-        let forwarding_line = match forwarding {
-            Forwarding::Allowed => "yes",
-            Forwarding::Refused => "no",
-        };
-        std::fs::write(
-            dir.join("sshd_config"),
-            format!(
-                "Port {port}\nListenAddress 127.0.0.1\nHostKey {d}/host_key\nPidFile {d}/sshd.pid\n\
-                 AuthorizedKeysFile {d}/authorized_keys\nStrictModes no\nUsePAM no\n\
-                 PasswordAuthentication no\nKbdInteractiveAuthentication no\n\
-                 PubkeyAuthentication yes\nAllowStreamLocalForwarding {forwarding_line}\n\
-                 SetEnv KO_STATE_DIR={state} PATH={path}\n",
-                d = text_of(&dir),
-                state = text_of(state),
-            ),
-        )
-        .unwrap();
-        let config = dir.join("ssh_config");
-        std::fs::write(
-            &config,
-            format!(
-                "Host {HOST}\n  HostName 127.0.0.1\n  Port {port}\n  User {user}\n  \
-                 IdentityFile {d}/client_key\n  IdentitiesOnly yes\n  IdentityAgent none\n  \
-                 UserKnownHostsFile /dev/null\n  StrictHostKeyChecking no\n  BatchMode yes\n",
-                d = text_of(&dir),
-            ),
-        )
-        .unwrap();
-        let sshd = first_file(
-            &[
-                "/usr/sbin/sshd",
-                "/usr/local/sbin/sshd",
-                "/usr/libexec/openssh/sshd",
-                "/opt/homebrew/sbin/sshd",
-            ],
-            "sshd",
-        );
-        let (null, log) = (
-            File::open("/dev/null").unwrap(),
-            File::create(dir.join("sshd.log")).unwrap(),
-        );
-        let mut child = Child::spawn(
-            &sshd,
-            &["-D", "-e", "-f", text_of(&dir.join("sshd_config"))],
-            &env,
-            &[(null.as_fd(), 0), (log.as_fd(), 1), (log.as_fd(), 2)],
-        );
-        poll("sshd to listen", || {
-            assert!(
-                child.wait(Duration::ZERO).is_none(),
-                "sshd exited: {}",
-                std::fs::read_to_string(dir.join("sshd.log")).unwrap_or_default()
-            );
-            TcpStream::connect(("127.0.0.1", port)).is_ok()
-        });
-        let block = dir.join("block");
-        let real = first_file(&["/usr/bin/ssh"], "ssh");
-        let bin = dir.join("bin");
-        std::fs::create_dir(&bin).unwrap();
-        let wrapper = bin.join("ssh");
-        std::fs::write(
-            &wrapper,
-            format!(
-                "#!/bin/sh\n[ -e {} ] && exit 255\nexec {} -F {} \"$@\"\n",
-                quote(text_of(&block)),
-                quote(text_of(&real)),
-                quote(text_of(&config)),
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(
-            &wrapper,
-            std::os::unix::fs::PermissionsExt::from_mode(0o700),
-        )
-        .unwrap();
-        Remote {
-            dir,
-            bin,
-            block,
-            _sshd: child,
-        }
-    }
-
-    fn with_ko(state: &Path) -> Remote {
-        let bin = ko().parent().unwrap().to_path_buf();
-        let path = format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", text_of(&bin));
-        Remote::start(state, &path, Forwarding::Allowed)
-    }
-
-    fn client_env(&self) -> Vec<Vec<u8>> {
-        let mut env = test_env(&self.dir);
-        env.retain(|entry| !entry.starts_with(b"PATH="));
-        let path = std::env::var("PATH").unwrap_or_default();
-        env.push(format!("PATH={}:{path}", text_of(&self.bin)).into_bytes());
-        env
-    }
-
     fn api(&self, args: &[&str]) -> crate::harness::Run {
         let mut argv = vec!["api", "--host", HOST];
         argv.extend_from_slice(args);
@@ -444,7 +278,14 @@ fn remote_refused_forwarding_is_one_clear_error_and_leaves_nothing() {
     let s = start(&[]);
     let bin = ko().parent().unwrap().to_path_buf();
     let path = format!("{}:/usr/bin:/bin", text_of(&bin));
-    let remote = Remote::start(&s.dir, &path, Forwarding::Refused);
+    let remote = Remote::start(
+        &s.dir,
+        &path,
+        Options {
+            forwarding: Forwarding::Refused,
+            ..Options::default()
+        },
+    );
     let message = remote.api(&["/version"]).error(1);
     assert!(
         message.starts_with(&format!(
@@ -462,7 +303,7 @@ fn remote_without_ko_on_the_host_is_a_clear_error() {
         return;
     }
     let empty = Dir::new("ko-empty-");
-    let remote = Remote::start(&empty, "/usr/bin:/bin", Forwarding::Allowed);
+    let remote = Remote::start(&empty, "/usr/bin:/bin", Options::default());
     let message = remote.api(&["/version"]).error(1);
     assert!(
         message.starts_with(&format!("ko {HOST}: ko was not found on {HOST}")),

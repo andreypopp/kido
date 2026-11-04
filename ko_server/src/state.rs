@@ -1642,7 +1642,7 @@ impl State {
             poll.unwatch(conn.token);
             poll.free(conn.timer);
             self.runs.forget(conn.token);
-            self.runtimes.forget_wait(conn.token);
+            self.runtimes.forget_wait(poll, conn.token);
             self.forget_stops(poll, conn.token);
             self.messages.forget(conn.token);
             if let Phase::Ws(link) = conn.phase {

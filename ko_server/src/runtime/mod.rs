@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -15,6 +15,7 @@ use crate::protocol::{
     Error, ErrorKind, ExecRequest, LeadReport, LinkState, PathMap, Version, check_version, version,
 };
 use crate::server::{Listener, Origin, Timing, Verified};
+use crate::ssh::token_name;
 
 pub(crate) mod command;
 pub(crate) mod container;
@@ -22,12 +23,15 @@ pub(crate) mod exec;
 pub(crate) mod file;
 pub(crate) mod leaving;
 pub(crate) mod pane;
+pub(crate) mod ssh;
 
-use exec::{Helper, Launch, Mode};
+use exec::{Helper, Launch, Mode, Source};
 use file::{Kind, LoadError, Runtime, Runtimes, Volume};
 use pane::{directory, socket_path, token_directory, token_path};
 
 const UP_LIMIT: Duration = Duration::from_secs(120);
+const QUICK_LIMIT: Duration = Duration::from_secs(15);
+pub(crate) const PASS_HOLD: Duration = Duration::from_secs(20);
 pub(crate) const CLEANUP_LIMIT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
@@ -50,14 +54,33 @@ impl Outcome<'_> {
 #[derive(Debug)]
 pub(crate) enum Next {
     Run(Launch),
+    /// An interactive step that one waiting pane runs on its terminal, as the argv.
+    Lead(Vec<String>),
     Up,
     Fail(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Ending {
+    Exit,
+    Refused(String),
+    Error(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Cleanup {
     Stop,
     Delete,
+}
+
+pub(crate) enum Tokens {
+    /// A private file on the host, which the program of the pane reads.
+    File {
+        name: String,
+        text: fn(&PaneToken) -> String,
+    },
+    /// The server writes it inside the runtime, through a step of the link, when a pane starts.
+    Remote,
 }
 
 pub(crate) struct Ctx<'a> {
@@ -68,11 +91,13 @@ pub(crate) struct Ctx<'a> {
 }
 
 /// What a kind puts into a pane's program before and after the shared `enter` words.
+/// `quoted` has the words from `ko` on single-quoted for the remote shell.
 pub(crate) struct Entry {
     pub(crate) prefix: Vec<Vec<u8>>,
-    pub(crate) ko: Vec<u8>,
-    pub(crate) socket: Vec<u8>,
+    pub(crate) ko: Vec<Vec<u8>>,
+    pub(crate) location: Vec<Vec<u8>>,
     pub(crate) token: Vec<Vec<u8>>,
+    pub(crate) quoted: bool,
 }
 
 pub(crate) fn version_next(name: &RuntimeName, out: &Outcome<'_>) -> Next {
@@ -103,13 +128,13 @@ impl Runtime {
     pub(crate) fn lead(&self) -> Option<&[String]> {
         match &self.kind {
             Kind::Command(command) => command.lead.as_deref(),
-            Kind::Container(_) => None,
+            Kind::Container(_) | Kind::Ssh(_) => None,
         }
     }
 
     pub(crate) fn paths(&self) -> Vec<PathMap> {
         let volumes: &[Volume] = match &self.kind {
-            Kind::Command(_) => &[],
+            Kind::Command(_) | Kind::Ssh(_) => &[],
             Kind::Container(container) => &container.volumes,
         };
         volumes
@@ -122,32 +147,32 @@ impl Runtime {
             .collect()
     }
 
-    pub(crate) fn token_file(&self, pane: PaneId) -> String {
+    /// How a pane's token reaches the runtime.
+    pub(crate) fn tokens(&self, pane: PaneId) -> Tokens {
         match &self.kind {
-            Kind::Command(_) => format!("{pane}.token"),
-            Kind::Container(_) => format!("{pane}.env"),
+            Kind::Command(_) => Tokens::File {
+                name: token_name(pane),
+                text: |token| token.to_string(),
+            },
+            Kind::Container(_) => Tokens::File {
+                name: format!("{pane}.env"),
+                text: container::token_text,
+            },
+            Kind::Ssh(_) => Tokens::Remote,
         }
     }
 
-    fn token_text(&self, token: &PaneToken) -> String {
-        match &self.kind {
-            Kind::Command(_) => token.to_string(),
-            Kind::Container(_) => container::token_text(token),
-        }
-    }
-
-    pub(crate) fn entry(
-        &self,
-        name: &RuntimeName,
-        pane: PaneId,
-        (exe, root, env): (&Path, &Path, &[Vec<u8>]),
-    ) -> Entry {
-        let token = token_path(root, name, self, pane);
+    pub(crate) fn entry(&self, pane: PaneId, cx: &Ctx<'_>) -> Entry {
         match &self.kind {
             Kind::Command(command) => {
-                command::entry(command, (exe, socket_path(root, name)), &token)
+                let token = token_path(cx.socket, self, pane).unwrap_or_default();
+                command::entry(command, (cx.exe, cx.socket.to_path_buf()), &token)
             }
-            Kind::Container(container) => container::entry(name, container, (env, &token)),
+            Kind::Container(container) => {
+                let token = token_path(cx.socket, self, pane).unwrap_or_default();
+                container::entry(cx.name, container, (cx.env, &token))
+            }
+            Kind::Ssh(remote) => ssh::entry(remote, cx),
         }
     }
 
@@ -168,29 +193,30 @@ impl Runtime {
 
     pub(crate) fn exec_launch(
         &self,
-        name: &RuntimeName,
         request: &ExecRequest,
-        env: &[Vec<u8>],
+        cx: &Ctx<'_>,
     ) -> Result<Launch, String> {
         match &self.kind {
-            Kind::Command(command) => command::exec_launch(name, self, command, request),
+            Kind::Ssh(remote) => ssh::exec_launch(self, remote, (request, cx)),
+            Kind::Command(command) => command::exec_launch(cx.name, self, command, request),
             Kind::Container(container) => {
-                container::exec_launch(name, self, container, (request, env))
+                container::exec_launch(cx.name, self, container, (request, cx.env))
             }
         }
     }
 
-    pub(crate) fn refused(&self, exit: Exit) -> bool {
+    pub(crate) fn ending(&self, exit: Exit, stderr: &[u8]) -> Ending {
         match &self.kind {
-            Kind::Command(command) => command::refused(command, exit),
-            Kind::Container(_) => false,
+            Kind::Ssh(_) => ssh::ending(exit, stderr),
+            Kind::Command(_) | Kind::Container(_) => Ending::Exit,
         }
     }
 
-    fn cleanup(&self, target: (&RuntimeName, &[Vec<u8>]), what: Cleanup) -> Option<Launch> {
+    fn cleanup(&self, cx: &Ctx<'_>, what: Cleanup) -> Option<Launch> {
         match &self.kind {
             Kind::Command(_) => None,
-            Kind::Container(container) => container::cleanup(container, target, what),
+            Kind::Container(container) => container::cleanup(container, (cx.name, cx.env), what),
+            Kind::Ssh(remote) => ssh::cleanup(remote, cx, what),
         }
     }
 }
@@ -201,6 +227,7 @@ const MISMATCH: &str = "the kind of the runtime changed during its start";
 enum Start {
     Command,
     Container(container::Stage),
+    Ssh(ssh::Link),
 }
 
 impl Start {
@@ -208,6 +235,7 @@ impl Start {
         match &settings.kind {
             Kind::Command(_) => Start::Command,
             Kind::Container(_) => Start::Container(container::Stage::System),
+            Kind::Ssh(_) => Start::Ssh(ssh::Link::new()),
         }
     }
 
@@ -217,6 +245,16 @@ impl Start {
             (Kind::Container(container), Start::Container(_)) => {
                 container::first(container, cx).map(Some)
             }
+            (Kind::Ssh(remote), Start::Ssh(_)) => ssh::first(remote, cx).map(Some),
+            _ => Err(MISMATCH.to_owned()),
+        }
+    }
+
+    // The step after the interactive one.
+    fn resume(&mut self, settings: &Runtime, cx: &Ctx<'_>) -> Result<Option<Launch>, String> {
+        match (&settings.kind, self) {
+            (Kind::Ssh(remote), Start::Ssh(link)) => ssh::resume(remote, link, cx).map(Some),
+            (Kind::Command(command), Start::Command) => Ok(command::first(command, cx.env)),
             _ => Err(MISMATCH.to_owned()),
         }
     }
@@ -227,6 +265,7 @@ impl Start {
             (Kind::Container(container), Start::Container(stage)) => {
                 container::next(container, stage, cx, out)
             }
+            (Kind::Ssh(remote), Start::Ssh(link)) => ssh::next(remote, link, cx, out),
             _ => Next::Fail(MISMATCH.to_owned()),
         }
     }
@@ -237,16 +276,44 @@ impl Start {
             (Kind::Container(container), Start::Container(_)) => {
                 container::watch(container, cx).map(Some)
             }
+            (Kind::Ssh(_), Start::Ssh(_)) => Ok(None),
             _ => Err(MISMATCH.to_owned()),
+        }
+    }
+
+    // Whether the link still answers, for the kinds whose link can die unseen.
+    fn alive(&self, settings: &Runtime, cx: &Ctx<'_>) -> Result<Option<Launch>, String> {
+        match (&settings.kind, self) {
+            (Kind::Ssh(remote), Start::Ssh(_)) => ssh::check(remote, cx).map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    // The step that puts a pane's token into the runtime, for `Tokens::Remote`.
+    fn deliver(
+        &self,
+        settings: &Runtime,
+        cx: &Ctx<'_>,
+        pane: PaneId,
+    ) -> Result<Option<Launch>, String> {
+        match (&settings.kind, self) {
+            (Kind::Ssh(remote), Start::Ssh(link)) => ssh::token(remote, link, cx, pane).map(Some),
+            _ => Ok(None),
         }
     }
 }
 
 #[derive(Debug)]
 enum Step {
-    Lead(Option<PaneId>),
+    Lead {
+        argv: Vec<String>,
+        leader: Option<PaneId>,
+    },
     Cleaning,
-    Up { helper: Helper, deadline: Timer },
+    Up {
+        helper: Helper,
+        deadline: Timer,
+    },
 }
 
 #[derive(Debug)]
@@ -267,9 +334,33 @@ struct Link {
     occupied: bool,
 }
 
+#[derive(Debug)]
+struct Pass {
+    pane: PaneId,
+    conn: Token,
+    token: String,
+}
+
+// The steps of the server that stand between a pane and its program: whether the link still
+// answers, and the delivery of the token.
+#[derive(Debug)]
+enum Job {
+    Check(Option<Pass>),
+    Deliver(Token),
+}
+
+#[derive(Debug)]
+struct Child {
+    name: RuntimeName,
+    helper: Helper,
+    deadline: Timer,
+    job: Job,
+}
+
 #[derive(Debug, Default)]
 struct Pending {
     reaping: Vec<Pid>,
+    commands: Vec<Pid>,
     queue: VecDeque<Launch>,
 }
 
@@ -304,7 +395,19 @@ pub(crate) struct Registry {
     dying: Vec<Pid>,
     cleaning: Vec<Pid>,
     cleanups: BTreeMap<RuntimeName, Pending>,
+    deleting: BTreeSet<RuntimeName>,
+    released: Vec<Pid>,
+    children: Vec<Child>,
+    passed: Vec<(Token, LinkState)>,
     exe: PathBuf,
+}
+
+pub(crate) fn text(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+pub(crate) fn words(words: &[&str]) -> Vec<String> {
+    words.iter().map(|word| (*word).to_owned()).collect()
 }
 
 pub(crate) fn last_line(bytes: &[u8]) -> Option<String> {
@@ -377,12 +480,32 @@ impl Registry {
             dying: Vec::new(),
             cleaning: Vec::new(),
             cleanups: BTreeMap::new(),
+            deleting: BTreeSet::new(),
+            released: Vec::new(),
+            children: Vec::new(),
+            passed: Vec::new(),
             exe: config.exe.clone(),
         }
     }
 
     pub(crate) fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub(crate) fn exec_launch(
+        &self,
+        name: &RuntimeName,
+        runtime: &Runtime,
+        request: &ExecRequest,
+    ) -> Result<Launch, String> {
+        let socket = socket_path(&self.root, name);
+        let cx = Ctx {
+            name,
+            env: &self.env,
+            socket: &socket,
+            exe: &self.exe,
+        };
+        runtime.exec_launch(request, &cx)
     }
 
     pub(crate) fn take_dying(&mut self) -> Vec<Pid> {
@@ -454,6 +577,8 @@ impl Registry {
         if let Some(old) = self.links.remove(name) {
             poll.free(old.idle);
         }
+        // A deletion waits for the cleanup, and a start that follows it keeps the directory.
+        self.deleting.remove(name);
         let start = Start::new(&settings);
         let socket = socket_path(&self.root, name);
         let cx = Ctx {
@@ -493,7 +618,7 @@ impl Registry {
 
     fn start_steps(&mut self, poll: &mut Poll, name: &RuntimeName, from_start: bool) {
         let socket = socket_path(&self.root, name);
-        let Some(link) = self.links.get(name) else {
+        let Some(link) = self.links.get_mut(name) else {
             return;
         };
         let cx = Ctx {
@@ -502,21 +627,32 @@ impl Registry {
             socket: &socket,
             exe: &self.exe,
         };
-        let first = link.start.first(&link.settings, &cx);
-        let phase = if from_start && link.settings.lead().is_some() {
-            Phase::Starting(Step::Lead(None))
+        let lead = link.settings.lead().filter(|_| from_start);
+        let next = if let Some(argv) = lead {
+            Next::Lead(argv.to_vec())
         } else {
-            match first {
-                Err(message) => return self.fail(poll, name, message),
-                Ok(None) => Phase::Up,
-                Ok(Some(launch)) => match Registry::spawn_up(poll, &launch) {
-                    Ok(step) => Phase::Starting(step),
-                    Err(error) => {
-                        let message = format!("the up step did not start: {error}");
-                        return self.fail(poll, name, message);
-                    }
-                },
+            let launched = if from_start {
+                link.start.first(&link.settings, &cx)
+            } else {
+                link.start.resume(&link.settings, &cx)
+            };
+            match launched {
+                Err(message) => Next::Fail(message),
+                Ok(None) => Next::Up,
+                Ok(Some(launch)) => Next::Run(launch),
             }
+        };
+        let phase = match next {
+            Next::Fail(message) => return self.fail(poll, name, message),
+            Next::Up => Phase::Up,
+            Next::Lead(argv) => Phase::Starting(Step::Lead { argv, leader: None }),
+            Next::Run(launch) => match Registry::spawn_up(poll, &launch) {
+                Ok(step) => Phase::Starting(step),
+                Err(error) => {
+                    let message = format!("the up step did not start: {error}");
+                    return self.fail(poll, name, message);
+                }
+            },
         };
         if let Some(link) = self.links.get_mut(name) {
             link.phase = phase;
@@ -524,7 +660,7 @@ impl Registry {
     }
 
     fn spawn_up(poll: &mut Poll, launch: &Launch) -> io::Result<Step> {
-        let helper = exec::spawn(poll, launch, Mode::Capture)?;
+        let helper = exec::spawn(poll, launch, Mode::Capture { stdin: false })?;
         let deadline = poll.timer();
         poll.start(deadline, UP_LIMIT, None)?;
         Ok(Step::Up { helper, deadline })
@@ -534,7 +670,10 @@ impl Registry {
         let Some(mut link) = self.links.remove(name) else {
             return;
         };
-        self.end(poll, name, &mut link, false);
+        let answer = LinkState::Failed {
+            message: message.clone(),
+        };
+        self.end(poll, name, &mut link, (false, &answer));
         link.phase = Phase::Failed(message);
         self.links.insert(name.clone(), link);
     }
@@ -558,6 +697,7 @@ impl Registry {
                 && let Ok(pid) = exec::detached(&launch)
             {
                 pending.reaping.push(pid);
+                pending.commands.push(pid);
                 self.cleaning.push(pid);
             }
         }
@@ -567,6 +707,16 @@ impl Registry {
 
     fn settle(&mut self, poll: &mut Poll) {
         self.drive();
+        let removable: Vec<RuntimeName> = self
+            .deleting
+            .iter()
+            .filter(|name| !self.cleanups.contains_key(*name))
+            .cloned()
+            .collect();
+        for name in removable {
+            self.deleting.remove(&name);
+            let _ = fs::remove_dir_all(directory(&self.root, &name));
+        }
         let ready: Vec<RuntimeName> = self
             .links
             .iter()
@@ -581,8 +731,29 @@ impl Registry {
         }
     }
 
-    fn end(&mut self, poll: &mut Poll, name: &RuntimeName, link: &mut Link, detach: bool) {
+    // The children of the link end, and the panes that wait behind them get the answer.
+    fn end(
+        &mut self,
+        poll: &mut Poll,
+        name: &RuntimeName,
+        link: &mut Link,
+        (detach, answer): (bool, &LinkState),
+    ) {
         let mut reaping = Vec::new();
+        let (mine, rest): (Vec<Child>, Vec<Child>) = std::mem::take(&mut self.children)
+            .into_iter()
+            .partition(|child| child.name == *name);
+        self.children = rest;
+        for mut child in mine {
+            poll.free(child.deadline);
+            reaping.extend(stop_helper(poll, &mut child.helper, &mut self.dying));
+            match child.job {
+                Job::Check(Some(Pass { conn, .. })) | Job::Deliver(conn) => {
+                    self.passed.push((conn, answer.clone()));
+                }
+                Job::Check(None) => {}
+            }
+        }
         if let Phase::Starting(Step::Up { helper, deadline }) = &mut link.phase {
             poll.free(*deadline);
             reaping.extend(stop_helper(poll, helper, &mut self.dying));
@@ -590,9 +761,16 @@ impl Registry {
         if let Some(mut watch) = link.watch.take() {
             reaping.extend(stop_helper(poll, &mut watch, &mut self.dying));
         }
+        let socket = socket_path(&self.root, name);
+        let cx = Ctx {
+            name,
+            env: &self.env,
+            socket: &socket,
+            exe: &self.exe,
+        };
         let stop = link
             .settings
-            .cleanup((name, &self.env), Cleanup::Stop)
+            .cleanup(&cx, Cleanup::Stop)
             .into_iter()
             .collect::<Vec<_>>();
         if detach {
@@ -615,32 +793,56 @@ impl Registry {
         self.waits.push((name.clone(), wait));
     }
 
-    pub(crate) fn forget_wait(&mut self, conn: Token) {
+    pub(crate) fn forget_wait(&mut self, poll: &mut Poll, conn: Token) {
         self.waits.retain(|(_, wait)| wait.conn != conn);
+        self.end_pass(poll, conn);
     }
 
-    pub(crate) fn expire_pane_wait(&mut self, conn: Token) -> Option<RuntimeName> {
+    fn end_pass(&mut self, poll: &mut Poll, conn: Token) -> bool {
+        let Some(at) = self.children.iter().position(|child| match &child.job {
+            Job::Check(Some(pass)) => pass.conn == conn,
+            Job::Deliver(waiting) => *waiting == conn,
+            Job::Check(None) => false,
+        }) else {
+            return false;
+        };
+        let mut child = self.children.swap_remove(at);
+        poll.free(child.deadline);
+        stop_helper(poll, &mut child.helper, &mut self.dying);
+        true
+    }
+
+    // The state to answer a pane whose wait ran out.
+    pub(crate) fn expire_pane_wait(&mut self, poll: &mut Poll, conn: Token) -> Option<LinkState> {
+        if self.end_pass(poll, conn) {
+            return Some(LinkState::Starting);
+        }
         let at = self
             .waits
             .iter()
             .position(|(_, wait)| wait.conn == conn && matches!(wait.who, Who::Pane(_)))?;
-        Some(self.waits.swap_remove(at).0)
+        let name = self.waits.swap_remove(at).0;
+        Some(self.state(&name))
     }
 
     pub(crate) fn needs_pane(&self, name: &RuntimeName) -> bool {
         matches!(
             self.links.get(name).map(|link| &link.phase),
-            Some(Phase::Starting(Step::Lead(None)))
+            Some(Phase::Starting(Step::Lead { leader: None, .. }))
         )
     }
 
     pub(crate) fn elect(&mut self, name: &RuntimeName, pane: PaneId) -> Option<Vec<String>> {
         let link = self.links.get_mut(name)?;
-        let Phase::Starting(Step::Lead(leader @ None)) = &mut link.phase else {
+        let Phase::Starting(Step::Lead {
+            argv,
+            leader: leader @ None,
+        }) = &mut link.phase
+        else {
             return None;
         };
         *leader = Some(pane);
-        link.settings.lead().map(<[String]>::to_vec)
+        Some(argv.clone())
     }
 
     pub(crate) fn report_lead(
@@ -652,7 +854,7 @@ impl Registry {
     ) -> Result<(), Error> {
         let leading = matches!(
             self.links.get(name).map(|link| &link.phase),
-            Some(Phase::Starting(Step::Lead(Some(leader)))) if *leader == pane
+            Some(Phase::Starting(Step::Lead { leader: Some(leader), .. })) if *leader == pane
         );
         if !leading {
             return Err(Error::new(
@@ -675,7 +877,7 @@ impl Registry {
             .links
             .iter()
             .filter(|(_, link)| {
-                matches!(&link.phase, Phase::Starting(Step::Lead(Some(leader))) if *leader == pane)
+                matches!(&link.phase, Phase::Starting(Step::Lead { leader: Some(leader), .. }) if *leader == pane)
             })
             .map(|(name, _)| name.clone())
             .collect();
@@ -690,9 +892,9 @@ impl Registry {
 
     pub(crate) fn take_settled(&mut self) -> Vec<(RuntimeName, Wait, LinkState)> {
         let waits = std::mem::take(&mut self.waits);
-        let (done, pending): (Vec<_>, Vec<_>) = waits
-            .into_iter()
-            .partition(|(name, _)| !matches!(self.state(name), LinkState::Starting));
+        let (done, pending): (Vec<_>, Vec<_>) = waits.into_iter().partition(|(name, _)| {
+            !matches!(self.state(name), LinkState::Starting) || self.needs_pane(name)
+        });
         self.waits = pending;
         done.into_iter()
             .map(|(name, wait)| {
@@ -706,17 +908,39 @@ impl Registry {
         let Some(mut link) = self.links.remove(name) else {
             return;
         };
-        self.end(poll, name, &mut link, detach);
+        self.end(poll, name, &mut link, (detach, &LinkState::Down));
         poll.free(link.idle);
     }
 
+    // A master that died unseen: the link starts again, and the pane that found out may lead.
+    fn restart(&mut self, poll: &mut Poll, name: &RuntimeName) {
+        let Some(mut link) = self.links.remove(name) else {
+            return;
+        };
+        if !matches!(link.phase, Phase::Up) {
+            self.links.insert(name.clone(), link);
+            return;
+        }
+        self.end(poll, name, &mut link, (false, &LinkState::Starting));
+        poll.free(link.idle);
+        self.begin(poll, name, link.settings);
+    }
+
     pub(crate) fn delete(&mut self, name: &RuntimeName, settings: &Runtime) {
-        let launches = settings
-            .cleanup((name, &self.env), Cleanup::Delete)
-            .into_iter()
-            .collect();
+        let socket = socket_path(&self.root, name);
+        let cx = Ctx {
+            name,
+            env: &self.env,
+            socket: &socket,
+            exe: &self.exe,
+        };
+        let launches = settings.cleanup(&cx, Cleanup::Delete).into_iter().collect();
         self.schedule(name, launches, Vec::new());
         self.drive();
+    }
+
+    pub(crate) fn take_passed(&mut self) -> Vec<(Token, LinkState)> {
+        std::mem::take(&mut self.passed)
     }
 
     pub(crate) fn waiters_of(&mut self, name: &RuntimeName) -> Vec<Wait> {
@@ -727,8 +951,144 @@ impl Registry {
         mine.into_iter().map(|(_, wait)| wait).collect()
     }
 
-    pub(crate) fn remove_directory(&self, name: &RuntimeName) {
-        let _ = fs::remove_dir_all(directory(&self.root, name));
+    // The directory holds the control socket that a cleanup may still use.
+    pub(crate) fn remove_directory(&mut self, name: &RuntimeName) {
+        if self.cleanups.contains_key(name) {
+            self.deleting.insert(name.clone());
+        } else {
+            let _ = fs::remove_dir_all(directory(&self.root, name));
+        }
+    }
+
+    pub(crate) fn remote_tokens(&self, name: &RuntimeName, pane: PaneId) -> bool {
+        self.links.get(name).is_some_and(|link| {
+            matches!(link.phase, Phase::Up) && matches!(link.settings.tokens(pane), Tokens::Remote)
+        })
+    }
+
+    fn spawn_child(
+        &mut self,
+        poll: &mut Poll,
+        name: &RuntimeName,
+        (launch, mode): (&Launch, Mode),
+        job: Job,
+    ) -> io::Result<()> {
+        let mut helper = exec::spawn(poll, launch, mode)?;
+        let deadline = poll.timer();
+        if let Err(error) = poll.start(deadline, QUICK_LIMIT, None) {
+            stop_helper(poll, &mut helper, &mut self.dying);
+            poll.free(deadline);
+            return Err(error);
+        }
+        self.children.push(Child {
+            name: name.clone(),
+            helper,
+            deadline,
+            job,
+        });
+        Ok(())
+    }
+
+    fn step_launch(
+        &self,
+        name: &RuntimeName,
+        pick: impl FnOnce(&Link, &Ctx<'_>) -> Result<Option<Launch>, String>,
+    ) -> Result<Launch, String> {
+        let link = self
+            .links
+            .get(name)
+            .ok_or_else(|| format!("runtime {name} is down"))?;
+        let socket = socket_path(&self.root, name);
+        let cx = Ctx {
+            name,
+            env: &self.env,
+            socket: &socket,
+            exe: &self.exe,
+        };
+        pick(link, &cx)?.ok_or_else(|| format!("runtime {name} has no such step"))
+    }
+
+    pub(crate) fn pass(
+        &mut self,
+        poll: &mut Poll,
+        name: &RuntimeName,
+        (conn, pane): (Token, PaneId),
+        token: String,
+    ) -> Result<(), String> {
+        let launch = self.step_launch(name, |link, cx| link.start.alive(&link.settings, cx))?;
+        let job = Job::Check(Some(Pass { pane, conn, token }));
+        let mode = Mode::Capture { stdin: false };
+        self.spawn_child(poll, name, (&launch, mode), job)
+            .map_err(|error| format!("cannot check the link: {error}"))
+    }
+
+    // An exec found the link gone: the next request starts it again.
+    pub(crate) fn suspect(&mut self, poll: &mut Poll, name: &RuntimeName) {
+        let alone = !self
+            .children
+            .iter()
+            .any(|child| child.name == *name && matches!(child.job, Job::Check(None)));
+        if !alone {
+            return;
+        }
+        if let Ok(launch) = self.step_launch(name, |link, cx| link.start.alive(&link.settings, cx))
+        {
+            let mode = Mode::Capture { stdin: false };
+            let _ = self.spawn_child(poll, name, (&launch, mode), Job::Check(None));
+        }
+    }
+
+    fn deliver(&mut self, poll: &mut Poll, name: &RuntimeName, pass: Pass) {
+        let Pass { pane, conn, token } = pass;
+        let started = self
+            .step_launch(name, |link, cx| {
+                link.start.deliver(&link.settings, cx, pane)
+            })
+            .and_then(|launch| {
+                let mode = Mode::Capture { stdin: true };
+                self.spawn_child(poll, name, (&launch, mode), Job::Deliver(conn))
+                    .map_err(|error| format!("cannot deliver the token: {error}"))
+            });
+        match started {
+            Ok(()) => {
+                if let Some(child) = self.children.last_mut() {
+                    child.helper.write_stdin(poll, token.into_bytes());
+                    child.helper.close_stdin(poll);
+                }
+            }
+            Err(message) => self.passed.push((conn, LinkState::Failed { message })),
+        }
+    }
+
+    fn finish(&mut self, poll: &mut Poll, child: Child) {
+        let Child {
+            name, helper, job, ..
+        } = child;
+        let exit = helper.exit().unwrap_or(Exit::Exited(1));
+        match job {
+            Job::Check(pass) if exit == Exit::Exited(0) => {
+                if let Some(pass) = pass {
+                    self.deliver(poll, &name, pass);
+                }
+            }
+            Job::Check(pass) => {
+                self.restart(poll, &name);
+                if let Some(Pass { conn, .. }) = pass {
+                    self.passed.push((conn, LinkState::Starting));
+                }
+            }
+            Job::Deliver(conn) => {
+                let state = if exit == Exit::Exited(0) {
+                    LinkState::Up
+                } else {
+                    let why = last_line(helper.tail()).unwrap_or_else(|| exit_text("token", exit));
+                    LinkState::Failed {
+                        message: format!("cannot deliver the token to {name}: {why}"),
+                    }
+                };
+                self.passed.push((conn, state));
+            }
+        }
     }
 
     pub(crate) fn write_token(
@@ -741,11 +1101,16 @@ impl Registry {
         let Some(link) = self.links.get(name) else {
             return Ok(());
         };
+        let Tokens::File { text, .. } = link.settings.tokens(pane) else {
+            return Ok(());
+        };
+        let Some(path) = token_path(&socket_path(&self.root, name), &link.settings, pane) else {
+            return Ok(());
+        };
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(token_directory(&self.root, name))?;
-        let path = token_path(&self.root, name, &link.settings, pane);
         match fs::remove_file(&path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
             _ => {}
@@ -756,12 +1121,17 @@ impl Registry {
             .custom_flags(libc::O_NOFOLLOW)
             .mode(0o600)
             .open(path)?;
-        file.write_all(link.settings.token_text(token).as_bytes())
+        file.write_all(text(token).as_bytes())
     }
 
     pub(crate) fn remove_token(&self, name: &RuntimeName, pane: PaneId) {
-        if let Some(link) = self.links.get(name) {
-            let _ = fs::remove_file(token_path(&self.root, name, &link.settings, pane));
+        let socket = socket_path(&self.root, name);
+        if let Some(path) = self
+            .links
+            .get(name)
+            .and_then(|link| token_path(&socket, &link.settings, pane))
+        {
+            let _ = fs::remove_file(path);
         }
     }
 
@@ -805,6 +1175,21 @@ impl Registry {
     }
 
     pub(crate) fn helper_ready(&mut self, poll: &mut Poll, ready: Ready) -> bool {
+        let found = self
+            .children
+            .iter_mut()
+            .find_map(|child| child.helper.owns(ready.token).map(|source| (child, source)));
+        match found {
+            Some((child, Source::Output)) => {
+                child.helper.collect(poll);
+                return true;
+            }
+            Some((child, Source::Stdin)) => {
+                child.helper.flush_stdin(poll);
+                return true;
+            }
+            None => {}
+        }
         let helper = self.links.values_mut().find_map(|link| {
             let starting = match &mut link.phase {
                 Phase::Starting(Step::Up { helper, .. }) => Some(helper),
@@ -841,6 +1226,20 @@ impl Registry {
             .map(|(name, _)| name.clone())
         {
             return Due::Idle(name);
+        }
+        if let Some(at) = self
+            .children
+            .iter()
+            .position(|child| child.deadline == timer)
+        {
+            let mut child = self.children.swap_remove(at);
+            poll.free(child.deadline);
+            stop_helper(poll, &mut child.helper, &mut self.dying);
+            if let Job::Check(Some(Pass { conn, .. })) | Job::Deliver(conn) = child.job {
+                let message = format!("runtime {} did not answer in time", child.name);
+                self.passed.push((conn, LinkState::Failed { message }));
+            }
+            return Due::Handled;
         }
         let late = self
             .links
@@ -904,6 +1303,12 @@ impl Registry {
                     self.fail(poll, name, message);
                 }
             },
+            Next::Lead(argv) => {
+                poll.free(deadline);
+                if let Some(link) = self.links.get_mut(name) {
+                    link.phase = Phase::Starting(Step::Lead { argv, leader: None });
+                }
+            }
             Next::Up => {
                 poll.free(deadline);
                 self.watch(poll, name, &socket);
@@ -916,7 +1321,7 @@ impl Registry {
     }
 
     fn next_step(poll: &mut Poll, launch: &Launch, deadline: Timer) -> io::Result<Step> {
-        let helper = exec::spawn(poll, launch, Mode::Capture)?;
+        let helper = exec::spawn(poll, launch, Mode::Capture { stdin: false })?;
         Ok(Step::Up { helper, deadline })
     }
 
@@ -961,6 +1366,20 @@ impl Registry {
         for name in ended {
             self.advance(poll, &name);
         }
+        let mut done = Vec::new();
+        for mut child in std::mem::take(&mut self.children) {
+            if child.helper.reap().is_some() {
+                done.push(child);
+            } else {
+                self.children.push(child);
+            }
+        }
+        for mut child in done {
+            poll.free(child.deadline);
+            child.helper.collect(poll);
+            child.helper.release(poll);
+            self.finish(poll, child);
+        }
         self.settle(poll);
         self.links
             .iter_mut()
@@ -973,6 +1392,17 @@ impl Registry {
         for name in names {
             self.down(poll, &name, true);
         }
+        // What a down or a delete queued earlier still runs after the server.
+        for pending in std::mem::take(&mut self.cleanups).into_values() {
+            for launch in &pending.queue {
+                let _ = exec::detached(launch);
+            }
+            self.released.extend(pending.commands);
+        }
+    }
+
+    pub(crate) fn take_released(&mut self) -> Vec<Pid> {
+        std::mem::take(&mut self.released)
     }
 }
 

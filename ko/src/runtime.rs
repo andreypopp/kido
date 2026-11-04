@@ -16,19 +16,28 @@ fn pane_id(text: &str) -> Result<PaneId, String> {
 
 #[derive(Debug, Args)]
 pub(crate) struct EnterArgs {
-    /// Where the runtime's socket is reached from here.
-    #[arg(long, value_name = "PATH")]
-    socket: PathBuf,
+    /// Where the runtime's socket is reached from here. Without it, the socket and the token
+    /// file are in the runtime's directory.
+    #[arg(long, value_name = "PATH", conflicts_with = "prepare")]
+    socket: Option<PathBuf>,
     /// The pane that the program belongs to.
-    #[arg(long, value_name = "PANE", value_parser = pane_id)]
-    pane: PaneId,
+    #[arg(long, value_name = "PANE", value_parser = pane_id, required_unless_present = "prepare", conflicts_with = "prepare")]
+    pane: Option<PaneId>,
     /// A private file with the pane's token, which ko enter reads and removes. Without it,
     /// the token is KO_PANE_TOKEN in the environment.
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", requires = "socket")]
     token_file: Option<PathBuf>,
     /// The runtime of the pane.
     #[arg(long, value_name = "NAME")]
     runtime: RuntimeName,
+    /// The runtime's directory, when the socket is not given. Default: a private directory
+    /// of this user for the runtime.
+    #[arg(long, value_name = "DIR", conflicts_with_all = ["socket", "token_file"])]
+    dir: Option<PathBuf>,
+    /// Make the runtime's directory ready, remove what an earlier link left in it, and print
+    /// it and the version of this ko, one for each line.
+    #[arg(long, conflicts_with_all = ["cwd", "env", "command"])]
+    prepare: bool,
     /// The directory to start in.
     #[arg(long, value_name = "DIR")]
     cwd: Option<PathBuf>,
@@ -56,14 +65,46 @@ pub(crate) fn enter(args: EnterArgs) -> ExitCode {
         pane,
         token_file,
         runtime,
+        dir,
+        prepare,
         cwd,
         env,
         command,
     } = args;
-    let token = token_file.map_or_else(
-        || TokenSource::Environment(std::env::var("KO_PANE_TOKEN").ok()),
-        TokenSource::File,
-    );
+    let remote = |dir| {
+        enter::remote_dir(
+            &runtime,
+            dir,
+            std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
+            ko_sys::sock::uid(),
+        )
+    };
+    if prepare {
+        let remote = remote(dir);
+        if let Err(error) = enter::prepare(&remote) {
+            return crate::fail("enter", error);
+        }
+        let Some(dir) = remote.dir.to_str() else {
+            return crate::fail("enter", "the runtime directory is not UTF-8");
+        };
+        say(dir);
+        say(&ko_server::protocol::json(&ko_server::protocol::version()));
+        return ExitCode::SUCCESS;
+    }
+    let Some(pane) = pane else {
+        return crate::fail("enter", "--pane is required");
+    };
+    let (socket, token) = match (socket, token_file) {
+        (Some(socket), Some(file)) => (socket, TokenSource::File(file)),
+        (Some(socket), None) => (
+            socket,
+            TokenSource::Environment(std::env::var("KO_PANE_TOKEN").ok()),
+        ),
+        (None, _) => {
+            let remote = remote(dir);
+            (remote.socket(), TokenSource::File(remote.token_file(pane)))
+        }
+    };
     let enter = Enter {
         socket,
         pane,

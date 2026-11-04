@@ -14,9 +14,9 @@ use crate::harness::{
 use crate::panes::{as_pane, headers, post, raw, raw_on, refuses, token_pane_in_new_session};
 use crate::runs::{has_pane, ids};
 
-struct Rt {
-    server: Server,
-    config: Dir,
+pub(crate) struct Rt {
+    pub(crate) server: Server,
+    pub(crate) config: Dir,
 }
 
 impl Deref for Rt {
@@ -41,7 +41,7 @@ impl Rt {
     }
 }
 
-fn serve_in(dir: Dir, runtimes: &Value, env: &[(&str, &str)]) -> Rt {
+pub(crate) fn serve_in(dir: Dir, runtimes: &Value, env: &[(&str, &str)]) -> Rt {
     let config = Dir::new("ko-rtc-");
     let file = config.join("runtimes.json");
     fs::write(&file, json!({"runtimes": runtimes}).to_string()).unwrap();
@@ -75,22 +75,22 @@ fn fifos(dir: &Path, names: &[String]) -> Vec<PathBuf> {
     paths
 }
 
-fn fifo(dir: &Path, name: &str) -> PathBuf {
+pub(crate) fn fifo(dir: &Path, name: &str) -> PathBuf {
     fifos(dir, &[name.to_owned()]).remove(0)
 }
 
-fn release(scratch: &Path, fifo: &Path, text: &str) {
+pub(crate) fn release(scratch: &Path, fifo: &Path, text: &str) {
     sh_run(
         scratch,
         &format!("printf '%s\\n' {} > {}", quote(text), quote(text_of(fifo))),
     );
 }
 
-fn rt_pane(s: &Server, runtime: &str, script: &str) -> String {
+pub(crate) fn rt_pane(s: &Server, runtime: &str, script: &str) -> String {
     s.new_pane(sh_in(runtime, script))
 }
 
-fn sh_in(runtime: &str, script: &str) -> Value {
+pub(crate) fn sh_in(runtime: &str, script: &str) -> Value {
     let mut request = sh(script);
     request["runtime"] = json!(runtime);
     request
@@ -100,18 +100,18 @@ fn rt_token_pane(s: &Server, runtime: &str) -> String {
     s.token_pane_with(json!({"runtime": runtime}), "exec cat")
 }
 
-fn info(s: &Server, runtime: &str) -> Value {
+pub(crate) fn info(s: &Server, runtime: &str) -> Value {
     serde_json::from_str(&s.request("GET", &format!("/runtimes/{runtime}"), None, 200)).unwrap()
 }
 
-fn state(s: &Server, runtime: &str) -> String {
+pub(crate) fn state(s: &Server, runtime: &str) -> String {
     info(s, runtime)["state"]["type"]
         .as_str()
         .unwrap()
         .to_owned()
 }
 
-fn wait_state(s: &Server, runtime: &str, want: &str) -> Value {
+pub(crate) fn wait_state(s: &Server, runtime: &str, want: &str) -> Value {
     let mut last = Value::Null;
     poll(&format!("runtime {runtime} to be {want}"), || {
         last = info(s, runtime);
@@ -134,13 +134,13 @@ fn via(
     raw_on(s, &socket, route, &headers(s, &extra), body)
 }
 
-fn dead(s: &Server, pane: &str) -> Value {
+pub(crate) fn dead(s: &Server, pane: &str) -> Value {
     s.wait_row(pane, &format!("{pane} to end"), |row| {
         !row["dead"].is_null()
     })
 }
 
-fn stop_pane(s: &Server, pane: &str) {
+pub(crate) fn stop_pane(s: &Server, pane: &str) {
     post(s, None, &format!("/panes/{pane}/stop"), &json!({}));
 }
 
@@ -983,7 +983,7 @@ pub(crate) struct Exec {
     pub(crate) end: Value,
 }
 
-fn decode(value: &Value) -> Vec<u8> {
+pub(crate) fn decode(value: &Value) -> Vec<u8> {
     ko_pane_wire::base64::decode(value["data"].as_str().unwrap()).unwrap()
 }
 
@@ -1013,7 +1013,7 @@ pub(crate) fn start_exec(s: &Server, runtime: &str, request: Value) -> crate::ha
     ws
 }
 
-fn closed_with(ws: &mut crate::harness::Ws, code: u16) {
+pub(crate) fn closed_with(ws: &mut crate::harness::Ws, code: u16) {
     ws.closed("the session to close");
     assert_eq!(ws.close_frame().map(|frame| frame.0), Some(code));
 }
@@ -1337,4 +1337,22 @@ fn at_most_32_exec_sessions_of_a_runtime_run_and_the_others_wait_in_order_then_g
         "a forced down starts none of the queued sessions"
     );
     drop(filler);
+}
+
+#[test]
+fn a_start_step_that_ignores_sigterm_is_killed_when_the_server_exits() {
+    let files = Dir::new("ko-rtf-");
+    let pidfile = files.join("pid");
+    let script = format!(
+        "echo $$ > {}; trap '' TERM; exec sleep 60",
+        quote(text_of(&pidfile))
+    );
+    let mut s = serve(
+        &json!({"dev": {"kind": "command", "up": ["/bin/sh", "-c", script]}}),
+        &[],
+    );
+    rt_pane(&s, "dev", "exec cat");
+    let step = pid_of(&pidfile);
+    s.server.stop();
+    wait_gone(step, "the start step that ignores SIGTERM");
 }

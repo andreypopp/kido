@@ -1,0 +1,553 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use ko_sys::pid::Exit;
+
+use crate::config::{SUN_PATH_MAX, env_path, program_path};
+use crate::ids::PaneId;
+use crate::protocol::ExecRequest;
+use crate::runtime::exec::Launch;
+use crate::runtime::file::{Runtime, Ssh};
+use crate::runtime::{
+    Cleanup, Ctx, Ending, Entry, Next, Outcome, last_line, text, version_next, words,
+};
+use crate::ssh::{
+    CONTROL, MASTER_OPTIONS, MASTER_SUFFIX, QueryFailure, SOCKET, control_args, forwarding_refused,
+    has_syntax, no_remote_ko, query_failure, quote, reported_path, token_name,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stage {
+    Check,
+    Prepare,
+    Cancel,
+    Forward,
+}
+
+/// What the start learns about the remote, and where it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Link {
+    stage: Stage,
+    dir: Option<String>,
+    adopted: bool,
+}
+
+impl Link {
+    pub(crate) fn new() -> Link {
+        Link {
+            stage: Stage::Check,
+            dir: None,
+            adopted: false,
+        }
+    }
+}
+
+fn control(socket: &Path) -> PathBuf {
+    socket.with_file_name(CONTROL)
+}
+
+fn program(env: &[Vec<u8>]) -> Result<PathBuf, String> {
+    let path = String::from_utf8_lossy(env_path(env));
+    program_path(&path, "ssh").ok_or_else(|| "ssh: command not found".to_owned())
+}
+
+fn launch(env: &[Vec<u8>], args: Vec<String>) -> Result<Launch, String> {
+    Ok(Launch::new(program(env)?, args, env))
+}
+
+// Options of every invocation through the master. With ControlMaster=no, ssh connects directly
+// when the control socket does not answer; the proxy command that always fails turns that into
+// an error.
+fn through(ctl: &Path) -> Vec<String> {
+    let mut args = words(&["-S"]);
+    args.push(text(ctl));
+    args.extend(words(&[
+        "-o",
+        "ControlMaster=no",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ProxyCommand=/usr/bin/false",
+        "-o",
+        "RemoteCommand=none",
+    ]));
+    args
+}
+
+fn passenger(
+    ssh: &Ssh,
+    (socket, env): (&Path, &[Vec<u8>]),
+    remote: Vec<String>,
+) -> Result<Launch, String> {
+    let mut args = words(&["-T"]);
+    args.extend(through(&control(socket)));
+    args.extend(["--".to_owned(), ssh.destination.clone()]);
+    args.extend(remote);
+    launch(env, args)
+}
+
+fn operation(
+    ssh: &Ssh,
+    (socket, env): (&Path, &[Vec<u8>]),
+    operation: &[&str],
+) -> Result<Launch, String> {
+    launch(
+        env,
+        control_args(&control(socket), operation, &ssh.destination),
+    )
+}
+
+fn check_paths(socket: &Path) -> Result<(), String> {
+    let dir = socket.parent().unwrap_or(socket);
+    let shown = text(dir);
+    if dir.as_os_str().len() + MASTER_SUFFIX > SUN_PATH_MAX {
+        Err(format!(
+            "runtime control path under {shown} exceeds {SUN_PATH_MAX} bytes; set KO_STATE_DIR to a shorter path"
+        ))
+    } else if has_syntax(&shown) {
+        Err(format!(
+            "runtime directory {shown} contains a colon or a percent sign, which ssh reads as syntax"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn first(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Launch, String> {
+    check_paths(cx.socket)?;
+    check(ssh, cx)
+}
+
+pub(crate) fn check(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Launch, String> {
+    operation(ssh, (cx.socket, cx.env), &["-O", "check"])
+}
+
+fn lead(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Vec<String>, String> {
+    let mut argv = vec![text(&program(cx.env)?)];
+    argv.extend(words(&["-M", "-N", "-f", "-o"]));
+    argv.push(format!("ControlPath={}", text(&control(cx.socket))));
+    for option in ["ControlMaster=yes", "ControlPersist=yes"]
+        .into_iter()
+        .chain(MASTER_OPTIONS)
+    {
+        argv.extend(["-o".to_owned(), option.to_owned()]);
+    }
+    argv.extend(ssh.ssh_args.iter().cloned());
+    argv.push(ssh.destination.clone());
+    Ok(argv)
+}
+
+fn prepare(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Launch, String> {
+    let mut words = vec!["ko", "enter", "--prepare"];
+    let dir = ssh.dir.as_ref().map(|dir| dir.as_path().to_string_lossy());
+    if let Some(dir) = &dir {
+        words.extend(["--dir", dir]);
+    }
+    words.extend(["--runtime", cx.name.as_str()]);
+    passenger(
+        ssh,
+        (cx.socket, cx.env),
+        words.iter().map(|word| quote(word)).collect(),
+    )
+}
+
+/// The step after the leader's login: the master answers now.
+pub(crate) fn resume(ssh: &Ssh, link: &mut Link, cx: &Ctx<'_>) -> Result<Launch, String> {
+    link.stage = Stage::Prepare;
+    prepare(ssh, cx)
+}
+
+// The directory on the first line and ko's version on the second.
+fn prepared<'a>(destination: &str, out: &'a Outcome<'_>) -> Result<(String, &'a [u8]), String> {
+    match query_failure(out.exit, out.tail) {
+        None => {}
+        Some(QueryFailure::NoKo) => return Err(no_remote_ko(destination)),
+        Some(QueryFailure::Ssh(message)) => {
+            return Err(if message.is_empty() {
+                format!("ssh to {destination} failed")
+            } else {
+                message
+            });
+        }
+        Some(QueryFailure::Exit { code, message }) => {
+            return Err(format!(
+                "cannot prepare {destination}: {message} (exit {code})"
+            ));
+        }
+        Some(QueryFailure::Signal(signal)) => {
+            return Err(format!("ssh to {destination} died of signal {signal}"));
+        }
+    }
+    let (first, rest) = match out.stdout.iter().position(|byte| *byte == b'\n') {
+        Some(at) => (
+            &out.stdout[..at],
+            out.stdout.get(at + 1..).unwrap_or_default(),
+        ),
+        None => (out.stdout, &[][..]),
+    };
+    let first = String::from_utf8_lossy(first);
+    let dir = reported_path(&first)
+        .ok_or_else(|| format!("{destination} reported an invalid directory {first:?}"))?;
+    Ok((dir.to_owned(), rest))
+}
+
+fn forward(ssh: &Ssh, link: &Link, cx: &Ctx<'_>, operation_name: &str) -> Result<Launch, String> {
+    let dir = link
+        .dir
+        .as_deref()
+        .ok_or_else(|| "the remote directory is not known".to_owned())?;
+    let spec = format!("{dir}/{SOCKET}:{}", text(cx.socket));
+    operation(
+        ssh,
+        (cx.socket, cx.env),
+        &["-O", operation_name, "-R", &spec],
+    )
+}
+
+pub(crate) fn next(ssh: &Ssh, link: &mut Link, cx: &Ctx<'_>, out: &Outcome<'_>) -> Next {
+    let launched = |launch: Result<Launch, String>| match launch {
+        Ok(launch) => Next::Run(launch),
+        Err(message) => Next::Fail(message),
+    };
+    match link.stage {
+        Stage::Check if out.ok() => {
+            link.adopted = true;
+            launched(resume(ssh, link, cx))
+        }
+        Stage::Check => {
+            link.adopted = false;
+            let _ = fs::remove_file(control(cx.socket));
+            match lead(ssh, cx) {
+                Ok(argv) => Next::Lead(argv),
+                Err(message) => Next::Fail(message),
+            }
+        }
+        Stage::Prepare => {
+            let (dir, version) = match prepared(&ssh.destination, out) {
+                Ok(found) => found,
+                Err(message) => return Next::Fail(message),
+            };
+            let inner = Outcome {
+                exit: out.exit,
+                stdout: version,
+                tail: out.tail,
+            };
+            if let Next::Fail(message) = version_next(cx.name, &inner) {
+                return Next::Fail(message);
+            }
+            link.dir = Some(dir);
+            // An adopted master may still hold this forward, and ssh skips an identical one
+            // while prepare has just removed its socket file.
+            let (stage, operation_name) = if link.adopted {
+                (Stage::Cancel, "cancel")
+            } else {
+                (Stage::Forward, "forward")
+            };
+            link.stage = stage;
+            launched(forward(ssh, link, cx, operation_name))
+        }
+        Stage::Cancel => {
+            link.stage = Stage::Forward;
+            launched(forward(ssh, link, cx, "forward"))
+        }
+        Stage::Forward if out.ok() => Next::Up,
+        Stage::Forward => {
+            let message = String::from_utf8_lossy(out.tail).trim().to_owned();
+            Next::Fail(if message.contains("forwarding") {
+                forwarding_refused(&ssh.destination)
+            } else {
+                format!("ssh cannot forward the socket: {message}")
+            })
+        }
+    }
+}
+
+pub(crate) fn token(ssh: &Ssh, link: &Link, cx: &Ctx<'_>, pane: PaneId) -> Result<Launch, String> {
+    let dir = link
+        .dir
+        .as_deref()
+        .ok_or_else(|| "the remote directory is not known".to_owned())?;
+    let file = quote(&format!("{dir}/{}", token_name(pane)));
+    passenger(
+        ssh,
+        (cx.socket, cx.env),
+        vec![format!("umask 077 && cat > {file}")],
+    )
+}
+
+/// The master is nobody's child: down asks it to exit, and the next `ko enter --prepare`
+/// clears what it leaves on the remote.
+pub(crate) fn cleanup(ssh: &Ssh, cx: &Ctx<'_>, what: Cleanup) -> Option<Launch> {
+    match what {
+        Cleanup::Stop => operation(ssh, (cx.socket, cx.env), &["-O", "exit"]).ok(),
+        Cleanup::Delete => None,
+    }
+}
+
+pub(crate) fn exec_launch(
+    runtime: &Runtime,
+    ssh: &Ssh,
+    (request, cx): (&ExecRequest, &Ctx<'_>),
+) -> Result<Launch, String> {
+    let program = request
+        .argv
+        .first()
+        .ok_or_else(|| "argv needs a program".to_owned())?;
+    if program.contains('=') {
+        return Err(format!("{program}: a program name cannot contain '='"));
+    }
+    let mut command = String::new();
+    if let Some(dir) = request.cwd.as_ref().or(runtime.cwd.as_ref()) {
+        command.push_str(&format!(
+            "cd {} && ",
+            quote(&dir.as_path().to_string_lossy())
+        ));
+    }
+    command.push_str("exec env --");
+    let assignments = runtime
+        .exec_env(cx.name, request)
+        .into_iter()
+        .map(|(variable, value)| format!("{variable}={value}"));
+    for word in assignments.chain(request.argv.iter().cloned()) {
+        command.push(' ');
+        command.push_str(&quote(&word));
+    }
+    // Nothing of the server's environment is for the remote command: ssh would send what a
+    // SendEnv of the user's configuration names (the locale that the system's configuration
+    // sends, PATH or HOME), and the command would keep it. ssh finds the program by the
+    // server's PATH, here, and runs without an environment; the remote login environment is
+    // the command's.
+    let mut launch = passenger(ssh, (cx.socket, cx.env), vec![command])?;
+    launch.env.clear();
+    Ok(launch)
+}
+
+pub(crate) fn ending(exit: Exit, stderr: &[u8]) -> Ending {
+    if exit != Exit::Exited(255) {
+        return Ending::Exit;
+    }
+    let text = String::from_utf8_lossy(stderr);
+    let refusal = text.lines().map(str::trim).find(|line| {
+        line.starts_with("mux_client_request_session: session request failed:")
+            || (line.starts_with("channel ") && line.contains(": open failed:"))
+    });
+    match refusal {
+        Some(line) => Ending::Refused(line.to_owned()),
+        None => Ending::Error(last_line(stderr).unwrap_or_else(|| "ssh failed".to_owned())),
+    }
+}
+
+pub(crate) fn entry(ssh: &Ssh, cx: &Ctx<'_>) -> Entry {
+    let ctl = control(cx.socket);
+    let prefix: Vec<Vec<u8>> = words(&["ssh", "-t"])
+        .into_iter()
+        .chain(through(&ctl))
+        .chain(["--".to_owned(), ssh.destination.clone()])
+        .map(String::into_bytes)
+        .collect();
+    let location = ssh
+        .dir
+        .as_ref()
+        .map(|dir| {
+            vec![
+                b"--dir".to_vec(),
+                dir.as_path().as_os_str().as_encoded_bytes().to_vec(),
+            ]
+        })
+        .unwrap_or_default();
+    Entry {
+        prefix,
+        ko: vec![b"exec".to_vec(), b"ko".to_vec()],
+        location,
+        token: Vec::new(),
+        quoted: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::RuntimeName;
+    use crate::protocol::{Version, json, version};
+    use crate::runtime::file::Kind;
+
+    fn ssh_runtime(extra: &str) -> Runtime {
+        serde_json::from_str(&format!(r#"{{"kind":"ssh","destination":"box"{extra}}}"#)).unwrap()
+    }
+
+    fn context<'a>(name: &'a RuntimeName, env: &'a [Vec<u8>], socket: &'a Path) -> Ctx<'a> {
+        Ctx {
+            name,
+            env,
+            socket,
+            exe: Path::new("/ko"),
+        }
+    }
+
+    #[test]
+    fn a_refused_channel_is_retryable_and_any_other_255_is_an_error() {
+        assert_eq!(ending(Exit::Exited(0), b""), Ending::Exit);
+        assert_eq!(ending(Exit::Exited(3), b"open failed"), Ending::Exit);
+        assert_eq!(
+            ending(Exit::Exited(255), b"open failed\nsession refused by peer\n"),
+            Ending::Error("session refused by peer".to_owned())
+        );
+        assert_eq!(
+            ending(
+                Exit::Exited(255),
+                b"channel 2: open failed: administratively prohibited: open failed\n"
+            ),
+            Ending::Refused(
+                "channel 2: open failed: administratively prohibited: open failed".to_owned()
+            )
+        );
+        let refused =
+            "mux_client_request_session: session request failed: Session open refused by peer";
+        assert_eq!(
+            ending(
+                Exit::Exited(255),
+                format!("x\n{refused}\nConnection closed by UNKNOWN port 65535\n").as_bytes()
+            ),
+            Ending::Refused(refused.to_owned())
+        );
+        assert_eq!(
+            ending(
+                Exit::Exited(255),
+                b"Connection closed by UNKNOWN port 65535\n"
+            ),
+            Ending::Error("Connection closed by UNKNOWN port 65535".to_owned())
+        );
+        assert_eq!(
+            ending(Exit::Exited(255), b""),
+            Ending::Error("ssh failed".to_owned())
+        );
+    }
+
+    #[test]
+    fn another_ko_build_on_the_remote_fails_the_start_and_names_both_builds() {
+        let runtime = ssh_runtime("");
+        let Kind::Ssh(ssh) = &runtime.kind else {
+            panic!("not ssh");
+        };
+        let name: RuntimeName = "box".parse().unwrap();
+        let socket = PathBuf::from("/r/box/socket");
+        let env = [b"PATH=/usr/bin:/bin".to_vec()];
+        let own = version();
+        let prepared = |protocol: &str, vt: &str| {
+            let remote = Version {
+                protocol: protocol.to_owned(),
+                vt: vt.to_owned(),
+                build: "remote-build".to_owned(),
+            };
+            let stdout = format!("/run/ko\n{}\n", json(&remote));
+            let mut link = Link::new();
+            link.stage = Stage::Prepare;
+            let out = Outcome {
+                exit: Exit::Exited(0),
+                stdout: stdout.as_bytes(),
+                tail: b"",
+            };
+            next(ssh, &mut link, &context(&name, &env, &socket), &out)
+        };
+        assert!(matches!(prepared("1.7", &own.vt), Next::Run(_)));
+        for (protocol, vt) in [("2.0", own.vt.as_str()), ("1.0", "vt-other")] {
+            let Next::Fail(message) = prepared(protocol, vt) else {
+                panic!("the build was accepted");
+            };
+            assert!(
+                message.contains("remote-build")
+                    && message.contains(&own.build)
+                    && message.contains("runtime box"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_prepare_says_why() {
+        let failed = |exit, stderr: &[u8]| {
+            prepared(
+                "box",
+                &Outcome {
+                    exit,
+                    stdout: b"",
+                    tail: stderr,
+                },
+            )
+            .unwrap_err()
+        };
+        assert!(failed(Exit::Exited(127), b"").starts_with("ko was not found on box"));
+        assert_eq!(
+            failed(Exit::Exited(255), b"Permission denied\n"),
+            "Permission denied"
+        );
+        assert_eq!(
+            failed(Exit::Exited(2), b"boom\n"),
+            "cannot prepare box: boom (exit 2)"
+        );
+    }
+
+    #[test]
+    fn the_exec_and_token_commands_quote_every_word() {
+        let runtime = ssh_runtime(r#","env":{"A":"it's"},"cwd":"/a b""#);
+        let Kind::Ssh(ssh) = &runtime.kind else {
+            panic!("not ssh");
+        };
+        let request = ExecRequest {
+            argv: vec!["echo".to_owned(), "$(x); 'y'".to_owned()],
+            cwd: None,
+            env: Default::default(),
+            stdin: false,
+        };
+        let name: RuntimeName = "box".parse().unwrap();
+        let env = [b"PATH=/usr/bin:/bin".to_vec()];
+        let socket = PathBuf::from("/r/box/socket");
+        let cx = context(&name, &env, &socket);
+        let launch =
+            exec_launch(&runtime, ssh, (&request, &cx)).unwrap_or_else(|why| panic!("{why}"));
+        assert_eq!(
+            launch.args.last().unwrap(),
+            "cd '/a b' && exec env -- 'A=it'\\''s' 'KO_RUNTIME=box' 'echo' '$(x); '\\''y'\\'''"
+        );
+        assert!(
+            launch
+                .args
+                .iter()
+                .any(|arg| arg == "ProxyCommand=/usr/bin/false")
+        );
+        assert!(launch.env.is_empty(), "the passenger has no environment");
+        assert!(launch.program.is_absolute());
+        let link = Link {
+            stage: Stage::Forward,
+            dir: Some("/run/ko".to_owned()),
+            adopted: false,
+        };
+        let token = token(
+            ssh,
+            &link,
+            &context(&name, &env, Path::new("/r/box/socket")),
+            "pane_3".parse().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            token.args.last().unwrap(),
+            "umask 077 && cat > '/run/ko/pane_3.token'"
+        );
+    }
+
+    #[test]
+    fn a_pane_runs_ko_enter_through_the_master_with_the_directory() {
+        let runtime = ssh_runtime(r#","dir":"/srv/ko""#);
+        let Kind::Ssh(ssh) = &runtime.kind else {
+            panic!("not ssh");
+        };
+        let name: RuntimeName = "box".parse().unwrap();
+        let env = [];
+        let socket = PathBuf::from("/r/box/socket");
+        let entry = entry(ssh, &context(&name, &env, &socket));
+        assert_eq!(entry.prefix.last().unwrap(), b"box");
+        assert_eq!(entry.ko, [b"exec".to_vec(), b"ko".to_vec()]);
+        assert_eq!(entry.location, [b"--dir".to_vec(), b"/srv/ko".to_vec()]);
+        assert!(entry.quoted);
+    }
+}

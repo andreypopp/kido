@@ -39,10 +39,6 @@ pub fn look_path_past(path: &str, dir: &Path, name: &str) -> Option<PathBuf> {
         .find(|candidate| is_executable(candidate) && !same_file(candidate, &shim))
 }
 
-fn quote(text: &str) -> String {
-    format!("'{}'", text.replace('\'', "'\\''"))
-}
-
 pub(crate) fn path_prepend_script(dir: &Path) -> String {
     format!(
         r#"
@@ -62,7 +58,7 @@ PATH="$_ko_bin${{_ko_rest:+:$_ko_rest}}"
 export PATH
 unset _ko_bin _ko_rest
 "#,
-        quote(&dir.to_string_lossy())
+        ko_server::ssh::quote(&dir.to_string_lossy())
     )
 }
 

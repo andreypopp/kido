@@ -11,7 +11,7 @@ use crate::runtime::exec::{
     Admit, Chunk, Limiter, MAX_SESSIONS, Mode, Retry, Running, Session, Source, Stage, Stream,
     spawn,
 };
-use crate::runtime::{Wait, Who};
+use crate::runtime::{Ending, Wait, Who};
 
 const FRAMING: usize = 80;
 
@@ -110,7 +110,7 @@ impl State {
                     poll.free(timer);
                 }
                 self.execs.limiter(name).forget(token);
-                self.runtimes.forget_wait(token);
+                self.runtimes.forget_wait(poll, token);
             }
             Stage::Running(Running { mut helper, .. }) => {
                 helper.release(poll);
@@ -161,11 +161,13 @@ impl State {
                         Err("the session was opened without stdin")
                     } else {
                         running.helper.write_stdin(poll, data.0);
+                        running.fed = true;
                         Ok(None)
                     }
                 }
                 (Stage::Running(running), ExecClient::Eof {}) => {
                     running.helper.close_stdin(poll);
+                    running.fed = true;
                     Ok(None)
                 }
                 (Stage::Running(running), ExecClient::Signal { signal }) => {
@@ -252,8 +254,15 @@ impl State {
         match state {
             LinkState::Up => self.exec_join(poll, index, name),
             LinkState::Failed { message } => self.exec_fail(poll, index, message),
-            LinkState::Down | LinkState::Starting => {
+            LinkState::Down => {
                 self.exec_fail(poll, index, format!("runtime {name} went down"));
+            }
+            LinkState::Starting => {
+                self.exec_fail(
+                    poll,
+                    index,
+                    format!("runtime {name} needs a pane to log in"),
+                );
             }
         }
     }
@@ -306,11 +315,12 @@ impl State {
         let Some((request, retried)) = queued else {
             return;
         };
+        let started = self.execs.limiter(&name).ends();
         let helper = self
             .runtimes
             .settings(&name)
             .map_err(|error| error.message)
-            .and_then(|runtime| runtime.exec_launch(&name, &request, &self.config.env))
+            .and_then(|runtime| self.runtimes.exec_launch(&name, &runtime, &request))
             .and_then(|launch| {
                 spawn(
                     poll,
@@ -330,6 +340,8 @@ impl State {
                             request,
                             retried,
                             output: false,
+                            fed: false,
+                            started,
                         });
                         std::mem::take(&mut session.backlog)
                     }
@@ -379,7 +391,7 @@ impl State {
                             Stream::Stderr => ExecServer::Stderr { data },
                         };
                         wire.ws.send(wire.out, protocol::json(&message));
-                        running.output = true;
+                        running.output |= stream == Stream::Stdout;
                         moved = true;
                     }
                 }
@@ -407,18 +419,34 @@ impl State {
             return;
         };
         let runtime = self.runtimes.settings(&name).ok();
-        let retry = match self.exec_session(index) {
-            Some((session, _)) => match &session.stage {
-                Stage::Running(running) => runtime
-                    .filter(|runtime| !running.output && !running.retried && runtime.refused(exit))
-                    .map(|_| running.request.clone()),
+        let ending = match self.exec_session(index) {
+            Some((session, _)) => match (&session.stage, &runtime) {
+                (Stage::Running(running), Some(runtime)) => {
+                    let ending = runtime.ending(exit, running.helper.tail());
+                    match ending {
+                        Ending::Refused(_)
+                            if !running.output && !running.retried && !running.fed =>
+                        {
+                            Err((running.request.clone(), running.started))
+                        }
+                        Ending::Refused(message) => Ok(Ending::Error(message)),
+                        other => Ok(other),
+                    }
+                }
+                (Stage::Running(_), None) => Ok(Ending::Exit),
                 _ => return,
             },
             None => return,
         };
-        let Some(request) = retry else {
-            return self.exec_exit(poll, index, exit);
+        let request = match ending {
+            Ok(Ending::Exit) => return self.exec_exit(poll, index, exit),
+            Ok(Ending::Error(message) | Ending::Refused(message)) => {
+                self.runtimes.suspect(poll, &name);
+                return self.exec_fail(poll, index, message);
+            }
+            Err(retry) => retry,
         };
+        let (request, started) = request;
         if let Some((session, _)) = self.exec_session(index)
             && let Stage::Running(mut running) = std::mem::replace(
                 &mut session.stage,
@@ -431,7 +459,7 @@ impl State {
         {
             running.helper.release(poll);
         }
-        let (when, admitted) = self.execs.limiter(&name).retry(token);
+        let (when, admitted) = self.execs.limiter(&name).retry(token, started);
         if when == Retry::Later {
             self.exec_wait_timer(poll, index);
         }

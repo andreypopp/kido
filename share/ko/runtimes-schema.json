@@ -226,6 +226,20 @@
       },
       "oneOf": [
         {
+          "description": "A runtime on an ssh host, reached through one ssh master that the first pane logs in.\nko must be installed there, on the PATH of ssh commands.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "ssh"
+            }
+          },
+          "$ref": "#/$defs/Ssh",
+          "required": [
+            "kind"
+          ]
+        },
+        {
           "description": "A runtime on the host, for the tests of the link machinery. The server accepts it only\nwith KO_RUNTIME_COMMAND_KIND=1 in its environment.",
           "type": "object",
           "properties": {
@@ -283,6 +297,37 @@
             "container"
           ]
         }
+      ]
+    },
+    "Ssh": {
+      "type": "object",
+      "properties": {
+        "destination": {
+          "description": "The ssh destination as typed: `host` or `user@host`.",
+          "type": "string"
+        },
+        "dir": {
+          "description": "The directory on the remote for the forwarded socket and the token files. Default:\n`$XDG_RUNTIME_DIR/ko-rt/NAME`, else `/tmp/ko-rt-UID/NAME`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "ssh_args": {
+          "description": "Connection options for the master (`-p`, `-J`, `-F`, `-i`, `-l`, `-o`, ...).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "destination"
       ]
     },
     "SshAgent": {

@@ -313,11 +313,12 @@ Conventions:
   host's sshd run only with `KO_E2E_HOST_SSH=1`: sshd starts the real
   user's shell, which reads that user's dotfiles whatever `HOME` the
   test sets; with the variable set, a failed ssh probe or a missing
-  zsh is a failure, not a skip. The remote tests (`remote.rs`) run
-  under the same variable, with a private `sshd` (its own config, and host and
-  client keys made once for each process), so one test can refuse
-  forwarding, and an `ssh` wrapper on the client's PATH that adds
-  `-F`. They never read the user's `~/.ssh`. CI sets the variable on
+  zsh is a failure, not a skip. The remote tests (`remote.rs`) and the
+  ssh runtime tests (`runtime_ssh.rs`) run under the same variable,
+  with a private `sshd` (`sshd.rs`: its own config, and host and
+  client keys made once for each process), so a test can refuse
+  forwarding, lower `MaxSessions` or need a key passphrase, and an
+  `ssh` wrapper on the client's PATH that adds `-F`. They never read the user's `~/.ssh`. CI sets the variable on
   both runners; its step "Set up localhost SSH" starts sshd and
   authorizes a key for localhost. The container test (`container.rs`)
   runs only with `KO_E2E_CONTAINER=1`, on a Mac where Apple's

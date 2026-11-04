@@ -3,13 +3,14 @@ use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use ko_server::config::{path_with, terminal, terminfo_of};
 use ko_server::ids::{PaneId, PaneToken, RuntimeName};
+use ko_server::ssh;
 
 use crate::bin_dir;
 
@@ -84,6 +85,103 @@ fn token(source: &TokenSource) -> Option<PaneToken> {
 fn forwarded(env: &[(String, String)], agent: bool) -> impl Iterator<Item = &(String, String)> {
     env.iter()
         .filter(move |(name, _)| !(agent && name == "SSH_AUTH_SOCK"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteDir {
+    pub dir: PathBuf,
+    base: Option<PathBuf>,
+}
+
+impl RemoteDir {
+    pub fn socket(&self) -> PathBuf {
+        self.dir.join(ssh::SOCKET)
+    }
+
+    pub fn token_file(&self, pane: PaneId) -> PathBuf {
+        self.dir.join(ssh::token_name(pane))
+    }
+}
+
+pub fn remote_dir(
+    runtime: &RuntimeName,
+    chosen: Option<PathBuf>,
+    xdg_runtime_dir: Option<&str>,
+    uid: u32,
+) -> RemoteDir {
+    if let Some(dir) = chosen {
+        return RemoteDir { dir, base: None };
+    }
+    let base = match xdg_runtime_dir.filter(|dir| dir.starts_with('/')) {
+        Some(xdg) => Path::new(xdg).join("ko-rt"),
+        None => PathBuf::from(format!("/tmp/ko-rt-{uid}")),
+    };
+    RemoteDir {
+        dir: base.join(runtime.as_str()),
+        base: Some(base),
+    }
+}
+
+#[derive(Debug)]
+pub enum PrepareError {
+    Create(PathBuf, io::Error),
+    NotPrivate(PathBuf),
+    Clear(PathBuf, io::Error),
+}
+
+impl fmt::Display for PrepareError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PrepareError::Create(dir, error) => {
+                write!(f, "{}: {}", dir.display(), os_message(error))
+            }
+            PrepareError::NotPrivate(dir) => {
+                write!(
+                    f,
+                    "{} is not a private directory of this user",
+                    dir.display()
+                )
+            }
+            PrepareError::Clear(dir, error) => {
+                write!(f, "cannot clear {}: {}", dir.display(), os_message(error))
+            }
+        }
+    }
+}
+
+fn private_dir(dir: &Path) -> Result<(), PrepareError> {
+    let private = fs::symlink_metadata(dir).is_ok_and(|meta| {
+        meta.is_dir() && meta.mode() & 0o077 == 0 && meta.uid() == ko_sys::sock::uid()
+    });
+    if private {
+        Ok(())
+    } else {
+        Err(PrepareError::NotPrivate(dir.to_path_buf()))
+    }
+}
+
+pub fn prepare(remote: &RemoteDir) -> Result<(), PrepareError> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&remote.dir)
+        .map_err(|error| PrepareError::Create(remote.dir.clone(), error))?;
+    if let Some(base) = &remote.base {
+        private_dir(base)?;
+    }
+    private_dir(&remote.dir)?;
+    let clear = |error| PrepareError::Clear(remote.dir.clone(), error);
+    for entry in fs::read_dir(&remote.dir).map_err(clear)? {
+        let name = entry.map_err(clear)?.file_name();
+        let stale = name == ssh::SOCKET
+            || name
+                .as_encoded_bytes()
+                .ends_with(ssh::TOKEN_SUFFIX.as_bytes());
+        if stale {
+            fs::remove_file(remote.dir.join(name)).map_err(clear)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn exec(enter: &Enter, exe: &Path) -> Failure {
@@ -192,6 +290,48 @@ mod tests {
         };
         assert_eq!(names(true), ["A"]);
         assert_eq!(names(false), ["SSH_AUTH_SOCK", "A"]);
+    }
+
+    #[test]
+    fn the_remote_directory_is_the_chosen_one_else_a_private_default() {
+        let dev: RuntimeName = "dev".parse().unwrap();
+        let at = |chosen: Option<&str>, xdg: Option<&str>| {
+            remote_dir(&dev, chosen.map(PathBuf::from), xdg, 501).dir
+        };
+        assert_eq!(
+            at(Some("/srv/ko"), Some("/run/user/501")),
+            Path::new("/srv/ko")
+        );
+        assert_eq!(
+            at(None, Some("/run/user/501")),
+            Path::new("/run/user/501/ko-rt/dev")
+        );
+        assert_eq!(at(None, None), Path::new("/tmp/ko-rt-501/dev"));
+        assert_eq!(at(None, Some("relative")), Path::new("/tmp/ko-rt-501/dev"));
+    }
+
+    #[test]
+    fn preparing_refuses_a_default_base_that_is_open_and_a_directory_behind_a_link() {
+        let base = scratch("enter-prepare");
+        let dir = base.join("rt/dev");
+        let remote = RemoteDir {
+            dir: dir.clone(),
+            base: Some(base.join("rt")),
+        };
+        prepare(&remote).unwrap();
+        assert_eq!(fs::metadata(base.join("rt")).unwrap().mode() & 0o777, 0o700);
+        fs::set_permissions(base.join("rt"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(prepare(&remote), Err(PrepareError::NotPrivate(_))));
+        let link = base.join("link");
+        symlink(&dir, &link).unwrap();
+        let through = RemoteDir {
+            dir: link,
+            base: None,
+        };
+        assert!(matches!(
+            prepare(&through),
+            Err(PrepareError::NotPrivate(_))
+        ));
     }
 
     #[test]

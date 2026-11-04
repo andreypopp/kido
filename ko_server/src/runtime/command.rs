@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use ko_sys::pid::Exit;
-
 use crate::config::program_path;
 use crate::ids::RuntimeName;
 use crate::protocol::ExecRequest;
@@ -26,14 +24,18 @@ pub(crate) fn entry(
             .iter()
             .map(|arg| arg.as_bytes().to_vec())
             .collect(),
-        ko: bytes(exe),
-        socket: bytes(
-            &command
-                .socket
-                .as_ref()
-                .map_or(socket, |socket| socket.as_path().to_path_buf()),
-        ),
+        ko: vec![bytes(exe)],
+        location: vec![
+            b"--socket".to_vec(),
+            bytes(
+                &command
+                    .socket
+                    .as_ref()
+                    .map_or(socket, |socket| socket.as_path().to_path_buf()),
+            ),
+        ],
         token: vec![b"--token-file".to_vec(), bytes(token_file)],
+        quoted: false,
     }
 }
 
@@ -78,10 +80,6 @@ pub(crate) fn exec_launch(
             .map(|(variable, value)| format!("{variable}={value}").into_bytes())
             .collect(),
     })
-}
-
-pub(crate) fn refused(_command: &Command, _exit: Exit) -> bool {
-    false
 }
 
 #[cfg(test)]
