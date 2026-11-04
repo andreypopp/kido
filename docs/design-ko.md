@@ -762,6 +762,14 @@ its socket, closes its listener, hangs up every pane, waits 500 ms,
 kills the survivors and exits. Because the socket goes first, a server
 that starts during the 500 ms keeps its own socket.
 
+The launcher does not compare versions: a server that another ko build
+started on the directory is used as it is. When that server refuses the
+`/client` upgrade, the terminal client reads `GET /version` and, for
+another protocol or terminal revision, fails with both versions and
+builds, the command `ko kill-server` that ends every session and pane,
+and the advice to start again (`ko_tui/src/client.rs`); for `ko HOST`
+the command runs on the host.
+
 `ko api` sends one HTTP request, as `gh api` does, and never starts a
 server. With `--stream`, it upgrades a WebSocket route, prints each
 text message as one line and sends each line of its stdin as one text

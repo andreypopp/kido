@@ -1,4 +1,7 @@
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
+use std::os::unix::net::UnixListener;
+use std::path::Path;
+use std::time::Duration;
 
 fn name_of(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
@@ -23,12 +26,62 @@ fn session(args: &[String]) {
     }
 }
 
+fn mismatch_server(dir: &str) -> std::io::Result<()> {
+    let listener = UnixListener::bind(Path::new(dir).join("socket"))?;
+    for connection in listener.incoming() {
+        let mut connection = connection?;
+        if connection
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .is_err()
+        {
+            continue;
+        }
+        let mut head = Vec::new();
+        let mut byte = [0];
+        while !head.ends_with(b"\r\n\r\n") && head.len() < 16384 {
+            match connection.read(&mut byte) {
+                Ok(1) => head.push(byte[0]),
+                _ => break,
+            }
+        }
+        if head.is_empty() {
+            continue;
+        }
+        let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
+        let (status, body) = if head.starts_with("get /version ")
+            && !head.contains("\r\nko-protocol:")
+            && !head.contains("\r\nko-vt:")
+        {
+            (
+                "200 OK",
+                r#"{"protocol":"1.0","vt":"different","build":"incompatible-test"}"#,
+            )
+        } else {
+            (
+                "409 Conflict",
+                r#"{"kind":"vt_mismatch","protocol":"1.0","vt":"different","build":"incompatible-test","message":"terminal revision mismatch"}"#,
+            )
+        };
+        let _ = write!(
+            connection,
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+    }
+    Ok(())
+}
+
 // The e2e suite copies this program under the name of what it stands for, because a foreground
 // check reads the process name (a script shows its interpreter's name on macOS).
-fn main() {
+fn main() -> std::io::Result<()> {
     let mut args = std::env::args();
     let program = args.next().unwrap_or_default();
     let args: Vec<String> = args.collect();
+    if let [mode, dir] = args.as_slice()
+        && mode == "mismatch-server"
+    {
+        return mismatch_server(dir);
+    }
     match name_of(&program) {
         "ko-probe" => {
             emit("OUT\n");
@@ -36,4 +89,5 @@ fn main() {
         }
         _ => session(&args),
     }
+    Ok(())
 }

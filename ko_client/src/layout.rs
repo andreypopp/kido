@@ -247,6 +247,37 @@ mod tests {
     }
 
     #[test]
+    fn ensure_session_does_not_duplicate_the_session_created_by_a_competing_client() {
+        let first: Snapshot =
+            protocol::decode(br#"{"revision":0,"layout":{"sessions":[]}}"#).unwrap();
+        let edit: Edit =
+            protocol::decode(br#"{"type":"ensure_session","name":"first","new":{}}"#).unwrap();
+        let mut sent = Vec::new();
+        let done = edit_from(first, &edit, |revision, layout| {
+            sent.push((revision, layout));
+            Ok(if sent.len() == 1 {
+                Err(busy(1, false))
+            } else {
+                Ok(busy(2, false))
+            })
+        })
+        .unwrap();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0].0, busy(0, false).revision);
+        assert_eq!(sent[0].1.sessions.len(), 1);
+        assert_eq!(sent[0].1.sessions[0].id, None);
+        assert_eq!(
+            sent[1],
+            (
+                busy(1, false).revision,
+                DraftLayout::from(&busy(1, false).layout)
+            )
+        );
+        assert_eq!(done.created, None);
+        assert_eq!(done.snapshot.layout.sessions.len(), 1);
+    }
+
+    #[test]
     fn every_kind_of_edit_is_applied_again_to_the_newer_document_after_a_conflict() {
         let name = |text: &str| Name::try_from(text.to_owned()).unwrap();
         let created = || CreatePane {

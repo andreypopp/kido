@@ -2059,9 +2059,28 @@ fn serve(mut client: Client) -> Result<(), String> {
     result
 }
 
+fn mismatch(dir: &std::path::Path, host: Option<&str>) -> Option<String> {
+    let (mismatch, server) =
+        ko_client::api::version(&dir.join("socket"), wire::READ_TIMEOUT, None).ok()?;
+    mismatch?;
+    let own = protocol::version();
+    let command = match host {
+        Some(host) => format!("On {host}, run ko kill-server, then ko server"),
+        None => format!(
+            "Run ko kill-server --server '{}', then start again",
+            dir.to_string_lossy().replace('\'', "'\"'\"'")
+        ),
+    };
+    Some(format!(
+        "The running server is a different version and must be restarted to upgrade. Server: protocol {}, terminal {}, build {}. Client: protocol {}, terminal {}, build {}. {command}. All sessions and panes will end.",
+        server.protocol, server.vt, server.build, own.protocol, own.vt, own.build
+    ))
+}
+
 pub fn run(dir: &std::path::Path, executable: &std::path::Path, pager: &str) -> Result<(), String> {
     let (socket, stream) = launch::attach(dir, executable, PATIENCE)?;
-    let link = Link::upgrade(stream, None, &Route::Client {}, None).map_err(text)?;
+    let link = Link::upgrade(stream, None, &Route::Client {}, None)
+        .map_err(|error| mismatch(dir, None).unwrap_or_else(|| error.to_string()))?;
     let signals = Signals::install(&SIGNALS).map_err(text)?;
     serve(Client::start(
         socket,
@@ -2083,7 +2102,9 @@ pub fn run_remote(
     let socket = remote.socket();
     let link = UnixStream::connect(&socket)
         .and_then(|stream| Link::upgrade(stream, None, &Route::Client {}, None))
-        .map_err(|_| remote.unreachable().to_string())?;
+        .map_err(|_| {
+            mismatch(remote.dir(), Some(host)).unwrap_or_else(|| remote.unreachable().to_string())
+        })?;
     serve(Client::start(
         socket,
         link,

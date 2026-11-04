@@ -239,20 +239,22 @@ import XCTest
     func testTheMismatchSheetOfARemoteHostNamesTheSideThatUpdates() {
         let own = KoVersion(protocolVersion: "1.2", vt: "aaaaaaaaaaaa", build: "mine")
         let host = Host.remote("devbox")
-        func alert(_ code: ko_code, _ server: KoVersion) -> NSAlert { WindowOwner.mismatchAlert(host: host, code: code, server: server, own: own) }
+        let recovery = "\n\nOn devbox, stop the server with the command below, then run ko server. All sessions and panes on that server will end."
+        func alert(_ code: ko_code, _ server: KoVersion) -> NSAlert { WindowOwner.mismatchAlert(host: host, code: code, server: server, own: own, serverDir: "/tmp/remote-ko") }
 
         let older = alert(KO_ERR_PROTOCOL_MISMATCH, KoVersion(protocolVersion: "0.9", vt: own.vt, build: "theirs"))
         XCTAssertEqual(older.messageText, "Update ko on devbox")
-        XCTAssertEqual(older.informativeText, "This app speaks ko protocol 1.2. The server speaks 0.9. Update ko on the host, then reconnect. The server is build theirs; this app is build mine.")
+        XCTAssertEqual(older.informativeText, "This app speaks ko protocol 1.2. The server speaks 0.9. Update ko on the host, then reconnect. The server is build theirs; this app is build mine." + recovery)
         let newer = alert(KO_ERR_PROTOCOL_MISMATCH, KoVersion(protocolVersion: "2.0", vt: own.vt, build: "theirs"))
         XCTAssertEqual(newer.messageText, "Update Kido.app to connect to devbox")
-        XCTAssertEqual(newer.informativeText, "The server speaks ko protocol 2.0; this app speaks 1.2. Update Kido.app on this Mac. The server is build theirs; this app is build mine.")
+        XCTAssertEqual(newer.informativeText, "The server speaks ko protocol 2.0; this app speaks 1.2. Update Kido.app on this Mac. The server is build theirs; this app is build mine." + recovery)
         let revision = alert(KO_ERR_VT_MISMATCH, KoVersion(protocolVersion: "1.2", vt: "bbbbbbbbbbbb", build: "theirs"))
         XCTAssertEqual(revision.messageText, "Kido.app and ko on devbox are from different releases")
-        XCTAssertEqual(revision.informativeText, "This app runs terminal revision aaaaaaaaa; the server runs bbbbbbbbb. Install the ko release of this Kido.app on the host, or update Kido.app. The server is build theirs; this app is build mine.")
+        XCTAssertEqual(revision.informativeText, "This app runs terminal revision aaaaaaaaa; the server runs bbbbbbbbb. Install the ko release of this Kido.app on the host, or update Kido.app. The server is build theirs; this app is build mine." + recovery)
         for sheet in [older, newer, revision] {
             XCTAssertEqual(sheet.buttons.map(\.title), ["Reconnect", "Close"])
             XCTAssertFalse(sheet.buttons[0].hasDestructiveAction)
+            XCTAssertEqual(sheet.accessoryView?.subviews.compactMap { $0 as? NSTextField }.first?.stringValue, "ko kill-server")
             XCTAssertTrue(sheet.window.defaultButtonCell === sheet.buttons[1].cell, "Close is the default")
         }
     }

@@ -87,7 +87,6 @@ import XCTest
         let dir = try stateDir()
         addTeardownBlock { @MainActor in
             try? KoClient.stopServer(dir: dir)
-            try? FileManager.default.removeItem(atPath: dir)
         }
         let executable = tools.ko
         let socket: String
@@ -130,7 +129,6 @@ import XCTest
             let server = try KoFakeServer(directory: dir, version: version)
             addTeardownBlock {
                 server.stop()
-                try? FileManager.default.removeItem(atPath: dir)
             }
             var events: [KoEvent] = []
             let client = try KoClient(socket: server.socket) { events.append($0) }

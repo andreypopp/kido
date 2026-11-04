@@ -13,6 +13,7 @@ final class Recorder {
 }
 
 @MainActor class KoTestCase: XCTestCase {
+    private var serverProcesses: [String: [Process]] = [:]
     func ko(_ arguments: [String], dir: String, output: Bool = false) throws -> Process {
         let process = Process()
         if output { process.standardOutput = Pipe() }
@@ -53,20 +54,43 @@ final class Recorder {
 
     func stateDir() throws -> String {
         var template = Array("/tmp/ko-kp-XXXXXX".utf8CString)
-        return String(cString: try XCTUnwrap(mkdtemp(&template)))
+        let dir = String(cString: try XCTUnwrap(mkdtemp(&template)))
+        let suite = try XCTUnwrap(ProcessInfo.processInfo.environment["KIDO_APP_SERVER"])
+        let manifest = suite + "/test-dirs"
+        if !FileManager.default.fileExists(atPath: manifest) { FileManager.default.createFile(atPath: manifest, contents: nil) }
+        let file = try FileHandle(forWritingTo: URL(fileURLWithPath: manifest))
+        try file.seekToEnd()
+        try file.write(contentsOf: Data((dir + "\n").utf8))
+        try file.close()
+        addTeardownBlock { @MainActor in
+            await KoServer.finishLaunches(dir: dir)
+            _ = try? await Task.detached { try KoClient.stopServer(dir: dir) }.value
+            for process in self.serverProcesses.removeValue(forKey: dir) ?? [] {
+                if process.isRunning { process.terminate() }
+                process.waitUntilExit()
+            }
+            try? FileManager.default.removeItem(atPath: dir)
+        }
+        return dir
+    }
+
+    func mismatchServer() throws -> String {
+        let dir = try stateDir()
+        let checkout = try XCTUnwrap(ProcessInfo.processInfo.environment["KO_CHECKOUT"])
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: checkout + "/target/debug/ko-fake")
+        process.arguments = ["mismatch-server", dir]
+        try process.run()
+        serverProcesses[dir, default: []].append(process)
+        wait("incompatible server socket") { FileManager.default.fileExists(atPath: dir + "/socket") || !process.isRunning }
+        XCTAssertTrue(process.isRunning)
+        return dir
     }
 
     func server(at path: String? = nil) throws -> String {
         let dir = try path ?? stateDir()
         let process = try ko(["server"], dir: dir)
-        addTeardownBlock {
-            process.waitUntilExit()
-            try? FileManager.default.removeItem(atPath: dir)
-        }
-        addTeardownBlock { @MainActor in
-            try? self.run(["kill-server"], dir: dir)
-            if process.isRunning { process.terminate() }
-        }
+        serverProcesses[dir, default: []].append(process)
         wait("the server socket") { FileManager.default.fileExists(atPath: dir + "/socket") }
         return dir
     }

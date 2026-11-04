@@ -502,6 +502,7 @@ public enum KoSchema {
         case breakPane(EditBreakPane)
         case addWindow(EditAddWindow)
         case addSession(EditAddSession)
+        case ensureSession(EditEnsureSession)
         case renameSession(EditRenameSession)
         case renameWindow(EditRenameWindow)
         case reorderSessions(EditReorderSessions)
@@ -524,6 +525,7 @@ public enum KoSchema {
             case "break_pane": self = .breakPane(try EditBreakPane(from: decoder))
             case "add_window": self = .addWindow(try EditAddWindow(from: decoder))
             case "add_session": self = .addSession(try EditAddSession(from: decoder))
+            case "ensure_session": self = .ensureSession(try EditEnsureSession(from: decoder))
             case "rename_session": self = .renameSession(try EditRenameSession(from: decoder))
             case "rename_window": self = .renameWindow(try EditRenameWindow(from: decoder))
             case "reorder_sessions": self = .reorderSessions(try EditReorderSessions(from: decoder))
@@ -575,6 +577,9 @@ public enum KoSchema {
                 try value.encode(to: encoder)
             case .addSession(let value):
                 try container.encode("add_session", forKey: .type)
+                try value.encode(to: encoder)
+            case .ensureSession(let value):
+                try container.encode("ensure_session", forKey: .type)
                 try value.encode(to: encoder)
             case .renameSession(let value):
                 try container.encode("rename_session", forKey: .type)
@@ -638,6 +643,15 @@ public enum KoSchema {
             self.edge = edge
             self.pane = pane
             self.window = window
+        }
+    }
+
+    public struct EditEnsureSession: Codable, Equatable, Sendable {
+        public var name: Name
+        public var new: CreatePane
+        public init(name: Name, new: CreatePane) {
+            self.name = name
+            self.new = new
         }
     }
 

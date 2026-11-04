@@ -75,12 +75,14 @@ visual visual-fast visual-slow: project
 
 ko-test: DERIVED = build/xcode.noindex/derived-$@
 ko-test: project
+	$(MAKE) -C $(KO_ABS) cargo ARGS='build -p ko_e2e --bin ko-fake'
 	mkdir -p build/bundle/ko-tests/home build/bundle/ko-tests/state
 	@set -eo pipefail; server=$$(mktemp -d /tmp/ko-test-XXXXXX) || exit 1; \
 	trap '$(KO_ABS)/build/ko/bin/ko kill-server --server "$$server" 2>/dev/null || true; rm -rf "$$server"' EXIT; \
-	xcodebuild -project Kido.xcodeproj -scheme Ko -configuration Debug -destination platform=macOS \
+	status=0; xcodebuild -project Kido.xcodeproj -scheme Ko -configuration Debug -destination platform=macOS \
 		-derivedDataPath $(DERIVED) KO_CHECKOUT=$(KO_ABS) KIDO_APP_SERVER="$$server" KIDO_VISUAL_CONDITION=KIDO_VISUAL \
-		$(if $(KO_RECORD_FIXTURES),KO_RECORD_FIXTURES=$(KO_RECORD_FIXTURES)) $(if $(ONLY),-only-testing:KoTests/$(ONLY)) test 2>&1 | $(XCODE_PROGRESS)
+		$(if $(KO_RECORD_FIXTURES),KO_RECORD_FIXTURES=$(KO_RECORD_FIXTURES)) $(if $(ONLY),-only-testing:KoTests/$(ONLY)) test 2>&1 | $(XCODE_PROGRESS) || status=$$?; \
+	python3 scripts/ko-test-leak-check.py "$$server" || status=1; exit $$status
 
 ko-model:
 	python3 scripts/gen-ko-model.py $(KO_ABS)/share/ko/openapi.json $(KO_ABS)/share/ko/client-model.json $(KO_ABS)/share/ko/config-schema.json Packages/KoModel/Sources/KoModel/KoSchema.swift

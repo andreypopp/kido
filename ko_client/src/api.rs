@@ -7,13 +7,45 @@ use std::time::{Duration, Instant};
 use ko_server::api::Route;
 use ko_server::config::{self, Dir};
 use ko_server::http::Response;
-use ko_server::protocol::Snapshot;
-use ko_sys::event::{Events, Interest, Mode, Poll};
+use ko_server::protocol::{self, ErrorKind, Snapshot, Version};
+use ko_sys::event::{Events, Interest, Mode, Poll, Wake};
 
 use crate::edit::Edit;
 use crate::launch;
 use crate::layout::{self, Document, Edited};
 use crate::wire::{self, Caller, Link, Next};
+
+pub fn version(
+    socket: &Path,
+    within: Duration,
+    cancel: Option<&Wake>,
+) -> io::Result<(Option<ErrorKind>, Version)> {
+    let (method, target) = Route::Version {}.to_request();
+    let response = wire::exchange(
+        socket,
+        (None, None),
+        (method, &target),
+        &[],
+        b"",
+        within,
+        cancel,
+    )?;
+    if response.status != 200 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "GET /version answered {} {}",
+                response.status, response.reason
+            ),
+        ));
+    }
+    let server = protocol::decode::<Version>(&response.body)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let mismatch = protocol::check_version(Some(&server.protocol), Some(&server.vt))
+        .err()
+        .map(|error| error.kind);
+    Ok((mismatch, server))
+}
 
 #[derive(Debug)]
 pub enum Failure {

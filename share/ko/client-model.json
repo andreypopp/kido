@@ -390,6 +390,26 @@
               "name": {
                 "$ref": "#/components/schemas/Name"
               },
+              "new": {
+                "$ref": "#/components/schemas/CreatePane"
+              },
+              "type": {
+                "const": "ensure_session",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "name",
+              "new"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "name": {
+                "$ref": "#/components/schemas/Name"
+              },
               "session": {
                 "$ref": "#/components/schemas/SessionId"
               },

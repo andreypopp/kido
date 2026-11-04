@@ -139,7 +139,8 @@ where a wall time is needed.
 ## 2. Versions and errors
 
 `GET /version` is the one request without version headers, because a
-client reads it before it knows the server's version. Its shape is
+client reads it before it knows the server's version. A client sends it
+without them, so that a server of another version answers it. Its shape is
 frozen across minors. It carries the protocol version, the
 libghostty-vt revision and the build (decided 2026-10-31), and the
 server's `instance` (below); `ko version`, which asks no server,

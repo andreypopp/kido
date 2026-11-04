@@ -933,6 +933,61 @@ impl Drop for KillOnDrop<'_> {
 }
 
 #[test]
+fn client_incompatible_server_reports_restart_command_and_both_versions() {
+    let dir = Dir::new("ko-mismatch-");
+    let env = crate::harness::test_env(&dir);
+    let _server = crate::harness::Child::spawn(
+        Path::new(env!("CARGO_BIN_EXE_ko-fake")),
+        &["mismatch-server", text_of(&dir)],
+        &env,
+        &[],
+    );
+    crate::harness::poll("incompatible server socket", || dir.join("socket").exists());
+    let scratch = Dir::new("ko-mismatch-run-");
+    let run = run_ko(&scratch, &env, &["--server", text_of(&dir)], "");
+    assert_eq!(run.exit, ko_sys::pid::Exit::Exited(1));
+    assert_eq!(run.stdout, "");
+    assert!(
+        run.stderr.contains(
+            "The running server is a different version and must be restarted to upgrade."
+        ),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        run.stderr
+            .contains("terminal different, build incompatible-test"),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains(&format!(
+            "build {}",
+            serde_json::from_str::<serde_json::Value>(
+                &run_ko(&scratch, &env, &["version"], "").ok()
+            )
+            .unwrap()["build"]
+                .as_str()
+                .unwrap()
+        )),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        run.stderr
+            .contains(&format!("ko kill-server --server '{}'", text_of(&dir))),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        run.stderr
+            .contains("then start again. All sessions and panes will end."),
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
 fn client_attach_or_start() {
     let dir = Dir::new("ko-auto-");
     let stale = UnixListener::bind(dir.join("socket")).unwrap();

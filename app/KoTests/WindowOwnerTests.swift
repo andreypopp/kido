@@ -18,36 +18,31 @@ import KoModel
         return owner
     }
 
-    // A server that the owner launches itself, which the test stops.
-    private func launchedDir() throws -> String {
-        let dir = try stateDir()
-        addTeardownBlock { @MainActor in
-            try? self.run(["kill-server"], dir: dir)
-            try? FileManager.default.removeItem(atPath: dir)
-        }
-        return dir
-    }
-
     private func names(_ owner: WindowOwner) -> [String] { owner.snapshot?.sessions.map(\.name) ?? [] }
 
-    func testTheOwnerStartsTheServerShowsNoSessionsAndThenTheLayoutOfTheServer() throws {
-        let dir = try launchedDir()
+    func testTheOwnerStartsTheServerCreatesTheFirstSessionAndThenShowsTheLayoutOfTheServer() throws {
+        let dir = try stateDir()
         let owner = try owner(dir)
-        wait("the empty server") { owner.testBanner.testText.title == "No sessions" }
-        XCTAssertNil(owner.snapshot)
-
-        try put(#"{"revision":0,"layout":{"sessions":[{"name":"main","windows":[{"name":"first","tree":{"pane":{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}}},{"name":"second","tree":{"pane":{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}}}]}]}}"#, dir: dir)
-        wait("the sessions") { self.names(owner) == ["main"] }
-        wait("the banner goes") { owner.testBanner.isHidden }
+        wait("the first session") { self.names(owner) == ["session"] && owner.testBanner.isHidden }
+        XCTAssertNotNil(owner.snapshot)
         XCTAssertTrue(owner.canNavigate)
-        XCTAssertEqual(owner.navigation.windows.map(\.name), ["first", "second"])
-        XCTAssertEqual(owner.window.title, "main — first")
+        owner.renameSession(SessionID(number: 1), "main") { error in XCTAssertNil(error) }
+        wait("the server's changed layout") { self.names(owner) == ["main"] }
+        XCTAssertTrue(owner.window.title.hasPrefix("main — "))
         XCTAssertEqual(owner.sidebar.tabs.entries.map(\.id), owner.navigation.windows.map(\.id))
+    }
+
+    func testClosingAnOwnerBeforeItsLaunchTaskRunsDoesNotStartAServer() async throws {
+        let dir = try stateDir()
+        let owner = try owner(dir)
+        owner.close()
+        await Task.yield()
+        await KoServer.finishLaunches(dir: dir)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir + "/socket"))
     }
 
     func testAServerThatCannotStartShowsTheStartBanner() throws {
         let dir = try stateDir()
-        addTeardownBlock { try? FileManager.default.removeItem(atPath: dir) }
         let file = dir + "/file"
         FileManager.default.createFile(atPath: file, contents: Data())
         let owner = try owner(file + "/server")
@@ -58,15 +53,16 @@ import KoModel
     }
 
     func testARestartedServerIsAFreshWelcomeAndTheOwnerShowsItsNewLayout() throws {
-        let dir = try launchedDir()
-        let owner = try owner(dir)
-        wait("the empty server") { owner.testBanner.testText.title == "No sessions" }
+        let dir = try server()
         try put(#"{"revision":0,"layout":{"sessions":[{"name":"before","windows":[{"name":"w","tree":{"pane":{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}}}]}]}}"#, dir: dir)
+        let owner = try owner(dir)
         wait("the first layout") { self.names(owner) == ["before"] }
         let client = try XCTUnwrap(owner.testClient)
         owner.testEditor { edit in
             var done = try client.edit(edit)
-            done.snapshot.revision = 99
+            if case .renameSession(let rename) = edit, rename.name == "held" {
+                done.snapshot.revision = 99
+            }
             return done
         }
         owner.renameSession(SessionID(number: 1), "held") { _ in }
@@ -74,19 +70,19 @@ import KoModel
         XCTAssertTrue(owner.testEditing)
 
         try run(["kill-server"], dir: dir)
-        wait("the owner starts an empty replacement server") {
-            FileManager.default.fileExists(atPath: dir + "/socket") && owner.testBanner.testText.title == "No sessions" && !owner.testEditing
+        wait("the owner starts a replacement server and its first session") {
+            FileManager.default.fileExists(atPath: dir + "/socket") && self.names(owner) == ["session"] && !owner.testEditing
         }
-        try put(#"{"revision":0,"layout":{"sessions":[{"name":"after","windows":[{"name":"w","tree":{"pane":{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}}}]}]}}"#, dir: dir)
+        owner.renameSession(SessionID(number: 1), "after") { error in XCTAssertNil(error) }
         wait("the layout of the new server") { self.names(owner) == ["after"] }
-        XCTAssertEqual(owner.window.title, "after — w")
+        XCTAssertTrue(owner.window.title.hasPrefix("after — "))
         XCTAssertFalse(owner.testEditing, "the fresh welcome ended the hold")
     }
 
     func testAFailedRestartShowsStartForAManualRetry() throws {
-        let dir = try launchedDir()
+        let dir = try stateDir()
         let owner = try owner(dir)
-        wait("the empty server") { owner.testBanner.testText.title == "No sessions" }
+        wait("the first session") { self.names(owner) == ["session"] && owner.testBanner.isHidden }
         let file = dir + "/file"
         FileManager.default.createFile(atPath: file, contents: Data())
         owner.testServerDir = file + "/server"
@@ -96,15 +92,14 @@ import KoModel
         XCTAssertFalse(owner.testBanner.testText.detail.isEmpty)
         owner.testServerDir = dir
         owner.start()
-        wait("the manual restart") { owner.testBanner.testText.title == "No sessions" }
+        wait("the manual restart") { self.names(owner) == ["session"] && owner.testBanner.isHidden }
     }
 
     func testNavigationSelectsAndSwitchesThroughTheCore() throws {
-        let dir = try launchedDir()
-        let owner = try owner(dir)
+        let dir = try server()
         let sleep = #"{"pane":{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}}"#
-        wait("the empty server") { owner.testBanner.testText.title == "No sessions" }
         try put(#"{"revision":0,"layout":{"sessions":[{"name":"one","windows":[{"name":"a","tree":\#(sleep)},{"name":"b","tree":\#(sleep)}]},{"name":"two","windows":[{"name":"c","tree":\#(sleep)}]}]}}"#, dir: dir)
+        let owner = try owner(dir)
         wait("the windows of the first session") { owner.navigation.windows.map(\.name) == ["a", "b"] }
         XCTAssertEqual(owner.navigation.window, WindowID(number: 1))
 
@@ -121,11 +116,10 @@ import KoModel
     }
 
     func testClosingAWindowDeletesItOnTheServer() throws {
-        let dir = try launchedDir()
-        let owner = try owner(dir)
+        let dir = try server()
         let sleep = #"{"pane":{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}}"#
-        wait("the empty server") { owner.testBanner.testText.title == "No sessions" }
         try put(#"{"revision":0,"layout":{"sessions":[{"name":"s","windows":[{"name":"a","tree":\#(sleep)},{"name":"b","tree":\#(sleep)}]}]}}"#, dir: dir)
+        let owner = try owner(dir)
         wait("two windows") { owner.navigation.windows.count == 2 }
         owner.confirmClose(.window(WindowID(number: 2)), name: "b")
         wait("one window") { owner.navigation.windows.map(\.name) == ["a"] }
@@ -135,22 +129,43 @@ import KoModel
         let own = KoClient.version
         let dir = try stateDir()
         let server = try KoFakeServer(directory: dir, version: #"{"protocol":"\#(own.protocolVersion)","vt":"abc","build":"theirs"}"#)
-        addTeardownBlock {
-            server.stop()
-            try? FileManager.default.removeItem(atPath: dir)
-        }
+        addTeardownBlock { server.stop() }
         let owner = try owner(dir)
         wait("the sheet") { owner.preparedAlert != nil }
         let alert = try XCTUnwrap(owner.preparedAlert).alert
         XCTAssertEqual(alert.messageText, "Restart the local ko server")
         XCTAssertTrue(alert.informativeText.contains("abc"), alert.informativeText)
         XCTAssertTrue(alert.informativeText.contains("theirs"), alert.informativeText)
-        XCTAssertEqual(alert.buttons.map(\.title), ["Restart", "Close"])
+        XCTAssertEqual(alert.buttons.map(\.title), ["Restart Server", "Close"])
+        let defaultDir = KoClient.defaultDir()
+        let defaultAlert = WindowOwner.mismatchAlert(host: .local, code: KO_ERR_VT_MISMATCH, server: own, own: own, serverDir: defaultDir)
+        XCTAssertEqual(defaultAlert.accessoryView?.subviews.compactMap { $0 as? NSTextField }.first?.stringValue, "ko kill-server --server '\(defaultDir)'")
         owner.respondToAlert(.alertSecondButtonReturn)
         XCTAssertEqual(owner.testBanner.testText.title, "Disconnected from Local")
         XCTAssertEqual(owner.testBanner.testText.button, "Reconnect")
         XCTAssertFalse(owner.testBanner.isHidden)
         XCTAssertFalse(owner.canNavigate)
+    }
+
+    func testRestartReplacesAnIncompatibleProcessWithTheBundledServerAndCreatesTheFirstSession() throws {
+        let dir = try mismatchServer()
+        let owner = try owner(dir)
+        wait("the mismatch sheet") { owner.preparedAlert != nil }
+        let alert = try XCTUnwrap(owner.preparedAlert).alert
+        XCTAssertEqual(alert.buttons.map(\.title), ["Restart Server", "Close"])
+        XCTAssertTrue(alert.informativeText.contains("different version"))
+        XCTAssertTrue(alert.informativeText.contains("incompatible-test"))
+        XCTAssertTrue(alert.informativeText.contains(KoClient.version.build))
+        let command = try XCTUnwrap(alert.accessoryView?.subviews.compactMap { $0 as? NSTextField }.first)
+        XCTAssertTrue(command.isSelectable)
+        XCTAssertEqual(command.stringValue, "ko kill-server --server '\(dir)'")
+        XCTAssertEqual(alert.window.defaultButtonCell, alert.buttons[1].cell as? NSButtonCell)
+        XCTAssertEqual(alert.buttons[0].keyEquivalent, "")
+        owner.respondToAlert(.alertFirstButtonReturn)
+        wait("the bundled server attaches and creates the first session") { self.names(owner) == ["session"] && owner.testBanner.isHidden }
+        let version = try JSONDecoder().decode([String: String].self, from: Data(output(["api", "/version"], dir: dir).utf8))
+        XCTAssertEqual(version["vt"], KoClient.version.vt)
+        XCTAssertEqual(version["build"], KoClient.version.build)
     }
 
     func testAServerThatNeverWelcomesEndsInTheStartBannerAtTheDeadline() throws {
@@ -161,7 +176,6 @@ import KoModel
         addTeardownBlock { @MainActor in
             WindowOwner.welcomeTimeout = timeout
             server.stop()
-            try? FileManager.default.removeItem(atPath: dir)
         }
         let owner = try owner(dir)
         wait("the deadline") { owner.testBanner.testText.title == "Kido could not reach Local" }

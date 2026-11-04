@@ -23,9 +23,9 @@ import XCTest
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         owner.testServerDir = dir
         addTeardownBlock { @MainActor in owner.close(); board.releaseGlobally() }
-        owner.start()
-        try await wait("the empty server") { owner.testBanner.testText.title == "No sessions" }
+        _ = try await KoServer.launch(dir: dir)
         try await koMain(dir)
+        owner.start()
         try await wait("rename owner ready") { owner.testClient != nil && owner.snapshot != nil }
         let client = try XCTUnwrap(owner.testClient)
         let list = owner.sidebar.list

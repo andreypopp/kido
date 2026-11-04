@@ -151,7 +151,7 @@ target/%/release/libko_client.a: build/.ko_client_deps FORCE
 	@: $${MACOSX_DEPLOYMENT_TARGET:?set MACOSX_DEPLOYMENT_TARGET}
 	@test -d "$$(rustc --print target-libdir --target $*)" || \
 	{ echo "ko-client-xcframework: rust target $* is not installed for $$(rustc --version); run: rustup target add $*" >&2; exit 1; }
-	$(CARGO) rustc --locked --release -p ko_client --lib --crate-type staticlib --target $*
+	$(BUILD_ID) $(CARGO) rustc --locked --release -p ko_client --lib --crate-type staticlib --target $*
 
 build/.ko_client_deps: Cargo.lock ko_client/Cargo.toml
 	set -e; tree=$$($(CARGO) tree --locked -p ko_client -e normal --prefix none); \

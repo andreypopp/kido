@@ -97,16 +97,31 @@ import XCTest
         XCTAssertThrowsError(try refused?.get()) { XCTAssertEqual(($0 as? KoError)?.code, KO_ERR_INVALID) }
     }
 
-    func testStartOnAnEmptyServerCreatesOneSessionInTheHomeDirectory() throws {
+    func testConnectingToAnEmptyServerCreatesOneSessionButDeletingItDoesNotRecreateIt() throws {
         let dir = try server()
         let owner = try owner(dir)
-        wait("the empty server") { owner.testBanner.testText.title == "No sessions" }
-        XCTAssertEqual(owner.testBanner.testText.button, "Start")
-        owner.start()
-        wait("one session") { owner.navigation.sessions.count == 1 && owner.testBanner.isHidden }
+        wait("one session without Start") { owner.navigation.sessions.count == 1 && owner.testBanner.isHidden }
         wait("the pane's directory") { owner.testModel?.panes.first?.cwd.isEmpty == false }
         XCTAssertEqual(URL(fileURLWithPath: owner.testModel?.panes.first?.cwd ?? "").standardizedFileURL,
                        URL(fileURLWithPath: NSHomeDirectory()).standardizedFileURL)
+        let id = try XCTUnwrap(owner.testModel?.layout.layout.sessions.first?.id)
+        try run(["api", "-X", "DELETE", "/sessions/\(id)"], dir: dir)
+        wait("the deliberate empty layout") { owner.testModel?.layout.layout.sessions.isEmpty == true && owner.testBanner.testText.title == "No sessions" && !owner.testEditing }
+        XCTAssertEqual(owner.testBanner.testText.button, "Start")
+        mainQueueDrained()
+        XCTAssertEqual(owner.testModel?.layout.layout.sessions.count, 0)
+        owner.start()
+        wait("Start still creates a session") { owner.navigation.sessions.count == 1 && owner.testBanner.isHidden }
+    }
+
+    func testTwoOwnersConnectingToAnEmptyServerCreateExactlyOneSession() throws {
+        let dir = try server()
+        let first = try owner(dir)
+        let second = try owner(dir)
+        wait("both owners show one session") { first.navigation.sessions.count == 1 && second.navigation.sessions.count == 1 && first.testBanner.isHidden && second.testBanner.isHidden && !first.testEditing && !second.testEditing }
+        let layout = try JSONDecoder().decode(KoSchema.Snapshot.self, from: Data(output(["api", "/layout"], dir: dir).utf8))
+        XCTAssertEqual(layout.layout.sessions.count, 1)
+        XCTAssertEqual(first.testModel?.layout.layout.sessions.first?.id, second.testModel?.layout.layout.sessions.first?.id)
     }
 
     func testSwitchingWindowsSkipsANestedRunWindow() throws {

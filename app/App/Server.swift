@@ -35,12 +35,26 @@ struct BundledTools: Sendable {
     }
 }
 
-enum KoServer {
-    // Both calls block until the server started or ended, so they run off the main thread.
+@MainActor enum KoServer {
+    #if KIDO_VISUAL
+    private static var launches: [String: [UUID: Task<String, any Error>]] = [:]
+
+    static func finishLaunches(dir: String) async {
+        for launch in launches[dir]?.values.map({ $0 }) ?? [] {
+            _ = try? await launch.value
+        }
+    }
+    #endif
     static func launch(dir: String) async throws(Failure) -> String {
         try tools.validate()
         let executable = tools.ko
-        do { return try await Task.detached { try KoClient.launch(dir: dir, executable: executable) }.value } catch {
+        let launch = Task.detached { try KoClient.launch(dir: dir, executable: executable) }
+        #if KIDO_VISUAL
+        let id = UUID()
+        launches[dir, default: [:]][id] = launch
+        defer { launches[dir]?[id] = nil }
+        #endif
+        do { return try await launch.value } catch {
             throw Failure(message: "\(error)")
         }
     }

@@ -101,9 +101,9 @@ import XCTest
         }
         let first = try XCTUnwrap(app.open(.local, start: false))
         first.testServerDir = dir
-        first.start()
-        try await wait("the empty server") { first.testBanner.testText.title == "No sessions" }
+        _ = try await KoServer.launch(dir: dir)
         try await koPut(dir, #"[{"name":"main","windows":[{"name":"w","tree":\#(koPane())}]},{"name":"target","windows":[{"name":"t","tree":\#(koPane())}]}]"#)
+        first.start()
         let ids = ["session_2", "window_2", "pane_2"]
         try await wait("first owner snapshot") { first.snapshot != nil }
         let instance = try XCTUnwrap(first.snapshot?.serverInstance)

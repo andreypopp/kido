@@ -3281,9 +3281,17 @@ mod tests {
                 Routes {
                     clients: Vec::new(),
                     views: Vec::new(),
-                    plain: Arc::new(move |request| match request.target.as_str() {
-                        "/version" => Some((200, body.clone())),
-                        _ => Some((426, String::new())),
+                    plain: Arc::new(move |request| {
+                        let head = request.head.to_ascii_lowercase();
+                        match request.target.as_str() {
+                            "/version"
+                                if !head.contains("\r\nko-protocol:")
+                                    && !head.contains("\r\nko-vt:") =>
+                            {
+                                Some((200, body.clone()))
+                            }
+                            _ => Some((426, String::new())),
+                        }
                     }),
                     stall: None,
                 },

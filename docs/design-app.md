@@ -93,7 +93,16 @@ and a start that brings no welcome shows "Disconnected", both with Start.
 A launch result that arrives after the welcome changes nothing. A remote
 window's redial only attaches ([Remote hosts](#remote-hosts)). Start also
 remains after a failed dial and the welcome deadline; on "No sessions" it
-creates a session. A welcome with `fresh` (another server instance) resets the
+creates a session. When the first welcome of a local owner's connection,
+or a `fresh` one, shows no session, the owner sends one `ensure_session`
+edit (one pane in the home directory). The edit adds the session only to
+a layout without one, and the core applies it again to the newer document
+after a revision conflict, so two windows that connect to an empty server
+at once end with one session. A same-instance reconnect, and a layout
+that another client emptied later, create nothing: the window shows "No
+sessions" with Start. A remote owner creates nothing at connect, because
+the home directory is the Mac's, not the host's. A welcome with `fresh`
+(another server instance) resets the
 session view and the model, because ids mean something only to the server
 that issued them, the owner makes a new `LayoutEditor` (a held edit's
 revision belongs to the old server) and selects the first session again. A welcome
@@ -116,13 +125,23 @@ backing-scale change (a display move) that keeps the grid still sends a size.
 A floating sidebar changes no size.
 
 **Version mismatch.** A server of another protocol or terminal revision
-gets one `KO_EVENT_MISMATCH` with the code and both `ko_version`s
-(protocol, vt, build), and the core does not retry. The owner keeps its
-last snapshot read-only, shows "Disconnected" with Reconnect and opens a
-native alert sheet. For a local server the sheet is "Restart the local ko
-server", with the warning that sessions, panes, commands and agents end and
-other clients disconnect. Restart is destructive and has no key
-equivalent; Close is the default and Escape action. Restart stops the
+refuses the `/client` upgrade (426 or 409, docs/protocol.md, section 1).
+The core then reads `GET /version`, which goes without the version
+headers, so an incompatible server answers it. The result is one
+`KO_EVENT_MISMATCH` with the code and both `ko_version`s (protocol, vt,
+build), and the core does not retry. A server that differs only in its
+build is compatible and connects. The usual case is a server that another
+ko build started on the shared directory (a Homebrew ko, an older
+checkout). The owner keeps its last snapshot read-only, shows
+"Disconnected" with Reconnect and opens a native alert sheet. For a local
+server the sheet is "Restart the local ko server": the running server is a
+different version and must be restarted to upgrade, the differing value and
+both builds, and the warning that sessions, panes, commands and agents end
+and other clients disconnect. A selectable line gives the command that
+does the same from a terminal, `ko kill-server --server DIR`. The
+directory is always named, because a terminal's `KO_STATE_DIR` or
+`XDG_STATE_HOME` can select another default than the app's. Restart Server is destructive and has
+no key equivalent; Close is the default and Escape action. Restart stops the
 server with `ko_client_stop_server`, then posts a notification with the
 server directory, and every local owner in the mismatch state on that
 directory dials again. A failed restart is a banner, "Could not restart
@@ -188,11 +207,13 @@ hides it. A welcome of another `instance` resets the session view as for a
 local server.
 
 **Mismatch.** A remote sheet has Reconnect and Close (the default and
-Escape); nothing is destructive, because a restart does not change the
-installed binary. A server of a lower protocol major reads "Update ko on
-HOST", a higher one "Update Kido.app to connect to HOST", another terminal
-revision "Kido.app and ko on HOST are from different releases". The second
-paragraph gives both versions and builds.
+Escape); nothing is destructive and the app stops no remote server: the
+user decides on the host. A server of a lower protocol major reads "Update
+ko on HOST", a higher one "Update Kido.app to connect to HOST", another
+terminal revision "Kido.app and ko on HOST are from different releases".
+The text gives both versions and builds, then tells the user to stop the
+server on the host with `ko kill-server` (the selectable line) and run
+`ko server`, and that its sessions and panes end.
 
 **SSH agent forwarding.** `ko server` gives every pane
 `SSH_AUTH_SOCK=<state dir>/agent.sock`. After the query, the app links that
@@ -1086,7 +1107,7 @@ a directional pane select is `ko_client_select`, not an edit. After a
 split the new pane is selected, and after a zoom the zoomed pane. When
 the active pane changes while a pane of the window has focus, the focus
 follows it. Session and window creation, session rename and reorders are
-edits too (`add_session`, `add_window`, `rename_session`,
+edits too (`add_session`, `ensure_session`, `add_window`, `rename_session`,
 `reorder_sessions`, `reorder_windows`); a reorder keeps its order on
 screen until the layout shows it. `App/Ko/LayoutEditor.swift` builds these
 edits; `ko layout edit EDIT-JSON` sends the same typed edit from the
@@ -2118,6 +2139,15 @@ content bridge, layout editor, layout gesture, owner and owner-model
 tests, each against its own private server in a `mktemp` directory under
 `/tmp` that its teardown stops, also when the test fails. The make target
 gives the host app a private `KIDO_APP_SERVER` and stops it afterwards.
+Each test directory (`KoTestCase.stateDir`, `/tmp/ko-kp-*`) is listed in
+`test-dirs` of that directory; its teardown waits for the app's launches
+on the directory (`KoServer.finishLaunches`, a `KIDO_VISUAL` seam), stops
+the server and only then removes the directory, because a launch that ends
+after the stop leaves a server with no directory. After the suite,
+`scripts/ko-test-leak-check.py` fails the target when a server of a listed
+directory still runs. The incompatible server of the mismatch tests is
+`ko-fake mismatch-server DIR` (`ko_e2e/fake/main.rs`), which answers `GET /version` without version headers with
+another terminal revision and 409 `vt_mismatch` to every other request.
 `make ko-fixtures` records, from a private server,
 `SidebarFeedTests/Fixtures/ko-tree.json` and
 `PaneGeometryTests/Fixtures/ko-layout.json`; the recorder tests skip

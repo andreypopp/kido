@@ -100,6 +100,10 @@ pub enum Edit {
         name: Name,
         new: CreatePane,
     },
+    EnsureSession {
+        name: Name,
+        new: CreatePane,
+    },
     RenameSession {
         session: SessionId,
         name: Name,
@@ -763,7 +767,8 @@ pub(crate) fn apply(layout: &mut DraftLayout, edit: &Edit) -> Done {
             session.windows.insert(at + 1, DraftWindow::single(new));
             Ok(())
         }
-        Edit::AddSession { name, new } => {
+        Edit::EnsureSession { .. } if !layout.sessions.is_empty() => Ok(()),
+        Edit::AddSession { name, new } | Edit::EnsureSession { name, new } => {
             layout
                 .sessions
                 .push(DraftSession::single(name.clone(), new));
@@ -1258,6 +1263,24 @@ mod tests {
             apply(&mut draft, &unfloat(1, 2)),
             Err(Refusal::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn ensure_session_creates_only_when_empty() {
+        let mut draft = layout(&[]);
+        let edit = Edit::EnsureSession {
+            name: name("first"),
+            new: created(),
+        };
+        apply(&mut draft, &edit).unwrap();
+        assert_eq!(draft.sessions.len(), 1);
+        let first = draft.clone();
+        apply(&mut draft, &edit).unwrap();
+        assert_eq!(draft, first);
+        let mut populated = layout(&["1"]);
+        let original = populated.clone();
+        apply(&mut populated, &edit).unwrap();
+        assert_eq!(populated, original);
     }
 
     #[test]

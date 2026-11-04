@@ -229,15 +229,7 @@ import XCTest
 
     func testConfigBannerAndLinkFailurePrecedence() throws {
         let file = try fixture("app: {font: {size: bad}}\n")
-        let dir = try stateDir()
-        let process = try ko(["server"], dir: dir)
-        addTeardownBlock { @MainActor in
-            let stop = try? self.ko(["kill-server"], dir: dir)
-            stop?.waitUntilExit()
-            process.waitUntilExit()
-            try? FileManager.default.removeItem(atPath: dir)
-        }
-        wait("server socket") { FileManager.default.fileExists(atPath: dir + "/socket") }
+        let dir = try server()
         try put(#"{"revision":0,"layout":{"sessions":[{"name":"main","windows":[{"name":"shell","tree":{"pane":{"new":{"command":{"type":"argv","argv":["/bin/cat"]}}}}}]}]}}"#, dir: dir)
         let board = NSPasteboard(name: .init(UUID().uuidString))
         let runtime = try XCTUnwrap(GhosttyRuntime(configFile: file, pasteboard: board))

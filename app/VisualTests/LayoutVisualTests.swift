@@ -27,11 +27,11 @@ import XCTest
         addTeardownBlock { @MainActor [dir] in
             owner.close()
             board.releaseGlobally()
+            await KoServer.finishLaunches(dir: dir)
             _ = try? await Child.run(tools.ko, ["kill-server", "--server", dir])
             try? FileManager.default.removeItem(atPath: dir)
         }
-        owner.start()
-        try await wait("the empty server", within: 5) { owner.testBanner.testText.title == "No sessions" }
+        _ = try await KoServer.launch(dir: dir)
         // The terminal area of the recorded snapshots: a 700x560 session view.
         let content = try XCTUnwrap(owner.window.contentView)
         content.layoutSubtreeIfNeeded()
@@ -51,6 +51,7 @@ import XCTest
         try #"{"revision":0,"layout":{"sessions":[{"name":"visual","windows":\#(windows)}]}}"#.write(toFile: draft, atomically: true, encoding: .utf8)
         let put = try await Child.run(tools.ko, ["api", "--server", dir, "-X", "PUT", "--input", draft, "/layout"])
         XCTAssertEqual(put.status, 0, put.err)
+        owner.start()
     }
 
     private var terminal: WindowView? { owner.testSession?.windows.values.first { !$0.isHidden } }

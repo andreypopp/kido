@@ -228,7 +228,9 @@ pub fn call(
     let client = client.map(|client| client.to_string());
     let length = body.len().to_string();
     let mut headers = vec![("Host", "localhost")];
-    headers.extend(versions.iter().map(|(name, value)| (*name, value.as_str())));
+    if (method, target) != ("GET", "/version") {
+        headers.extend(versions.iter().map(|(name, value)| (*name, value.as_str())));
+    }
     if let Some(client) = &client {
         headers.push(("Ko-Client", client));
     }

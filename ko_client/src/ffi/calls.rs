@@ -10,7 +10,7 @@ use ko_server::ids::{ClientId, MessageId, PaneId};
 use ko_server::protocol::{self, Revision, SendPrompt, Show};
 use ko_sys::event::Wake;
 
-use super::engine::{mismatch_of, probe};
+use super::engine::failure;
 use super::{Buffer, Client, Code, bytes_of, client, empty, hand_over, locked, text_of};
 use crate::edit::{Edit, Refusal};
 use crate::layout::{self, Document, EditError};
@@ -300,10 +300,10 @@ pub unsafe extern "C" fn ko_client_probe(
         return Code::Argument;
     };
     let within = Duration::from_millis(u64::from(within_ms));
-    match probe(Path::new(socket), within, None) {
-        Ok(server) => {
+    match crate::api::version(Path::new(socket), within, None).map_err(|error| failure(&error)) {
+        Ok((mismatch, server)) => {
             hand_over(out, protocol::json(&server).into_bytes());
-            mismatch_of(&server).unwrap_or(Code::Ok)
+            mismatch.as_ref().map(Code::of).unwrap_or(Code::Ok)
         }
         Err((code, message)) => {
             hand_over(out, message.into_bytes());

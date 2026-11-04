@@ -117,6 +117,7 @@ private class AlertEscape: NSView {
         return alive && snapshot != nil
     }
     private var pendingNewSession = false
+    private var pendingInitialSession = false
     private var navigationModel = SessionModel()
     private enum Target { case pane(Snapshot.Position), window(SessionID, WindowID) }
     private var focusTarget: Target?
@@ -339,6 +340,7 @@ private class AlertEscape: NSView {
         let generation = generation
         down("Starting the ko server…", "", button: nil)
         task = Task {
+            guard accepts(generation) else { return }
             do throws(Failure) {
                 _ = try await KoServer.launch(dir: serverDir)
                 guard accepts(generation), !welcomed else { return }
@@ -380,6 +382,7 @@ private class AlertEscape: NSView {
         down("Connecting to \(host.label)…", "", button: nil)
         if case .remote(let alias) = host { return connectRemote(alias, cause: cause) }
         task = Task { [self] in
+            guard accepts(generation) else { return }
             do throws(Failure) {
                 let socket = try await KoServer.launch(dir: serverDir)
                 guard accepts(generation) else { return }
@@ -451,16 +454,17 @@ private class AlertEscape: NSView {
         }
     }
 
-    static func mismatchAlert(host: Host, code: ko_code, server: KoVersion, own: KoVersion) -> NSAlert {
+    static func mismatchAlert(host: Host, code: ko_code, server: KoVersion, own: KoVersion, serverDir: String) -> NSAlert {
         let alert = NSAlert()
         let local = host == .local
         let builds = "The server is build \(server.build); this app is build \(own.build)."
+        let command = "ko kill-server" + (local ? " --server '\(serverDir.replacingOccurrences(of: "'", with: "'\"'\"'"))'" : "")
         let protocols = "This app speaks ko protocol \(own.protocolVersion). The server speaks \(server.protocolVersion)."
         let revisions = "This app runs terminal revision \(own.vt.prefix(9)); the server runs \(server.vt.prefix(9))."
         if local {
             let detail = code == KO_ERR_PROTOCOL_MISMATCH ? protocols : "This app runs terminal revision \(own.vt.prefix(9)). The server runs \(server.vt.prefix(9))."
             alert.messageText = "Restart the local ko server"
-            alert.informativeText = "\(detail) \(builds) Restart the server, then reconnect."
+            alert.informativeText = "The running server is a different version and must be restarted to upgrade. \(detail) \(builds)"
                 + "\n\nRestarting ends all sessions and panes on this local ko server. Running commands and agents will stop. Other clients attached to this server will disconnect."
         } else if code == KO_ERR_PROTOCOL_MISMATCH, let major = server.major, let ours = own.major, major > ours {
             alert.messageText = "Update Kido.app to connect to \(host.label)"
@@ -472,13 +476,24 @@ private class AlertEscape: NSView {
             alert.messageText = "Kido.app and ko on \(host.label) are from different releases"
             alert.informativeText = "\(revisions) Install the ko release of this Kido.app on the host, or update Kido.app. \(builds)"
         }
-        alert.addButton(withTitle: local ? "Restart" : "Reconnect").hasDestructiveAction = local
+        if !local {
+            alert.informativeText += "\n\nOn \(host.label), stop the server with the command below, then run ko server. All sessions and panes on that server will end."
+        }
+        alert.addButton(withTitle: local ? "Restart Server" : "Reconnect").hasDestructiveAction = local
         alert.addButton(withTitle: "Close").keyEquivalent = "\u{1b}"
         alert.buttons[0].keyEquivalent = ""
         alert.window.defaultButtonCell = alert.buttons[1].cell as? NSButtonCell
         alert.window.initialFirstResponder = alert.buttons[1]
         let escape = AlertEscape()
         escape.button = alert.buttons[1]
+        let field = NSTextField(wrappingLabelWithString: command)
+        field.isSelectable = true
+        field.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        field.preferredMaxLayoutWidth = 420
+        escape.frame = NSRect(x: 0, y: 0, width: 420, height: field.fittingSize.height)
+        field.frame = escape.bounds
+        field.autoresizingMask = [.width, .height]
+        escape.addSubview(field)
         alert.accessoryView = escape
         return alert
     }
@@ -487,7 +502,7 @@ private class AlertEscape: NSView {
         invalidate(keepingSnapshot: true)
         link = .mismatch(code: code, server: server, own: own)
         down("Disconnected from \(host.label)", "", button: "Reconnect")
-        let alert = Self.mismatchAlert(host: host, code: code, server: server, own: own)
+        let alert = Self.mismatchAlert(host: host, code: code, server: server, own: own, serverDir: serverDir)
         let generation = generation
         prepareAlert(alert) { [weak self] response in
             guard let self, accepts(generation) else { return }
@@ -861,6 +876,7 @@ private class AlertEscape: NSView {
             initial?.cancel()
             initial = nil
             if fresh {
+                pendingInitialSession = host == .local
                 feedFresh = true
                 selectedFirst = false
                 // The new server's revisions start again, so an edit held for the old one never settles.
@@ -949,6 +965,12 @@ private class AlertEscape: NSView {
         let model = SessionModel(ko)
         let marks = ko.runtimeMarks
         received = Received(ko: ko, model: model, snapshot: Snapshot(model: ko, marks: marks))
+        if pendingInitialSession {
+            pendingInitialSession = false
+            if ko.layout.layout.sessions.isEmpty && !pendingNewSession {
+                create(.ensureSession(.init(name: "session", new: .init(cwd: .absPath(NSHomeDirectory())))))
+            }
+        }
         if pendingNewSession {
             pendingNewSession = false
             newSession()
