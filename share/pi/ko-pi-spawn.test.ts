@@ -146,21 +146,24 @@ test("a message to an ended subagent restarts it by --session-id in its recorded
     const s = await startSession(fx);
     s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", name: "kid", session: "kid-session", model: "acme/m:low", fork: false, cwd: "/work/kid", pane: { instance: INSTANCE, pane: "pane_77" } } });
     const message = s.tools.get("message_agent");
-    const [first, second] = await Promise.all([message.execute("c", { to: "kid", message: "carry on" }), message.execute("c", { to: "kid", message: "also this" })]);
+    const results = await Promise.all([message.execute("c", { to: "kid", message: "carry on" }), message.execute("c", { to: "kid", message: "also this" })]);
+    const texts = results.map(text);
+    const winner = texts.findIndex((t) => t.startsWith("restarted kid in pane pane_10; "));
+    assert.notEqual(winner, -1, texts.join("|"));
+    const winning = ["carry on", "also this"][winner]!;
+    const losing = ["carry on", "also this"][1 - winner]!;
     const posts = fx.posts("/panes") as Body[];
     assert.equal(posts.length, 1, "one restart");
     const argv = posts[0]!.command.argv as string[];
     assert.deepEqual(argv.slice(3), ["ko-pi", "--session-id", "kid-session", "--name", "kid", "--model", "acme/m:low"]);
     assert.equal(posts[0]!.cwd, "/work/kid");
     assert.equal(posts[0]!.parent, "pane_1");
-    assert.equal(posts[0]!.vars["ko-pi.task"].text, "carry on");
-    const texts = [text(first), text(second)];
-    assert.ok(texts.some((t) => t.startsWith("restarted kid in pane pane_10; ")), texts.join("|"));
-    assert.ok(texts.some((t) => t.startsWith("queued for kid:")), "the second message goes to the pane that the first started");
+    assert.equal(posts[0]!.vars["ko-pi.task"].text, winning);
+    assert.ok(texts[1 - winner]!.startsWith("queued for kid:"), "the other message goes to the pane that the first started");
     const children = entriesOf(s, "ko-pi.child");
     assert.deepEqual(children.map((child) => child.pane.pane), ["pane_77", "pane_10"]);
     assert.equal(entriesOf(s, "ko-pi.work").length, 2, "the restart and the second message are each work");
-    assert.deepEqual(fx.posts("/panes/pane_10/messages").map((post) => post.text), ["also this"]);
+    assert.deepEqual(fx.posts("/panes/pane_10/messages").map((post) => post.text), [losing]);
 
     const steered = text(await (async () => {
       s.entries.push({ type: "custom", customType: "ko-pi.child", data: { ...children[0], owner: "self-session", pane: { instance: INSTANCE, pane: "pane_78" } } });
