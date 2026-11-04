@@ -670,7 +670,7 @@ after it lands.
   `ko_client::ffi`, the header and `exports.txt`; `make schemas` with
   the `app:` types in `config-schema.json`; the Rust tests of section
   10; `make verify`. About 1 agent-day. Manager on Opus, implementer
-  on Sonnet, the six reviewers of AGENTS.md "Review".
+  on GPT-6.1 Sol, the six reviewers of AGENTS.md "Review".
 - **UA2 App** (5, 6.1, 6.2, 6.3's picker, 8, 9, 10): `gen-ko-model.py`
   with the third schema and `make ko-model`; `GhosttyConf.swift` and
   `ThemePaths`; `GhosttyRuntime` on `ko_config_load` with the file and

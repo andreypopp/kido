@@ -1317,12 +1317,12 @@ not write code.
 The top-level session orchestrates the planning and development and
 delegates to subagents, by these rules:
 - when spawning subagents, implementers/builders and investigation/repro work
-  run on Sonnet 5.5 (claude-bridge/claude-sonnet-5-5),
+  run on GPT-6.1 Sol at low thinking (openai-codex/gpt-6.1-sol:low),
   reviewers on Opus 5.5
   (claude-bridge/claude-opus-5-5) or GPT-6 Astra (openai-codex/gpt-6-astra),
   sometimes one and sometimes the other (always the fully qualified name); planners
   and design work run on Fable (claude-bridge/claude-fable-5-1), never on
-  Sonnet; Fable also when asked for complex tasks or reviews
+  the implementer model; Fable also when asked for complex tasks or reviews
 - the top level session tries to do work in subagents and orchestrates them
   (schedules follow ups and etc), this is because top level session needs to be
   able to respond to user always
@@ -1349,7 +1349,7 @@ delegates to subagents, by these rules:
   scripts/lint.sh, and no tests, reviewers or full verification; a small
   product change may use fewer reviewers if the manager says which ones
 - docs (docs/, AGENTS.md, READMEs) are written by a smart model, usually the
-  manager of the unit of work, never by the Sonnet implementer; the
+  manager of the unit of work, never by the implementer; the
   implementer reports the facts the docs need; the manager writes them after
   the implementation and before review, so the implementer's final make verify
   (lint checks doc references) runs after the last docs edit
