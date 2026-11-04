@@ -1,11 +1,12 @@
 use std::io;
 use std::path::PathBuf;
 
+use ko_config::values::RuntimeName;
 use ko_pane_wire::frame::Size;
 
 use crate::config::Config;
 use crate::delivery::Stamps;
-use crate::ids::{PaneId, PaneToken, RunId, RuntimeName};
+use crate::ids::{PaneId, PaneToken, RunId};
 use crate::inbox::Inbox;
 use crate::model::PaneModel;
 use crate::pane_proc::{Input, Io, Launch, PaneProc};

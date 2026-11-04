@@ -1,10 +1,13 @@
 use std::path::{Path, PathBuf};
 
-use crate::ids::{PaneId, RuntimeName};
-use crate::protocol::{PathMap, Variable};
-use crate::runtime::file::Runtime;
+use ko_config::runtime::PathMap;
+use ko_config::values::RuntimeName;
+
+use crate::ids::PaneId;
+use crate::protocol::Variable;
 use crate::runtime::{Ctx, Tokens};
 use crate::ssh::quote_bytes;
+use ko_config::runtime::Runtime;
 
 pub(crate) fn directory(root: &Path, name: &RuntimeName) -> PathBuf {
     root.join(name.as_str())
@@ -19,7 +22,7 @@ pub(crate) fn token_directory(root: &Path, name: &RuntimeName) -> PathBuf {
 }
 
 pub(crate) fn token_path(socket: &Path, runtime: &Runtime, pane: PaneId) -> Option<PathBuf> {
-    match runtime.tokens(pane) {
+    match super::tokens(runtime, pane) {
         Tokens::File { name, .. } => Some(socket.with_file_name("panes").join(name)),
         Tokens::Remote => None,
     }
@@ -29,11 +32,11 @@ fn map_cwd(paths: &[PathMap], default: Option<&Path>, host_cwd: &Path) -> Option
     paths
         .iter()
         .filter_map(|map| {
-            let rest = host_cwd.strip_prefix(map.host.as_path()).ok()?;
-            Some((map.host.as_path().components().count(), map, rest))
+            let rest = host_cwd.strip_prefix(Path::new(map.host.as_str())).ok()?;
+            Some((Path::new(map.host.as_str()).components().count(), map, rest))
         })
         .max_by_key(|(depth, ..)| *depth)
-        .map(|(_, map, rest)| map.runtime.as_path().join(rest))
+        .map(|(_, map, rest)| Path::new(map.runtime.as_str()).join(rest))
         .or_else(|| default.map(Path::to_path_buf))
 }
 
@@ -73,13 +76,14 @@ pub(crate) fn wrapper(wrap: &Wrap<'_>, inner: Option<&[Vec<u8>]>) -> Vec<Vec<u8>
         (Some(cwd), true) => Some(PathBuf::from(cwd)),
         (Some(cwd), false) => map_cwd(
             &runtime.paths(),
-            runtime.cwd.as_ref().map(|cwd| cwd.as_path()),
+            runtime.cwd.as_ref().map(|cwd| Path::new(cwd.as_str())),
             Path::new(cwd),
         ),
-        (None, _) => runtime.cwd.as_ref().map(|cwd| cwd.as_path().to_path_buf()),
+        (None, _) => runtime.cwd.as_ref().map(|cwd| PathBuf::from(cwd.as_str())),
     };
     let socket = socket_path(root, name);
-    let entry = runtime.entry(
+    let entry = super::entry(
+        runtime,
         *pane,
         &Ctx {
             name,
@@ -105,7 +109,7 @@ pub(crate) fn wrapper(wrap: &Wrap<'_>, inner: Option<&[Vec<u8>]>) -> Vec<Vec<u8>
         enter.extend([text("--cwd"), bytes(&cwd)]);
     }
     let requested = env.iter().map(|Variable { name, value }| (name, value));
-    for (variable, value) in runtime.env.iter().chain(requested) {
+    for (variable, value) in runtime.env.as_map().iter().chain(requested) {
         enter.extend([text("--env"), text(&format!("{variable}={value}"))]);
     }
     if let Some(inner) = inner {
@@ -121,8 +125,9 @@ pub(crate) fn wrapper(wrap: &Wrap<'_>, inner: Option<&[Vec<u8>]>) -> Vec<Vec<u8>
 
 #[cfg(test)]
 mod tests {
+    use ko_config::values::AbsPath;
+
     use super::*;
-    use crate::protocol::AbsPath;
 
     fn map(host: &str, runtime: &str) -> PathMap {
         PathMap {

@@ -2,6 +2,7 @@ adler2
 aho-corasick
 anstyle
 arbitrary
+arraydeque
 arrayvec
 autocfg
 bit-set
@@ -47,6 +48,7 @@ jobserver
 ko
 ko_bench
 ko_client
+ko_config
 ko_e2e
 ko_pane
 ko_pane_wire
@@ -85,6 +87,7 @@ regex-syntax
 rustix
 rustversion
 rusty-fork
+saphyr-parser
 schemars
 schemars_derive
 scoped-tls

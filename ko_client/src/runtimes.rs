@@ -5,8 +5,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use ko_config::values::RuntimeName;
 use ko_server::api::{Route, WaitMs};
-use ko_server::ids::RuntimeName;
 use ko_server::protocol::{Empty, LeadReport, LinkState, RuntimeWait, STDERR_TAIL};
 use ko_sys::fd::{self, Waited, Want};
 use ko_sys::signal::{Signal, Signals};

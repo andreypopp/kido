@@ -69,9 +69,9 @@ enum Command {
         /// Print the schema of the client core's model and edit documents instead.
         #[arg(long, group = "schema")]
         client: bool,
-        /// Print the JSON schema of the runtime configuration file instead.
+        /// Print the JSON schema of the configuration file config.yaml instead.
         #[arg(long, group = "schema")]
-        runtimes: bool,
+        config: bool,
     },
     /// Send one HTTP request to the ko server and print the response.
     ///
@@ -258,10 +258,10 @@ struct ServerArgs {
     /// share/ko/bin beside the installed ko, if it exists.
     #[arg(long, value_name = "DIR")]
     bin_dir: Option<PathBuf>,
-    /// The runtime configuration file. The default is $XDG_CONFIG_HOME/ko/runtimes.json, else
-    /// ~/.config/ko/runtimes.json.
+    /// The configuration file, in YAML. The default is $XDG_CONFIG_HOME/ko/config.yaml, else
+    /// ~/.config/ko/config.yaml.
     #[arg(long, value_name = "FILE")]
-    runtimes: Option<PathBuf>,
+    config: Option<PathBuf>,
     /// Print the absolute path of the socket that the server would use, and start nothing.
     #[arg(long)]
     print_socket: bool,
@@ -378,7 +378,7 @@ fn server(args: ServerArgs) -> ExitCode {
         args.shell,
         args.bin_dir.or_else(|| bin_dir::of_exe(&invoked())),
         scrollback,
-        args.runtimes,
+        args.config,
     ) {
         Ok(config) => config,
         Err(message) => return fail("server", message),
@@ -723,14 +723,14 @@ fn main() -> ExitCode {
         }
         Command::ApiSchema {
             client: false,
-            runtimes: true,
+            config: true,
         } => {
-            say(&schema::runtimes());
+            say(&ko_config::config::schema());
             ExitCode::SUCCESS
         }
         Command::ApiSchema {
             client: false,
-            runtimes: false,
+            config: false,
         } => {
             say(&schema::openapi());
             ExitCode::SUCCESS

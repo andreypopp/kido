@@ -2011,7 +2011,7 @@ palette-step-nofocus (a model fixture). The mockup's alternatives
 (stripe-2pt, label-left, label-tag, tui-stripe) were rejected and
 have no image. The server's runtimes are `command` runtimes: the
 Visual scheme sets `KO_RUNTIME_COMMAND_KIND=1`, and a test writes
-`runtimes.json` into the scheme's private `XDG_CONFIG_HOME` and
+`config.yaml` under `ko/` in the scheme's private `XDG_CONFIG_HOME` and
 removes it at teardown. A runtime is held `Starting` by an `up` step
 that reads a FIFO, and made to fail by an `up` step that exits 255. A
 test never sets or unsets its own environment: `setenv` in the test

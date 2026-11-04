@@ -6,14 +6,15 @@ use ko_sys::pid::Exit;
 use crate::config::{SUN_PATH_MAX, env_path, program_path};
 use crate::ids::PaneId;
 use crate::runtime::exec::Launch;
-use crate::runtime::file::Ssh;
 use crate::runtime::{
     Cleanup, Ctx, Ending, Entry, Next, Outcome, last_line, text, version_next, words,
 };
 use crate::ssh::{
     CONTROL, MASTER_OPTIONS, MASTER_SUFFIX, QueryFailure, SOCKET, control_args, forwarding_refused,
-    has_syntax, no_remote_ko, query_failure, quote, reported_path, token_name,
+    no_remote_ko, query_failure, quote, reported_path, token_name,
 };
+use ko_config::runtime::Ssh;
+use ko_config::ssh_args::has_syntax;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stage {
@@ -80,7 +81,7 @@ fn passenger(
 ) -> Result<Launch, String> {
     let mut args = words(&["-T"]);
     args.extend(through(&control(socket)));
-    args.extend(["--".to_owned(), ssh.destination.clone()]);
+    args.extend(["--".to_owned(), ssh.destination.as_str().to_owned()]);
     args.extend(remote);
     launch(env, args)
 }
@@ -92,7 +93,7 @@ fn operation(
 ) -> Result<Launch, String> {
     launch(
         env,
-        control_args(&control(socket), operation, &ssh.destination),
+        control_args(&control(socket), operation, ssh.destination.as_str()),
     )
 }
 
@@ -131,14 +132,14 @@ fn lead(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Vec<String>, String> {
     {
         argv.extend(["-o".to_owned(), option.to_owned()]);
     }
-    argv.extend(ssh.ssh_args.iter().cloned());
-    argv.push(ssh.destination.clone());
+    argv.extend(ssh.ssh_args.as_slice().iter().cloned());
+    argv.push(ssh.destination.as_str().to_owned());
     Ok(argv)
 }
 
 fn prepare(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Launch, String> {
     let mut words = vec!["ko", "enter", "--prepare"];
-    let dir = ssh.dir.as_ref().map(|dir| dir.as_path().to_string_lossy());
+    let dir = ssh.dir.as_ref().map(|dir| dir.as_str());
     if let Some(dir) = &dir {
         words.extend(["--dir", dir]);
     }
@@ -222,7 +223,7 @@ pub(crate) fn next(ssh: &Ssh, link: &mut Link, cx: &Ctx<'_>, out: &Outcome<'_>) 
             }
         }
         Stage::Prepare => {
-            let (dir, version) = match prepared(&ssh.destination, out) {
+            let (dir, version) = match prepared(ssh.destination.as_str(), out) {
                 Ok(found) => found,
                 Err(message) => return Next::Fail(message),
             };
@@ -253,7 +254,7 @@ pub(crate) fn next(ssh: &Ssh, link: &mut Link, cx: &Ctx<'_>, out: &Outcome<'_>) 
         Stage::Forward => {
             let message = String::from_utf8_lossy(out.tail).trim().to_owned();
             Next::Fail(if message.contains("forwarding") {
-                forwarding_refused(&ssh.destination)
+                forwarding_refused(ssh.destination.as_str())
             } else {
                 format!("ssh cannot forward the socket: {message}")
             })
@@ -315,18 +316,13 @@ pub(crate) fn entry(ssh: &Ssh, cx: &Ctx<'_>) -> Entry {
     let prefix: Vec<Vec<u8>> = words(&["ssh", "-t"])
         .into_iter()
         .chain(through(&ctl))
-        .chain(["--".to_owned(), ssh.destination.clone()])
+        .chain(["--".to_owned(), ssh.destination.as_str().to_owned()])
         .map(String::into_bytes)
         .collect();
     let location = ssh
         .dir
         .as_ref()
-        .map(|dir| {
-            vec![
-                b"--dir".to_vec(),
-                dir.as_path().as_os_str().as_encoded_bytes().to_vec(),
-            ]
-        })
+        .map(|dir| vec![b"--dir".to_vec(), dir.as_str().as_bytes().to_vec()])
         .unwrap_or_default();
     Entry {
         prefix,
@@ -339,14 +335,14 @@ pub(crate) fn entry(ssh: &Ssh, cx: &Ctx<'_>) -> Entry {
 
 #[cfg(test)]
 mod tests {
+    use ko_config::runtime::{Kind, Runtime};
+    use ko_config::values::RuntimeName;
+
     use super::*;
-    use crate::ids::RuntimeName;
     use crate::protocol::{Version, json, version};
-    use crate::runtime::file::Kind;
-    use crate::runtime::file::Runtime;
 
     fn ssh_runtime(extra: &str) -> Runtime {
-        serde_json::from_str(&format!(r#"{{"kind":"ssh","destination":"box"{extra}}}"#)).unwrap()
+        serde_json::from_str(&format!(r#"{{"ssh":{{"destination":"box"{extra}}}}}"#)).unwrap()
     }
 
     fn context<'a>(name: &'a RuntimeName, env: &'a [Vec<u8>], socket: &'a Path) -> Ctx<'a> {

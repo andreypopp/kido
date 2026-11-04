@@ -22,8 +22,8 @@ Thus the ring, the views, the status model and the input path do not
 change: the runtime is a property of how the pane's program started
 and of which socket its processes talk to.
 
-The coordinator's modules are `ko_server/src/runtime/`: `file.rs`
-(the configuration), `mod.rs` (the registry, the link states and the
+The configuration is the crate `ko_config` ("The configuration
+file"). The coordinator's modules are `ko_server/src/runtime/`: `mod.rs` (the registry, the link states and the
 one dispatch over the kinds), `pane.rs` (the runtime directory's
 layout, the cwd mapping and a pane's host-side argv), `command.rs`
 (what only the `command` kind does), `container.rs` (the container
@@ -41,32 +41,87 @@ of its own.
 
 ## The configuration file
 
-ko has no configuration file for anything else (design-ko.md,
-"Decisions", 2026-10-30). A runtime cannot be derived, so it has one:
-`$XDG_CONFIG_HOME/ko/runtimes.json`, else `~/.config/ko/runtimes.json`,
-else the file of `ko server --runtimes FILE`. The server reads the
+ko has one configuration file, for what cannot be derived (design-ko.md,
+"Decisions", 2026-10-30 and 2026-11-04): `$XDG_CONFIG_HOME/ko/config.yaml`,
+else `~/.config/ko/config.yaml`, else the file of `ko server --config
+FILE`. Its `runtimes:` key holds the runtimes; Kido.app's settings
+become other top-level keys (plans/app-config.md). The server reads the
 file when a runtime is used or listed, and again at each link start,
-a retry after `Failed` included, so an edit needs no reload. A link that is up keeps the configuration
-that it started with. A missing file is an empty configuration. A
-file that does not parse fails every runtime request with the parse
-error and its line, and the server runs regardless.
+a retry after `Failed` included, so an edit needs no reload. A link
+that is up keeps the configuration that it started with. A missing
+file, an empty file and a file without `runtimes` have no runtimes. A
+file that does not decode fails every runtime request with the error,
+and the server runs regardless.
 
-The shape is the code's (`ko_server/src/runtime/file.rs`);
-`share/ko/runtimes-schema.json` is its JSON schema, which `ko
-api-schema --runtimes` prints and `make schemas` regenerates. The
-fields that every kind has are the runtime's `env`, its default
-`cwd`, the `paths` prefix list of the cwd mapping, `pi`, where an
-agent's pi runs ("Agents in a runtime"), and `color`, an sRGB
-`#rrggbb` that clients draw the runtime in ("Clients"). `GET
-/runtimes/NAME` reports the effective `paths`, the `cwd`, `pi` and
-the `color`; a spawner and a routed pi read the first three. The server
-validates the file with the API's newtypes (a name, an absolute
-path); a bad field is an error that names the runtime and the field.
-An unknown field is an error that names the runtime and the field
-(`runtime NAME: unknown field "X"`). The kind's fields are flattened
-into the entry, and serde refuses `deny_unknown_fields` with
-`flatten`, so `file.rs` compares the entry's keys with the fields of
-its kind after the typed decode.
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/andreypopp/kido/main/share/ko/config-schema.json
+runtimes:
+  gpu:
+    ssh:
+      destination: me@gpu-host
+      ssh_args: [-p, 2222]
+    env:
+      CUDA_VISIBLE_DEVICES: 0
+    cwd: /work
+    color: "#d08a2a"
+  dev:
+    container:
+      from: {image: debian:trixie}
+      volumes:
+        - {host: /Users/me/src, runtime: /src}
+    paths:
+      - {host: /Users/me/src, runtime: /src}
+    pi: runtime
+```
+
+The crate `ko_config` owns the file: the types (`ko_config/src/config.rs`
+and `ko_config/src/runtime.rs`), their newtypes
+(`ko_config/src/values.rs`), the path rule, the decode and the JSON
+schema `share/ko/config-schema.json`, which `ko api-schema --config`
+prints and `make schemas` regenerates. It depends on no ko crate. The
+server reads the file through it; ko_client, ko_shell and ko take its
+values that the wire and the command line share (`RuntimeName`,
+`AbsPath`) and the ssh option classifier (`ssh_args.rs`). Kido.app
+will read the file through ko_client (plans/app-config.md). The fields that every runtime has
+are its `env`, its default `cwd`, the `paths` prefix list of the cwd
+mapping, `pi`, where an agent's pi runs ("Agents in a runtime"), and
+`color`, an sRGB `#rrggbb` that clients draw the runtime in
+("Clients"). The kind is one key beside them, `ssh`, `container` or
+`command`, whose value holds the kind's fields; an entry gives exactly
+one. `GET /runtimes/NAME` reports the effective `paths`, the `cwd`,
+`pi` and the `color`; a spawner and a routed pi read the first three.
+
+**The decode.** Every type is decoded by serde's derive, with
+`deny_unknown_fields` on every record, and its schema comes from
+schemars' derive. A rule that serde cannot state, such as an absolute
+path, a name, a connection-only `ssh_args` or an option of `container
+run` that ko owns, is the `TryFrom` of a newtype. Only the format is
+written by hand (`ko_config/src/yaml.rs`): saphyr-parser's events
+become a tree with positions, and one serde `Deserializer` reads it.
+It resolves scalars by the type that asks:
+
+- A string field takes any scalar as its text, so `yes`, `no`, `on`,
+  `NO`, `0755`, `1:20` and the `2222` of `ssh_args` stay as written.
+- A bool, an integer or a float field takes only the YAML 1.2 core
+  schema's plain forms: `true`/`false` in three cases, decimal, `0o`
+  and `0x` integers, and the core floats. No YAML 1.1 forms: `yes` is
+  not a bool, `0755` not octal, `1:20` not sexagesimal. A quoted scalar
+  is never a bool or a number.
+- A plain `~`, `null` or an empty value is null. A key with a null
+  value is the same as a missing key, also in a map such as `env`;
+  the schema is stricter and does not allow the null.
+- `deserialize_any` gives a scalar as text, so a value that serde
+  buffers (an untagged enum) keeps the text as written.
+
+The decode refuses a duplicate key, more than one document, a tag and
+a key that is not a scalar. It expands anchors and aliases, and it
+refuses a file, a depth or a node count, aliases expanded, over the
+caps of `yaml.rs` and `config.rs` while it builds the tree, so a
+hostile file costs the server no more than the caps. YAML 1.2 has no merge key, so `<<` is an unknown
+field. An error names the path of keys and items to the value and its
+line and column, after the file's path: `runtimes: dev: ssh: ssh_args:
+-N is not a connection option; ko owns the rest of the ssh command at
+line 5 column 17`.
 
 **The `command` kind** exists for the e2e suite only. The server
 accepts it only with `KO_RUNTIME_COMMAND_KIND=1` in its environment;
@@ -406,7 +461,7 @@ as `error`. Only the ssh kind classifies one.
 The `container` kind runs a runtime's panes and exec sessions in one
 Apple container, through the `container` CLI (measured with 1.5.0).
 Each container is one lightweight Linux VM on arm64. The fields are
-`Container` in `ko_server/src/runtime/file.rs`. `from` names either an
+`Container` in `ko_config/src/runtime.rs`. `from` names either an
 image, from which ko creates and owns the container `ko-<name>`, or a
 container that the user created and manages. The server finds the
 `container` binary on its own `PATH` at each link start, unless the
@@ -505,9 +560,9 @@ order and finish after the server is gone.
 ## The ssh kind
 
 An `ssh` entry names a `destination`, `ssh_args` and an optional
-remote `dir` (`ko_server/src/runtime/file.rs`). `ssh_args` takes
+remote `dir` (`ko_config/src/runtime.rs`). `ssh_args` takes
 only connection options, the kept class of the option classifier in
-`ko_server/src/ssh.rs`, which `ko ssh` and the remote attach also
+`ko_config/src/ssh_args.rs`, which `ko ssh` and the remote attach also
 use; a control-socket option (`-S`, `ControlPath`, `ControlMaster`,
 `ControlPersist`) is refused too, because it would replace ko's.
 Every pane, passenger and exec session of the runtime is one channel
@@ -705,6 +760,34 @@ left the group survives.
 
 ## Decisions
 
+The configuration file, 2026-11-04:
+
+- The file is YAML 1.2, `config.yaml`, with no JSON form: a person
+  writes it, with comments, and an editor checks it with the JSON
+  schema through the `yaml-language-server` line.
+- One file for every setting that ko and Kido.app cannot derive, with
+  one top-level key for each owner; `runtimes:` is the server's.
+- The parser is saphyr-parser, the event parser of the yaml-rust2 line:
+  pure Rust without `unsafe`, YAML 1.2, two packages. serde-saphyr and
+  serde_norway were rejected: a serde YAML crate must pick a type for a
+  plain scalar in `deserialize_any`, so a buffered string field fails
+  on `2222`; serde-saphyr adds about twelve packages, and serde_norway
+  is unsafe-libyaml, unreleased since 2024-12, and keeps the last of
+  two duplicate keys. serde_yml has a RUSTSEC advisory. libyaml's YAML
+  1.1 resolution reads `no` as false.
+- The deserializer resolves a scalar by the type that asks, not by the
+  scalar alone: a string field takes `yes` and `0755` as written, and
+  a bool, an integer or a float field takes only the core schema's
+  forms.
+- The kind is a key of the entry (`ssh:`, `container:`, `command:`),
+  not a `kind:` tag beside flattened fields: serde's `flatten` and an
+  internal tag buffer the value through `deserialize_any` and refuse
+  `deny_unknown_fields`. A derived raw record with the three optional
+  keys converts through `try_from` into the runtime, whose kind is an
+  enum; the schema states the rule as a `oneOf` of `required` keys.
+- The error for zero or two kinds names `ssh` and `container` only:
+  `command` is a test kind, and the server's knob check explains it.
+
 2026-11-04:
 
 - The ssh master is the leader pane's process, with
@@ -716,9 +799,10 @@ left the group survives.
   of the link.
 - The exec passes variables in the first frame to `ko enter --exec`, not `SetEnv`,
   which a default sshd's `AcceptEnv` refuses.
-- The option classifier and the ssh facts that the remote attach
-  shares live in `ko_server::ssh`, because the server validates
-  `ssh_args` and `ko_shell` and `ko_client` depend on `ko_server`.
+- The option classifier lives in `ko_config::ssh_args`, because the
+  configuration validates `ssh_args` and `ko_server`, `ko_shell` and
+  `ko_client` depend on `ko_config`. The ssh facts that the remote
+  attach shares stay in `ko_server::ssh`.
 - Down does not clean the remote files: the next `--prepare` does,
   and a dead pane's token buys nothing.
 

@@ -1,12 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Runtimes",
-  "description": "The runtime configuration file: the runtimes that panes can run in, by name.",
+  "title": "Config",
+  "description": "The ko configuration file, `config.yaml`.",
   "type": "object",
   "properties": {
     "runtimes": {
+      "description": "The runtimes that panes can run in, by name.",
       "type": "object",
       "additionalProperties": false,
+      "default": {},
       "patternProperties": {
         "^[a-z0-9-]{1,32}$": {
           "$ref": "#/$defs/Runtime"
@@ -14,12 +16,10 @@
       }
     }
   },
-  "required": [
-    "runtimes"
-  ],
+  "additionalProperties": false,
   "$defs": {
     "AbsPath": {
-      "description": "An absolute path.",
+      "description": "an absolute path",
       "type": "string",
       "pattern": "^/"
     },
@@ -29,26 +29,31 @@
         "ro"
       ]
     },
+    "Argv": {
+      "description": "an argv that starts with an absolute program path",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "Command": {
       "type": "object",
       "properties": {
         "lead": {
           "description": "An interactive step of the start. One waiting pane runs it on its own terminal and\nreports the result.",
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Argv"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "prefix": {
           "description": "The argv that goes before `ko enter` in a pane's program.",
-          "type": "array",
-          "default": [],
-          "items": {
-            "type": "string"
-          }
+          "$ref": "#/$defs/Prefix",
+          "default": []
         },
         "socket": {
           "description": "Where the runtime's socket is reached inside the runtime. Default: the host path.",
@@ -63,14 +68,23 @@
         },
         "up": {
           "description": "A step of the start that the server runs as its own child. Exit 0 continues the start.",
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Argv"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
+      },
+      "additionalProperties": false
+    },
+    "ConnectionArgs": {
+      "description": "ssh connection options, with no destination and no command",
+      "type": "array",
+      "items": {
+        "type": "string"
       }
     },
     "Container": {
@@ -92,14 +106,11 @@
         },
         "init": {
           "description": "The command that keeps the container alive.",
-          "type": "array",
+          "$ref": "#/$defs/Init",
           "default": [
             "sleep",
             "infinity"
-          ],
-          "items": {
-            "type": "string"
-          }
+          ]
         },
         "ko": {
           "$ref": "#/$defs/Ko",
@@ -107,11 +118,8 @@
         },
         "run_args": {
           "description": "More arguments of `container run`. ko refuses the options it owns.",
-          "type": "array",
-          "default": [],
-          "items": {
-            "type": "string"
-          }
+          "$ref": "#/$defs/RunArgs",
+          "default": []
         },
         "ssh_agent": {
           "$ref": "#/$defs/SshAgent",
@@ -136,9 +144,29 @@
           }
         }
       },
+      "additionalProperties": false,
       "required": [
         "from"
       ]
+    },
+    "Destination": {
+      "description": "an ssh destination",
+      "type": "string",
+      "pattern": "^[^-\\u0000][^\\u0000]*$"
+    },
+    "Env": {
+      "description": "Environment variables: names without = or NUL, values without NUL.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "Init": {
+      "description": "a command",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     },
     "Ko": {
       "oneOf": [
@@ -157,7 +185,7 @@
           "type": "object",
           "properties": {
             "mount": {
-              "$ref": "#/$defs/AbsPath"
+              "$ref": "#/$defs/MountDir"
             }
           },
           "additionalProperties": false,
@@ -166,6 +194,11 @@
           ]
         }
       ]
+    },
+    "MountDir": {
+      "description": "an absolute path without a comma",
+      "type": "string",
+      "pattern": "^/[^,\\u0000]*$"
     },
     "Operand": {
       "description": "an image reference or a container name",
@@ -183,15 +216,35 @@
           "$ref": "#/$defs/AbsPath"
         }
       },
+      "additionalProperties": false,
       "required": [
         "host",
         "runtime"
       ]
     },
+    "Prefix": {
+      "description": "an argv",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "Program": {
       "description": "a program name or path",
       "type": "string",
       "pattern": "^[^\\u0000]+$"
+    },
+    "RemoteDir": {
+      "description": "an absolute path without a colon, a percent sign or a newline",
+      "type": "string",
+      "pattern": "^/[^:%\\n\\u0000]*$"
+    },
+    "RunArgs": {
+      "description": "arguments of `container run` without an option that ko owns",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
     },
     "Runtime": {
       "type": "object",
@@ -201,6 +254,28 @@
           "anyOf": [
             {
               "$ref": "#/$defs/RuntimeColor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "command": {
+          "description": "A runtime on the host, for the tests of the link machinery. The server accepts it only\nwith KO_RUNTIME_COMMAND_KIND=1 in its environment.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Command"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "container": {
+          "description": "A container of Apple's `container`, which ko creates from an image or finds by name.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Container"
             },
             {
               "type": "null"
@@ -220,10 +295,7 @@
         },
         "env": {
           "description": "Variables for every pane of the runtime, applied before the variables of the request.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          },
+          "$ref": "#/$defs/Env",
           "default": {}
         },
         "paths": {
@@ -238,55 +310,55 @@
           "description": "Where pi runs for an agent in this runtime.",
           "$ref": "#/$defs/RuntimePi",
           "default": "host"
+        },
+        "ssh": {
+          "description": "A runtime on an ssh host, reached through one ssh master that the first pane logs in.\nko must be installed there, on the PATH of ssh commands.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Ssh"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
+      "additionalProperties": false,
       "oneOf": [
         {
-          "description": "A runtime on an ssh host, reached through one ssh master that the first pane logs in.\nko must be installed there, on the PATH of ssh commands.",
-          "type": "object",
           "properties": {
-            "kind": {
-              "type": "string",
-              "const": "ssh"
+            "ssh": {
+              "type": "object"
             }
           },
-          "$ref": "#/$defs/Ssh",
           "required": [
-            "kind"
+            "ssh"
           ]
         },
         {
-          "description": "A runtime on the host, for the tests of the link machinery. The server accepts it only\nwith KO_RUNTIME_COMMAND_KIND=1 in its environment.",
-          "type": "object",
           "properties": {
-            "kind": {
-              "type": "string",
-              "const": "command"
+            "container": {
+              "type": "object"
             }
           },
-          "$ref": "#/$defs/Command",
           "required": [
-            "kind"
+            "container"
           ]
         },
         {
-          "description": "A container of Apple's `container`, which ko creates from an image or finds by name.",
-          "type": "object",
           "properties": {
-            "kind": {
-              "type": "string",
-              "const": "container"
+            "command": {
+              "type": "object"
             }
           },
-          "$ref": "#/$defs/Container",
           "required": [
-            "kind"
+            "command"
           ]
         }
       ]
     },
     "RuntimeColor": {
-      "description": "An sRGB colour as #rrggbb.",
+      "description": "a colour as #rrggbb",
       "type": "string",
       "pattern": "^#[0-9A-Fa-f]{6}$"
     },
@@ -339,14 +411,13 @@
       "type": "object",
       "properties": {
         "destination": {
-          "description": "The ssh destination as typed: `host` or `user@host`.",
-          "type": "string"
+          "$ref": "#/$defs/Destination"
         },
         "dir": {
           "description": "The directory on the remote for the forwarded socket and the token files. Default:\n`$XDG_RUNTIME_DIR/ko-rt/NAME`, else `/tmp/ko-rt-UID/NAME`.",
           "anyOf": [
             {
-              "$ref": "#/$defs/AbsPath"
+              "$ref": "#/$defs/RemoteDir"
             },
             {
               "type": "null"
@@ -355,13 +426,11 @@
         },
         "ssh_args": {
           "description": "Connection options for the master (`-p`, `-J`, `-F`, `-i`, `-l`, `-o`, ...).",
-          "type": "array",
-          "default": [],
-          "items": {
-            "type": "string"
-          }
+          "$ref": "#/$defs/ConnectionArgs",
+          "default": []
         }
       },
+      "additionalProperties": false,
       "required": [
         "destination"
       ]
@@ -391,7 +460,7 @@
       "type": "object",
       "properties": {
         "host": {
-          "$ref": "#/$defs/AbsPath"
+          "$ref": "#/$defs/VolumePath"
         },
         "options": {
           "anyOf": [
@@ -404,13 +473,19 @@
           ]
         },
         "runtime": {
-          "$ref": "#/$defs/AbsPath"
+          "$ref": "#/$defs/VolumePath"
         }
       },
+      "additionalProperties": false,
       "required": [
         "host",
         "runtime"
       ]
+    },
+    "VolumePath": {
+      "description": "an absolute path without a colon",
+      "type": "string",
+      "pattern": "^/[^:\\u0000]*$"
     }
   }
 }

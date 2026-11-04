@@ -318,69 +318,6 @@ impl From<VarName> for String {
     }
 }
 
-const MAX_RUNTIME_NAME: usize = 32;
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct RuntimeName(String);
-
-impl RuntimeName {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl JsonSchema for RuntimeName {
-    fn schema_name() -> Cow<'static, str> {
-        "RuntimeName".into()
-    }
-
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type": "string",
-            "pattern": "^[a-z0-9-]{1,32}$",
-            "description": "One to 32 bytes of a to z, 0 to 9 and -. host is not a runtime name."
-        })
-    }
-}
-
-impl TryFrom<String> for RuntimeName {
-    type Error = &'static str;
-
-    fn try_from(text: String) -> Result<RuntimeName, &'static str> {
-        let valid = (1..=MAX_RUNTIME_NAME).contains(&text.len())
-            && text
-                .bytes()
-                .all(|byte| matches!(byte, b'a'..=b'z' | b'0'..=b'9' | b'-'))
-            && text != "host";
-        if valid {
-            Ok(RuntimeName(text))
-        } else {
-            Err("invalid runtime name")
-        }
-    }
-}
-
-impl FromStr for RuntimeName {
-    type Err = &'static str;
-
-    fn from_str(text: &str) -> Result<RuntimeName, &'static str> {
-        RuntimeName::try_from(text.to_owned())
-    }
-}
-
-impl fmt::Display for RuntimeName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl From<RuntimeName> for String {
-    fn from(RuntimeName(text): RuntimeName) -> String {
-        text
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,20 +355,6 @@ mod tests {
             "ended-pane_3"
         );
         assert!(parse(&String::from(MessageId::ended(PaneId::new(0)))).is_ok());
-    }
-
-    #[test]
-    fn a_runtime_name_is_one_to_32_lowercase_letters_digits_and_hyphens_but_not_host() {
-        for good in ["a", "dev-1", "0", &"x".repeat(32), "host1", "hos"] {
-            assert!(RuntimeName::try_from(good.to_owned()).is_ok(), "{good}");
-        }
-        for bad in ["", "host", "Dev", "a_b", "a b", "é", "a/b", &"x".repeat(33)] {
-            assert_eq!(
-                RuntimeName::try_from(bad.to_owned()),
-                Err("invalid runtime name"),
-                "{bad}"
-            );
-        }
     }
 
     #[test]

@@ -587,8 +587,17 @@ test("the exec client drives a real ko server with a command-kind runtime the wa
   const fx = makeFixture();
   const t = tree(fx);
   const state = realpathSync(mkdtempSync("/tmp/ko-pi-real-"));
-  writeFileSync(join(state, "runtimes.json"), JSON.stringify({ runtimes: { dev: { kind: "command", env: { HOME: "/var/empty" }, cwd: join(t.rt, "fallback"), paths: [{ host: t.host, runtime: t.rt }] } } }));
-  const server = spawn(join(bin, "ko"), ["server", "--server", state, "--shell", "/bin/sh", "--runtimes", join(state, "runtimes.json")], {
+  writeFileSync(join(state, "config.yaml"), `runtimes:
+  dev:
+    command: {}
+    env:
+      HOME: /var/empty
+    cwd: ${join(t.rt, "fallback")}
+    paths:
+      - host: ${t.host}
+        runtime: ${t.rt}
+`);
+  const server = spawn(join(bin, "ko"), ["server", "--server", state, "--shell", "/bin/sh", "--config", join(state, "config.yaml")], {
     env: { PATH: "/usr/bin:/bin", HOME: state, KO_RUNTIME_COMMAND_KIND: "1" },
     stdio: "ignore",
   });

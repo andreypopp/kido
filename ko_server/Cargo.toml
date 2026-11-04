@@ -10,6 +10,7 @@ fuzz = []
 [dependencies]
 httparse.workspace = true
 libc.workspace = true
+ko_config = { path = "../ko_config" }
 ko_pane_wire = { path = "../ko_pane_wire" }
 ko_sys = { path = "../ko_sys" }
 miniz_oxide.workspace = true

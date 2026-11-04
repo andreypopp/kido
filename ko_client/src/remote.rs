@@ -6,6 +6,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use ko_config::ssh_args::has_syntax;
 use ko_server::config::{self, Dir};
 use ko_server::ssh::{self, QueryFailure, control_args};
 use ko_sys::fd::{self, Want};
@@ -188,7 +189,7 @@ fn private_dir(base: &Path, name: &str) -> Result<PathBuf, Error> {
             ssh::MAX_DIR
         )));
     }
-    if text.contains(',') || ssh::has_syntax(text) {
+    if text.contains(',') || has_syntax(text) {
         return Err(Error::Dir(format!(
             "private directory {text} contains a comma, a colon or a percent sign"
         )));

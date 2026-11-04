@@ -440,7 +440,7 @@ impl State {
         let ending = match self.exec_session(index) {
             Some((session, _)) => match (&session.stage, &runtime) {
                 (Stage::Running(running), Some(runtime)) => {
-                    let ending = runtime.ending(exit, running.helper.tail());
+                    let ending = crate::runtime::ending(runtime, exit, running.helper.tail());
                     match ending {
                         Ending::Refused(_)
                             if !running.output && !running.retried && !running.fed =>

@@ -211,7 +211,7 @@ impl State {
         RuntimeInfo {
             runtime: ClientRuntime {
                 name: name.clone(),
-                kind: runtime.kind(),
+                kind: crate::runtime::kind(runtime),
                 color: runtime.color.clone(),
                 state: self.runtimes.state(name),
             },

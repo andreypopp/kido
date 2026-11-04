@@ -6,15 +6,18 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use ko_config::config::{self as settings, LoadError};
+use ko_config::runtime::{Kind, Runtime};
+use ko_config::values::{RuntimeColor, RuntimeName};
 use ko_sys::event::{Poll, Ready, Timer, Token};
 use ko_sys::pid::{Exit, Pid, Waited};
 
 use crate::config::{Config, RuntimeIdle, SUN_PATH_MAX};
 use crate::exec_wire::Start as ExecStart;
-use crate::ids::{PaneId, PaneToken, RuntimeName};
+use crate::ids::{PaneId, PaneToken};
 use crate::protocol::{
-    ClientEvent, ClientRuntime, Error, ErrorKind, ExecRequest, LeadReport, LinkState, PathMap,
-    RuntimeColor, RuntimeKind, Variable, Version, check_version, version,
+    ClientEvent, ClientRuntime, Error, ErrorKind, ExecRequest, LeadReport, LinkState, RuntimeKind,
+    Variable, Version, check_version, version,
 };
 use crate::server::{Listener, Origin, Timing, Verified};
 use crate::ssh::token_name;
@@ -22,13 +25,11 @@ use crate::ssh::token_name;
 pub(crate) mod command;
 pub(crate) mod container;
 pub(crate) mod exec;
-pub(crate) mod file;
 pub(crate) mod leaving;
 pub(crate) mod pane;
 pub(crate) mod ssh;
 
 use exec::{Helper, Launch, Mode, Source};
-use file::{Kind, LoadError, Runtime, Runtimes, Volume};
 use pane::{directory, socket_path, token_directory, token_path};
 
 const UP_LIMIT: Duration = Duration::from_secs(120);
@@ -126,124 +127,108 @@ pub(crate) fn version_next(name: &RuntimeName, out: &Outcome<'_>) -> Next {
     ))
 }
 
-impl Runtime {
-    pub(crate) fn lead(&self) -> Option<&[String]> {
-        match &self.kind {
-            Kind::Command(command) => command.lead.as_deref(),
-            Kind::Container(_) | Kind::Ssh(_) => None,
-        }
+pub(crate) fn kind(runtime: &Runtime) -> RuntimeKind {
+    match runtime.kind {
+        Kind::Ssh(_) => RuntimeKind::Ssh,
+        Kind::Command(_) => RuntimeKind::Command,
+        Kind::Container(_) => RuntimeKind::Container,
     }
+}
 
-    pub(crate) fn paths(&self) -> Vec<PathMap> {
-        let volumes: &[Volume] = match &self.kind {
-            Kind::Command(_) | Kind::Ssh(_) => &[],
-            Kind::Container(container) => &container.volumes,
-        };
-        volumes
-            .iter()
-            .map(|volume| PathMap {
-                host: volume.host.clone(),
-                runtime: volume.runtime.clone(),
+/// How a pane's token reaches the runtime.
+pub(crate) fn tokens(runtime: &Runtime, pane: PaneId) -> Tokens {
+    match &runtime.kind {
+        Kind::Command(_) => Tokens::File {
+            name: token_name(pane),
+            text: |token| token.to_string(),
+        },
+        Kind::Container(_) => Tokens::File {
+            name: format!("{pane}.env"),
+            text: container::token_text,
+        },
+        Kind::Ssh(_) => Tokens::Remote,
+    }
+}
+
+pub(crate) fn entry(runtime: &Runtime, pane: PaneId, cx: &Ctx<'_>) -> Entry {
+    match &runtime.kind {
+        Kind::Command(command) => {
+            let token = token_path(cx.socket, runtime, pane).unwrap_or_default();
+            command::entry(command, (cx.exe, cx.socket.to_path_buf()), &token)
+        }
+        Kind::Container(container) => {
+            let token = token_path(cx.socket, runtime, pane).unwrap_or_default();
+            container::entry(cx.name, container, (cx.env, &token))
+        }
+        Kind::Ssh(remote) => ssh::entry(remote, cx),
+    }
+}
+
+pub(crate) fn exec_env<'a>(
+    runtime: &'a Runtime,
+    name: &'a RuntimeName,
+    request: &'a ExecRequest,
+) -> BTreeMap<&'a str, &'a str> {
+    let mut env: BTreeMap<&str, &str> = runtime
+        .env
+        .as_map()
+        .iter()
+        .chain(&request.env)
+        .map(|(variable, value)| (variable.as_str(), value.as_str()))
+        .collect();
+    env.insert("KO_RUNTIME", name.as_str());
+    if let Kind::Command(_) = runtime.kind {
+        env.entry("PATH").or_insert(command::DEFAULT_PATH);
+    }
+    env
+}
+
+/// What the ko inside the runtime runs: the request under the runtime's cwd and env.
+pub(crate) fn exec_start(
+    runtime: &Runtime,
+    name: &RuntimeName,
+    request: &ExecRequest,
+    escalation: Duration,
+) -> ExecStart {
+    ExecStart {
+        argv: request.argv.clone(),
+        cwd: request.cwd.clone().or_else(|| runtime.cwd.clone()),
+        env: exec_env(runtime, name, request)
+            .into_iter()
+            .map(|(name, value)| Variable {
+                name: name.to_owned(),
+                value: value.to_owned(),
             })
-            .chain(self.paths.iter().cloned())
-            .collect()
+            .collect(),
+        escalation_ms: u64::try_from(escalation.as_millis()).unwrap_or(u64::MAX),
     }
+}
 
-    /// How a pane's token reaches the runtime.
-    pub(crate) fn tokens(&self, pane: PaneId) -> Tokens {
-        match &self.kind {
-            Kind::Command(_) => Tokens::File {
-                name: token_name(pane),
-                text: |token| token.to_string(),
-            },
-            Kind::Container(_) => Tokens::File {
-                name: format!("{pane}.env"),
-                text: container::token_text,
-            },
-            Kind::Ssh(_) => Tokens::Remote,
-        }
+/// The helper process that runs `ko enter --exec` inside the runtime.
+pub(crate) fn exec_launch(
+    runtime: &Runtime,
+    request: &ExecRequest,
+    cx: &Ctx<'_>,
+) -> Result<Launch, String> {
+    match &runtime.kind {
+        Kind::Ssh(remote) => ssh::exec_launch(remote, cx),
+        Kind::Command(command) => command::exec_launch(runtime, command, (request, cx)),
+        Kind::Container(container) => container::exec_launch(container, cx),
     }
+}
 
-    pub(crate) fn entry(&self, pane: PaneId, cx: &Ctx<'_>) -> Entry {
-        match &self.kind {
-            Kind::Command(command) => {
-                let token = token_path(cx.socket, self, pane).unwrap_or_default();
-                command::entry(command, (cx.exe, cx.socket.to_path_buf()), &token)
-            }
-            Kind::Container(container) => {
-                let token = token_path(cx.socket, self, pane).unwrap_or_default();
-                container::entry(cx.name, container, (cx.env, &token))
-            }
-            Kind::Ssh(remote) => ssh::entry(remote, cx),
-        }
+pub(crate) fn ending(runtime: &Runtime, exit: Exit, stderr: &[u8]) -> Ending {
+    match &runtime.kind {
+        Kind::Ssh(_) => ssh::ending(exit, stderr),
+        Kind::Command(_) | Kind::Container(_) => Ending::Exit,
     }
+}
 
-    pub(crate) fn exec_env<'a>(
-        &'a self,
-        name: &'a RuntimeName,
-        request: &'a ExecRequest,
-    ) -> BTreeMap<&'a str, &'a str> {
-        let mut env: BTreeMap<&str, &str> = self
-            .env
-            .iter()
-            .chain(&request.env)
-            .map(|(variable, value)| (variable.as_str(), value.as_str()))
-            .collect();
-        env.insert("KO_RUNTIME", name.as_str());
-        if let Kind::Command(_) = self.kind {
-            env.entry("PATH").or_insert(command::DEFAULT_PATH);
-        }
-        env
-    }
-
-    /// What the ko inside the runtime runs: the request under the runtime's cwd and env.
-    pub(crate) fn exec_start(
-        &self,
-        name: &RuntimeName,
-        request: &ExecRequest,
-        escalation: Duration,
-    ) -> ExecStart {
-        ExecStart {
-            argv: request.argv.clone(),
-            cwd: request.cwd.clone().or_else(|| self.cwd.clone()),
-            env: self
-                .exec_env(name, request)
-                .into_iter()
-                .map(|(name, value)| Variable {
-                    name: name.to_owned(),
-                    value: value.to_owned(),
-                })
-                .collect(),
-            escalation_ms: u64::try_from(escalation.as_millis()).unwrap_or(u64::MAX),
-        }
-    }
-
-    /// The helper process that runs `ko enter --exec` inside the runtime.
-    pub(crate) fn exec_launch(
-        &self,
-        request: &ExecRequest,
-        cx: &Ctx<'_>,
-    ) -> Result<Launch, String> {
-        match &self.kind {
-            Kind::Ssh(remote) => ssh::exec_launch(remote, cx),
-            Kind::Command(command) => command::exec_launch(self, command, (request, cx)),
-            Kind::Container(container) => container::exec_launch(container, cx),
-        }
-    }
-
-    pub(crate) fn ending(&self, exit: Exit, stderr: &[u8]) -> Ending {
-        match &self.kind {
-            Kind::Ssh(_) => ssh::ending(exit, stderr),
-            Kind::Command(_) | Kind::Container(_) => Ending::Exit,
-        }
-    }
-
-    fn cleanup(&self, cx: &Ctx<'_>, what: Cleanup) -> Option<Launch> {
-        match &self.kind {
-            Kind::Command(_) => None,
-            Kind::Container(container) => container::cleanup(container, (cx.name, cx.env), what),
-            Kind::Ssh(remote) => ssh::cleanup(remote, cx, what),
-        }
+pub(crate) fn cleanup(runtime: &Runtime, cx: &Ctx<'_>, what: Cleanup) -> Option<Launch> {
+    match &runtime.kind {
+        Kind::Command(_) => None,
+        Kind::Container(container) => container::cleanup(container, (cx.name, cx.env), what),
+        Kind::Ssh(remote) => ssh::cleanup(remote, cx, what),
     }
 }
 
@@ -503,7 +488,7 @@ fn stop_helper(poll: &mut Poll, helper: &mut Helper, dying: &mut Vec<Pid>) -> Op
 impl Registry {
     pub(crate) fn new(config: &Config) -> Registry {
         Registry {
-            file: config.runtimes.file.clone(),
+            file: config.file.clone(),
             command_kind: config.runtimes.command_kind,
             idle: config.runtimes.idle,
             root: config.dir.join("runtimes"),
@@ -543,8 +528,8 @@ impl Registry {
             socket: &socket,
             exe: &self.exe,
         };
-        let launch = runtime.exec_launch(request, &cx)?;
-        Ok((launch, runtime.exec_start(name, request, self.escalation)))
+        let launch = exec_launch(runtime, request, &cx)?;
+        Ok((launch, exec_start(runtime, name, request, self.escalation)))
     }
 
     pub(crate) fn take_dying(&mut self) -> Vec<Pid> {
@@ -555,20 +540,34 @@ impl Registry {
         std::mem::take(&mut self.cleaning)
     }
 
-    fn load(&mut self) -> Result<Runtimes, Error> {
-        let loaded = file::load(&self.file, self.command_kind).map_err(|error| match error {
+    fn load(&mut self) -> Result<settings::Config, Error> {
+        let config = settings::load(&self.file).map_err(|error| match error {
             LoadError::Invalid(message) => Error::new(ErrorKind::Invalid, message),
             LoadError::Io(message) => Error::new(ErrorKind::Io, message),
         })?;
+        if let Some(name) = config
+            .runtimes
+            .iter()
+            .find_map(|(name, runtime)| matches!(runtime.kind, Kind::Command(_)).then_some(name))
+            .filter(|_| !self.command_kind)
+        {
+            return Err(Error::new(
+                ErrorKind::Invalid,
+                format!(
+                    "{}: runtimes: {name}: command: is a test kind; set KO_RUNTIME_COMMAND_KIND=1",
+                    self.file.display()
+                ),
+            ));
+        }
         self.configured = Some(
-            loaded
+            config
                 .runtimes
                 .iter()
-                .map(|(name, runtime)| (name.clone(), (runtime.kind(), runtime.color.clone())))
+                .map(|(name, runtime)| (name.clone(), (kind(runtime), runtime.color.clone())))
                 .collect(),
         );
         self.dirty = true;
-        Ok(loaded)
+        Ok(config)
     }
 
     fn missing(&self, name: &RuntimeName) -> Error {
@@ -626,7 +625,7 @@ impl Registry {
             if matches!(link.phase, Phase::Starting(_) | Phase::Up) {
                 desired.insert(
                     name.clone(),
-                    (link.settings.kind(), link.settings.color.clone()),
+                    (kind(&link.settings), link.settings.color.clone()),
                 );
             }
         }
@@ -869,9 +868,7 @@ impl Registry {
             socket: &socket,
             exe: &self.exe,
         };
-        let stop = link
-            .settings
-            .cleanup(&cx, Cleanup::Stop)
+        let stop = cleanup(&link.settings, &cx, Cleanup::Stop)
             .into_iter()
             .collect::<Vec<_>>();
         if detach {
@@ -1037,7 +1034,9 @@ impl Registry {
             socket: &socket,
             exe: &self.exe,
         };
-        let launches = settings.cleanup(&cx, Cleanup::Delete).into_iter().collect();
+        let launches = cleanup(settings, &cx, Cleanup::Delete)
+            .into_iter()
+            .collect();
         self.schedule(name, launches, Vec::new());
         self.drive();
     }
@@ -1065,7 +1064,8 @@ impl Registry {
 
     pub(crate) fn remote_tokens(&self, name: &RuntimeName, pane: PaneId) -> bool {
         self.links.get(name).is_some_and(|link| {
-            matches!(link.phase, Phase::Up) && matches!(link.settings.tokens(pane), Tokens::Remote)
+            matches!(link.phase, Phase::Up)
+                && matches!(tokens(&link.settings, pane), Tokens::Remote)
         })
     }
 
@@ -1204,7 +1204,7 @@ impl Registry {
         let Some(link) = self.links.get(name) else {
             return Ok(());
         };
-        let Tokens::File { text, .. } = link.settings.tokens(pane) else {
+        let Tokens::File { text, .. } = tokens(&link.settings, pane) else {
             return Ok(());
         };
         let Some(path) = token_path(&socket_path(&self.root, name), &link.settings, pane) else {

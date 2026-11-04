@@ -8,8 +8,9 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use ko_config::values::RuntimeName;
 use ko_server::config::{path_with, terminal, terminfo_of};
-use ko_server::ids::{PaneId, PaneToken, RuntimeName};
+use ko_server::ids::{PaneId, PaneToken};
 use ko_server::ssh;
 
 use crate::bin_dir;

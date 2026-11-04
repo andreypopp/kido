@@ -2,6 +2,8 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroU16, NonZeroUsize};
 
+use ko_config::runtime::{PathMap, RuntimePi};
+use ko_config::values::{AbsPath, RuntimeColor, RuntimeName, env_valid};
 use ko_pane_wire::frame::{
     self, CellPx, Dim, History, KeyAction, KeyCode, MouseAction, MouseButton,
 };
@@ -16,7 +18,7 @@ use crate::api::WaitMs;
 use crate::config::BUILD;
 use crate::http::Status;
 use crate::ids::{
-    ClientId, Instance, MessageId, Name, PaneId, RunId, RuntimeName, SessionId, VarName, WindowId,
+    ClientId, Instance, MessageId, Name, PaneId, RunId, SessionId, VarName, WindowId,
 };
 use crate::pane_proc::{self, Death};
 use crate::route::{Body, Invalid};
@@ -2747,120 +2749,6 @@ mod tests {
     }
 }
 
-/// An sRGB colour as `#rrggbb`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct RuntimeColor(String);
-
-impl JsonSchema for RuntimeColor {
-    fn schema_name() -> Cow<'static, str> {
-        "RuntimeColor".into()
-    }
-
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({
-            "type": "string",
-            "pattern": "^#[0-9A-Fa-f]{6}$",
-            "description": "An sRGB colour as #rrggbb."
-        })
-    }
-}
-
-impl TryFrom<String> for RuntimeColor {
-    type Error = &'static str;
-
-    fn try_from(text: String) -> Result<RuntimeColor, &'static str> {
-        let valid = text.len() == 7
-            && text.starts_with('#')
-            && text[1..].bytes().all(|byte| byte.is_ascii_hexdigit());
-        if valid {
-            Ok(RuntimeColor(text))
-        } else {
-            Err("invalid color: expected #rrggbb")
-        }
-    }
-}
-
-impl From<RuntimeColor> for String {
-    fn from(RuntimeColor(text): RuntimeColor) -> String {
-        text
-    }
-}
-
-#[cfg(test)]
-mod runtime_color_tests {
-    use super::RuntimeColor;
-
-    #[test]
-    fn a_runtime_color_is_a_hash_and_six_hex_digits() {
-        for good in ["#000000", "#d08a2a", "#D08A2A"] {
-            assert!(RuntimeColor::try_from(good.to_owned()).is_ok(), "{good}");
-        }
-        for bad in [
-            "", "#abc", "d08a2a", "#d08a2", "#d08a2ab", "#gggggg", "red", "#é08a2a",
-        ] {
-            assert!(RuntimeColor::try_from(bad.to_owned()).is_err(), "{bad}");
-        }
-    }
-}
-
-/// An absolute path, as the runtime configuration and the API name it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct AbsPath(String);
-
-impl AbsPath {
-    pub fn as_path(&self) -> &std::path::Path {
-        std::path::Path::new(&self.0)
-    }
-}
-
-impl JsonSchema for AbsPath {
-    fn schema_name() -> Cow<'static, str> {
-        "AbsPath".into()
-    }
-
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type": "string", "pattern": "^/", "description": "An absolute path."})
-    }
-}
-
-impl TryFrom<String> for AbsPath {
-    type Error = String;
-
-    fn try_from(text: String) -> Result<AbsPath, String> {
-        if text.starts_with('/') && !text.contains('\0') {
-            Ok(AbsPath(text))
-        } else {
-            Err(format!("{text:?} is not an absolute path"))
-        }
-    }
-}
-
-impl From<AbsPath> for String {
-    fn from(AbsPath(text): AbsPath) -> String {
-        text
-    }
-}
-
-/// A directory of the host and the directory of the runtime that holds the same files.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct PathMap {
-    pub host: AbsPath,
-    pub runtime: AbsPath,
-}
-
-/// Where an agent's pi runs when it works in a runtime.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimePi {
-    /// On the host. Its built-in tools and `!` commands run in the runtime through exec sessions.
-    #[default]
-    Host,
-    /// Inside the runtime, in a pane of the runtime.
-    Runtime,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeKind {
@@ -2931,10 +2819,6 @@ pub enum KillSignal {
     Term,
     Kill,
     Int,
-}
-
-pub(crate) fn env_valid(name: &str, value: &str) -> bool {
-    !name.is_empty() && !name.contains(['=', '\0']) && !value.contains('\0')
 }
 
 pub const STDERR_TAIL: usize = 4096;

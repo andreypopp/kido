@@ -7,13 +7,13 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::Arc;
 
+use ko_config::values::RuntimeName;
 use ko_pane_wire::ring::{Pos, Reader};
 use ko_sys::event::{Interest, Poll, Read, Reads, Timer, Token};
 use ko_sys::mapping::Named;
 use vstd::prelude::*;
 
 use crate::http::{self, Framing, Head, MAX_HEAD, Parsed, Status};
-use crate::ids::RuntimeName;
 use crate::link::{Link, Role, Wire};
 use crate::server::{Origin, Verified};
 use crate::spill::Spill;

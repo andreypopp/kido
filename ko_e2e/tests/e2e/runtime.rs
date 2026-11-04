@@ -28,31 +28,27 @@ impl Deref for Rt {
     }
 }
 
-fn serve(runtimes: &Value, env: &[(&str, &str)]) -> Rt {
-    serve_in(Dir::new("ko-"), runtimes, env)
+fn serve(config: &str, env: &[(&str, &str)]) -> Rt {
+    serve_in(Dir::new("ko-"), config, env)
 }
 
 impl Rt {
-    fn rewrite(&self, runtimes: &Value) {
-        fs::write(
-            self.config.join("runtimes.json"),
-            json!({"runtimes": runtimes}).to_string(),
-        )
-        .unwrap();
+    fn rewrite(&self, config: &str) {
+        fs::write(self.config.join("config.yaml"), config).unwrap();
     }
 }
 
-pub(crate) fn serve_in(dir: Dir, runtimes: &Value, env: &[(&str, &str)]) -> Rt {
+pub(crate) fn serve_in(dir: Dir, text: &str, env: &[(&str, &str)]) -> Rt {
     let config = Dir::new("ko-rtc-");
-    let file = config.join("runtimes.json");
-    fs::write(&file, json!({"runtimes": runtimes}).to_string()).unwrap();
+    let file = config.join("config.yaml");
+    fs::write(&file, text).unwrap();
     let mut env = env.to_vec();
     env.push(("KO_RUNTIME_COMMAND_KIND", "1"));
     let server = start_in(
         dir,
         Path::new("/bin/sh"),
         &env,
-        &["--runtimes", text_of(&file)],
+        &["--config", text_of(&file)],
     );
     Rt { server, config }
 }
@@ -151,7 +147,14 @@ fn a_runtime_pane_runs_through_the_wrapper_and_its_token_file_is_private_and_use
     let gate = fifo(&files, "gate");
     let wait = format!("read x < {}; exec \"$@\"", quote(text_of(&gate)));
     let s = serve(
-        &json!({"dev": {"kind": "command", "prefix": ["/bin/sh", "-c", wait, "sh"]}}),
+        &format!(
+            r#"
+runtimes:
+  dev:
+    command:
+      prefix: ["/bin/sh", "-c", {wait:?}, "sh"]
+"#
+        ),
         &[],
     );
 
@@ -223,15 +226,25 @@ fn a_runtime_connection_acts_as_a_pane_of_its_runtime_and_sees_only_its_scope() 
     fs::create_dir_all(maps.join("host/sub")).unwrap();
     fs::create_dir_all(maps.join("rt/sub")).unwrap();
     let s = serve(
-        &json!({
-            "dev": {
-                "kind": "command",
-                "env": {"RT_VAR": "runtime", "BOTH": "runtime"},
-                "cwd": "/",
-                "paths": [{"host": text_of(&maps.join("host")), "runtime": text_of(&maps.join("rt"))}],
-            },
-            "other": {"kind": "command", "pi": "runtime"},
-        }),
+        &format!(
+            r#"
+runtimes:
+  dev:
+    command: {{}}
+    env:
+      RT_VAR: runtime
+      BOTH: runtime
+    cwd: /
+    paths:
+      - host: {host}
+        runtime: {rt}
+  other:
+    command: {{}}
+    pi: runtime
+"#,
+            host = text_of(&maps.join("host")),
+            rt = text_of(&maps.join("rt")),
+        ),
         &[],
     );
     let (dev, other) = (info(&s, "dev"), info(&s, "other"));
@@ -678,21 +691,28 @@ fn the_first_pane_starts_a_runtime_and_a_failed_start_ends_it_with_its_message_a
     let up = fifo(&files, "up");
     let lead = fifo(&files, "lead");
     let log = files.join("lead.log");
+    let gate = format!(
+        "read code < {}; echo boom >&2; exit $code",
+        quote(text_of(&up))
+    );
+    let led = format!(
+        "echo led >> {}; read code < {}; [ $code = 0 ] || echo denied >&2; exit $code",
+        quote(text_of(&log)),
+        quote(text_of(&lead)),
+    );
     let s = serve(
-        &json!({
-            "gate": {"kind": "command", "color": "#d08a2a", "up": [
-                "/bin/sh", "-c",
-                format!("read code < {}; echo boom >&2; exit $code", quote(text_of(&up))),
-            ]},
-            "lead": {"kind": "command", "lead": [
-                "/bin/sh", "-c",
-                format!(
-                    "echo led >> {}; read code < {}; [ $code = 0 ] || echo denied >&2; exit $code",
-                    quote(text_of(&log)),
-                    quote(text_of(&lead)),
-                ),
-            ]},
-        }),
+        &format!(
+            r##"
+runtimes:
+  gate:
+    color: "#d08a2a"
+    command:
+      up: ["/bin/sh", "-c", {gate:?}]
+  lead:
+    command:
+      lead: ["/bin/sh", "-c", {led:?}]
+"##
+        ),
         &[],
     );
     let lines = || fs::read_to_string(&log).map_or(0, |text| text.lines().count());
@@ -823,7 +843,7 @@ fn the_first_pane_starts_a_runtime_and_a_failed_start_ends_it_with_its_message_a
 #[test]
 fn the_terminal_client_marks_a_runtime_pane_in_the_sidebar_and_a_new_window_runs_in_the_same_runtime()
  {
-    let s = serve(&json!({"box": {"kind": "command"}}), &[]);
+    let s = serve("runtimes:\n  box: {command: {}}\n", &[]);
     let first = rt_pane(&s, "box", "printf 'pane-one\\n'; exec cat");
     let o = Outer::new(&s.dir, Keys::Extended);
     o.attach("cat");
@@ -847,16 +867,16 @@ fn the_terminal_client_marks_a_runtime_pane_in_the_sidebar_and_a_new_window_runs
 
 #[test]
 fn a_client_link_hears_of_a_runtime_that_the_configuration_gains_changes_or_loses() {
-    let s = serve(
-        &json!({"a": {"kind": "command"}, "b": {"kind": "command"}}),
-        &[],
-    );
+    let s = serve("runtimes:\n  a: {command: {}}\n  b: {command: {}}\n", &[]);
     let (mut client, welcome) = s.client(None);
     assert_eq!(welcome["runtimes"].as_array().map(Vec::len), Some(2));
-    s.rewrite(&json!({
-        "a": {"kind": "command", "color": "#d08a2a"},
-        "c": {"kind": "command"},
-    }));
+    s.rewrite(
+        r##"
+runtimes:
+  a: {command: {}, color: "#d08a2a"}
+  c: {command: {}}
+"##,
+    );
     let listed = info(&s, "c");
     assert_eq!(listed["state"]["type"], "down");
     client.within(DEADLINE);
@@ -882,14 +902,11 @@ fn a_client_link_hears_of_a_runtime_that_the_configuration_gains_changes_or_lose
 
 #[test]
 fn a_runtime_that_leaves_the_configuration_while_up_is_deleted_for_clients_when_its_link_ends() {
-    let s = serve(
-        &json!({"a": {"kind": "command"}, "b": {"kind": "command"}}),
-        &[],
-    );
+    let s = serve("runtimes:\n  a: {command: {}}\n  b: {command: {}}\n", &[]);
     let (mut client, _) = s.client(None);
     let pane = rt_pane(&s, "a", "exec cat");
     wait_state(&s, "a", "up");
-    s.rewrite(&json!({"b": {"kind": "command"}}));
+    s.rewrite("runtimes:\n  b: {command: {}}\n");
     let listed: Value = serde_json::from_str(&s.request("GET", "/runtimes", None, 200)).unwrap();
     assert_eq!(
         listed
@@ -933,7 +950,12 @@ fn a_runtime_that_leaves_the_configuration_while_up_is_deleted_for_clients_when_
 #[test]
 fn an_idle_runtime_goes_down_unless_a_pane_or_an_exec_session_holds_it() {
     let s = serve(
-        &json!({"kept": {"kind": "command"}, "idle": {"kind": "command"}, "busy": {"kind": "command"}}),
+        "
+runtimes:
+  kept: {command: {}}
+  idle: {command: {}}
+  busy: {command: {}}
+",
         &[("KO_RUNTIME_IDLE_SECONDS", "0.3")],
     );
     let files = Dir::new("ko-rtf-");
@@ -970,14 +992,26 @@ fn an_idle_runtime_goes_down_unless_a_pane_or_an_exec_session_holds_it() {
 #[test]
 fn a_retry_after_a_failed_start_reads_the_configuration_again() {
     let s = serve(
-        &json!({"fix": {"kind": "command", "up": ["/bin/sh", "-c", "echo broken >&2; exit 3"]}}),
+        r#"
+runtimes:
+  fix:
+    command:
+      up: [/bin/sh, -c, "echo broken >&2; exit 3"]
+"#,
         &[],
     );
     let first = rt_pane(&s, "fix", "exec cat");
     s.screen_has(&first, "runtime fix: broken");
     wait_state(&s, "fix", "failed");
 
-    s.rewrite(&json!({"fix": {"kind": "command", "up": ["/bin/sh", "-c", "exit 0"]}}));
+    s.rewrite(
+        "
+runtimes:
+  fix:
+    command:
+      up: [/bin/sh, -c, exit 0]
+",
+    );
     let second = rt_pane(&s, "fix", "echo fixed; exec cat");
     s.screen_has(&second, "fixed");
     wait_state(&s, "fix", "up");
@@ -986,8 +1020,8 @@ fn a_retry_after_a_failed_start_reads_the_configuration_again() {
 #[test]
 fn a_configuration_that_cannot_be_used_fails_the_runtime_requests_and_not_the_server() {
     let dir = Dir::new("ko-rtc-");
-    let file = dir.join("runtimes.json");
-    let s = start_with(Path::new("/bin/sh"), &[], &["--runtimes", text_of(&file)]);
+    let file = dir.join("config.yaml");
+    let s = start_with(Path::new("/bin/sh"), &[], &["--config", text_of(&file)]);
     let get = |path: &str| raw(&s, "GET", path, &headers(&s, &[]), &Value::Null);
     let created = |runtime: &str| {
         raw(
@@ -1013,26 +1047,26 @@ fn a_configuration_that_cannot_be_used_fails_the_runtime_requests_and_not_the_se
         "{body}"
     );
 
-    fs::write(&file, r#"{"runtimes":{"dev":{"kind":"command"}}}"#).unwrap();
+    fs::write(&file, "runtimes:\n  dev:\n    command: {}\n").unwrap();
     let (status, body) = get("/runtimes");
     assert_eq!((status, body["kind"].as_str()), (400, Some("invalid")));
     assert!(
         body["message"]
             .as_str()
             .unwrap()
-            .contains("runtime dev: kind: command is a test kind"),
+            .contains("runtimes: dev: command: is a test kind; set KO_RUNTIME_COMMAND_KIND=1"),
         "without the knob a command runtime is an error that names the runtime and the field: {body}"
     );
     assert_eq!(created("dev").0, 400);
     assert!(s.rows().is_empty(), "the request that failed made no pane");
 
-    fs::write(&file, "{\"runtimes\": {\n  \"dev\": [").unwrap();
+    fs::write(&file, "runtimes:\n  dev: [").unwrap();
     let (status, body) = get("/runtimes");
     assert_eq!((status, body["kind"].as_str()), (400, Some("invalid")));
     let message = body["message"].as_str().unwrap();
     assert!(
-        message.contains("line 2 column"),
-        "the serde position: {message}"
+        message.contains(&format!("{}: ", file.display())) && message.contains("line 3 column"),
+        "the parser position: {message}"
     );
     s.request("GET", "/version", None, 200);
 }
@@ -1043,7 +1077,7 @@ fn a_runtime_socket_path_over_the_limit_fails_the_start_with_advice() {
     let socket = long.join("socket").as_os_str().len();
     let runtime = long.join("runtimes/dev/socket").as_os_str().len();
     assert!(socket <= 103 && runtime > 103, "{socket} {runtime}");
-    let s = serve_in(long, &json!({"dev": {"kind": "command"}}), &[]);
+    let s = serve_in(long, "runtimes:\n  dev: {command: {}}\n", &[]);
     let pane = rt_pane(&s, "dev", "exec cat");
     let message = "runtime socket path exceeds 103 bytes; set KO_STATE_DIR to a shorter path";
     s.screen_has(&pane, "runtime dev: runtime socket path exceeds 103 bytes;");
@@ -1166,11 +1200,25 @@ fn an_exec_session_runs_a_command_with_split_output_stdin_signals_and_an_exit() 
     let files = Dir::new("ko-rtf-");
     let work = Dir::new("ko-rtw-");
     let s = serve(
-        &json!({
-            "dev": {"kind": "command", "env": {"RT_VAR": "runtime", "BOTH": "runtime", "PATH": "/usr/bin:/bin"}, "cwd": text_of(&work)},
-            "login": {"kind": "command", "lead": ["/bin/sh", "-c", "exit 0"]},
-            "broken": {"kind": "command", "up": ["/bin/sh", "-c", "echo nope >&2; exit 4"]},
-        }),
+        &format!(
+            r#"
+runtimes:
+  dev:
+    command: {{}}
+    env:
+      RT_VAR: runtime
+      BOTH: runtime
+      PATH: /usr/bin:/bin
+    cwd: {work}
+  login:
+    command:
+      lead: [/bin/sh, -c, exit 0]
+  broken:
+    command:
+      up: [/bin/sh, -c, "echo nope >&2; exit 4"]
+"#,
+            work = text_of(&work),
+        ),
         &[
             ("KO_VIEW_QUEUE_BYTES", "262144"),
             ("KO_STOP_ESCALATION_MS", "300"),
@@ -1369,7 +1417,7 @@ fn an_exec_session_reads_its_output_in_order_and_stops_the_command_while_the_rea
     let files = Dir::new("ko-rtf-");
     let mark = files.join("done");
     let s = serve(
-        &json!({"dev": {"kind": "command"}}),
+        "runtimes:\n  dev: {command: {}}\n",
         &[("KO_VIEW_QUEUE_BYTES", "262144")],
     );
     let lines = 600_000;
@@ -1436,10 +1484,14 @@ pub(crate) fn tree_pids(files: &Path) -> [Pid; 3] {
 #[test]
 fn a_cancelled_exec_session_ends_its_whole_process_group_even_when_the_command_ignores_sigterm() {
     let s = serve(
-        &json!({
-            "dev": {"kind": "command"},
-            "junk": {"kind": "command", "prefix": ["/bin/sh", "-c", "echo junk; exec \"$@\"", "sh"]},
-        }),
+        r#"
+runtimes:
+  dev:
+    command: {}
+  junk:
+    command:
+      prefix: [/bin/sh, -c, 'echo junk; exec "$@"', sh]
+"#,
         &[("KO_STOP_ESCALATION_MS", "300")],
     );
     let files = Dir::new("ko-rtf-");
@@ -1493,7 +1545,7 @@ exit 0
 #[test]
 fn a_cancel_after_the_leader_exited_still_ends_the_group_that_holds_the_output() {
     let s = serve(
-        &json!({"dev": {"kind": "command"}}),
+        "runtimes:\n  dev: {command: {}}\n",
         &[("KO_STOP_ESCALATION_MS", "300")],
     );
     let files = Dir::new("ko-rtf-");
@@ -1582,7 +1634,7 @@ fn at_most_32_exec_sessions_of_a_runtime_run_and_the_others_wait_in_order_then_g
     let started = files.join("started");
     fs::create_dir(&started).unwrap();
     let s = serve(
-        &json!({"dev": {"kind": "command"}}),
+        "runtimes:\n  dev: {command: {}}\n",
         &[("KO_RUNTIME_EXEC_WAIT_MS", "1500")],
     );
     let session = |index: usize| {
@@ -1670,7 +1722,14 @@ fn a_start_step_that_ignores_sigterm_is_killed_when_the_server_exits() {
         quote(text_of(&pidfile))
     );
     let mut s = serve(
-        &json!({"dev": {"kind": "command", "up": ["/bin/sh", "-c", script]}}),
+        &format!(
+            r#"
+runtimes:
+  dev:
+    command:
+      up: ["/bin/sh", "-c", {script:?}]
+"#
+        ),
         &[],
     );
     rt_pane(&s, "dev", "exec cat");

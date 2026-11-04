@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use crate::config::program_path;
 use crate::protocol::ExecRequest;
 use crate::runtime::exec::Launch;
-use crate::runtime::file::{Command, Runtime};
 use crate::runtime::{Ctx, Entry, Next, Outcome, text, words};
+use ko_config::runtime::{Command, Runtime};
 
 pub(crate) const DEFAULT_PATH: &str = "/usr/bin:/bin";
 
@@ -20,6 +20,7 @@ pub(crate) fn entry(
     Entry {
         prefix: command
             .prefix
+            .as_slice()
             .iter()
             .map(|arg| arg.as_bytes().to_vec())
             .collect(),
@@ -30,7 +31,7 @@ pub(crate) fn entry(
                 &command
                     .socket
                     .as_ref()
-                    .map_or(socket, |socket| socket.as_path().to_path_buf()),
+                    .map_or(socket, |socket| PathBuf::from(socket.as_str())),
             ),
         ],
         token: vec![b"--token-file".to_vec(), bytes(token_file)],
@@ -39,7 +40,7 @@ pub(crate) fn entry(
 }
 
 pub(crate) fn first(command: &Command, env: &[Vec<u8>]) -> Option<Launch> {
-    let (program, args) = command.up.as_deref()?.split_first()?;
+    let (program, args) = command.up.as_ref()?.as_slice().split_first()?;
     Some(Launch::new(PathBuf::from(program), args.to_vec(), env))
 }
 
@@ -56,10 +57,11 @@ pub(crate) fn exec_launch(
     command: &Command,
     (request, cx): (&ExecRequest, &Ctx<'_>),
 ) -> Result<Launch, String> {
-    let env = runtime.exec_env(cx.name, request);
+    let env = super::exec_env(runtime, cx.name, request);
     let path = env.get("PATH").copied().unwrap_or(DEFAULT_PATH);
     let mut words = command
         .prefix
+        .as_slice()
         .iter()
         .cloned()
         .chain([text(cx.exe)])
@@ -72,16 +74,17 @@ pub(crate) fn exec_launch(
 
 #[cfg(test)]
 mod tests {
+    use ko_config::runtime::Kind;
+    use ko_config::values::{AbsPath, RuntimeName};
+
     use super::*;
-    use crate::ids::RuntimeName;
-    use crate::protocol::AbsPath;
-    use crate::runtime::file::Kind;
+    use crate::runtime::exec_start;
 
     #[test]
     fn an_exec_helper_is_the_prefix_then_the_ko_in_exec_mode_with_no_environment_and_the_start_has_the_variables()
      {
         let runtime: Runtime = serde_json::from_str(
-            r#"{"kind":"command","env":{"A":"runtime","B":"runtime"},"cwd":"/work","prefix":["/usr/bin/env"]}"#,
+            r#"{"env":{"A":"runtime","B":"runtime"},"cwd":"/work","command":{"prefix":["/usr/bin/env"]}}"#,
         )
         .unwrap();
         let Kind::Command(command) = &runtime.kind else {
@@ -111,7 +114,7 @@ mod tests {
         assert!(launch.env.is_empty(), "nothing of the server's environment");
 
         let escalation = std::time::Duration::from_millis(2500);
-        let start = runtime.exec_start(&name, &request(None, None), escalation);
+        let start = exec_start(&runtime, &name, &request(None, None), escalation);
         let env: Vec<String> = start
             .env
             .iter()
@@ -127,14 +130,15 @@ mod tests {
             ]
         );
         assert_eq!(start.argv, ["/bin/echo", "x"]);
-        assert_eq!(start.cwd.unwrap().as_path(), Path::new("/work"));
+        assert_eq!(start.cwd.unwrap().as_str(), "/work");
         assert_eq!(start.escalation_ms, 2500);
-        let moved = runtime.exec_start(
+        let moved = exec_start(
+            &runtime,
             &name,
             &request(Some("/elsewhere"), Some("/opt")),
             escalation,
         );
-        assert_eq!(moved.cwd.unwrap().as_path(), Path::new("/elsewhere"));
+        assert_eq!(moved.cwd.unwrap().as_str(), "/elsewhere");
         assert!(
             moved
                 .env

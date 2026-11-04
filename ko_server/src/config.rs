@@ -33,6 +33,7 @@ pub struct Config {
     pub message_ack: Duration,
     pub view_queue: ViewQueue,
     pub runtimes: RuntimesConfig,
+    pub file: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,7 +44,6 @@ pub enum RuntimeIdle {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimesConfig {
-    pub file: PathBuf,
     pub idle: RuntimeIdle,
     pub exec_wait: Duration,
     pub command_kind: bool,
@@ -106,11 +106,11 @@ pub fn scratch(dir: &Path, pane_exe: PathBuf, limits: Limits) -> Config {
         message_ack: MESSAGE_ACK,
         view_queue: ViewQueue::default(),
         runtimes: RuntimesConfig {
-            file: dir.join("runtimes.json"),
             idle: RuntimeIdle::After(RUNTIME_IDLE),
             exec_wait: RUNTIME_EXEC_WAIT,
             command_kind: false,
         },
+        file: dir.join("config.yaml"),
     }
 }
 
@@ -157,25 +157,23 @@ pub fn dir(chosen: Option<PathBuf>) -> PathBuf {
     if let Some(state) = set("XDG_STATE_HOME") {
         return PathBuf::from(state).join("ko");
     }
-    let home = set("HOME")
-        .map(PathBuf::from)
-        .or_else(env::home_dir)
-        .unwrap_or_else(|| PathBuf::from("/"));
-    home.join(".local/state/ko")
+    home().join(".local/state/ko")
 }
 
-pub fn runtimes_file(chosen: Option<PathBuf>) -> PathBuf {
-    if let Some(file) = chosen {
-        return file;
-    }
-    if let Some(config) = set("XDG_CONFIG_HOME") {
-        return PathBuf::from(config).join("ko/runtimes.json");
-    }
-    let home = set("HOME")
+fn home() -> PathBuf {
+    set("HOME")
         .map(PathBuf::from)
         .or_else(env::home_dir)
-        .unwrap_or_else(|| PathBuf::from("/"));
-    home.join(".config/ko/runtimes.json")
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+fn config_file(chosen: Option<PathBuf>) -> PathBuf {
+    chosen.unwrap_or_else(|| {
+        ko_config::config::default_path(
+            set("XDG_CONFIG_HOME").map(PathBuf::from).as_deref(),
+            &home(),
+        )
+    })
 }
 
 fn runtime_idle(value: Option<OsString>) -> RuntimeIdle {
@@ -322,7 +320,7 @@ impl Config {
         shell: Option<PathBuf>,
         bin_dir: Option<PathBuf>,
         scrollback: Scrollback,
-        runtimes: Option<PathBuf>,
+        file: Option<PathBuf>,
     ) -> Result<Config, String> {
         let shell = shell
             .or_else(|| set("SHELL").map(PathBuf::from))
@@ -335,8 +333,7 @@ impl Config {
         let bin_dir = bin_dir
             .map(|dir| std::path::absolute(dir).map_err(|error| error.to_string()))
             .transpose()?;
-        let runtimes =
-            std::path::absolute(runtimes_file(runtimes)).map_err(|error| error.to_string())?;
+        let file = std::path::absolute(config_file(file)).map_err(|error| error.to_string())?;
         let dir = dir(chosen);
         let socket = socket(Dir::Create, &dir)?;
         let cwd = env::current_dir().map_err(|error: io::Error| error.to_string())?;
@@ -375,12 +372,12 @@ impl Config {
                 spill_bytes: positive("KO_VIEW_SPILL_BYTES").unwrap_or(SPILL_BYTES),
             },
             runtimes: RuntimesConfig {
-                file: runtimes,
                 idle: runtime_idle(env::var_os("KO_RUNTIME_IDLE_SECONDS")),
                 exec_wait: positive("KO_RUNTIME_EXEC_WAIT_MS")
                     .map_or(RUNTIME_EXEC_WAIT, Duration::from_millis),
                 command_kind: set("KO_RUNTIME_COMMAND_KIND").is_some_and(|value| value == "1"),
             },
+            file,
         })
     }
 }

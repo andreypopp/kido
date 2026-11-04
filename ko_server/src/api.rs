@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+use ko_config::values::RuntimeName;
 use ko_pane_wire::frame::{History, ScreenFormat, ScreenRows};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::de::IntoDeserializer;
@@ -7,7 +8,7 @@ use serde::de::value::Error as ValueError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ids::{ClientId, PaneId, RunId, RuntimeName, SessionId, VarName, WindowId};
+use crate::ids::{ClientId, PaneId, RunId, SessionId, VarName, WindowId};
 use crate::protocol::{
     Candidate, ClientEvent, ClientRequest, DeleteVars, DownRuntime, Empty, ExecClient, ExecServer,
     HistoryDef, Images, Info, Input, InputResult, LayoutPanes, LeadReport, Listing, Message,

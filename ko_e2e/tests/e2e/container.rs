@@ -8,9 +8,9 @@ use ko_sys::pid::Exit;
 use serde_json::{Value, json};
 
 use crate::harness::{
-    Dir, Server, enabled, ko, poll_for, run_ko, run_program, start_in, test_env, text_of, which,
+    Dir, Server, enabled, ko, poll_for, run_ko, run_program, test_env, text_of, which,
 };
-use crate::runtime::{read_exec, start_exec, start_tree};
+use crate::runtime::{read_exec, serve_in, start_exec, start_tree};
 
 // Runs only with KO_E2E_CONTAINER=1, on a Mac where `container system status` succeeds, with the
 // debian:trixie image already present; then a missing layout or container CLI is a failure.
@@ -170,22 +170,23 @@ fn a_container_runtime_starts_on_the_first_pane_and_follows_its_container() {
     let volume = Dir::new("ko-vol-");
     fs::write(volume.join("hello.txt"), "from-the-host").unwrap();
     let host_volume = fs::canonicalize(&*volume).unwrap();
-    let config = Dir::new("ko-rtc-");
-    let file = config.join("runtimes.json");
-    let runtimes = json!({"runtimes": {&name: {
-        "kind": "container",
-        "from": {"image": "debian:trixie"},
-        "container": text_of(&container),
-        "volumes": [{"host": text_of(&host_volume), "runtime": "/work"}],
-        "env": {"FROM_CONFIG": "yes"},
-    }}});
-    fs::write(&file, runtimes.to_string()).unwrap();
-    let s = start_in(
-        Dir::new("ko-"),
-        Path::new("/bin/sh"),
-        &[("KO_STOP_ESCALATION_MS", "2000")],
-        &["--runtimes", text_of(&file)],
+    let text = format!(
+        r#"
+runtimes:
+  {name}:
+    container:
+      from: {{image: "debian:trixie"}}
+      container: {container}
+      volumes:
+        - host: {host}
+          runtime: /work
+    env:
+      FROM_CONFIG: "yes"
+"#,
+        container = text_of(&container),
+        host = text_of(&host_volume),
     );
+    let s = serve_in(Dir::new("ko-"), &text, &[("KO_STOP_ESCALATION_MS", "2000")]);
 
     let script = "stty raw -echo; echo up-$KO_RUNTIME; echo S=$KO_SOCKET; echo T=$TERM; \
         echo D=$TERMINFO_DIRS; echo F=$FROM_CONFIG; echo H=$(cat /work/hello.txt); \
@@ -334,18 +335,16 @@ fn a_container_runtime_starts_on_the_first_pane_and_follows_its_container() {
 
 #[test]
 fn a_container_runtime_that_cannot_start_fails_and_leaves_no_socket() {
-    let config = Dir::new("ko-rtc-");
-    let file = config.join("runtimes.json");
-    let runtimes = json!({"runtimes": {
-        "nocli": {"kind": "container", "from": {"image": "x"}, "container": "no-such-container-cli"},
-        "gone": {"kind": "container", "from": {"image": "x"}, "container": "/nonexistent/container"},
-    }});
-    fs::write(&file, runtimes.to_string()).unwrap();
-    let s = start_in(
+    let s = serve_in(
         Dir::new("ko-"),
-        Path::new("/bin/sh"),
+        "
+runtimes:
+  nocli:
+    container: {from: {image: x}, container: no-such-container-cli}
+  gone:
+    container: {from: {image: x}, container: /nonexistent/container}
+",
         &[],
-        &["--runtimes", text_of(&file)],
     );
     for (name, message) in [
         (

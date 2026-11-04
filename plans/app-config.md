@@ -146,10 +146,8 @@ The ko side: the app starts its server with `server --server DIR`
 only (`ko_client/src/launch.rs:160`), so the scrollback limits
 (`ko/src/main.rs:241-253`) and the knobs of docs/design.md "Knobs"
 (`KO_*` variables, `ko_server/src/config.rs:362-382`) are at their
-defaults in Kido.app. The server reads `runtimes.json` at
-`ko_server/src/config.rs:167` and parses it in
-`ko_server/src/runtime/file.rs:421`; ko-rt-yaml replaces both with
-`ko_config`.
+defaults in Kido.app. The server reads `config.yaml` through
+`ko_config` (docs/design-runtimes.md, "The configuration file").
 
 ## 3. The file and its readers
 

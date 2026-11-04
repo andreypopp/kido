@@ -6,8 +6,9 @@ use std::process::{Command, ExitCode};
 
 use clap::Args;
 use ko_client::runtimes::{self, Shown, Up};
+use ko_config::values::RuntimeName;
 use ko_server::config::variable;
-use ko_server::ids::{InvalidId, PaneId, RuntimeName};
+use ko_server::ids::{InvalidId, PaneId};
 use ko_shell::enter::{self, Enter, TokenSource};
 use ko_shell::session::{self, End};
 

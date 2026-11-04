@@ -46,8 +46,11 @@ fn serve(options: Options, env: &[(&str, &str)]) -> Box {
     );
     let mut env = env.to_vec();
     env.push(("PATH", &path));
-    let runtimes = json!({"box": {"kind": "ssh", "destination": HOST, "dir": text_of(&dir)}});
-    let rt = serve_in(state, &runtimes, &env);
+    let config = format!(
+        "runtimes:\n  box:\n    ssh:\n      destination: {HOST}\n      dir: {}\n",
+        text_of(&dir)
+    );
+    let rt = serve_in(state, &config, &env);
     Box { rt, remote, dir }
 }
 

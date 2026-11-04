@@ -6,11 +6,12 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use ko_config::values::RuntimeName;
 use ko_sys::pid::Exit;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{PaneId, RunId, RuntimeName};
+use crate::ids::{PaneId, RunId};
 use crate::pane_proc::Cause;
 use crate::panes::{Condition, Seen};
 use crate::protocol::{Info, RunRow, Show};

@@ -393,7 +393,10 @@ impl Inside {
         let env = overlay(&given, &self.inherited);
         let path = program_path(&String::from_utf8_lossy(env_path(&env)), &program)
             .ok_or_else(|| Failure::NotFound(program.clone()))?;
-        let cwd = start.cwd.as_ref().map(|cwd| cwd.as_path());
+        let cwd = start
+            .cwd
+            .as_ref()
+            .map(|cwd| std::path::Path::new(cwd.as_str()));
         if let Some(cwd) = cwd {
             check_cwd(cwd).map_err(Failure::Cwd)?;
         }

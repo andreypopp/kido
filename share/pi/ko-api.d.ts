@@ -559,7 +559,7 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** @description An absolute path. */
+        /** @description an absolute path */
         AbsPath: string;
         Agent: {
             msg?: string;
@@ -1392,7 +1392,7 @@ export interface components {
             runtime?: components["schemas"]["RuntimeName"];
             startedAt: components["schemas"]["Timestamp"];
         };
-        /** @description An sRGB colour as #rrggbb. */
+        /** @description a colour as #rrggbb */
         RuntimeColor: string;
         /** @description What a client needs of a runtime to mark its panes and offer it for a new pane. */
         RuntimeInfo: {

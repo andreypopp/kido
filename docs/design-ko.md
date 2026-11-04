@@ -153,7 +153,8 @@ and the OpenAPI document. The status model is `telemetry.rs`,
 message queue (its routes in `state/messages.rs`), the clipboard answerer, the
 shared-memory leak record and the `agent.sock` link; `config.rs` the
 state directory, the options and the knobs. `runtime/` holds the
-runtimes' configuration, registry, links and exec helpers, with
+runtimes' registry, links and exec helpers over the configuration of
+`ko_config`, with
 `state/runtime_ops.rs` and `state/exec_ops.rs` over them
 ([design-runtimes.md](design-runtimes.md)).
 
@@ -501,8 +502,8 @@ reads its environment knobs, and `ko_server/src/panes.rs` sets the
 variables of every pane, `SSH_AUTH_SOCK=<dir>/agent.sock` among them,
 which a pane's `env` can replace. `--bin-dir` is the shim directory put
 first on every pane's PATH (design.md, "The bin directory"); `--shell`
-reaches every pane as `KO_SHELL`. `--runtimes FILE` names the
-runtime configuration (design-runtimes.md). A runtime's listener is
+reaches every pane as `KO_SHELL`. `--config FILE` names the
+configuration file (design-runtimes.md, "The configuration file"). A runtime's listener is
 in `DIR/runtimes/<name>/`; a socket path there that is too long fails
 that runtime's start, not the server.
 At start the server links `agent.sock` to its own inherited agent only
@@ -726,8 +727,10 @@ Each decision names its date. The code states the rest.
 
 2026-11-04:
 
-- Runtimes get one configuration file, `runtimes.json`, because a
-  runtime cannot be derived. It holds runtimes only; everything else
-  stays without a file. Runtimes are managed through the HTTP API
+- Runtimes get a configuration file, the `runtimes:` key of
+  `config.yaml`, because a runtime cannot be derived. The file has one
+  top-level key for each owner; Kido.app's settings join it
+  (plans/app-config.md), and everything that can be derived stays
+  without a file. Runtimes are managed through the HTTP API
   only: a runtime starts with its first pane or exec session and stops
   by the idle rule.

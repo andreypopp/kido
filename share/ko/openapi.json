@@ -2,7 +2,7 @@
   "components": {
     "schemas": {
       "AbsPath": {
-        "description": "An absolute path.",
+        "description": "an absolute path",
         "pattern": "^/",
         "type": "string"
       },
@@ -2763,6 +2763,7 @@
         "type": "object"
       },
       "PathMap": {
+        "additionalProperties": false,
         "description": "A directory of the host and the directory of the runtime that holds the same files.",
         "properties": {
           "host": {
@@ -3224,7 +3225,7 @@
         "type": "object"
       },
       "RuntimeColor": {
-        "description": "An sRGB colour as #rrggbb.",
+        "description": "a colour as #rrggbb",
         "pattern": "^#[0-9A-Fa-f]{6}$",
         "type": "string"
       },

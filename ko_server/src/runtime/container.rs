@@ -1,13 +1,14 @@
 use std::path::{Path, PathBuf};
 
+use ko_config::values::RuntimeName;
 use ko_sys::pid::Exit;
 use serde::Deserialize;
 
 use crate::config::{env_path, installed, program_path};
-use crate::ids::{PaneToken, RuntimeName};
+use crate::ids::PaneToken;
 use crate::runtime::exec::Launch;
-use crate::runtime::file::{Access, Container, Ko, Source, SshAgent};
 use crate::runtime::{Cleanup, Ctx, Entry, Next, Outcome, text, version_next, words};
+use ko_config::runtime::{Access, Container, Ko, Source, SshAgent};
 
 const PROGRAM: &str = "container";
 const SOCKET: &str = "/run/ko/socket";
@@ -79,7 +80,7 @@ fn inner_ko(settings: &Container) -> &'static str {
 fn mount(settings: &Container, exe: &Path) -> Result<Option<PathBuf>, String> {
     match &settings.ko {
         Ko::Path => Ok(None),
-        Ko::Mount(dir) => Ok(Some(dir.as_path().to_path_buf())),
+        Ko::Mount(dir) => Ok(Some(PathBuf::from(dir.as_str()))),
         Ko::Shipped => {
             let layouts = installed(exe, SHIPPED);
             layouts
@@ -194,8 +195,8 @@ fn run(settings: &Container, image: &str, cx: &Ctx<'_>) -> Next {
             "-v".to_owned(),
             format!(
                 "{}:{}{access}",
-                text(volume.host.as_path()),
-                text(volume.runtime.as_path())
+                text(Path::new(volume.host.as_str())),
+                text(Path::new(volume.runtime.as_str()))
             ),
         ]);
     }
@@ -208,9 +209,9 @@ fn run(settings: &Container, image: &str, cx: &Ctx<'_>) -> Next {
     if settings.ssh_agent == SshAgent::Forward {
         args.push("--ssh".to_owned());
     }
-    args.extend(settings.run_args.iter().cloned());
+    args.extend(settings.run_args.as_slice().iter().cloned());
     args.push(image.to_owned());
-    args.extend(settings.init.iter().cloned());
+    args.extend(settings.init.as_slice().iter().cloned());
     step(settings, cx, args)
 }
 

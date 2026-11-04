@@ -6,7 +6,9 @@ use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{self, AbsPath, EXEC_CHUNK, Ended, KillSignal, Variable};
+use ko_config::values::AbsPath;
+
+use crate::protocol::{self, EXEC_CHUNK, Ended, KillSignal, Variable};
 
 const HEADER: usize = 5;
 const MAX_PAYLOAD: usize = EXEC_CHUNK;

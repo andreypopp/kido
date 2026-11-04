@@ -5,18 +5,17 @@ use std::io;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use ko_config::values::{RuntimeName, env_valid};
 use ko_pane_wire::frame::Size;
 use ko_sys::clock::Mono;
 use ko_sys::event::Token;
 
 use crate::config::{Config, path_with, terminal};
 use crate::delivery::{Stamps, mint_stamps};
-use crate::ids::{PaneId, PaneToken, RunId, RuntimeName, SessionId};
+use crate::ids::{PaneId, PaneToken, RunId, SessionId};
 use crate::pane::{Birth, Pane, Program};
 use crate::pane_proc::{Cause, Io, Launch, Life};
-use crate::protocol::{
-    Close, Command, CreatePane, Error, ErrorKind, Relation, Variable, env_valid,
-};
+use crate::protocol::{Close, Command, CreatePane, Error, ErrorKind, Relation, Variable};
 
 #[derive(Debug)]
 pub(crate) enum AddError {
@@ -591,11 +590,11 @@ mod tests {
             message_ack: crate::config::MESSAGE_ACK,
             view_queue: crate::config::ViewQueue::default(),
             runtimes: crate::config::RuntimesConfig {
-                file: PathBuf::from("/tmp/runtimes.json"),
                 idle: crate::config::RuntimeIdle::Never,
                 exec_wait: crate::config::RUNTIME_EXEC_WAIT,
                 command_kind: false,
             },
+            file: PathBuf::from("/tmp/config.yaml"),
         }
     }
 

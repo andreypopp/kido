@@ -4,6 +4,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use ko_config::runtime::Runtime;
+use ko_config::values::RuntimeName;
 use ko_pane_wire::frame::{Dead, History, ImageKey, Req, ScreenFormat, ScreenRows, Size};
 use ko_pane_wire::ring::Invalid;
 use ko_sys::event::{Events, Mode, Poll, Reads, Ready, Timer, Token};
@@ -17,9 +19,7 @@ use crate::conn::{Conn, Phase};
 use crate::deflate::Deflate;
 use crate::delivery::{Delivery, Handle};
 use crate::http::lossy;
-use crate::ids::{
-    ClientId, Instance, Name, PaneId, RunId, RuntimeName, SessionId, VarName, WindowId,
-};
+use crate::ids::{ClientId, Instance, Name, PaneId, RunId, SessionId, VarName, WindowId};
 use crate::layout::{Document, PutError, Removal, Resized};
 use crate::link::{Role, Wire};
 use crate::model::{self, Model};
@@ -34,7 +34,6 @@ use crate::protocol::{
 use crate::router;
 use crate::runs;
 use crate::runtime::Registry;
-use crate::runtime::file::Runtime;
 use crate::runtime::leaving::Leaving;
 use crate::server::Verified;
 use crate::shm::Leaks;

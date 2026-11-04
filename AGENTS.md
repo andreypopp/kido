@@ -167,6 +167,12 @@ These requirements are fixed:
   `ko-pi` shims), `share/ko/shim.sh` and `share/pi/ko-pi.ts` (as
   `share/ko/pi/ko-pi.ts`) beside `bin/ko` in `build/ko/`, the layout
   that `ko_shell/src/bin_dir.rs` finds as installed.
+  `ko_config/` is the crate `ko_config`: the configuration file
+  `config.yaml` (its types, the path rule, the YAML decode in
+  `yaml.rs` and its JSON schema; docs/design-runtimes.md, "The
+  configuration file"), the values that the file and the wire share
+  (`RuntimeName`, `AbsPath`, ...) and the ssh option classifier
+  (`ssh_args.rs`). It depends on no ko crate.
   `share/pi/testdata/fake_ko/` is the crate `fake_ko`, the fake `ko`
   of the TypeScript suite, a workspace member outside
   `default-members` that `make build-fake-ko` builds for
@@ -232,7 +238,8 @@ These requirements are fixed:
   dev-dependency of `ko_client`, `ko_tui` and `ko_e2e`, and `vstd`
   and `verus_state_machines_macros` in `ko_pane_wire` and `vstd` in
   `ko_server`, pinned with `=` to the crates version of `scripts/verus.sh`
-  (`scripts/lint.sh` compares them).
+  (`scripts/lint.sh` compares them), and `saphyr-parser` (it brings
+  `arraydeque` and `thiserror`) in `ko_config`.
   `proptest` and `loom` are dev-dependencies.
   `scripts/crates.txt` lists every package of `Cargo.lock`, ko's own
   crates included. `scripts/lint.sh` fails on a package that the list
@@ -504,8 +511,8 @@ Conventions:
   a route: add its block with its `///` doc (the OpenAPI description),
   add the arm in `router.rs`, then run `make schemas`. `make schemas`
   (`scripts/lint.sh --update-schemas`) rewrites
-  `share/ko/openapi.json` and `share/ko/client-model.json` from
-  `ko api-schema` and `share/pi/ko-api.d.ts` from the first through
+  `share/ko/openapi.json`, `share/ko/client-model.json` and
+  `share/ko/config-schema.json` from `ko api-schema` and `share/pi/ko-api.d.ts` from the first through
   openapi-typescript (pinned in `share/pi/package.json`). lint fails
   when a file differs from the generated output. `ko-pi.ts` takes its
   HTTP and `/client` shapes from `ko-api.d.ts` and writes none by hand.
@@ -685,7 +692,8 @@ Conventions:
 ## Layout
 
 ko's crates: `ko/` (the binary), `ko_server/` (the coordinator),
-`ko_client/` (the client core), `ko_tui/` (the terminal client),
+`ko_client/` (the client core), `ko_config/` (the configuration
+file), `ko_tui/` (the terminal client),
 `ko_shell/` (shell priming, `ko ssh` and the bin directory), `ko_pane/`
 (the pane process), `ko_pane_wire/` (the frame codec and the ring),
 `ko_vt/` and `ko_vt_sys/` (libghostty-vt, built by zig from PATH out
@@ -699,7 +707,7 @@ maps the coordinator's modules.
       bin/              the bin directory's sh shims (ko, ssh, ko-pi)
       shim.sh           their shared helper
       bash/, zsh/       the OSC 133 integrations every primed shell sources
-      openapi.json, client-model.json   the generated schemas (make schemas)
+      openapi.json, client-model.json, config-schema.json   the generated schemas (make schemas)
     share/pi/           ko-pi.ts, the harness, which the ko-pi shim loads
                         with --extension; its suite ko-pi-*.test.ts on
                         the fake ko of testdata/fake_ko/; ko-api.d.ts,
@@ -908,7 +916,7 @@ acquire/release and none under `seq_cst`. The loom models of
     make probe-ko BYTES=N  ko-bench throughput: the server's ring reader under ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
     make build-bench  the C helpers of bench/ in build/bench/, after build-ko
     make prompts regenerate the prompt fixture through scripts/lint.sh --update-prompts
-    make schemas regenerate share/ko/openapi.json, share/ko/client-model.json and share/pi/ko-api.d.ts through scripts/lint.sh --update-schemas
+    make schemas regenerate share/ko/openapi.json, share/ko/client-model.json, share/ko/config-schema.json and share/pi/ko-api.d.ts through scripts/lint.sh --update-schemas
     make api-docs  one static HTML page of share/ko/openapi.json (Redocly) in build/ko-api.html; not part of verify
     make fuzz TARGET=ring TIME=600  one time-boxed fuzz run, for CI or the user; no TARGET lists the targets
     make miri    Miri on ko's modules without sockets or FFI (scripts/miri.sh); for CI or the user

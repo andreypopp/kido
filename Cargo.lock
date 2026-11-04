@@ -30,6 +30,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
 
 [[package]]
+name = "arraydeque"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d902e3d592a523def97af8f317b08ce16b7ab854c1985a0c671e6f15cebc236"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -387,6 +393,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "ko_client",
+ "ko_config",
  "ko_pane_wire",
  "ko_server",
  "ko_shell",
@@ -409,6 +416,7 @@ dependencies = [
 name = "ko_client"
 version = "0.0.0"
 dependencies = [
+ "ko_config",
  "ko_pane_wire",
  "ko_server",
  "ko_sys",
@@ -418,6 +426,16 @@ dependencies = [
  "serde",
  "serde_json",
  "tungstenite",
+]
+
+[[package]]
+name = "ko_config"
+version = "0.0.0"
+dependencies = [
+ "saphyr-parser",
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -458,6 +476,7 @@ name = "ko_server"
 version = "0.0.0"
 dependencies = [
  "httparse",
+ "ko_config",
  "ko_pane_wire",
  "ko_sys",
  "ko_vt",
@@ -476,6 +495,7 @@ name = "ko_shell"
 version = "0.0.0"
 dependencies = [
  "ko_client",
+ "ko_config",
  "ko_pane_wire",
  "ko_server",
  "ko_sys",
@@ -769,6 +789,16 @@ dependencies = [
  "quick-error",
  "tempfile",
  "wait-timeout",
+]
+
+[[package]]
+name = "saphyr-parser"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48cf5a82d41247a625f040af08e91008fec945bce3b0bffba992c44af092caa2"
+dependencies = [
+ "arraydeque",
+ "thiserror",
 ]
 
 [[package]]

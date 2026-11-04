@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+use ko_config::values::RuntimeName;
 use ko_pane_wire::frame::Limits;
-use ko_server::ids::{ClientId, Instance, PaneId, RuntimeName, SessionId, VarName, WindowId};
+use ko_server::ids::{ClientId, Instance, PaneId, SessionId, VarName, WindowId};
 use ko_server::protocol::{
     self, ClientEvent, ClientRequest, ClientRuntime, ClipboardContent, ClipboardLocation, Hello,
     LayoutPanes, Listing, Live, Row, Selection, Snapshot,

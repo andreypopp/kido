@@ -13,12 +13,12 @@ import XCTest
 let runtimeGapWithMessage = "ssh: connect to host gpu-1 port 22: Connection refused"
 
 extension VisualTestCase {
-    // Writes the runtimes file that the private server of this test reads from the private config directory.
+    // Writes the config file (JSON is YAML) that the private server of this test reads from the private config directory.
     // The Visual scheme lets the server run `command` runtimes; a test never changes its own environment.
     func koRuntimes(_ runtimes: [String: [String: Any]]) throws {
         let config = try XCTUnwrap(ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"])
         try FileManager.default.createDirectory(atPath: config + "/ko", withIntermediateDirectories: true)
-        let file = URL(fileURLWithPath: config + "/ko/runtimes.json")
+        let file = URL(fileURLWithPath: config + "/ko/config.yaml")
         try JSONSerialization.data(withJSONObject: ["runtimes": runtimes], options: [.sortedKeys]).write(to: file)
         addTeardownBlock { @MainActor in try? FileManager.default.removeItem(at: file) }
     }
@@ -79,7 +79,7 @@ extension VisualTests {
 
     // window, window-hover, zoomed and label-find: a runtime pane, a host pane and a routed pi agent.
     func runtimeWindowStates(dark: Bool, find: Bool = false) async throws {
-        try koRuntimes(["buildbox": ["kind": "command"]])
+        try koRuntimes(["buildbox": ["command": [String: Any]()]])
         RuntimePill.spins = false
         let tree = splitTree("h", [
             runtimePane("buildbox", "buildbox ~/src/kido\\r\\n$ make verify\\r\\ncargo build ok\\r\\n"),
@@ -119,7 +119,7 @@ extension VisualTests {
     func runtimeStartingState(dark: Bool) async throws {
         let fifo = directory.path + "/hold"
         XCTAssertEqual(mkfifo(fifo, 0o600), 0)
-        try koRuntimes(["e2e": ["kind": "command", "up": ["/bin/sh", "-c", "read hold < '\(fifo)'"]]])
+        try koRuntimes(["e2e": ["command": ["up": ["/bin/sh", "-c", "read hold < '\(fifo)'"]]]])
         RuntimePill.spins = false
         let tree = splitTree("h", [runtimePane("e2e", ""), runtimePane(nil, "~/Workspace/kido\\r\\n$ \\r\\n")])
         try await startThemed(dark, windows: #"[{"name":"w","tree":\#(tree)}]"#)
@@ -132,7 +132,7 @@ extension VisualTests {
 
     // failed: the pill carries the message, and the pane's screen the same message from ko.
     func runtimeFailedState(dark: Bool) async throws {
-        try koRuntimes(["gpu-1": ["kind": "command", "up": ["/bin/sh", "-c", "echo '\(runtimeGapWithMessage)' >&2; exit 255"]]])
+        try koRuntimes(["gpu-1": ["command": ["up": ["/bin/sh", "-c", "echo '\(runtimeGapWithMessage)' >&2; exit 255"]]]])
         RuntimePill.spins = false
         let tree = splitTree("h", [runtimePane("gpu-1", ""), runtimePane(nil, "~/Workspace/kido\\r\\n$ \\r\\n")])
         try await startThemed(dark, windows: #"[{"name":"w","tree":\#(tree)}]"#)
@@ -145,7 +145,7 @@ extension VisualTests {
 
     // float: a float in a runtime over two host panes, its stripe clipped by the card's corners.
     func runtimeFloatState(dark: Bool) async throws {
-        try koRuntimes(["py311": ["kind": "command"]])
+        try koRuntimes(["py311": ["command": [String: Any]()]])
         RuntimePill.spins = false
         let float = runtimePane("py311", "py311 /work\\r\\n$ pytest -x\\r\\n")
         let tree = splitTree("h", [runtimePane(nil, "left\\r\\n"), runtimePane(nil, "right\\r\\n")])
@@ -162,9 +162,9 @@ extension VisualTests {
 
     // colour-hash and colour-config: four runtimes in four panes; gpu-1 takes its configured colour.
     func runtimeColourState(dark: Bool, configured: Bool) async throws {
-        var gpu: [String: Any] = ["kind": "command"]
+        var gpu: [String: Any] = ["command": [String: Any]()]
         if configured { gpu["color"] = "#d08a2a" }
-        try koRuntimes(["buildbox": ["kind": "command"], "py311": ["kind": "command"], "gpu-1": gpu, "e2e": ["kind": "command"]])
+        try koRuntimes(["buildbox": ["command": [String: Any]()], "py311": ["command": [String: Any]()], "gpu-1": gpu, "e2e": ["command": [String: Any]()]])
         RuntimePill.spins = false
         let names = ["buildbox", "py311", "gpu-1", "e2e"]
         let tree = splitTree("h", [splitTree("v", names[..<2].map { runtimePane($0, "\($0)\\r\\n") }), splitTree("v", names[2...].map { runtimePane($0, "\($0)\\r\\n") })])
@@ -366,7 +366,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
 // The commands that make a pane from another: the pane's runtime and directory, in the request and in the row.
 @MainActor final class RuntimeActionTests: VisualTestCase {
     func testANewPaneTakesItsRuntimeFromThePaneItIsMadeFromAndItsDirectoryOnlyFromAHostPane() async throws {
-        try koRuntimes(["box": ["kind": "command"]])
+        try koRuntimes(["box": ["command": [String: Any]()]])
         let dir = try koServerDir()
         _ = try await KoServer.launch(dir: dir)
         let tree = #"{"split":"h","children":[\#(runtimePane(nil, "a", cwd: "/tmp")),\#(runtimePane("box", "b")),\#(runtimePane(nil, "c", vars: routedVars, status: piStatus, cwd: "/var"))]}"#

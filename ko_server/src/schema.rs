@@ -241,13 +241,6 @@ pub fn openapi() -> String {
     serde_json::to_string_pretty(&document()).unwrap_or_default()
 }
 
-pub fn runtimes() -> String {
-    let schema = SchemaSettings::draft2020_12()
-        .into_generator()
-        .into_root_schema_for::<crate::runtime::file::Runtimes>();
-    serde_json::to_string_pretty(&schema).unwrap_or_default()
-}
-
 pub fn generator() -> SchemaGenerator {
     SchemaSettings::draft2020_12()
         .with(|settings| {

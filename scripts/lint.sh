@@ -227,11 +227,11 @@ elif ! diff -u share/ko/client-model.json "$scratch/client-model.json"; then
   echo 'share/ko/client-model.json:1: client model schema differs; regenerate: scripts/lint.sh --update-schemas'
   failed=1
 fi
-build/ko/bin/ko api-schema --runtimes > "$scratch/runtimes-schema.json"
+build/ko/bin/ko api-schema --config > "$scratch/config-schema.json"
 if [[ "${1:-}" == --update-schemas ]]; then
-  cp "$scratch/runtimes-schema.json" share/ko/runtimes-schema.json
-elif ! diff -u share/ko/runtimes-schema.json "$scratch/runtimes-schema.json"; then
-  echo 'share/ko/runtimes-schema.json:1: runtime configuration schema differs; regenerate: scripts/lint.sh --update-schemas'
+  cp "$scratch/config-schema.json" share/ko/config-schema.json
+elif ! diff -u share/ko/config-schema.json "$scratch/config-schema.json"; then
+  echo 'share/ko/config-schema.json:1: configuration schema differs; regenerate: scripts/lint.sh --update-schemas'
   failed=1
 fi
 printf 'const probe: number = 1;\n' > "$scratch/probe.ts"

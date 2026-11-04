@@ -3,11 +3,12 @@ use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
 
+use ko_config::values::RuntimeName;
 use ko_sys::event::{Events, Interest, Mode, Poll, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
 
 use crate::config::Config;
-use crate::ids::{Instance, RuntimeName};
+use crate::ids::Instance;
 use crate::state::{State, Wake};
 
 const ACCEPT_BURST: usize = 16;
@@ -483,11 +484,11 @@ pub(crate) mod tests {
             message_ack: crate::config::MESSAGE_ACK,
             view_queue: crate::config::ViewQueue::default(),
             runtimes: crate::config::RuntimesConfig {
-                file: dir.join("runtimes.json"),
                 idle: crate::config::RuntimeIdle::Never,
                 exec_wait: crate::config::RUNTIME_EXEC_WAIT,
                 command_kind: false,
             },
+            file: dir.join("config.yaml"),
         };
         let timing = Timing {
             shutdown_grace: Duration::from_millis(100),

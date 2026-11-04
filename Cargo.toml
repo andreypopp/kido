@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["fuzz", "share/pi/testdata/fake_ko", "ko", "ko_bench", "ko_client", "ko_e2e", "ko_pane", "ko_pane_wire", "ko_server", "ko_shell", "ko_sys", "ko_tui", "ko_vt", "ko_vt_sys"]
-default-members = ["ko", "ko_bench", "ko_client", "ko_pane", "ko_pane_wire", "ko_server", "ko_shell", "ko_sys", "ko_tui", "ko_vt", "ko_vt_sys"]
+members = ["fuzz", "share/pi/testdata/fake_ko", "ko", "ko_bench", "ko_client", "ko_config", "ko_e2e", "ko_pane", "ko_pane_wire", "ko_server", "ko_shell", "ko_sys", "ko_tui", "ko_vt", "ko_vt_sys"]
+default-members = ["ko", "ko_bench", "ko_client", "ko_config", "ko_pane", "ko_pane_wire", "ko_server", "ko_shell", "ko_sys", "ko_tui", "ko_vt", "ko_vt_sys"]
 
 [workspace.package]
 edition = "2024"
@@ -14,6 +14,7 @@ libc = "0.2"
 loom = "0.7.2"
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
 proptest = "1.12.0"
+saphyr-parser = "0.3.3"
 schemars = { version = "1.2.3", default-features = false, features = ["derive"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
