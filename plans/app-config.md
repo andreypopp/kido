@@ -656,9 +656,9 @@ Swift (`app/`):
 ## 11. Units, estimates and order
 
 Dependencies: ko-rt-yaml (`ko_config`, the crate, the path, the schema
-command, `--config`) lands first. Runtimes U4
-(plans/ko-runtimes.md:1075, the app's palette entries and runtime
-step) touches `Palette*.swift` too; UA2 below edits `PaletteTheme.swift`
+command, `--config`) lands first. The runtimes' client
+unit (built: design-app.md, "Command palette", the app's palette
+entries and runtime step) touches `Palette*.swift` too; UA2 below edits `PaletteTheme.swift`
 only, so the two can run in parallel in separate worktrees, with one
 merge of the palette files by the top-level session. UA1 can start in
 the ko-rt-yaml worktree once `ko_config::Config` exists, or on `main`

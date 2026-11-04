@@ -876,8 +876,8 @@ reconnect clears the queue.
 `ko_server/src/protocol.rs` and `ko_server/src/runs.rs` define the
 bodies; `ko_server/src/state/run_ops.rs` holds the routes' logic. The
 server keeps each run in `runs/<id>/` of its own state directory: `meta.json`, with the run's argv, written once at
-the start, `outcome`, the captured `screen` and the `output` path that
-the run's command writes. Every writer of a run is on the server's
+the start, `outcome` and the captured `screen`. A run has no output file:
+its output is its pane's content. Every writer of a run is on the server's
 loop thread: `State` refuses a second outcome, and the `outcome` file
 is a plain atomic write (a temporary file renamed over it).
 

@@ -325,7 +325,11 @@ exec --env-file` reads. The ssh kind's token file is on the remote
 `ko enter --token-file F` reads and unlinks it; a file that is missing
 or not private is `ko enter: no token`, exit 1. Without
 `--token-file`, `ko enter` takes `KO_PANE_TOKEN` from its environment,
-which the container kind uses.
+which the container kind uses. Where the token is readable: on the
+host, in the wrapper's environment (`ps -E` shows only the caller's
+own processes on macOS, and `/proc/PID/environ` is `0400` on Linux)
+and in the `0600` files; inside the runtime, in the pane's
+environment, as any pane's.
 
 **`ko enter`** (`ko_shell/src/enter.rs`) is the inner side. It sets
 `KO_SOCKET`, `KO_PANE`, `KO_PANE_TOKEN`, `KO_RUNTIME`,
@@ -458,8 +462,11 @@ session past the cap waits in order for one to end and ends with
 `error` after `KO_RUNTIME_EXEC_WAIT_MS` (30 s) of waiting for a slot;
 the wait for `Up` does not count. The cap exists for the ssh kind,
 whose master carries panes and sessions as channels of one
-connection, which sshd's `MaxSessions` bounds; the other kinds keep
-it for one behaviour. A helper exit that the kind classifies as a
+connection, which sshd's `MaxSessions` bounds, 10 by default; the
+other kinds keep it for one behaviour. The cap has no configuration
+field: it bounds what ko admits to the loop, and sshd's limit is met
+on the retry path; a host that shows the need can get a
+`max_sessions` field later. A helper exit that the kind classifies as a
 refused channel is retried once, after the next session of that
 runtime ends (at once when one ended since it started), then reported
 as `error`. Only the ssh kind classifies one.
@@ -485,6 +492,22 @@ target is always `/run/ko/socket`. A user's container must have been
 created with `-v <socket>:/run/ko/socket`, where `<socket>` is the
 `socket` that `GET /runtimes/{name}` reports; else the start fails
 and names that `-v`.
+
+**Measured** (2026-11-03, `container` 1.5.0, macOS 27.0.1): a `GET
+/version` through the relay on one keep-alive connection has a round
+trip of about 100 us (p50 98 us, p99 668 us), and an echo through
+`--publish-socket`, the other direction, p50 80 us, so the relay costs
+no more than the fallback that it replaces. `--ssh` relays the host's
+`SSH_AUTH_SOCK` the same way (its documentation calls it the
+equivalent of a `--volume` of that socket), which is why a socket
+volume carries the runtime socket and `--ssh` stays for the agent
+alone. `container stop` removes a published host socket. `container
+exec` into a stopped container is refused. `container image pull` of
+a multi-platform image unpacks every platform, about a minute for
+`python:3-alpine`, so a first start is slow; the waiting pane shows
+only `starting runtime NAME`, because the pull is the server's child
+and no progress is relayed, and the start's 120 s deadline is a
+guess.
 
 **The ko inside.** `ko: "shipped"`, the default, mounts the static
 Linux ko of `share/ko/linux/aarch64` beside the server's installation
@@ -605,6 +628,20 @@ of the kind.
 5. The forward of the remote socket to the runtime's listener.
    Success is `Up`. A refused forward fails with the text of a
    remote attach whose host refuses unix-socket forwarding.
+
+**sshd and the remote socket.** sshd never removes a forward's socket
+file: `-O cancel -R` and `-O exit` leave it, and
+`StreamLocalBindUnlink` is sshd's option, not the client's, so a
+forward to a path with a stale socket fails with `remote port
+forwarding failed`, exit 255 under `ExitOnForwardFailure=yes`; a
+forward into a directory that does not exist fails the same way. That
+is why `--prepare` creates the directory and removes the stale socket
+before the forward. The forwarded socket is `srw-------` of the remote
+user in a `0700` directory: on a shared remote host another user
+cannot connect, and the remote user's other processes can, with a
+pane token of that runtime. `AllowStreamLocalForwarding` is on by
+default in macOS and Linux OpenSSH; a host that turns it off fails at
+the forward.
 
 **Through the master.** With `ControlMaster=no`, ssh connects
 directly when the control socket does not answer. Every passenger,
@@ -770,6 +807,35 @@ left the group survives.
 
 ## Decisions
 
+Fixed before the design, 2026-11-03:
+
+- The first kinds are `ssh` and Apple's `container`, both validated on
+  this Mac; podman on Linux and Firecracker are later ("Not built").
+  The podman-machine transport of macOS is out of scope.
+- A pane in a runtime gets a `KO_SOCKET` that belongs to that runtime
+  only, and every pane, run and agent that a runtime pane creates is
+  in the same runtime.
+- No stdio fallback for attaching clients, and no views and no
+  `/client` on a runtime socket.
+- Runtimes are managed through the HTTP API only: no `ko runtime`
+  subcommands and no `--runtime` flag on `ko run` or `ko layout edit`.
+  A runtime starts with its first pane and stops by the idle rule,
+  600 s.
+- ko ships a static musl Linux `ko` for the container kind. The
+  Homebrew formula builds the host's architecture only; x86_64 joins
+  when ssh starts copying ko. Until then an ssh host needs an
+  installed ko, and the upload comes with the bridge ("Not built").
+- The `command` kind is test-only, and the container e2e runs locally
+  behind `KO_E2E_CONTAINER=1`.
+- ssh panes ride the master: one authentication and one connection.
+  The alternative, one connection for each pane, keeps panes alive
+  through a master loss, but authenticates for each pane and leaves
+  the inner agents without a socket while the master is down. The
+  cost: a laptop that sleeps loses its remote panes, as it loses a
+  `ko ssh` pane.
+- `starting runtime NAME` is the whole text of a waiting pane; a
+  container image pull shows no progress there.
+
 The configuration file, 2026-11-04:
 
 - The file is YAML 1.2, `config.yaml`, with no JSON form: a person
@@ -807,6 +873,19 @@ The configuration file, 2026-11-04:
 - The remote directory is resolved on the remote by `ko enter`, both
   for `--prepare` and for a pane, so the pane's argv needs no fact
   of the link.
+- The exec session is a WebSocket, not a run: a run would give every
+  tool call a pane, a pty that merges stderr and rewrites bytes, a
+  window in the layout and a sweep; the tools need bytes, a status and
+  stdin.
+- No file routes. Read, write, list and search inside a runtime are
+  commands of its shell (`cat`, `test`, `mkdir -p`, `ls -1Ap`, `find`
+  or `fd`, `grep` or `rg`), which every image with a shell has,
+  through the exec session. A file route would need a file server
+  inside the runtime; the exec session reaches the same files with
+  less code and no second protocol, and a slow case, such as a search
+  of a large tree, is slow inside the runtime, not in ko.
+- The ssh channel budget is a cap of 32 sessions for each runtime
+  with a queue and one retry, and no configuration field ("Limits").
 - The exec passes variables in the first frame to `ko enter --exec`, not `SetEnv`,
   which a default sshd's `AcceptEnv` refuses.
 - The option classifier lives in `ko_config::ssh_args`, because the
@@ -879,3 +958,95 @@ Clients, 2026-11-04:
   a trusted pi's `pi.runtime` do.
 - A new pane takes the focused row's `runtime`; a routed pi's host
   pane gives a host pane.
+
+## Not built
+
+Later kinds and ideas that the model holds a place for, with the
+facts read or measured for them on 2026-11-03 and 2026-11-04. None is
+scheduled.
+
+- **pi shipped into a runtime.** An inside agent without an installed
+  pi. pi's GitHub releases (earendil-works/pi, read for v1.5.0) ship
+  standalone Bun builds for darwin, linux and windows on arm64 and
+  x64, with `SHA256SUMS`. `pi-linux-arm64.tar.gz` is 59 MB: one
+  123 MB ELF `pi` built with Bun v1.4.4, linked against glibc
+  (`/lib/ld-linux-aarch64.so.1`), so it runs on Debian-like images and
+  not on musl images such as Alpine; beside it `photon_rs_bg.wasm`, an
+  X11 clipboard addon that a headless runtime does not need, and pi's
+  docs, themes and examples. No Node is needed, so ko could copy the
+  archive into a runtime as it mounts the static ko. Not probed:
+  whether `--extension ko-pi.ts` loads in the standalone binary, the
+  59 MB copy for each runtime and pi version, and the credentials,
+  because a pi inside needs the model key in the runtime unless ko
+  proxies model requests on the host. The decision stands: ko never
+  copies pi.
+- **The bridge transport.** A kind whose runtime gives only a byte
+  channel (a pty, a `virtio-serial` port, a vsock connection)
+  delivers connections by frames instead of a listener: `exec` (host
+  to guest: argv, env, cwd, and a pty size or none), `data` (both
+  ways: bytes, tagged `stdin`, `stdout` or `stderr` when the session
+  has no pty), `resize` (host to guest), `exit` (guest to host: the
+  status or the signal), and on a shared channel `open`, `close` and
+  `credit` with a stream id. The exec session is this session as a
+  WebSocket, so a bridge kind serves `GET /runtimes/NAME/exec` by
+  sending the frames on its channel, with no helper process. On a
+  shared channel the host side makes a `socketpair` for each `open`
+  that is an API stream, keeps one end as the stream's pump on the
+  loop and hands the other end to `State::accept` as a connection
+  with the runtime's origin; `credit` is the window, so a slow inner
+  reader stalls one stream, not the channel. The codec would live in
+  `ko_pane_wire` beside the pane frames, because `ko-pane` strips and
+  injects the pty variant: its payload is base64 inside `ESC _ ko ...
+  ESC \`, since APC cannot carry `ESC \`; the stdio variant is raw
+  with a length prefix. `ko enter --bridge` would be the pane's first
+  process inside a runtime that gives only a pty: it opens an inner
+  pty for `ko shell`, binds its own unix socket in the runtime as that
+  pane's `KO_SOCKET`, and carries each connection to it as frames over
+  its own stdin and stdout, the outer pty. The channel is one pane's,
+  so every connection on it is that pane's identity without a token:
+  `Origin` would gain a variant for a pane's channel, and the token
+  check is skipped, not failed, for it. When the runtime has no ko,
+  the host uploads the static Linux ko over the same pty before `ko
+  enter --bridge` starts. The code already keeps what the bridge
+  needs: a connection is a stream with an `Origin` whatever delivered
+  it, the registry's link is optional, `KO_SOCKET` inside a runtime is
+  an argument of `ko enter`, the version check runs through whatever
+  carries the first exec, and the status model reads only the inner
+  records. About 7 agent-days with `ko guest` and a Firecracker kind.
+- **podman on Linux.** The link is a running container with the
+  runtime directory bind-mounted (`-v <rt dir>:/run/ko`), because a
+  file mount pins the old inode (`ECONNREFUSED` after a re-bind) while
+  a directory mount follows it; the pane is `podman exec -it -e -w ...
+  ko enter`. Measured in the `podman machine` VM (Fedora CoreOS,
+  podman 6.0.2, rootless, SELinux enforcing): a host unix socket in a
+  bind-mounted directory is `EACCES` until the container runs with
+  `--security-opt label=disable` (`:z` does not help); the peer uid
+  that the host sees is the user's for container root and a subuid
+  (`100999`) for `--user 1000`, which the runtime listener ignores by
+  design. The kind is the container kind's module with a second argv
+  table, about 2 agent-days.
+- **Firecracker on Linux (KVM).** Its vsock device forwards a guest
+  connection to CID 2 port P to the host unix socket `<uds_path>_P`,
+  so the runtime listener is bound at that name and nothing on the
+  host changes. The guest needs a small `ko guest`: a unix listener at
+  `/run/ko/socket` that connects each client to vsock 2:P, one guest
+  connection for one host connection, and a vsock listener for exec
+  sessions that the host reaches with `CONNECT port\n` and the
+  bridge's dedicated-connection frames, with the pty in the guest;
+  the host-side pane program is a small vsock client in `ko`. One VM
+  for each runtime; a snapshot and restore keep the guest's listen
+  sockets and close its connections, which suits the relay.
+  cloud-hypervisor has the same vsock model and adds virtio-fs.
+  Neither ran here: no KVM.
+- **QEMU, Lima, Apple Virtualization.framework.** QEMU on Linux goes
+  through `vhost-vsock`, which needs an AF_VSOCK listener type on the
+  host; on macOS only through `virtio-serial` with a unix chardev, one
+  byte stream, the shared-channel bridge. Lima is the ssh kind with
+  `ssh_args: [-F, <limactl show-ssh config>]`; its `portForwards` also
+  reverse-forward unix sockets. Apple Virtualization.framework exposes
+  vsock only in the VM's owner process; Apple's `container` is that
+  owner with a CLI, which is why it is the macOS kind.
+- **`@` completion from the runtime.** A routed pi's `@` lists host
+  files. A later change can wrap the provider with
+  `ctx.ui.addAutocompleteProvider` over an exec of `fd` or `find`, at
+  a round trip for each keystroke.

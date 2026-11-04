@@ -911,3 +911,49 @@ test. The e2e suite sets the server's through its environment.
   `resume_from` reads the saved sessions of the caller's own
   filesystem. A remote attach shows a remote server's agents; it does
   not make them peers of local ones.
+
+## Decisions
+
+Each decision names its date. The code states the rest.
+
+2026-11-04, agents without runs:
+
+- ko is the mediator. A subagent is a pane with a `parent`, not a
+  run; ko keeps no record of an agent after its pane goes, and a
+  harness's own data lives only in its own pi session. Thus, the same
+  harness works where `KO_SOCKET` is a runtime's socket and the
+  filesystem is not the host's (design-runtimes.md).
+- No new CLI command for agents: `ko api --stream` is the harness's
+  bridge to the message stream and the output stream. `stop_agent`
+  and `stop_async_bash` take one target.
+- The `ended` message on the parent's stream is the only ending
+  signal. There is no `GET /panes/{id}/wait`, because nothing else
+  needs one: a human reads the row's `dead`, and a run has `run-wait`.
+- `ended` carries no count of the messages that died with the child's
+  queue: the parent knows what it sent, and a count would not say
+  which.
+- Message ids are the sender's and idempotent, which replaced "never
+  resend": a sender resends after a timeout, an `io` error or a
+  dropped connection and learns the truth, and no receiver reads a
+  message twice. The 16-message window and the 2 s ack wait stay.
+- A report that is not acked is resent with the same id until it is;
+  the parent keeps the whole text in its session, and `read_report`
+  is the reference of a capped report notice.
+- An output stream that the ring overruns gets a `skip` and loses
+  those bytes: a slow harness must not hold the pane, and the screen
+  keeps them. A view cannot serve a harness, because its backpressure
+  path sends snapshots that only a terminal decoder can apply.
+- The prompt routes take the scope pane as `from`, and the identity
+  headers stay identity only: Kido.app holds no pane token, and a
+  client identity for it would add a concept for no gain.
+- Trust is by the child's cwd, `KO_AGENT_TRUSTED_CWD`, not by a
+  repository root: it holds for the one directory that the parent
+  chose, and it compares paths of the child's own filesystem, so it
+  holds in a runtime.
+- `close` is `keep` or `on_exit`. An `on_success`, which would remove
+  only a pane that exited 0, was considered and not built.
+- An agent's pane gets no screen capture: the ending notice reads the
+  screen while the pane lingers, and a run's capture stays for runs.
+- The run's output file and its `tee` wrapper went with the output
+  stream: a run's output is its pane's content, and a `tee` to a host
+  path cannot run inside a runtime.

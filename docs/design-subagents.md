@@ -97,6 +97,19 @@ harness reads the entries with `ctx.sessionManager.getBranch()` at
 each use, so a `/tree` back past a spawn drops the child from the
 registry (Limits, below).
 
+The registry rests on these facts of pi's session API, read in pi
+1.4.0's `SessionManager`: a custom entry is a tree entry under the
+leaf, so it belongs to its branch, and `getBranch()` returns only the
+active branch's entries. `/fork` and `/clone` copy the path from the
+root to the leaf with its custom entries under a new id, and the
+CLI's `--fork` copies every entry of every branch; that is why an
+entry carries `owner`. `--session-id ID` opens the file of that id in
+the cwd's project directory, else it creates a new session with that
+id, so a restart names only the id and the recorded cwd, never a file
+path. pi writes the session file at the first user or assistant
+message, not at `session_start`, so a child that never ran a turn has
+no file.
+
 In the parent:
 
 | entry | when | data |
@@ -219,7 +232,8 @@ the caller's session directory and each directory directly under its
 parent, and matches the id at the end of a file name
 (`<time>_<id>.jsonl`). An exact id wins; otherwise the prefix must
 match one file. Then it reads the header line of the match, where pi
-records the session's working directory.
+records the session's working directory. A session that never ran a
+turn has no file ("The registry"), so it cannot be resumed.
 
 **Continue** (`resume_from` alone) starts `ko-pi --session <session
 file>`: the same session id, with its history, in its recorded
