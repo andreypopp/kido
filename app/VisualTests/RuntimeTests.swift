@@ -46,9 +46,8 @@ extension VisualTests {
     private func startThemed(_ dark: Bool, windows: String) async throws {
         var config: String?
         if dark {
-            config = FileManager.default.temporaryDirectory.appendingPathComponent("kido-runtime-dark-\(getpid()).conf").path
-            let theme = ThemeConf.line(.init(light: "kido-dark", dark: "kido-dark"))
-            try "\(theme)\nfont-family = Menlo\nfont-size = 13\ncursor-style-blink = false\n".write(toFile: try XCTUnwrap(config), atomically: true, encoding: .utf8)
+            config = FileManager.default.temporaryDirectory.appendingPathComponent("kido-runtime-dark-\(getpid()).yaml").path
+            try "app: {theme: kido-dark}\n".write(toFile: try XCTUnwrap(config), atomically: true, encoding: .utf8)
         }
         try await start(configFile: config, windows: windows)
         if dark { window.appearance = NSAppearance(named: .darkAqua) }
@@ -262,7 +261,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
 // palette-root, palette-step, palette-step-failed, palette-step-host and palette-step-nofocus.
 @MainActor final class RuntimePaletteTests: VisualTestCase {
     func testRuntimePalette() async throws {
-        let config = FileManager.default.temporaryDirectory.appendingPathComponent("runtime-palette-\(UUID().uuidString).conf")
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("runtime-palette-\(UUID().uuidString).yaml")
         defer { try? FileManager.default.removeItem(at: config) }
         let previous = NSApp.mainMenu
         defer { NSApp.mainMenu = previous }
@@ -273,7 +272,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
             KoSchema.ClientRuntime(kind: .command, name: "e2e", state: .starting),
         ]
         for (theme, background, foreground) in [("light", "fff9ec", "424242"), ("dark", "171717", "c9c9c9")] {
-            try "background = #\(background)\nforeground = #\(foreground)\n".write(to: config, atomically: true, encoding: .utf8)
+            try configYAML(at: config, background: background, foreground: foreground).write(to: config, atomically: true, encoding: .utf8)
             let board = NSPasteboard(name: .init("runtime-palette-" + UUID().uuidString))
             defer { board.releaseGlobally() }
             let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
@@ -372,8 +371,8 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
         let tree = #"{"split":"h","children":[\#(runtimePane(nil, "a", cwd: "/tmp")),\#(runtimePane("box", "b")),\#(runtimePane(nil, "c", vars: routedVars, status: piStatus, cwd: "/var"))]}"#
         try await koPut(dir, #"[{"name":"main","windows":[{"name":"w","tree":\#(tree)}]}]"#)
         PaneView.renderOffscreen = true
-        let config = FileManager.default.temporaryDirectory.appendingPathComponent("runtime-actions-\(getpid()).conf")
-        try "\(ThemeConf.line(.init()))\nfont-family = Menlo\nfont-size = 13\n".write(to: config, atomically: true, encoding: .utf8)
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("runtime-actions-\(getpid()).yaml")
+        try "app: {font: {size: 13}}\n".write(to: config, atomically: true, encoding: .utf8)
         let board = NSPasteboard(name: .init("runtime-actions-" + UUID().uuidString))
         let owner = WindowOwner(host: .local, runtime: try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board)), start: false)
         owner.testServerDir = dir

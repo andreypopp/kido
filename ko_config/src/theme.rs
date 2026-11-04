@@ -136,8 +136,15 @@ fn resolve(path: &Path) -> io::Result<PathBuf> {
     Err(io::Error::other("too many levels of symbolic links"))
 }
 
+fn io_error(error: io::Error) -> SetError {
+    SetError::Io(if error.raw_os_error().is_some() {
+        error.kind().to_string()
+    } else {
+        error.to_string()
+    })
+}
+
 fn replace_file(target: &Path, original: &str, text: &str, mode: u32) -> Result<(), SetError> {
-    let io = |error: io::Error| SetError::Io(format!("{}: {error}", target.display()));
     let mut name = target.file_name().unwrap_or_default().to_owned();
     name.push(format!(".tmp-{}", std::process::id()));
     let temporary = target.with_file_name(name);
@@ -146,16 +153,16 @@ fn replace_file(target: &Path, original: &str, text: &str, mode: u32) -> Result<
         .create_new(true)
         .mode(mode)
         .open(&temporary)
-        .map_err(io)?;
+        .map_err(io_error)?;
     let done = file
         .set_permissions(fs::Permissions::from_mode(mode))
         .and_then(|()| file.write_all(text.as_bytes()))
         .and_then(|()| file.sync_all())
-        .map_err(io)
+        .map_err(io_error)
         .and_then(|()| match read_existing(target) {
-            Ok((now, _)) if now == original => fs::rename(&temporary, target).map_err(io),
+            Ok((now, _)) if now == original => fs::rename(&temporary, target).map_err(io_error),
             Ok(_) => Err(SetError::Changed),
-            Err(error) => Err(io(error)),
+            Err(error) => Err(io_error(error)),
         });
     if done.is_err() {
         let _ = fs::remove_file(&temporary);
@@ -180,16 +187,15 @@ pub fn set_theme(path: &Path, light: &str, dark: &str) -> Result<bool, SetError>
         light: name(light)?,
         dark: name(dark)?,
     };
-    let io = |error: io::Error| SetError::Io(format!("{}: {error}", path.display()));
-    let target = resolve(path).map_err(io)?;
+    let target = resolve(path).map_err(io_error)?;
     if let Some(directory) = target.parent() {
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(directory)
-            .map_err(io)?;
+            .map_err(io_error)?;
     }
-    let (text, existing) = read_existing(&target).map_err(io)?;
+    let (text, existing) = read_existing(&target).map_err(io_error)?;
     let current = config::parse(&text).map_err(SetError::Invalid)?;
     if current.app.theme.pair() == pair {
         return Ok(false);
@@ -207,7 +213,7 @@ pub fn set_theme(path: &Path, light: &str, dark: &str) -> Result<bool, SetError>
         fs::OpenOptions::new()
             .write(true)
             .open(&target)
-            .map_err(io)?;
+            .map_err(io_error)?;
     }
     replace_file(&target, &text, &edited, existing.unwrap_or(0o600))?;
     Ok(true)
@@ -435,7 +441,7 @@ mod tests {
         fs::write(&file, "# mine\n").unwrap();
         fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
         let error = set_theme(&file, "A", "B").unwrap_err();
-        assert!(matches!(error, SetError::Io(_)), "{error:?}");
+        assert_eq!(error, SetError::Io("permission denied".to_owned()));
         assert_eq!(fs::read_to_string(&file).unwrap(), "# mine\n");
         fs::remove_dir_all(dir).unwrap();
     }

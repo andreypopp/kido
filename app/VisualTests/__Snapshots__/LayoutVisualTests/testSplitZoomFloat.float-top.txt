@@ -1,9 +1,9 @@
 bounds=0.00,0.00,700.00,560.00 separator=0.00,0.00,700.00,0.50 banner=false
-pane_1 cells=Geometry(x: 0, y: 0, width: 42, height: 18) layer=tiled grid=9.50,8.00,336.00,270.00 content=9.50,0.50,336.00,285.00 chrome=0.00,0.50,349.50,285.00 insets=7.5,7.5 find=false alternate=false scroll=nil
-pane_2 cells=Geometry(x: 0, y: 19, width: 42, height: 17) layer=tiled grid=9.50,293.00,336.00,255.00 content=9.50,286.00,336.00,274.00 chrome=0.00,286.00,349.50,274.00 insets=7.0,12.0 find=false alternate=false scroll=nil
-pane_3 cells=Geometry(x: 43, y: 0, width: 42, height: 36) layer=tiled grid=353.50,8.00,336.00,540.00 content=353.50,0.50,336.00,559.50 chrome=350.00,0.50,350.00,559.50 insets=7.5,12.0 find=false alternate=false scroll=nil
-pane_4 cells=Geometry(x: 5, y: 0, width: 35, height: 10) layer=floating(z: 0) grid=49.50,8.00,280.00,150.00 content=49.50,8.00,280.00,150.00 chrome=46.00,1.00,287.50,164.50 insets=0.0,0.0 find=false alternate=false scroll=nil
+pane_1 cells=Geometry(x: 0, y: 0, width: 42, height: 17) layer=tiled grid=9.50,5.50,336.00,263.50 content=9.50,0.50,336.00,276.00 chrome=0.00,0.50,349.50,276.00 insets=5.0,7.5 find=false alternate=false scroll=nil
+pane_2 cells=Geometry(x: 0, y: 18, width: 42, height: 17) layer=tiled grid=9.50,284.50,336.00,263.50 content=9.50,277.00,336.00,283.00 chrome=0.00,277.00,349.50,283.00 insets=7.5,12.0 find=false alternate=false scroll=nil
+pane_3 cells=Geometry(x: 43, y: 0, width: 42, height: 35) layer=tiled grid=353.50,5.50,336.00,542.50 content=353.50,0.50,336.00,559.50 chrome=350.00,0.50,350.00,559.50 insets=5.0,12.0 find=false alternate=false scroll=nil
+pane_4 cells=Geometry(x: 5, y: 0, width: 35, height: 10) layer=floating(z: 0) grid=49.50,8.00,280.00,155.00 content=49.50,8.00,280.00,155.00 chrome=46.00,0.50,287.50,170.00 insets=0.0,0.0 find=false alternate=false scroll=nil
 divider=0.00,0.00,700.00,0.50
-divider=0.00,285.50,349.50,0.50
+divider=0.00,276.50,349.50,0.50
 divider=349.50,0.50,0.50,559.50
-float pane_4=46.00,1.00,287.50,164.50
+float pane_4=46.00,0.50,287.50,170.00

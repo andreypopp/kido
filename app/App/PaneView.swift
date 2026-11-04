@@ -206,7 +206,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     private var renderSequence: UInt64 = 0
     private var wheelRemainder = 0.0
     private var wheelOwner: ghostty_wheel_disposition_e?
-    private var wheelMultiplier = (precision: 1.0, discrete: 3.0)
     private var rowHeight: CGFloat = 1
     @objc func showFind(_ sender: Any? = nil) {
         if case .entering = copyMode { return }
@@ -653,20 +652,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         _ = ghostty_surface_set_render_failed_callback(surface, { @Sendable userdata, token, status in
             PaneView.onMain(userdata) { $0.rendered(token, status: status) }
         }, this)
-        let serialized = ghostty_config_serialize(runtime.config)
-        if let bytes = serialized.ptr {
-            let text = String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(serialized.len)), as: UTF8.self)
-            if let line = text.split(separator: "\n").first(where: { $0.hasPrefix("mouse-scroll-multiplier = ") }) {
-                for value in line.dropFirst("mouse-scroll-multiplier = ".count).split(separator: ",") {
-                    let pair = value.split(separator: ":")
-                    if pair.count == 2, let number = Double(pair[1]) {
-                        if pair[0] == "precision" { wheelMultiplier.precision = number }
-                        if pair[0] == "discrete" { wheelMultiplier.discrete = number }
-                    }
-                }
-            }
-        }
-        ghostty_string_free(serialized)
         scroller.alphaValue = 0
         scroller.isHidden = true
         scroller.begin = { [weak self] in self?.snapScroll() }
@@ -1169,6 +1154,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
                 return serve(read, text: event.text)
             }
         }
+        if runtime.clipboard.read == .allow { return serve(read) }
         clipboard = (read, nil, .now() + PaneView.clipboardTimeout)
         guard let owner = window?.delegate as? WindowOwner else { return finishClipboard(false) }
         owner.requestClipboard(self, read.mimes.allSatisfy { $0 == "text/plain" } ? .clipboard : .rich)
@@ -1862,6 +1848,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             if intent == GHOSTTY_WHEEL_VIEWPORT {
                 guard event.scrollingDeltaY != 0 else { return }
                 let delta = event.scrollingDeltaY
+                let wheelMultiplier = runtime.values.mouse.scrollMultiplier
                 let current = scrollPosition()
                 if current.retainedHistoryRows == 0 {
                     wheelRemainder = 0

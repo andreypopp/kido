@@ -96,7 +96,7 @@ const keyGroups = [
           <p>Install kido with Homebrew:</p>
           <InstallCommand id="usage-install" />
           <p>This puts the <code>kido</code> command on your PATH. Run it to start the kido server, or to attach to it if it is already running. kido runs its own tmux server, separate from your regular one, so you can use both side by side.</p>
-          <p>The configuration file is <code>~/.config/kido/kido.conf</code>. To keep your existing tmux configuration, source it from there by adding <code>source-file ~/.tmux.conf</code> to <code>kido.conf</code>.</p>
+          <p>The configuration file is <code>~/.config/ko/config.yaml</code>; its settings are defined in the <a href="https://raw.githubusercontent.com/andreypopp/kido/main/share/ko/config-schema.json">configuration schema</a>.</p>
         </div>
       </section>
 
@@ -104,7 +104,7 @@ const keyGroups = [
         <div class="keys-content">
           <div class="section-copy reveal">
             <h2>Keyboard bindings.<br /><span>Default ones.</span></h2>
-            <p class="subhead">These are the keyboard bindings set by default, you can override them in the <code>~/.config/kido/kido.conf</code> configuration file.</p>
+            <p class="subhead">These are the default keyboard bindings.</p>
           </div>
           {keyGroups.map(({ caption, rows }) => (
             <table>

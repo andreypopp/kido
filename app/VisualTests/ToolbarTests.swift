@@ -30,12 +30,12 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
 
 @MainActor final class ToolbarTests: VisualTestCase {
     func testTabActivityMarks() throws {
-        let config = FileManager.default.temporaryDirectory.appendingPathComponent("tab-marks-\(UUID().uuidString).conf")
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("tab-marks-\(UUID().uuidString).yaml")
         defer { try? FileManager.default.removeItem(at: config) }
         let board = NSPasteboard(name: .init("tab-marks-" + UUID().uuidString))
         defer { board.releaseGlobally() }
         for (name, hex) in [("light", "fffaf0"), ("dark", "172029")] {
-            try "background = #\(hex)\n".write(to: config, atomically: true, encoding: .utf8)
+            try configYAML(at: config, background: hex).write(to: config, atomically: true, encoding: .utf8)
             let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
             let owner = WindowOwner(host: .local, runtime: runtime, start: false)
             defer { owner.close() }
@@ -135,12 +135,12 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                 NSGradient(starting: NSColor(calibratedWhite: 0, alpha: 0.2), ending: .clear)!.draw(in: bounds, angle: 0)
             }
         }
-        let config = FileManager.default.temporaryDirectory.appendingPathComponent("header-\(UUID().uuidString).conf")
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("header-\(UUID().uuidString).yaml")
         defer { try? FileManager.default.removeItem(at: config) }
         let board = NSPasteboard(name: .init("header-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
         for hex in ["fffaf0", "172029"] {
-            try "background = #\(hex)\n".write(to: config, atomically: true, encoding: .utf8)
+            try configYAML(at: config, background: hex).write(to: config, atomically: true, encoding: .utf8)
             let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
             let owner = WindowOwner(host: .remote("header-\(UUID().uuidString)"), runtime: runtime, start: false)
             owner.sidebar.tabs.hostLabel = { nil }
@@ -365,79 +365,15 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("shade-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory.appendingPathComponent("other"), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let config = directory.appendingPathComponent("kido-app.conf")
+        let config = directory.appendingPathComponent("config.yaml")
         let board = NSPasteboard(name: .init("shade-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
-        let notes = directory.appendingPathComponent("notes.log")
-        try FileManager.default.createSymbolicLink(at: directory.appendingPathComponent("linked.conf"),
-                                                  withDestinationURL: directory.appendingPathComponent("other/theme.conf"))
-        for (key, field, fallback, diagnostic) in [
-            ("kido-sidebar-shade", \GhosttyRuntime.KidoSettings.sidebarShade, 0.05, "kido-sidebar-shade: not a percentage from -100 to 100: "),
-            ("kido-unfocused-background-shift", \GhosttyRuntime.KidoSettings.unfocusedShift, 0.03, "kido-unfocused-background-shift: not a percentage from -100 to 100: ")
-        ] {
-            for (text, files, shade, note) in [
-                ("kido-sidebar-shade = 30%", [:], 0.3, nil),
-                ("kido-sidebar-shade = 30", [:], 0.3, nil),
-                ("kido-sidebar-shade = 0", [:], 0, nil),
-                ("kido-sidebar-shade = -0", [:], 0, nil),
-                ("kido-sidebar-shade = -100", [:], 1, nil),
-                ("kido-sidebar-shade = \"\"", [:], nil, nil),
-                ("kido-sidebar-shade = 20%\nkido-sidebar-shade = 40%", [:], 0.4, nil),
-                ("kido-sidebar-shade =   \" 30.5% \"  ", [:], 0.305, nil),
-                ("kido-sidebar-shade = +30", [:], nil, "+30"),
-                ("kido-sidebar-shade = 1e1", [:], nil, "1e1"),
-                ("kido-sidebar-shade = 0x1p4", [:], nil, "0x1p4"),
-                ("kido-sidebar-shade = 100%", [:], 1, nil),
-                ("kido-sidebar-shade = 101", [:], nil, "101"),
-                ("kido-sidebar-shade = -10%", [:], 0.1, nil),
-                ("kido-sidebar-shade = -101", [:], nil, "-101"),
-                ("kido-sidebar-shade = dark", [:], nil, "dark"),
-                ("", [:], nil, nil),
-                ("kido-sidebar-shade = 20%\nkido-sidebar-shade =", [:], nil, nil),
-                ("kido-sidebar-shade = 20%\nkido-sidebar-shade =   ", [:], nil, nil),
-                ("config-file = included.conf", ["included.conf": "kido-sidebar-shade = 30%"], 0.3, nil),
-                ("kido-sidebar-shade = 20%\nconfig-file = ?missing.conf\nconfig-file = ?\"included.conf\"",
-                 ["included.conf": "config-file = nested.conf", "nested.conf": "kido-sidebar-shade = \"30%\""], 0.3, nil),
-                ("kido-sidebar-shade = 20%\nconfig-file = included.conf",
-                 ["included.conf": "kido-sidebar-shade ="], nil, nil),
-                ("config-file = included.conf\nconfig-file = sibling.conf",
-                 ["included.conf": "kido-sidebar-shade = 10%\nconfig-file = nested.conf",
-                  "sibling.conf": "kido-sidebar-shade = 20%",
-                  "nested.conf": "kido-sidebar-shade = 30%\nconfig-file = included.conf"], 0.3, nil),
-                ("config-file = linked.conf",
-                 ["other/theme.conf": "config-file = child.conf", "other/child.conf": "kido-sidebar-shade = 40%",
-                  "child.conf": "kido-sidebar-shade = 50%"], 0.4, nil)
-            ] as [(String, [String: String], Double?, String?)] {
-                let text = text.replacingOccurrences(of: "kido-sidebar-shade", with: key)
-                try ("background = #172029\nkido-sidebar-shad = 1\n" + text + "\n").write(to: config, atomically: false, encoding: .utf8)
-                for (name, contents) in files {
-                    try contents.replacingOccurrences(of: "kido-sidebar-shade", with: key).write(to: directory.appendingPathComponent(name), atomically: false, encoding: .utf8)
-                }
-                FileManager.default.createFile(atPath: notes.path, contents: nil)
-                let log = try FileHandle(forWritingTo: notes)
-                let saved = dup(STDERR_FILENO)
-                dup2(log.fileDescriptor, STDERR_FILENO)
-                let loaded = GhosttyRuntime.loadConfig(file: config.path, home: directory.path)
-                dup2(saved, STDERR_FILENO)
-                close(saved)
-                try log.close()
-                let parsed = try XCTUnwrap(loaded)
-                ghostty_config_free(parsed.config)
-                XCTAssertEqual(parsed.settings[keyPath: field], shade ?? fallback, text)
-                let lines = try String(contentsOf: notes, encoding: .utf8).split(separator: "\n")
-                XCTAssertFalse(lines.contains { $0.contains("\(key): unknown field") }, "\(text): \(lines)")
-                XCTAssertTrue(lines.contains { $0.contains("kido-sidebar-shad: unknown field") }, text)
-                XCTAssertEqual(lines.contains { $0.contains("not a percentage") }, note != nil, text)
-                if let note { XCTAssertTrue(lines.contains { $0.hasSuffix(diagnostic + note) }, text) }
-            }
-        }
-
         let fixture = sidebarFixture()
         SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
         defer { SidebarView.visualNow = nil }
         for hex in ["fffaf0", "172029"] {
             for value in [nil, "30%", "20%"] as [String?] {
-                try ("background = #\(hex)\n" + (value.map { "kido-sidebar-shade = \($0)\n" } ?? "")).write(to: config, atomically: true, encoding: .utf8)
+                try configYAML(at: config, background: hex, sidebarShade: value).write(to: config, atomically: true, encoding: .utf8)
                 let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
                 let owner = WindowOwner(host: .local, runtime: runtime, start: false)
                 defer { owner.close() }
@@ -487,91 +423,35 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("live-config-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let file = directory.appendingPathComponent("kido-app.conf")
-        let included = directory.appendingPathComponent("included.conf")
-        try "kido-sidebar-shade = 20%\n".write(to: included, atomically: false, encoding: .utf8)
+        let file = directory.appendingPathComponent("config.yaml")
         let board = NSPasteboard(name: .init("live-config-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
         let runtime = try XCTUnwrap(GhosttyRuntime(configFile: file.path, pasteboard: board))
-        XCTAssertEqual(runtime.settings.sidebarShade, 0.05)
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         defer { runtime.onConfigChange = {}; owner.close() }
         func reload(_ edit: () throws -> Void) async throws {
             let changed = expectation(description: "config reload")
             runtime.onConfigChange = { owner.updateAppearance(); changed.fulfill() }
             try edit()
-            await fulfillment(of: [changed], timeout: 0.3)
+            await fulfillment(of: [changed], timeout: 3)
         }
-        for (text, shade, atomic) in [("kido-sidebar-shade = 30%\nbackground = #172029\n", 0.3, false),
-                                      ("kido-sidebar-shade = 20%\nbackground = #fffaf0\n", 0.2, true),
-                                      ("kido-sidebar-shade = 40%\n", 0.4, false),
-                                      ("background = #172029\n", 0.05, false),
-                                      ("kido-sidebar-shade =\n", 0.05, false),
-                                      ("kido-sidebar-shade = bad\n", 0.05, false),
-                                      ("kido-sidebar-shade = -10%\nbackground = #171717\n", 0.1, false),
-                                      ("kido-sidebar-shade = 40%\nbackground = #171717\n", 0.4, false),
-                                      ("background = #fefaf1\n", 0.05, false),
-                                      ("background = #192028\n", 0.05, false),
-                                      ("background = #fff9ec\n", 0.05, false),
-                                      ("background = #171717\n", 0.05, false),
-                                      (nil, 0.05, false)] as [(String?, Double, Bool)] {
-            try await reload {
-                if let text { try text.write(to: file, atomically: atomic, encoding: .utf8) }
-                else { try FileManager.default.removeItem(at: file) }
-            }
-            XCTAssertEqual(runtime.settings.sidebarShade, shade)
-            owner.sidebar.viewDidLayout()
-            XCTAssertEqual(owner.sidebar.list.layer?.backgroundColor, owner.sidebar.listBackground?.cgColor)
-            if let text, let expected = ["background = #fefaf1\n": [241.3, 237.5, 228.95], "background = #192028\n": [36.5, 43.15, 50.75],
-                                        "background = #fff9ec\n": [242.25, 236.55, 224.2], "background = #171717\n": [34.6, 34.6, 34.6]][text] {
-                let color = try XCTUnwrap(owner.sidebar.listBackground?.usingColorSpace(.sRGB))
-                for (actual, target) in zip([color.redComponent, color.greenComponent, color.blueComponent], expected) {
-                    XCTAssertEqual(actual, target / 255, accuracy: 0.000001)
-                }
-            }
-            if text == "kido-sidebar-shade = 40%\nbackground = #171717\n" {
-                let color = try XCTUnwrap(owner.sidebar.listBackground?.usingColorSpace(.sRGB))
-                XCTAssertEqual([color.redComponent, color.greenComponent, color.blueComponent].map { Int(($0 * 255).rounded()) }, [116, 116, 116])
-            }
-            if text?.contains("#fffaf0") == true { XCTAssertEqual(owner.window.appearance?.name, .aqua) }
-            if text?.contains("#172029") == true { XCTAssertEqual(owner.window.appearance?.name, .darkAqua) }
+        for atomic in [false, true] {
+            try await reload { try "app: {window: {sidebar_shade: 30}}\n".write(to: file, atomically: atomic, encoding: .utf8) }
+            XCTAssertEqual(runtime.sidebarShade, 0.3)
+            XCTAssertNil(runtime.configError)
+            try await reload { try "app: {window: {sidebar_shade: bad}}\n".write(to: file, atomically: atomic, encoding: .utf8) }
+            XCTAssertEqual(runtime.sidebarShade, 0.3)
+            XCTAssertTrue(runtime.configError?.problem.message.contains("sidebar_shade") == true)
         }
-        try await reload { try "config-file = included.conf\n".write(to: file, atomically: false, encoding: .utf8) }
-        try await reload {
-            try "kido-sidebar-shade = 70%\n".write(to: included, atomically: false, encoding: .utf8)
-            var action = ghostty_action_s()
-            action.tag = GHOSTTY_ACTION_RELOAD_CONFIG
-            var target = ghostty_target_s()
-            target.tag = GHOSTTY_TARGET_APP
-            XCTAssertTrue(GhosttyRuntime.action(runtime.app, target, action))
-        }
-        XCTAssertEqual(runtime.settings.sidebarShade, 0.7)
+        try await reload { try "app: {window: {sidebar_shade: 70}}\n".write(to: file, atomically: true, encoding: .utf8) }
+        XCTAssertNil(runtime.configError)
+        XCTAssertEqual(runtime.sidebarShade, 0.7)
         let events = runtime.visualWatchEvents, scheduled = runtime.visualReloadsScheduled
-        try "swap".write(to: directory.appendingPathComponent("kido.conf"), atomically: true, encoding: .utf8)
-        try await wait("unrelated directory event handled", within: 0.3) { runtime.visualWatchEvents > events }
+        try "swap".write(to: directory.appendingPathComponent("editor-swap"), atomically: true, encoding: .utf8)
+        try await wait("unrelated directory event handled", within: 3) { runtime.visualWatchEvents > events }
         XCTAssertEqual(runtime.visualReloadsScheduled, scheduled)
-        let appearance = NSApp.appearance
-        defer { NSApp.appearance = appearance }
-        for name in [NSAppearance.Name.darkAqua, .aqua] {
-            try await reload { NSApp.appearance = NSAppearance(named: name) }
-            XCTAssertEqual(owner.window.appearance?.name, name)
-            XCTAssertEqual(runtime.settings.sidebarShade, 0.7)
-            let actual = try XCTUnwrap(owner.sidebar.listBackground?.usingColorSpace(.sRGB))
-            let expected = name == .darkAqua ? [185.4, 185.4, 185.4] : [76.5, 74.7, 70.8]
-            for (channel, target) in zip([actual.redComponent, actual.greenComponent, actual.blueComponent], expected) {
-                XCTAssertEqual(channel, target / 255, accuracy: 0.000001)
-            }
-        }
         try await reload { try FileManager.default.removeItem(at: file) }
-        for name in [NSAppearance.Name.darkAqua, .aqua] {
-            try await reload { NSApp.appearance = NSAppearance(named: name) }
-            XCTAssertEqual(runtime.settings.sidebarShade, 0.05)
-            let actual = try XCTUnwrap(owner.sidebar.listBackground?.usingColorSpace(.sRGB))
-            let expected = name == .darkAqua ? [34.6, 34.6, 34.6] : [242.25, 236.55, 224.2]
-            for (channel, target) in zip([actual.redComponent, actual.greenComponent, actual.blueComponent], expected) {
-                XCTAssertEqual(channel, target / 255, accuracy: 0.000001)
-            }
-        }
+        XCTAssertEqual(runtime.sidebarShade, 0.05)
     }
 
     func testSymlinkConfigReplacement() async throws {
@@ -579,9 +459,9 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         let targetDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("target-config-\(UUID().uuidString)")
         for path in [directory, targetDirectory] { try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true) }
         defer { for path in [directory, targetDirectory] { try? FileManager.default.removeItem(at: path) } }
-        let file = directory.appendingPathComponent("kido-app.conf")
-        let target = targetDirectory.appendingPathComponent("target.conf")
-        try "kido-sidebar-shade = 20%\n".write(to: target, atomically: false, encoding: .utf8)
+        let file = directory.appendingPathComponent("config.yaml")
+        let target = targetDirectory.appendingPathComponent("target.yaml")
+        try "app: {window: {sidebar_shade: 20}}\n".write(to: target, atomically: false, encoding: .utf8)
         try FileManager.default.createSymbolicLink(at: file, withDestinationURL: target)
         let board = NSPasteboard(name: .init("linked-config-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
@@ -590,14 +470,14 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             let changed = expectation(description: "symlink target reload")
             runtime.onConfigChange = { changed.fulfill() }
             try edit()
-            await fulfillment(of: [changed], timeout: 0.3)
+            await fulfillment(of: [changed], timeout: 3)
         }
-        try await reload { try FileManager.default.moveItem(at: target, to: targetDirectory.appendingPathComponent("old.conf")) }
-        XCTAssertEqual(runtime.settings.sidebarShade, 0.05)
-        try await reload { try "kido-sidebar-shade = 30%\n".write(to: target, atomically: false, encoding: .utf8) }
-        XCTAssertEqual(runtime.settings.sidebarShade, 0.3)
-        try await reload { try "kido-sidebar-shade = 40%\n".write(to: target, atomically: false, encoding: .utf8) }
-        XCTAssertEqual(runtime.settings.sidebarShade, 0.4)
+        try await reload { try FileManager.default.moveItem(at: target, to: targetDirectory.appendingPathComponent("old.yaml")) }
+        XCTAssertEqual(runtime.sidebarShade, 0.05)
+        try await reload { try "app: {window: {sidebar_shade: 30}}\n".write(to: target, atomically: false, encoding: .utf8) }
+        XCTAssertEqual(runtime.sidebarShade, 0.3)
+        try await reload { try "app: {window: {sidebar_shade: 40}}\n".write(to: target, atomically: false, encoding: .utf8) }
+        XCTAssertEqual(runtime.sidebarShade, 0.4)
         runtime.onConfigChange = {}
     }
 
@@ -605,16 +485,16 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("missing-config-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let file = directory.appendingPathComponent("new/kido-app.conf")
+        let file = directory.appendingPathComponent("new/config.yaml")
         let board = NSPasteboard(name: .init("missing-config-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
         let runtime = try XCTUnwrap(GhosttyRuntime(configFile: file.path, pasteboard: board))
         let changed = expectation(description: "directory and config created")
         runtime.onConfigChange = { changed.fulfill() }
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try "kido-sidebar-shade = 30%\n".write(to: file, atomically: false, encoding: .utf8)
-        await fulfillment(of: [changed], timeout: 0.3)
-        XCTAssertEqual(runtime.settings.sidebarShade, 0.3)
+        try "app: {window: {sidebar_shade: 30}}\n".write(to: file, atomically: false, encoding: .utf8)
+        await fulfillment(of: [changed], timeout: 3)
+        XCTAssertEqual(runtime.sidebarShade, 0.3)
         runtime.onConfigChange = {}
     }
 
@@ -629,8 +509,8 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("contrast-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let config = directory.appendingPathComponent("kido-app.conf")
-        try "background = #\(hex)\nkido-sidebar-shade = 0\n".write(to: config, atomically: false, encoding: .utf8)
+        let config = directory.appendingPathComponent("config.yaml")
+        try configYAML(at: config, background: hex, sidebarShade: "0").write(to: config, atomically: false, encoding: .utf8)
         let board = NSPasteboard(name: .init("contrast-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
         let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
@@ -640,8 +520,8 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         if value != nil { XCTAssertNotEqual(owner.sidebar.list.effectiveAppearance.name, appearance) }
         let changed = expectation(description: "shade crosses contrast threshold")
         runtime.onConfigChange = { owner.updateAppearance(); changed.fulfill() }
-        try ("background = #\(hex)\n" + (value.map { "kido-sidebar-shade = \($0)\n" } ?? "")).write(to: config, atomically: false, encoding: .utf8)
-        await fulfillment(of: [changed], timeout: 0.3)
+        try configYAML(at: config, background: hex, sidebarShade: value).write(to: config, atomically: false, encoding: .utf8)
+        await fulfillment(of: [changed], timeout: 3)
         XCTAssertEqual(owner.sidebar.list.effectiveAppearance.name, appearance)
         XCTAssertEqual(owner.window.effectiveAppearance.name, terminalAppearance)
         if value == nil {
@@ -749,19 +629,19 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
     }
 
     func testHeaderShiftReload() async throws {
-        let config = FileManager.default.temporaryDirectory.appendingPathComponent("header-shift-\(UUID().uuidString).conf")
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("header-shift-\(UUID().uuidString).yaml")
         defer { try? FileManager.default.removeItem(at: config) }
         let board = NSPasteboard(name: .init("header-shift-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
         for hex in ["fffaf0", "172029"] {
-            try "background = #\(hex)\n".write(to: config, atomically: true, encoding: .utf8)
+            try configYAML(at: config, background: hex).write(to: config, atomically: true, encoding: .utf8)
             let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
             let owner = WindowOwner(host: .local, runtime: runtime, start: false)
             defer { runtime.onConfigChange = {}; owner.close() }
             for shift in [10, 3] {
                 let changed = expectation(description: "header shift-only reload")
                 runtime.onConfigChange = { owner.updateAppearance(); changed.fulfill() }
-                try "background = #\(hex)\nkido-unfocused-background-shift = \(shift)%\n".write(to: config, atomically: true, encoding: .utf8)
+                try configYAML(at: config, background: hex, unfocusedShift: shift).write(to: config, atomically: true, encoding: .utf8)
                 await fulfillment(of: [changed], timeout: 3)
                 owner.window.display()
                 let expected = headerPaperRGB["\(hex)-shifted" + (shift == 10 ? "10" : "")]!

@@ -618,6 +618,9 @@ Conventions:
   edit to that document and sends it again. A view gives the restore
   the `continuation_max_bytes` of the client's `Welcome`
   (docs/protocol.md, section 4).
+  `ko_config_defaults`, `ko_config_load` and `ko_config_set_theme`
+  take no handle and block on at most one file; the app calls them on
+  main.
 - **Time.** `Mono` is nanoseconds of `CLOCK_UPTIME_RAW` on macOS, as
   `ko_now_ns` reads it, and of `CLOCK_MONOTONIC` on Linux. The loop's deadlines are `std::time::Instant`.
   Timeouts are `Duration` arguments, not statics.

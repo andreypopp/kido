@@ -228,8 +228,8 @@ extension VisualTests {
 
     func testCopyOnSelectNeverWritesUntilACopy() async throws {
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
-        let config = URL(fileURLWithPath: "/tmp/kido-copy-select-\(UUID().uuidString).conf")
-        try "copy-on-select = clipboard\n".write(to: config, atomically: true, encoding: .utf8)
+        let config = URL(fileURLWithPath: "/tmp/kido-copy-select-\(UUID().uuidString).yaml")
+        try "app: {clipboard: {copy_on_select: true}}\n".write(to: config, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: config) }
         let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)

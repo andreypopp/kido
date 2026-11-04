@@ -274,6 +274,10 @@ private class AlertEscape: NSView {
         banner = Banner(background: runtime.background, target: self, action: #selector(WindowOwner.start))
         banner.frame = sidebar.content.bounds
         sidebar.content.addSubview(banner)
+        sidebar.configBanner.reveal = { [weak self] in
+            guard let error = self?.runtime.configError else { return }
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: error.path)])
+        }
         window.center()
         if !background {
             window.makeKeyAndOrderFront(nil)
@@ -291,11 +295,13 @@ private class AlertEscape: NSView {
         sidebar.content.wantsLayer = true
         sidebar.content.layer?.backgroundColor = background.cgColor
         banner?.background = background
+        sidebar.configBanner.background = background
         let dark = background.isDark
         let theme = (background: background, appearance: NSAppearance(named: dark ? .darkAqua : .aqua))
         window.appearance = theme.appearance
         sidebar.updateAppearance(runtime: runtime)
         session?.updateBackground()
+        showConfigError()
     }
 
     func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions) -> NSApplication.PresentationOptions {
@@ -308,8 +314,14 @@ private class AlertEscape: NSView {
     func down(_ title: String, _ detail: String, button: String?) {
         guard alive else { return }
         sidebar.list.leave()
+        sidebar.showConfigError(nil)
         banner.show(title, detail, button: button)
         sidebar.list.offline(title)
+    }
+
+    func showConfigError() {
+        guard welcomed, case .connected = link, preparedAlert == nil else { return }
+        sidebar.showConfigError(runtime.configError.map { (runtime.abbreviate($0.path) + " has an error", $0.problem.detail) })
     }
 
     @objc func start() {
@@ -868,6 +880,7 @@ private class AlertEscape: NSView {
                 sidebar.list.leave()
             }
         case .failed(let code, let message):
+            welcomed = false
             guard recovering == nil else { return }
             let absent = host == .local ? "No ko server is running." : "The connection to \(host.label) is down."
             down("Disconnected from \(host.label)", (code == KO_ERR_NO_SERVER ? absent : message) + "\nReconnecting…", button: host == .local ? "Start" : "Reconnect")
@@ -1278,6 +1291,7 @@ private class AlertEscape: NSView {
     private func ready() {
         guard welcomed, model.session != nil, case .connected = link else { return }
         banner.isHidden = true
+        showConfigError()
     }
 
     func accepts(_ token: Int) -> Bool {

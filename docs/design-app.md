@@ -293,14 +293,46 @@ actions are the only pane commands. In linefeed mode (LNM), Ghostty's
 termio write path turns each typed `\r` into `\r\n` once, with the same
 routine for the manual and pty backends; the app and the server do not
 convert again.
-Ghostty's configuration is `kido-app.conf` beside `kido.conf`
-(`$XDG_CONFIG_HOME/kido/`, else `~/.config/kido/`), in Ghostty's syntax,
-and Ghostty's own config files are not read; `config-file =
-~/.config/ghostty/config` there shares them. It is read over built-in
-light and dark themes that follow the macOS appearance and switch live
-on existing panes. The file overrides these defaults, including the
-theme, background and non-blinking cursor. The window and pane chrome
-follow the effective Ghostty background and its light or dark
+The app's terminal settings are the `app:` key of ko's configuration
+file, `$XDG_CONFIG_HOME/ko/config.yaml`, else `~/.config/ko/config.yaml`
+(design-ko.md, 4.14). The app reads the Mac's file, also for a remote
+window, through `ko_config_load` of `ko_client`, so it needs no server;
+`ko_config_defaults` gives the default path and the defaults.
+No Ghostty file reaches Ghostty: Ghostty's own config, `config-file`
+includes and the old `~/.config/kido` are not read.
+`app/App/GhosttyConf.swift` maps the typed `KoSchema.App` to one
+Ghostty config string, and `GhosttyRuntime.loadConfig` loads only that
+string (named `/kido`), then the theme override (`/kido-theme`).
+`GhosttyConf.text` gives the order: the app's fixed lines, which no key
+changes, come first; the mirror's clipboard deny comes last, because the
+server, not the mirror, answers OSC 52. The cursor's style and blink are
+fixed (design-ko.md, 4.14). A Ghostty diagnostic on the string is a
+fault of the mapping, not of the user's file: the app writes it to
+stderr, and the tests fail on it. An absent `font.family` is the
+system's monospaced font: the family name of
+`NSFont.monospacedSystemFont` (`.AppleSystemUIFontMonospaced`), which
+Ghostty's CoreText discovery resolves to its Regular face.
+`copy_on_select` is a bool: Ghostty's `primary` has no effect on macOS,
+so `true` is `clipboard` and `false` is `none`, Ghostty's macOS default.
+`app.keys` becomes one `keybind` line for each binding; the visual
+tests need bindings on menu keys, so they load a test-only string after
+`/kido` (`GhosttyRuntime.loadTestBindings`, under `KIDO_VISUAL`).
+Each pane reads the scroll multiplier and the clipboard policy from the
+typed value, not from Ghostty's config.
+
+If the file does not decode, the app writes `<file>:<line>:<column>:
+<message>` to stderr. At launch it uses the defaults, so it starts; at a
+reload it keeps the settings that it loaded. Every window then shows a
+strip at the top of its terminal area (`app/App/ConfigBanner.swift`):
+"~/.config/ko/config.yaml has an error", the `<line>:<column>:
+<message>` on one line, cut at its end, and "Reveal in Finder". The
+panes reflow below the strip, and the strip never takes the first
+responder, so the user can fix the file in a pane. A link failure
+shows the full veil of `Banner` and hides the strip. The next load that
+succeeds hides it. A theme file that fails its check (below) shows the
+same strip with the theme file's path.
+
+The window and pane chrome follow the effective Ghostty background and its light or dark
 appearance. Colours derived from the theme stay in `GhosttyRuntime`.
 Every other chrome colour, alpha and shadow is a named role in
 `app/App/Chrome.swift`: system colours, the macOS accent, fixed values,
@@ -314,13 +346,30 @@ exempt; the theme derivations in `GhosttyRuntime` use this marker.
 `app/VisualTests` is not checked. The `PromptMarkdown` package cannot
 import the app, so the prompt view passes it its three ink roles.
 
-The defaults are `theme = light:kido-light,dark:kido-dark`, by bare name.
-`main.swift` sets `GHOSTTY_RESOURCES_DIR` to the bundle's `ghostty` folder
-before Ghostty starts, and Ghostty searches a bare theme name in
-`$XDG_CONFIG_HOME/ghostty/themes` (else `~/.config/ghostty/themes`), then in
-`<resources dir>/themes`. Thus, a name in the user's file still resolves
-after the app moves or in a dev build. The spawned server and shells inherit the
-variable; Ghostty never starts a shell in Kido, so it has no effect there.
+The default theme pair is `kido-light` and `kido-dark`. A theme name
+resolves in the app (`ThemePaths`): a bundled name to
+`<bundle>/ghostty/themes/<name>`, else to `themes/<name>` beside the
+config file (`~/.config/ko/themes`), and the string names the absolute
+paths, quoted, so Ghostty's own theme search never runs and
+`~/.config/ghostty/themes` is never read. A bundled name wins over a user
+file of the same name. A user theme keeps Ghostty's theme syntax, so a
+Ghostty export from iTerm2-Color-Schemes drops in unchanged.
+`ThemeFile.check` (`app/App/ThemeFile.swift`) checks each file with
+Ghostty's own parser before its path goes into the string: it loads the
+file into a private config and compares its serialized lines with those
+of a fresh config. Neither is finalized, because Ghostty's finalize
+resolves a `theme` key and would search the user's Ghostty themes before
+the check can refuse the key. Each line that differs
+names a key that the file set, and the key must be one of the colour
+keys of the check's list; another key, or a Ghostty diagnostic, fails
+the file. The palette row builds the swatch from the same checked file. A side whose theme
+fails gets Kido's default theme for that appearance. The time between
+the check and Ghostty's read of the file is the user's own file system;
+it is not a security boundary.
+`main.swift` sets `GHOSTTY_RESOURCES_DIR` to the bundle's `ghostty`
+folder before Ghostty starts, for Ghostty's other resources. The spawned
+server and shells inherit the variable; Ghostty never starts a shell in
+Kido, so it has no effect there.
 `project.yml` ships `app/Resources/ghostty` whole as a folder resource. Its
 `themes` folder holds `kido-light` and `kido-dark`, and also `ahrefs-light` and `ahrefs-dark`
 (kido's own, notes in `app/design/themes/ahrefs/`) and `solarized-light`
@@ -343,26 +392,15 @@ The steps are debounced at 60 ms; the last selection wins. Closing the
 palette ends the preview and goes back to the session theme if there is one,
 else to the file. A session theme comes from the save step's "This session
 only" row or from a failed write. It holds until the next successful write or
-quit. `loadConfig` keeps Ghostty's diagnostics, and
-the mode reads them to dim a theme file that fails after it was listed.
+quit.
 
-`app/App/ThemeConf.swift` reads and writes only the `theme` line of
-`kido-app.conf` itself. It does not walk `config-file` includes, and an
-include that sets `theme` wins in Ghostty without the picker knowing. The
-last line whose trimmed key is `theme` counts. Its value is a pair if it
-contains `,`, `:` or `=`, as in Ghostty, else one name for both sides. A pair
-needs both `light:` and `dark:`; Ghostty rejects a line without them and keeps
-the value before it, and so does the parse. With no valid line, the pair is
-the defaults. A save merges the chosen side into
-that pair and always writes `theme = light:L,dark:D`. It replaces the line
-or appends one, and keeps every other byte, CRLF included. It writes
-`<target>.tmp-<pid>` beside the target with the target's mode (0600 for a
-new file), syncs it and renames it over the target. The target is the
-conf's resolved path, so a symlinked conf keeps its link; a dangling link
-writes its target. A missing directory is created with mode 0700. If the
-merged pair equals the file's pair, nothing is written. The watcher sees the
-rename and reloads; the override is cleared before, so the reload shows the
-written theme with no flash.
+The picker writes through `ko_config_set_theme` (design-ko.md, 4.14),
+which edits only `app.theme` and keeps every other byte. The written
+value is always the pair; a pair equal to the file's pair writes nothing.
+A conflict (the file changed during the write) is the status "The file
+changed. Choose the theme again." with the theme kept for the session.
+The watcher sees the rename and reloads; the override is cleared before,
+so the reload shows the written theme with no flash.
 
 The built-in defaults unbind Ghostty's `super+k`. The app has no Clear
 command, and Ghostty binds Command-K to `clear_screen` by default. That
@@ -372,24 +410,13 @@ does nothing.
 The sidebar list's background is a shade of the terminal background.
 The shade mixes the terminal background toward black on a light
 terminal background and toward white on a dark one, with the same light
-or dark decision as the window appearance. The default is 5%.
-Thus the default follows each reload and each live theme switch.
-`kido-sidebar-shade = <percent>` is the app's own key
-in that file. Ghostty does not know it, and its unknown-field
-diagnostic is hidden only for the app's two keys, this one and
-`kido-unfocused-background-shift`. The value is a decimal number from -100
-to 100 (digits, an optional leading `-` and an optional fraction), with or
-without `%` and optionally in double quotes. The app uses its absolute
-value, and the theme gives the direction. The mix is per sRGB component (as CSS
-`color-mix(in srgb, ...)`).
-`NSColor.blended` is not used: it mixes in generic RGB and gives a
-different colour. An absent key and an empty value (`kido-sidebar-shade =`,
-Ghostty's reset syntax) give the default. An invalid value gives a note
-on stderr and the default. AppKit's sidebar glass is not shown. The
-app reads the key from the same files as Ghostty: the main file, then
-its `config-file` includes in Ghostty's breadth-first order, with
-relative paths, `~/`, optional `?` paths and cycles resolved as Ghostty
-resolves them. The last value wins.
+or dark decision as the window appearance. `window.sidebar_shade` sets
+it, 5% by default. Thus the default follows each reload and each live
+theme switch. The app uses the absolute value, and the theme gives the
+direction. The mix is per sRGB component (as CSS
+`color-mix(in srgb, ...)`). `NSColor.blended` is not used: it mixes in
+generic RGB and gives a different colour. AppKit's sidebar glass is not
+shown.
 
 The sidebar has its own light or dark appearance, from the relative
 luminance L of its shade colour: dark (light text) when L < 0.179,
@@ -406,35 +433,35 @@ that changes the appearance redraws them.
 The file reloads live, with no polling. The app watches the file and
 its directory, so a save in place, a save by atomic rename, and the
 creation or deletion of the file all cause a reload. A deleted file
-gives the built-in defaults. If the directory does not exist, the app
-watches the nearest existing ancestor until the directory appears. If
-the file is a symlink, the app also watches the directory of its
-target. A change to another file in a watched directory does not cause
-a reload. A burst of events gives one reload. Each reload reads the included files
-again, but the app does not watch them: a change to an include has no
-automatic reload. Ghostty's reload action for the app also reads the
-file and its includes again.
+gives the defaults. If the directory does not exist, the app watches the
+nearest existing ancestor until the directory appears. If the file is a
+symlink, the app also watches the directory of its target. A change to
+another file in a watched directory does not cause a reload, and the
+themes directory is not watched: an edited theme file applies at the
+next reload of the config or Ghostty's reload action. A burst of events gives one reload. Ghostty's reload action
+for the app also reloads the file.
 
-Launch and reload build the config in the same way, and a reload prints
-its diagnostics to stderr as at launch. If Ghostty's part of the config
-is different, a reload applies the new config to each live pane inside
-`PaneView.reflow`. A font change changes the cell, not the grid: the
-surface keeps the server's grid at the new cell, the new pixel size
-reaches the server as the window size, and the grid comes back from the
-server. A change to only the shade does not reflow the panes, so
-it does not end copy mode. The app gets the config without surface
-propagation. The chrome of every window then follows the new background
-and appearance.
+Launch and reload build the config in the same way. A reload checks
+each different theme path once, and compares the new string and the
+bytes of the checked theme files with the loaded ones; if they differ, the reload applies
+the new config to each live pane inside `PaneView.reflow`. A font change
+changes the cell, not the grid: the surface keeps the server's grid at
+the new cell, the new pixel size reaches the server as the window size,
+and the grid comes back from the server. A change of only `window` or of
+`clipboard.read` and `clipboard.write` leaves the string the same, so it
+repaints without a reflow and does not end copy mode. The app gets the
+config without surface propagation. The chrome of every window then
+follows the new background and appearance.
 
 The server has one grid per pane, so every pane has one font size. ⌘+, ⌘−
 and ⌘0 change it on one surface, and `SessionView.fontChanged` gives that
 size to every pane with Ghostty's `set_font_size:` action. Ghostty keeps a
 size set in this way when the config reloads. Thus a reload that changes
-`font-size` gives the new value to every pane of every window, hidden panes
+`font.size` gives the new value to every pane of every window, hidden panes
 included, after the pane gets the new config. The runtime compares the new
-`font-size` with the one that it loaded last. A new pane starts at the
+`font.size` with the one that it loaded last. A new pane starts at the
 current size with the same action, so Ghostty also keeps its size. Thus a
-reload that does not change `font-size` keeps one adjusted size in all
+reload that does not change `font.size` keeps one adjusted size in all
 panes.
 
 ### Content
@@ -498,7 +525,7 @@ presentation, then applies a changed target.
 Ghostty paces rendering with its own CVDisplayLink
 (see [Threads](#threads)); token presentation remains immediate.
 The app adds no deferred packet, easing or momentum filter.
-Ghostty's mouse-scroll-multiplier precision setting remains the user's speed
+The `mouse.scroll_multiplier` precision value remains the user's speed
 override; precision 2 restores the previous speed. Discrete wheel notches
 are unchanged. An active selection gesture uses integral wheel steps.
 Thumb drags replace the target; a thumb press snaps once and suppresses
@@ -659,11 +686,10 @@ background and 3% toward white on a dark one (relative luminance < 0.5), per
 sRGB component. This is the direction rule of the sidebar shade, and one
 helper computes both. The titlebar and toolbar band uses this shifted
 paper in all sidebar modes and in full screen. Thus it matches an inactive
-pane. The pane shift does not follow `kido-sidebar-shade`, so a strong
+pane. The pane shift does not follow `window.sidebar_shade`, so a strong
 sidebar value does not make inactive panes hard to read. Its own
-key, `kido-unfocused-background-shift = <percent>`, has the syntax, range,
-include order and diagnostic rules of `kido-sidebar-shade`, with
-a 3% default, and the same reader reads both keys. A reload that changes only this key repaints the
+key, `window.unfocused_shift`, has the same range and direction rule,
+with a 3% default. A reload that changes only this key repaints the
 panes and the band. The focused pane also gets a 1pt `controlAccentColor`
 stroke at 50% alpha, inside its chrome rect, over the padding and not over
 cells. A single-pane window draws no shift and no edge on its pane while
@@ -686,7 +712,7 @@ its chrome rect, and the pane view's layer carry the pure or shifted paper.
 Thus glyphs, the cursor, selection, find highlights and the COPY and
 history pills keep their colours. A cell whose program sets an explicit
 background equal to the default colour stays pure in an inactive pane.
-A `kido-app.conf` reload clones the new config for each surface. On a
+A config reload clones the new config for each surface. On a
 theme switch, Ghostty changes the app config, the app gives each surface
 the new colour scheme, and each surface then asks for a reload of its own
 config, which clones the current app config. The app sends the scheme
@@ -806,10 +832,10 @@ reaches the app as server events, never through the mirror
 `clipboard-read = deny`, `clipboard-write = deny` and
 `kitty_clipboard = false`, so a mirror neither touches the pasteboard nor
 writes a reply toward the pane; `ko-pane`'s terminal encodes every reply.
-The runtime reduces the user's `clipboard-read` and `clipboard-write`
-to the app's policy (`GhosttyRuntime.ClipboardPolicy`): a read `deny`
-refuses every server read at once and any other read value asks; a write
-`allow` applies server writes and any other write value ignores them.
+The app's policy is `clipboard.read` and `clipboard.write` of the
+config: a read `deny` refuses every server read at once, `ask` asks
+(below) and `allow` answers with no sheet; a write `allow` applies server
+writes and `deny` ignores them.
 
 A `clipboard_write` event writes the general pasteboard: every content
 through `PasteboardMIME`, which refuses text with a NUL, text over 1 MiB
@@ -1786,38 +1812,30 @@ Theme mode picks the terminal theme and shows it live. Its visuals are
 are in [Panes](#panes). `PaletteTheme` reads the list once when the mode
 opens:
 
-- The bundled themes in one fixed order: `kido-light`, `kido-dark`,
-  `ahrefs-light`, `ahrefs-dark`, `solarized-light`, `solarized-dark`. They
-  are written by bare name.
-- Then the regular files in `themes` beside `kido-app.conf`
-  (`$XDG_CONFIG_HOME/kido/themes`, else `~/.config/kido/themes`), sorted
-  with `localizedStandardCompare`. Dotfiles and names that contain `,`, `:`
-  or `=` are not listed; a symlink to a regular file is. They are written
-  by absolute path, because Ghostty does not search this directory.
-  `~/.config/ghostty/themes` is not listed, but a name there still resolves.
+- The bundled themes, in the fixed order of `ThemePaths.bundled`.
+- Then the regular files of `~/.config/ko/themes` (the `themes` directory
+  beside the config file), sorted with `localizedStandardCompare`. A name
+  that is not a `ThemeName` of `ko_config` and the names of bundled
+  themes are not listed; a symlink to a regular file is.
 
-Each row loads its file through a private Ghostty config for the swatch: the
-background with "Aa" in the foreground, and palette colours 4, 2, 1 and 3.
-The "light" or "dark" tag is the background's luminance. The row shows the
-file name. "✓ Light" and "✓ Dark" mark the rows that the conf's pair
-names: a bundled row by bare name, a user row by path with `~/` expanded. A
-file that is missing or has diagnostics is a dimmed row with an empty swatch,
-no tag and "theme file not found" or "invalid: <diagnostic>" in red. It can
-be selected and hovered; then the preview shows the theme that
-`kido-app.conf` sets now, not the broken file. Return and click on it do
-nothing. A file that disappears after the list was read is dimmed when it is
-previewed or saved, and the save writes nothing. The marks and the list are
-read once, when the mode opens; an external edit of the conf does not change
-them.
+Every row is written by its name. Each row runs `ThemeFile.check` on its
+file (Panes), which also gives the swatch: the background with "Aa" in
+the foreground, and palette colours 4, 2, 1 and 3. The "light" or "dark"
+tag is the background's luminance. The row shows the file name. "✓ Light"
+and "✓ Dark" mark the rows that the loaded pair names. A file that is
+missing or fails the check is a dimmed row with an empty swatch, no tag
+and "theme file not found" or "invalid: <problem>" in red. It can be
+selected and hovered; then the preview shows the theme that the config
+sets now, not the broken file. Return and click on it do nothing. A
+preview or a save checks the file again, so a file that disappears after
+the list was read is dimmed then, and the save writes nothing. The marks
+and the list are read once, when the mode opens; an external edit of the
+config does not change them.
 
-If Ghostty fails to load the theme that a side of the pair names, the red
-status says "<value>: not found. The current config names it for
-<Light|Dark>; Ghostty's default colours are shown instead.", or "<value>:
-invalid: <diagnostic>. …" for a file with errors. The user's `theme` line
-replaces kido's defaults, so Ghostty falls back to its own colours. A theme
-that Ghostty loads but the list does not show (from
-`~/.config/ghostty/themes` or another path) gets no status and no mark. The
-current appearance's side is checked first.
+The mode's red status shows the config's error, if it has one. For a
+theme of the pair that fails its check, it says "<name>: <problem>. The
+current config names it for <Light|Dark>; Kido's default theme is shown
+instead."
 
 The selection starts on the theme of the current appearance, with no
 preview. Each later selection change previews: Up/Down, a new query (its
@@ -1831,19 +1849,19 @@ copy mode, zoom or full screen they are in.
 Return or a click on a row opens the save step. The head shows the theme as a
 chip with its swatch, the field reads "Use for…" and takes no text, and three
 radio rows follow: the current appearance (selected), the other one, Both,
-and "This session only · not saved to kido-app.conf". Up/Down move the
+and "This session only · not saved to config.yaml". Up/Down move the
 radio. Return or a click writes, applies and closes. The session row writes
 nothing and reads nothing: the theme becomes the session theme for both
 appearances until quit or the next successful save, and its foot says
-"applies until quit; <conf path> is not changed".
+"applies until quit; <config path> is not changed".
 Escape or ⌫ goes back to the list with the query, the selection and the
-preview kept. The foot shows the exact line, from the same
-`ThemeConf.line` that the writer calls, and the conf path. Both writes the
+preview kept. The foot reads "writes theme: light: L, dark: D to <config path>",
+with the merged pair that the save writes. Both writes the
 one theme to both sides.
 
 If the write fails, the list stays open with the red status "Could not write
 <path>: <reason>. <name> is applied for this session only." and "Reveal in
-Finder", which selects the conf or, if it is absent, its directory. The
+Finder", which selects the config file or, if it is absent, its directory. The
 theme becomes the session theme: a later preview is restored to it, not to
 the file.
 
@@ -1962,12 +1980,16 @@ lock. Commit the lock with that change.
 servers (`VisualTestCase.koServerDir()`, a `mkdtemp` directory under
 `/tmp`, stopped and removed at teardown), never activating a window. Clipboard sheets use visible windows placed
 far off screen, as do native-button local-mismatch tests;
-the other fixtures keep their windows unordered. Menlo 13 and the built-in
+the other fixtures keep their windows unordered. The default font (the
+system's monospaced font at 13) and the built-in
 light/dark themes isolate terminal-area image and compact layout references:
 single panes at three heights, splits, floats, zoom, fractional history,
 alternate screen and settled resize. The shared visual runtime's Ghostty
-config is its own `$TMPDIR/kido-visual-PID.conf`, removed in the class
-teardown. A test-only
+config is its own `$TMPDIR/kido-visual-PID.yaml`, removed in the class
+teardown. `testYAMLSettingsRendering` records the system font, a font
+family and size, a dark theme and a user theme of the test's own
+`themes` directory; `testConfigErrorBanner` records the error strip in
+light and dark. A test-only
 `KIDO_VISUAL` build condition exposes an occlusion bypass through
 `@testable`; normal builds retain their occlusion policy. Each image waits
 for a tokened Ghostty presented-frame callback, not a timed delay. The fence
@@ -1994,11 +2016,17 @@ filtered, filtered2, nomatch, connect, connect-typing, connect-invalid,
 connect-none, rename, rename-error, rename-error2, nowindow, match-run,
 theme, theme-filtered, theme-preview, theme-save, theme-save-session,
 theme-err-write and theme-err-file. The theme images are recorded last in the same test. Their
-conf lives in the visual scheme's private `HOME` (`XDG_CONFIG_HOME` is
-`$HOME/.config`), so the paths read `~/.config/kido`; the test checks that
+config lives in the visual scheme's private `HOME` (`XDG_CONFIG_HOME` is
+`$HOME/.config`), so the paths read `~/.config/ko`; the test checks that
 `HOME` is that private directory before it writes. theme-err-file removes the
 built app's bundled theme file and restores its bytes in a `defer`.
-`ThemeConfTests` tests the conf text functions and the writer.
+`KoTests/GhosttyConfTests` checks the exact Ghostty string of every key,
+that Ghostty reports no diagnostic on it, the theme resolution and
+`ThemeFile.check` (the six bundled files pass, another key and a
+diagnostic fail), and that `ko_config_load` refuses every key equivalent
+of the app's menus, the window menu's Command-1 to Command-9 included,
+as a key binding. The writer's cases are Rust tests of
+`ko_config/src/theme.rs`.
 
 `RuntimeTests.swift` records one image for each decided state of the
 runtime mockup, `app/design/runtime/`, in light and dark:

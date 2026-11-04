@@ -1,5 +1,5 @@
 use std::ffi::c_char;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ko_config::config::{self, LoadError};
 use ko_config::theme::{self, SetError};
@@ -15,6 +15,36 @@ fn message(code: Code, out: *mut Buffer, text: &str) -> Code {
             .into_bytes(),
     );
     code
+}
+
+/// # Safety
+///
+/// `out` is writable for one `ko_buffer`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ko_config_defaults(out: *mut Buffer) -> Code {
+    empty(out);
+    if out.is_null() {
+        return Code::Argument;
+    }
+    let home = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(std::env::home_dir)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let path = config::default_path(config_home.as_deref(), &home);
+    let Some(path) = path.to_str() else {
+        return message(Code::Io, out, "the configuration path is not UTF-8");
+    };
+    hand_over(
+        out,
+        json!({ "path": path, "config": config::Config::default() })
+            .to_string()
+            .into_bytes(),
+    );
+    Code::Ok
 }
 
 /// # Safety

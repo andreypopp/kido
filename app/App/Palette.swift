@@ -689,10 +689,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
 
     private func previewTheme(at index: Int) {
         guard shown.indices.contains(index), let row = shown[index].entry.theme else { return }
-        if theme?.preview(row) == true {
-            shown = theme?.entries() ?? []
-            table.reloadData()
-        }
+        theme?.preview(row)
         themeStatus()
     }
     private func themeStatus() {
@@ -716,7 +713,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
             case .pick:
                 guard let value = entry.theme?.value else { return }
                 let choice = theme.check(value)
-                select(row)
+                select(row, preview: choice.problem == nil)
                 guard choice.problem == nil else { return }
                 enter(.theme(.save(choice)))
             case .save(let choice):

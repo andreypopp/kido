@@ -138,16 +138,14 @@ public enum KoSchema {
 
     public struct App: Codable, Equatable, Sendable {
         public var clipboard: Clipboard
-        public var cursor: Cursor
         public var font: Font
         public var keyboard: Keyboard
         public var keys: [String: Action]
         public var mouse: Mouse
         public var theme: Theme
         public var window: WindowSettings
-        public init(clipboard: Clipboard, cursor: Cursor, font: Font, keyboard: Keyboard, keys: [String: Action], mouse: Mouse, theme: Theme, window: WindowSettings) {
+        public init(clipboard: Clipboard, font: Font, keyboard: Keyboard, keys: [String: Action], mouse: Mouse, theme: Theme, window: WindowSettings) {
             self.clipboard = clipboard
-            self.cursor = cursor
             self.font = font
             self.keyboard = keyboard
             self.keys = keys
@@ -264,12 +262,12 @@ public enum KoSchema {
     }
 
     public struct Clipboard: Codable, Equatable, Sendable {
-        public var copyOnSelect: CopyOnSelect
+        public var copyOnSelect: Bool
         public var pasteProtection: Bool
         public var read: ClipboardRead
         public var trimTrailingSpaces: Bool
         public var write: ClipboardWrite
-        public init(copyOnSelect: CopyOnSelect, pasteProtection: Bool, read: ClipboardRead, trimTrailingSpaces: Bool, write: ClipboardWrite) {
+        public init(copyOnSelect: Bool, pasteProtection: Bool, read: ClipboardRead, trimTrailingSpaces: Bool, write: ClipboardWrite) {
             self.copyOnSelect = copyOnSelect
             self.pasteProtection = pasteProtection
             self.read = read
@@ -368,12 +366,6 @@ public enum KoSchema {
         }
     }
 
-    public enum CopyOnSelect: String, Codable, Equatable, Sendable {
-        case off
-        case on
-        case clipboard
-    }
-
     public struct CreatePane: Codable, Equatable, Sendable {
         public var close: Close?
         public var command: Command?
@@ -442,22 +434,6 @@ public enum KoSchema {
         public init(window: WindowId) {
             self.window = window
         }
-    }
-
-    public struct Cursor: Codable, Equatable, Sendable {
-        public var blink: Bool
-        public var style: CursorStyle
-        public init(blink: Bool, style: CursorStyle) {
-            self.blink = blink
-            self.style = style
-        }
-    }
-
-    public enum CursorStyle: String, Codable, Equatable, Sendable {
-        case block
-        case bar
-        case underline
-        case blockHollow = "block_hollow"
     }
 
     public enum Cwd: Codable, Equatable, Sendable {

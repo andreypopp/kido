@@ -1,6 +1,7 @@
 import AppKit
 import os
 import GhosttyKit
+import KoModel
 
 extension NSColor {
     var luminance: Double {
@@ -32,33 +33,31 @@ extension NSColor {
     let pasteboard: NSPasteboard
     let configFile: String
     let home: String
-    func expand(_ value: String) -> String { value == "~" || value.hasPrefix("~/") ? home + value.dropFirst() : value }
     func abbreviate(_ value: String) -> String { value == home || value.hasPrefix(home + "/") ? "~" + value.dropFirst(home.count) : value }
-    struct KidoSettings {
-        var sidebarShade = 0.05
-        var unfocusedShift = 0.03
+    var sidebarShade: Double { abs(values.window.sidebarShade) / 100 }
+    var unfocusedShift: Double { abs(values.window.unfocusedShift) / 100 }
+    private(set) var values: KoSchema.App
+    private var loadedText: String
+    #if KIDO_VISUAL
+    func loadTestBindings(_ text: String) {
+        ghostty_config_load_string(config, text, UInt(text.utf8.count), "/kido-test-bindings")
+        ghostty_config_finalize(config)
+        ghostty_app_update_config_without_surface_propagation(app, config)
     }
-    private(set) var settings: KidoSettings
-    // What the user's config says about a program's clipboard access. The surfaces get both policies
-    // as deny, so a mirror never answers or applies OSC 52; the server's events carry it.
-    struct ClipboardPolicy: Equatable {
-        enum Access: Equatable { case deny, ask, allow }
-        var read = Access.ask
-        var write = Access.allow
-    }
-    private(set) var clipboard: ClipboardPolicy
+    #endif
+    private(set) var configError: ConfigError?
+    private(set) var themeFiles: [String: ThemeFile]
+    var clipboard: KoSchema.Clipboard { values.clipboard }
     enum ThemeOverride: Equatable { case none, preview(String), session(String) }
     private enum Preview: Equatable { case file, theme(String) }
     private var preview: Preview?
     private var sessionTheme: String?
-    private var loadedFont: Float = 0
     private var loadedTheme: String?
     var themeOverride: ThemeOverride {
         switch preview { case .file: .none; case .theme(let value): .preview(value); case nil: sessionTheme.map(ThemeOverride.session) ?? .none }
     }
     private var overrideValue: String? { switch themeOverride { case .none: nil; case .preview(let value), .session(let value): value } }
     private(set) var diagnostics: [String] = []
-    private(set) var fileDiagnostics: [String] = []
     #if KIDO_VISUAL
     var visualThemeApplies = 0
     #endif
@@ -101,16 +100,8 @@ extension NSColor {
                         nanoseconds: value.st_mtimespec.tv_nsec, size: value.st_size)
     }
     private var loadedStat: FileStat?
-    nonisolated private static func userClipboardPolicy(_ config: ghostty_config_t) -> ClipboardPolicy {
-        func access(_ key: String) -> String? {
-            var value: UnsafePointer<CChar>?
-            return ghostty_config_get(config, &value, key, UInt(key.utf8.count)) ? value.map { String(cString: $0) } : nil
-        }
-        return ClipboardPolicy(read: access("clipboard-read") == "deny" ? .deny : .ask, write: access("clipboard-write") == "allow" ? .allow : .deny)
-    }
-
     nonisolated private static func denyMirrorClipboard(_ config: ghostty_config_t) {
-        let policy = "clipboard-read = deny\nclipboard-write = deny\n"
+        let policy = GhosttyConf.mirrorClipboard
         ghostty_config_load_string(config, policy, UInt(policy.utf8.count), "/kido-clipboard")
     }
     var onConfigChange: () -> Void = {}
@@ -143,16 +134,15 @@ extension NSColor {
         self.pasteboard = pasteboard
         self.home = ProcessInfo.processInfo.environment["HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory()
         guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS else { return nil }
-        let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 }
-        self.configFile = configFile ?? (xdg ?? home + "/.config") + "/kido/kido-app.conf"
+        guard let defaults = try? AppConfig.defaults() else { return nil }
+        self.configFile = configFile ?? defaults.path
         self.loadedStat = Self.fileStat(self.configFile)
-        guard let loaded = Self.loadConfig(file: self.configFile, home: home) else { return nil }
-        self.fileDiagnostics = loaded.diagnostics
+        guard let loaded = Self.loadConfig(file: self.configFile) else { return nil }
         self.config = loaded.config
-        let fontKey = "font-size"
-        _ = ghostty_config_get(loaded.config, &loadedFont, fontKey, UInt(fontKey.utf8.count))
-        self.settings = loaded.settings
-        self.clipboard = loaded.clipboard
+        self.values = loaded.values
+        self.loadedText = loaded.text
+        self.configError = loaded.error
+        self.themeFiles = loaded.themeFiles
         self.diagnostics = loaded.diagnostics
 
         var runtime = ghostty_runtime_config_s(
@@ -246,121 +236,100 @@ extension NSColor {
 
     struct LoadedConfig {
         let config: ghostty_config_t
-        let settings: KidoSettings
+        let values: KoSchema.App
+        let text: String
         let diagnostics: [String]
-        let clipboard: ClipboardPolicy
+        let error: ConfigError?
+        let themeFiles: [String: ThemeFile]
     }
 
-    private static let settingKeys: [String: WritableKeyPath<KidoSettings, Double>] = [
-        "kido-sidebar-shade": \.sidebarShade,
-        "kido-unfocused-background-shift": \.unfocusedShift
-    ]
-    private static func readDiagnostics(_ config: ghostty_config_t) -> [String] {
-        (0..<ghostty_config_diagnostics_count(config)).compactMap { index in
-            let message = String(cString: ghostty_config_get_diagnostic(config, index).message)
-            return settingKeys.keys.contains(where: { message == "\($0): unknown field" || message.hasSuffix(":\($0): unknown field") }) ? nil : message
+    nonisolated private static func readDiagnostics(_ config: ghostty_config_t) -> [String] {
+        (0..<ghostty_config_diagnostics_count(config)).map { String(cString: ghostty_config_get_diagnostic(config, $0).message) }
+    }
+
+    private static func read(_ file: String) -> Result<KoSchema.App, ConfigError> {
+        do { return .success(try AppConfig.load(file)) }
+        catch {
+            let problem = (error as? ConfigProblem) ?? ConfigProblem(line: nil, column: nil, message: error.localizedDescription)
+            note("\(file):\(problem.detail)")
+            return .failure(ConfigError(path: file, problem: problem))
         }
     }
-    static func loadConfig(file: String, home: String, override: String? = nil) -> LoadedConfig? {
-        guard let config = ghostty_config_new() else { return nil }
-        let defaults = ThemeConf.line(.init()) + "\ncursor-style-blink = false\nalpha-blending = linear\nscrollback-limit = 536870912\nkeybind = super+k=unbind\nkeybind = super+j=unbind\nkeybind = super+s=unbind\nkeybind = super+shift+s=unbind\n"
-        ghostty_config_load_string(config, defaults, UInt(defaults.utf8.count), "/kido-defaults")
-        if FileManager.default.fileExists(atPath: file) { ghostty_config_load_file(config, file) }
-        ghostty_config_load_recursive_files(config)
-        let keys = settingKeys
-        var values: [String: String] = [:]
-        var files: [String] = []
-        func readSettings(_ path: String) {
-            guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
-            for line in text.split(whereSeparator: \.isNewline) {
-                let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                guard parts.count == 2 else { continue }
-                var value = parts[1]
-                if keys[parts[0]] != nil {
-                    if value.count >= 2, value.first == "\"", value.last == "\"" { value = String(value.dropFirst().dropLast()) }
-                    value = value.trimmingCharacters(in: .whitespaces)
-                    values[parts[0]] = value.isEmpty ? nil : value
-                }
-                if parts[0] == "config-file" {
-                    if value.isEmpty { files.removeAll(); continue }
-                    if value.first == "?" { value.removeFirst() }
-                    if value.count >= 2, value.first == "\"", value.last == "\"" { value = String(value.dropFirst().dropLast()) }
-                    if value.isEmpty { continue }
-                    if value.hasPrefix("~/") { value = home + value.dropFirst() }
-                    if !value.hasPrefix("/") {
-                        value = URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent(value).path
-                        if let resolved = realpath(value, nil) {
-                            value = String(cString: resolved)
-                            free(resolved)
-                        } else { value = URL(fileURLWithPath: value).standardized.path }
-                    }
-                    files.append(value)
-                }
+
+    static func loadConfig(file: String, override: String? = nil) -> LoadedConfig? {
+        switch read(file) {
+        case .success(let values): return makeConfig(values, file: file, override: override, error: nil)
+        case .failure(let error):
+            guard let defaults = try? AppConfig.defaults() else { return nil }
+            return makeConfig(defaults.config.app, file: file, override: override, error: error)
+        }
+    }
+
+    private static func makeConfig(_ values: KoSchema.App, file: String, override: String?, error initialError: ConfigError?) -> LoadedConfig? {
+        guard let defaults = try? AppConfig.defaults() else { return nil }
+        let fallback = AppConfig.pair(defaults.config.app.theme)
+        var error = initialError
+        var files: [String: ThemeFile] = [:]
+        func readTheme(_ path: String) -> ThemeFile {
+            if let checked = files[path] { return checked }
+            let checked = ThemeFile(path)
+            files[path] = checked
+            if let problem = checked.problem {
+                let failure = ConfigProblem(line: nil, column: nil, message: problem.text)
+                note("\(path):\(failure.detail)")
+                if error == nil { error = ConfigError(path: path, problem: failure) }
             }
+            return checked
         }
-        readSettings(file)
-        var loaded = Set<String>()
-        var index = 0
-        while index < files.count {
-            let path = files[index]
-            if loaded.insert(path).inserted { readSettings(path) }
-            index += 1
+        func checked(_ name: String, fallback: String) -> String {
+            let path = ThemePaths.path(name, configFile: file)
+            if readTheme(path).problem != nil {
+                let path = ThemePaths.path(fallback, configFile: file)
+                _ = readTheme(path)
+                return path
+            }
+            return path
         }
-        var settings = KidoSettings()
-        for (key, field) in keys {
-            guard let value = values[key] else { continue }
-            guard value.range(of: #"^-?[0-9]+(\.[0-9]+)?%?$"#, options: .regularExpression) != nil,
-                  let percent = Double(value.hasSuffix("%") ? String(value.dropLast()) : value), (-100...100).contains(percent)
-            else { note("\(key): not a percentage from -100 to 100: \(value)"); continue }
-            settings[keyPath: field] = abs(percent) / 100
-        }
-        let tiling = "window-padding-x = 0\nwindow-padding-y = 0\nscrollbar = never\n"
-        ghostty_config_load_string(config, tiling, UInt(tiling.utf8.count), "/kido")
+        let pair = AppConfig.pair(values.theme)
+        let themes = ThemePaths(light: checked(pair.light, fallback: fallback.light), dark: checked(pair.dark, fallback: fallback.dark))
+        let text = GhosttyConf.text(values, themes: themes, systemFont: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular).familyName!)
+        guard let config = ghostty_config_new() else { return nil }
+        ghostty_config_load_string(config, text, UInt(text.utf8.count), "/kido")
         if let override {
-            let text = "theme = \(override)\n"
-            ghostty_config_load_string(config, text, UInt(text.utf8.count), "/kido-theme")
+            let paths = ThemePaths(light: checked(override, fallback: fallback.light), dark: checked(override, fallback: fallback.dark))
+            let theme = GhosttyConf.theme(paths) + "\n"
+            ghostty_config_load_string(config, theme, UInt(theme.utf8.count), "/kido-theme")
         }
         ghostty_config_finalize(config)
-        let clipboard = userClipboardPolicy(config)
-        denyMirrorClipboard(config)
         let diagnostics = readDiagnostics(config)
         for message in diagnostics { note("ghostty config: \(message)") }
-        return LoadedConfig(config: config, settings: settings, diagnostics: diagnostics, clipboard: clipboard)
+        return LoadedConfig(config: config, values: values, text: text, diagnostics: diagnostics, error: error, themeFiles: files)
     }
 
     private func reloadConfig() {
         reloadWork = nil
-        let stat = Self.fileStat(configFile)
-        let override = overrideValue
-        if override != nil, stat != loadedStat, let file = Self.loadConfig(file: configFile, home: home) {
-            fileDiagnostics = file.diagnostics
-            ghostty_config_free(file.config)
+        loadedStat = Self.fileStat(configFile)
+        let values: KoSchema.App
+        switch Self.read(configFile) {
+        case .success(let loaded): values = loaded
+        case .failure(let error):
+            configError = error
+            onConfigChange()
+            return
         }
-        loadedStat = stat
-        guard let loaded = Self.loadConfig(file: configFile, home: home, override: override) else { return }
+        guard let loaded = Self.makeConfig(values, file: configFile, override: overrideValue, error: nil) else { return }
         diagnostics = loaded.diagnostics
-        if override == nil { fileDiagnostics = loaded.diagnostics }
-        var changed = loadedTheme != override
-        if changed {
-            #if KIDO_VISUAL
-            visualThemeApplies += 1
-            #endif
-        } else {
-            let old = ghostty_config_serialize(config)
-            let new = ghostty_config_serialize(loaded.config)
-            changed = Data(UnsafeRawBufferPointer(start: old.ptr, count: Int(old.len))) != Data(UnsafeRawBufferPointer(start: new.ptr, count: Int(new.len)))
-            ghostty_string_free(old)
-            ghostty_string_free(new)
-        }
-        var newFont: Float = 0
-        let fontKey = "font-size"
-        _ = ghostty_config_get(loaded.config, &newFont, fontKey, UInt(fontKey.utf8.count))
-        let font = loadedFont != newFont ? newFont : nil
-        loadedFont = newFont
-        loadedTheme = override
-        settings = loaded.settings
-        clipboard = loaded.clipboard
+        configError = loaded.error
+        let changed = loadedText != loaded.text || loadedTheme != overrideValue || themeFiles != loaded.themeFiles
+        #if KIDO_VISUAL
+        if loadedTheme != overrideValue { visualThemeApplies += 1 }
+        #endif
+        let newFont = Float(loaded.values.font.size)
+        let font = Float(self.values.font.size) != newFont ? newFont : nil
+        loadedTheme = overrideValue
+        loadedText = loaded.text
+        themeFiles = loaded.themeFiles
+        self.values = loaded.values
         ghostty_app_update_config_without_surface_propagation(app, loaded.config)
         ghostty_config_free(loaded.config)
         if changed { DispatchQueue.main.async { [weak self] in self?.onConfigReload(font) } }
@@ -430,7 +399,7 @@ extension NSColor {
     var background: NSColor { color("background") }
     var foreground: NSColor { color("foreground") }
     var separator: NSColor { background.mixed(toward: foreground, amount: 0.18) }
-    var unfocusedPaper: NSColor { background.shifted(settings.unfocusedShift) }
+    var unfocusedPaper: NSColor { background.shifted(unfocusedShift) }
     var sidebarSeparator: NSColor { background.isDark ? separator : background.mixed(toward: foreground, amount: 0.28) }
 
     private func color(_ key: String) -> NSColor { Self.color(key, config: config) }
@@ -462,7 +431,6 @@ extension NSColor {
                 ghostty_config_free(runtime.config)
                 runtime.config = owned
                 runtime.diagnostics = readDiagnostics(owned)
-                if runtime.overrideValue == nil { runtime.fileDiagnostics = runtime.diagnostics }
                 runtime.onConfigChange()
             }
             return true

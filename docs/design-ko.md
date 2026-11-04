@@ -800,9 +800,18 @@ the runtime idle: each setting has one source. The knobs that only
 tests and tuning need stay environment variables (design.md, "Knobs").
 
 **`app:`.** Kido.app's terminal settings: the theme pair, the font,
-the cursor, the keyboard, the mouse, the clipboard, the window shades
+the keyboard, the mouse, the clipboard, the window shades
 and `keys`. This is a closed whitelist that the app maps to the
-Ghostty configuration that it generates (plans/app-config.md). A key
+Ghostty configuration that it generates (design-app.md, "Panes"): each
+key has a type, a default, a range and one Ghostty key, and no user file
+reaches Ghostty. A Ghostty option joins the whitelist by a decision, one
+key at a time. Colours live only in theme files, so the picker can show
+every colour that applies; `config-file` includes do not exist; and the
+options of windows, tabs, shells, notifications, scrollback and image
+storage are the app's or ko's, not Ghostty's. The cursor's style and blink are
+not settings: the restore of the server's snapshot replaces the
+mirror's defaults with the server's, so the app fixes
+`cursor-style-blink = false`. A key
 binding maps a `Trigger` (Ghostty's `modifier+key`, kept in one
 canonical spelling) to an `Action` of the few that Kido names. A
 trigger of the app's own menus (`ko_config::keys::MENU_OWNED`) is
@@ -811,7 +820,9 @@ monospaced font, which the app resolves. The server decodes `app:` and
 does not use it.
 
 **The C ABI.** Kido.app reads the file through `ko_client`, because
-the app must work without a server. `ko_config_load` returns the whole
+the app must work without a server. `ko_config_defaults` returns the
+default path and the default `Config`, which the app uses at a launch
+with a bad file. `ko_config_load` returns the whole
 decoded `Config` as JSON, with every default filled in, or the
 `Problem` with its line and column. The app decodes the JSON with the
 Swift types that `app/scripts/gen-ko-model.py` generates from the
@@ -1071,7 +1082,7 @@ Each decision names its date. The code states the rest.
 - Runtimes get a configuration file, the `runtimes:` key of
   `config.yaml`, because a runtime cannot be derived. The file has one
   top-level key for each owner; Kido.app's settings join it
-  (plans/app-config.md), and everything that can be derived stays
+  (4.14), and everything that can be derived stays
   without a file. Runtimes are managed through the HTTP API
   only: a runtime starts with its first pane or exec session and stops
   by the idle rule.

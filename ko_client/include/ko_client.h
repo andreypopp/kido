@@ -423,6 +423,14 @@ ko_code ko_remote_socket(const char *host, const ko_ssh_run *run, ko_buffer *out
 ko_code ko_remote_unreachable(const char *host, bool remote_answers, ko_buffer *out);
 
 /*
+ * Returns the default configuration and its path. Reads HOME and XDG_CONFIG_HOME, but no file.
+ * The caller frees `out`. KO_OK: {"path": "<default config path>", "config": Config}, with the
+ * same Config shape as ko_config_load. KO_ERR_IO: the path is not UTF-8; an error message as in
+ * ko_config_load. KO_ERR_ARGUMENT: `out` is NULL. Pure.
+ */
+ko_code ko_config_defaults(ko_buffer *out);
+
+/*
  * Reads and decodes the configuration file `path` (config.yaml, docs/design-ko.md "The
  * configuration file"). A file that does not exist is the default configuration. It reads one
  * file and blocks briefly; it starts nothing. `out` is filled in every case and the caller frees it:

@@ -5,7 +5,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::values::{Payload, ranged};
 
-const MENU_OWNED: [&str; 40] = [
+const MENU_OWNED: [&str; 49] = [
+    "super+1",
+    "super+2",
+    "super+3",
+    "super+4",
+    "super+5",
+    "super+6",
+    "super+7",
+    "super+8",
+    "super+9",
     "super+q",
     "super+n",
     "super+t",
@@ -336,6 +345,16 @@ mod tests {
         for text in ["super+e", "ctrl+d", "super+alt+d", "super+m", "alt+left"] {
             assert!(trigger(text).is_ok(), "{text}");
         }
+        for digit in 1..=9 {
+            let text = format!("super+digit_{digit}");
+            assert!(
+                trigger(&text)
+                    .unwrap_err()
+                    .ends_with("belongs to a menu of the app"),
+                "{text}"
+            );
+        }
+        assert!(trigger("super+digit_0").is_ok());
         for owned in MENU_OWNED {
             assert!(
                 Trigger::try_from(owned.to_owned()).is_err(),

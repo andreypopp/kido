@@ -32,7 +32,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     var window: NSWindow!
     private static var processRuntime: GhosttyRuntime?
     // Outlives every test's directory: Ghostty reads the file again on each appearance change.
-    nonisolated private static let processConfig = FileManager.default.temporaryDirectory.appendingPathComponent("kido-visual-\(getpid()).conf")
+    nonisolated private static let processConfig = FileManager.default.temporaryDirectory.appendingPathComponent("kido-visual-\(getpid()).yaml")
 
     override class func tearDown() {
         try? FileManager.default.removeItem(at: processConfig)
@@ -180,9 +180,9 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
         if Self.processRuntime == nil {
             let config = Self.processConfig
-            let theme = ThemeConf.line(.init())
-            try "\(theme)\nfont-family = Menlo\nfont-size = 13\ncursor-style-blink = false\nkeybind = super+e=text:X\nkeybind = super+shift+c=text:Y\n".write(to: config, atomically: true, encoding: .utf8)
+            try "app: {font: {size: 13}}\n".write(to: config, atomically: true, encoding: .utf8)
             Self.processRuntime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))))
+            Self.processRuntime?.loadTestBindings("keybind = super+e=text:X\nkeybind = super+shift+c=text:Y\n")
         }
         runtime = try XCTUnwrap(Self.processRuntime)
     }
@@ -267,8 +267,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     }
 
     func testSinglePaneHeaderPaper() async throws {
-        let config = directory.appendingPathComponent("single-pane-header.conf")
-        try "background = #fffaf0\n".write(to: config, atomically: true, encoding: .utf8)
+        let config = directory.appendingPathComponent("single-pane-header.yaml")
+        try configYAML(at: config, background: "fffaf0").write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         defer { owner.close() }
@@ -313,9 +313,124 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
     }
 
+    func testThemeFileReloadRepaintsExistingPane() async throws {
+        let config = directory.appendingPathComponent("theme-reload.yaml")
+        let themes = ThemePaths.directory(configFile: config.path)
+        try FileManager.default.createDirectory(at: themes, withIntermediateDirectories: true)
+        let theme = themes.appendingPathComponent("custom")
+        try "background = #000000\n".write(to: theme, atomically: true, encoding: .utf8)
+        try "app: {theme: custom, window: {unfocused_shift: 0}}\n".write(to: config, atomically: true, encoding: .utf8)
+        try await start(configFile: config.path)
+        let pane = try XCTUnwrap(terminal?.panes.first)
+        func check(_ rgb: [Int]) async throws {
+            try await presented()
+            let root = try XCTUnwrap(window.contentView)
+            let image = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
+            root.cacheDisplay(in: root.bounds, to: image)
+            let point = root.convert(CGPoint(x: pane.bounds.midX, y: pane.bounds.midY), from: pane)
+            let scale = CGFloat(image.pixelsWide) / root.bounds.width
+            let color = try XCTUnwrap(image.colorAt(x: Int(point.x * scale), y: Int((root.bounds.maxY - point.y) * scale))?.usingColorSpace(.sRGB))
+            for (actual, expected) in zip([color.redComponent, color.greenComponent, color.blueComponent], rgb) {
+                XCTAssertEqual(actual * 255, Double(expected), accuracy: 2)
+            }
+        }
+        try await check([0, 0, 0])
+        let reloaded = expectation(description: "theme contents reach existing surfaces")
+        let previous = runtime.onConfigReload
+        runtime.onConfigReload = { font in previous(font); reloaded.fulfill() }
+        try "background = #ffffff\n".write(to: theme, atomically: true, encoding: .utf8)
+        XCTAssertTrue(ghostty_surface_binding_action(pane.surface, "reload_config", 13))
+        await fulfillment(of: [reloaded], timeout: 5)
+        try await check([255, 255, 255])
+    }
+
+    func testYAMLFontRendering() async throws {
+        let config = directory.appendingPathComponent("font.yaml")
+        try "app: {theme: kido-light, font: {family: Menlo, size: 15}}\n".write(to: config, atomically: true, encoding: .utf8)
+        try await start(configFile: config.path)
+        let pane = try XCTUnwrap(terminal?.panes.first)
+        try await emit(pane, "Menlo 15\r\nAaBb 0123456789 => != ffi\r\n")
+        window.makeFirstResponder(pane)
+        pane.syncFocus()
+        ghostty_app_set_focus(runtime.app, true)
+        ghostty_surface_set_focus(pane.surface, true)
+        try await snapshot("font-size-family", testName: "testYAMLSettingsRendering")
+    }
+
+    func testYAMLSettingsRendering() async throws {
+        let config = directory.appendingPathComponent("settings.yaml")
+        try "app: {theme: kido-light}\n".write(to: config, atomically: true, encoding: .utf8)
+        try await start(configFile: config.path)
+        let pane = try XCTUnwrap(terminal?.panes.first)
+        try await emit(pane, "System monospaced font\r\nAaBb 0123456789 => != ffi\r\n")
+        try await snapshot("system-mono-light")
+        let themes = directory.appendingPathComponent("themes")
+        try FileManager.default.createDirectory(at: themes, withIntermediateDirectories: true)
+        try "background = #123456\nforeground = #fefefe\ncursor-color = #ffcc00\n".write(to: themes.appendingPathComponent("custom"), atomically: true, encoding: .utf8)
+        for (name, label, yaml) in [
+            ("dark", "System mono 13, kido-dark theme", "app: {theme: kido-dark}\n"),
+            ("user-theme", "System mono 13, user theme custom", "app: {theme: custom}\n")
+        ] {
+            let changed = expectation(description: name)
+            runtime.onConfigChange = { changed.fulfill() }
+            try yaml.write(to: config, atomically: true, encoding: .utf8)
+            await fulfillment(of: [changed], timeout: 5)
+            XCTAssertNil(runtime.configError)
+            XCTAssertEqual(runtime.diagnostics, [])
+            window.backgroundColor = runtime.unfocusedPaper
+            window.appearance = NSAppearance(named: runtime.background.isDark ? .darkAqua : .aqua)
+            session.updateBackground()
+            try await emit(pane, "\u{1b}[2J\u{1b}[H\(label)\r\nAaBb 0123456789 => != ffi\r\n\u{1b}[?25h")
+            window.makeFirstResponder(pane)
+            pane.syncFocus()
+            ghostty_app_set_focus(runtime.app, true)
+            ghostty_surface_set_focus(pane.surface, true)
+            try await settle()
+            try await snapshot(name)
+        }
+    }
+
+    func testConfigErrorBanner() async throws {
+        let config = directory.appendingPathComponent("config.yaml")
+        try "app: {theme: kido-light}\n".write(to: config, atomically: true, encoding: .utf8)
+        try await start(configFile: config.path)
+        let sidebar = Sidebar()
+        window.contentViewController = sidebar
+        sidebar.content.addSubview(session)
+        session.frame = sidebar.content.bounds
+        session.autoresizingMask = [.width, .height]
+        sidebar.isCollapsed = true
+        let pane = try XCTUnwrap(terminal?.panes.first)
+        try await emit(pane, "The terminal stays usable while config.yaml has an error.\r\n$ vim ~/.config/ko/config.yaml\r\n")
+        for side in ["light", "dark"] {
+            let changed = expectation(description: side)
+            runtime.onConfigChange = { changed.fulfill() }
+            try "app: {theme: kido-\(side)}\n".write(to: config, atomically: true, encoding: .utf8)
+            await fulfillment(of: [changed], timeout: 5)
+            window.appearance = NSAppearance(named: side == "dark" ? .darkAqua : .aqua)
+            window.backgroundColor = runtime.unfocusedPaper
+            sidebar.terminalHost.wantsLayer = true
+            sidebar.terminalHost.layer?.backgroundColor = runtime.unfocusedPaper.cgColor
+            sidebar.content.wantsLayer = true
+            sidebar.content.layer?.backgroundColor = runtime.background.cgColor
+            sidebar.updateAppearance(runtime: runtime)
+            session.updateBackground()
+            sidebar.configBanner.background = runtime.background
+            let failed = expectation(description: "invalid config")
+            runtime.onConfigChange = { failed.fulfill() }
+            try "app:\n  font: {size: wrong}\n".write(to: config, atomically: true, encoding: .utf8)
+            await fulfillment(of: [failed], timeout: 5)
+            let error = try XCTUnwrap(runtime.configError)
+            sidebar.showConfigError(("~/.config/ko/config.yaml has an error", error.problem.detail))
+            try await settle()
+            try await snapshot(side, view: sidebar.terminalHost)
+            sidebar.showConfigError(nil)
+        }
+    }
+
     func testAdjustedFontConfigReload() async throws {
-        let config = directory.appendingPathComponent("adjusted-font.conf")
-        try "font-family = Menlo\nfont-size = 13\n".write(to: config, atomically: true, encoding: .utf8)
+        let config = directory.appendingPathComponent("adjusted-font.yaml")
+        try "app: {font: {size: 13}}\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
         let first = try XCTUnwrap(terminal?.panes.first)
         let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
@@ -341,7 +456,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         for (size, background, expected) in reloads {
             let changed = expectation(description: "config reload")
             runtime.onConfigChange = { changed.fulfill() }
-            try "font-family = Menlo\nfont-size = \(size)\nbackground = \(background)\n".write(to: config, atomically: false, encoding: .utf8)
+            try configYAML(at: config, background: background, size: size).write(to: config, atomically: false, encoding: .utf8)
             await fulfillment(of: [changed], timeout: 3)
             await mainQueueFence()
             for pane in allPanes {
@@ -396,20 +511,20 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     }
 
     func testLiveConfigReflowsPane() async throws {
-        let config = directory.appendingPathComponent("live.conf")
-        try "font-family = Menlo\nfont-size = 13\n".write(to: config, atomically: true, encoding: .utf8)
+        let config = directory.appendingPathComponent("live.yaml")
+        try "app: {font: {size: 13}}\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
         let pane = try XCTUnwrap(terminal?.panes.first)
         let before = ghostty_surface_size(pane.surface)
         let shaded = expectation(description: "shade-only reload")
         runtime.onConfigChange = { shaded.fulfill() }
-        try "font-family = Menlo\nfont-size = 13\nkido-sidebar-shade = 30%\n".write(to: config, atomically: false, encoding: .utf8)
+        try "app: {font: {size: 13}, window: {sidebar_shade: 30}}\n".write(to: config, atomically: false, encoding: .utf8)
         await fulfillment(of: [shaded], timeout: 0.3)
         await mainQueueFence()
         XCTAssertEqual(ghostty_surface_size(pane.surface).cell_height_px, before.cell_height_px, "a shade-only reload keeps the cell")
         let changed = expectation(description: "font config reload")
         runtime.onConfigChange = { changed.fulfill() }
-        try "font-family = Menlo\nfont-size = 20\n".write(to: config, atomically: false, encoding: .utf8)
+        try "app: {font: {size: 20}}\n".write(to: config, atomically: false, encoding: .utf8)
         await fulfillment(of: [changed], timeout: 0.3)
         try await settle()
         let after = ghostty_surface_size(pane.surface)
@@ -887,10 +1002,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     func testPaneFocusTreatment() async throws {
         SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
         defer { SidebarView.visualNow = nil }
-        let config = directory.appendingPathComponent("focus.conf")
-        let themes = app.appendingPathComponent("Resources/ghostty/themes").path
-        let settings = "font-family = Menlo\nfont-size = 13\ncursor-style-blink = false\n"
-        try (ThemeConf.line(.init()) + "\n" + settings).write(to: config, atomically: true, encoding: .utf8)
+        let config = directory.appendingPathComponent("focus.yaml")
+        try "app: {font: {size: 13}}\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
         let sidebar = Sidebar()
         window.titleVisibility = .hidden
@@ -1241,11 +1354,11 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             sidebar.updateAppearance(runtime: runtime)
             reloaded.fulfill()
         }
-        try ("theme = \(themes)/kido-light\nkido-sidebar-shade = 40%\n" + settings).write(to: config, atomically: false, encoding: .utf8)
+        try "app: {theme: kido-light, window: {sidebar_shade: 40}}\n".write(to: config, atomically: false, encoding: .utf8)
         await fulfillment(of: [reloaded], timeout: 5)
         try await settle()
         try await drain(runtime)
-        XCTAssertEqual(runtime.settings.sidebarShade, 0.4)
+        XCTAssertEqual(runtime.sidebarShade, 0.4)
         try await paint(content: "\u{1b}[48;2;255;249;236m" + String(repeating: " ", count: 40) + "\u{1b}[0m")
         let frames = expectation(description: "reloaded paper presented")
         frames.expectedFulfillmentCount = terminal.panes.count
@@ -1256,13 +1369,13 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             check(try color(image, pane, CGPoint(x: pane.bounds.midX, y: 35)), [247, 242, 229], "pane shade ignores sidebar override after reload")
             check(try color(image, pane, CGPoint(x: 40, y: pane.bounds.maxY - 15)), [255, 249, 236], "explicit default-colour cell background stays opaque")
         }
-        for (setting, expected) in [("kido-unfocused-background-shift = 20%\n", [204, 199, 189]), ("", [247, 242, 229]), ("kido-unfocused-background-shift = -20%\n", [204, 199, 189])] {
+        for (setting, expected) in [(20, [204, 199, 189]), (3, [247, 242, 229]), (-20, [204, 199, 189])] {
             let changed = expectation(description: "pane shift reloaded")
             runtime.onConfigChange = { [weak self] in
                 self?.session.updateBackground()
                 changed.fulfill()
             }
-            try ("theme = \(themes)/kido-light\nkido-sidebar-shade = 40%\n" + setting + settings).write(to: config, atomically: false, encoding: .utf8)
+            try "app: {theme: kido-light, window: {sidebar_shade: 40, unfocused_shift: \(setting)}}\n".write(to: config, atomically: false, encoding: .utf8)
             await fulfillment(of: [changed], timeout: 5)
             try await settle()
             try await drain(runtime)

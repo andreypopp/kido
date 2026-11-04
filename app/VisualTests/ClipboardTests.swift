@@ -219,8 +219,8 @@ import KoModel
     }
 
     func testAMirrorNeitherAnswersNorAppliesOSC52OrOSC5522() async throws {
-        let config = URL(fileURLWithPath: "/tmp/kido-clipboard-\(UUID().uuidString).conf")
-        try "clipboard-read = allow\nclipboard-write = allow\n".write(to: config, atomically: true, encoding: .utf8)
+        let config = URL(fileURLWithPath: "/tmp/kido-clipboard-\(UUID().uuidString).yaml")
+        try "app: {clipboard: {read: allow, write: allow}}\n".write(to: config, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: config) }
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
@@ -247,12 +247,27 @@ import KoModel
         XCTAssertNil(owner.preparedAlert)
         XCTAssertEqual(board.changeCount, changes)
         XCTAssertEqual(board.string(forType: .string), "secret")
-        XCTAssertEqual(runtime.clipboard, .init(read: .ask, write: .allow), "the user's allow is the server path's policy: reads still ask")
+        XCTAssertEqual(runtime.clipboard.read, .allow)
+        XCTAssertEqual(runtime.clipboard.write, .allow)
+    }
+
+    func testExplicitAllowReadsWithoutAConsentSheet() async throws {
+        let config = URL(fileURLWithPath: "/tmp/clipboard-allow-\(UUID().uuidString).yaml")
+        try "app: {clipboard: {read: allow}}\n".write(to: config, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: config) }
+        let rig = try await rig(configFile: config.path)
+        rig.board.clearContents()
+        rig.board.setString("explicitly allowed", forType: .string)
+        let station = rig.stations[0]
+        station.send(query())
+        let reply = try await station.reply(until: b64("explicitly allowed"), self)
+        XCTAssertEqual(reply, answer("c", "explicitly allowed"))
+        XCTAssertNil(rig.owner.preparedAlert)
     }
 
     func testConsentCancellationRegistersAndLimits() async throws {
-        let config = URL(fileURLWithPath: "/tmp/kido-clipboard-\(UUID().uuidString).conf")
-        try "clipboard-read = allow\n".write(to: config, atomically: true, encoding: .utf8)
+        let config = URL(fileURLWithPath: "/tmp/kido-clipboard-\(UUID().uuidString).yaml")
+        try "app: {clipboard: {read: ask}}\n".write(to: config, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: config) }
         let rig = try await rig(configFile: config.path)
         let (board, runtime, owner, station) = (rig.board, rig.runtime, rig.owner, rig.stations[0])
@@ -383,11 +398,12 @@ import KoModel
         XCTAssertFalse(next.allows(.local))
         consent.reset()
         XCTAssertFalse(next.allows(.remote("user@alias")))
-        let config = URL(fileURLWithPath: "/tmp/\(suite).conf")
-        try "clipboard-read = deny\nclipboard-write = deny\n".write(to: config, atomically: true, encoding: .utf8)
+        let config = URL(fileURLWithPath: "/tmp/\(suite).yaml")
+        try "app: {clipboard: {read: deny, write: deny}}\n".write(to: config, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: config) }
         let rig = try await rig(configFile: config.path)
-        XCTAssertEqual(rig.runtime.clipboard, .init(read: .deny, write: .deny))
+        XCTAssertEqual(rig.runtime.clipboard.read, .deny)
+        XCTAssertEqual(rig.runtime.clipboard.write, .deny)
         let (board, owner, station) = (rig.board, rig.owner, rig.stations[0])
         board.clearContents()
         board.setString("kept", forType: .string)

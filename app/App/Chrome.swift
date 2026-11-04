@@ -52,6 +52,7 @@ enum Chrome {
     static var cardSurface: (fillMix: Double, edgeAlpha: CGFloat) { (0.07, 0.14) }
     static func capsuleEdge(_ foreground: NSColor, alpha: CGFloat) -> NSColor { foreground.withAlphaComponent(alpha) }
     static func bannerVeil(_ background: NSColor) -> NSColor { background.withAlphaComponent(0.85) }
+    static func configErrorPaper(_ background: NSColor) -> NSColor { background.shifted(0.05) }
     static func floatingOverlay(_ background: NSColor) -> NSColor { background.withAlphaComponent(0.45) }
     static func matchHighlight(_ foreground: NSColor) -> NSColor { foreground.withAlphaComponent(0.14) }
     // A runtime's colour: the configured one as given, else the hue of its name at the saturation and

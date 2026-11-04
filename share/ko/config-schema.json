@@ -9,15 +9,11 @@
       "$ref": "#/$defs/App",
       "default": {
         "clipboard": {
-          "copy_on_select": "on",
+          "copy_on_select": false,
           "paste_protection": true,
           "read": "ask",
           "trim_trailing_spaces": true,
           "write": "allow"
-        },
-        "cursor": {
-          "blink": false,
-          "style": "block"
         },
         "font": {
           "features": [],
@@ -96,18 +92,11 @@
         "clipboard": {
           "$ref": "#/$defs/Clipboard",
           "default": {
-            "copy_on_select": "on",
+            "copy_on_select": false,
             "paste_protection": true,
             "read": "ask",
             "trim_trailing_spaces": true,
             "write": "allow"
-          }
-        },
-        "cursor": {
-          "$ref": "#/$defs/Cursor",
-          "default": {
-            "blink": false,
-            "style": "block"
           }
         },
         "font": {
@@ -192,8 +181,8 @@
       "type": "object",
       "properties": {
         "copy_on_select": {
-          "$ref": "#/$defs/CopyOnSelect",
-          "default": "on"
+          "type": "boolean",
+          "default": false
         },
         "paste_protection": {
           "description": "Ask before a paste that looks unsafe.",
@@ -343,38 +332,6 @@
       "additionalProperties": false,
       "required": [
         "from"
-      ]
-    },
-    "CopyOnSelect": {
-      "description": "Whether a selection is copied at once: never, to the selection clipboard, or to both clipboards.",
-      "type": "string",
-      "enum": [
-        "off",
-        "on",
-        "clipboard"
-      ]
-    },
-    "Cursor": {
-      "type": "object",
-      "properties": {
-        "blink": {
-          "type": "boolean",
-          "default": false
-        },
-        "style": {
-          "$ref": "#/$defs/CursorStyle",
-          "default": "block"
-        }
-      },
-      "additionalProperties": false
-    },
-    "CursorStyle": {
-      "type": "string",
-      "enum": [
-        "block",
-        "bar",
-        "underline",
-        "block_hollow"
       ]
     },
     "Destination": {

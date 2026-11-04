@@ -1,22 +1,37 @@
 import AppKit
 import GhosttyKit
+import KoModel
 
 enum ThemeStep: Equatable {
     case pick, save(ThemeRow)
 }
 
 struct ThemeRow: Equatable {
-    enum Problem: Equatable {
-        case missing, invalid(String)
-        var text: String { switch self { case .missing: "theme file not found"; case .invalid(let line): "invalid: " + line } }
-    }
     let name: String
     let value: String
     let path: String
     let background: NSColor
     let foreground: NSColor
     let colors: [NSColor]
-    var problem: Problem?
+    let file: ThemeFile
+    var problem: ThemeFile.Problem? { file.problem }
+
+    @MainActor static func load(_ path: String, file: ThemeFile? = nil) -> ThemeRow {
+        let file = file ?? ThemeFile(path)
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        let config = ghostty_config_new()!
+        defer { ghostty_config_free(config) }
+        if let data = file.contents {
+            let text = String(decoding: data, as: UTF8.self)
+            ghostty_config_load_string(config, text, UInt(data.count), path)
+        }
+        var palette = ghostty_config_palette_s()
+        _ = ghostty_config_get(config, &palette, "palette", 7)
+        let colors = withUnsafePointer(to: &palette.colors) { pointer in
+            pointer.withMemoryRebound(to: ghostty_config_color_s.self, capacity: 256) { p in [4, 2, 1, 3].map { GhosttyRuntime.color(p[$0]) } }
+        }
+        return ThemeRow(name: name, value: name, path: path, background: GhosttyRuntime.color("background", config: config), foreground: GhosttyRuntime.color("foreground", config: config), colors: colors, file: file)
+    }
 
     func drawSwatch(at point: NSPoint) {
         let box = NSBezierPath(roundedRect: NSRect(origin: point, size: NSSize(width: 18, height: 18)), xRadius: 4, yRadius: 4)
@@ -38,67 +53,49 @@ struct ThemeRow: Equatable {
         var isError: Bool { if case .preview = self { false } else { true } }
         var canReveal: Bool { if case .writeError = self { true } else { false } }
     }
-    static let bundled = ["kido-light", "kido-dark", "ahrefs-light", "ahrefs-dark", "solarized-light", "solarized-dark"]
     let runtime: GhosttyRuntime
     let directory: String
-    let pair: ThemeConf.Pair
+    let pair: KoSchema.ThemePair
     var rows: [ThemeRow]
     var query = ""
     var selection = 0
     private(set) var dark = false
     private(set) var radio = 0
-    private var savePair = ThemeConf.Pair()
+    private var savePair: KoSchema.ThemePair
     private(set) var status: Status?
 
     init(runtime: GhosttyRuntime) {
         self.runtime = runtime
-        directory = URL(fileURLWithPath: runtime.configFile).deletingLastPathComponent().appendingPathComponent("themes").path
-        let parsed = (try? ThemeConf.read(runtime.configFile))?.pair ?? .init()
-        pair = ThemeConf.Pair(light: runtime.expand(parsed.light), dark: runtime.expand(parsed.dark))
-        let bundled = Bundle.main.resourceURL!.appendingPathComponent("ghostty/themes")
-        rows = Self.bundled.map { Self.load(name: $0, value: $0, path: bundled.appendingPathComponent($0).path) }
+        directory = ThemePaths.directory(configFile: runtime.configFile).path
+        pair = AppConfig.pair(runtime.values.theme)
+        savePair = pair
+        rows = ThemePaths.bundled.map { ThemeRow.load(ThemePaths.path($0, configFile: runtime.configFile)) }
         let files = (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
         rows += files.filter { name in
-            guard !name.hasPrefix("."), ThemeConf.isBareName(name) else { return false }
+            // Use the ThemeName rule in ko_config/src/values.rs.
+            guard !name.hasPrefix("."),
+                  !name.unicodeScalars.contains(where: { "/,:=".unicodeScalars.contains($0) || $0.properties.generalCategory == .control }),
+                  !ThemePaths.bundled.contains(name) else { return false }
             var info = stat()
             return stat(directory + "/" + name, &info) == 0 && info.st_mode & S_IFMT == S_IFREG
-        }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.map { Self.load(name: $0, value: directory + "/" + $0, path: directory + "/" + $0) }
+        }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }.map { ThemeRow.load(ThemePaths.path($0, configFile: runtime.configFile)) }
         dark = runtime.colorScheme == GHOSTTY_COLOR_SCHEME_DARK
         selection = rows.firstIndex { $0.value == (dark ? pair.dark : pair.light) } ?? 0
         status = fileStatus()
     }
     private func fileStatus() -> Status? {
-        let dark = runtime.colorScheme == GHOSTTY_COLOR_SCHEME_DARK
-        for (side, value) in dark ? [("Dark", pair.dark), ("Light", pair.light)] : [("Light", pair.light), ("Dark", pair.dark)] {
-            guard let diagnostic = runtime.fileDiagnostics.first(where: { message in
-                if message.contains("theme"), message.contains("\"\(value)\"") { return true }
-                if value.hasPrefix("/") { return message.hasPrefix(value + ":") }
-                return message.hasPrefix("/") && message.prefix(while: { $0 != ":" }).hasSuffix("/themes/" + value)
-            }) else { continue }
-            let missing = diagnostic.contains("not found") || (value.hasPrefix("/") && !FileManager.default.fileExists(atPath: value))
-            let problem = missing ? "not found" : "invalid: " + diagnostic
-            return .fileError("\(runtime.abbreviate(value)): \(problem). The current config names it for \(side); Ghostty's default colours are shown instead.")
+        guard let error = runtime.configError else { return nil }
+        if error.path != runtime.configFile {
+            let sides = runtime.colorScheme == GHOSTTY_COLOR_SCHEME_DARK ? [("Dark", pair.dark), ("Light", pair.light)] : [("Light", pair.light), ("Dark", pair.dark)]
+            if let (side, name) = sides.first(where: { ThemePaths.path($0.1, configFile: runtime.configFile) == error.path }) {
+                return .fileError("\(name): \(error.problem.message). The current config names it for \(side); Kido's default theme is shown instead.")
+            }
         }
-        return nil
-    }
-    private static func load(name: String, value: String, path: String) -> ThemeRow {
-        let config = ghostty_config_new()!
-        defer { ghostty_config_free(config) }
-        ghostty_config_load_file(config, path)
-        ghostty_config_finalize(config)
-        var palette = ghostty_config_palette_s()
-        _ = ghostty_config_get(config, &palette, "palette", 7)
-        let colors = withUnsafePointer(to: &palette.colors) { pointer in
-            pointer.withMemoryRebound(to: ghostty_config_color_s.self, capacity: 256) { p in [4, 2, 1, 3].map { GhosttyRuntime.color(p[$0]) } }
-        }
-        var problem: ThemeRow.Problem?
-        if !FileManager.default.fileExists(atPath: path) { problem = .missing }
-        else if ghostty_config_diagnostics_count(config) > 0 { problem = .invalid(String(cString: ghostty_config_get_diagnostic(config, 0).message)) }
-        return ThemeRow(name: name, value: value, path: path, background: GhosttyRuntime.color("background", config: config), foreground: GhosttyRuntime.color("foreground", config: config), colors: colors, problem: problem)
+        return .fileError("\(runtime.abbreviate(error.path)): \(error.problem.detail)")
     }
     func entries(_ step: ThemeStep = .pick) -> [(entry: PaletteEntry, offsets: [[Int]])] {
         if case .save = step {
-            return [(dark ? "Dark mode" : "Light mode", " · the current appearance"), (dark ? "Light mode" : "Dark mode", ""), ("Both", " · one theme whatever the appearance"), ("This session only", " · not saved to kido-app.conf")].enumerated().map { index, item in
+            return [(dark ? "Dark mode" : "Light mode", " · the current appearance"), (dark ? "Light mode" : "Dark mode", ""), ("Both", " · one theme whatever the appearance"), ("This session only", " · not saved to config.yaml")].enumerated().map { index, item in
                 (PaletteEntry(id: .themeUse(index), title: item.0, detail: item.1, operation: .themeUse), [[], []])
             }
         }
@@ -111,11 +108,7 @@ struct ThemeRow: Equatable {
     }
     func check(_ value: String) -> ThemeRow {
         let index = rows.firstIndex { $0.value == value }!
-        var info = stat()
-        if stat(rows[index].path, &info) != 0 || info.st_mode & S_IFMT != S_IFREG { rows[index].problem = .missing }
-        else if rows[index].problem == nil, let diagnostic = runtime.diagnostics.first(where: { $0.contains(rows[index].path) || ($0.contains("theme") && $0.contains(value)) }) {
-            rows[index].problem = .invalid(diagnostic)
-        }
+        rows[index] = ThemeRow.load(rows[index].path)
         return rows[index]
     }
     private func applyPreview(_ row: ThemeRow) {
@@ -127,10 +120,9 @@ struct ThemeRow: Equatable {
             status = .preview("Previewing \(row.name). ↩ chooses where to use it, esc restores the current theme.")
         }
     }
-    @discardableResult func preview(_ row: ThemeRow) -> Bool {
-        let previous = rows
-        applyPreview(check(row.value))
-        return previous != rows
+    func preview(_ row: ThemeRow) {
+        runtime.previewTheme(row.value)
+        status = .preview("Previewing \(row.name). ↩ chooses where to use it, esc restores the current theme.")
     }
     func configChanged() -> Bool {
         guard case .preview(let value) = runtime.themeOverride else {
@@ -138,9 +130,10 @@ struct ThemeRow: Equatable {
             status = fileStatus()
             return false
         }
+        guard let index = rows.firstIndex(where: { $0.value == value }), let file = runtime.themeFiles[rows[index].path] else { return false }
         let previous = rows
-        let row = check(value)
-        if row.problem != nil { applyPreview(row) }
+        rows[index] = ThemeRow.load(rows[index].path, file: file)
+        if rows[index].problem != nil { applyPreview(rows[index]) }
         return previous != rows
     }
     func beginSave(_ row: ThemeRow) {
@@ -150,9 +143,9 @@ struct ThemeRow: Equatable {
     func selectRadio(_ index: Int, row: ThemeRow) {
         radio = index
         guard index != 3 else { return }
-        savePair = merged(row, current: (try? ThemeConf.read(runtime.configFile))?.pair ?? .init())
+        savePair = merged(row, current: (try? AppConfig.load(runtime.configFile)).map { AppConfig.pair($0.theme) } ?? pair)
     }
-    private func merged(_ row: ThemeRow, current: ThemeConf.Pair) -> ThemeConf.Pair {
+    private func merged(_ row: ThemeRow, current: KoSchema.ThemePair) -> KoSchema.ThemePair {
         var pair = current
         if radio == 2 || (radio == 0 ? !dark : dark) { pair.light = row.value }
         if radio == 2 || (radio == 0 ? dark : !dark) { pair.dark = row.value }
@@ -160,7 +153,7 @@ struct ThemeRow: Equatable {
     }
     func foot(_ row: ThemeRow? = nil) -> String {
         if row != nil, radio == 3 { return "applies until quit; \(runtime.abbreviate(runtime.configFile)) is not changed" }
-        if row != nil { return "writes \(ThemeConf.line(savePair)) to \(runtime.abbreviate(runtime.configFile))" }
+        if row != nil { return "writes theme: light: \(savePair.light), dark: \(savePair.dark) to \(runtime.abbreviate(runtime.configFile))" }
         return "themes: bundled + \(runtime.abbreviate(directory))"
     }
     func reveal() {
@@ -177,15 +170,14 @@ struct ThemeRow: Equatable {
         }
         runtime.flushTheme()
         do {
-            let changed = try ThemeConf.write(to: runtime.configFile) { merged(row, current: $0) }
-            runtime.saveThemeOverride(nil, reload: !changed)
+            let current = AppConfig.pair(try AppConfig.load(runtime.configFile).theme)
+            try AppConfig.setTheme(runtime.configFile, merged(row, current: current))
+            runtime.saveThemeOverride(nil, reload: true)
             return true
         } catch {
             runtime.saveThemeOverride(row.value)
-            let failure = error as NSError
-            let underlying = failure.userInfo[NSUnderlyingErrorKey] as? NSError
-            let code = Int32(underlying?.code ?? failure.code)
-            status = .writeError("Could not write \(runtime.abbreviate(runtime.configFile)): \(String(cString: strerror(code)).lowercased()). \(row.name) is applied for this session only.")
+            let message = (error as? ConfigProblem)?.detail ?? error.localizedDescription
+            status = .writeError("Could not write \(runtime.abbreviate(runtime.configFile)): \(message). \(row.name) is applied for this session only.")
             return false
         }
     }

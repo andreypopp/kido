@@ -3459,6 +3459,23 @@ mod tests {
     }
 
     #[test]
+    fn config_defaults_returns_the_path_and_config_without_reading_a_file() {
+        let mut out = empty_buffer();
+        // SAFETY: out is writable; a null out is tested as a refused argument.
+        unsafe {
+            assert_eq!(ko_config_defaults(&mut out), Code::Ok);
+            assert_eq!(ko_config_defaults(std::ptr::null_mut()), Code::Argument);
+        }
+        let value: Value = serde_json::from_str(&contents(&out)).unwrap();
+        assert!(Path::new(value["path"].as_str().unwrap()).ends_with("ko/config.yaml"));
+        assert_eq!(
+            value["config"],
+            serde_json::to_value(ko_config::config::Config::default()).unwrap()
+        );
+        freed_once(&mut out);
+    }
+
+    #[test]
     fn a_config_load_gives_the_decoded_file_with_defaults_or_the_error_with_its_place() {
         let dir = config_dir("load");
         let file = dir.join("config.yaml");
@@ -3555,10 +3572,7 @@ mod tests {
             .unwrap();
         let (code, value) = set_theme(&file, c"A", c"B");
         assert_eq!(code, Code::Io);
-        assert!(
-            value["error"]["message"].is_string() && value["error"].get("line").is_none(),
-            "{value}"
-        );
+        assert_eq!(value, json!({"error": {"message": "permission denied"}}));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

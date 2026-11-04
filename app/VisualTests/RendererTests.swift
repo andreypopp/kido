@@ -16,8 +16,8 @@ import KoModel
 
     override func setUp() async throws {
         try await super.setUp()
-        config = URL(fileURLWithPath: "/tmp/kido-renderer-\(UUID().uuidString).conf")
-        try "cursor-style-blink = false\ncustom-shader-animation = false\nwindow-vsync = true\n".write(to: config, atomically: true, encoding: .utf8)
+        config = URL(fileURLWithPath: "/tmp/kido-renderer-\(UUID().uuidString).yaml")
+        try "".write(to: config, atomically: true, encoding: .utf8)
         board = NSPasteboard(name: .init("kido-renderer-\(UUID().uuidString)"))
         runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
         PaneView.renderOffscreen = true

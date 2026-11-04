@@ -14,7 +14,6 @@ pub struct App {
     /// The colour theme for the light and the dark appearance.
     pub theme: Theme,
     pub font: Font,
-    pub cursor: Cursor,
     pub keyboard: Keyboard,
     pub mouse: Mouse,
     pub clipboard: Clipboard,
@@ -99,23 +98,6 @@ pub struct Font {
     pub line_height: LineHeight,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CursorStyle {
-    #[default]
-    Block,
-    Bar,
-    Underline,
-    BlockHollow,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields, default)]
-pub struct Cursor {
-    pub style: CursorStyle,
-    pub blink: bool,
-}
-
 /// Whether the option key acts as alt: off, on, or the left or right one only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -166,16 +148,6 @@ pub enum ClipboardWrite {
     Deny,
 }
 
-/// Whether a selection is copied at once: never, to the selection clipboard, or to both clipboards.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CopyOnSelect {
-    Off,
-    #[default]
-    On,
-    Clipboard,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct Clipboard {
@@ -183,7 +155,7 @@ pub struct Clipboard {
     pub read: ClipboardRead,
     /// Whether a program may write the clipboard (OSC 52).
     pub write: ClipboardWrite,
-    pub copy_on_select: CopyOnSelect,
+    pub copy_on_select: bool,
     /// Ask before a paste that looks unsafe.
     pub paste_protection: bool,
     pub trim_trailing_spaces: bool,
@@ -194,7 +166,7 @@ impl Default for Clipboard {
         Clipboard {
             read: ClipboardRead::default(),
             write: ClipboardWrite::default(),
-            copy_on_select: CopyOnSelect::default(),
+            copy_on_select: false,
             paste_protection: true,
             trim_trailing_spaces: true,
         }
@@ -228,10 +200,9 @@ mod tests {
             serde_json::json!({
                 "theme": {"light": "kido-light", "dark": "kido-dark"},
                 "font": {"size": 13.0, "features": [], "thicken": false, "line_height": 0.0},
-                "cursor": {"style": "block", "blink": false},
                 "keyboard": {"option_as_alt": "off"},
                 "mouse": {"scroll_multiplier": {"precision": 1.0, "discrete": 3.0}, "hide_while_typing": false},
-                "clipboard": {"read": "ask", "write": "allow", "copy_on_select": "on", "paste_protection": true, "trim_trailing_spaces": true},
+                "clipboard": {"read": "ask", "write": "allow", "copy_on_select": false, "paste_protection": true, "trim_trailing_spaces": true},
                 "window": {"sidebar_shade": 5.0, "unfocused_shift": 3.0},
                 "keys": {}
             })
@@ -249,7 +220,6 @@ app:
     features: [ss13, -ss17, +liga, '0123']
     thicken: true
     line_height: -5.5
-  cursor: {style: block_hollow, blink: true}
   keyboard: {option_as_alt: left}
   mouse:
     scroll_multiplier: {precision: 0.5, discrete: 10}
@@ -257,7 +227,7 @@ app:
   clipboard:
     read: deny
     write: deny
-    copy_on_select: clipboard
+    copy_on_select: true
     paste_protection: false
     trim_trailing_spaces: false
   window: {sidebar_shade: -10, unfocused_shift: 0}
@@ -272,10 +242,9 @@ app:
             serde_json::json!({
                 "theme": {"light": "a", "dark": "b"},
                 "font": {"family": "PragmataPro Mono Liga", "size": 16.0, "features": ["ss13", "-ss17", "+liga", "0123"], "thicken": true, "line_height": -5.5},
-                "cursor": {"style": "block_hollow", "blink": true},
                 "keyboard": {"option_as_alt": "left"},
                 "mouse": {"scroll_multiplier": {"precision": 0.5, "discrete": 10.0}, "hide_while_typing": true},
-                "clipboard": {"read": "deny", "write": "deny", "copy_on_select": "clipboard", "paste_protection": false, "trim_trailing_spaces": false},
+                "clipboard": {"read": "deny", "write": "deny", "copy_on_select": true, "paste_protection": false, "trim_trailing_spaces": false},
                 "window": {"sidebar_shade": -10.0, "unfocused_shift": 0.0},
                 "keys": {"alt+k": "unbind", "ctrl+shift+arrow_up": "csi:1;5A", "super+e": "text:X"}
             })
@@ -441,14 +410,14 @@ app:
             "cursor: {style: beam}",
             "clipboard: {read: on}",
             "clipboard: {write: ask}",
-            "clipboard: {copy_on_select: true}",
+            "clipboard: {copy_on_select: on}",
         ] {
             assert!(parse(&format!("app: {{{text}}}\n")).is_err(), "{text}");
         }
         crate::config::refusals(&[
             (
                 "app:\n  cursor: {style: beam}\n",
-                "app: cursor: style: unknown variant `beam`, expected one of `block`, `bar`, `underline`, `block_hollow` at line 2 column 19",
+                "app: unknown field `cursor`, expected one of `theme`, `font`, `keyboard`, `mouse`, `clipboard`, `window`, `keys` at line 2 column 3",
             ),
             (
                 "app:\n  clipboard: {blink: true}\n",
@@ -465,12 +434,8 @@ app:
                 "app: font: thicken: invalid type: string \"1\", expected a boolean at line 2 column 19",
             ),
             (
-                "app:\n  cursor: {blink: yes}\n",
-                "app: cursor: blink: invalid type: string \"yes\", expected a boolean at line 2 column 19",
-            ),
-            (
                 "app:\n  fonts: {}\n",
-                "app: unknown field `fonts`, expected one of `theme`, `font`, `cursor`, `keyboard`, `mouse`, `clipboard`, `window`, `keys` at line 2 column 3",
+                "app: unknown field `fonts`, expected one of `theme`, `font`, `keyboard`, `mouse`, `clipboard`, `window`, `keys` at line 2 column 3",
             ),
             (
                 "app:\n  font: {colour: red}\n",

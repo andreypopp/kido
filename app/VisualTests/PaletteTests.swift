@@ -18,7 +18,7 @@ import PaneGeometry
         let previous: NSMenu?
         init(text: String = "", path: String? = nil) throws {
             directory = URL(fileURLWithPath: path ?? "/tmp/kt-" + UUID().uuidString.prefix(8))
-            conf = directory.appendingPathComponent("kido-app.conf")
+            conf = directory.appendingPathComponent("config.yaml")
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try text.write(to: conf, atomically: false, encoding: .utf8)
             runtime = try XCTUnwrap(GhosttyRuntime(configFile: conf.path, pasteboard: NSPasteboard(name: .init("theme-" + UUID().uuidString))))
@@ -98,11 +98,11 @@ import PaneGeometry
         try themeCommand(panel, #selector(NSResponder.insertTab(_:)))
         try themeCommand(panel, #selector(NSResponder.insertBacktab(_:)))
         try themeCommand(panel, #selector(NSResponder.moveDown(_:)))
-        let expected = ThemeConf.Pair(light: "kido-light", dark: rows[selected].value)
-        XCTAssertTrue(try XCTUnwrap(palette.theme).foot(rows[selected]).contains(ThemeConf.line(expected)))
+        let expected = KoSchema.ThemePair(light: "kido-light", dark: rows[selected].value)
+        XCTAssertTrue(try XCTUnwrap(palette.theme).foot(rows[selected]).contains("light: \(expected.light), dark: \(expected.dark)"))
         try themeCommand(panel, #selector(NSResponder.insertNewline(_:)))
         XCTAssertNil(app.palettePanel)
-        XCTAssertEqual(try String(contentsOf: fixture.conf, encoding: .utf8), ThemeConf.line(expected) + "\n")
+        XCTAssertEqual(AppConfig.pair(try AppConfig.load(fixture.conf.path).theme), expected)
         XCTAssertEqual(runtime.themeOverride, .none)
         XCTAssertTrue(input.isEmpty, "Theme mode must not send keys to a pane")
         try await themeChange(runtime, {}, matches: { runtime.background == rows[0].background })
@@ -144,7 +144,7 @@ import PaneGeometry
         defer { fixture.close() }
         let themes = fixture.directory.appendingPathComponent("themes")
         try FileManager.default.createDirectory(at: themes, withIntermediateDirectories: true)
-        for name in ["user10", "user2", "kido-light", ".hidden", "bad:name"] {
+        for name in ["user10", "user2", "kido-light", ".hidden", "bad:name", "\u{7f}hidden", "\u{85}hidden"] {
             try "background = #123456\nforeground = white\n".write(to: themes.appendingPathComponent(name), atomically: false, encoding: .utf8)
         }
         try "invalid-field = huh\n".write(to: themes.appendingPathComponent("broken"), atomically: false, encoding: .utf8)
@@ -152,8 +152,8 @@ import PaneGeometry
         try FileManager.default.createDirectory(at: themes.appendingPathComponent("folder"), withIntermediateDirectories: true)
         let panel = try fixture.open(), palette = panel.palette
         let rows = try XCTUnwrap(palette.theme?.rows)
-        XCTAssertEqual(Array(rows.prefix(PaletteTheme.bundled.count)).map(\.value), PaletteTheme.bundled)
-        XCTAssertEqual(Array(rows.dropFirst(PaletteTheme.bundled.count)).map(\.name), ["broken", "kido-light", "link", "user2", "user10"])
+        XCTAssertEqual(Array(rows.prefix(ThemePaths.bundled.count)).map(\.value), ThemePaths.bundled)
+        XCTAssertEqual(Array(rows.dropFirst(ThemePaths.bundled.count)).map(\.name), ["broken", "link", "user2", "user10"])
         let broken = try XCTUnwrap(rows.firstIndex { $0.name == "broken" })
         palette.choose(broken)
         XCTAssertEqual(palette.mode, .theme(.pick))
@@ -170,18 +170,18 @@ import PaneGeometry
         try themeCommand(panel, #selector(NSResponder.moveDown(_:)))
         XCTAssertEqual(palette.theme?.radio, 2)
         try themeCommand(panel, #selector(NSResponder.insertNewline(_:)))
-        XCTAssertEqual(ThemeConf.parse(try String(contentsOf: fixture.conf, encoding: .utf8)).pair, .init(light: row.value, dark: row.value))
+        XCTAssertEqual(AppConfig.pair(try AppConfig.load(fixture.conf.path).theme), .init(light: row.value, dark: row.value))
         fixture.app.closePalette()
         let readonly = try fixture.open()
         try FileManager.default.setAttributes([.posixPermissions: 0o400], ofItemAtPath: fixture.conf.path)
         readonly.palette.field.stringValue = "user10"
         readonly.palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
-        try await themeChange(fixture.runtime, { fixture.runtime.flushTheme() }, matches: { fixture.runtime.themeOverride == .preview(themes.appendingPathComponent("user10").path) })
+        try await themeChange(fixture.runtime, { fixture.runtime.flushTheme() }, matches: { fixture.runtime.themeOverride == .preview("user10") })
         try themeCommand(readonly, #selector(NSResponder.insertNewline(_:)))
         try themeCommand(readonly, #selector(NSResponder.insertNewline(_:)))
         XCTAssertNotNil(fixture.app.palettePanel)
-        XCTAssertTrue(readonly.palette.error?.contains("permission denied") == true)
-        let applied = themes.appendingPathComponent("user10").path
+        XCTAssertTrue(readonly.palette.error?.lowercased().contains("permission denied") == true)
+        let applied = "user10"
         XCTAssertEqual(fixture.runtime.themeOverride, .session(applied))
         readonly.palette.field.stringValue = ""
         readonly.palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
@@ -195,13 +195,16 @@ import PaneGeometry
         fixture.app.closePalette()
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fixture.conf.path)
         try await themeChange(fixture.runtime, {
-            try "theme = light:absent,dark:kido-dark\n".write(to: fixture.conf, atomically: true, encoding: .utf8)
-        }, matches: { fixture.runtime.fileDiagnostics.contains { $0.contains("absent") } })
+            try "app: {theme: {light: absent, dark: kido-dark}}\n".write(to: fixture.conf, atomically: true, encoding: .utf8)
+        }, matches: { fixture.runtime.configError?.path.hasSuffix("/absent") == true })
         let missing = try fixture.open()
-        XCTAssertEqual(missing.palette.error, "absent: not found. The current config names it for Light; Ghostty's default colours are shown instead.")
+        XCTAssertTrue(missing.palette.error?.contains("theme file not found") == true)
         try FileManager.default.removeItem(at: themes.appendingPathComponent("user2"))
-        missing.palette.field.stringValue = "user2"
-        missing.palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+        try await themeChange(fixture.runtime, {
+            missing.palette.field.stringValue = "user2"
+            missing.palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+            fixture.runtime.flushTheme()
+        }, matches: { missing.palette.shown.first?.entry.theme?.problem == .missing })
         XCTAssertEqual(missing.palette.shown.first?.entry.theme?.problem, .missing)
         try themeCommand(missing, #selector(NSResponder.insertNewline(_:)))
         XCTAssertEqual(missing.palette.mode, .theme(.pick))
@@ -246,7 +249,7 @@ import PaneGeometry
         let external = URL(fileURLWithPath: "/tmp/kt-external-" + UUID().uuidString)
         try "background = blue\nforeground = white\n".write(to: external, atomically: false, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: external) }
-        let text = ThemeConf.line(.init(light: external.path, dark: external.path)) + "\n"
+        let text = "app: {theme: absent}\n"
         let fixture = try ThemeFixture(text: text)
         defer { fixture.close() }
         let themes = fixture.directory.appendingPathComponent("themes")
@@ -254,7 +257,7 @@ import PaneGeometry
         let file = themes.appendingPathComponent("gone")
         try "background = red\n".write(to: file, atomically: false, encoding: .utf8)
         let panel = try fixture.open(), palette = panel.palette
-        XCTAssertNil(palette.error)
+        XCTAssertNotNil(palette.error)
         XCTAssertTrue(palette.shown.allSatisfy { $0.entry.shortcut.isEmpty })
         palette.field.stringValue = "gone"
         palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
@@ -318,14 +321,14 @@ import PaneGeometry
         try click(2)
         XCTAssertEqual(panel.palette.mode, .theme(.save(rows[2])))
         try click(2)
-        let both = ThemeConf.Pair(light: rows[2].value, dark: rows[2].value)
-        XCTAssertEqual(ThemeConf.parse(try String(contentsOf: fixture.conf, encoding: .utf8)).pair, both)
+        let both = KoSchema.ThemePair(light: rows[2].value, dark: rows[2].value)
+        XCTAssertEqual(AppConfig.pair(try AppConfig.load(fixture.conf.path).theme), both)
         try await themeChange(fixture.runtime, {}, matches: { fixture.runtime.background == rows[2].background })
         let next = try fixture.open()
         try await themeChange(fixture.runtime, { try themeCommand(next, #selector(NSResponder.moveDown(_:))) }, matches: { fixture.runtime.background == rows[3].background })
-        let filePair = ThemeConf.Pair(light: rows[0].value, dark: rows[1].value)
+        let filePair = KoSchema.ThemePair(light: rows[0].value, dark: rows[1].value)
         let scheduled = fixture.runtime.visualReloadsScheduled
-        try await themeChange(fixture.runtime, { try ThemeConf.write(to: fixture.conf.path) { _ in filePair } }, matches: { fixture.runtime.background == rows[3].background && fixture.runtime.visualReloadsScheduled > scheduled })
+        try await themeChange(fixture.runtime, { try AppConfig.setTheme(fixture.conf.path, filePair) }, matches: { fixture.runtime.background == rows[3].background && fixture.runtime.visualReloadsScheduled > scheduled })
         XCTAssertEqual(next.palette.theme?.pair, both, "marks are a snapshot of the file at entry")
         next.palette.field.stringValue = "no-such-theme"
         next.palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
@@ -341,7 +344,7 @@ import PaneGeometry
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: fixture.conf.path)[.systemFileNumber] as? NSNumber, attrs[.systemFileNumber] as? NSNumber)
     }
 
-    private func themeSnapshots() async throws {
+    func testThemeSnapshots() async throws {
         let home = try XCTUnwrap(ProcessInfo.processInfo.environment["HOME"])
         let expected = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/bundle/visual/home").path
         guard home == expected else { throw XCTSkip("Theme snapshots need the private visual-test HOME") }
@@ -354,11 +357,11 @@ import PaneGeometry
                 let contents = broken ? try Data(contentsOf: resource) : nil
                 if broken { try FileManager.default.removeItem(at: resource) }
                 defer { if let contents { try? contents.write(to: resource) } }
-                let pair = ThemeConf.Pair(light: dark ? "kido-light" : name, dark: dark ? name : "kido-dark")
-                let fixture = try ThemeFixture(text: broken ? ThemeConf.line(pair) + "\n" : "", path: home + "/.config/kido")
+                let pair = KoSchema.ThemePair(light: dark ? "kido-light" : name, dark: dark ? name : "kido-dark")
+                let fixture = try ThemeFixture(text: broken ? themeYAML(pair) : "", path: home + "/.config/ko")
                 defer { fixture.close() }
                 let panel = try fixture.open(), palette = panel.palette
-                let initial = try XCTUnwrap(palette.theme?.rows[dark ? (broken ? 5 : 1) : (broken ? 4 : 0)])
+                let initial = try XCTUnwrap(palette.theme?.rows[dark ? 1 : 0])
                 try await themeChange(fixture.runtime, {}, matches: { fixture.runtime.background == initial.background })
                 if state == "theme-filtered" {
                     panel.sendEvent(try key(panel, "sol"))
@@ -467,12 +470,12 @@ import PaneGeometry
     }
 
     func testPaletteSnapshots() async throws {
-        let config = FileManager.default.temporaryDirectory.appendingPathComponent("palette-\(UUID().uuidString).conf")
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("palette-\(UUID().uuidString).yaml")
         defer { try? FileManager.default.removeItem(at: config) }
         let previous = NSApp.mainMenu
         defer { NSApp.mainMenu = previous }
         for (theme, background, foreground) in [("light", "fff9ec", "424242"), ("dark", "171717", "c9c9c9")] {
-            try "background = #\(background)\nforeground = #\(foreground)\n".write(to: config, atomically: true, encoding: .utf8)
+            try configYAML(at: config, background: background, foreground: foreground).write(to: config, atomically: true, encoding: .utf8)
             let board = NSPasteboard(name: .init("palette-" + UUID().uuidString))
             defer { board.releaseGlobally() }
             let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
@@ -593,7 +596,6 @@ import PaneGeometry
             }, ["New Session", "Connect to Local Host", "Connect to Remote Host…", "Theme…"])
             image(noWindow.palette, "\(theme)-nowindow")
         }
-        try await themeSnapshots()
     }
 
     func testPromptDraftsPickerQuotesAndKeys() throws {

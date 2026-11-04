@@ -19,8 +19,8 @@ import XCTest
         PaneView.renderOffscreen = true
         let board = NSPasteboard(name: .init("ko-layout-" + UUID().uuidString))
         // The font of the recorded snapshots, so that only the layout differs.
-        let config = dir + "/ghostty.conf"
-        try "\(ThemeConf.line(.init()))\nfont-family = Menlo\nfont-size = 13\ncursor-style-blink = false\n".write(toFile: config, atomically: true, encoding: .utf8)
+        let config = dir + "/ghostty.yaml"
+        try "app: {font: {size: 13}}\n".write(toFile: config, atomically: true, encoding: .utf8)
         let owner = WindowOwner(host: .local, runtime: try XCTUnwrap(GhosttyRuntime(configFile: config, pasteboard: board)), start: false)
         owner.testServerDir = dir
         self.owner = owner

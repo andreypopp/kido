@@ -76,6 +76,8 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     }
     let list = SidebarView()
     let content = NSView()
+    let configBanner = ConfigBanner()
+    private var contentTop: NSLayoutConstraint!
     let tabs = WindowTabs()
     private var lastTabActivity = false
     let terminalHost = NSView()
@@ -115,13 +117,22 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
             }
         }
     }
+    func showConfigError(_ error: (title: String, detail: String)?) {
+        if let error { configBanner.show(error.title, error.detail) }
+        else { configBanner.isHidden = true }
+        let height = error == nil ? 0 : ConfigBanner.height
+        guard contentTop.constant != height else { return }
+        contentTop.constant = height
+        terminalHost.layoutSubtreeIfNeeded()
+    }
+
     var changed: () -> Void = {}
     var listBackground: NSColor? { didSet { view.needsLayout = true } }
 
     func updateAppearance(runtime: GhosttyRuntime) {
         let background = runtime.background
         tabs.theme = (runtime.unfocusedPaper, NSAppearance(named: background.isDark ? .darkAqua : .aqua))
-        let shade = background.shifted(runtime.settings.sidebarShade)
+        let shade = background.shifted(runtime.sidebarShade)
         listBackground = shade
         separatorColor = runtime.sidebarSeparator
         list.appearance = NSAppearance(named: shade.luminance < 0.179 ? .darkAqua : .aqua)
@@ -151,13 +162,20 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         addSplitViewItem(sidebarItem)
         let terminal = NSViewController()
         terminalHost.addSubview(content)
+        terminalHost.addSubview(configBanner)
         content.translatesAutoresizingMaskIntoConstraints = false
+        configBanner.translatesAutoresizingMaskIntoConstraints = false
+        contentTop = content.topAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.topAnchor)
         leading = content.leadingAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.leadingAnchor)
         NSLayoutConstraint.activate([
             leading,
             content.trailingAnchor.constraint(equalTo: terminalHost.trailingAnchor),
-            content.topAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.topAnchor),
+            contentTop,
             content.bottomAnchor.constraint(equalTo: terminalHost.bottomAnchor),
+            configBanner.topAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.topAnchor),
+            configBanner.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            configBanner.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            configBanner.heightAnchor.constraint(equalToConstant: ConfigBanner.height),
         ])
         terminal.view = terminalHost
         let terminalItem = NSSplitViewItem(viewController: terminal)
