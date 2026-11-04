@@ -1,12 +1,15 @@
 use std::io::{self, Write};
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
 use clap::Args;
 use ko_client::runtimes::{self, Shown, Up};
+use ko_server::config::variable;
 use ko_server::ids::{InvalidId, PaneId, RuntimeName};
 use ko_shell::enter::{self, Enter, TokenSource};
+use ko_shell::session::{self, End};
 
 use crate::{Target, assignment, complain, invoked, say, target};
 
@@ -21,23 +24,31 @@ pub(crate) struct EnterArgs {
     #[arg(long, value_name = "PATH", conflicts_with = "prepare")]
     socket: Option<PathBuf>,
     /// The pane that the program belongs to.
-    #[arg(long, value_name = "PANE", value_parser = pane_id, required_unless_present = "prepare", conflicts_with = "prepare")]
+    #[arg(long, value_name = "PANE", value_parser = pane_id, required_unless_present_any = ["prepare", "exec", "watch"], conflicts_with_all = ["prepare", "exec", "watch"])]
     pane: Option<PaneId>,
     /// A private file with the pane's token, which ko enter reads and removes. Without it,
     /// the token is KO_PANE_TOKEN in the environment.
     #[arg(long, value_name = "FILE", requires = "socket")]
     token_file: Option<PathBuf>,
     /// The runtime of the pane.
-    #[arg(long, value_name = "NAME")]
-    runtime: RuntimeName,
+    #[arg(long, value_name = "NAME", required_unless_present_any = ["exec", "watch"], conflicts_with_all = ["exec", "watch"])]
+    runtime: Option<RuntimeName>,
     /// The runtime's directory, when the socket is not given. Default: a private directory
     /// of this user for the runtime.
     #[arg(long, value_name = "DIR", conflicts_with_all = ["socket", "token_file"])]
     dir: Option<PathBuf>,
     /// Make the runtime's directory ready, remove what an earlier link left in it, and print
     /// it and the version of this ko, one for each line.
-    #[arg(long, conflicts_with_all = ["cwd", "env", "command"])]
+    #[arg(long, conflicts_with_all = ["cwd", "env", "command", "exec", "watch"])]
     prepare: bool,
+    /// Run the command of an exec session. The server's first frame names it; its frames come
+    /// in on stdin, and the command's output and exit go out as frames on stdout. The end of
+    /// stdin cancels the command: SIGTERM to its process group, SIGKILL after the escalation.
+    #[arg(long, conflicts_with_all = ["watch", "socket", "pane", "token_file", "dir", "prepare", "cwd", "env", "command"])]
+    exec: bool,
+    /// Wait until stdin ends, then exit.
+    #[arg(long, conflicts_with_all = ["exec", "socket", "pane", "token_file", "dir", "prepare", "cwd", "env", "command"])]
+    watch: bool,
     /// The directory to start in.
     #[arg(long, value_name = "DIR")]
     cwd: Option<PathBuf>,
@@ -67,10 +78,32 @@ pub(crate) fn enter(args: EnterArgs) -> ExitCode {
         runtime,
         dir,
         prepare,
+        exec,
+        watch,
         cwd,
         env,
         command,
     } = args;
+    if watch {
+        session::watch();
+        return ExitCode::SUCCESS;
+    }
+    if exec {
+        let inherited = std::env::vars_os()
+            .map(|(name, value)| variable(&name.into_vec(), &value.into_vec()))
+            .collect();
+        return match session::run(inherited) {
+            Ok(End::Reported) => ExitCode::SUCCESS,
+            Ok(End::Cancelled) => ExitCode::FAILURE,
+            Err(failure) => {
+                complain(format_args!("ko enter: {failure}"));
+                ExitCode::from(failure.status())
+            }
+        };
+    }
+    let Some(runtime) = runtime else {
+        return crate::fail("enter", "--runtime is required");
+    };
     let remote = |dir| {
         enter::remote_dir(
             &runtime,

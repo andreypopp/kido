@@ -9,7 +9,7 @@ use ko_pane_wire::frame::Size;
 use ko_sys::clock::Mono;
 use ko_sys::event::Token;
 
-use crate::config::{Config, path_with, terminal, variable};
+use crate::config::{Config, path_with, terminal};
 use crate::delivery::{Stamps, mint_stamps};
 use crate::ids::{PaneId, PaneToken, RunId, RuntimeName, SessionId};
 use crate::pane::{Birth, Pane, Program};
@@ -92,21 +92,11 @@ fn environment(
         )
         .chain((!requested_agent).then_some(agent))
         .collect();
-    let overridden = |entry: &&Vec<u8>| {
-        let name = entry.split(|&byte| byte == b'=').next().unwrap_or_default();
-        overrides.iter().any(|(set, _)| set.as_bytes() == name)
-    };
-    let inherited: Vec<Vec<u8>> = config
-        .env
+    let given: Vec<(&[u8], &[u8])> = overrides
         .iter()
-        .filter(|entry| !overridden(entry))
-        .cloned()
+        .map(|(name, value)| (name.as_bytes(), value.as_slice()))
         .collect();
-    overrides
-        .into_iter()
-        .map(|(name, value)| variable(name.as_bytes(), &value))
-        .chain(inherited)
-        .collect()
+    crate::config::overlay(&given, &config.env)
 }
 
 pub(crate) type Wrap<'a> = &'a dyn Fn(Option<&[Vec<u8>]>) -> Vec<Vec<u8>>;

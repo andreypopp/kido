@@ -13,6 +13,8 @@ const MAX_READS: u8 = 16;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Interest {
     Idle,
+    /// Wants no data, but the descriptor stays in the set: a hangup or an error still reports.
+    Hangup,
     Read,
     Write,
     ReadWrite,
@@ -36,9 +38,10 @@ impl Interest {
         matches!(self, Interest::Write | Interest::ReadWrite)
     }
 
-    fn events(self) -> libc::c_short {
+    fn events(self, hangup: libc::c_short) -> libc::c_short {
         match self {
             Interest::Idle => 0,
+            Interest::Hangup => hangup,
             Interest::Read => libc::POLLIN,
             Interest::Write => libc::POLLOUT,
             Interest::ReadWrite => libc::POLLIN | libc::POLLOUT,
@@ -269,8 +272,29 @@ impl Default for Reads {
 #[derive(Debug)]
 struct Source {
     fd: RawFd,
+    hangup: libc::c_short,
     interest: Interest,
     slot: Option<usize>,
+}
+
+// Linux poll reports a hangup or an error whatever the events are.
+#[cfg(target_os = "linux")]
+fn hangup_events(_fd: RawFd) -> libc::c_short {
+    0
+}
+
+// macOS poll reports a hangup only for a descriptor that asks for an event that it cannot have
+// yet: POLLOUT on a pipe's read end, POLLPRI on a pipe's write end or a socket (measured: they
+// report nothing while the peer is open, with data unread or not).
+#[cfg(target_os = "macos")]
+fn hangup_events(fd: RawFd) -> libc::c_short {
+    // SAFETY: F_GETFL only reads the flags of the descriptor.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags >= 0 && flags & libc::O_ACCMODE == libc::O_RDONLY {
+        libc::POLLOUT
+    } else {
+        libc::POLLPRI
+    }
 }
 
 #[derive(Debug)]
@@ -338,6 +362,7 @@ impl Poll {
     pub fn watch(&mut self, fd: BorrowedFd<'_>, interest: Interest) -> Token {
         let token = Token(self.sources.insert(Source {
             fd: fd.as_raw_fd(),
+            hangup: hangup_events(fd.as_raw_fd()),
             interest: Interest::Idle,
             slot: None,
         }));
@@ -369,12 +394,12 @@ impl Poll {
                     }
                 }
             }
-            (Some(slot), _) => self.fds[slot].events = interest.events(),
+            (Some(slot), _) => self.fds[slot].events = interest.events(source.hangup),
             (None, _) => {
                 source.slot = Some(self.fds.len());
                 self.fds.push(libc::pollfd {
                     fd: source.fd,
-                    events: interest.events(),
+                    events: interest.events(source.hangup),
                     revents: 0,
                 });
                 self.owners.push(token.0.index);
@@ -620,6 +645,40 @@ mod tests {
         poll.turn(Mode::Wait, &mut events).unwrap();
         poll.unwatch(token);
         assert!(events.ready().is_empty() && events.due().is_empty());
+    }
+
+    #[test]
+    fn a_hangup_interest_reports_a_closed_peer_even_with_data_unread() {
+        use std::io::Write;
+        let mut poll = Poll::new();
+        let mut events = Events::default();
+        let (read, mut write) = std::io::pipe().unwrap();
+        let (read_end, write_end) = std::io::pipe().unwrap();
+        let reading = poll.watch(read.as_fd(), Interest::Hangup);
+        let writing = poll.watch(write_end.as_fd(), Interest::Hangup);
+        poll.turn(Mode::Peek, &mut events).unwrap();
+        assert!(events.ready().is_empty());
+        write.write_all(b"unread").unwrap();
+        poll.turn(Mode::Peek, &mut events).unwrap();
+        assert!(events.ready().is_empty(), "data alone is not a hangup");
+        // A spawn in another test thread can hold a peer open for a while.
+        drop((write, read_end));
+        let limit = poll.timer();
+        poll.start(limit, Duration::from_secs(5), None).unwrap();
+        let mut seen: Vec<Token> = Vec::new();
+        while seen.len() < 2 && events.due().is_empty() {
+            poll.turn(Mode::Wait, &mut events).unwrap();
+            for ready in events.ready() {
+                if !seen.contains(&ready.token) {
+                    seen.push(ready.token);
+                }
+            }
+            for ready in events.ready() {
+                poll.interest(ready.token, Interest::Idle);
+            }
+        }
+        seen.sort_by_key(|token| token == &writing);
+        assert_eq!(seen, [reading, writing]);
     }
 
     #[test]

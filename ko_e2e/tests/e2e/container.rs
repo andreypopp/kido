@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::harness::{
     Dir, Server, enabled, ko, poll_for, run_ko, run_program, start_in, test_env, text_of, which,
 };
-use crate::runtime::{read_exec, start_exec};
+use crate::runtime::{read_exec, start_exec, start_tree};
 
 // Runs only with KO_E2E_CONTAINER=1, on a Mac where `container system status` succeeds, with the
 // debian:trixie image already present; then a missing layout or container CLI is a failure.
@@ -183,7 +183,7 @@ fn a_container_runtime_starts_on_the_first_pane_and_follows_its_container() {
     let s = start_in(
         Dir::new("ko-"),
         Path::new("/bin/sh"),
-        &[],
+        &[("KO_STOP_ESCALATION_MS", "2000")],
         &["--runtimes", text_of(&file)],
     );
 
@@ -253,6 +253,53 @@ fn a_container_runtime_starts_on_the_first_pane_and_follows_its_container() {
     );
     assert_eq!(String::from_utf8(exec.stderr).unwrap(), "err\n");
     assert_eq!(exec.end, json!({"type": "exit", "status": 3}));
+
+    let mut ws = start_exec(
+        &s,
+        &name,
+        json!({"argv": ["sh", "-c", "kill -USR1 $$"], "stdin": false}),
+    );
+    ws.within(CONTAINER_DEADLINE);
+    assert_eq!(
+        read_exec(&mut ws).end,
+        json!({"type": "exit", "signal": "USR1"}),
+        "a signal exit keeps its name"
+    );
+
+    // The pids are the container's, so the probe is an exec in the container as well.
+    let ws = start_tree(&s, &name, (&host_volume, "/work"));
+    let numbers: Vec<String> = ["leader", "child", "grandchild"]
+        .iter()
+        .map(|member| {
+            let file = host_volume.join(member);
+            poll_for(&format!("the pid of the {member}"), LINK_POLL, || {
+                fs::read_to_string(&file).is_ok_and(|text| text.trim().parse::<u32>().is_ok())
+            });
+            fs::read_to_string(&file).unwrap().trim().to_owned()
+        })
+        .collect();
+    drop(ws);
+    let probe = format!(
+        "for pid in {}; do read -r _ _ state _ < /proc/$pid/stat 2>/dev/null && [ \"$state\" != Z ] && echo \"$pid $state\" && exit 1; done; exit 0",
+        numbers.join(" ")
+    );
+    let last = RefCell::new(String::new());
+    let _showing = Showing(&last);
+    poll_for(
+        "the group of a closed session to end in the container",
+        ENGINE_POLL,
+        || {
+            let mut ws = start_exec(
+                &s,
+                &name,
+                json!({"argv": ["sh", "-c", &probe], "stdin": false}),
+            );
+            ws.within(CONTAINER_DEADLINE);
+            let done = read_exec(&mut ws);
+            *last.borrow_mut() = String::from_utf8_lossy(&done.stdout).into_owned();
+            done.end == json!({"type": "exit", "status": 0})
+        },
+    );
 
     s.request(
         "POST",

@@ -1,13 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::program_path;
-use crate::ids::RuntimeName;
 use crate::protocol::ExecRequest;
 use crate::runtime::exec::Launch;
 use crate::runtime::file::{Command, Runtime};
-use crate::runtime::{Entry, Next, Outcome};
+use crate::runtime::{Ctx, Entry, Next, Outcome, text, words};
 
-const DEFAULT_PATH: &str = "/usr/bin:/bin";
+pub(crate) const DEFAULT_PATH: &str = "/usr/bin:/bin";
 
 fn bytes(path: &Path) -> Vec<u8> {
     path.as_os_str().as_encoded_bytes().to_vec()
@@ -53,43 +52,34 @@ pub(crate) fn next(out: &Outcome<'_>) -> Next {
 }
 
 pub(crate) fn exec_launch(
-    name: &RuntimeName,
     runtime: &Runtime,
     command: &Command,
-    request: &ExecRequest,
+    (request, cx): (&ExecRequest, &Ctx<'_>),
 ) -> Result<Launch, String> {
-    let mut env = runtime.exec_env(name, request);
-    let path = *env.entry("PATH").or_insert(DEFAULT_PATH);
-    let mut words = command.prefix.iter().chain(&request.argv);
-    let program = words
-        .next()
-        .ok_or_else(|| "argv needs a program".to_owned())?;
+    let env = runtime.exec_env(cx.name, request);
+    let path = env.get("PATH").copied().unwrap_or(DEFAULT_PATH);
+    let mut words = command
+        .prefix
+        .iter()
+        .cloned()
+        .chain([text(cx.exe)])
+        .chain(words(&["enter", "--exec"]));
+    let program = words.next().unwrap_or_default();
     let found =
-        program_path(path, program).ok_or_else(|| format!("{program}: command not found"))?;
-    let dir = request
-        .cwd
-        .as_ref()
-        .or(runtime.cwd.as_ref())
-        .map(|dir| dir.as_path().to_path_buf());
-    Ok(Launch {
-        program: found,
-        args: words.cloned().collect(),
-        dir,
-        env: env
-            .into_iter()
-            .map(|(variable, value)| format!("{variable}={value}").into_bytes())
-            .collect(),
-    })
+        program_path(path, &program).ok_or_else(|| format!("{program}: command not found"))?;
+    Ok(Launch::new(found, words.collect(), &[]))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::RuntimeName;
     use crate::protocol::AbsPath;
     use crate::runtime::file::Kind;
 
     #[test]
-    fn an_exec_gets_the_runtime_env_then_the_request_env_and_nothing_of_the_server() {
+    fn an_exec_helper_is_the_prefix_then_the_ko_in_exec_mode_with_no_environment_and_the_start_has_the_variables()
+     {
         let runtime: Runtime = serde_json::from_str(
             r#"{"kind":"command","env":{"A":"runtime","B":"runtime"},"cwd":"/work","prefix":["/usr/bin/env"]}"#,
         )
@@ -108,11 +98,24 @@ mod tests {
             stdin: false,
         };
         let name: RuntimeName = "dev".parse().unwrap();
-        let launch = exec_launch(&name, &runtime, command, &request(None, None)).unwrap();
-        let env: Vec<String> = launch
+        let socket = PathBuf::from("/s");
+        let cx = Ctx {
+            name: &name,
+            env: &[],
+            socket: &socket,
+            exe: Path::new("/opt/ko"),
+        };
+        let launch = exec_launch(&runtime, command, (&request(None, None), &cx)).unwrap();
+        assert_eq!(launch.program, PathBuf::from("/usr/bin/env"));
+        assert_eq!(launch.args, ["/opt/ko", "enter", "--exec"]);
+        assert!(launch.env.is_empty(), "nothing of the server's environment");
+
+        let escalation = std::time::Duration::from_millis(2500);
+        let start = runtime.exec_start(&name, &request(None, None), escalation);
+        let env: Vec<String> = start
             .env
             .iter()
-            .map(|entry| String::from_utf8_lossy(entry).into_owned())
+            .map(|variable| format!("{}={}", variable.name, variable.value))
             .collect();
         assert_eq!(
             env,
@@ -123,17 +126,20 @@ mod tests {
                 "PATH=/usr/bin:/bin"
             ]
         );
-        assert_eq!(launch.program, PathBuf::from("/usr/bin/env"));
-        assert_eq!(launch.args, ["/bin/echo", "x"]);
-        assert_eq!(launch.dir, Some(PathBuf::from("/work")));
-        let moved = exec_launch(
+        assert_eq!(start.argv, ["/bin/echo", "x"]);
+        assert_eq!(start.cwd.unwrap().as_path(), Path::new("/work"));
+        assert_eq!(start.escalation_ms, 2500);
+        let moved = runtime.exec_start(
             &name,
-            &runtime,
-            command,
             &request(Some("/elsewhere"), Some("/opt")),
-        )
-        .unwrap();
-        assert_eq!(moved.dir, Some(PathBuf::from("/elsewhere")));
-        assert!(moved.env.contains(&b"PATH=/opt".to_vec()));
+            escalation,
+        );
+        assert_eq!(moved.cwd.unwrap().as_path(), Path::new("/elsewhere"));
+        assert!(
+            moved
+                .env
+                .iter()
+                .any(|variable| variable.name == "PATH" && variable.value == "/opt")
+        );
     }
 }

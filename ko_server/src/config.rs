@@ -114,8 +114,21 @@ pub fn scratch(dir: &Path, pane_exe: PathBuf, limits: Limits) -> Config {
     }
 }
 
-pub(crate) fn variable(name: &[u8], value: &[u8]) -> Vec<u8> {
+pub fn variable(name: &[u8], value: &[u8]) -> Vec<u8> {
     [name, b"=", value].concat()
+}
+
+/// The given variables, then the inherited ones that they do not replace.
+pub fn overlay(given: &[(&[u8], &[u8])], inherited: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    let replaced = |entry: &&Vec<u8>| {
+        let name = entry.split(|&byte| byte == b'=').next().unwrap_or_default();
+        given.iter().any(|(set, _)| *set == name)
+    };
+    given
+        .iter()
+        .map(|(name, value)| variable(name, value))
+        .chain(inherited.iter().filter(|entry| !replaced(entry)).cloned())
+        .collect()
 }
 
 fn set(name: &str) -> Option<OsString> {

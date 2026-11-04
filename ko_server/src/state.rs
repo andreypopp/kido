@@ -791,7 +791,7 @@ impl State {
             sink: &mut discard,
         });
         self.leaks.release_all();
-        self.exec_shutdown(poll);
+        self.exec_shutdown();
         self.runtimes.shutdown(poll);
         self.runtimes_changed(poll);
         poll.stop(self.ticker);

@@ -5,9 +5,8 @@ use ko_sys::pid::Exit;
 
 use crate::config::{SUN_PATH_MAX, env_path, program_path};
 use crate::ids::PaneId;
-use crate::protocol::ExecRequest;
 use crate::runtime::exec::Launch;
-use crate::runtime::file::{Runtime, Ssh};
+use crate::runtime::file::Ssh;
 use crate::runtime::{
     Cleanup, Ctx, Ending, Entry, Next, Outcome, last_line, text, version_next, words,
 };
@@ -284,34 +283,8 @@ pub(crate) fn cleanup(ssh: &Ssh, cx: &Ctx<'_>, what: Cleanup) -> Option<Launch> 
     }
 }
 
-pub(crate) fn exec_launch(
-    runtime: &Runtime,
-    ssh: &Ssh,
-    (request, cx): (&ExecRequest, &Ctx<'_>),
-) -> Result<Launch, String> {
-    let program = request
-        .argv
-        .first()
-        .ok_or_else(|| "argv needs a program".to_owned())?;
-    if program.contains('=') {
-        return Err(format!("{program}: a program name cannot contain '='"));
-    }
-    let mut command = String::new();
-    if let Some(dir) = request.cwd.as_ref().or(runtime.cwd.as_ref()) {
-        command.push_str(&format!(
-            "cd {} && ",
-            quote(&dir.as_path().to_string_lossy())
-        ));
-    }
-    command.push_str("exec env --");
-    let assignments = runtime
-        .exec_env(cx.name, request)
-        .into_iter()
-        .map(|(variable, value)| format!("{variable}={value}"));
-    for word in assignments.chain(request.argv.iter().cloned()) {
-        command.push(' ');
-        command.push_str(&quote(&word));
-    }
+pub(crate) fn exec_launch(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Launch, String> {
+    let command = format!("exec {}", ["ko", "enter", "--exec"].map(quote).join(" "));
     // Nothing of the server's environment is for the remote command: ssh would send what a
     // SendEnv of the user's configuration names (the locale that the system's configuration
     // sends, PATH or HOME), and the command would keep it. ssh finds the program by the
@@ -370,6 +343,7 @@ mod tests {
     use crate::ids::RuntimeName;
     use crate::protocol::{Version, json, version};
     use crate::runtime::file::Kind;
+    use crate::runtime::file::Runtime;
 
     fn ssh_runtime(extra: &str) -> Runtime {
         serde_json::from_str(&format!(r#"{{"kind":"ssh","destination":"box"{extra}}}"#)).unwrap()
@@ -489,26 +463,16 @@ mod tests {
 
     #[test]
     fn the_exec_and_token_commands_quote_every_word() {
-        let runtime = ssh_runtime(r#","env":{"A":"it's"},"cwd":"/a b""#);
+        let runtime = ssh_runtime("");
         let Kind::Ssh(ssh) = &runtime.kind else {
             panic!("not ssh");
-        };
-        let request = ExecRequest {
-            argv: vec!["echo".to_owned(), "$(x); 'y'".to_owned()],
-            cwd: None,
-            env: Default::default(),
-            stdin: false,
         };
         let name: RuntimeName = "box".parse().unwrap();
         let env = [b"PATH=/usr/bin:/bin".to_vec()];
         let socket = PathBuf::from("/r/box/socket");
         let cx = context(&name, &env, &socket);
-        let launch =
-            exec_launch(&runtime, ssh, (&request, &cx)).unwrap_or_else(|why| panic!("{why}"));
-        assert_eq!(
-            launch.args.last().unwrap(),
-            "cd '/a b' && exec env -- 'A=it'\\''s' 'KO_RUNTIME=box' 'echo' '$(x); '\\''y'\\'''"
-        );
+        let launch = exec_launch(ssh, &cx).unwrap_or_else(|why| panic!("{why}"));
+        assert_eq!(launch.args.last().unwrap(), "exec 'ko' 'enter' '--exec'");
         assert!(
             launch
                 .args

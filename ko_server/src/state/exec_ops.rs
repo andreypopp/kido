@@ -4,9 +4,8 @@ use ko_sys::pid::Exit;
 use ko_sys::signal::Signal;
 
 use super::*;
-use crate::protocol::{
-    EXEC_CHUNK, Ended, ExecClient, ExecRequest, ExecServer, KillSignal, LinkState, Text,
-};
+use crate::exec_wire::ToKo;
+use crate::protocol::{EXEC_CHUNK, Ended, ExecClient, ExecRequest, ExecServer, LinkState, Text};
 use crate::runtime::exec::{
     Admit, Chunk, Limiter, MAX_SESSIONS, Mode, Retry, Running, Session, Source, Stage, Stream,
     spawn,
@@ -14,6 +13,7 @@ use crate::runtime::exec::{
 use crate::runtime::{Ending, Wait, Who};
 
 const FRAMING: usize = 80;
+const READS_PER_TURN: usize = 16;
 
 #[derive(Debug)]
 pub(super) struct Execs {
@@ -34,6 +34,15 @@ impl Execs {
             .entry(name.clone())
             .or_insert_with(|| Limiter::new(MAX_SESSIONS))
     }
+}
+
+fn forward(wire: &mut Wire<'_>, stream: Stream, data: Vec<u8>) {
+    let data = Text(data);
+    let message = match stream {
+        Stream::Stdout => ExecServer::Stdout { data },
+        Stream::Stderr => ExecServer::Stderr { data },
+    };
+    wire.ws.send(wire.out, protocol::json(&message));
 }
 
 fn fit(room: usize) -> usize {
@@ -71,13 +80,8 @@ impl State {
         self.exec_release(poll, index);
     }
 
-    fn exec_exit(&mut self, poll: &mut Poll, index: usize, exit: Exit) {
-        self.exec_send(
-            index,
-            &ExecServer::Exit {
-                ended: Ended::from(exit),
-            },
-        );
+    fn exec_exit(&mut self, poll: &mut Poll, index: usize, ended: Ended) {
+        self.exec_send(index, &ExecServer::Exit { ended });
         if let Some((_, wire)) = self.exec_session(index) {
             wire.ws.finish(wire.out);
         }
@@ -157,25 +161,23 @@ impl State {
                 (Stage::Running(running), ExecClient::Stdin { data }) => {
                     if data.0.len() > EXEC_CHUNK {
                         Err("stdin data exceeds 64 KiB")
-                    } else if !running.helper.takes_stdin() {
+                    } else if !running.request.stdin {
                         Err("the session was opened without stdin")
                     } else {
-                        running.helper.write_stdin(poll, data.0);
+                        running.helper.send(poll, &ToKo::Stdin(&data.0));
                         running.fed = true;
                         Ok(None)
                     }
                 }
                 (Stage::Running(running), ExecClient::Eof {}) => {
-                    running.helper.close_stdin(poll);
-                    running.fed = true;
+                    if running.request.stdin {
+                        running.helper.send(poll, &ToKo::Eof);
+                        running.fed = true;
+                    }
                     Ok(None)
                 }
                 (Stage::Running(running), ExecClient::Signal { signal }) => {
-                    running.helper.signal(match signal {
-                        KillSignal::Term => Signal::Term,
-                        KillSignal::Kill => Signal::Kill,
-                        KillSignal::Int => Signal::Int,
-                    });
+                    running.helper.send(poll, &ToKo::Signal(signal));
                     Ok(None)
                 }
                 (Stage::Ended, _) => Ok(None),
@@ -321,18 +323,17 @@ impl State {
             .settings(&name)
             .map_err(|error| error.message)
             .and_then(|runtime| self.runtimes.exec_launch(&name, &runtime, &request))
-            .and_then(|launch| {
-                spawn(
-                    poll,
-                    &launch,
-                    Mode::Exec {
-                        stdin: request.stdin,
-                    },
-                )
-                .map_err(|error| error.to_string())
+            .and_then(|(launch, start)| {
+                let mut helper =
+                    spawn(poll, &launch, Mode::Session).map_err(|error| error.to_string())?;
+                helper.send(poll, &ToKo::Start(start));
+                Ok(helper)
             });
         match helper {
-            Ok(helper) => {
+            Ok(mut helper) => {
+                if !request.stdin {
+                    helper.send(poll, &ToKo::Eof);
+                }
                 let backlog = match self.exec_session(index) {
                     Some((session, _)) => {
                         session.stage = Stage::Running(Running {
@@ -365,7 +366,8 @@ impl State {
     pub(super) fn pump_exec(&mut self, poll: &mut Poll, index: usize) {
         let ended = {
             let State { conns, execs, .. } = self;
-            let Some((Role::Exec(session), wire)) = conns.get_mut(index).and_then(Conn::role_mut)
+            let Some((Role::Exec(session), mut wire)) =
+                conns.get_mut(index).and_then(Conn::role_mut)
             else {
                 return;
             };
@@ -373,41 +375,44 @@ impl State {
                 return;
             };
             running.helper.reap();
-            for _ in 0..16 {
+            for _ in 0..READS_PER_TURN {
                 let mut moved = false;
-                for stream in [Stream::Stdout, Stream::Stderr] {
-                    let wanted = fit(wire.out.room());
-                    if wanted == 0 {
-                        break;
-                    }
-                    if let Chunk::Data(count) =
-                        running
-                            .helper
-                            .read(poll, stream, &mut execs.scratch, wanted)
-                    {
-                        let data = Text(execs.scratch.get(..count).unwrap_or_default().to_vec());
-                        let message = match stream {
-                            Stream::Stdout => ExecServer::Stdout { data },
-                            Stream::Stderr => ExecServer::Stderr { data },
-                        };
-                        wire.ws.send(wire.out, protocol::json(&message));
-                        running.output |= stream == Stream::Stdout;
-                        moved = true;
-                    }
+                while let Some((stream, data)) = running.helper.output(poll, fit(wire.out.room())) {
+                    forward(&mut wire, stream, data);
+                    running.output |= stream == Stream::Stdout;
+                    moved = true;
                 }
-                if !moved {
+                let wanted = fit(wire.out.room());
+                if let Chunk::Data(count) =
+                    running
+                        .helper
+                        .read(poll, Stream::Stderr, &mut execs.scratch, wanted)
+                {
+                    let data = execs.scratch.get(..count).unwrap_or_default().to_vec();
+                    forward(&mut wire, Stream::Stderr, data);
+                    moved = true;
+                }
+                if !moved || running.helper.broken().is_some() {
                     break;
                 }
             }
             running.helper.reading(poll, fit(wire.out.room()) > 0);
-            running
-                .helper
-                .drained()
-                .then(|| running.helper.exit())
-                .flatten()
+            match (running.helper.broken(), running.helper.drained()) {
+                (Some(invalid), _) => Err(invalid),
+                (None, true) => Ok(running.helper.exit()),
+                (None, false) => Ok(None),
+            }
         };
-        if let Some(exit) = ended {
-            self.exec_finished(poll, index, exit);
+        match ended {
+            Err(invalid) => {
+                let message = match self.exec_name(index) {
+                    Some(name) => format!("ko in runtime {name} sent invalid output: {invalid}"),
+                    None => format!("ko sent invalid output: {invalid}"),
+                };
+                self.exec_fail(poll, index, message);
+            }
+            Ok(Some(exit)) => self.exec_finished(poll, index, exit),
+            Ok(None) => {}
         }
     }
 
@@ -418,6 +423,19 @@ impl State {
         let Some(name) = self.exec_name(index) else {
             return;
         };
+        let framed = match self.exec_session(index) {
+            Some((
+                Session {
+                    stage: Stage::Running(running),
+                    ..
+                },
+                _,
+            )) => running.helper.ended(),
+            _ => return,
+        };
+        if let Some(ended) = framed {
+            return self.exec_exit(poll, index, ended);
+        }
         let runtime = self.runtimes.settings(&name).ok();
         let ending = match self.exec_session(index) {
             Some((session, _)) => match (&session.stage, &runtime) {
@@ -439,7 +457,7 @@ impl State {
             None => return,
         };
         let request = match ending {
-            Ok(Ending::Exit) => return self.exec_exit(poll, index, exit),
+            Ok(Ending::Exit) => return self.exec_exit(poll, index, Ended::from(exit)),
             Ok(Ending::Error(message) | Ending::Refused(message)) => {
                 self.runtimes.suspect(poll, &name);
                 return self.exec_fail(poll, index, message);
@@ -564,18 +582,13 @@ impl State {
         })
     }
 
-    pub(super) fn exec_shutdown(&mut self, poll: &mut Poll) {
-        let pids: Vec<_> = self.running_helpers().map(|helper| helper.pid()).collect();
-        for pid in pids {
-            self.leaving
-                .hand_over(poll, pid, self.config.stop_escalation);
+    pub(super) fn exec_shutdown(&mut self) {
+        for helper in self.running_helpers() {
+            helper.signal(Signal::Term);
         }
     }
 
     pub(crate) fn kill_helpers(&mut self) {
-        for helper in self.running_helpers() {
-            helper.signal(Signal::Kill);
-        }
         self.leaving.kill_all();
     }
 

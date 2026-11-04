@@ -1176,16 +1176,17 @@ status or a signal and closes with 1000; `error` closes with 1011 and
 is the one way a session ends without `exit`: the runtime failed to
 start, it needs a pane to log in, the command could not start, the
 transport failed (ssh's own exit 255), no session slot came free in
-time, or a message did not parse. A `data`
+time, or a message did not parse. A missing program or cwd is `exit`
+127 or 1, with the reason on stderr. A `data`
 payload is at most 64 KiB before its encoding. `argv` runs without a
 shell. Nothing of the caller's environment crosses: the runtime's
 `env`, then the request's, apply. The server reads the WebSocket only
 while the command takes input and sends output only while the
 connection's queue is below its cap, so a slow reader stops the
-command and nothing is lost. A close before `exit` ends the helper
-process: `SIGTERM`, then `SIGKILL` after `KO_STOP_ESCALATION_MS`.
-Whether that ends the command inside is the kind's: in a container,
-the command keeps running and only its stdin closes
-(design-runtimes.md, "The container kind"). One runtime
+command and nothing is lost. A close before `exit` ends the
+command's process group on every kind: `SIGTERM`, then `SIGKILL`
+after the escalation (design-runtimes.md, "The exec session"). A
+`signal` message signals that group, and a command that a signal
+ended ends with `exit` and the signal's name on every kind. One runtime
 runs at most 32 sessions; later ones wait in order. The user and host
 pane identities may open a session; a runtime connection may not.

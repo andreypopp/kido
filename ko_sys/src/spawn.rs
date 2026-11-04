@@ -5,7 +5,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr;
 
-use crate::pid::Pid;
+use crate::pid::{Pid, Program};
 use crate::retry::{check, check_code, retry};
 use crate::signal::Signal;
 
@@ -114,6 +114,18 @@ pub fn program(
     dir: Option<&Path>,
 ) -> io::Result<Pid> {
     start(program, args, targets, (env, dir), Session::Inherit)
+}
+
+/// The program leads a new session and process group.
+pub fn grouped(
+    program: &Path,
+    args: &[&str],
+    targets: &[(BorrowedFd<'_>, u8)],
+    env: Env<'_>,
+    dir: Option<&Path>,
+) -> io::Result<Program> {
+    let pid = start(program, args, targets, (env, dir), Session::New)?;
+    Ok(Program::held(pid))
 }
 
 // Every descriptor but the targets and stderr closes in the child. It returns the spawn flags

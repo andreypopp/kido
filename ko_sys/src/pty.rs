@@ -5,7 +5,7 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use crate::pid::{Exit, Group, Pid, Waited};
+use crate::pid::{Exit, Pid, Program, Waited};
 use crate::retry::check;
 use crate::signal::Signal;
 
@@ -57,32 +57,6 @@ impl fmt::Display for Setup {
 pub struct Pty {
     pub master: OwnedFd,
     pub program: Result<Program, Failed>,
-}
-
-#[derive(Debug)]
-pub struct Program {
-    group: Group,
-}
-
-impl Program {
-    pub fn pid(&self) -> Pid {
-        self.group.leader()
-    }
-
-    pub fn signal(&self, signal: Signal) -> io::Result<()> {
-        self.group.signal(signal)
-    }
-
-    pub fn peek_exit(&self) -> io::Result<Option<Exit>> {
-        self.pid().peek_exit()
-    }
-
-    pub fn reap(self) -> io::Result<Exit> {
-        match self.pid().wait()? {
-            Waited::Ended(exit) => Ok(exit),
-            Waited::Running | Waited::NoChild => Err(io::Error::from(io::ErrorKind::NotFound)),
-        }
-    }
 }
 
 const SETUP_ERRORS: [i32; 4] = [libc::EAGAIN, libc::ENOMEM, libc::EMFILE, libc::ENFILE];
@@ -361,9 +335,7 @@ pub fn spawn(size: Winsize, cwd: &Path, argv: &[Vec<u8>], env: &[Vec<u8>]) -> Re
     match report(&read) {
         Ok(None) => Ok(Pty {
             master,
-            program: Ok(Program {
-                group: Group::held(leader),
-            }),
+            program: Ok(Program::held(leader)),
         }),
         Ok(Some((step, error))) => match leader.wait() {
             Ok(Waited::Ended(exit)) if exit == Exit::Exited(step.exit_code()) => Ok(Pty {

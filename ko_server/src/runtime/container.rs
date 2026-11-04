@@ -5,9 +5,8 @@ use serde::Deserialize;
 
 use crate::config::{env_path, installed, program_path};
 use crate::ids::{PaneToken, RuntimeName};
-use crate::protocol::ExecRequest;
 use crate::runtime::exec::Launch;
-use crate::runtime::file::{Access, Container, Ko, Runtime, Source, SshAgent};
+use crate::runtime::file::{Access, Container, Ko, Source, SshAgent};
 use crate::runtime::{Cleanup, Ctx, Entry, Next, Outcome, text, version_next, words};
 
 const PROGRAM: &str = "container";
@@ -133,28 +132,18 @@ pub(crate) fn entry(
     }
 }
 
-pub(crate) fn exec_launch(
-    name: &RuntimeName,
-    runtime: &Runtime,
-    settings: &Container,
-    (request, env): (&ExecRequest, &[Vec<u8>]),
-) -> Result<Launch, String> {
-    let mut args = words(&["exec"]);
-    if request.stdin {
-        args.push("-i".to_owned());
-    }
+pub(crate) fn exec_launch(settings: &Container, cx: &Ctx<'_>) -> Result<Launch, String> {
+    let mut args = words(&["exec", "-i"]);
     if let Some(user) = &settings.user {
         args.extend(["-u".to_owned(), user.as_str().to_owned()]);
     }
-    if let Some(dir) = request.cwd.as_ref().or(runtime.cwd.as_ref()) {
-        args.extend(["--cwd".to_owned(), text(dir.as_path())]);
-    }
-    for (variable, value) in runtime.exec_env(name, request) {
-        args.extend(["-e".to_owned(), format!("{variable}={value}")]);
-    }
-    args.push(target(name, settings));
-    args.extend(request.argv.iter().cloned());
-    launch(settings, env, args)
+    args.extend([
+        target(cx.name, settings),
+        inner_ko(settings).to_owned(),
+        "enter".to_owned(),
+        "--exec".to_owned(),
+    ]);
+    launch(settings, cx.env, args)
 }
 
 pub(crate) fn first(settings: &Container, cx: &Ctx<'_>) -> Result<Launch, String> {
@@ -162,7 +151,14 @@ pub(crate) fn first(settings: &Container, cx: &Ctx<'_>) -> Result<Launch, String
 }
 
 pub(crate) fn watch(settings: &Container, cx: &Ctx<'_>) -> Result<Launch, String> {
-    let args = words(&["exec", "-i", &target(cx.name, settings), "cat"]);
+    let args = words(&[
+        "exec",
+        "-i",
+        &target(cx.name, settings),
+        inner_ko(settings),
+        "enter",
+        "--watch",
+    ]);
     launch(settings, cx.env, args)
 }
 
@@ -558,7 +554,7 @@ mod tests {
         let rig = Rig::new();
         assert_eq!(
             watch(&image, &rig.ctx()).unwrap().args,
-            words(&["exec", "-i", "ko-dev", "cat"])
+            words(&["exec", "-i", "ko-dev", "/opt/ko/bin/ko", "enter", "--watch"])
         );
         let target = (&rig.name, &[][..]);
         let stop = cleanup(&image, target, Cleanup::Stop).unwrap();
@@ -607,48 +603,31 @@ mod tests {
     }
 
     #[test]
-    fn an_exec_sets_variables_with_values_only_and_opens_stdin_only_when_asked() {
-        let name: RuntimeName = "dev".parse().unwrap();
-        let runtime: Runtime = serde_json::from_str(
-            r#"{"kind":"container","from":{"image":"x"},"container":"/c","user":"app",
-            "env":{"A":"runtime","B":"runtime"},"cwd":"/work"}"#,
-        )
-        .unwrap();
-        let crate::runtime::file::Kind::Container(found) = &runtime.kind else {
-            panic!("not a container");
-        };
-        let request = |stdin: bool, cwd: Option<&str>| ExecRequest {
-            argv: vec!["ls".to_owned(), "-l".to_owned()],
-            cwd: cwd.map(|cwd| cwd.to_owned().try_into().unwrap()),
-            env: [("B".to_owned(), "request".to_owned())].into(),
-            stdin,
-        };
+    fn an_exec_runs_ko_enter_exec_in_the_container_with_nothing_of_the_request_in_the_argv() {
+        let rig = Rig::new();
+        let found = settings(r#"{"from":{"image":"x"},"container":"/c","user":"app"}"#);
         let env = [b"HOME=/home/me".to_vec()];
-        let launch = exec_launch(&name, &runtime, found, (&request(false, None), &env)).unwrap();
+        let cx = Ctx {
+            name: &rig.name,
+            env: &env,
+            socket: &rig.socket,
+            exe: &rig.exe,
+        };
+        let launch = exec_launch(&found, &cx).unwrap();
         assert_eq!(launch.program, PathBuf::from("/c"));
         assert_eq!(
             launch.args,
             words(&[
                 "exec",
+                "-i",
                 "-u",
                 "app",
-                "--cwd",
-                "/work",
-                "-e",
-                "A=runtime",
-                "-e",
-                "B=request",
-                "-e",
-                "KO_RUNTIME=dev",
                 "ko-dev",
-                "ls",
-                "-l"
+                "/opt/ko/bin/ko",
+                "enter",
+                "--exec"
             ])
         );
         assert_eq!(launch.env, env);
-        let input =
-            exec_launch(&name, &runtime, found, (&request(true, Some("/tmp")), &env)).unwrap();
-        assert_eq!(input.args.get(1).map(String::as_str), Some("-i"));
-        assert!(input.args.windows(2).any(|pair| pair == ["--cwd", "/tmp"]));
     }
 }

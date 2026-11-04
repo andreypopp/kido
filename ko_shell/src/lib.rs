@@ -1,6 +1,7 @@
 pub mod bin_dir;
 pub mod enter;
 mod prime;
+pub mod session;
 pub mod shell;
 pub mod ssh;
 #[cfg(test)]

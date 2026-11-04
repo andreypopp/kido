@@ -292,7 +292,7 @@ impl Group {
         }
     }
 
-    pub(crate) fn held(leader: Pid) -> Group {
+    fn held(leader: Pid) -> Group {
         Group {
             leader,
             proof: Proof::Held,
@@ -320,6 +320,40 @@ impl Group {
             // macOS can return EPERM for a group with only zombies or exiting processes.
             Err(error) if matches!(error.raw_os_error(), Some(libc::ESRCH | libc::EPERM)) => Ok(()),
             Err(error) => Err(error),
+        }
+    }
+}
+
+/// A child that leads its own process group. This process holds its zombie until `reap`, so the
+/// group's id is not reused before then, and the type has no way to signal after the reap.
+#[derive(Debug)]
+pub struct Program {
+    group: Group,
+}
+
+impl Program {
+    pub(crate) fn held(leader: Pid) -> Program {
+        Program {
+            group: Group::held(leader),
+        }
+    }
+
+    pub fn pid(&self) -> Pid {
+        self.group.leader()
+    }
+
+    pub fn signal(&self, signal: Signal) -> io::Result<()> {
+        self.group.signal(signal)
+    }
+
+    pub fn peek_exit(&self) -> io::Result<Option<Exit>> {
+        self.pid().peek_exit()
+    }
+
+    pub fn reap(self) -> io::Result<Exit> {
+        match self.pid().wait()? {
+            Waited::Ended(exit) => Ok(exit),
+            Waited::Running | Waited::NoChild => Err(io::Error::from(io::ErrorKind::NotFound)),
         }
     }
 }

@@ -6,14 +6,14 @@ use serde_json::{Value, json};
 
 use crate::harness::{
     DEADLINE, Dir, Server, base64, contains, poll, quote, run_ko, run_program, stays, test_env,
-    text_of, which,
+    text_of, wait_gone, which,
 };
 use crate::harness::{enabled, ko};
 use crate::panes::{headers, raw};
 use crate::runs::has_pane;
 use crate::runtime::{
-    Rt, closed_with, dead, fifo, read_exec, release, rt_pane, serve_in, start_exec, state,
-    stop_pane, wait_state,
+    Rt, closed_with, dead, fifo, read_exec, release, rt_pane, serve_in, start_exec, start_tree,
+    state, stop_pane, tree_pids, wait_state,
 };
 use crate::sshd::{Forwarding, HOST, Options, Remote};
 
@@ -374,6 +374,7 @@ fn an_exec_session_runs_through_a_live_master_that_the_server_adopts_and_retries
         &[
             ("KO_RUNTIME_IDLE_SECONDS", "0.5"),
             ("KO_RUNTIME_EXEC_WAIT_MS", "20000"),
+            ("KO_STOP_ESCALATION_MS", "300"),
             ("KO_E2E_MARK", "leaked"),
         ],
     );
@@ -449,6 +450,23 @@ fn an_exec_session_runs_through_a_live_master_that_the_server_adopts_and_retries
     );
     assert_eq!(state(s, "box"), "up");
 
+    let mut ws = start_exec(s, "box", request("kill -USR1 $$"));
+    assert_eq!(
+        read_exec(&mut ws).end,
+        json!({"type": "exit", "signal": "USR1"}),
+        "a remote signal exit keeps its name"
+    );
+    let files = Dir::new("ko-rtf-");
+    let ws = start_tree(s, "box", (&files, text_of(&files)));
+    let group = tree_pids(&files);
+    drop(ws);
+    for pid in group {
+        wait_gone(
+            pid,
+            "the session closed on a remote command that ignores HUP and TERM",
+        );
+    }
+
     let holding = |name: &str| {
         let started = work.join(format!("{name}.started"));
         let gate = work.join(name);
@@ -486,10 +504,10 @@ fn an_exec_session_runs_through_a_live_master_that_the_server_adopts_and_retries
             .remote
             .calls()
             .iter()
-            .filter(|call| call.contains("echo third"))
+            .filter(|call| call.contains("'enter' '--exec'"))
             .count()
-            == 2,
-        "the refused channel was tried again: {:?}",
+            == 8,
+        "seven sessions and the refused one tried again make eight exec channels: {:?}",
         boxed.remote.calls()
     );
     release(&s.scratch, &fifos[1], "go");

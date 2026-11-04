@@ -10,9 +10,11 @@ use ko_sys::event::{Poll, Ready, Timer, Token};
 use ko_sys::pid::{Exit, Pid, Waited};
 
 use crate::config::{Config, RuntimeIdle, SUN_PATH_MAX};
+use crate::exec_wire::Start as ExecStart;
 use crate::ids::{PaneId, PaneToken, RuntimeName};
 use crate::protocol::{
-    Error, ErrorKind, ExecRequest, LeadReport, LinkState, PathMap, Version, check_version, version,
+    Error, ErrorKind, ExecRequest, LeadReport, LinkState, PathMap, Variable, Version,
+    check_version, version,
 };
 use crate::server::{Listener, Origin, Timing, Verified};
 use crate::ssh::token_name;
@@ -188,20 +190,44 @@ impl Runtime {
             .map(|(variable, value)| (variable.as_str(), value.as_str()))
             .collect();
         env.insert("KO_RUNTIME", name.as_str());
+        if let Kind::Command(_) = self.kind {
+            env.entry("PATH").or_insert(command::DEFAULT_PATH);
+        }
         env
     }
 
+    /// What the ko inside the runtime runs: the request under the runtime's cwd and env.
+    pub(crate) fn exec_start(
+        &self,
+        name: &RuntimeName,
+        request: &ExecRequest,
+        escalation: Duration,
+    ) -> ExecStart {
+        ExecStart {
+            argv: request.argv.clone(),
+            cwd: request.cwd.clone().or_else(|| self.cwd.clone()),
+            env: self
+                .exec_env(name, request)
+                .into_iter()
+                .map(|(name, value)| Variable {
+                    name: name.to_owned(),
+                    value: value.to_owned(),
+                })
+                .collect(),
+            escalation_ms: u64::try_from(escalation.as_millis()).unwrap_or(u64::MAX),
+        }
+    }
+
+    /// The helper process that runs `ko enter --exec` inside the runtime.
     pub(crate) fn exec_launch(
         &self,
         request: &ExecRequest,
         cx: &Ctx<'_>,
     ) -> Result<Launch, String> {
         match &self.kind {
-            Kind::Ssh(remote) => ssh::exec_launch(self, remote, (request, cx)),
-            Kind::Command(command) => command::exec_launch(cx.name, self, command, request),
-            Kind::Container(container) => {
-                container::exec_launch(cx.name, self, container, (request, cx.env))
-            }
+            Kind::Ssh(remote) => ssh::exec_launch(remote, cx),
+            Kind::Command(command) => command::exec_launch(self, command, (request, cx)),
+            Kind::Container(container) => container::exec_launch(container, cx),
         }
     }
 
@@ -400,6 +426,7 @@ pub(crate) struct Registry {
     children: Vec<Child>,
     passed: Vec<(Token, LinkState)>,
     exe: PathBuf,
+    escalation: Duration,
 }
 
 pub(crate) fn text(path: &Path) -> String {
@@ -485,6 +512,7 @@ impl Registry {
             children: Vec::new(),
             passed: Vec::new(),
             exe: config.exe.clone(),
+            escalation: config.stop_escalation / 2,
         }
     }
 
@@ -497,7 +525,7 @@ impl Registry {
         name: &RuntimeName,
         runtime: &Runtime,
         request: &ExecRequest,
-    ) -> Result<Launch, String> {
+    ) -> Result<(Launch, ExecStart), String> {
         let socket = socket_path(&self.root, name);
         let cx = Ctx {
             name,
@@ -505,7 +533,8 @@ impl Registry {
             socket: &socket,
             exe: &self.exe,
         };
-        runtime.exec_launch(request, &cx)
+        let launch = runtime.exec_launch(request, &cx)?;
+        Ok((launch, runtime.exec_start(name, request, self.escalation)))
     }
 
     pub(crate) fn take_dying(&mut self) -> Vec<Pid> {
@@ -1337,7 +1366,7 @@ impl Registry {
         };
         let spawned = link.start.watch(&link.settings, &cx).and_then(|launch| {
             launch
-                .map(|launch| exec::spawn(poll, &launch, Mode::Exec { stdin: true }))
+                .map(|launch| exec::spawn(poll, &launch, Mode::Capture { stdin: true }))
                 .transpose()
                 .map_err(|error| error.to_string())
         });

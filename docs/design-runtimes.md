@@ -251,7 +251,8 @@ container's `/run/ko`, the parent of the relayed socket, is made by
 the engine, owned by root and `0755`, and the token, not the
 directory, is the identity on a runtime socket. A command without a
 pane identity (`--server`, `KO_STATE_DIR`) keeps the check. `ko enter` and `ko
-runtime-exec` are plumbing, hidden from `ko --help`.
+runtime-exec` are plumbing, hidden from `ko --help`; so are `ko enter`'s
+`--exec` ("The exec session") and `--watch` ("The container kind").
 
 **Status.** A runtime pane's foreground is the transport's process,
 which says nothing about the program inside. `pane_kind.rs` reads a
@@ -280,36 +281,80 @@ for.
 
 **The helper.** The kind turns the request into a helper process
 (`Runtime::exec_launch` in `ko_server/src/runtime/mod.rs`), which the server runs as its child with
-three non-blocking pipes on the loop and reaps on `SIGCHLD`. The
-helper's exit is the command's. For `command`, the helper is the
-`prefix` and the argv, with no shell. For `container`, it is
-`container exec` ("The container kind"). The kinds still to come plug
-in at the launch and at the classification of an exit
-(`Runtime::ending`: the command's exit, a refused channel, or the
-transport's own error); a bridge kind can serve the session by frames
-with no process. The ssh kind's helper is described in "The ssh kind".
+three non-blocking pipes on the loop and reaps on `SIGCHLD`. On every
+kind the helper's transport runs `ko enter --exec` of the ko inside
+the runtime, which runs the command: for `command`, the `prefix`,
+then the server's own ko; for `container`, `container exec` ("The
+container kind"); for ssh, a passenger ("The ssh kind"). The argv is
+only `ko enter --exec`: the command, its cwd, its environment and the
+escalation go in the first frame, so no value of the runtime's `env`
+appears in an argv, which `ps` shows to every user.
+
+**The inside ko** (`ko_shell/src/session.rs`) starts the command as
+the leader of a new session and process group, with its own pipes. The
+helper's stdin and stdout carry the frames of
+`ko_server/src/exec_wire.rs`, server to ko and ko to server. The
+helper's stderr stays raw: it is the transport's and the inside ko's
+own text (ssh's errors, a missing ko, `ko enter: ...`), and reaches
+the client as stderr. A signal and an exit cross as the JSON of the
+protocol's types, by name, never by number, because the host is macOS
+and the runtime is often Linux. The ko sends the exit, a status or a
+signal, after the leader ended and both of the command's pipes ended;
+a normal exit signals nothing, so a process that the command put in
+the background survives, as on the host.
+
+**Cancel.** The end of the helper's stdin or stdout, a frame that
+does not parse, or a `SIGTERM`, `SIGHUP` or `SIGINT` to the ko
+cancels: `SIGTERM` to the group, then `SIGKILL` at the escalation, or
+at once when the leader ends after the cancel. The ko watches both
+ends for a hangup even while backpressure pauses its reads, so a
+command that never reads its stdin cannot hide the transport's end
+(`Interest::Hangup` in `ko_sys/src/event.rs`). The escalation is half
+of `KO_STOP_ESCALATION_MS`: a margin, not a guarantee, for the ko's
+`SIGKILL` to come before the server's `SIGKILL` of the helper. The ko
+holds the leader's zombie until the session ends (`ko_sys::pid::Program`),
+so the group's id is not reused while the ko can signal it, and a
+cancel after the leader's exit still reaches the processes that hold
+its output. The ko signals only that group. A process that leaves the
+group (`setsid`, `setpgid`) escapes the cancel.
+
+An exit frame is the command's end, whatever the helper's own status.
+A helper that ends without one is classified by the kind
+(`Runtime::ending`: the helper's exit, a refused channel, or the
+transport's own error); a missing program or cwd is the inside ko's
+exit 127 or 1 with its message on stderr. A frame that does not parse
+ends the session at once with `error`; output that a remote login
+shell prints before the ko starts is such a frame. The kinds still to come plug in at the launch
+and at that classification; a bridge kind can serve the session by
+the same frames with no process.
 
 **The environment** of the command is the runtime's `env`, then the
 request's, then the forced `KO_RUNTIME`. Nothing of the caller's or
 the server's environment crosses, which is the credential boundary of
 a routed agent's tools. Inside the runtime, the command starts from
-the environment that the kind's transport gives: an ssh host's login
-environment, an image's environment in a container, and nothing for
-the `command` kind, whose `PATH` is the runtime's, else
-`/usr/bin:/bin`.
+the environment that the kind's transport gives to the inside ko: an
+ssh host's login environment, an image's environment in a container,
+and nothing for the `command` kind, whose `PATH` is the runtime's,
+else `/usr/bin:/bin`. The ko adds no variable of its own: an exec is
+not a pane, and gets no `KO_SOCKET`, `KO_PANE` or token.
 
 **Backpressure, both ways.** The server reads the WebSocket only
 while the child's stdin pipe takes bytes, and reads a stdout or
 stderr pipe only while the connection's queue is below its cap, so a
-slow reader blocks the command on its write as a full pipe does.
-Nothing is dropped and nothing spills. While a session pauses its
+slow reader blocks the command on its write as a full pipe does; the
+inside ko applies the same rule between its frames and the command's
+pipes. Nothing is dropped and nothing spills. While a session pauses its
 WebSocket reads for stdin, its pong deadline restarts at each ping,
 and a hangup of the peer still ends it. A WebSocket that closes first
-closes the child's stdin and sends it `SIGTERM`, then `SIGKILL` after
-`KO_STOP_ESCALATION_MS`; a step that a failed or cancelled start
-ends gets the same, and at its exit the server kills and reaps every
-such child. A `signal` message signals the same child.
-The server signals only its own child, never a pid from a message.
+closes the helper's stdin, which cancels the command inside, and sends
+the helper `SIGTERM`, then `SIGKILL` after `KO_STOP_ESCALATION_MS`;
+a step that a failed or cancelled start ends gets the same. At its
+exit the server kills every child that it is ending, but sends a
+running exec helper only `SIGTERM`, so the ko inside finishes its own escalation
+after the server is gone. A `signal`
+message is a frame to the inside ko, which signals the command's
+group. The server signals only its own child, never a pid from a
+message.
 
 **Limits.** One runtime runs at most 32 exec sessions at once. A
 session past the cap waits in order for one to end and ends with
@@ -377,14 +422,13 @@ it was created with: an edit of these fields takes effect after a
 `DELETE` of the runtime.
 
 **The watch.** The link holds one more helper while it is up:
-`container exec -i <target> cat` with a stdin that the server never
-writes. It ends when the container stops, from outside too, and its
+`container exec -i <target> <ko> enter --watch` with a stdin that the
+server never writes; `--watch` only waits for the end of its stdin. It ends when the container stops, from outside too, and its
 end takes the link `Down` as a forced down does, which removes the
 runtime's panes, whose `container exec` ended with the VM anyway. The
 next pane or exec starts the link again. `container logs --follow`
 ended at once, and `container start --attach` refuses a running
-container, so neither can be the watch. The watch needs `cat` in the
-image.
+container, so neither can be the watch.
 
 **A pane** runs `ko runtime-exec NAME -- container exec -t -i [-u
 USER] --env-file <panes>/pane_N.env <target> <ko> enter --socket
@@ -395,20 +439,17 @@ The cwd mapping has the configured volumes as `paths` entries, host
 to runtime, before the configured `paths`; `GET /runtimes` reports
 the combined list.
 
-**An exec session** runs `container exec [-i] [-u USER] [--cwd DIR]
--e K=V... <target> ARGV...`, with `-i` only when the request has
-stdin. Each variable has a value, because `-e K` alone copies the
-host's value. The `container` CLI runs with the server's environment,
-and none of it reaches the command; `PATH` is the image's unless an
-`env` names it. The exit status is the command's; a command that a
-signal ended exits with 128 plus the signal, as a shell reports it,
-never as `exit { signal }`. A missing program exits 1 with `failed to
-find target executable` on stderr. The `container exec` client
-ignores `SIGTERM` and `SIGINT` (it prints `missing signal in xpc
-message`) and passes no signal into the container, so a `signal`
-message or a close before `exit` ends the client at the escalation's
-`SIGKILL` and leaves the command running with its stdin closed; a
-command that reads its stdin then ends on the EOF.
+**An exec session** runs `container exec -i [-u USER] <target> <ko>
+enter --exec` ("The exec session"), with no `-e` and no `--cwd`
+of the CLI, so the CLI copies nothing of the server's environment;
+`PATH` is the image's unless an `env` names it. A missing ko exits 1
+with `failed to find target executable` on stderr. The `container
+exec` client ignores `SIGTERM` and `SIGINT` (it prints `missing
+signal in xpc message`) and passes no signal into the container, and
+it reports a signal exit as 128 plus the signal; the frames carry
+both instead. A close before `exit` ends the client at the
+escalation's `SIGKILL`, which ends the inside ko's stdin and thus
+cancels the command.
 
 **Down and cleanup.** Down, the idle rule, a failed start and the
 server's exit stop a container that ko created (`container stop`); a
@@ -490,16 +531,16 @@ connection does. The link stays `Up` until a check shows the death:
 the next pane's check, or the check that follows an exec session
 that ended with ssh's own failure.
 
-**The exec helper** is a passenger that runs `env(1)` with the
-variables as words, because sshd accepts no other variables and
-`env` takes any name in every login shell. The server finds `ssh`
+**The exec helper** is a passenger that runs the remote `ko enter
+--exec` ("The exec session"), with the variables in its first frame,
+because sshd accepts no other variables. The server finds `ssh`
 on its own `PATH` and runs the passenger with an empty environment,
 because a `SendEnv` of the user's ssh configuration would carry the
 server's variables to the command, and a `SendEnv` on the command
-line cannot clear it. A program whose name
-contains `=` is refused, because `env` would read it as a variable.
-ssh's exit is the command's status, except 255, which is `error` with
-ssh's stderr; a remote signal also ends as 255. A 255 whose stderr
+line cannot clear it. The end of the local ssh closes the channel,
+which ends the remote ko's stdin and cancels the command; sshd sends
+it no signal. The exit frame is the command's status or signal.
+Without one, ssh's exit 255 is `error` with ssh's stderr. A 255 whose stderr
 says that sshd refused the channel (its `MaxSessions`) is retried
 once, only when no output reached the client and no stdin or EOF
 reached the helper, because the refused helper's input is lost.
@@ -623,19 +664,9 @@ else from a trusted `pi.runtime`, and a routed agent's `cwd` from
 that variable.
 
 **Cancel.** A tool's abort or timeout kills its `ko api --stream`
-process, which closes the session ("The exec session"). What that
-does to the command is the kind's, and the harness does not work
-around it:
-
-- `command`: the helper is the command, so `SIGTERM`, then `SIGKILL`,
-  ends the shell; its own children get no signal.
-- `container`: `container exec` passes no signal, so the command
-  keeps running with its stdin closed ("The container kind").
-- `ssh`: the passenger is `ssh -T` without a pty; the end of the
-  local client closes the channel, which sends the remote command no
-  signal, so it runs until a write to its closed output or a read of
-  its stdin ends it. A remote signal exit reads as ssh's 255, which
-  is the exec's `error`, not a status.
+process, which closes the session. On every kind, the inside ko then
+ends the command's process group ("The exec session"); a process that
+left the group survives.
 
 ## Decisions
 
@@ -648,7 +679,7 @@ around it:
 - The remote directory is resolved on the remote by `ko enter`, both
   for `--prepare` and for a pane, so the pane's argv needs no fact
   of the link.
-- The exec passes variables as words of `env(1)`, not `SetEnv`,
+- The exec passes variables in the first frame to `ko enter --exec`, not `SetEnv`,
   which a default sshd's `AcceptEnv` refuses.
 - The option classifier and the ssh facts that the remote attach
   shares live in `ko_server::ssh`, because the server validates
@@ -677,9 +708,21 @@ Agents in a runtime, 2026-11-04:
 - A routed pi's `async_bash` is a run in the runtime, through `POST
   /runs`, not an exec session: it keeps a pane, a screen and the
   run's lifecycle.
-- A routed tool's cancel ends only what the kind's transport ends;
-  the gaps of the container and ssh kinds are the transports', and a
-  fix belongs to ko, not to the harness.
+- A routed tool's cancel is ko's, not the harness's.
+
+Exec cancel, 2026-11-04:
+
+- Every exec runs under the ko inside the runtime, not as the
+  transport's own command: no transport passes a signal (the container
+  CLI and sshd do not), and only a process inside can end the
+  command's group and report a signal exit by name.
+- The signal and the stdin's end reach the inside ko as frames on the
+  helper's stdin, not through the runtime socket: an exec has no pane
+  identity there, and the stdin is there on every kind. The output
+  and the exit are frames on the helper's stdout; the helper's stderr
+  stays raw, because the transport writes its own errors there.
+- A normal exit leaves the group alone, as a host shell does; only a
+  cancel kills it.
 
 Container kind, 2026-11-04:
 

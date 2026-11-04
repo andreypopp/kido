@@ -1021,7 +1021,7 @@ pub(crate) fn closed_with(ws: &mut crate::harness::Ws, code: u16) {
     assert_eq!(ws.close_frame().map(|frame| frame.0), Some(code));
 }
 
-fn pid_of(file: &Path) -> Pid {
+pub(crate) fn pid_of(file: &Path) -> Pid {
     poll("the pid file", || {
         fs::read_to_string(file).is_ok_and(|text| text.trim().parse::<i64>().is_ok())
     });
@@ -1157,13 +1157,23 @@ fn an_exec_session_runs_a_command_with_split_output_stdin_signals_and_an_exit() 
         "dev",
         json!({"argv": ["no-such-program-ko"], "stdin": false}),
     );
-    let end = read_exec(&mut ws).end;
+    let done = read_exec(&mut ws);
+    assert_eq!(done.end, json!({"type": "exit", "status": 127}));
     assert!(
-        end["message"]
-            .as_str()
+        String::from_utf8(done.stderr)
             .unwrap()
-            .contains("command not found"),
-        "{end}"
+            .contains("no-such-program-ko: command not found"),
+        "a missing program is the ko inside's word on stderr and status 127"
+    );
+    let mut ws = start_exec(
+        &s,
+        "dev",
+        json!({"argv": ["/bin/sh", "-c", "kill -USR1 $$"], "stdin": false}),
+    );
+    assert_eq!(
+        read_exec(&mut ws).end,
+        json!({"type": "exit", "signal": "USR1"}),
+        "a signal exit keeps its name"
     );
 
     let mut ws = start_exec(&s, "login", script("true"));
@@ -1253,6 +1263,182 @@ fn an_exec_session_reads_its_output_in_order_and_stops_the_command_while_the_rea
         "nothing is lost or reordered"
     );
     assert!(mark.exists());
+}
+
+const TREE: &str = r#"trap '' HUP TERM
+dir=$1
+case $2 in
+child)
+	sh "$0" "$dir" grandchild &
+	echo $$ > "$dir/child"
+	wait
+	;;
+grandchild)
+	echo $$ > "$dir/grandchild"
+	while :; do sleep 0.1; done
+	;;
+*)
+	sh "$0" "$dir" child &
+	echo $$ > "$dir/leader"
+	wait
+	;;
+esac
+"#;
+
+// A command whose leader, child and grandchild share one process group and ignore HUP and
+// TERM. They write their pids into `seen`, which is `files` as the runtime sees it.
+pub(crate) fn start_tree(s: &Server, runtime: &str, (files, seen): (&Path, &str)) -> Ws {
+    fs::write(files.join("tree.sh"), TREE).unwrap();
+    start_exec(
+        s,
+        runtime,
+        json!({"argv": ["/bin/sh", format!("{seen}/tree.sh"), seen], "stdin": true}),
+    )
+}
+
+pub(crate) fn tree_pids(files: &Path) -> [Pid; 3] {
+    ["leader", "child", "grandchild"].map(|name| pid_of(&files.join(name)))
+}
+
+#[test]
+fn a_cancelled_exec_session_ends_its_whole_process_group_even_when_the_command_ignores_sigterm() {
+    let s = serve(
+        &json!({
+            "dev": {"kind": "command"},
+            "junk": {"kind": "command", "prefix": ["/bin/sh", "-c", "echo junk; exec \"$@\"", "sh"]},
+        }),
+        &[("KO_STOP_ESCALATION_MS", "300")],
+    );
+    let files = Dir::new("ko-rtf-");
+    let ws = start_tree(&s, "dev", (&files, text_of(&files)));
+    let group = tree_pids(&files);
+    drop(ws);
+    for pid in group {
+        wait_gone(
+            pid,
+            "the socket closed on a command that ignores HUP and TERM",
+        );
+    }
+
+    let files = Dir::new("ko-rtf-");
+    let mut ws = start_tree(&s, "dev", (&files, text_of(&files)));
+    let group = tree_pids(&files);
+    ws.send(&json!({"type": "signal", "signal": "term"}));
+    stays(
+        "a command that ignores SIGTERM keeps running after a term message",
+        Duration::from_millis(300),
+        || !group[0].has_ended(),
+    );
+    ws.send(&json!({"type": "signal", "signal": "kill"}));
+    assert_eq!(
+        read_exec(&mut ws).end,
+        json!({"type": "exit", "signal": "KILL"})
+    );
+    for pid in group {
+        wait_gone(pid, "a kill message");
+    }
+
+    let mut ws = start_exec(&s, "junk", json!({"argv": ["/bin/true"], "stdin": false}));
+    let end = read_exec(&mut ws).end;
+    assert_eq!(end["type"], "error");
+    assert!(
+        end["message"]
+            .as_str()
+            .unwrap()
+            .contains("ko in runtime junk sent invalid output"),
+        "{end}"
+    );
+    closed_with(&mut ws, 1011);
+}
+
+// A group member that outlives its leader and holds the command's stdout: only a signal to the
+// group ends it.
+const STRAGGLER: &str = r#"sh -c 'trap "" TERM; echo $$ > "$0/straggler"; while :; do sleep 0.1; done' "$1" &
+exit 0
+"#;
+
+#[test]
+fn a_cancel_after_the_leader_exited_still_ends_the_group_that_holds_the_output() {
+    let s = serve(
+        &json!({"dev": {"kind": "command"}}),
+        &[("KO_STOP_ESCALATION_MS", "300")],
+    );
+    let files = Dir::new("ko-rtf-");
+    let script = files.join("straggler.sh");
+    fs::write(&script, STRAGGLER).unwrap();
+    let ws = start_exec(
+        &s,
+        "dev",
+        json!({"argv": ["/bin/sh", text_of(&script), text_of(&files)], "stdin": false}),
+    );
+    let straggler = pid_of(&files.join("straggler"));
+    stays(
+        "the session waits for the output that the straggler holds",
+        Duration::from_millis(300),
+        || !straggler.has_ended(),
+    );
+    drop(ws);
+    wait_gone(straggler, "the session closed after its leader exited");
+}
+
+// The ko inside, alone: a command that never reads its stdin and ignores TERM, a client that
+// pushes more than the ko buffers and then ends the stream. Frames are written by hand: a kind
+// byte, a big-endian length, the payload.
+#[test]
+fn the_ko_inside_learns_that_the_transport_ended_while_it_reads_no_stdin() {
+    use std::os::fd::AsFd;
+    let files = Dir::new("ko-rtf-");
+    fs::write(files.join("tree.sh"), TREE).unwrap();
+    let (in_read, in_write) = std::io::pipe().unwrap();
+    let (out_read, out_write) = std::io::pipe().unwrap();
+    let mut ko = crate::harness::Child::spawn(
+        &crate::harness::ko(),
+        &["enter", "--exec"],
+        &[],
+        &[(in_read.as_fd(), 0), (out_write.as_fd(), 1)],
+    );
+    drop((in_read, out_write));
+    let frame = |kind: u8, payload: &[u8]| {
+        let mut bytes = vec![kind];
+        bytes.extend((payload.len() as u32).to_be_bytes());
+        bytes.extend(payload);
+        bytes
+    };
+    let start = json!({
+        "argv": ["/bin/sh", text_of(&files.join("tree.sh")), text_of(&files)],
+        "env": [],
+        "escalation_ms": 300,
+    });
+    let mut bytes = frame(1, start.to_string().as_bytes());
+    for _ in 0..64 {
+        bytes.extend(frame(2, &[b'x'; 65536]));
+    }
+    ko_sys::fd::set_nonblocking(in_write.as_fd()).unwrap();
+    let mut sent = 0;
+    while sent < bytes.len() {
+        if !ko_sys::fd::wait_writable_within(in_write.as_fd(), Duration::from_millis(300)).unwrap()
+        {
+            break;
+        }
+        match ko_sys::fd::write(in_write.as_fd(), &bytes[sent..]) {
+            Ok(count) => sent += count,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("{error}"),
+        }
+    }
+    assert!(
+        sent > 131_072 && sent < bytes.len(),
+        "the ko stopped reading after {sent} of {} bytes",
+        bytes.len()
+    );
+    let group = tree_pids(&files);
+    assert_eq!(ko.wait(Duration::from_millis(100)), None);
+    drop(in_write);
+    for pid in group {
+        wait_gone(pid, "the end of the ko's stdin while it read none");
+    }
+    assert!(ko.wait(DEADLINE).is_some(), "the ko ends with its group");
+    drop(out_read);
 }
 
 #[test]

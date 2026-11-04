@@ -9,8 +9,9 @@ use ko_sys::pid::{Exit, Pid, Waited};
 use ko_sys::signal::Signal;
 use ko_sys::spawn;
 
+use crate::exec_wire::{Frames, FromKo, Invalid, ToKo};
 use crate::ids::RuntimeName;
-use crate::protocol::{ExecClient, ExecRequest, STDERR_TAIL};
+use crate::protocol::{Ended, ExecClient, ExecRequest, STDERR_TAIL};
 
 pub(crate) const MAX_SESSIONS: usize = 32;
 const MAX_BACKLOG: usize = 16;
@@ -117,7 +118,6 @@ impl Limiter {
 pub(crate) struct Launch {
     pub(crate) program: PathBuf,
     pub(crate) args: Vec<String>,
-    pub(crate) dir: Option<PathBuf>,
     pub(crate) env: Vec<Vec<u8>>,
 }
 
@@ -126,7 +126,6 @@ impl Launch {
         Launch {
             program,
             args,
-            dir: None,
             env: env.to_vec(),
         }
     }
@@ -134,8 +133,12 @@ impl Launch {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mode {
-    Exec { stdin: bool },
-    Capture { stdin: bool },
+    Capture {
+        stdin: bool,
+    },
+    /// An exec session's helper: frames on its stdin and stdout, the transport's own words on
+    /// its stderr.
+    Session,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,10 +177,33 @@ pub(crate) enum Chunk {
 }
 
 #[derive(Debug)]
+struct Framed {
+    reader: Reader,
+    frames: Frames,
+    ended: Option<Ended>,
+    broken: Option<Invalid>,
+}
+
+#[derive(Debug)]
+enum Stdout {
+    Raw(Reader),
+    Framed(Box<Framed>),
+}
+
+impl Stdout {
+    fn reader(&self) -> &Reader {
+        match self {
+            Stdout::Raw(reader) => reader,
+            Stdout::Framed(framed) => &framed.reader,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct Helper {
     pid: Pid,
     stdin: Option<Stdin>,
-    stdout: Option<Reader>,
+    stdout: Stdout,
     stderr: Reader,
     exit: Option<Exit>,
     tail: Vec<u8>,
@@ -200,27 +226,20 @@ pub(crate) fn spawn(poll: &mut Poll, launch: &Launch, mode: Mode) -> io::Result<
     let (in_read, in_write) = io::pipe()?;
     let null = File::options().read(true).write(true).open("/dev/null")?;
     let args: Vec<&str> = launch.args.iter().map(String::as_str).collect();
-    let (stdin, stdout) = match mode {
-        Mode::Exec { stdin } => (stdin, true),
-        Mode::Capture { stdin } => (stdin, true),
+    let stdin = match mode {
+        Mode::Capture { stdin } => stdin,
+        Mode::Session => true,
     };
     let pid = spawn::program(
         &launch.program,
         &args,
         &[
             (if stdin { in_read.as_fd() } else { null.as_fd() }, 0),
-            (
-                if stdout {
-                    out_write.as_fd()
-                } else {
-                    null.as_fd()
-                },
-                1,
-            ),
+            (out_write.as_fd(), 1),
             (err_write.as_fd(), 2),
         ],
         spawn::Env::Only(&launch.env),
-        launch.dir.as_deref(),
+        None,
     )?;
     drop((out_write, err_write, in_read));
     let stdin = if stdin {
@@ -236,13 +255,18 @@ pub(crate) fn spawn(poll: &mut Poll, launch: &Launch, mode: Mode) -> io::Result<
     } else {
         None
     };
+    let stdout = reader(poll, out_read)?;
     Ok(Helper {
         pid,
         stdin,
-        stdout: if stdout {
-            Some(reader(poll, out_read)?)
-        } else {
-            None
+        stdout: match mode {
+            Mode::Capture { .. } => Stdout::Raw(stdout),
+            Mode::Session => Stdout::Framed(Box::new(Framed {
+                reader: stdout,
+                frames: Frames::default(),
+                ended: None,
+                broken: None,
+            })),
         },
         stderr: reader(poll, err_read)?,
         exit: None,
@@ -259,8 +283,23 @@ pub(crate) fn detached(launch: &Launch) -> io::Result<Pid> {
         &args,
         &[(null.as_fd(), 0), (null.as_fd(), 1), (null.as_fd(), 2)],
         spawn::Env::Only(&launch.env),
-        launch.dir.as_deref(),
+        None,
     )
+}
+
+fn read_reader(poll: &mut Poll, reader: &mut Reader, buffer: &mut [u8]) -> Chunk {
+    if !reader.open {
+        return Chunk::End;
+    }
+    match ko_sys::fd::read(reader.fd.as_fd(), buffer) {
+        Ok(count) if count > 0 => Chunk::Data(count),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Chunk::Wait,
+        _ => {
+            reader.open = false;
+            poll.unwatch(reader.token);
+            Chunk::End
+        }
+    }
 }
 
 impl Helper {
@@ -282,17 +321,13 @@ impl Helper {
     }
 
     fn readers(&self) -> impl Iterator<Item = &Reader> {
-        self.stdout.iter().chain(std::iter::once(&self.stderr))
+        [self.stdout.reader(), &self.stderr].into_iter()
     }
 
     pub(crate) fn backed_up(&self) -> bool {
         self.stdin
             .as_ref()
             .is_some_and(|stdin| stdin.sent < stdin.pending.len())
-    }
-
-    pub(crate) fn takes_stdin(&self) -> bool {
-        self.stdin.is_some()
     }
 
     pub(crate) fn pid(&self) -> Pid {
@@ -309,6 +344,18 @@ impl Helper {
         } else {
             stdin.pending.extend_from_slice(&bytes);
         }
+        self.flush_stdin(poll);
+    }
+
+    pub(crate) fn send(&mut self, poll: &mut Poll, message: &ToKo<'_>) {
+        let Some(stdin) = &mut self.stdin else {
+            return;
+        };
+        if stdin.sent >= stdin.pending.len() {
+            stdin.pending.clear();
+            stdin.sent = 0;
+        }
+        message.encode(&mut stdin.pending);
         self.flush_stdin(poll);
     }
 
@@ -354,6 +401,7 @@ impl Helper {
         }
     }
 
+    /// A read of the transport's own words, or of a capture's stdout.
     pub(crate) fn read(
         &mut self,
         poll: &mut Poll,
@@ -361,34 +409,23 @@ impl Helper {
         scratch: &mut [u8],
         wanted: usize,
     ) -> Chunk {
-        let reader = match stream {
-            Stream::Stdout => self.stdout.as_mut(),
-            Stream::Stderr => Some(&mut self.stderr),
-        };
-        let Some(reader) = reader.filter(|reader| reader.open) else {
-            return Chunk::End;
+        let reader = match (stream, &mut self.stdout) {
+            (Stream::Stdout, Stdout::Raw(reader)) => reader,
+            (Stream::Stdout, Stdout::Framed(_)) => return Chunk::End,
+            (Stream::Stderr, _) => &mut self.stderr,
         };
         let wanted = wanted.min(scratch.len());
-        match scratch
-            .get_mut(..wanted)
-            .map(|buffer| ko_sys::fd::read(reader.fd.as_fd(), buffer))
-        {
-            Some(Ok(count)) if count > 0 => {
-                if stream == Stream::Stderr {
-                    self.tail
-                        .extend_from_slice(scratch.get(..count).unwrap_or_default());
-                    let excess = self.tail.len().saturating_sub(STDERR_TAIL);
-                    self.tail.drain(..excess);
-                }
-                Chunk::Data(count)
-            }
-            Some(Err(error)) if error.kind() == io::ErrorKind::WouldBlock => Chunk::Wait,
-            _ => {
-                reader.open = false;
-                poll.unwatch(reader.token);
-                Chunk::End
-            }
+        let Some(buffer) = scratch.get_mut(..wanted) else {
+            return Chunk::End;
+        };
+        let chunk = read_reader(poll, reader, buffer);
+        if let (Chunk::Data(count), Stream::Stderr) = (chunk, stream) {
+            self.tail
+                .extend_from_slice(scratch.get(..count).unwrap_or_default());
+            let excess = self.tail.len().saturating_sub(STDERR_TAIL);
+            self.tail.drain(..excess);
         }
+        chunk
     }
 
     pub(crate) fn collect(&mut self, poll: &mut Poll) {
@@ -405,6 +442,68 @@ impl Helper {
                         .extend_from_slice(data.get(..room.min(count)).unwrap_or_default());
                 }
             }
+        }
+    }
+
+    /// The next bytes that the command wrote, from the ko's frames, at most `wanted` of them.
+    /// A call reads the pipe at most once, and only when no whole frame is buffered.
+    pub(crate) fn output(&mut self, poll: &mut Poll, wanted: usize) -> Option<(Stream, Vec<u8>)> {
+        let Stdout::Framed(framed) = &mut self.stdout else {
+            return None;
+        };
+        let Framed {
+            reader,
+            frames,
+            ended,
+            broken,
+        } = &mut **framed;
+        if wanted == 0 || broken.is_some() {
+            return None;
+        }
+        let mut read = false;
+        loop {
+            match frames.from_ko(wanted) {
+                Ok(Some(FromKo::Stdout(data))) if !data.is_empty() => {
+                    return Some((Stream::Stdout, data.to_vec()));
+                }
+                Ok(Some(FromKo::Stderr(data))) if !data.is_empty() => {
+                    return Some((Stream::Stderr, data.to_vec()));
+                }
+                Ok(Some(FromKo::Exit(done))) => {
+                    ended.get_or_insert(done);
+                }
+                Ok(Some(_)) => {}
+                Ok(None) if !read && reader.open => {
+                    read = true;
+                    let filled = frames.fill(|buffer| match read_reader(poll, reader, buffer) {
+                        Chunk::Data(count) => Ok(count),
+                        Chunk::Wait => Err(io::ErrorKind::WouldBlock.into()),
+                        Chunk::End => Ok(0),
+                    });
+                    if matches!(filled, Ok(0)) && !frames.is_empty() {
+                        *broken = Some(Invalid::Truncated);
+                    }
+                }
+                Ok(None) => return None,
+                Err(invalid) => {
+                    *broken = Some(invalid);
+                    return None;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn ended(&self) -> Option<Ended> {
+        match &self.stdout {
+            Stdout::Framed(framed) => framed.ended,
+            Stdout::Raw(_) => None,
+        }
+    }
+
+    pub(crate) fn broken(&self) -> Option<Invalid> {
+        match &self.stdout {
+            Stdout::Framed(framed) => framed.broken,
+            Stdout::Raw(_) => None,
         }
     }
 
@@ -427,6 +526,10 @@ impl Helper {
 
     pub(crate) fn drained(&self) -> bool {
         self.readers().all(|reader| !reader.open)
+            && match &self.stdout {
+                Stdout::Raw(_) => true,
+                Stdout::Framed(framed) => framed.frames.is_empty(),
+            }
     }
 
     pub(crate) fn signal(&self, signal: Signal) {
@@ -451,11 +554,11 @@ impl Helper {
     }
 
     pub(crate) fn release(&mut self, poll: &mut Poll) {
-        for reader in self
-            .stdout
-            .iter_mut()
-            .chain(std::iter::once(&mut self.stderr))
-        {
+        let stdout = match &mut self.stdout {
+            Stdout::Raw(reader) => reader,
+            Stdout::Framed(framed) => &mut framed.reader,
+        };
+        for reader in [stdout, &mut self.stderr] {
             if reader.open {
                 reader.open = false;
                 poll.unwatch(reader.token);

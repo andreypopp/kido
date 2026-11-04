@@ -372,7 +372,9 @@ impl Run {
                         Some(1) => {
                             c.pause_after = None;
                             c.interest = match c.interest {
-                                Interest::Read | Interest::Idle => Interest::Idle,
+                                Interest::Read | Interest::Idle | Interest::Hangup => {
+                                    Interest::Idle
+                                }
                                 Interest::Write | Interest::ReadWrite => Interest::Write,
                             };
                             self.poll.interest(c.token, c.interest);

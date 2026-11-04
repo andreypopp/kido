@@ -34,9 +34,21 @@ pub struct Enter {
 }
 
 #[derive(Debug)]
+pub struct Cwd {
+    dir: PathBuf,
+    message: String,
+}
+
+impl fmt::Display for Cwd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "cwd {}: {}", self.dir.display(), self.message)
+    }
+}
+
+#[derive(Debug)]
 pub enum Failure {
     NoToken,
-    Cwd { dir: PathBuf, message: String },
+    Cwd(Cwd),
     Exec(io::Error),
 }
 
@@ -44,7 +56,7 @@ impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Failure::NoToken => f.write_str("no token"),
-            Failure::Cwd { dir, message } => write!(f, "cwd {}: {message}", dir.display()),
+            Failure::Cwd(cwd) => cwd.fmt(f),
             Failure::Exec(error) => error.fmt(f),
         }
     }
@@ -184,22 +196,26 @@ pub fn prepare(remote: &RemoteDir) -> Result<(), PrepareError> {
     Ok(())
 }
 
+pub(crate) fn check_cwd(dir: &Path) -> Result<(), Cwd> {
+    let message = match fs::metadata(dir) {
+        Ok(meta) if meta.is_dir() => return Ok(()),
+        Ok(_) => "Not a directory".to_owned(),
+        Err(error) => os_message(&error),
+    };
+    Err(Cwd {
+        dir: dir.to_path_buf(),
+        message,
+    })
+}
+
 pub fn exec(enter: &Enter, exe: &Path) -> Failure {
     let Some(token) = token(&enter.token) else {
         return Failure::NoToken;
     };
-    if let Some(dir) = &enter.cwd {
-        let problem = match fs::metadata(dir) {
-            Ok(meta) if meta.is_dir() => None,
-            Ok(_) => Some("Not a directory".to_owned()),
-            Err(error) => Some(os_message(&error)),
-        };
-        if let Some(message) = problem {
-            return Failure::Cwd {
-                dir: dir.clone(),
-                message,
-            };
-        }
+    if let Some(dir) = &enter.cwd
+        && let Err(cwd) = check_cwd(dir)
+    {
+        return Failure::Cwd(cwd);
     }
     let mut process = Command::new(exe);
     process.arg("shell");

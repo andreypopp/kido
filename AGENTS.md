@@ -160,7 +160,8 @@ These requirements are fixed:
   forward and their cleanup). It never depends on `ko_vt` or
   libghostty-vt. `ko_shell/` is the crate `ko_shell` that `ko shell`,
   `ko ssh` and `ko server --bin-dir` use: the priming of a local or
-  remote login shell, the ssh arguments and the bin directory lookup.
+  remote login shell, the ssh arguments, the bin directory lookup,
+  and `ko enter`, with the exec session's supervisor (`session.rs`).
   It embeds the shell integrations of `share/ko/` with `include_str!`;
   `make build-ko` installs `share/ko/bin` (the `ko`, `ssh` and
   `ko-pi` shims), `share/ko/shim.sh` and `share/pi/ko-pi.ts` (as
@@ -247,7 +248,7 @@ These requirements are fixed:
   every crate inherits them. `clippy.toml` permits `unwrap`, `expect`,
   `panic!` and indexing in tests. The readers of untrusted bytes
   (`ko_pane_wire`'s `frame.rs` and `ring.rs`, `ko_server`'s
-  `pane_proc.rs`, `ko_pane`'s `io.rs`) also deny `clippy::indexing_slicing` and
+  `pane_proc.rs` and `exec_wire.rs`, `ko_pane`'s `io.rs`) also deny `clippy::indexing_slicing` and
   `clippy::arithmetic_side_effects`. `print_stdout` and `print_stderr`
   are denied: the CLI writes through `writeln!` on a locked stream, and
   only `ko_bench/src/main.rs` allows the macros. Inside `verus!`, Verus
@@ -540,7 +541,9 @@ Conventions:
   of the given parent and leads its own group and session.
   `Group::signal` checks the start time and the group again.
   `ko-pane` signals its program's group only through the
-  `ko_sys::pty::Program` that `pty::spawn` returned after `exec`.
+  `ko_sys::pid::Program` that `pty::spawn` returned after `exec`;
+  `ko enter --exec` signals its command's group only through the
+  `Program` that `spawn::grouped` returned.
   It owns the child and is not `Copy`, and its reap consumes it, so
   no group signal follows the reap. `ESRCH`
   is not an error, and neither is `EPERM` on a group signal.
