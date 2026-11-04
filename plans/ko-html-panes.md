@@ -610,7 +610,7 @@ spike crashed on that in its own code, not in WebKit).
 Not measured: the view over a real Ghostty surface in Kido.app, the
 latency through a ko server and the SSH forward, and a page's memory
 when it holds a large DOM. The first unit of the app measures them
-with `KIDO_APP_TIMING`.
+in the visual suite.
 
 ## 15. pi
 
