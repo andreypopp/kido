@@ -655,9 +655,12 @@ Total: 13.5 agent-days. Units 5 and 6 can run in parallel with 3 and
 
 ## 12. Open questions (decided)
 
-The user accepted every recommendation below on 2026-11-04. One key
-question is still open: whether `C-h/j/k/l` move between the panes of
-a window without the prefix, or after `C-a`.
+The user accepted every recommendation below on 2026-11-04. The user also decided that
+`C-h`, `C-j`, `C-k` and `C-l` move between the panes of a window
+**without the prefix** (left, down, up, right; no wrap). `C-a` followed
+by one of them sends that key to the program, as `C-a C-a` sends `C-a`.
+Open: whether the four keys go to the program when vim is in the
+pane's foreground (the vim-tmux-navigator rule).
 
 
 Each with a recommendation. The user decides.
