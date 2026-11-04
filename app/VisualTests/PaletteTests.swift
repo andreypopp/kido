@@ -1666,7 +1666,7 @@ import PaneGeometry
 
 private extension PromptCandidate {
     init(pane: PaneID, session: SessionID, window: WindowID, title: String) {
-        self.init(KoSchema.Candidate(pane: pane, session: session, title: title, window: window))
+        self.init(KoSchema.Candidate(inbox: false, pane: pane, session: session, title: title, window: window))
     }
-    var schema: KoSchema.Candidate { KoSchema.Candidate(pane: pane, session: session, title: title, window: window) }
+    var schema: KoSchema.Candidate { KoSchema.Candidate(inbox: false, pane: pane, session: session, title: title, window: window) }
 }
