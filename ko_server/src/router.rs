@@ -1889,11 +1889,8 @@ mod tests {
         );
     }
 
-    fn pi_pane(inbox: Option<&str>, name: &str) -> Value {
-        let mut vars = json!({"pi.session": format!("session-{name}"), "pi.name": name});
-        if let Some(inbox) = inbox {
-            vars["pi.inbox"] = json!(inbox);
-        }
+    fn pi_pane(name: &str) -> Value {
+        let vars = json!({"pi.session": format!("session-{name}"), "pi.name": name});
         json!({"command": {"type": "shell", "command":
             "stty raw -echo; printf '\\033]7501;state=idle:app=pi\\007'; exec cat"}, "vars": vars})
     }
@@ -1948,30 +1945,10 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_goes_to_an_agent_of_the_session_by_paste_or_by_inbox() {
+    fn a_prompt_goes_to_an_agent_of_the_session_by_paste() {
         let mut server = harness("prompt");
-        let paste = add_window(&mut server, "paste", pi_pane(None, "Paster"));
-        let dir = PathBuf::from(format!("/tmp/ko-router-inbox-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let socket = dir.join("inbox.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let peer = std::thread::spawn(move || {
-            use std::io::Read;
-            let (mut peer, _) = listener.accept().unwrap();
-            let mut got = String::new();
-            peer.read_to_string(&mut got).unwrap();
-            peer.write_all(b"ok").unwrap();
-            got
-        });
-        let inbox = add_window(&mut server, "inbox", pi_pane(socket.to_str(), "Inboxer"));
-        let dead_inbox = add_window(
-            &mut server,
-            "dead",
-            pi_pane(Some("/tmp/ko-no-such.sock"), "Gone"),
-        );
+        let paste = add_window(&mut server, "paste", pi_pane("Paster"));
         wait_for_root(&mut server, &paste);
-        wait_for_root(&mut server, &inbox);
-        wait_for_root(&mut server, &dead_inbox);
 
         let (status, candidates) =
             prompt_call(&mut server, "GET /prompt/resolve?from=pane_1", &json!(null));
@@ -1982,11 +1959,7 @@ mod tests {
             .iter()
             .map(|c| c["pane"].as_str().unwrap())
             .collect();
-        assert_eq!(
-            panes,
-            [paste.as_str(), inbox.as_str(), dead_inbox.as_str()],
-            "pane_1 is a terminal"
-        );
+        assert_eq!(panes, [paste.as_str()], "pane_1 is a terminal");
         assert_eq!(candidates[0]["title"], "Paster");
         let (_, narrowed) = prompt_call(
             &mut server,
@@ -2017,24 +1990,12 @@ mod tests {
             server.step(Mode::Peek);
         }
         assert_eq!(
-            send(&mut server, &inbox, "hello inbox"),
-            ("200".to_owned(), json!({"via": {"type": "inbox"}}))
-        );
-        assert_eq!(peer.join().unwrap(), "hello inbox");
-        let (status, refused) = send(&mut server, &dead_inbox, "x");
-        assert_eq!(
-            (status.as_str(), refused["message"].as_str()),
-            ("409", Some("Gone is not accepting messages")),
-            "an advertised inbox that does not answer is refused, never a paste"
-        );
-        assert_eq!(
             send(&mut server, "pane_1", "x").0,
             "400",
             "a terminal is no candidate"
         );
         assert_eq!(send(&mut server, &paste, "").0, "400");
         assert_eq!(server.status("GET /prompt/resolve", "\r\n"), "HTTP/1.1 400");
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     fn step_until(server: &mut Harness, what: &str, mut done: impl FnMut(&mut Harness) -> bool) {

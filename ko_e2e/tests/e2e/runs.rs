@@ -61,13 +61,8 @@ pub(crate) fn started(s: &Server, caller: &str, args: &[&str]) -> Value {
         "{started}"
     );
     assert_eq!(
-        started["output"],
-        Path::new(text_of(&s.dir))
-            .join("runs")
-            .join(id)
-            .join("output")
-            .to_str()
-            .unwrap(),
+        started.as_object().map(|fields| fields.len()),
+        Some(3),
         "{started}"
     );
     started
@@ -160,7 +155,7 @@ fn a_run_is_a_pane_marked_at_creation_that_runs_the_argv_as_given() {
     let s = start(&[]);
     let caller = caller(&s);
     let (mut watcher, _) = s.client(None);
-    let script = "echo \"run-output $KO_RUN_ID\" | tee \"$KO_RUN_OUTPUT\"; exit 3";
+    let script = "echo \"run-output $KO_RUN_ID\"; exit 3";
     let run = run_of(&s, &caller, "env", &["sh", "-c", script, "ignored"]);
     let (id, pane) = (id_of(&run), pane_of(&run));
 
@@ -214,8 +209,7 @@ fn a_run_is_a_pane_marked_at_creation_that_runs_the_argv_as_given() {
         wait_ending(&s, id),
         ("failed".to_owned(), "exit 3".to_owned())
     );
-    let output = fs::read_to_string(record.join("output")).unwrap();
-    assert_eq!(output, format!("run-output {id}\n"));
+    s.screen_has(pane, &format!("run-output {id}"));
     let outcome = ko_as(&s, None, &["run-wait", "--json", id], "").json();
     assert_eq!(outcome["result"], "failed");
     assert_eq!(outcome["text"], "exit 3");
@@ -639,13 +633,11 @@ fn the_runs_table_the_detail_and_the_json_render_the_records_for_a_human() {
             "/tmp/some project"
         ])
     );
-    let output = s.dir.join("runs").join(a).join("output");
     assert_eq!(
         ko(&["runs", a]),
         format!(
             "id:       {a}\nname:     kid\nsession:  \nparent:   {b}\ncommand:  \ncwd:      /tmp/some project\n\
-             started:  2023-11-15T03:43:20+05:30\noutcome:  completed\nended:    2023-11-15T03:44:50+05:30\noutput:   {}\n",
-            output.display()
+             started:  2023-11-15T03:43:20+05:30\noutcome:  completed\nended:    2023-11-15T03:44:50+05:30\n"
         )
     );
     assert_eq!(ko(&["runs", "--all", a]), ko(&["runs", a]));
@@ -658,7 +650,6 @@ fn the_runs_table_the_detail_and_the_json_render_the_records_for_a_human() {
         "cwd",
         "startedAt",
         "outcome",
-        "output",
     ]
     .iter()
     .map(|key| detail.find(&format!("\"{key}\":")).unwrap_or(usize::MAX))

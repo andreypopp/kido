@@ -419,7 +419,6 @@ fn show(args: &RunsArgs, target: &Target, id: &RunId) -> ExitCode {
             }
         }
     }
-    line("output", &info.output);
     if let Some(screen) = &screen {
         let _ = writeln!(out, "screen:\n{screen}");
     }
@@ -550,7 +549,11 @@ pub(crate) fn prompt(args: PromptArgs) -> ExitCode {
                 target: one.pane,
                 text,
             };
-            match runs::send(&dir, Some(caller), &request) {
+            let mut sent = runs::send(&dir, Some(caller.clone()), &request);
+            if one.inbox && matches!(sent, Err(Failure::Server(_))) {
+                sent = runs::send(&dir, Some(caller), &request);
+            }
+            match sent {
                 Ok(_) => ExitCode::SUCCESS,
                 Err(failure) => failed("prompt", &dir, failure),
             }

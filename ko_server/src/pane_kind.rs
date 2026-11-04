@@ -8,7 +8,6 @@ const SSH_DEST: VarName = VarName::known("ssh.dest");
 pub(crate) const PI_SESSION: VarName = VarName::known("pi.session");
 const PI_NAME: VarName = VarName::known("pi.name");
 const PI_ACTIVITY: VarName = VarName::known("pi.activity");
-const PI_INBOX: VarName = VarName::known("pi.inbox");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RemoteKind {
@@ -26,7 +25,6 @@ pub(crate) enum Kind {
         session: String,
         name: String,
         activity: String,
-        inbox: Option<String>,
     },
     Ssh {
         destination: String,
@@ -63,7 +61,6 @@ pub(crate) fn classify(telemetry: &Telemetry, vars: &Vars, records: &[ProgramRec
                 session: session.to_owned(),
                 name: var(&PI_NAME),
                 activity: var(&PI_ACTIVITY),
-                inbox: Some(var(&PI_INBOX)).filter(|inbox| !inbox.is_empty()),
             },
             None => Kind::SomeAgent {
                 name: "pi".to_owned(),
@@ -174,7 +171,6 @@ mod tests {
                 session: "s1".to_owned(),
                 name: "Worker".to_owned(),
                 activity: String::new(),
-                inbox: None
             }
         );
         let bare = telemetry("zsh", &[("pi.session", json!(7))]);
@@ -191,32 +187,6 @@ mod tests {
             }
         );
         assert_eq!(bare.kind(&root_app("make")), Kind::Terminal);
-    }
-
-    #[test]
-    fn the_inbox_needs_the_pi_root() {
-        let mut found = telemetry(
-            "zsh",
-            &[
-                ("pi.session", json!("s1")),
-                ("pi.inbox", json!("/tmp/inbox.sock")),
-            ],
-        );
-        assert_eq!(of_pane(&found.telemetry, &found.vars), Kind::Terminal);
-        let root = root_app("pi").pop().unwrap();
-        found
-            .telemetry
-            .records
-            .apply(crate::program_status::Report::Set(root));
-        assert_eq!(
-            of_pane(&found.telemetry, &found.vars),
-            Kind::PiAgent {
-                session: "s1".to_owned(),
-                name: String::new(),
-                activity: String::new(),
-                inbox: Some("/tmp/inbox.sock".to_owned())
-            }
-        );
     }
 
     #[test]
@@ -254,7 +224,6 @@ mod tests {
             session: "s".to_owned(),
             name: name.to_owned(),
             activity: String::new(),
-            inbox: None,
         };
         assert_eq!(title(&pi("Worker"), "pane").as_deref(), Some("Worker"));
         assert_eq!(title(&pi(""), "pane").as_deref(), Some("pane"));

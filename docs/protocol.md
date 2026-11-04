@@ -420,7 +420,11 @@ whole output.
 The caller must be the user, the pane itself or the pane's parent
 (section 1); any other pane identity is `refused`. `ko api --stream
 PATH` reads such a stream from the shell and prints each text message
-as one line; it exits 0 only after a close with code 1000.
+as one line; it exits 0 only after a close with code 1000. It also
+sends each non-empty line of its stdin as one text message, which is
+how a receiver answers on the message stream (section 7); at the end
+of stdin it sends nothing more and goes on printing. A line of stdin
+over 1 MiB ends it with exit 1.
 
 ## 5. Images
 
@@ -880,8 +884,9 @@ section 1.
   switches to it. The run's pane gets `close: on_exit` and, under a parent, the
   pane's `parent`: a `pane_N` parent as given, a run parent resolved
   to that run's pane. A caller that acts as a pane may name only
-  itself or a run whose pane it is. The pane's environment gets `KO_RUN_ID` and `KO_RUN_OUTPUT`,
-  and its command is the body's argv with no wrapper. The server ties
+  itself or a run whose pane it is. The pane's environment gets `KO_RUN_ID`,
+  and its command is the body's argv with no wrapper, so the run's
+  output is the pane's content. The server ties
   the run to its pane when it creates the pane, and nothing changes
   the tie later: no variable names a run. The run's pane enters the
   document in one layout event whose row carries the `run` field. A
@@ -954,7 +959,9 @@ for a prompt from pane `from`, with the scope rule applied in the
 server:
 the candidates of the caller's window, else, when that window has
 none, those of the other windows of its session. With `window=true`
-it never widens. Run windows and terminal panes are not candidates. `POST /prompt`
+it never widens. Run windows and terminal panes are not candidates. A
+candidate says whether its message stream is open (`inbox`), which
+decides the path below. `POST /prompt`
 (`SendPrompt`) sends text to one candidate of its `from` and reports
 how it went (`ko_server/src/state/prompt.rs`). A pane identity may
 name only itself as `from`; the user (`ko` outside a pane, Kido.app)
@@ -965,17 +972,15 @@ names any pane. The first that applies delivers:
   kind `user` with the body's `id` (section 7, "Messages"), stamped
   with the caller's identity; the reply carries the message's state
   and `seq`.
-- A pane whose trusted `pi.inbox` names an inbox gets the text over
-  that socket (`ko_server/src/msg.rs`, the protocol of
-  `share/pi/README.md`), with a 2 s deadline as a stored send in the
-  loop. An inbox that cannot be reached is `refused`; a timeout or
-  another failure after the connect is `io`. Neither falls back to a
-  paste.
 - Any other candidate gets one `paste` input and one Enter key through
   its `ko-pane`; the pane's bracketed paste mode decides the wrapping.
 
-`ko prompt` sends its own pane as `from` and mints the id. It does
-not resend: the `pi.inbox` path has no ids. It exits with 0 sent (acked, delivered or queued), 1 empty text or an
+`ko prompt` sends its own pane as `from` and mints the id. When the
+connection fails after the request may have been sent, and the
+candidate's stream was open, it resends once with the same id: the
+server enqueues each id once and answers a repeat from the original.
+It never repeats a paste, which has no id, and it does not resend an
+`io` reply. It exits with 0 sent (acked, delivered or queued), 1 empty text or an
 error, 4 no agent in scope, 5 several); its `--window` sends
 `window=true`.
 

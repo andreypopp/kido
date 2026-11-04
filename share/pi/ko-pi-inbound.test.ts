@@ -2,278 +2,159 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { readFileSync } from "node:fs";
+import { makeFixture, selfPane, startSession, pollUntil, customMessages, entriesOf, asSubagent, idleTurn, notices } from "./ko-pi-fixture.ts";
 
-import { join, dirname } from "node:path";
+import { PARENT_GUIDANCE } from "./ko-pi.ts";
 
-import { fileURLToPath } from "node:url";
+const parent = { type: "pane", pane: "pane_2", session: "boss-session", name: "boss" };
+const peer = { type: "pane", pane: "pane_3", session: "peer-session", name: "peer" };
 
-import { parseEnvelope } from "./ko-pi.ts";
+const acked = async (fx: ReturnType<typeof makeFixture>, id: string): Promise<void> =>
+  pollUntil(() => fx.acks().some((ack) => ack.id === id), 2000, `the ack of ${id}`);
 
-import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
-
-import {
-  makeFixture,
-  fakeTheme,
-  startSession,
-  freshExtension,
-  asSubagent,
-  sendToInbox,
-  envelope,
-  customMessages,
-} from "./ko-pi-fixture.ts";
-
-const SELF = "self-session";
-
-test("parseEnvelope agrees with Msg.parse's v0/v1 discriminator table", () => {
-  const fixturePath = join(dirname(fileURLToPath(import.meta.url)), "testdata", "discriminator.json");
-  const cases: { name: string; raw: string; ok: boolean }[] = JSON.parse(readFileSync(fixturePath, "utf8"));
-  assert.ok(cases.length >= 11, `expected at least 11 cases in the shared fixture, got ${cases.length}`);
-  for (const c of cases) {
-    const got = parseEnvelope(c.raw) !== null;
-    assert.equal(got, c.ok, `${c.name}: parseEnvelope(${JSON.stringify(c.raw)}) ok = ${got}, want ${c.ok}`);
-  }
-});
-
-test("kind dispatch: messages, notices, unrecognised kinds and v0 text reach the model", async () => {
+test("each kind reaches pi as its own kind of message and is acked once handed over", async () => {
   const fx = makeFixture();
   try {
-    fx.writeAgent("root-x", "peer-a", { session: "peer-a", run: "peer-a" });
+    fx.setPanes([selfPane()]);
     const s = await startSession(fx);
-    const from = { session: "peer-a", name: "peer-a" };
 
-    await sendToInbox(s.inboxPath, "plain v0 text");
-    assert.ok(s.delivered.some((d) => d.text === "plain v0 text"), "v0 raw text is delivered unchanged");
+    fx.feed({ id: "kind-user-01", kind: "user", text: "typed by a person", from: { type: "user" } });
+    await acked(fx, "kind-user-01");
+    assert.deepEqual(s.delivered, [{ text: "typed by a person", opts: { deliverAs: "followUp" } }]);
 
-    await sendToInbox(s.inboxPath, envelope("message", "hello", { from }));
-    assert.ok(
-      customMessages(s, "ko-message").some((m) => m.message.content.endsWith("\nhello")),
-      "kind message reaches the model as a custom message carrying its text",
-    );
+    fx.feed({ id: "kind-msg-001", kind: "message", text: "when you can", relation: "parent", from: parent });
+    await acked(fx, "kind-msg-001");
+    const [message] = customMessages(s, "ko-message");
+    assert.equal(message!.message.content, "message from @boss (your parent, who spawned you):\nwhen you can");
+    assert.deepEqual(message!.opts, { deliverAs: "followUp", triggerTurn: true });
+    assert.equal(message!.message.details.work, true, "work from the parent is marked");
 
-    await sendToInbox(s.inboxPath, envelope("notice", "build finished", { from }));
-    assert.ok(
-      customMessages(s, "ko-notice").some((m) => m.message.content.endsWith("\nbuild finished") && m.message.details?.from === "peer-a"),
-      "kind notice reaches the model as a custom message, named by its sender, full text intact",
-    );
+    fx.feed({ id: "kind-msg-002", kind: "message", text: "fyi", relation: "sibling", from: peer });
+    await acked(fx, "kind-msg-002");
+    const second = customMessages(s, "ko-message")[1]!;
+    assert.equal(second.message.content, "message from @peer (another agent in this session, not the user):\nfyi");
+    assert.equal(second.message.details.work, false);
 
-    for (const kind of ["ask", "reply"]) {
-      await sendToInbox(s.inboxPath, envelope(kind, "old kind", { from }));
-      assert.ok(s.delivered.some(d => d.text.includes(`unrecognised message kind "${kind}"`)));
-    }
+    fx.feed({ id: "kind-steer-01", kind: "steer", text: "do X instead", relation: "parent", from: parent });
+    await acked(fx, "kind-steer-01");
+    const [steer] = customMessages(s, "ko-steer");
+    assert.equal(steer!.message.content, "boss is redirecting this work: do X instead");
+    assert.deepEqual(steer!.opts, { deliverAs: "steer", triggerTurn: true }, "a steer joins the running turn");
+    assert.equal(steer!.message.details.work, true);
 
-    await sendToInbox(s.inboxPath, envelope("ping", "unknown kind text", { from }));
-    assert.ok(s.delivered.some((d) => d.text.includes("unrecognised message kind") && d.text.includes("unknown kind text")));
+    fx.feed({ id: "kind-note-01", kind: "notice", text: "heads up", relation: "sibling", from: peer });
+    await acked(fx, "kind-note-01");
+    assert.deepEqual(notices(s), ["notice from peer (a subagent or background run's report, not the user):\nheads up"]);
+
+    fx.feed({ id: "kind-weird-01", kind: "weird", text: "?", relation: "sibling", from: peer });
+    await acked(fx, "kind-weird-01");
+    assert.deepEqual(fx.acks().at(-1), { type: "refuse", id: "kind-weird-01" }, "a message that has no known shape is refused");
+    assert.equal(s.delivered.length, 1, "and delivers nothing");
+    fx.feed({ id: "kind-norel-01", kind: "message", text: "no relation", from: peer, relation: undefined });
+    await acked(fx, "kind-norel-01");
+    assert.deepEqual(fx.acks().at(-1), { type: "refuse", id: "kind-norel-01" }, "a pane sender without its relation has not the shape either");
+
+    fx.feed({ id: "kind-plain-01", kind: "message", text: "from a terminal", from: { type: "user" } });
+    await acked(fx, "kind-plain-01");
+    assert.equal(s.delivered.at(-1)!.text, "from a terminal", "a message with no calling agent is plain text");
   } finally {
     await fx.restore();
   }
 });
 
-// A message steered or queued into a session otherwise reads exactly like the
-// user typing, and who is talking is the one thing the model cannot infer: the
-// header names the sender and their relationship, and only a peer's says "not the user".
-test("every message with a session is labelled with its sender and their relationship, even a top-level peer; raw v0 text stays the user's own words", async () => {
+test("work marks follow the parent's messages: at message_start in the child, not at the receiving", async () => {
   const fx = makeFixture();
   try {
-    fx.writeAgent("root-x", "peer-a", { session: "peer-session", run: "peer-session" });
-    fx.writeAgent("root-y", "hidden-peer", { session: "hidden-peer-session", run: "hidden-peer-session" });
-    await asSubagent(fx, SELF, async () => {
-      fx.writeAgent(SELF, "kid", { session: "kid-session", run: "kid-session" });
-      const s = await startSession(fx, { factory: await freshExtension() });
-      const labelled = () => customMessages(s, "ko-message").map((m) => m.message);
-
-      await sendToInbox(s.inboxPath, envelope("message", "fix the failing test\nthen report", { from: { session: "boss-session", name: "boss" } }));
-      await sendToInbox(s.inboxPath, envelope("message", "the refactor is in", { from: { session: "kid-session", name: "kid" } }));
-      await sendToInbox(s.inboxPath, envelope("message", "can you review this?", { from: { session: "peer-session", name: "peer-a" } }));
-      await sendToInbox(s.inboxPath, envelope("message", "sharing a pane does not make me the user", { from: { session: "hidden-peer-session", name: "hidden-peer" } }));
-      await sendToInbox(s.inboxPath, envelope("message", "no map entry names me", { from: { session: "stranger-session", name: "solo" } }));
-
-      assert.deepEqual(
-        labelled().map((m) => m.content),
-        [
-          "message from @boss (your parent, who spawned you):\nfix the failing test\nthen report",
-          "message from @kid (your subagent):\nthe refactor is in",
-          "message from @peer-a (another agent in this session, not the user):\ncan you review this?",
-          "message from @hidden-peer (another agent in this session, not the user):\nsharing a pane does not make me the user",
-          "message from @solo (another agent in this session, not the user):\nno map entry names me",
-        ],
-        "one header line each, naming the sender and how they stand to this session, with the text from the next line on",
-      );
-
-      const renderer = s.renderers.get("ko-message");
-      assert.ok(renderer, "the extension registered a renderer for its own message type");
-      const drawn = renderer!(labelled()[0], { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
-      assert.match(drawn, /^│ @boss says:/, "the row names the sender");
-      assert.ok(!drawn.includes("who spawned you"), "the parenthetical is for the model; the transcript does not repeat it");
-      assert.ok(
-        drawn.includes("fix the failing test") && drawn.includes("then report"),
-        "regular mode draws the message in full regardless of ctrl-o",
-      );
-
+    fx.setPanes([selfPane()]);
+    await asSubagent("self-session", async () => {
+      const s = await startSession(fx);
+      assert.equal(entriesOf(s, "ko-pi.work").length, 0);
+      await s.emit("message_start", { message: { role: "custom", customType: "ko-message", details: { work: true } } });
+      await s.emit("message_start", { message: { role: "custom", customType: "ko-message", details: { work: false } } });
+      assert.deepEqual(entriesOf(s, "ko-pi.work").map((work) => work.owner), ["self-session"]);
     });
   } finally {
     await fx.restore();
   }
 });
 
-
-
-test("a notice names its sender, shows its full text, and keeps the model header off the transcript", async () => {
+test("an interrupt aborts at once and delivers its text when the turn settles; idle, it delivers at once", async () => {
   const fx = makeFixture();
   try {
+    fx.setPanes([selfPane()]);
     const s = await startSession(fx);
-    const from = { session: "peer-a", name: "peer-a" };
-    const text = 'async run "build" failed: exit status 3\nrun: abc123\noutput: /tmp/x/output\n--- output ---\nboom';
+    await s.emit("agent_start");
+    fx.feed({ id: "int-0000001", kind: "interrupt", text: "new work", relation: "parent", from: parent });
+    await acked(fx, "int-0000001");
+    assert.equal(s.aborts(), 1);
+    assert.equal(customMessages(s, "ko-message").length, 0, "held while the turn still runs");
+    await s.emit("agent_settled", { aborted: true }, { isIdle: () => true });
+    assert.equal(customMessages(s, "ko-message").length, 1);
+    assert.match(customMessages(s, "ko-message")[0]!.message.content, /new work$/);
 
-    await sendToInbox(s.inboxPath, envelope("notice", text, { from }));
-    const sent = customMessages(s, "ko-notice")[0];
-    assert.ok(sent, "a notice was sent as a custom message");
-    assert.ok(sent!.message.content.endsWith(`\n${text}`), "the model-visible content is the notice's full text, under its header line");
-
-    const renderer = s.renderers.get("ko-notice");
-    assert.ok(renderer, "the extension registered a renderer for its own custom type");
-
-    const drawn = renderer!(sent!.message, { expanded: false, outputPad: 1 }, fakeTheme).render(120).join("\n");
-    assert.match(drawn, /@peer-a notifies:\n│ async run "build" failed: exit status 3\n/, "regular mode names the sender above the notice body");
-    assert.ok(drawn.includes("boom"), "regular mode shows the full body even when options.expanded is false");
-
-    // The header is model-facing only: the transcript already says who a
-    // notification is from, so the renderer takes it back off.
-    const review = "reviewed internal/ui: two findings\nthe second one needs a decision";
-    await sendToInbox(s.inboxPath, envelope("notice", review, { from: { session: "kid-1", name: "kid-1" } }));
-    const reviewed = customMessages(s, "ko-notice")[1]!;
-    const [header, ...body] = (reviewed.message.content as string).split("\n");
-    assert.match(header!, /^notice from kid-1 \(.*not the user\):$/, "one header line, naming the sender and what this is");
-    assert.equal(body.join("\n"), review, "the child's own text follows, from the next line, byte for byte");
-
-    const reviewedDrawn = renderer!(reviewed.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
-    assert.match(reviewedDrawn, /@kid-1 notifies:\n│ reviewed internal\/ui: two findings/, "regular mode shows the text below the sender");
-    assert.ok(!reviewedDrawn.includes("not the user"), "the transcript does not repeat the model header");
-    assert.ok(reviewedDrawn.includes("needs a decision"), "regular mode shows the whole text");
-
-    // labelFrom's fallback order: name, session, pane, "another agent".
-    await sendToInbox(s.inboxPath, envelope("notice", "from a human", { from: { session: "", pane: "pane_12" } as never }));
-    const nameless = customMessages(s, "ko-notice")[2]!;
-    assert.equal(nameless.message.details.from, "pane_12", "the pane stands in for a name when there is none");
-
-    const namelessDrawn = renderer!(nameless.message, { expanded: false, outputPad: 1 }, fakeTheme).render(80).join("\n");
-    assert.match(namelessDrawn, /@pane_12 notifies:/, "a nameless sender still gets a sane, non-empty label");
+    fx.feed({ id: "int-0000002", kind: "interrupt", text: "more", relation: "parent", from: parent });
+    await acked(fx, "int-0000002");
+    assert.equal(s.aborts(), 2);
+    assert.equal(customMessages(s, "ko-message").length, 2, "idle: nothing to wait for");
   } finally {
     await fx.restore();
   }
 });
 
-test("all inbound renderers dim headers, wrap normal text behind a border, and retain click toggles across component recreation", async () => {
+test("a stop shuts the session down once, after it has been acked, and discards held interrupts", async () => {
   const fx = makeFixture();
   try {
+    fx.setPanes([selfPane()]);
     const s = await startSession(fx);
-    const body = "output line\n\x1b[31m" + "界".repeat(60) + "\x1b[0m\n\nlast line";
-    const theme = {
-      ...fakeTheme,
-      fg: (color: string, text: string) => {
-        assert.ok(color === "border" || color === "dim");
-        return color === "border" ? `\x1b[34m${text}\x1b[0m` : `\x1b[2m${text}\x1b[0m`;
-      },
-    };
-    const click = {
-      type: "click", button: "left", x: 0, y: 0, screenX: 0, screenY: 0,
-      width: 80, height: 1, shift: false, alt: false, ctrl: false, clickCount: 1,
-    };
-    for (const [kind, verb] of [["message", "says"], ["steer", "redirects"], ["notice", "notifies"]]) {
-      const renderer = s.renderers.get(`ko-${kind}`)!;
-      const header = `@boss ${verb}:`;
-      const message = {
-        customType: `ko-${kind}`, timestamp: 123,
-        content: body,
-        details: { from: "boss", noticeId: "notice-1" },
-      };
-      const draw = (expanded: boolean) => renderer(JSON.parse(JSON.stringify(message)), { expanded, outputPad: 1 }, theme);
-      s.pi.getSettings = () => ({});
-      const component = draw(true);
-      const collapsedLines = [`\x1b[34m│ \x1b[0m\x1b[2m${header}\x1b[0m ${body.split("\n", 1)[0]}...`];
-      assert.deepEqual(component.render(80), collapsedLines, `${kind}: unset tuiMode defaults to fullscreen and starts collapsed`);
-      s.pi.getSettings = () => ({ tuiMode: "fullscreen" });
-      assert.deepEqual(component.render(80), collapsedLines, `${kind}: fullscreen ignores ctrl-o and starts collapsed`);
-      assert.deepEqual(component.handleMouse({ ...click, type: "press" }), { handled: true, render: false });
-      assert.deepEqual(component.render(80), collapsedLines, "press does not toggle");
-      assert.equal(component.handleMouse({ ...click, button: "right" }), undefined);
-      assert.equal(component.handleMouse({ ...click, type: "release" }), undefined);
-      assert.deepEqual(component.handleMouse(click), { handled: true, render: true });
-      assert.ok(component.render(80).map(stripTerminalSequences).includes("│ last line"), "click expands the body");
-      const recreated = draw(false);
-      fakeTheme.bgCalls.length = 0;
-      for (const width of [80, 20]) {
-        const lines = recreated.render(width);
-        assert.ok(lines.every((line) => line.startsWith("\x1b[34m│ \x1b[0m")));
-        assert.ok(lines.every((line) => visibleWidth(line) <= width));
-        assert.ok(lines.map(stripTerminalSequences).includes("│ last line"), "recreated component keeps expansion");
-        assert.ok(lines.length > 5, `${kind}: long content wraps`);
-      }
-      assert.equal(fakeTheme.bgCalls.length, 0, "no background");
-      assert.deepEqual(draw(false).handleMouse(click), { handled: true, render: true });
-      assert.deepEqual(recreated.render(80), collapsedLines, "a second click collapses only this message");
-      assert.deepEqual(renderer({ ...message, timestamp: 124 }, { expanded: true }, theme).render(80), collapsedLines, "another message starts collapsed");
-      s.pi.getSettings = () => ({ tuiMode: "regular" });
-      for (const expanded of [false, true]) {
-        assert.ok(draw(expanded).render(80).map(stripTerminalSequences).includes("│ last line"), "regular mode is always expanded");
-      }
-      const fallback = renderer({ ...message, details: undefined, content: "plain text" }, { expanded: false }, theme).render(80);
-      assert.deepEqual(fallback.map(stripTerminalSequences), [`│ another agent ${verb}:`, "│ plain text"]);
-      s.pi.getSettings = () => ({ tuiMode: "fullscreen" });
-      for (const [text, width, expected] of [
-        ["", 80, `│ ${header}`],
-        ["short", 80, `│ ${header} short`],
-        ["short\nmore", 80, `│ ${header} short...`],
-        ["\x1b[31m" + "界".repeat(30) + "\x1b[0m", 2 + visibleWidth(header) + 1 + 4 + 3, `│ ${header} 界界...`],
-      ] as const) {
-        const lines = renderer({ ...message, content: text, details: { from: "boss" } }, { expanded: true }, theme).render(width);
-        assert.deepEqual(lines.map(stripTerminalSequences), [expected], `${kind}: collapsed preview never wraps`);
-        assert.ok(visibleWidth(lines[0]) <= width, "ANSI and CJK fit the available width");
-        assert.ok(lines[0].includes(`\x1b[2m${header}\x1b[0m`), "only the preview header is dim");
-      }
-    }
+    await s.emit("agent_start");
+    fx.feed({ id: "stop-held-01", kind: "interrupt", text: "held", from: parent });
+    await acked(fx, "stop-held-01");
+    fx.feed({ id: "stop-stop-01", kind: "stop", from: parent });
+    await pollUntil(() => s.shutdowns() === 1, 2000, "the shutdown");
+    await acked(fx, "stop-stop-01");
+    await s.emit("agent_settled", { aborted: true }, { isIdle: () => true });
+    assert.equal(customMessages(s, "ko-message").length, 0, "stop discards the held replacement work");
+    assert.equal(s.shutdowns(), 1);
   } finally {
     await fx.restore();
   }
 });
 
-// Pins a real bug: the render path and the model path are different code paths,
-// and two subagents' notices sat invisible for minutes, appearing only when the
-// parent's turn happened to end. The widget's whole life is one fixture.
-test("an inbound notice renders a widget at once and clears it once the model entry takes over", async () => {
+test("a notice that cannot be recorded is refused, and one that can is acked and recorded once", async () => {
   const fx = makeFixture();
   try {
+    fx.setPanes([selfPane()]);
     const s = await startSession(fx);
-    const from = { session: "peer-a", name: "peer-a" };
+    const report = { type: "pane", pane: "pane_5", session: "kid-session", name: "kid" };
+    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp", pane: { instance: "a".repeat(32), pane: "pane_5" } } });
+    s.failAppends.add("ko-pi.report");
+    fx.feed({ id: "rep-fail-001", kind: "notice", text: "done", data: { report: true }, relation: "child", from: report });
+    await pollUntil(() => fx.acks().some((ack) => ack.id === "rep-fail-001"), 2000, "the verdict");
+    assert.deepEqual(fx.acks(), [{ type: "refuse", id: "rep-fail-001" }], "the child retries a report that was not recorded");
+    assert.equal(notices(s).length, 0);
 
-    await sendToInbox(s.inboxPath, envelope("notice", "build finished", { from }));
+    s.failAppends.clear();
+    fx.forgetAcks();
+    fx.dropStream();
+    await pollUntil(() => fx.acks().length === 1, 2000, "the report to arrive again");
+    assert.deepEqual(fx.acks(), [{ type: "ack", id: "rep-fail-001" }]);
+    assert.deepEqual(entriesOf(s, "ko-pi.report").map((entry) => [entry.child, entry.text]), [["kid-session", "done"]]);
+    assert.equal(notices(s).length, 1);
+    assert.ok(notices(s)[0]!.endsWith(PARENT_GUIDANCE));
+  } finally {
+    await fx.restore();
+  }
+});
 
-    const widget = s.widgets.get("ko-notice-pending");
-    assert.ok(widget, "a widget was set for the pending notice");
-    assert.ok(widget!.content, "the widget has content, not a clear");
-    const dimTheme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
-    assert.deepEqual(
-      widget!.content!(undefined, dimTheme).render(80),
-      ["<dim>│ </dim><dim>@peer-a notifies:</dim><dim> build finished</dim>"],
-      "the pending row is the notice's collapsed line, border, header and body all dim",
-    );
-    assert.ok(visibleWidth(widget!.content!(undefined, fakeTheme).render(14)[0]!) <= 14, "and it fits");
-
-    const noticeMessages = customMessages(s, "ko-notice");
-    assert.equal(noticeMessages.length, 1, "the notice's text was sent to the model exactly once");
-    const sent = noticeMessages[0]!.message;
-    assert.ok(sent.content.endsWith("\nbuild finished"), "the model-visible text is the notice's full text, unchanged under its header line");
-    const noticeId = sent.details?.noticeId;
-    assert.ok(noticeId, "the message carries an id the widget half can be matched against");
-
-    assert.ok(s.widgets.get("ko-notice-pending")?.content, "the widget is still up before delivery actually happens");
-
-    await s.emit("message_start", { message: { ...sent, role: "custom" } });
-
-    assert.equal(s.widgets.get("ko-notice-pending")?.content, undefined, "the widget is cleared once the real entry has taken over");
-
-    await s.emit("message_start", { message: { role: "custom", customType: "some-other-type" } });
-    assert.equal(s.widgets.get("ko-notice-pending")?.content, undefined, "an unrelated message_start leaves the cleared widget alone");
+test("an idle turn of a child with no work owed reports nothing", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane({ parent: "pane_2" })]);
+    await asSubagent("self-session", async () => {
+      const s = await startSession(fx);
+      await idleTurn(s, "nothing was asked");
+      assert.deepEqual(fx.posts("/panes/pane_2/messages"), []);
+    });
   } finally {
     await fx.restore();
   }

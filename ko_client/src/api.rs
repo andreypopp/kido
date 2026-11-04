@@ -1,15 +1,19 @@
+use std::fmt;
+use std::io;
+use std::os::fd::BorrowedFd;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ko_server::api::Route;
 use ko_server::config::{self, Dir};
 use ko_server::http::Response;
 use ko_server::protocol::Snapshot;
+use ko_sys::event::{Events, Interest, Mode, Poll};
 
 use crate::edit::Edit;
 use crate::launch;
 use crate::layout::{self, Document, Edited};
-use crate::wire::{self, Caller, Link};
+use crate::wire::{self, Caller, Link, Next};
 
 #[derive(Debug)]
 pub enum Failure {
@@ -128,4 +132,94 @@ pub fn replace_layout(
 pub fn edit_layout(dir: &Path, caller: Option<Caller>, edit: &Edit) -> Result<Edited, Failure> {
     layout::edit(&socket(dir, caller.as_ref())?, (None, caller), edit)
         .map_err(|error| Failure::Failed(error.to_string()))
+}
+
+const LINE_MAX: usize = 1 << 20;
+
+#[derive(Debug)]
+pub enum StreamError {
+    Io(io::Error),
+    Binary,
+    LineTooLong,
+}
+
+impl fmt::Display for StreamError {
+    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            StreamError::Io(error) => error.fmt(out),
+            StreamError::Binary => out.write_str("binary message"),
+            StreamError::LineTooLong => out.write_str("a line of standard input is too long"),
+        }
+    }
+}
+
+impl From<io::Error> for StreamError {
+    fn from(error: io::Error) -> StreamError {
+        StreamError::Io(error)
+    }
+}
+
+fn send_lines(link: &mut Link, pending: &mut Vec<u8>, end: bool) -> Result<(), StreamError> {
+    while let Some(at) = pending.iter().position(|byte| *byte == b'\n') {
+        let line: Vec<u8> = pending.drain(..=at).take(at).collect();
+        if line.len() > LINE_MAX {
+            return Err(StreamError::LineTooLong);
+        }
+        if !line.is_empty() {
+            link.send(String::from_utf8_lossy(&line).into_owned())?;
+        }
+    }
+    if pending.len() > LINE_MAX {
+        return Err(StreamError::LineTooLong);
+    }
+    if end && !pending.is_empty() {
+        link.send(String::from_utf8_lossy(pending).into_owned())?;
+        pending.clear();
+    }
+    Ok(())
+}
+
+pub fn forward(
+    mut link: Link,
+    stdin: BorrowedFd<'_>,
+    mut print: impl FnMut(&str) -> io::Result<()>,
+) -> Result<Option<(u16, String)>, StreamError> {
+    let mut poll = Poll::new();
+    link.watch(&mut poll)?;
+    let mut input = Some(poll.watch(stdin, Interest::Read));
+    let (mut events, mut pending, mut chunk) = (Events::default(), Vec::new(), vec![0u8; 1 << 16]);
+    loop {
+        link.begin_turn();
+        loop {
+            match link.next(&mut poll, Instant::now())? {
+                Next::Text(text) => print(text.as_str())?,
+                Next::Closed => return Ok(link.close_frame().cloned()),
+                Next::Binary(_) => return Err(StreamError::Binary),
+                Next::Wait => break,
+            }
+        }
+        link.settle(&mut poll)?;
+        poll.turn(Mode::Wait, &mut events)?;
+        if !events
+            .ready()
+            .iter()
+            .any(|ready| Some(ready.token) == input && ready.read)
+        {
+            continue;
+        }
+        match ko_sys::fd::read(stdin, &mut chunk) {
+            Ok(0) => {
+                if let Some(token) = input.take() {
+                    poll.unwatch(token);
+                }
+                send_lines(&mut link, &mut pending, true)?;
+            }
+            Ok(count) => {
+                pending.extend(chunk.iter().take(count));
+                send_lines(&mut link, &mut pending, false)?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
 }

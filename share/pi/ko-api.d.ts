@@ -588,6 +588,8 @@ export interface components {
             max_lines?: number;
         };
         Candidate: {
+            /** @description True while the pane has its message stream open, so a prompt goes through its queue. */
+            inbox: boolean;
             pane: components["schemas"]["PaneId"];
             session: components["schemas"]["SessionId"];
             title: string;
@@ -976,7 +978,6 @@ export interface components {
             id: components["schemas"]["RunId"];
             name: components["schemas"]["RunName"];
             outcome?: components["schemas"]["RunOutcome"];
-            output: string;
             pane?: components["schemas"]["PaneId"];
             parent?: components["schemas"]["Parent"];
             runtime?: components["schemas"]["RuntimeName"];
@@ -1514,7 +1515,6 @@ export interface components {
         };
         Started: {
             id: components["schemas"]["RunId"];
-            output: string;
             pane: components["schemas"]["PaneId"];
             window: components["schemas"]["WindowId"];
         };
@@ -1582,9 +1582,6 @@ export interface components {
             vt: string;
         };
         Via: {
-            /** @constant */
-            type: "inbox";
-        } | {
             /** @constant */
             type: "paste";
         } | ({

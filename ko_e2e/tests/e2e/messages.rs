@@ -1,10 +1,16 @@
+use std::fs::File;
+use std::io::Write;
+use std::os::fd::AsFd;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::harness::{DEADLINE, Message, PRINT_TOKEN, Server, Steady, Ws, start, start_with};
+use crate::harness::{
+    Child, DEADLINE, Message, PRINT_TOKEN, Server, Steady, Ws, ko, poll, start, start_with,
+};
 use crate::panes::{Headers, as_pane, post, raw, token_pane_in_new_session};
+use crate::runs::ko_command;
 
 pub(crate) fn path(pane: &str) -> String {
     format!("/panes/{pane}/messages")
@@ -382,4 +388,86 @@ fn a_pane_that_dies_or_leaves_drops_its_queue_and_tells_its_parent() {
     );
     ack(&mut stream, "after-0001");
     assert_eq!(answer(&s, next), (200, json!({"state": "acked", "seq": 4})));
+}
+
+#[test]
+fn ko_api_stream_sends_each_line_of_stdin_so_a_receiver_acks_and_refuses_through_it() {
+    let s = start(&[]);
+    let user = s.headers();
+    let a = s.token_pane("exec cat");
+    let (env, argv) = ko_command(&s, Some(&a), &["api", "--stream", &path(&a)]);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let (input, mut lines) = std::io::pipe().unwrap();
+    let (stdout, stderr) = (
+        s.scratch.join("receiver-out"),
+        s.scratch.join("receiver-err"),
+    );
+    let (out, err) = (
+        File::create(&stdout).unwrap(),
+        File::create(&stderr).unwrap(),
+    );
+    let _cli = Child::spawn(
+        &ko(),
+        &argv,
+        &env,
+        &[(input.as_fd(), 0), (out.as_fd(), 1), (err.as_fd(), 2)],
+    );
+    row_has_inbox(&s, &a, true);
+    let printed = |id: &str| {
+        std::fs::read_to_string(&stdout).is_ok_and(|text| {
+            text.lines()
+                .any(|line| serde_json::from_str::<Value>(line).is_ok_and(|m| m["id"] == id))
+        })
+    };
+
+    let acked = send_later(&s, &user, &a, &body("cli-0001", "one"));
+    poll("the first message on stdout", || printed("cli-0001"));
+    writeln!(lines, r#"{{"type":"ack","id":"cli-0001"}}"#).unwrap();
+    assert_eq!(
+        answer(&s, acked),
+        (200, json!({"state": "acked", "seq": 1}))
+    );
+
+    let refused = send_later(&s, &user, &a, &body("cli-0002", "two"));
+    poll("the second message on stdout", || printed("cli-0002"));
+    writeln!(lines, "\n{}", json!({"type": "refuse", "id": "cli-0002"})).unwrap();
+    let (status, reply) = answer(&s, refused);
+    assert_eq!(
+        (status, reply["kind"].as_str()),
+        (409, Some("refused")),
+        "{reply}"
+    );
+
+    drop(lines);
+    let _later = send_later(&s, &user, &a, &body("cli-0003", "three"));
+    poll("a message after the end of stdin", || printed("cli-0003"));
+    assert_eq!(std::fs::read_to_string(&stderr).unwrap(), "");
+}
+
+#[test]
+fn ko_api_stream_prints_what_was_queued_at_once_and_refuses_a_line_that_is_too_long() {
+    let s = start(&[]);
+    let user = s.headers();
+    let a = s.token_pane("exec cat");
+    assert_eq!(
+        send(&s, &user, &a, &body("queued-0001", "waiting")).1["state"],
+        "queued"
+    );
+    let (env, argv) = ko_command(&s, Some(&a), &["api", "--stream", &path(&a)]);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let none = File::open("/dev/null").unwrap();
+    let stdout = s.scratch.join("queued-out");
+    let out = File::create(&stdout).unwrap();
+    let _cli = Child::spawn(&ko(), &argv, &env, &[(none.as_fd(), 0), (out.as_fd(), 1)]);
+    poll("the queued message on stdout", || {
+        std::fs::read_to_string(&stdout).is_ok_and(|text| text.contains("queued-0001"))
+    });
+
+    let b = s.token_pane("exec cat");
+    let (env, argv) = ko_command(&s, Some(&b), &["api", "--stream", &path(&b)]);
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let long = "x".repeat(1 << 20) + "y\n";
+    let run = crate::harness::run_ko(&s.scratch, &env, &argv, &long);
+    assert_eq!(crate::runs::code(&run), 1);
+    assert_eq!(run.stderr, "ko api: a line of standard input is too long\n");
 }

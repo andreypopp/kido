@@ -100,10 +100,9 @@ private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void)
     #expect(shape(snapshot.sessions[0].nodes) == ["build[1,2]", "3", "5>4,7>8", "9"])
 }
 
-@Test func theInboxDotReadsTheRowOrThePiInboxVariable() throws {
+@Test func theInboxDotReadsTheRow() throws {
     #expect(try !edited(5) { _ in }.inbox)
     #expect(try edited(5) { $0.inbox = true }.inbox)
-    #expect(try edited(5) { $0.vars["pi.inbox"] = .string("x") }.inbox)
 }
 
 @Test func aDeadPaneThatClosesOnExitLingersByItsCauseAndAKeptOrRunPaneDoesNot() throws {

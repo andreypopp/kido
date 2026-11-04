@@ -110,7 +110,6 @@ pub(crate) struct State {
     execs: exec_ops::Execs,
     leaving: Leaving,
     stops: pane_ops::Stops,
-    prompts: prompt::PromptState,
     messages: messages::Waits,
     leaks: Leaks,
     next_object: u32,
@@ -244,7 +243,6 @@ impl State {
             execs,
             leaving,
             stops,
-            prompts: prompt::PromptState::default(),
             messages: messages::Waits::default(),
             leaks,
             next_object: 0,
@@ -800,7 +798,6 @@ impl State {
         self.model.stop(poll);
         self.runs.stop(poll);
         self.stops.stop(poll);
-        self.prompts.stop(poll);
     }
 
     fn mark(&mut self, poll: &mut Poll, id: PaneId) {
@@ -1323,7 +1320,6 @@ impl State {
             for &ready in events.ready() {
                 if !own(self, poll, Wake::Ready(ready))?
                     && !self.pane_ready(poll, ready)
-                    && !self.prompt_ready(poll, ready)
                     && !self.runtime_ready(poll, ready)
                     && !self.exec_ready(poll, ready)
                 {
@@ -1340,8 +1336,7 @@ impl State {
                     self.sweep(poll);
                 } else if self.stops.is_escalation(due.timer) {
                     self.escalate(poll);
-                } else if self.prompt_due(poll, due.timer)
-                    || self.wait_due(poll, due.timer)
+                } else if self.wait_due(poll, due.timer)
                     || self.runtime_due(poll, due.timer)
                     || self.leaving_due(poll, due.timer)
                     || self.exec_due(poll, due.timer)
@@ -1649,7 +1644,6 @@ impl State {
             self.runs.forget(conn.token);
             self.runtimes.forget_wait(conn.token);
             self.forget_stops(poll, conn.token);
-            self.prompts.forget(conn.token);
             self.messages.forget(conn.token);
             if let Phase::Ws(link) = conn.phase {
                 match link.role {

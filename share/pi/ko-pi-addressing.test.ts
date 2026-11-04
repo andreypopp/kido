@@ -1,194 +1,203 @@
 import { test } from "node:test";
 
 import assert from "node:assert/strict";
-import { existsSync, rmSync } from "node:fs";
-import { join } from "node:path";
 
-import { makeFixture, selfPane, agentPane, startNamedSession, asSubagent } from "./ko-pi-fixture.ts";
+import { makeFixture, agentPane, selfPane, startSession, text, exited, type Fixture } from "./ko-pi-fixture.ts";
 
-const SELF = "self-session";
+const INSTANCE = "a".repeat(32);
 
-function json(payload: string): { kind: string; id: string; text: string; from: { session: string; name?: string; pane?: string }; v?: number } {
-  return JSON.parse(payload);
+// top (root) > boss > self > kid; boss > peer > cousin; top has a root sibling; one agent in another ko session.
+function tree(fx: Fixture): void {
+  fx.setPanes([
+    selfPane({ parent: "pane_2", cwd: "/work/self" }),
+    agentPane({ pane: "pane_2", session: "boss-session", name: "boss", parent: "pane_9", state: "working" }),
+    agentPane({ pane: "pane_3", session: "peer-session", name: "Peer", parent: "pane_2" }),
+    agentPane({ pane: "pane_4", session: "cousin-session", name: "cousin", parent: "pane_3" }),
+    agentPane({ pane: "pane_5", session: "kid-session", name: "kid", parent: "pane_1", close: "on_exit", cwd: "/work/kid" }),
+    agentPane({ pane: "pane_6", session: "rootpeer-session", name: "rootpeer" }),
+    agentPane({ pane: "pane_7", session: "elsewhere-session", name: "elsewhere", koSession: "session_2" }),
+    agentPane({ pane: "pane_8", session: "abc12345-one", name: "twin", parent: "pane_2" }),
+    agentPane({ pane: "pane_10", session: "abc12345-two", name: "twin", parent: "pane_2" }),
+    agentPane({ pane: "pane_9", session: "top-session", name: "top" }),
+  ]);
 }
 
-test("message_agent resolves by name, exact session id and unique prefix, and explains every refusal", async () => {
+const kid = { name: "kid", session: "kid-session", model: "acme/m:high", fork: false, cwd: "/work/kid", pane: { instance: INSTANCE, pane: "pane_5" } };
+
+test("list_agents lists the scope with each relationship, depth and the own subagent's report", async () => {
   const fx = makeFixture();
   try {
-    const inbox = await fx.startInbox();
-    fx.setPanes([
-      selfPane(),
-      agentPane({ pane: "pane_2", session: "abc12345-one", name: "Worker-2", inbox: inbox.path }),
-      agentPane({ pane: "pane_3", session: "abc12345-two", title: "π - ", inbox: inbox.path }),
-      agentPane({ pane: "pane_4", session: "worker-x", name: "scout" }),
-      agentPane({ pane: "pane_5", session: "worker-y", name: "scout" }),
-      agentPane({ pane: "pane_6", session: "worker-6", name: "worker-6", inbox: inbox.path }),
-      agentPane({ pane: "pane_7", session: "elsewhere", name: "far-away", koSession: "session_2", inbox: inbox.path }),
-      agentPane({ pane: "pane_8", session: "twin-a", name: "Twin", koSession: "session_2" }),
-      agentPane({ pane: "pane_9", session: "twin-b", name: "Twin", koSession: "session_2" }),
-    ]);
-    const s = await startNamedSession(fx, "Self");
+    tree(fx);
+    const s = await startSession(fx, { name: "Self" });
+    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", ...kid } });
+    s.entries.push({ type: "custom", customType: "ko-pi.work", data: { owner: "self-session", child: "kid-session", at: 1 } });
+    s.entries.push({ type: "custom", customType: "ko-pi.report", data: { owner: "self-session", child: "kid-session", name: "kid", text: "x".repeat(1500), at: 2, id: "r" } });
+    const list = s.tools.get("list_agents");
+    const rows = JSON.parse(text(await list.execute("c", {}))) as Array<Record<string, unknown>>;
+    const byName = new Map(rows.map((row) => [row.name, row]));
+    assert.deepEqual(rows.map((row) => row.name).sort(), ["Peer", "boss", "kid", "rootpeer", "top", "twin", "twin"].sort());
+    assert.deepEqual(
+      rows.filter((row) => row.name !== "twin").map((row) => [row.name, row.relationship, row.depth, row.kind]).sort(),
+      [
+        ["Peer", "peer", 2, "subagent"],
+        ["boss", "parent", 1, "subagent"],
+        ["kid", "own", 3, "subagent"],
+        ["rootpeer", "relative", 0, "agent"],
+        ["top", "relative", 0, "agent"],
+      ].sort(),
+    );
+    const own = byName.get("kid")!;
+    assert.equal(own.state, "running");
+    assert.equal(own.reported, true);
+    assert.equal(own.model, "acme/m:high");
+    assert.equal((own.report as string).length, 1000, "the report is capped at 1000 bytes");
+    assert.equal(own.parent, "self-session");
+    assert.equal(own.canMessage, true);
+    assert.equal(byName.get("boss")!.status, "working");
+    assert.equal(byName.get("boss")!.parent, "top-session");
+    assert.equal(byName.has("cousin"), false, "a cousin is outside the scope");
+    assert.equal(byName.has("elsewhere"), false, "another session is outside it too");
+
+    const peers = JSON.parse(text(await list.execute("c", { which: "peers" }))) as Array<Record<string, unknown>>;
+    assert.deepEqual(peers.map((row) => row.name).sort(), ["Peer", "twin", "twin"]);
+    const subs = JSON.parse(text(await list.execute("c", { which: "subagents" }))) as Array<Record<string, unknown>>;
+    assert.deepEqual(subs.map((row) => row.name), ["kid"]);
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("an ended subagent lists from the registry, with the cause of its lingering pane or a gone pane", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane(), agentPane({ pane: "pane_5", session: "kid-session", name: "kid", parent: "pane_1", dead: exited(1) })]);
+    const s = await startSession(fx);
+    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", ...kid } });
+    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", ...kid, name: "old", session: "old-session", pane: { instance: INSTANCE, pane: "pane_77" } } });
+    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "other-session", ...kid, name: "foreign", session: "foreign-session" } });
+    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", ...kid, name: "stale", session: "stale-session", pane: { instance: "b".repeat(32), pane: "pane_1" } } });
+    const rows = JSON.parse(text(await s.tools.get("list_agents").execute("c", {}))) as Array<Record<string, unknown>>;
+    assert.deepEqual(
+      rows.map((row) => [row.name, row.state, row.ended, row.canMessage]).sort(),
+      [
+        ["kid", "ended", "exit 1", false],
+        ["old", "ended", "its pane is gone", false],
+        ["stale", "ended", "its pane is gone", false],
+      ],
+      "a child of another owner is not listed; a pane of another server instance is gone",
+    );
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("message_agent resolves by name, session id, unique prefix and pane, and explains every refusal", async () => {
+  const fx = makeFixture();
+  try {
+    tree(fx);
+    const s = await startSession(fx, { name: "Self" });
     const message = s.tools.get("message_agent");
-    const deliver = async (to: string) => (await message.execute("c", { to, message: "x" })).content[0].text;
+    const send = async (to: string) => text(await message.execute("c", { to, message: "x" }));
 
-    assert.equal(await deliver("worker-2"), "delivered to Worker-2 by inbox", "a name is caseless");
-    assert.equal(await deliver("@worker-2"), "delivered to Worker-2 by inbox", "a leading @ is ignored");
-    assert.equal(await deliver("worker-6"), "delivered to worker-6 by inbox");
-    assert.equal(await deliver("abc12345-one"), "delivered to Worker-2 by inbox", "an exact session id wins over a prefix");
-    assert.equal(await deliver("abc12345-t"), "delivered to π -  by inbox", "a unique prefix resolves; an unnamed agent shows its title");
-    assert.equal(
-      await deliver("abc12345"),
-      'could not message abc12345: "abc12345" matches several agents by id: abc12345-one (Worker-2), abc12345-two (π - )',
-    );
-    assert.equal(await deliver("abc"), 'could not message abc: id prefixes need at least 8 characters');
-    assert.equal(await deliver("nope"), 'could not message nope: no agent session matches "nope"');
-    assert.equal(
-      await deliver("scout"),
-      'could not message scout: "scout" matches several agents by name: worker-x (scout), worker-y (scout)',
-    );
-    assert.equal(await deliver("Self"), "Self is this agent");
-    assert.equal(await deliver("elsewhere"), "could not message elsewhere: elsewhere (elsewhere) is in another session, not this one");
-    assert.equal(
-      await deliver("Twin"),
-      'could not message Twin: "Twin" matches several agents by name: twin-a (Twin), twin-b (Twin), none in this session',
-    );
-    assert.equal(
-      (await message.execute("c", { to: "Worker-2", message: "bad:\ud800:end" })).content[0].text,
-      "could not message Worker-2: the message is not valid UTF-8",
-    );
-    assert.equal(
-      (await message.execute("c", { to: "Worker-2", message: "" })).content[0].text,
-      "could not message Worker-2: the message is empty; nothing sent",
-    );
+    assert.equal(await send("peer"), "delivered to Peer", "a name is caseless");
+    assert.equal(await send("@Peer"), "delivered to Peer", "a leading @ is ignored");
+    assert.equal(await send("peer-session"), "delivered to Peer");
+    assert.equal(await send("pane_3"), "delivered to Peer", "a pane id is an address");
+    assert.equal(await send("rootpeer-s"), "delivered to rootpeer", "a unique prefix resolves");
+    assert.equal(await send("@Peer (session peer-session)"), "delivered to Peer", "a mention names the session");
+    assert.equal(await send("abc12345-one"), "delivered to twin", "an exact session id wins over a prefix");
+    assert.equal(await send("abc12345"), 'could not message abc12345: "abc12345" matches several by id: abc12345-one (twin), abc12345-two (twin)');
+    assert.equal(await send("abc"), "could not message abc: id prefixes need at least 8 characters");
+    assert.equal(await send("twin"), 'could not message twin: "twin" matches several by name: abc12345-one (twin), abc12345-two (twin)');
+    assert.equal(await send("nope"), 'could not message nope: no agent session matches "nope"');
+    assert.equal(await send("Self"), "Self is this agent");
+    assert.equal(await send("elsewhere"), "could not message elsewhere: elsewhere (elsewhere-session) is in another session, not this one");
 
-    const received = inbox.received().map(json);
-    assert.equal(received.length, 5, "the five deliveries reached the inbox; the refusals sent nothing");
-    assert.deepEqual(received[0].from, { session: SELF, name: "Self", pane: "pane_1" });
-    assert.equal(received[0].kind, "message");
-    assert.equal(received[0].text, "x");
-    assert.match(received[0].id, /^[0-9a-f]{32}$/, "a fresh 32-hex id");
+    assert.equal(text(await message.execute("c", { to: "Peer", message: "" })), "could not message Peer: the message is empty; nothing sent");
+    assert.equal(text(await message.execute("c", { to: "Peer", message: "bad:\ud800:end" })), "could not message Peer: the message is not valid UTF-8");
+
+    const posts = fx.posts("/panes/pane_3/messages");
+    assert.equal(posts.length, 5);
+    assert.match(posts[0]!.id, /^[A-Za-z0-9_-]{22}$/, "128 random bits as 22 base64url characters");
+    assert.equal(new Set(posts.map((post) => post.id)).size, 5, "one fresh id for each intent");
+    const { id: _id, ...body } = posts[0]!;
+    assert.deepEqual(body, { kind: "message", text: "x" });
   } finally {
     await fx.restore();
   }
 });
 
-
-
-// A plain message to a running agent waits for its turn to end, so the line
-// says so rather than "delivered"; the steer hint goes only to a caller that
-// could steer the target.
-test("a message to a running agent says it is queued, and only a descendant gets the steer hint", async () => {
+test("a send resends the same id on a delivered or io answer, and reports what the last answer was", async () => {
   const fx = makeFixture();
   try {
-    const inbox = await fx.startInbox();
-    fx.setPanes([
-      selfPane(),
-      agentPane({ pane: "pane_2", session: "busy-peer", name: "busy-peer", inbox: inbox.path, state: "working" }),
-      agentPane({ pane: "pane_3", session: "kid-session", name: "kid", inbox: inbox.path, state: "working" }),
-    ]);
-    fx.writeAgent(SELF, "kid", { session: "kid-session", run: "kid-run" });
-    fx.setRuns([{ id: "kid-run", name: "kid", parent: "pane_1", pane: "pane_3", session: "kid-session" }]);
-    const s = await startNamedSession(fx, "caller");
+    tree(fx);
+    const s = await startSession(fx);
+    const message = s.tools.get("message_agent");
+    const call = async (script: Array<{ status: number; body: unknown }>) => {
+      fx.scriptSends(script);
+      const before = fx.posts("/panes/pane_3/messages").length;
+      const said = text(await message.execute("c", { to: "Peer", message: "hello" }));
+      return { said, posts: fx.posts("/panes/pane_3/messages").slice(before) };
+    };
+    const io = { status: 500, body: { kind: "io", message: "the queue broke" } };
+    const delivered = { status: 200, body: { state: "delivered", seq: 1 } };
+    const acked = { status: 200, body: { state: "acked", seq: 1 } };
 
-    assert.equal(
-      (await s.tools.get("message_agent").execute("c", { to: "busy-peer", message: "x" })).content[0].text,
-      "queued for busy-peer: it is running and reads this when its current turn ends",
-    );
-    assert.equal(
-      (await s.tools.get("message_agent").execute("c", { to: "kid", message: "x" })).content[0].text,
-      "queued for kid: it is running and reads this when its current turn ends; to reach it now, use message_agent with mode steer",
-    );
+    const lost = await call([delivered, io, acked]);
+    assert.equal(lost.said, "delivered to Peer");
+    assert.equal(lost.posts.length, 3);
+    assert.equal(new Set(lost.posts.map((post) => post.id)).size, 1, "the resends carry the one id");
+
+    const stuck = await call([delivered, delivered, delivered]);
+    assert.equal(stuck.posts.length, 3, "three tries, then the last state");
+    assert.equal(stuck.said, "sent to Peer: written to its message stream, not yet confirmed");
+
+    const down = await call([io, io, io]);
+    assert.equal(down.said, "could not message Peer: the queue broke");
+
+    const queued = await call([{ status: 200, body: { state: "queued", seq: 4 } }]);
+    assert.equal(queued.posts.length, 1, "a queued answer is final");
+    assert.match(queued.said, /^queued for Peer: it is not receiving messages now/);
+
+    const refused = await call([{ status: 409, body: { kind: "refused", message: "pane_3 is not in your scope" } }]);
+    assert.equal(refused.said, "could not message Peer: Peer refused the message: pane_3 is not in your scope");
+    const gone = await call([{ status: 410, body: { kind: "gone", message: "pane_3 is dead" } }]);
+    assert.equal(gone.said, "could not message Peer: Peer is dead: pane_3 is dead");
   } finally {
     await fx.restore();
   }
 });
 
-// The tree: root (top-level) -> mid (me) -> child -> grandchild, plus a peer
-// under root. A steer reaches a descendant however deep; the steer modes
-// refuse a peer, an ancestor and the caller.
-test("message_agent modes restrict control to descendants and mark parent work", async () => {
+test("steer and interrupt-and-steer send their kinds, and a message to a working agent says it waits", async () => {
   const fx = makeFixture();
   try {
-    const inbox = await fx.startInbox();
-    fx.writeAgent("root", "mid", { session: "mid" });
-    fx.writeAgent("mid", "child", { session: "child" });
-    fx.writeAgent("child", "grandchild", { session: "grandchild" });
-    fx.writeAgent("root", "peer", { session: "peer" });
-    fx.setPanes(["mid", "child", "grandchild", "peer", "root"].map((session, i) =>
-      agentPane({ pane: `pane_${i + 1}`, session, name: session, inbox: inbox.path })));
-    await asSubagent(fx, "mid", async () => {
-      const s = await startNamedSession(fx, "mid", "mid");
-      const message = s.tools.get("message_agent");
-      for (const mode of ["message", "steer", "interrupt-and-steer"]) {
-        const work = join(fx.agentDir("mid", "child"), "work");
-        rmSync(work, { force: true });
-        assert.equal((await message.execute("c", { to: "child", message: "new work", mode })).content[0].text, "delivered to child by inbox");
-        assert.ok(existsSync(work), `${mode} marks new parent work`);
-        assert.equal((await message.execute("c", { to: "grandchild", message: "deeper", mode })).content[0].text, "delivered to grandchild by inbox");
-        for (const to of ["peer", "root"]) {
-          const result = (await message.execute("c", { to, message: "x", mode })).content[0].text;
-          assert.equal(result, mode === "message" ? `delivered to ${to} by inbox` : `${to} is not this agent's descendant`);
-        }
-        assert.equal((await message.execute("c", { to: "mid", message: "x", mode })).content[0].text, "mid is this agent");
-      }
-      assert.deepEqual(inbox.received().map(json).map(e => e.kind), ["message", "message", "message", "message", "steer", "steer", "interrupt-and-steer", "interrupt-and-steer"]);
-    }, { parent: "root", name: "mid" });
+    tree(fx);
+    const s = await startSession(fx);
+    const message = s.tools.get("message_agent");
+    assert.equal(text(await message.execute("c", { to: "boss", message: "a" })), "queued for boss: it is running and reads this when its current turn ends; to reach it now, use message_agent with mode steer");
+    assert.equal(text(await message.execute("c", { to: "boss", message: "b", mode: "steer" })), "delivered to boss");
+    assert.equal(text(await message.execute("c", { to: "boss", message: "c", mode: "interrupt-and-steer" })), "delivered to boss");
+    assert.deepEqual(fx.posts("/panes/pane_2/messages").map((post) => post.kind), ["message", "steer", "interrupt"]);
   } finally {
     await fx.restore();
   }
 });
 
-test("run addresses and pasted mentions resolve names before ids and exact ids before prefixes", async () => {
+test("read_report returns the whole last report or all of them, only for an own subagent", async () => {
   const fx = makeFixture();
   try {
-    const inbox = await fx.startInbox();
-    const second = await fx.startInbox();
-    fx.setPanes([
-      selfPane(),
-      agentPane({ pane: "pane_2", session: "session-one", name: "first", inbox: inbox.path }),
-      agentPane({ pane: "pane_3", session: "session-two", name: "run-aaaa", inbox: second.path }),
-    ]);
-    fx.writeAgent(SELF, "first", { session: "session-one", run: "run-aaaa-one" });
-    fx.writeAgent(SELF, "run-aaaa", { session: "session-two", run: "run-aaaa-one-more" });
-    fx.setRuns([
-      { id: "run-aaaa-one", name: "first", pane: "pane_2", session: "session-one", parent: "pane_1" },
-      { id: "run-aaaa-one-more", name: "run-aaaa", pane: "pane_3", session: "session-two", parent: "pane_1" },
-    ]);
-    const s = await startNamedSession(fx, "Self");
-    const deliver = async (to: string) => (await s.tools.get("message_agent").execute("c", { to, message: "x" })).content[0].text;
-    for (const to of ["run-aaaa-one", "@first (run run-aaaa-one)", "@first (session session-one)", "session-o"]) {
-      assert.equal(await deliver(to), "delivered to first by inbox");
-    }
-    assert.equal(await deliver("run-aaaa"), "delivered to run-aaaa by inbox");
-    assert.match(await deliver("run-aaaa-"), /matches several agents by id: session-one \(first\), session-two \(run-aaaa\)/);
-    assert.equal(await deliver("run-aaaa-one-m"), "delivered to run-aaaa by inbox");
-    assert.equal(inbox.received().length, 4);
-    assert.equal(second.received().length, 2);
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("a control tool to a target without an inbox refuses and never pastes", async () => {
-  const fx = makeFixture();
-  try {
-    fx.writeAgent("root", "mid", { session: "mid" });
-    fx.writeAgent("mid", "mute", { session: "mute" });
-    fx.setPanes([
-      agentPane({ pane: "pane_1", session: "mid", name: "mid" }),
-      agentPane({ pane: "pane_2", session: "mute", name: "mute" }),
-    ]);
-    await asSubagent(fx, "mid", async () => {
-      const s = await startNamedSession(fx, "mid", "mid");
-      assert.equal(
-        (await s.tools.get("message_agent").execute("c", { to: "mute", message: "x", mode: "steer" })).content[0].text,
-        "could not message mute: mute has no inbox to reach it on",
-      );
-      assert.equal(
-        (await s.tools.get("message_agent").execute("c", { to: "mute", message: "x", mode: "interrupt-and-steer" })).content[0].text,
-        "could not message mute: mute has no inbox to reach it on",
-      );
-    });
+    tree(fx);
+    const s = await startSession(fx);
+    const data = (extra: Record<string, unknown>) => ({ owner: "self-session", child: "kid-session", name: "kid", id: "r", ...extra });
+    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", ...kid } });
+    const read = s.tools.get("read_report");
+    assert.equal(text(await read.execute("c", { agent: "kid" })), "kid has not reported");
+    s.entries.push({ type: "custom", customType: "ko-pi.report", data: data({ text: "first", at: 1 }) });
+    s.entries.push({ type: "custom", customType: "ko-pi.report", data: data({ text: "y".repeat(6000), at: 2 }) });
+    assert.equal(text(await read.execute("c", { agent: "kid" })), "y".repeat(6000), "the whole text, past every cap");
+    const all = text(await read.execute("c", { agent: "@kid", which: "all" }));
+    assert.match(all, /^--- report 1 of 2, .*---\nfirst\n\n--- report 2 of 2/);
+    assert.match(text(await read.execute("c", { agent: "Peer" })), /no agent session matches "Peer"/, "a peer is no subagent of this session");
   } finally {
     await fx.restore();
   }

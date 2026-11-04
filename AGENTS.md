@@ -8,8 +8,8 @@ work in this repository.
 [docs/design-ko.md](docs/design-ko.md) contains the design of the
 server `ko` and its decisions. [docs/protocol.md](docs/protocol.md)
 describes the protocol's behaviour. [docs/design.md](docs/design.md)
-describes the agent features: the store for each fact, the inbox
-protocol and addressing, spawning and the window lifecycle, run
+describes the agent features: the store for each fact, the
+messages and addressing, spawning and the window lifecycle, run
 outcomes, and the boundary between ko and its pi extension.
 [docs/design-subagents.md](docs/design-subagents.md) describes
 subagents. [docs/design-program-status.md](docs/design-program-status.md)
@@ -567,7 +567,8 @@ Conventions:
   and calls its own handlers with `&mut self`; no callback is
   registered with the loop, and no `Rc<RefCell<..>>` exists. A
   request that waits (`/runs/<id>/wait`, `/runs/<id>/stop` with a
-  wait, a failed outcome's screen capture, the prompt's inbox send)
+  wait, a failed outcome's screen capture, a message's wait for its
+  ack)
   is a connection in `Phase::Handling` with a waiter stored in
   `State` and, for its deadline, a timer of the loop, never a thread
   (docs/design-ko.md, "The loop rule").
@@ -772,16 +773,16 @@ Every C file of `bench/` starts with `#define _DARWIN_C_SOURCE` and
 
 **The harness is one pi extension.** `share/pi/ko-pi.ts` holds every
 agent tool. It calls only ko's run commands (`run-child`, `runs
---json`, `run-wait --json`, `run-stop`, `run-outcome`), `ko layout
-edit` (a top-level agent's window) and `ko api`: `GET /layout`, and
-`PUT` and `DELETE` on `/panes/$KO_PANE/vars/<name>`. It
+--json`, `run-wait --json`, `run-stop`) and `ko api`, with
+`--stream` for its message stream and a run's output stream
+(docs/design.md, "The pi extension, ko-pi", lists the routes). It
 never opens ko's socket. These commands, their flags, exit codes and
-JSON are the contract between the two (docs/design.md, "The pi
-extension, ko-pi"). The extension never finds or parses ko's state
-directory; it reads only the output path that a run command prints.
-ko never reads the extension's files. Its knobs are `KO_*`, and its
-state directory is `$KO_PI_STATE_DIR`, else `$XDG_STATE_HOME/ko-pi`,
-else `~/.local/state/ko-pi`.
+JSON are the contract between the two. ko is the mediator: the
+extension never reads ko's state directory or another agent's files
+and has no state directory of its own; its registry and reports are
+custom entries in its own pi session (docs/design-subagents.md, "The
+registry"). ko never reads the extension's files. Its knobs are
+`KO_*`.
 
 ## The server
 
@@ -818,8 +819,8 @@ most easily:
   is gone.
 
 **Native agent status.** Only OSC 7501 root apps `pi` and
-`claude-code` identify agent panes. Four pane variables supply local pi
-identity, never detection: `pi.session`, `pi.name`, `pi.inbox` and
+`claude-code` identify agent panes. Three pane variables supply local pi
+identity, never detection: `pi.session`, `pi.name` and
 `pi.activity`. ko trusts them only while the pane has an OSC 7501 root
 with `app=pi`. ssh panes use `ssh.dest` and `ssh.args`, trusted only
 while the foreground is `ssh` (docs/design-program-status.md).
@@ -842,12 +843,12 @@ lifecycle", gives the rules. The ones a change breaks most easily:
   removes a `close: on_exit` pane dead for the linger grace, and a
   pane whose immutable `parent` pane is gone or dead. A run's pane
   gets `close: on_exit` and its parent's pane as `parent`.
-- `ko prompt` uses the pane's message stream when it is open, else
-  the trusted `pi.inbox`, and a paste only for a pane with neither.
-  An advertised but unavailable inbox is an error, not permission to
-  paste. A failure after the connect may have delivered the message
-  over `pi.inbox`, which has no ids, so nothing retries a prompt
-  while that path exists. Exit codes: 0 sent,
+- `ko prompt` uses the pane's message stream when it is open, else a
+  paste. It mints the message id and resends once with the same id
+  only when the connection failed and the candidate's stream was
+  open; the server's once-per-id rule makes that safe. A paste has no
+  id and is never repeated. Exit
+  codes: 0 sent,
   1 empty stdin or an error, 4 no agent in scope, 5 several. Scope is
   the caller's window, widened to the session only when the window
   has no agents; `--window` never widens. The prompt routes take the
@@ -913,7 +914,7 @@ the e2e stage to the tests whose names contain the text (a cargo test
 filter). Every selected stage runs even after a failure and prints
 PASS/FAIL/SKIP with its time. `scripts/verify.sh` scrubs the
 environment: it unsets `KO_STATE_DIR`, `KO_PANE`, `KO_SOCKET`,
-`KO_PANE_TOKEN`, `KO_RUN_ID`, `KO_RUN_OUTPUT` and every `KO_AGENT_*`, and removes installed
+`KO_PANE_TOKEN`, `KO_RUN_ID` and every `KO_AGENT_*`, and removes installed
 `share/ko/bin` entries from PATH, so the developer's own pane does not
 enter the tests. The lint and ts stages need Node 24 or newer;
 `KO_TS_TEST_REQUIRED=1`, which verify sets itself, makes a missing node
@@ -988,7 +989,7 @@ overwrites the host's macOS outputs. The container (`ko-ci-like-<pid>`;
 its busy siblings `ko-ci-like-busy-<pid>-N`) gets
 `KO_STATE_DIR=/tmp/ko-state`, and the host's other `KO_*` variables
 pass through, except `KO_AGENT_*`, `KO_PANE`, `KO_PANE_TOKEN`,
-`KO_SOCKET`, `KO_RUN_ID` and `KO_RUN_OUTPUT`. In a linked worktree, the script
+`KO_SOCKET` and `KO_RUN_ID`. In a linked worktree, the script
 also mounts the main repository's git directory read-only, because
 `ko_server/build.rs` runs git. Linux's check is `make ci-like
 ARGS="--cpus 2 --memory 6g -- make verify"`; the Rust and zig builds

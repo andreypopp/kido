@@ -3,7 +3,6 @@ use ko_pane_wire::frame::{Key, KeyAction, KeyCode};
 use super::*;
 use crate::api::routes;
 use crate::ids::WindowId;
-use crate::msg::{self, Delivery, Step};
 use crate::pane_kind::{self, Kind, RemoteKind};
 use crate::panes::{acts_as, is_descendant};
 use crate::protocol::{
@@ -13,44 +12,7 @@ use crate::server::Origin;
 
 use super::messages::{Posting, Reply};
 
-const INBOX_TIMEOUT: Duration = Duration::from_secs(2);
 const ENTER: u16 = 58;
-
-#[derive(Debug)]
-struct Sending {
-    conn: Option<Token>,
-    delivery: Delivery,
-    name: String,
-}
-
-#[derive(Debug, Default)]
-pub(super) struct PromptState {
-    sends: Vec<Sending>,
-}
-
-impl PromptState {
-    pub(super) fn stop(&mut self, poll: &mut Poll) {
-        for sending in self.sends.drain(..) {
-            sending.delivery.close(poll);
-        }
-    }
-
-    pub(super) fn forget(&mut self, conn: Token) {
-        for sending in &mut self.sends {
-            if sending.conn == Some(conn) {
-                sending.conn = None;
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Reachable {
-    candidate: Candidate,
-    stream: bool,
-    inbox: Option<String>,
-    name: String,
-}
 
 fn enter() -> Option<Key> {
     Some(Key {
@@ -68,7 +30,7 @@ impl State {
         &self,
         caller: Option<PaneId>,
         from: PaneId,
-    ) -> Result<(Vec<Reachable>, WindowId), Error> {
+    ) -> Result<(Vec<Candidate>, WindowId), Error> {
         acts_as(caller, from, "prompt only from itself")?;
         let layout = self.document.layout();
         let (session, own) = layout
@@ -92,25 +54,22 @@ impl State {
                 };
                 let kind = pane_kind::of_pane(pane.telemetry(), pane.vars());
                 let title = lossy(pane.proc().title());
-                let (inbox, name) = match &kind {
+                if matches!(
+                    kind,
                     Kind::Terminal
-                    | Kind::Ssh {
-                        pane: RemoteKind::Terminal,
-                        ..
-                    } => continue,
-                    Kind::PiAgent { inbox, name, .. } => (inbox.clone(), name.clone()),
-                    Kind::SomeAgent { .. } | Kind::Ssh { .. } => (None, title.clone()),
-                };
-                found.push(Reachable {
-                    candidate: Candidate {
-                        pane: id,
-                        session: session.id,
-                        window: window.id,
-                        title: pane_kind::title(&kind, &title).unwrap_or_default(),
-                    },
-                    stream: pane.inbox().stream().is_some(),
-                    inbox,
-                    name,
+                        | Kind::Ssh {
+                            pane: RemoteKind::Terminal,
+                            ..
+                        }
+                ) {
+                    continue;
+                }
+                found.push(Candidate {
+                    pane: id,
+                    session: session.id,
+                    window: window.id,
+                    title: pane_kind::title(&kind, &title).unwrap_or_default(),
+                    inbox: pane.inbox().stream().is_some(),
                 });
             }
         }
@@ -123,11 +82,7 @@ impl State {
         from: PaneId,
         window_only: bool,
     ) -> Result<Vec<Candidate>, Error> {
-        let (found, own) = self.reachable(caller, from)?;
-        let candidates: Vec<Candidate> = found
-            .into_iter()
-            .map(|reachable| reachable.candidate)
-            .collect();
+        let (candidates, own) = self.reachable(caller, from)?;
         let in_window: Vec<Candidate> = candidates
             .iter()
             .filter(|candidate| candidate.window == own)
@@ -156,7 +111,7 @@ impl State {
         };
         let Some(target) = reachable
             .into_iter()
-            .find(|reachable| reachable.candidate.pane == request.target)
+            .find(|candidate| candidate.pane == request.target)
         else {
             return Some(Err(Error::new(
                 ErrorKind::Invalid,
@@ -169,7 +124,7 @@ impl State {
         let known = self
             .pane(request.target)
             .is_ok_and(|pane| pane.inbox().seen(&request.id).is_some());
-        if target.stream || known {
+        if target.inbox || known {
             let posting = Posting {
                 caller,
                 target: request.target,
@@ -184,36 +139,10 @@ impl State {
                 .submit(poll, index, posting, &self.edges())
                 .map(|result| result.map(Sent::from));
         }
-        let token = self.conns[index].token;
-        let Some(inbox) = target.inbox else {
-            if let Err(refused) = self.may_paste(caller, origin, request.target) {
-                return Some(Err(refused));
-            }
-            return self.paste_prompt(poll, index, request.target, &request.text);
-        };
-        let mut delivery = match Delivery::start(poll, &inbox, &request.text, INBOX_TIMEOUT) {
-            Ok(delivery) => delivery,
-            Err(failure) => return Some(Err(inbox_error(&target.name, failure))),
-        };
-        match delivery.step(poll) {
-            Step::Done(result) => {
-                delivery.close(poll);
-                Some(
-                    result
-                        .map(|()| Sent { via: Via::Inbox })
-                        .map_err(|failure| inbox_error(&target.name, failure)),
-                )
-            }
-            Step::Pending => {
-                self.conns[index].phase = Phase::Handling;
-                self.prompts.sends.push(Sending {
-                    conn: Some(token),
-                    delivery,
-                    name: target.name,
-                });
-                None
-            }
+        if let Err(refused) = self.may_paste(caller, origin, request.target) {
+            return Some(Err(refused));
         }
+        self.paste_prompt(poll, index, request.target, &request.text)
     }
 
     // A paste is input to the target's terminal, so a runtime connection may paste only where it
@@ -293,61 +222,6 @@ impl State {
             Err(Error::new(ErrorKind::Io, "no Enter key"))
         };
         router::answer::<routes::SendPrompt>(self, poll, conn, reply);
-    }
-
-    pub(super) fn prompt_ready(&mut self, poll: &mut Poll, ready: Ready) -> bool {
-        let Some(at) = self
-            .prompts
-            .sends
-            .iter()
-            .position(|send| send.delivery.token() == ready.token)
-        else {
-            return false;
-        };
-        if let Step::Done(result) = self.prompts.sends[at].delivery.step(poll) {
-            self.finish_send(poll, at, result);
-        }
-        true
-    }
-
-    pub(super) fn prompt_due(&mut self, poll: &mut Poll, timer: Timer) -> bool {
-        let Some(at) = self
-            .prompts
-            .sends
-            .iter()
-            .position(|send| send.delivery.timer() == timer)
-        else {
-            return false;
-        };
-        if let Step::Done(result) = self.prompts.sends[at].delivery.expire() {
-            self.finish_send(poll, at, result);
-        }
-        true
-    }
-
-    fn finish_send(&mut self, poll: &mut Poll, at: usize, result: Result<(), msg::Error>) {
-        let Sending {
-            conn,
-            delivery,
-            name,
-        } = self.prompts.sends.swap_remove(at);
-        delivery.close(poll);
-        if let Some(conn) = conn {
-            let reply = result
-                .map(|()| Sent { via: Via::Inbox })
-                .map_err(|failure| inbox_error(&name, failure));
-            router::answer::<routes::SendPrompt>(self, poll, conn, reply);
-        }
-    }
-}
-
-fn inbox_error(name: &str, failure: msg::Error) -> Error {
-    match failure {
-        msg::Error::Unavailable => Error::new(
-            ErrorKind::Refused,
-            format!("{name} is not accepting messages"),
-        ),
-        msg::Error::Failed(message) => Error::new(ErrorKind::Io, message),
     }
 }
 

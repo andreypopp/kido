@@ -2,276 +2,173 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { mkdirSync, writeFileSync, copyFileSync, mkdtempSync, rmSync } from "node:fs";
 
-import { tmpdir, userInfo } from "node:os";
+import { join, dirname } from "node:path";
 
-import { createServer, type Server } from "node:net";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { dirname, join } from "node:path";
+import koPi from "./ko-pi.ts";
 
-import koPi, { privateDir } from "./ko-pi.ts";
+import { makeFixture, createFakePi, startSession, freshExtension, withEnv, pollUntil, selfPane } from "./ko-pi-fixture.ts";
 
-import {
-  makeFixture,
-  selfPane,
-  fakeCtx,
-  startSession,
-  startSessionCore,
-  withEnv,
-  asSubagent,
-  pollUntil,
-  pollForStable,
-  startNamedSession,
-  idleTurn,
-  parentSetup,
-  assertReport,
-} from "./ko-pi-fixture.ts";
+const MESSAGES = "/panes/pane_1/messages";
 
-// Pins a real incident: every KO_AGENT_* variable is inherited by anything an
-// agent's process starts, so a nested pi run arrives with a child's entire
-// environment. What tells the two apart: the child's directory records the
-// child's own pi session id; a nested pi mints its own.
-test("a process that merely inherited a subagent's environment is not a subagent", async () => {
-  const fx = makeFixture();
+test("a second copy of the extension at another path registers nothing, and a reload of the first still does", async () => {
+  const first = createFakePi();
+  koPi(first.pi as never);
+  assert.ok(first.tools.size > 0 && first.handlers.size > 0, "the extension registered nothing at all");
+  assert.deepEqual([...first.tools.keys()], ["list_agents", "read_report", "list_async_bash", "message_agent", "spawn_agent", "stop_agent", "async_bash", "stop_async_bash"]);
+
+  const here = dirname(fileURLToPath(import.meta.url));
+  const dir = mkdtempSync(join(here, ".copy-"));
   try {
-    const realSession = "the-real-childs-run";
-    const agentDir = fx.writeAgent("parent-x", "worker", { session: realSession, run: realSession });
-    await withEnv({ KO_RUN_ID: realSession, KO_AGENT_DIR: agentDir, KO_AGENT_PARENT_SESSION: "parent-x" }, async () => {
-      const s = await startSession(fx, { sessionId: "a-nested-pis-own-session" });
-
-      const event: { systemPrompt: string; systemPromptOptions: { promptGuidelines: string[] } } = {
-        systemPrompt: "base prompt",
-        systemPromptOptions: { promptGuidelines: [] },
-      };
-      await s.emit("before_agent_start", event);
-      assert.ok(
-        event.systemPromptOptions.promptGuidelines.every((line) => !line.includes("You were spawned as a subagent")),
-        "it is told nothing about a parent it does not have",
-      );
-    });
+    copyFileSync(join(here, "ko-pi.ts"), join(dir, "ko-pi.ts"));
+    const copy = await import(pathToFileURL(join(dir, "ko-pi.ts")).href);
+    const registered = createFakePi();
+    copy.default(registered.pi);
+    assert.deepEqual([...registered.tools.keys()], [], "the copy registered tools");
+    assert.deepEqual([...registered.handlers.keys()], [], "the copy registered handlers");
   } finally {
-    await fx.restore();
+    rmSync(dir, { recursive: true, force: true });
   }
+
+  const reloaded = createFakePi();
+  koPi(reloaded.pi as never);
+  assert.deepEqual([...reloaded.tools.keys()].sort(), [...first.tools.keys()].sort());
 });
 
-// Negative control for the test above: the directory names this process's own
-// session id, so the parent edge is trustworthy.
-test("a real subagent still gets the parent edge and the standing subagent instruction", async () => {
+test("a session writes its pane variables and opens its message stream; quitting deletes the variables and closes the stream", async () => {
   const fx = makeFixture();
   try {
-    await asSubagent(fx, "child-session", async () => {
-      const s = await startSession(fx, { sessionId: "child-session" });
-      const event: { systemPrompt: string; systemPromptOptions: { promptGuidelines: string[] } } = {
-        systemPrompt: "base prompt",
-        systemPromptOptions: { promptGuidelines: [] },
-      };
-      await s.emit("before_agent_start", event);
-      const guidelines = event.systemPromptOptions.promptGuidelines.join("\n");
-      assert.match(guidelines, /your report is the last message of a turn that ends after all of them finish/, "the standing instruction rides on every turn");
-      assert.match(guidelines, /never run `sleep`/i, "so does the always-on never-sleep rule");
-    });
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("an unresolved session id is not a subagent, whatever the environment claims", async () => {
-  const fx = makeFixture();
-  try {
-    const agentDir = fx.writeAgent("parent-x", "worker", { session: "self-session", run: "self-session" });
-    await withEnv({ KO_RUN_ID: "self-session", KO_AGENT_DIR: agentDir, KO_AGENT_PARENT_SESSION: "parent-x" }, async () => {
-      const s = await startSession(fx, { sessionId: "" });
-
-      const event: { systemPrompt: string; systemPromptOptions: { promptGuidelines: string[] } } = {
-        systemPrompt: "base prompt",
-        systemPromptOptions: { promptGuidelines: [] },
-      };
-      await s.emit("before_agent_start", event);
-      assert.equal(event.systemPromptOptions.promptGuidelines.length, 1, "the always-on never-sleep rule still applies");
-      assert.doesNotMatch(event.systemPromptOptions.promptGuidelines.join("\n"), /You were spawned as a subagent/);
-    });
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("a headless pi writes nothing and binds no inbox", async () => {
-  const fx = makeFixture();
-  try {
-    const s = await startSessionCore(fx, koPi, (c) => ({ ...fakeCtx("headless-session", c.ui), hasUI: false }));
-    await s.emit("turn_start");
-    await s.emit("session_shutdown", { reason: "quit" });
-    assert.deepEqual(fx.apiCalls(), [], "a headless pi writes no pane variable");
-    assert.equal(existsSync(fx.inboxPath("headless-session")), false, "and binds no inbox");
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("the session id, the session name and the inbox path are written as pane options", async () => {
-  const fx = makeFixture();
-  try {
-    const s = await startSessionCore(fx, koPi, (c) => {
-      c.pi.sessionName = "Parent";
-      return fakeCtx("self-session", c.ui);
-    });
-    assert.deepEqual(fx.optionWrites(), [
-      { key: "pi.session", value: "self-session" },
-      { key: "pi.name", value: "Parent" },
-      { key: "pi.inbox", value: fx.inboxPath("self-session") },
-    ]);
-    assert.equal(statSync(join(fx.stateDir, "inbox")).mode & 0o777, 0o700, "the inbox directory is private");
-
-    const renames = () => fx.optionWrites().filter((w) => w.key === "pi.name").length;
-    const last = () => fx.optionWrites().filter((w) => w.key === "pi.name").at(-1)?.value;
-
-    s.pi.sessionName = "Renamed Agent";
-    await s.emit("session_info_changed", { name: "not the authoritative name" });
-    await pollUntil(() => last() === "Renamed Agent", 2000, "the rename to be written");
-
-    const before = renames();
-    await s.emit("session_info_changed", {});
-    await pollForStable(renames, 150, 2000, "the rename write count");
-    assert.equal(renames(), before, "an unchanged name is not written again");
-
-    s.pi.sessionName = undefined;
-    await s.emit("session_info_changed", {});
-    await pollUntil(() => last() === "", 2000, "the cleared name to be written");
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("a pane whose inbox is already answered keeps it: the extension binds nothing and publishes nothing", async () => {
-  const fx = makeFixture();
-  let other: Server | undefined;
-  try {
-    const path = fx.inboxPath("shared-session");
-    mkdirSync(join(fx.stateDir, "inbox"), { recursive: true, mode: 0o700 });
-    other = createServer();
-    await new Promise<void>((resolve) => other!.listen(path, resolve));
-
-    const s = await startSession(fx, { sessionId: "shared-session" });
-    assert.equal(fx.optionWrites().filter((w) => w.key === "pi.inbox").length, 0, "it published no inbox of its own");
-    assert.deepEqual(fx.optionWrites().filter((w) => w.key === "pi.session"), [{ key: "pi.session", value: "shared-session" }]);
-    assert.ok(existsSync(path), "the live listener's socket file is still there");
-    await s.emit("session_shutdown", { reason: "quit" });
-    assert.ok(existsSync(path), "its shutdown must not unlink a socket it never bound");
-  } finally {
-    if (other) await new Promise<void>((resolve) => other!.close(() => resolve()));
-    await fx.restore();
-  }
-});
-
-test("shutdown unsets the four options on this pane", async () => {
-  const fx = makeFixture();
-  try {
-    const s = await startSession(fx);
-    await s.emit("session_shutdown", { reason: "quit" });
-    const unset = fx.optionWrites().filter((w) => w.value === undefined);
-    assert.deepEqual(unset.map((w) => w.key), ["pi.session", "pi.name", "pi.inbox", "pi.activity"]);
-    const deletes = fx.apiCalls().filter((call) => call.method === "DELETE");
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx, { name: "Self" });
+    await pollUntil(() => fx.streamOpens(MESSAGES) === 1, 2000, "the message stream");
+    const puts = fx.apiCalls().filter((call) => call.method === "PUT");
     assert.deepEqual(
-      deletes.map((call) => [call.path, JSON.parse(call.body)]),
-      [["/panes/pane_1/vars", { names: ["pi.session", "pi.name", "pi.inbox", "pi.activity"], if: { name: "pi.session", value: "self-session" } }]],
-      "the four unsets are one delete, conditional on this session",
+      puts.map((call) => [call.path, JSON.parse(call.body)]),
+      [["/panes/pane_1/vars/pi.session", "self-session"], ["/panes/pane_1/vars/pi.name", "Self"]],
     );
+    await pollUntil(() => fx.row("pane_1")?.inbox === true, 2000, "the row to show its inbox");
+
+    await s.emit("session_shutdown", { reason: "quit" });
+    const deletes = fx.apiCalls().filter((call) => call.method === "DELETE");
+    assert.deepEqual(deletes.map((call) => [call.path, JSON.parse(call.body)]), [
+      ["/panes/pane_1/vars", { names: ["pi.session", "pi.name", "pi.activity"], if: { name: "pi.session", value: "self-session" } }],
+    ]);
+    assert.equal(fx.row("pane_1")?.vars?.["pi.session"], undefined, "the conditional delete took effect");
   } finally {
     await fx.restore();
   }
 });
 
-test("a shutdown leaves the variables of a new owner of the pane", async () => {
+test("a headless session writes no variable and opens no stream", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    await startSession(fx, { ctx: { hasUI: false } });
+    assert.deepEqual(fx.apiCalls().filter((call) => call.method !== "GET"), []);
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a stream that closes is opened again, and a message the receiver has seen is acked and not delivered twice", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
     const s = await startSession(fx);
-    fx.setPanes([selfPane({ pi_session: "new-owner", pi_name: "Newcomer" })]);
-    await s.emit("session_shutdown", { reason: "quit" });
-    assert.equal(fx.apiCalls().filter((call) => call.method === "DELETE").length, 1, "this session asked once");
-    assert.deepEqual(fx.panes().map((row) => [row.pi_session, row.pi_name]), [["new-owner", "Newcomer"]]);
+    await pollUntil(() => fx.streamOpens(MESSAGES) === 1, 2000, "the stream");
+    fx.feed({ id: "once-0001", kind: "user", text: "hello" });
+    await pollUntil(() => fx.acks().length === 1, 2000, "the ack");
+    assert.deepEqual(fx.acks(), [{ type: "ack", id: "once-0001" }]);
+    assert.deepEqual(s.delivered.map((d) => d.text), ["hello"]);
+
+    fx.forgetAcks();
+    fx.dropStream();
+    await pollUntil(() => fx.streamOpens(MESSAGES) === 2, 2000, "the stream to open again");
+    await pollUntil(() => fx.acks().length === 1, 2000, "the repeat to be acked");
+    assert.deepEqual(s.delivered.map((d) => d.text), ["hello"], "a repeat is acked and not handed to pi again");
   } finally {
     await fx.restore();
   }
 });
 
-const LONG_SESSION = "01a1a221-a4a0-75a8-bfda-8d670f98c9f4";
+test("a /reload parks the stream and keeps the variables; the next module takes the same stream over", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s1 = await startSession(fx, { factory: await freshExtension() });
+    await pollUntil(() => fx.streamOpens(MESSAGES) === 1, 2000, "the stream");
+    const before = fx.apiCalls().length;
 
-function longStateDir(base: string): string {
-  const long = join(base, "a".repeat(60), "ko-pi");
-  mkdirSync(long, { recursive: true });
-  return long;
+    await s1.emit("session_shutdown", { reason: "reload" });
+    assert.equal(fx.apiCalls().slice(before).some((call) => call.method === "DELETE"), false, "a reload keeps the variables");
+    fx.feed({ id: "gap-0001", kind: "user", text: "in the gap" });
+    const s2 = await startSession(fx, { factory: await freshExtension() });
+    await pollUntil(() => s2.delivered.length === 1, 2000, "the message of the gap");
+    assert.equal(s2.delivered[0]!.text, "in the gap");
+    assert.equal(s1.delivered.length, 0, "the module that shut down delivers nothing");
+    assert.equal(fx.streamOpens(MESSAGES), 1, "the reload kept the one stream");
+    fx.feed({ id: "after-0001", kind: "user", text: "after" });
+    await pollUntil(() => s2.delivered.length === 2, 2000, "a message after the reload");
+  } finally {
+    await fx.restore();
+  }
+});
+
+function makeRepo(repo: string): void {
+  mkdirSync(join(repo, ".git", "objects"), { recursive: true });
+  mkdirSync(join(repo, ".git", "refs"));
+  writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
 }
 
-test("a long state directory publishes a short pi.inbox in a private directory", async () => {
+test("project trust answers yes only for the real path of KO_AGENT_TRUSTED_CWD", async () => {
   const fx = makeFixture();
-  let inbox: string | undefined;
   try {
-    await withEnv({ KO_PI_STATE_DIR: longStateDir(fx.stateDir) }, async () => {
-      await startSessionCore(fx, koPi, (c) => fakeCtx(LONG_SESSION, c.ui));
+    const trusted = join(fx.dir, "trusted");
+    const other = join(fx.dir, "other");
+    mkdirSync(trusted);
+    mkdirSync(other);
+    const s = createFakePi();
+    koPi(s.pi as never);
+    await withEnv({ KO_AGENT_TRUSTED_CWD: trusted }, async () => {
+      assert.deepEqual(await s.emit("project_trust", { cwd: trusted }), [{ trusted: "yes" }]);
+      assert.deepEqual(await s.emit("project_trust", { cwd: other }), [{ trusted: "undecided" }]);
+      assert.deepEqual(await s.emit("project_trust", { cwd: join(fx.dir, "missing") }), [{ trusted: "undecided" }]);
+      assert.deepEqual(await s.emit("project_trust", { cwd: join(trusted, "..", "trusted") }), [{ trusted: "yes" }], "paths compare by their real path");
     });
-    inbox = fx.optionWrites().find((w) => w.key === "pi.inbox")?.value;
-    assert.ok(inbox, "pi.inbox was published");
-    assert.ok(Buffer.byteLength(inbox, "utf8") <= 103, inbox);
-    assert.ok(!inbox.startsWith(fx.stateDir), inbox);
-    const info = statSync(dirname(inbox));
-    assert.equal(info.mode & 0o777, 0o700);
-    assert.equal(info.uid, userInfo().uid);
-  } finally {
-    await fx.restore();
-    if (inbox) rmSync(inbox, { force: true });
-  }
-});
-
-test("with a long state directory a child's report reaches the inbox that its parent published", async () => {
-  const fx = makeFixture();
-  let parentInbox: string | undefined;
-  try {
-    await withEnv({ KO_PI_STATE_DIR: longStateDir(fx.stateDir) }, async () => {
-      const parent = await startSessionCore(fx, koPi, (c) => fakeCtx("boss-session", c.ui));
-      parentInbox = fx.optionWrites().find((w) => w.key === "pi.inbox")?.value;
-      assert.ok(parentInbox, "the parent published an inbox");
-      await parent.emit("session_shutdown", { reason: "quit" });
-      const inbox = await fx.startInboxAt(parentInbox);
-      parentSetup(fx, parentInbox);
-      await asSubagent(fx, "self-session", async () => {
-        const s = await startNamedSession(fx, "worker", "self-session");
-        await idleTurn(s, "done");
-        await pollUntil(() => inbox.received().length === 1, 2000, "the report");
-        assertReport(inbox, 0, "done");
-      });
+    await withEnv({ KO_AGENT_TRUSTED_CWD: undefined }, async () => {
+      assert.deepEqual(await s.emit("project_trust", { cwd: trusted }), [{ trusted: "undecided" }]);
     });
   } finally {
     await fx.restore();
-    if (parentInbox) rmSync(parentInbox, { force: true });
   }
 });
 
-test("an inbox that cannot be made is a visible warning", async () => {
+test("spawn_agent passes the trusted cwd only while its parent trusts a repository that holds the cwd", async () => {
   const fx = makeFixture();
   try {
-    const s = await startSessionCore(fx, koPi, (c) => fakeCtx("../escape", c.ui));
-    assert.match(s.notifications[0]?.message ?? "", /no inbox/);
-    assert.equal(s.notifications[0]?.type, "warning");
+    fx.setPanes([selfPane()]);
+    const repo = join(fx.dir, "repo");
+    makeRepo(repo);
+    const inside = join(repo, "sub");
+    mkdirSync(inside);
+    const outside = join(fx.dir, "elsewhere");
+    mkdirSync(outside);
+    let trusted = true;
+    const s = await startSession(fx, { ctx: { cwd: repo, isProjectTrusted: () => trusted } });
+    const spawn = s.tools.get("spawn_agent");
+    await spawn.execute("c", { name: "trusted", task: "x", cwd: inside });
+    const env = (n: number) => fx.posts("/panes")[n]!.env as Array<{ name: string; value: string }>;
+    assert.deepEqual(env(0).find((v) => v.name === "KO_AGENT_TRUSTED_CWD"), { name: "KO_AGENT_TRUSTED_CWD", value: inside });
+    trusted = false;
+    await spawn.execute("c", { name: "untrusted", task: "x", cwd: inside });
+    assert.equal(env(1).some((v) => v.name === "KO_AGENT_TRUSTED_CWD"), false);
+    trusted = true;
+    await spawn.execute("c", { name: "foreign", task: "x", cwd: outside });
+    assert.equal(env(2).some((v) => v.name === "KO_AGENT_TRUSTED_CWD"), false, "a cwd outside the spawner's repository is not trusted");
   } finally {
     await fx.restore();
-  }
-});
-
-test("privateDir refuses a directory that is open to others or is a symlink", () => {
-  const root = mkdtempSync(join(tmpdir(), "ko-pi-private-"));
-  try {
-    assert.equal(privateDir(join(root, "mine")), null);
-    assert.equal(statSync(join(root, "mine")).mode & 0o777, 0o700);
-    assert.equal(privateDir(join(root, "mine")), null);
-    mkdirSync(join(root, "open"));
-    chmodSync(join(root, "open"), 0o755);
-    assert.match(privateDir(join(root, "open")) ?? "", /not a private directory/);
-    assert.equal(statSync(join(root, "open")).mode & 0o777, 0o755);
-    symlinkSync(join(root, "mine"), join(root, "link"));
-    assert.match(privateDir(join(root, "link")) ?? "", /not a private directory/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
   }
 });

@@ -1769,7 +1769,6 @@ pub struct Info {
     pub run: RunRow,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
-    pub output: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1834,7 +1833,6 @@ pub struct Started {
     pub id: RunId,
     pub window: WindowId,
     pub pane: PaneId,
-    pub output: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1883,6 +1881,8 @@ pub struct Candidate {
     pub session: SessionId,
     pub window: WindowId,
     pub title: String,
+    /// True while the pane has its message stream open, so a prompt goes through its queue.
+    pub inbox: bool,
 }
 
 /// A prompt for the agent in a pane. The scope is the window of `from`, else its session.
@@ -1899,7 +1899,6 @@ pub struct SendPrompt {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Via {
-    Inbox,
     Paste,
     Message(Posted),
 }
@@ -2238,7 +2237,7 @@ mod tests {
             same::<StartRun>(json);
         }
         same::<Started>(
-            r#"{"id":"0123456789abcdef0123456789abcdef","window":"window_2","pane":"pane_3","output":"/tmp/x/output"}"#,
+            r#"{"id":"0123456789abcdef0123456789abcdef","window":"window_2","pane":"pane_3"}"#,
         );
         for json in [
             r#"{}"#,
@@ -2268,7 +2267,7 @@ mod tests {
         same::<SendPrompt>(
             r#"{"from":"pane_1","id":"abcdefgh","target":"pane_2","text":"hi\nthere"}"#,
         );
-        same::<Sent>(r#"{"via":{"type":"inbox"}}"#);
+        same::<Sent>(r#"{"via":{"type":"paste"}}"#);
         same::<Sent>(r#"{"via":{"type":"message","state":"acked","seq":3,"duplicate":true}}"#);
         same::<SendMessage>(
             r#"{"id":"abcdefgh","kind":"notice","text":"x","data":{"list":[1,2],"report":true}}"#,
@@ -2315,7 +2314,7 @@ mod tests {
             assert!(decode::<StreamRequest>(bad.as_bytes()).is_err(), "{bad}");
         }
         same::<Candidate>(
-            r#"{"pane":"pane_2","session":"session_1","window":"window_3","title":"Worker"}"#,
+            r#"{"pane":"pane_2","session":"session_1","window":"window_3","title":"Worker","inbox":true}"#,
         );
         for bad in [
             r#"{"name":"w","argv":["/bin/sh"],"parent":"../x"}"#,

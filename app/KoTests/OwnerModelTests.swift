@@ -46,14 +46,16 @@ import XCTest
         return owner.snapshot?.sessions.flatMap { $0.nodes.flatMap(items) } ?? []
     }
 
-    func testATabIsTitledByItsFocusPaneAndAPiAgentWithAnInboxIsMessageable() throws {
+    func testATabIsTitledByItsFocusPaneAndAPiAgentWithAnOpenMessageStreamIsMessageable() throws {
+        let checkout = try XCTUnwrap(ProcessInfo.processInfo.environment["KO_CHECKOUT"].flatMap { $0.isEmpty ? nil : $0 }, "KO_CHECKOUT")
         let printf = "printf '\\033]7501;state=idle:app=pi\\007'; " + cat
-        let pi = shell(printf, vars: #"{"pi.session":"s1","pi.name":"Worker","pi.inbox":"/tmp/ko-inbox"}"#)
+        let streaming = "printf '\\033]7501;state=idle:app=pi\\007'; \(checkout)/build/ko/bin/ko api --stream \"/panes/$KO_PANE/messages\" </dev/null >/dev/null & " + cat
+        let pi = shell(streaming, vars: #"{"pi.session":"s1","pi.name":"Worker"}"#)
         let mute = shell(printf, vars: #"{"pi.session":"s2","pi.name":"Mute"}"#)
         let (_, owner) = try shown(#"[{"name":"first","tree":\#(pi)},{"name":"second","tree":\#(mute)}]"#)
         wait("both tabs are pi agents") { owner.sidebar.tabs.entries.count == 2 && owner.sidebar.tabs.entries.allSatisfy(\.agent) }
+        wait("the pane with a message stream takes a prompt") { owner.sidebar.tabs.entries.map(\.messageable) == [true, false] }
         let tabs = owner.sidebar.tabs.entries
-        XCTAssertEqual(tabs.map(\.messageable), [true, false], "only the agent with an inbox takes a prompt")
         XCTAssertEqual(tabs.map(\.displayName), ["@Worker", "Mute"])
         XCTAssertEqual(owner.navigation.windows.map(\.name), ["first", "second"], "the window keeps its name")
     }
@@ -110,20 +112,23 @@ import XCTest
     func testSwitchingWindowsSkipsANestedRunWindow() throws {
         let pi = shell("printf '\\033]7501;state=idle:app=pi\\007'; " + cat, vars: #"{"pi.session":"s1","pi.name":"Parent"}"#)
         let (dir, owner) = try shown(#"[{"name":"parent","tree":\#(pi)},{"name":"last","tree":\#(shell(cat))}]"#)
+        let before = Set(try XCTUnwrap(owner.testModel.map(\.layout.layout.windows)).map(\.id))
         try run(["run-child", "--session", "session_1", "--name", "kid", "pane_1", "--", "/bin/sleep", "60"], dir: dir)
         wait("the run window nested under its parent pane") {
             owner.snapshot?.sessions.first?.nodes.count == 2 && owner.snapshot?.sessions.first?.nodes.first?.children.isEmpty == false
         }
         let windows = try XCTUnwrap(owner.testModel.map(\.layout.layout.windows)).map(\.id)
-        XCTAssertEqual(owner.navigation.window, windows[0])
+        let nested = try XCTUnwrap(windows.first { !before.contains($0) })
+        let top = windows.filter { $0 != nested }
+        XCTAssertEqual(owner.navigation.window, top[0])
         owner.perform(.switchWindow(next: true))
-        wait("the last top-level window") { owner.navigation.window == windows[1] }
+        wait("the last top-level window") { owner.navigation.window == top[1] }
         owner.perform(.switchWindow(next: true))
-        wait("the first window again") { owner.navigation.window == windows[0] }
+        wait("the first window again") { owner.navigation.window == top[0] }
         let session = try XCTUnwrap(owner.navigation.session)
-        owner.perform(.selectWindow(session, windows[2]))
-        wait("the nested run window") { owner.navigation.window == windows[2] }
+        owner.perform(.selectWindow(session, nested))
+        wait("the nested run window") { owner.navigation.window == nested }
         owner.perform(.switchWindow(next: false))
-        wait("its parent") { owner.navigation.window == windows[0] }
+        wait("its parent") { owner.navigation.window == top[0] }
     }
 }

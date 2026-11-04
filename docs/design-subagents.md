@@ -1,15 +1,17 @@
 # Subagents, as built
 
-A subagent is a pi session that another agent starts in a separate
-window of the same session. Its first message is a task. ko keeps
-its run record after the window closes, and the parent keeps its agent
-directory. This document describes a subagent from the tool call that
-creates it to the sweep that closes its window.
+A subagent is a pi session that another agent starts in a window of
+its own. Its pane has the spawner's pane as its `parent` and `close:
+on_exit`. ko keeps no record of an agent after its pane goes: the
+parent's own pi session holds what the parent knows about its
+children, and each harness keeps only its own facts. Runs stay for
+`async_bash` and `ko run`. This document follows a subagent from the
+tool call that creates it to the sweep that removes its pane.
 
 [design.md](design.md) describes the mechanisms that subagents use:
 
 - The pi extension, ko-pi
-- The inbox
+- Messages
 - Addressing
 - Identity
 - The window lifecycle
@@ -18,190 +20,176 @@ creates it to the sweep that closes its window.
 This document refers to those sections by name instead of repeating them.
 `AGENTS.md` describes what ko cannot change.
 
+**The principle.** ko is the mediator. The harness uses only ko's API
+through `ko` commands. It never reads another agent's files and never
+connects to another agent's socket. Every exchange between two agents
+(a task, a message, a report, a stop, an ending) goes through ko.
+
 ## The tools, and what they call
 
-The five tools are in `share/pi/ko-pi.ts`. No tool has a ko
-subcommand of its own. A tool that starts, waits for or stops a run
-calls a run command. Every other tool reads the layout through
-`ko api` and the extension's state directory, and writes to inboxes.
+The eight tools are in `share/pi/ko-pi.ts`. No tool has a ko
+subcommand of its own.
 
 | tool | what it uses |
 |---|---|
-| `list_runs()` | `ko runs --json --all --parent P`, `agents/<me>/*`, one `ko api /layout` |
-| `message_agent(to, message, mode?)` | the target's inbox; `ko run-child` to restart an ended child |
-| `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)` | pi's session list, `pi --list-models`, `ko run-child P --name N --cwd D --env ... -- ko shell -- ko-pi ...`, or `ko layout edit` with `add_window` and `rename_window` for a top-level agent |
-| `stop_run(to, force?)`, `to` one address or a list | the target's inbox, then `ko run-stop` |
-| `async_bash(command, name, stream?)` | `ko run-child P --name N -- bash -o pipefail -c ...` |
+| `list_agents(which?)` | `ko api /layout`, `/version`, the registry in the own session |
+| `read_report(agent, which?)` | the own session's `ko-pi.report` entries |
+| `list_async_bash()` | `ko runs --json --all --parent $KO_PANE` |
+| `message_agent(to, message, mode?)` | `POST /panes/{t}/messages`; `POST /panes` to restart an ended child |
+| `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?)` | pi's session directories, `pi --list-models`, `POST /panes` |
+| `stop_agent(agent, force?)` | `POST /panes/{t}/messages` kind `stop`, then `POST /panes/{t}/stop` |
+| `async_bash(command, name, stream?)` | `ko run-child $KO_PANE --name N -- bash -o pipefail -c CMD`, `ko run-wait ID --json`, `ko api --stream /panes/P/output` |
+| `stop_async_bash(run)` | `ko run-stop ID` |
 
-P is the caller's `KO_RUN_ID` for a subagent, else its `$KO_PANE`.
-For each run that it starts, the parent also runs `ko run-wait ID
---json` in the background ("Endings", below).
+The parent of every run and every child is `$KO_PANE`. No agent has
+`KO_RUN_ID`. A tool checks its own arguments and refuses them with a
+reason, which the model reads as the tool result. Tools register
+unconditionally and report ko as unavailable outside ko.
 
-A tool checks its own arguments and refuses them with a reason. The
-model reads that reason as the tool result.
+**Scope.** Every tool that acts on another agent acts on the agents of
+the caller's scope: its children, its siblings, and each ancestor
+with that ancestor's siblings, within its ko session (protocol.md,
+section 7, the stop's scope). The server enforces the scope on every
+send and stop; the harness resolves addresses over the same set only
+to word its refusals. `stop_agent`, `steer` and `interrupt-and-steer`
+thus reach a peer and an ancestor, not only a descendant. A child
+that stops its parent removes itself a moment later through the
+orphan rule.
 
-**Scope.** `message_agent` in `message` mode acts on any agent in this
-session. Its `steer` and `interrupt-and-steer` modes and
-`stop_run` act only on the caller's descendants, which includes a
-grandchild. design.md, "Steer, interrupt and stop", gives the rule and
-its reason.
+**list_agents** lists the scope, without the caller. `which` selects
+`all` (the default), `peers` or `subagents` (the caller's own). A
+row has `id` (the pi session), `name`, `pane`, `window`, `status`
+(the root's OSC 7501 state, `starting` before it has one, `ended`),
+`activity`, `parent` (the parent's pi session), `depth`, `cwd`,
+`canMessage` (the row's `inbox`: the pane's message stream is open),
+`kind` (`agent` or `subagent`), `relationship` (`own`, `parent`,
+`peer`, `relative`) and `state` (`running` or `ended`). An own child
+adds `model`, `reported` and `report`: the first 1000 bytes of its
+last report. `read_report` gives the rest. An ended child is a
+registry entry whose pane is gone, dead or of another server
+instance (`/version`'s `instance`); every ended child lists, with
+`ended`, its cause or "its pane is gone". The agents come from the
+panes with a pi root and `pi.session` (design.md, "The trust rule")
+and from the caller's own children whose pane has not yet published
+`pi.session`.
 
-**What steers and what queues.** `message_agent` in `steer` mode and a
-child's report steer; `message_agent` in `message` and
-`interrupt-and-steer` mode queues. design.md, "Steer and
-followUp", gives the rule and the envelope kinds ("v0 and v1").
+**read_report** returns the whole text of an own child's last report,
+or with `which: all` every report in order with its time, from the
+caller's own session. It never reads the child's session.
 
-No tool reports to the parent. The harness sends a child's report
-itself, to the parent edge (design.md, "Identity"; "Reporting",
-below). Tools register unconditionally. They report ko as
-unavailable outside ko.
+**list_async_bash** lists the caller's own runs: all running and the
+newest 20 ended, newest first, with `run`, `name`, `state`,
+`outcome`, `startedAt`, `pane` and the `ko api` command that reads
+the pane's screen.
 
-A report notice has a bound of 4000 bytes. The harness keeps a report
-whole, because it is a work product. Only the text *sent* to the parent
-has a bound ("Reporting", below).
+A report notice has a bound of 4000 bytes. The parent keeps the
+report whole, because it is a work product ("Reporting", below).
 
-**list_runs** is the only tool for finding agents to message and runs to
-stop with `stop_run`. It lists the caller's discovery scope: the agents
-in its session whose parent is the root level, the caller, or an
-ancestor of the caller. Thus, a top-level caller sees the other
-top-level agents and its direct subagents. A subagent sees its peers,
-its direct subagents, its parent and the parent's peers, the
-grandparent and its peers, and so on up to the top-level agents. No
-caller sees a grandchild, the subagents of a peer or of an ancestor's
-peer, or another agent's bash runs.
+## The registry: the own pi session
 
-Every caller also sees its own runs: all running runs and the newest 20
-ended runs, newest first, also when a run's window moved to another
-session. The list excludes the caller itself. A live child merges into its pane's row: the row
-id is the child's session id, and `run` is its current run id. Children
-that `ko run-child pane_N` started for a top-level pi are listed too.
-A top-level agent has no run, whether the user started it or
-`spawn_agent` did, so its row comes from its pane alone.
+Each harness appends custom entries to its own pi session with
+`pi.appendEntry`. Every entry carries `owner`, the appending
+session's id, and `at`; an entry whose `owner` is not the own
+session id is ignored. Thus, a `--fork` or `/clone` copy, which
+copies the entries, inherits no children and no reports. The
+harness reads the entries with `ctx.sessionManager.getBranch()` at
+each use, so a `/tree` back past a spawn drops the child from the
+registry (Limits, below).
 
-Rows carry `kind` (`agent`, `subagent`, `bash`) and `relationship`
-(`own`, `parent`, `peer` for the same parent, or `relative`: a
-farther ancestor or an ancestor's peer). The agent map decides `subagent` against
-`bash`, not ko. Live agents carry id, name, pane, window, status,
-activity, parent, depth, cwd, model and `canMessage`. Own
-runs add `run`, `startedAt`, `state` (`running` or `ended`), the
-ending's `outcome`, and a subagent's `task` and `report` from its agent
-directory.
+In the parent:
 
-The listed status is the pane root's OSC 7501 state: working, blocked,
-done, error or idle, else unknown. The name is the pane's `pi.name`,
-or its title when the session has no name. Native Claude Code has no
-`pi.session` and does not appear in the list.
+| entry | when | data |
+|---|---|---|
+| `ko-pi.child` | at each spawn and restart | `name`, `session`, `model`, `fork`, `cwd`, `pane: { instance, pane }`; the last entry of a name is current |
+| `ko-pi.work` | before it sends an own child work, in any mode, and at a spawn or restart with a task | `child` |
+| `ko-pi.report` | when a child's report arrives, before the ack | `child`, `name`, `text`, `id` |
+| `ko-pi.ended` | when it announces a child's ending, and when it stops the child | `child`, `pane` |
 
-The discovery scope limits only discovery: `list_runs` and the `@`
-completion, which reads the same list and excludes bash and ended rows.
-It never limits addressing. Names resolve across the entire session for every `message_agent` mode. Discovery is not symmetric: a
-subagent sees its grandparent's peer, but that peer does not see the
-subagent. An agent that receives a message from outside its scope can
-still reply, because the header names the sender and addressing is
-open. Sender checks and ancestry use the same snapshot: all panes and
-the whole agent map, not the scoped list.
+In the child:
+
+| entry | when | data |
+|---|---|---|
+| `ko-pi.work` | when it delivers its task, and at `message_start` of a message or steer with `details.work` | none |
+| `ko-pi.report` | before it sends a report | `text`, `id` |
+| `ko-pi.sent` | when the parent acks or refuses a report | `id`, `refused` when refused |
+
+**Has a child reported?** The parent's rule: its last `ko-pi.report`
+for the child comes after its last `ko-pi.work` for it on the branch,
+or it gave the child no work. The child's rule about itself is the
+same over its own entries. The order is the position on the branch,
+not a time, so there is no tie and no clock. Both are own facts:
+nothing reads the other side.
 
 ## What a child is given
 
-**Names.** `spawn_agent` and `async_bash` require `name`. ko's
-`run-child` refuses a name over 64 bytes or with a control character
-(design.md, "Spawning"). A name
-is unique within its parent, for live and ended children: the
-directory `agents/<parent>/<name>/` or a run of the same name exists, or
-it does not. A reused name is refused with "message it instead" (spawn)
-or "choose another name" (async_bash). A name a child of the same parent
-used means "message it" ("Restarting through a message", below). A
-`toplevel` name is unique among the live agents in the caller's session instead ("A top-level agent", below).
+**Names.** `spawn_agent` and `async_bash` require `name`. The server
+refuses a name over 64 bytes or with a control character (design.md,
+"Spawning"); the harness also refuses an empty name, `.`, `..` and a
+name with `/`. A child's name is unique among the caller's registry
+children, its live own children and its runs. A reused name is
+refused with "message it instead" (spawn) or "choose another name"
+(async_bash). A `toplevel` name is unique among the live agents of
+the caller's session instead.
 
-**Spawning.** Without `model`, the child runs the caller's current model
-and thinking level, `provider/model-id:thinking`. A caller with no
-model is refused: "caller has no model; specify model". An explicit
-`model` is checked with `pi --list-models`. `agent.json` records the
-resolved value, never an empty string, so a restart runs the model that
-the child actually ran. `cwd` must be an existing directory; else the
-spawn is refused. Without it, the child starts in the caller's
-directory, or in a resumed session's own directory ("Resuming a saved
-session", below). The extension passes it as `--cwd`, the new pane's
-directory. Then it checks the depth (maximum 2). Then it writes the
-child's agent directory, `task` and `agent.json` with an empty `run`,
-before the child starts. Then it runs:
+**Spawning.** Without `model`, the child runs the caller's current
+model and thinking level, `provider/model-id:thinking`. A caller with
+no model is refused. An explicit `model` is checked with `pi
+--list-models`. The registry records the resolved value, so a restart
+runs the model that the child ran. `cwd` must be an existing
+directory. Without it, the child starts in the caller's directory, or
+in a resumed session's own directory. Then the harness reads
+`/layout` and checks the depth: the length of the caller's `parent`
+chain over the rows, at most 2. Then it sends one `POST /panes`
+(protocol.md, section 7):
 
-    ko run-child P --name N --cwd C [--env KO_AGENT_TRUSTED_ROOT=G] \
-      --env KO_AGENT_PARENT_SESSION=S --env KO_AGENT_DIR=D \
-      -- ko shell -- ko-pi \
-      --session-id <minted id> --name N --model M [--fork <session file>]
+    name: N, cwd: C
+    command: [ko, shell, --, ko-pi, --session-id ID | --session FILE, --name N, --model M, --fork FILE?]
+    env: KO_AGENT_SESSION=ID, KO_AGENT_PARENT_SESSION=S, KO_AGENT_TRUSTED_CWD=C?
+    parent: $KO_PANE, close: on_exit
+    vars: { "ko-pi.task": { text, from: { session, name, pane } } }   (a non-empty task)
 
 `ko shell --` starts pi through the user's login shell, so the child
 has the environment of an interactive pane (design.md, "The login
-environment").
-
-S is the caller's own pi session id. The extension mints the child's
-session id. It writes the run id that `run-child` prints into
-`agent.json`. A failed spawn removes the directory.
-
-The window's environment is what `run-child` gives every run
-(design.md, "Window lifecycle") plus the `--env` values:
+environment"). S is the caller's own pi session id. The harness mints
+the child's session id, 32 hex characters. The task never enters a
+command line: it is the pane variable `ko-pi.task`, and its JSON
+must fit the variable limit of 1,044,480 bytes. After the request
+returns, the harness appends `ko-pi.child` and, with a task,
+`ko-pi.work`.
 
 | variable | what it carries |
 |---|---|
-| `KO_RUN_ID` | the child's run id; the child's own runs name it as their parent |
-| `KO_RUN_OUTPUT` | the run's output path; a pi child writes nothing there |
-| `KO_AGENT_DIR` | the child's agent directory, which holds its task and its parent edge |
-| `KO_AGENT_PARENT_SESSION` | the parent's session id, read only by the repo's `no-git-writes` guard, which also reads ko-pi's `KO_AGENT_PARENT_SESSION` |
-| `KO_AGENT_TRUSTED_ROOT` | the git common directory of a repository that the parent trusts; absent otherwise |
+| `KO_AGENT_SESSION` | the child's own pi session id, the half of the parent edge that the child checks |
+| `KO_AGENT_PARENT_SESSION` | the parent's pi session id; also read by the repo's `no-git-writes` guard |
+| `KO_AGENT_TRUSTED_CWD` | the child's cwd, when the spawner trusts it; absent otherwise |
 
-The environment does not prove identity. Everything that the child's
-process starts inherits the environment. Thus, a pi started inside a
-subagent's pane receives the complete set. The child trusts the parent
-edge only when `agent.json` in `KO_AGENT_DIR` names its own pi session
-id (design.md, "Identity"). This prevents a nested pi from reporting for
-another session and from recording another run's outcome.
+The environment does not prove identity: everything that the child's
+process starts inherits it. The child trusts the parent edge only
+when `KO_AGENT_SESSION` equals its own pi session id (design.md,
+"Identity"). A nested pi mints its own id, so it has no edge.
 
 **Project trust.** pi 1.4.0 asks "Trust project folder?" at startup
-when the directory has project resources that need trust, such as
-`.pi/extensions` or `.pi/prompts`. It asks before interactive mode
-starts, so pi reports no OSC 7501 status and ko shows no blocked
-agent. A child in a new worktree would wait there for a person, and its
-parent would get no notice.
+when the directory has project resources that need trust. It asks
+before interactive mode starts, so pi reports no OSC 7501 status, and
+a child in a new worktree would wait there for a person. Thus, the
+spawner sets `KO_AGENT_TRUSTED_CWD` to the child's cwd when its own
+`ctx.isProjectTrusted()` holds and the child's cwd has the same git
+common directory as the spawner's. Both checks run on the spawner's
+side. The child's `project_trust` handler answers `yes` when the real
+path of pi's directory equals the real path of the variable, and
+`undecided` otherwise, so pi checks its trust store and asks as
+before. The trust holds for the one directory that the parent chose,
+not for every worktree of the repository. A pi that a person starts
+in that pane in that directory also gets `yes`. This is not a
+security boundary: the parent chose the directory.
 
-Thus, every run that a spawner starts gets `KO_AGENT_TRUSTED_ROOT=G`
-when the spawner's `ctx.isProjectTrusted()` is true and its directory
-is in a git repository. G is the real path of `git rev-parse
---git-common-dir` in the spawner's directory. A restart adds it from the
-parent's trust at the time of the restart. The `project_trust` handler
-answers `yes` when the real common directory of pi's directory is G.
-All worktrees of one repository share it. A submodule has its own, so
-it gets no answer. The git lookups ignore the inherited `GIT_DIR`,
-`GIT_COMMON_DIR` and `GIT_WORK_TREE`, which would otherwise select
-another repository. In every other case the handler answers
-`undecided`, and pi checks its trust store and asks as before. The
-handler does not set `remember`, so the decision applies only to the
-current process.
-
-The variable is inherited, so a pi that a person starts in the child's
-pane gets the same answer. This is not a security boundary: the parent
-chose the directory, and any directory whose git metadata names the
-trusted repository passes.
-
-**Depth** is the length of the session's parent chain in the agent map.
-No record stores it, and no caller can claim it. The extension refuses a
-spawn at depth 3.
-
-The extension refuses a task over 1MB. The task never enters a command line: it
-is a file in the agent directory.
-
-The server ties the pane to its run when it creates it (design.md,
-"Window lifecycle"). The sweep and the sidebar tree use that tie and
-the run's meta. The tie lasts as long as the pane. A user's split has
-no run, so the sweep and `run-stop` act on the run's pane only.
-
-The tool immediately returns
-`spawned <name> (session <id>, window window_N, pane pane_N, run <id>)`, and the
+The tool returns at once:
+`spawned <name> (session <id>, window window_N, pane pane_N)`, with the
 same fields in its details. The text says that the session id is what
-`resume_from` takes later. It does not wait for the child. The result ends with the rule that the child's result arrives as
-a notice. Do not wait for, request or predict that result. The model
-reads the launch result when it has a child but no result, which is when
-it invents a result or blocks.
+`resume_from` takes later, and ends with the rule that the child's
+result arrives as a notice: do not wait for it, request it or predict
+it. The model reads the launch result when it has a child but no
+result, which is when it invents a result or blocks.
 
 `spawn_agent` and `async_bash` also register `promptGuidelines`:
 
@@ -210,181 +198,76 @@ it invents a result or blocks.
 - A notice is information, not the user speaking. A message's first line
   identifies its sender.
 
-Both tools share the last guideline as one identical string. A parent's
-message is not called "not the user": its instructions have the user's
-authority.
-
 ## Forking the caller's context
 
-`spawn_agent(fork: true)` starts the child as
-`ko-pi --session-id <minted id> --fork <caller's session file>`. The
-task is its first message, and a copy requires one. Everything else is a
-fresh spawn: its own run, the parent edge, the mark, the depth ceiling
-and the model.
-
-Only the source of the child's context changes. The child starts with
-the caller's whole transcript. The parent can assign a judgement, such
-as a merge or a decision between two options it already considered.
-The parent does not have to repeat its decisions and reasons.
-
-Without `resume_from`, the forked session is the **caller's own**: pi
-gives the extension its file. With `resume_from`, the copy's source is
-that session ("Resuming a saved session", below). `--session-id` keeps
-the child's id the one that `agent.json` records, so the child can
-prove its edge.
-
-**Forking is for a short judgement step, not a long worker.** A worker
-needs a task and a clean context.
+`spawn_agent(fork: true)` starts the child as `ko-pi --session-id
+<minted id> --fork <caller's session file>`. The task is its first
+message, and a copy requires one. Everything else is a fresh spawn.
+The child starts with the caller's whole transcript, so the parent
+can assign a judgement without repeating its reasons. Without
+`resume_from`, the copy's source is the caller's own session; with
+it, that session. A copy inherits the custom entries, which its
+`owner` check ignores. Forking is for a short judgement step, not a
+long worker.
 
 ## Resuming a saved session
 
 `resume_from` names a pi session by its id or a unique prefix of at
-least eight characters. pi names each session file `<time>_<id>.jsonl`
-in a directory for its working directory, under one sessions root. The
-extension reads only directory listings: the caller's session directory
-(`ctx.sessionManager.getSessionDir()`) and each directory directly
-under its parent. It matches the id at the end of a file name. It does
-not use pi's `SessionManager.list`, because that parses every session
-file. An exact id wins; otherwise the prefix must match one file. An
-unknown id reads `unknown session "<id>"`; an ambiguous prefix reads
-`"<p>" matches several sessions by id: ...` with up to five ids. The extension then reads the header line of the one match,
-where pi records the session's working directory.
+least eight characters. The harness reads only directory listings:
+the caller's session directory and each directory directly under its
+parent, and matches the id at the end of a file name
+(`<time>_<id>.jsonl`). An exact id wins; otherwise the prefix must
+match one file. Then it reads the header line of the match, where pi
+records the session's working directory.
 
-**Continue** (`resume_from` alone) starts
-`ko-pi --session <session file>` in a new window: the same session id,
-with its history. pi takes the working directory of a `--session` from
-the header, not from its process. Thus, the agent runs in its recorded
-directory: a different `cwd` is refused, and so is a recorded directory
-that no longer exists. A session is refused while it is live: a pane that is not
-dead holds its `pi.session`, with or without a pi root ("session <id> is live in a pane"), or it
-is one of the caller's own children whose recorded run is live. Two pi
-processes must never write one session file. The lookup and the check
-run under the restart lock for that session ("Restarting through a
-message").
+**Continue** (`resume_from` alone) starts `ko-pi --session <session
+file>`: the same session id, with its history, in its recorded
+directory; a different `cwd` is refused. A session is refused while a
+pane that is not dead holds its `pi.session`, and when it is an
+ancestor of the caller. An own registry child resumes only under its
+existing name. Any other session becomes the caller's child; its old
+parent's registry entry stays, and that parent sees the session live
+under another pane and cannot restart it. The checks and the request
+run under the restart lock for that session.
 
-- An ended child of the caller resumes through the restart path of
-  `message_agent` ("Restarting through a message"): the same name is
-  required.
-- The caller itself and its ancestors in the agent map are refused,
-  because the map must stay a tree: "session <id> is an ancestor of
-  this session".
-- Any other session becomes the caller's child: a new agent directory
-  under the caller with `session-file`, started by the same restart
-  path. After the launch succeeds, the
-  extension removes every other parent's `agent.json` for that session.
-  Their `task`, `report` and history stay. Thus, the session has one
-  parent edge, and the old parent can no longer restart it by name.
+**Copy** (`resume_from` with `fork: true`) starts `ko-pi --session-id
+<minted id> --fork <session file>`. The original stays as it was, and
+a live original is not refused, because pi only reads it.
 
-**Copy** (`resume_from` with `fork: true`) starts
-`ko-pi --session-id <minted id> --fork <session file>`. The original
-stays as it was, and a live original is not refused, because pi only
-reads it. pi's fork takes the process's working directory, so `cwd`
-applies.
-
-**An empty task** (or only whitespace) is allowed only to continue a
-session. The session comes back and starts no turn. The extension writes
-an empty `task`, `delivered` and no `work`, and a child with an empty `task` and no `work` has reported
-("The agent directory"). Thus, it owes no report until its parent
-sends it work. Its ending notice reads `subagent "<name>" completed;
-no report was owed`.
+**An empty task** is allowed only to continue a session. The session
+comes back and starts no turn. No `ko-pi.task` and no `ko-pi.work`
+are written, so the child owes no report until its parent sends it
+work.
 
 ## A top-level agent
 
-`toplevel: true` starts the agent with no parent edge and no run. It
-is then the same as a pi that the user starts in a shell: a pane with
-`pi.*` variables. The extension adds a window after the last window
-of the caller's session (the session that holds `$KO_PANE`) with `ko
-layout edit`, which applies the edit again when the layout changed
-meanwhile. The window's one new pane runs `ko shell -- ko-pi ...` in
-the cwd. A second edit gives the window the agent's name.
-
-There is no agent directory, no `KO_AGENT_DIR`, no run, no
-`run-wait`, no notice to the caller and no orphan rule. When pi exits,
-the pane dies as any command pane does, with no shell after it. The
-sweep does not collect it: it stays until the user closes it, and
-`ko runs` never lists it. The result names the window and the pane,
-not a run. The task goes over the new agent's inbox, as a message from
-the caller. The spawn waits up to `KO_INBOX_WAIT_MS` (30000 ms) for the pane to
-publish `pi.session` and its inbox, also for an empty task, and holds the
-name claim and the session lock during the wait. Thus, a second spawn
-from the same caller sees the agent live. On a timeout, the result
-still names the agent and adds `timed out waiting for its inbox; no task
-was delivered`. The
-agent is a peer: the
-caller reaches it with `message_agent` in `message` mode. `stop_run`
-and the `steer` and `interrupt-and-steer` modes refuse it, because it is
-not a descendant. Every caller sees it in `list_runs`, because the
-discovery scope includes all top-level agents ("list_runs", above).
-
-The depth ceiling does not apply. `fork`, `resume_from`, `model`,
-`cwd` and `KO_AGENT_TRUSTED_ROOT` apply as for a child. The trust
-fact comes from the spawner, not from a parent edge, so a top-level
-agent in a worktree of a trusted repository also starts without the
-question. One of the caller's own children cannot
-become top-level: "resume this child with its existing name and without
-toplevel". Another parent's ended child loses that parent's
-`agent.json` after the launch, as above.
-
-## The agent directory
-
-ko's run record (`<server state>/runs/<id>/`) holds what ko knows
-about a run: meta, outcome, output, screen (design.md, "Who is
-authoritative for what"). The extension's agent directory
-(`<ko-pi state>/agents/<parent-session>/<name>/`) holds what only the
-harness knows:
-
-- `agent.json`: `session`, `run`, `model`, `fork`. The parent
-  writes it at spawn and at each restart. `model` is the resolved
-  `provider/model-id:thinking`, never empty.
-- `task`: the parent writes it before the child starts. A restart with
-  a session file rewrites it to the new first prompt. It is empty only
-  for a resume without work.
-- `delivered`: the child writes it after it delivers the task. Thus,
-  `/reload` does not deliver the task twice. A task that cannot be read
-  leaves no marker and stays eligible for the next attempt.
-- `session-file`: the child writes its pi session file at
-  `session_start`. A restart needs it.
-- `report`: the child writes the whole report before it sends it. An
-  empty file is an empty report. If it cannot write the file, it sends
-  nothing.
-- `work`: the parent writes it, empty, before it sends its own child new
-  work by `message_agent`, in any mode. It stays
-  after a failed send, because the message can have arrived. The child
-  writes it again when pi takes its parent's message or steer into the
-  transcript (`message_start`), because a report written while the
-  message waits in pi's queue covers only the earlier work. The child
-  marks each message and steer from its parent with `work: true` in
-  the custom message's `details`, and writes `work` when
-  `message_start` shows that mark. The message carries the fact, so
-  the child keeps no list of pending work: pi keeps queued custom
-  messages through Escape, an aborted run and `/reload`, and a list
-  in the extension would not. The child never compares the content,
-  which pi can change. A notice and a message from another agent are
-  not new work. A restart that
-  delivers the message as the child's first prompt writes no `work`:
-  the restart removes `report` before the child starts, and a later
-  `work` could hide a report that the child wrote before the restart
-  returned.
-
-A child **has reported** when `report` exists and `work` is absent or
-older than `report`, or when `task` is empty and `work` is absent: such
-a child was given no work. Both sides read this rule: the parent for its
-children, and the child for its own report. A tie counts as not
-reported: the child then reports again on its next settle, which is the
-safe direction. Thus, an earlier report does not count for later work, and the
-earlier report stays readable at its path until the child reports again.
-`list_runs` shows the `report` path whenever the file exists.
-
-For a top-level parent, `<parent-session>` is its own pi session id,
-although `run-child` receives its pane. A parent that restarts under its
-own session id finds its children again. A forked or new parent session
-inherits none.
+`toplevel: true` starts the agent with no parent edge: the same `POST
+/panes` with the caller's ko session as `session` and no `parent`,
+`close` or `KO_AGENT_PARENT_SESSION`. The server places the window
+after the caller's window and names it in the same change, so no
+unnamed window flashes. The task goes as `ko-pi.task` like a child's;
+the new agent delivers it as a message from the caller, because its
+edge does not name the caller. There is no registry entry, no notice
+and no orphan rule. When pi exits, the pane dies and stays until the
+user closes it. The depth ceiling does not apply; `fork`,
+`resume_from`, `model`, `cwd` and the trusted cwd apply as for a
+child. One of the caller's own children cannot become top-level.
 
 ## A child's life
 
-**Start.** The child's extension binds its inbox before it delivers the
-task, so it can receive questions during its first turn. It reads
-`task` and delivers it as its first user message.
+**Start.** At `session_start` the child:
+
+1. Checks its edge: `KO_AGENT_SESSION` equals its own session id and
+   `KO_AGENT_PARENT_SESSION` is set.
+2. Opens its message stream, then writes `pi.session` and `pi.name`.
+   Thus, it can receive questions during its first turn.
+3. Reads its own row. With `ko-pi.task`, a child whose edge parent is
+   the task's `from.session` appends `ko-pi.work` and delivers the
+   text as its first user message; otherwise it delivers the text as
+   a message with the sender header. Then it deletes the variable,
+   which is the delivered marker. A failed read leaves the variable
+   for the next attempt.
+4. Adopts its live runs and starts the parent watch.
 
 Every turn's system prompt then contains these standing instructions:
 
@@ -395,437 +278,308 @@ Every turn's system prompt then contains these standing instructions:
   your parent. It must stand on its own.
 - If you stop to wait for another agent or the user, say so; when the
   work completes later, tell your parent with `message_agent`.
+- Reporting does not end this session: the parent ends it with
+  `stop_agent` and continues it with `message_agent`.
 
-The first instruction comes first, so that a child ends its turn and
-does not sleep to keep its report back.
+The system prompt contains the instructions instead of the task
+because the task arrives only once. A subagent caller gets the same
+fact in the results of `async_bash`, `spawn_agent` (except a
+top-level spawn and a resume with an empty task) and a restarting
+`message_agent`.
 
-The system prompt contains the instructions instead of the task because
-the task arrives only once. Otherwise, a restart or a follow-up message
-from the parent would not include the instructions.
+**Watching the parent.** The child's pi is a child of the server, so
+no signal tells it that its parent has ended. Every
+`KO_PARENT_POLL_MS` (5 s) it reads `/layout`: its own row's `parent`
+pane is alive when it is not dead and its `pi.session` is the edge's
+parent, with or without a pi root, because pi clears its root while
+it is in the external editor or suspended. A failed read is no
+evidence. Otherwise the child shuts down through the one teardown.
+The same tick resends an unsent report ("Reporting").
 
-A subagent caller gets the same fact in a tool result. These results
-add that ending the turn now sends no report, and that the report is
-the last message of a turn that ends when no run of its own is running
-and no subagent of its own owes a report:
-
-- The `async_bash` start result.
-- The `spawn_agent` result, except for an independent peer and for a
-  `resume_from` with an empty task, which owes no report.
-- The `message_agent` result that restarts an ended child.
-
-A top-level caller does not get this clause.
-
-**Watching the parent.** The child's pi is a child of the server.
-Thus, no signal tells it that its parent has ended. Every
-`KO_PARENT_POLL_MS` (five seconds), it reads the parent's pane from
-`ko api /layout`: its `pi.session` and whether it is dead. It keeps the
-pane it found, and searches the whole list again only when that pane
-no longer matches. A pane that is not dead and has the parent's
-`pi.session` means that the parent is alive, with or without a pi
-root, because pi clears its root while it is in the external editor or
-suspended. A
-failed read is no evidence. When the parent is gone, the child shuts
-down through the normal exit path. A slow read holds later ticks back.
-
-**Reporting.** The report is automatic. When a turn of the child
-settles idle (`agent_settled` with `ctx.isIdle()`), the harness sends
-the last assistant message of that run to the parent as a `notice`
-envelope. Its address is the parent edge, not a session from a lookup.
-The text is the concatenation of that message's `text` blocks, without
-thinking blocks and tool calls. pi's `agent_end` carries only the
-run's own messages, from its first prompt to its settle, with every
-steer and follow-up that drained into it. pi ends a run with an
-assistant message that has no tool call, so that message is the
-model's closing text. Claude Code subagents use the same rule. Only the
-last message counts, not the last non-empty one, because an earlier
-message can be stale narration from the middle of the run.
+**Reporting.** When a turn of the child settles idle (`agent_settled`
+with `ctx.isIdle()`), the harness sends the last assistant message of
+that run to the parent. The text is the concatenation of that
+message's `text` blocks. Only the last message counts, because an
+earlier one can be stale narration.
 
 The settle sends the report only if all of these are true, in this
 order:
 
-1. The child has a parent edge. A top-level agent sends nothing.
+1. The child has a parent edge.
 2. The turn was not aborted, and no accepted interrupt or stop ended
-   it. Escape, `message_agent` in `interrupt-and-steer` mode and
-   `stop_run` end a turn deliberately, and `stop_run` records `stopped` first. The child
-   reads this from `agent_settled`'s `aborted` field, not only from
-   the last stop reason: Escape during pi's retry delay after a
-   provider error leaves an error as the last stop reason.
+   it. The child reads this from `agent_settled`'s `aborted` field
+   and from its own control mark.
 3. The turn did not stop on a provider error. Such a turn sends the
-   error notice instead (below).
-4. The child has not reported on its last work, by the rule above.
-   Thus, the report goes once for each piece of work, and only the
-   parent's work creates the obligation: the first task, or work that
-   the parent marked with `work`. A turn that something else started
-   sends nothing after the report: a prompt typed into the child's pane,
-   a notice or stream batch from a run of its own, or a sibling's message.
-   New `work` from the parent re-arms it. A restart or `/reload` needs
-   no memory, because the state is files.
-5. The child's run list is readable (`ko runs --json` succeeds and
-   prints a list). A failed read is not an empty list: that settle
-   sends nothing, and the next settle reads again. A restarted child
-   first finishes its read of its live runs, so an early settle cannot
-   miss them.
-6. The child waits on nothing: no async bash run of its own is live,
-   and no subagent of its own is live without a report on its last
-   work. A subagent that reported but stays alive does not count. When
-   the last such run reports or ends, its notice wakes the child for a
-   turn. That turn settles with nothing to wait for, and its last
-   message is the report.
+   error notice instead.
+4. The child has not reported on its last work, by the rule of "The
+   registry". Thus, a turn that something else started (a prompt
+   typed into the pane, a notice, a stream batch, a sibling's
+   message) sends nothing after the report.
+5. Its runs and its children are readable. A failed read sends
+   nothing, and the next settle reads again.
+6. No own bash run is live, and no own live child owes a report.
+   When the last one ends or reports, its notice wakes the child for
+   a turn whose last message is the report.
 
-**An empty last message is still the report.** The child writes an
-empty `report` and sends `subagent "<name>" ended its turn with no
-message`, with the guidance. A child with an empty report has
-reported: `stop_run` records `completed`. A separate "no report" state
-would need memory of what it already sent.
+The reads of 5 and 6 wait on the server, so after them the child
+checks again: an accepted interrupt or stop, new work, or a report
+since the read cancels the report.
 
-The harness **keeps the report whole**. The notice enters the parent's
-next turn, so the text sent to the parent has a 4000-byte bound. The
-guidance that ends every report notice - the child stays alive, so end
-it with `stop_run` or continue it with `message_agent` - is part of
-that bound.
+The child mints one message id for the report, appends `ko-pi.report
+{ text, id }`, and sends `kind: notice` with `data: { report: true }`
+to its parent pane. The text is the whole last message, up to about
+1 MB. An `acked` or `refused` reply appends `ko-pi.sent { id }`. The
+mark is its own entry, so a late ack after new work does not count as
+a report on that work. A `delivered`, `queued` or `io` reply leaves
+the report pending, and every tick of the parent watch resends each
+pending report, oldest first, with its own id until its mark. The server delivers each id once (protocol.md,
+section 7, "Ids"), so the parent never reads a report twice, also
+after a `/reload`. An empty last message sends `subagent "<name>"
+ended its turn with no message`.
 
-Thus, the child writes the full text as `report` in the agent directory
-before it sends. If the write fails, it sends nothing, and the next
-settle on the same work tries again: a sent report without its file
-would count as no report. A report that does not fit sends its start
-plus a final line that names the file:
-
-    full report: <ko-pi state>/agents/<parent>/<name>/report
-
-The report's start, the final line and the guidance together remain
-within the cap. A report that fits arrives byte for byte. The harness
-removes any partial character from the end of the report's start.
-
-The child finds the parent's pane before it writes and sends, and that
-lookup waits on the server. pi holds back a message that arrives during
-`agent_settled` until the handler returns, so no new turn shows the
-change. Thus, after the lookup, the child checks again: an accepted
-interrupt or stop, or a `work` time different from the one it read,
-cancels the report before the write. A cancelled report is not written
-and does not count as sent. A failed read is no evidence, so the
-child writes nothing and sends nothing, and the next settle on the same
-work tries again. If the parent is gone or has no inbox, or the send
-fails, the report is written and nothing is sent; `list_runs` and the
-ending notice still read the file.
+The parent, on a notice with `data.report` from a current registry
+child, appends `ko-pi.report` with the whole text before it acks; if
+the append throws, it answers `refuse`, and the child retries. A
+report id that the parent has already stored is acked and not
+delivered again. The parent's model gets a notice of at most 4000
+bytes with the guidance included: a report that does not fit sends
+its start and a final line `full report: read_report("<name>")`.
 
 **A child that waits on something ko cannot see**, such as a peer's
 message or a file, reports when its turn ends. Its last message says
-what it waits for. Its later completion sends nothing, because it has
-reported on this work. The standing instruction tells it to tell its
-parent with `message_agent` then.
+what it waits for, and the standing instruction tells it to tell its
+parent with `message_agent` when the work completes.
 
-**The error notice.** A turn that stops on a provider error sends the
-error and how to retry, once for each failed attempt: a prompt or an
-inbound message that starts an agent run begins a new attempt. It
-sends nothing for an error ending when the child's run already has an
-outcome (`stop_run --force` writes one and sends no request). A
-terminated provider can end the turn with an error, not an abort, so
-the rule does not rely on the stop reason alone. The error notice
-writes no `report` and carries no guidance: a status is not the
-child's account of its work. A child that never starts a turn and
-never exits sends nothing: only a settled turn is evidence.
+**The error notice.** A turn that stops on a provider error sends
+`subagent stopped on an error: <error>` and `message it to retry, or
+stop_agent to end it`, once for each failed attempt. It writes no
+report entry.
 
-**Endings.** The parent learns of every ending, report or not. For each
-run that it starts, the parent runs `ko run-wait ID --json` in the
-background. When it exits, the parent formats the notice:
+**The exit notice.** At `session_shutdown` with reason `quit`, a
+child with an edge that has not reported on its last work, and that
+no stop or parent loss is ending, sends one last notice: `subagent
+"N" is exiting before its first turn ran`, `... without a report on
+its last work: its last turn failed: <error>` when the error was not
+yet sent, or `... without a report on its last work`. The error notice
+and the exit notice each keep one message id across their resends. `/reload`,
+`/new`, `/resume` and `/fork` send nothing.
 
-    subagent "worker" completed without a report: none of its turns ended in a report, so this is the whole account of it
-    detail: no turn ever ran: ...
-    run: 6f1c...
-    message it to continue it, or stop_run to end it
+**Endings.** When a child's pane dies or leaves the document, the
+server enqueues the message `ended-pane_N` of kind `ended` on the
+parent's stream (protocol.md, section 7). The parent formats the
+notice from its own rule:
 
-A child that has reported reads `subagent "worker" completed`, with
-no "message it" line. A child with a report older than its last work
-reads `subagent "worker" completed without reporting on its last work:
-its earlier report is <path>`, with the "message it" line. No notice has a resume line. A parent that
-restarts under its own session starts one `run-wait` per live child,
-once, at its first turn event. Its ended children are not watched.
+    subagent "worker" ended: exit 0; it had reported
 
-Without this notice, a parent that assigns work and waits quietly for a
-report would wait for a report that never arrives. The notice claims
-nothing about the work, only how the run ended.
+    subagent "worker" ended: exit 1; it had not reported on its last work
+    --- last 4000 bytes of its screen ---
+    ...
+    message it to continue it, or stop_agent to end it
 
-The parent's UI displays a notice immediately as a dimmed
-`│ @<name> notifies: <first line>` line above the editor. Separately, the
-notice enters the model's context at the next turn boundary as a
-collapsed message that a mouse click expands, or expanded outside
-fullscreen mode. A notice steers instead of queuing as a follow-up, so a
-parent in a turn sees it between tool calls.
+    subagent "worker" ended: its pane was removed; it had reported
+
+The screen block appears only for a dead pane that lingers and a
+child that had not reported; the harness reads it with `GET
+/panes/pane_N/screen?history=all`. An `ended` message for a pane that
+is not a current registry child of this server instance, or for a
+child that `stop_agent` silenced, sends nothing. The message is
+queued, so a reload gap loses nothing. A parent that restarts under
+its own session id in a new pane has a new queue: its `session_start`
+reads the rows of its registry children, and one whose pane is gone,
+dead or of another instance gets the notice once, with `its pane is
+gone` or the dead pane's cause. `ko-pi.ended` records each
+announcement, so each ending of a child's current pane is announced
+once.
+
+The parent's UI displays a notice at once as a dimmed `│ @<name>
+notifies: <first line>` line above the editor. The notice enters the
+model's context at the next turn boundary as a steer: a parent in a
+turn sees it between tool calls.
 
 **The parent ends a child.** A child has no idle timer. After it
-reports, or after a turn settles with nothing to do, it stays alive.
-Only its parent (`stop_run`), the user, or the orphan rule ends it.
-`stop_run` records `completed` for a child that has reported, and
-`stopped` for one that has not. The parent then gets no ending notice for it
-("Redirecting one, and ending one from outside").
+reports, it stays alive. Only its parent (`stop_agent`), an agent in
+its scope, the user or the orphan rule ends it.
 
-**Shutdown.** The child uses one teardown, whether it quits, is stopped
-or loses its parent:
+**Shutdown.** The child uses one teardown, whether it quits, is
+stopped or loses its parent:
 
-1. It closes the inbox.
-2. It stops the parent watch and its own `run-wait` processes.
-3. It records its run's outcome with `ko run-outcome`: `completed` if
-   the session is idle, `failed` otherwise. A session waiting for its
-   first turn reports idle but has done nothing. Thus, it records
-   `failed` with "no turn ever ran". The detail of a session whose last
-   turn failed names that error.
-4. It deletes its four pane variables, with the conditional delete
-   of design.md, "The variables".
+1. The exit notice, when it is owed.
+2. `ko run-stop` for each own live bash run.
+3. It closes the message stream.
+4. It deletes its pane variables with the conditional delete of
+   design.md, "The variables".
 
-`/reload` keeps the inbox listening, keeps the pane variables and its
-`run-wait` watches, and records no outcome, because the run continues
-(design.md, "The inbox"). `/new`, `/resume` and `/fork` record nothing either: the
-process continues as another session.
+No outcome is recorded: an agent has no run. `/reload` keeps the
+message stream, the variables and the run watches. `/new`, `/resume`
+and `/fork` tear down as a quit does, without the exit notice.
 
-**The window, and the pane.** The sweep collects a run's pane after
-it has been dead for thirty seconds, and captures its screen. If no
-outcome exists, it records the pane's ending. A window with the user's
-own split keeps that split (design.md, "Window lifecycle").
+**The pane.** The sweep removes the child's pane after it has been
+dead for the linger grace (`close: on_exit`), or at once when its
+parent pane is gone or dead (design.md, "Window lifecycle"). An
+agent's pane gets no screen capture: the ending notice reads the
+screen while the pane lingers.
 
 ## Redirecting one, and ending one from outside
 
-`message_agent` has three modes. `steer` and `interrupt-and-steer`
-redirect a descendant's work:
+`message_agent` has three modes, and all three reach any agent of the
+scope:
 
-- `steer` leaves the turn running and adds text inside its loop, as a
-  `ko-steer` custom message with `deliverAs: "steer"`. The child reads
-  it between tool calls and continues with the correction instead of
-  restarting. An idle child starts a turn with it.
-- `interrupt-and-steer` sends one `interrupt-and-steer` envelope with
-  the text. The child marks its turn as ended by a control, holds the
-  text, and requests pi's abort. It answers `ok` at once. pi's
-  extension `abort()` returns before the run ends. A blocked tool call
-  can keep the run going for a long time. A message sent while the run
-  streams is a follow-up, and the aborted run never drains it. Thus,
-  the child delivers the held text at the run's `agent_settled`, as an
-  ordinary message from its parent with `followUp`. The text starts a
-  new turn. An idle child delivers it at once. The aborted turn's
-  settle sends no report, no error notice and no idle notice, because
-  the control mark holds until the text is delivered as new work.
+- `message` queues with `followUp` until the receiver's turn ends.
+- `steer` leaves the turn running and adds the text inside its loop,
+  as a `ko-steer` custom message with `deliverAs: "steer"`. An idle
+  receiver starts a turn with it.
+- `interrupt-and-steer` sends kind `interrupt`. The receiver marks
+  its turn as ended by a control, holds the text and requests pi's
+  abort. pi's extension `abort()` returns before the run ends, and a
+  message sent while the run streams is a follow-up that the aborted
+  run never drains. Thus, the receiver delivers the held text at the
+  run's `agent_settled`, as an ordinary message from its sender. An
+  idle receiver delivers it at once. The aborted turn's settle sends
+  no report and no error notice.
 
-On arrival, the text identifies its sender. Otherwise, an instruction
-arriving during a task would appear to be the child's own idea. Both
-modes are new work from the parent ("Reporting", `work`). There is no
-interrupt without text: a parent that wants the child idle stops it with
-`stop_run`, or steers it to wait.
+A message and a steer from the parent carry `details.work`, so the
+child's `message_start` marks new work. The parent marks
+`ko-pi.work` before it sends its own child work in any mode; the mark
+stays after a failed send, because the message can have arrived.
+There is no interrupt without text.
 
-`stop_run` takes a list of one or more targets. It resolves each
-target among the caller's own runs and its descendants, in this order:
-an exact run or session id, a unique prefix of at least eight
-characters, an unambiguous running name. It accepts a mention as
-design.md, "Addressing", describes. It resolves every target before it
-stops any. A target that does not resolve, is ambiguous or is outside
-this rule gets its own error line and does not block the others. Two
-targets that name one run stop it once. The resolved runs stop in
-parallel, so a call takes about one escalation, not one for each run.
-The result has one line for each target, in input order: completed,
-stopped or the error. The call is an error only if no target stopped a
-run. Each line gives the path to read: a bash run's `output:`, or a
-subagent's `report:` if its report file exists.
+**Sending.** Every send mints one id, 128 random bits as 22 base64url
+characters, for one intent, and keeps it for that intent's retries: a
+`message_agent` call, the stop request, each error and exit notice,
+each report. A tool call resends on `delivered` or `io` up to three
+times, `KO_RESEND_MS` (1 s) apart, then reports the last state:
+`delivered to N` (acked), `queued for N` (the agent is not receiving
+and reads it when its stream returns), or `sent to N: written ..., not
+yet confirmed`. An acked `message` to a working agent says that it
+reads the text when its turn ends and points to `steer`.
 
-    stopped run 6f1c...; killed its pane; output: <server state>/runs/6f1c.../output
-    completed worker; <run-stop text>; report: <agent dir>/report
-    "build": error: run 6f1c... has already ended failed: exit 3; output: ...
+**stop_agent** resolves one address in the scope by the addressing
+rules of design.md and refuses only the caller. A target with an open
+message stream gets kind `stop`; then the harness sends `POST
+/panes/pane_N/stop` with `wait_ms: 5000`, whatever the request
+returned, so the pane dies also when the agent does not end itself
+(design.md, "Steer, interrupt and stop"). A target without a stream is
+refused unless `force`, which skips the request and stops the pane
+with `wait_ms: 0`, so it is removed at once.
+Lines: `stopped NAME; it had reported`, `stopped NAME; it had not
+reported on its last work`, `stopped NAME` for a peer or ancestor,
+`NAME had already ended: <cause>`.
 
-**The result is the only signal.** A run that the caller stops with
-`stop_run` sends the caller no ending notice: the caller already knows.
-Before it stops a run that it watches, `stop_run` sets the run's watch
-to silenced. The flag is part of the watch data, so it survives a
-`/reload`. The `run-wait` close handler keeps the outcome of a silenced
-watch for the stop and sends no notice. A stop that fails while the
-watch is open clears the flag, so a later ending still notifies. A stop
-that fails after the silenced watch closed puts that ending in its
-error line: `<error>; run ID has already ended RESULT[: TEXT]` with the
-path. A run that
-ends any other way notifies as before: the user closes it, `ko
-run-stop` from elsewhere, the orphan sweep, a crash, normal completion.
-Only the caller's own runs have a notice to drop; a deeper
-descendant's notice goes to its own parent, which did not stop it.
+**The result is the only signal.** Before it stops an own child,
+`stop_agent` appends `ko-pi.ended` for it, so the server's `ended`
+message for that pane sends no notice. A child that ends any other way
+notifies as before.
 
-A run can end on its own before or during the call. Exactly one signal
-reaches the caller:
-
-- Ended before the call, with its notice not yet sent (`run-wait` has
-  not exited): the line reads `run ID has already ended RESULT[: TEXT]`
-  with the path, and the notice is dropped.
-- Ended during the call: `run-outcome` exits 5 (an outcome exists), or a
-  bash run's `run-stop` exits 5 (its pane is dead or gone; it records
-  nothing, so the pane's own ending stays). `stop_run` reports the
-  ending in the same `has already ended` line. It takes the outcome
-  from the watch, or from `ko run-wait ID --json` for a run that it
-  does not watch. The notice is dropped.
-- A subagent whose `run-stop` exits 5 after `stop_run` recorded the
-  outcome ended on the stop request: the line reads `stopped NAME; its
-  pane was already gone`, or `completed`.
-
-If the notice already went out before the call, the caller has it and
-the line also says the run had ended: the line answers the call, it
-is not a second notice.
-
-- A bash run: `ko run-stop ID`.
-- A subagent: `ko run-outcome ID` records `completed` if the child has
-  reported, else `stopped`. Then the stop request goes over its inbox, and
-  `ko run-stop ID --wait 5` follows. A healthy
-  child ends itself within the wait. ko escalates for one that does
-  not (design.md, "Window lifecycle"). `force` skips the request.
-  Without an inbox and without `force`, the stop is refused.
-
-These controls reach descendants only ("Scope", above).
-
-The sweep collects orphans. A run's pane carries the pane `parent`
-that `POST /runs` gave it: a top-level parent's pane (`pane_N`) as
-given, a subagent parent's run resolved to that run's pane. The pane
-is an orphan when that parent pane is gone or dead (design.md, "Window
-lifecycle"). Before it closes the run's pane, the sweep records
-`failed` with "its parent ended".
-
-The sweep reads no pi evidence. A pi that quits inside a shell pane
-that stays open, or that moves to another session id with `/new`,
-`/resume` or `/fork`, keeps its pane alive, so the sweep keeps its
-children. A subagent's own parent watch, which reads `pi.session`,
-ends it. An `async_bash` run of such a pi lives until the pane closes
-(design.md, "Known limits").
+**The orphan rule.** The server removes a pane whose `parent` pane is
+gone or dead (design.md, "Window lifecycle"). It reads no pi
+evidence: a pi that quits inside a shell pane that stays open keeps
+its pane alive, so its children end through their own parent watch,
+which reads `pi.session`.
 
 ## Restarting through a message
 
-`message_agent` to an ended subagent restarts it as a
-new run under the same session. The rules:
+`message_agent` in `message` mode to an ended own child restarts it:
+`POST /panes` with `--session-id <id>` in the recorded cwd, the
+message as `ko-pi.task`, the parent's `ko-pi.work` and a new
+`ko-pi.child` with the new pane. The message is never in pi's argv:
+pi's parser reads an argument that starts with `@` as a file, even
+after `--`. The rules:
 
-- Only the parent restarts its child. The lookup is
-  `agents/<sender>/<name>/`, so another parent's ended child is not
-  found. An `async_bash` run is refused: "a background command, not an
-  agent".
-- A name resolves to a live agent first, then to the newest ended child
-  of the sender. After a restart, the old runs of the session are
-  history: only the run in `agent.json` takes the name, so they never
-  compete with the live child for its address.
-- A child restarts once at a time. Discovery, the restart and the
-  `agent.json` write run under a lock for that child's session; the
-  delivery follows after the lock. Thus, two concurrent messages to an
-  ended child start one run: the second sees the first's live run and
-  is delivered to it. Another child's restart does not wait.
-- PARENT is the sender's current run id or pane, not the one at the
-  spawn. A stale parent would make the sweep's orphan rule close the
-  child at once.
-- With `session-file`, the restart is
-  `ko run-child P ... -- ko shell -- ko-pi --session <session-file> --name N --model M`.
-  The message is never in pi's argv: pi's parser reads an argument that
-  starts with `@` as a file, even after `--`. The extension writes the
-  message as `task` and removes `delivered`, and the child delivers it
-  at `session_start`, so there is no inbox race.
-- Without `session-file`, the restart uses `--session-id <id>` and no
-  prompt. The extension removes `delivered`, so the stored task is
-  delivered again. The message follows over the inbox, which the
-  sender waits for up to 5000 ms.
-- A restart removes the old `report` and `work` before the child
-  starts. `spawn_agent` with `resume_from` uses the same path for an
-  ended child ("Resuming a saved session").
-- The extension rewrites `agent.json` with the new run before it
-  delivers the message, and starts a new `run-wait`. A second message
-  while the new run's inbox is not bound waits for the inbox. It never starts a second run, because the run
-  in `agent.json` is live.
-- A stopped child restarts on a message. Stopped is not finished.
-
-The sweep closes the old dead window like any dead run.
+- Only the parent restarts its child: the registry is the parent's
+  own. `steer` and `interrupt-and-steer` to an ended child are
+  refused.
+- A name resolves to a live agent first, then to an ended registry
+  child.
+- A child restarts once at a time. Discovery and the restart run
+  under a lock for that child's session. A second message during the
+  restart finds the first one's live pane and goes to it.
+- The new pane's `parent` is the sender's current pane.
 
 ## An async bash run
 
-`async_bash(command, name, stream?)` runs a command in its own detached
-window. It tells the caller once the command ends. It is a run with a
-command as its child, not a pi session:
+`async_bash(command, name, stream?)` runs a command in its own
+window and tells the caller once the command ends. It is a run, not
+an agent:
 
-    ko run-child P --name N -- bash -o pipefail -c '<command> 2>&1 | tee "$KO_RUN_OUTPUT"'
+    ko run-child $KO_PANE --name N -- bash -o pipefail -c '<command>'
 
-There is no wrapper around the command (design.md, "Window lifecycle").
 The server starts the argv directly, so text from the model never
-reaches a shell. The depth ceiling does not apply, because a bash run starts no
-agents. An agent at the ceiling can still run a build.
+reaches a shell other than that `bash`. There is no wrapper: the
+command's output is its pane's content. The depth ceiling does not
+apply.
 
-The result names the run id and the output file. ko decides where a
-run's output is, and `run-child` prints it, so the extension never
-derives ko's state directory.
-
-The parent's `run-wait` gives the ending, and the parent formats the
-notice:
+The result names the run id, the window and the pane, and the `ko
+api` command that reads the screen. The harness starts `ko run-wait
+ID --json` in the background and formats the ending notice:
 
     async run "build" failed: exit 3
-    run: 6f1c...
-    output: <server state>/runs/6f1c.../output
-    --- last 4000 bytes of output (12034 omitted) ---
+    pane: pane_7
+    --- last 4000 bytes of its screen ---
     ...
 
-The notice contains the last 4000 bytes of the output file. It uses the
-tail, not the start, because failure information comes last. If the
-tail starts inside a UTF-8 character, the extension removes that partial
-character. The output file is the source of truth; nothing truncates
-it.
+The tail is the last 4000 bytes of `GET
+/panes/pane_N/screen?history=all` while the pane lingers, else of `GET
+/runs/ID/screen`, the capture of the sweep. It uses the tail, because
+failure information comes last.
 
-**Exactly one notice.** The parent's `run-wait` exits once, so the
-parent sends one notice for each run, or none for a run that it
-stopped itself with `stop_run`. The ending itself has one
-recorded write: the server refuses a second outcome, and the first
-write wins. `run-stop`, the sweep and
-the child's own `run-outcome` can race; the notice shows whichever won.
-A run whose parent is gone has nobody to tell.
+**Exactly one notice.** `run-wait` exits once, so the harness sends
+one notice for each run, or none for a run that it stopped with
+`stop_async_bash`, which silences the watch first. A stop that fails
+clears the silence. When `run-stop` exits 5, because the run had
+already ended, the line reads `had already ended`.
 
-A bash run is not an agent. `message_agent` refuses it.
-`stop_run` reaches it, and the orphan rule collects it. `ko runs`
-shows it like any other run.
+A bash run is not an agent. `message_agent` and `stop_agent` do not
+resolve it. The orphan rule collects it.
 
 ## Streaming a run's output
 
-With `stream: true`, the parent tails the run's `output` file every
-`KO_STREAM_POLL_MS` (default 1000) and holds the new lines. It sends
-the held lines as one collapsed custom message (`deliverAs: "steer"`,
-`triggerTurn: true`) at one of two times:
+With `stream: true`, the harness opens `ko api --stream
+/panes/pane_N/output?offset=O` beside the `run-wait` (protocol.md,
+section 4, "The output stream") and reads its `bytes` and `skip`
+records. It strips escape sequences (CSI, OSC, DCS, APC, PM, SOS and
+other ESC sequences), keeps text, tabs and newlines, and applies the
+carriage-return rule: a `\r` that a `\n` does not follow starts the
+line over, so a progress bar leaves its last state. A `skip` adds `...
+N bytes omitted (the pane's screen has them)` to the next batch.
 
-- While the parent works, at a tool boundary: a `turn_end` that ran
-  tools. The batch steers into the running work without costing a
-  turn. A long turn without tools holds its lines until it ends.
-- While the parent is idle, on the idle schedule: the first held batch
-  goes after `KO_STREAM_FLUSH_MS` (default 1000). Each batch sent this
-  way doubles the delay, up to `KO_STREAM_MAX_WAIT_MS` (default
-  30000). Each starts a turn, so a long noisy command starts fewer and
-  fewer turns. A tool boundary resets the delay. `agent_end` starts the
-  schedule for lines held during the work.
+The held lines go as one collapsed custom message (`deliverAs:
+"steer"`, `triggerTurn: true`) at one of two times:
 
-Each run has a budget of `KO_STREAM_BUDGET_BYTES` (default 256 KiB)
-of sent batches. After the budget is spent, one last message reads
-`... output budget spent; the rest is only in <path>`, and the run
-sends no more batches and stops tailing. The budget is checked before
-each batch, so the last batch can pass it by up to one batch. The
-ending notice still follows.
+- While the caller works, at a tool boundary: a `turn_end` that ran
+  tools.
+- While the caller is idle, on the idle schedule: the first batch
+  after `KO_STREAM_FLUSH_MS` (1000), each later one at double the
+  delay, up to `KO_STREAM_MAX_WAIT_MS` (30000). A tool boundary
+  resets the delay.
 
-A batch keeps a tail of up to 200 lines within a 16KB line budget. It
-keeps a single overlong last line, truncated to 16KB. One line above the
-tail reads `... N lines omitted (see <path>)`. N counts lines removed by
-the cap, lines dropped from the held 5000-line buffer, and a read gap
-over 256 KiB. The batch uses the tail, for the same reason as the
-notice. The batch's first line names the run.
+Each run has a budget of `KO_STREAM_BUDGET_BYTES` (256 KiB) of sent
+batches. After it, one last message names the screen route and no
+more batches go. A batch keeps a tail of up to 200 lines within 16 KB;
+one line above it reads `... N lines omitted (the pane's screen has
+them)`, for lines cut by the cap and lines dropped from the held
+5000-line buffer.
 
-A partial last line waits for its newline. When the run ends, the
-parent reads the rest of the file and sends it before the ending
-notice. Thus, the model never reads "this is how it ended" before the
-corresponding output.
-
-ko stores no stream flag. A `/reload` keeps the watch and its held
-lines. A parent that restarts re-watches a bash run for its ending
-only, not for batches. `stream` defaults to off.
+When `run-wait` exits, the harness waits up to `KO_STREAM_DRAIN_MS`
+(1500) for the output stream to close after the pane's death, sends
+the partial last line and the held lines, then the ending notice.
+Thus, the model never reads "this is how it ended" before the output.
+A `/reload` parks each watch with its offset and held lines on
+`globalThis`, and the reloaded module reopens the stream at that
+offset, the resume path. A restarted harness re-watches a live run
+for its ending only.
 
 ## A human at a shell
 
 A human uses ko's own commands, not the tools:
 
-- `ko prompt` sends text to an agent in scope as v0 text, which the
-  agent reads as the user's own words (design.md, "Delivery, and when a
-  paste is allowed").
+- `ko prompt` sends text to an agent in scope as kind `user`, which
+  the agent reads as the user's own words (design.md, "Delivery, and
+  when a paste is allowed").
 - `ko run --name N -- CMD...` starts a parentless run.
-  `ko runs`, `ko run-wait`, `ko run-stop` and `ko run-outcome`
-  act on any run by id.
 - `ko-pi` in a pane starts a top-level agent.
 
-A shell has no inbox and no session. It cannot message, steer, interrupt or
-receive a notice.
+A shell has no message stream and no session. It cannot receive a
+message or a notice.
 
 ## In the sidebar
 
@@ -839,55 +593,44 @@ first rows, and an only child also receives `└`, not its own dot. This
 makes ownership immediately visible.
 
 The anchor is the `parent` of the child's pane row, which the server
-sets to the parent's pane when the run starts. The edge stays for a live and a finished child
-alike. Thus, a finished child remains nested while its window lingers.
-A child whose parent is absent or in another session is a root.
+sets to the spawner's pane when it creates the pane. The edge stays
+for a live and a finished child alike. Thus, a finished child remains
+nested while its window lingers. A child whose parent is absent or in
+another session is a root.
 
 In Kido.app, a lingering run window shows its run's result in the
 status slot, by the Ended rule of design-app.md ("Sidebar"): a green
 `✓` for `completed`, a red dot for `failed` and `died`, a gray dot for
-`stopped`. A stop after the child has reported is `completed`: the work
-finished. A stop before it is not a failure, but it did not finish the
-work. A child pane without a run, with `close: on_exit`, shows a
-dimmed `✓` for exit 0 and a dimmed `×` otherwise until the sweep
-removes it.
+`stopped`. A subagent's pane has no run and has `close: on_exit`: it
+shows a dimmed `✓` for exit 0 and a dimmed `×` otherwise until the
+sweep removes it.
 
 These nested windows do not follow the document's window order.
 
 ## Limits
 
-- If the sweep collects a child without a recorded outcome, the parent's
-  notice gives how the pane ended, not whether the child finished its
-  work. Only the run record and captured screen remain as evidence.
-- A child can start shutdown when its parent dies. The sweep can close
-  its window during shutdown and record "its parent ended" before the
-  child records its own outcome. The first write wins.
+- A `/tree` back past a spawn drops the child's registry entry. The
+  child lives on with its row's `parent`, lists and can be messaged,
+  but cannot be restarted by name and its ending sends no notice.
+- A message queued for a pane that dies is dropped without word to
+  its sender.
+- The task variable is visible to clients until the child deletes it.
+- An agent's pane gets no screen capture. The ending notice reads the
+  screen while the pane lingers.
+- The escape stripper is simpler than a terminal: a sequence it does
+  not know reaches the model as noise. A `skip` loses bytes that only
+  the screen keeps.
+- A run's output is bounded by the terminal's scrollback and the
+  capture's cap.
 - Nesting stops at depth 2 within each parent chain.
-- A re-watched bash run after a parent restart sends no batches.
-- Report state is file times, not work ids. A `work` write in the
-  same time as the `report` counts as new work, so the child reports
-  again. A clock that moves back can make new work older than an old
-  report.
-- A report that the child wrote but could not send (parent gone, its
-  inbox missing, or the send failed) counts as sent for that work.
-- A child that waits on something ko cannot see reports once, when
-  its turn ends. Its later completion reaches the parent only if it
-  sends a message ("Reporting").
-- The agent directory is shared by the runs of one child. If a
-  message restarts the child before the parent formats the old run's
-  ending, that ending reads the new run's `report` state.
-- A `run-wait` that exits without an outcome sends no ending and
-  removes the watch, so it no longer holds the report back.
+- A re-watched bash run after a restart sends no batches.
 - `/reload` forgets the last turn's error and that the first turn
-  never ran. A quit after the reload records `completed` without them.
+  never ran.
 - A child idle behind an async bash run that never ends, such as a
-  watcher, never sends its report while that run lives ("A child's
-  life").
+  watcher, never reports while that run lives.
 - A subagent's window moved to another session is outside its
-  parent's scope. The parent cannot reach it.
-- The session lock and the name claim are in the caller's process. Two
-  different callers that resume one saved session at the same time can
-  both pass the live check before either agent publishes
-  `pi.session`, and two pi processes then write one session file.
-- Everything assumes one machine: a shared filesystem and a ko binary
-  beside every agent.
+  parent's scope.
+- The name claim and the restart lock are in the caller's process.
+  Two callers that resume one saved session at the same time can both
+  pass the live check, and two pi processes then write one session
+  file.

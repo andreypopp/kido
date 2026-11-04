@@ -13,7 +13,7 @@ use ko_client::edit::Edit;
 use ko_client::launch::{self, PATIENCE};
 use ko_client::layout::Document;
 use ko_client::remote::Remote;
-use ko_client::wire::{Caller, Next};
+use ko_client::wire::{Caller, Link};
 use ko_pane_wire::frame::Scrollback;
 use ko_server::agent;
 use ko_server::api::Route;
@@ -81,7 +81,9 @@ enum Command {
     /// and exits 1. It refuses a WebSocket endpoint (/client and /panes/ID/view) and exits 2.
     ///
     /// With --stream, the command upgrades a WebSocket endpoint instead and prints each text
-    /// message as one line. It exits 0 when the server closes the socket with the normal close
+    /// message as one line. Each non-empty line of standard input goes to the server as one text
+    /// message; at the end of standard input the command sends nothing more and goes on printing.
+    /// It exits 0 when the server closes the socket with the normal close
     /// code 1000. It exits 1 on any other end (another close code, no close frame, a lost
     /// connection, a binary message) and writes "ko api: closed:" and the code and reason for a
     /// close. On a refused upgrade it prints the error body and exits 1, as for a status that is
@@ -439,6 +441,19 @@ pub(crate) fn table(rows: &[Vec<String>]) {
     }
 }
 
+fn stream(link: Link) -> ExitCode {
+    let mut out = io::stdout().lock();
+    let ended = api::forward(link, io::stdin().as_fd(), |text| {
+        writeln!(out, "{text}").and_then(|()| out.flush())
+    });
+    match ended {
+        Ok(Some((1000, _))) => ExitCode::SUCCESS,
+        Ok(Some((code, reason))) => fail("api", format!("closed: {code} {reason}")),
+        Ok(None) => fail("api", "closed: no close frame"),
+        Err(error) => fail("api", error),
+    }
+}
+
 fn api(args: ApiArgs) -> ExitCode {
     let body = match args.input.as_deref().map(read_input).transpose() {
         Ok(body) => body.unwrap_or_default(),
@@ -466,32 +481,7 @@ fn api(args: ApiArgs) -> ExitCode {
     };
     let response = if args.stream {
         match api::stream(&dir, caller, &args.path) {
-            Ok(Ok(mut link)) => {
-                let mut out = io::stdout().lock();
-                return loop {
-                    match link.receive() {
-                        Ok(Next::Text(text)) => {
-                            if let Err(error) =
-                                writeln!(out, "{}", text.as_str()).and_then(|()| out.flush())
-                            {
-                                break fail("api", error);
-                            }
-                        }
-                        Ok(Next::Closed) => {
-                            break match link.close_frame() {
-                                Some((1000, _)) => ExitCode::SUCCESS,
-                                Some((code, reason)) => {
-                                    fail("api", format!("closed: {code} {reason}"))
-                                }
-                                None => fail("api", "closed: no close frame"),
-                            };
-                        }
-                        Ok(Next::Binary(_)) => break fail("api", "binary message"),
-                        Ok(Next::Wait) => {}
-                        Err(error) => break fail("api", error),
-                    }
-                };
-            }
+            Ok(Ok(link)) => return stream(link),
             Ok(Err(response)) => Ok(response),
             Err(error) => Err(error),
         }

@@ -138,11 +138,13 @@ public enum KoSchema {
     }
 
     public struct Candidate: Codable, Equatable, Sendable {
+        public var inbox: Bool
         public var pane: PaneId
         public var session: SessionId
         public var title: String
         public var window: WindowId
-        public init(pane: PaneId, session: SessionId, title: String, window: WindowId) {
+        public init(inbox: Bool, pane: PaneId, session: SessionId, title: String, window: WindowId) {
+            self.inbox = inbox
             self.pane = pane
             self.session = session
             self.title = title

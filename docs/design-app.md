@@ -1099,8 +1099,7 @@ the core's label, its lifecycle comes from the pane's status and, for a
 dead pane, its `close` and run (below), `run` is its run id, `started` is
 the run's start while it is live, `mark` is the core's seen mark and
 `inbox` tells whether the row's `inbox` is true (its message stream is
-open) or the pane has a `pi.inbox` variable. The second source goes when
-ko-pi moves to the message stream. The snapshot's
+open). The snapshot's
 `ServerInstance` is the model's instance string. The Swift types of the
 model are generated from the schemas (see [Testing](#testing)), so the app
 has no hand-written decoder and no unknown values. Ko ids (`pane_N`,

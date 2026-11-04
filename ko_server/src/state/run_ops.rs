@@ -387,19 +387,10 @@ impl State {
             started_at: Timestamp::now(),
         };
         runs::write_meta(&self.runs.root, &meta).map_err(io)?;
-        let output = runs::output_path(&self.runs.root, &id)
-            .to_string_lossy()
-            .into_owned();
-        let mut env = vec![
-            Variable {
-                name: "KO_RUN_ID".to_owned(),
-                value: id.to_string(),
-            },
-            Variable {
-                name: "KO_RUN_OUTPUT".to_owned(),
-                value: output.clone(),
-            },
-        ];
+        let mut env = vec![Variable {
+            name: "KO_RUN_ID".to_owned(),
+            value: id.to_string(),
+        }];
         env.extend(request.env);
         let create = CreatePane {
             cwd: request.cwd,
@@ -445,12 +436,7 @@ impl State {
             self.delete_pane(poll, pane);
             return Err(io(failed));
         }
-        Ok(Started {
-            id,
-            window,
-            pane,
-            output,
-        })
+        Ok(Started { id, window, pane })
     }
 
     #[cfg(test)]

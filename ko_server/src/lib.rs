@@ -16,7 +16,6 @@ mod inbox;
 mod layout;
 mod link;
 mod model;
-mod msg;
 mod pane;
 mod pane_kind;
 mod pane_proc;

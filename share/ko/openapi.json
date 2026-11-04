@@ -107,6 +107,10 @@
       },
       "Candidate": {
         "properties": {
+          "inbox": {
+            "description": "True while the pane has its message stream open, so a prompt goes through its queue.",
+            "type": "boolean"
+          },
           "pane": {
             "$ref": "#/components/schemas/PaneId"
           },
@@ -124,7 +128,8 @@
           "pane",
           "session",
           "window",
-          "title"
+          "title",
+          "inbox"
         ],
         "type": "object"
       },
@@ -1619,9 +1624,6 @@
           "outcome": {
             "$ref": "#/components/schemas/RunOutcome"
           },
-          "output": {
-            "type": "string"
-          },
           "pane": {
             "$ref": "#/components/schemas/PaneId"
           },
@@ -1643,8 +1645,7 @@
           "name",
           "argv",
           "cwd",
-          "startedAt",
-          "output"
+          "startedAt"
         ],
         "type": "object"
       },
@@ -3651,9 +3652,6 @@
           "id": {
             "$ref": "#/components/schemas/RunId"
           },
-          "output": {
-            "type": "string"
-          },
           "pane": {
             "$ref": "#/components/schemas/PaneId"
           },
@@ -3664,8 +3662,7 @@
         "required": [
           "id",
           "window",
-          "pane",
-          "output"
+          "pane"
         ],
         "type": "object"
       },
@@ -3881,18 +3878,6 @@
       },
       "Via": {
         "oneOf": [
-          {
-            "properties": {
-              "type": {
-                "const": "inbox",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          },
           {
             "properties": {
               "type": {

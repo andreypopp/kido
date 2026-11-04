@@ -14,7 +14,7 @@ The sources:
   - OSC 133 ([semantic prompts](https://gitlab.freedesktop.org/Per_Bothner/specifications/-/blob/master/proposals/semantic-prompts.md)).
   - The pane title, OSC 0/2.
   - The foreground process of the pty and the active screen.
-- The pane variables `pi.session`, `pi.name`, `pi.inbox` and
+- The pane variables `pi.session`, `pi.name` and
   `pi.activity` of pi's harness, only for local pi agents.
 - The pane variables `ssh.dest` and `ssh.args`, set by `ko ssh`.
 
@@ -193,8 +193,8 @@ order. A variable that is not a JSON string counts as absent.
    `ssh`: `Ssh`. Its `pane` is `RemoteKind::Agent` when the root record's
    app is `pi` or `claude-code`, else `RemoteKind::Terminal`.
 2. The root app is `pi` and `pi.session` is a non-empty string:
-   `PiAgent`, with its name, inbox and activity from `pi.name`,
-   `pi.inbox` and `pi.activity`.
+   `PiAgent`, with its name and activity from `pi.name` and
+   `pi.activity`.
 3. The root app is `claude-code`, or `pi` without the session
    variable: `SomeAgent` with the app as its name.
 4. Anything else: `Terminal`.
@@ -233,9 +233,9 @@ exits is no `Ssh`. A run pane can have any kind.
 - Row title: `pi.name` when set, else the pane title.
 - Status: as `SomeAgent`, from the pi root. A message that repeats the
   title is dropped; without a message, `pi.activity` supplies it.
-- Supports: everything in design.md and design-subagents.md: the inbox
-  for `ko prompt` and `message_agent`, name addressing, `list_runs`,
-  parent links, run records.
+- Supports: everything in design.md and design-subagents.md: the
+  message stream for `ko prompt` and `message_agent`, name addressing,
+  `list_agents`, parent links.
 
 ### `Ssh`
 
@@ -274,8 +274,8 @@ and the title; Kido.app shows the caption and the child rows too.
 - For `PiAgent`, `pi.session` and `pi.name` give identity and name.
   OSC 7501 gives status.
 - A pane's kind determines only its row and `ko prompt` scope. The
-  harness's messaging and control use `pi.inbox` and session ids
-  under the same trust rule. A child's report and the parent watch
+  harness's messaging and control use the message stream, the
+  `parent` edges and session ids under the same trust rule. A child's report and the parent watch
   read only `pi.session` and pane death (design.md, "The trust rule").
 
 ## Clients

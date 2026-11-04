@@ -71,9 +71,9 @@ Claude Code runs unmodified, without a shim or settings.
 status.
 
 Start pi as `ko-pi` to load the harness. Only a pi started as `ko-pi`
-appears in `list_runs` and accepts `message_agent`. `ko prompt` sends
-text from stdin to the agent in your window, over its inbox or as a
-paste for a native agent.
+appears in `list_agents` and accepts `message_agent`. `ko prompt` sends
+text from stdin to the agent in your window, over its message stream or
+as a paste for a native agent.
 
 `ko --help` lists the commands: the server, `ko api` for one request
 to the server, the run commands, `ko panes` and `ko layout`.

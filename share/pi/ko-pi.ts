@@ -1,11 +1,9 @@
 import { AgentSession, type ExtensionAPI, type ExtensionContext, type MessageRenderer, type Theme } from "@earendil-works/pi-coding-agent";
 import { type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
-import { accessSync, closeSync, constants, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { createConnection, createServer, type Server, type Socket } from "node:net";
-import { homedir, userInfo } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
+import { accessSync, closeSync, constants, openSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { dirname, delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "./ko-api.d.ts";
@@ -14,26 +12,24 @@ type Api = components["schemas"];
 
 type Outcome = Required<Pick<Api["RunOutcome"], "text">> & { result: string };
 
-const SOCKET_PATH_MAX = 103;
-
-const MAX_PROMPT_BYTES = 1024 * 1024;
-
 const KO_TIMEOUT_MS = 5000;
 
 const VAR_SESSION = "pi.session";
 const VAR_NAME = "pi.name";
-const VAR_INBOX = "pi.inbox";
 const VAR_ACTIVITY = "pi.activity";
-const VAR_KEYS = [VAR_SESSION, VAR_NAME, VAR_INBOX, VAR_ACTIVITY];
+const VAR_TASK = "ko-pi.task";
+const VAR_KEYS = [VAR_SESSION, VAR_NAME, VAR_ACTIVITY];
 
-export type Sender = { session: string; name?: string; pane?: string };
+const ENTRY_CHILD = "ko-pi.child";
+const ENTRY_WORK = "ko-pi.work";
+const ENTRY_REPORT = "ko-pi.report";
+const ENTRY_ENDED = "ko-pi.ended";
+const ENTRY_SENT = "ko-pi.sent";
 
-export type Envelope = { id: string; from: Sender; text: string } & (
-  | { kind: "message" | "notice" | "steer" | "interrupt-and-steer" | "stop" }
-  | { kind: "unrecognised"; claimed: string }
-);
+type SendKind = Api["SendKind"];
+type Dead = Api["Dead"];
 
-type RunResult = { ok: true; out: string } | { ok: false; error: string; code?: number };
+type RunResult = { ok: true; out: string; raw: string } | { ok: false; error: string; code?: number; out: string; err: string };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -54,33 +50,6 @@ const outcomeOf = (text: string): Outcome | undefined => {
   }
 };
 
-export function parseEnvelope(text: string): Envelope | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (!isRecord(parsed) || Array.isArray(parsed)) return null;
-  const obj = parsed;
-  if (!("v" in obj) || !("kind" in obj)) return null;
-  const from = isRecord(obj.from) ? obj.from : {};
-  const [session, name, pane] = [str(from.session), str(from.name), str(from.pane)];
-  const sender: Sender = { session, name: name || undefined, pane: pane || undefined };
-  const base = { id: str(obj.id), from: sender, text: str(obj.text) };
-  const kind = str(obj.kind);
-  switch (kind) {
-    case "message":
-    case "notice":
-    case "steer":
-    case "interrupt-and-steer":
-    case "stop":
-      return { ...base, kind };
-    default:
-      return { ...base, kind: "unrecognised", claimed: kind };
-  }
-}
-
 function findKo(): string | null {
   const path = process.env.PATH;
   if (!path) return null;
@@ -95,93 +64,6 @@ function findKo(): string | null {
   return null;
 }
 
-export function stateDir(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.KO_PI_STATE_DIR) return env.KO_PI_STATE_DIR;
-  if (env.XDG_STATE_HOME) return join(env.XDG_STATE_HOME, "ko-pi");
-  return join(homedir(), ".local", "state", "ko-pi");
-}
-
-const OWN_UID = userInfo().uid;
-const FALLBACK_INBOX_DIR = `/tmp/ko-pi-${OWN_UID}`;
-
-function inboxPath(dir: string, session: string): { path: string; fallback: boolean } | null {
-  if (session.includes("/") || session.includes("..")) return null;
-  const path = join(dir, "inbox", session + ".sock");
-  if (Buffer.byteLength(path, "utf8") <= SOCKET_PATH_MAX) return { path, fallback: false };
-  const tag = createHash("sha256").update(dir).update("\0").update(session).digest("hex").slice(0, 24);
-  const short = join(FALLBACK_INBOX_DIR, tag + ".sock");
-  return Buffer.byteLength(short, "utf8") <= SOCKET_PATH_MAX ? { path: short, fallback: true } : null;
-}
-
-export function privateDir(dir: string): string | null {
-  try {
-    mkdirSync(dir, { mode: 0o700 });
-  } catch (err) {
-    if (!(err instanceof Error && "code" in err && err.code === "EEXIST")) return `cannot create ${dir}: ${err instanceof Error ? err.message : err}`;
-  }
-  const info = lstatSync(dir);
-  if (!info.isDirectory() || info.uid !== OWN_UID || (info.mode & 0o077) !== 0) return `${dir} is not a private directory of this user`;
-  return null;
-}
-
-type AgentRecord = { session: string; run: string; model: string; fork: boolean };
-
-type AgentEntry = AgentRecord & { name: string; parent: string; dir: string };
-
-function readAgentRecord(dir: string): AgentRecord | null {
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(join(dir, "agent.json"), "utf8"));
-    if (!isRecord(parsed) || typeof parsed.session !== "string" || typeof parsed.run !== "string" || typeof parsed.model !== "string" || !parsed.model) return null;
-    return {
-      session: parsed.session,
-      run: parsed.run,
-      model: parsed.model,
-      fork: parsed.fork === true,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function childEntries(root: string, parent: string): AgentEntry[] {
-  let names: string[];
-  try {
-    names = readdirSync(join(root, parent));
-  } catch {
-    return [];
-  }
-  const entries: AgentEntry[] = [];
-  for (const name of names) {
-    const dir = join(root, parent, name);
-    const record = readAgentRecord(dir);
-    if (record) entries.push({ ...record, name, parent, dir });
-  }
-  return entries;
-}
-
-function agentEntries(dir: string): AgentEntry[] {
-  const root = join(dir, "agents");
-  let parents: string[];
-  try {
-    parents = readdirSync(root);
-  } catch {
-    return [];
-  }
-  return parents.flatMap((parent) => childEntries(root, parent));
-}
-
-function chain(bySession: Map<string, AgentEntry>, start: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  let cur = start;
-  while (cur && !seen.has(cur)) {
-    seen.add(cur);
-    out.push(cur);
-    cur = bySession.get(cur)?.parent ?? "";
-  }
-  return out;
-}
-
 async function runCommand(command: string, args: string[], opts: { timeoutMs: number; env?: NodeJS.ProcessEnv; input?: string } = { timeoutMs: KO_TIMEOUT_MS }): Promise<RunResult> {
   return new Promise((resolve) => {
     const child = spawn(command, args, { stdio: [opts.input === undefined ? "ignore" : "pipe", "pipe", "pipe"], env: opts.env ?? process.env });
@@ -189,39 +71,87 @@ async function runCommand(command: string, args: string[], opts: { timeoutMs: nu
       child.stdin?.on("error", () => {});
       child.stdin?.end(opts.input);
     }
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
     const finish = (result: RunResult): void => {
       clearTimeout(timer);
       resolve(result);
     };
     const timer = setTimeout(() => {
       child.kill();
-      finish({ ok: false, error: `${command} timed out after ${opts.timeoutMs}ms` });
+      finish({ ok: false, error: `${command} timed out after ${opts.timeoutMs}ms`, out: "", err: "" });
     }, opts.timeoutMs);
     timer.unref();
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
     child.stdout?.on("data", (c: Buffer) => stdout.push(c));
     child.stderr?.on("data", (c: Buffer) => stderr.push(c));
-    child.on("error", (err) => finish({ ok: false, error: err instanceof Error ? err.message : String(err) }));
+    child.on("error", (err) => finish({ ok: false, error: err instanceof Error ? err.message : String(err), out: "", err: "" }));
     child.on("close", (code) => {
-      if (code === 0) finish({ ok: true, out: Buffer.concat(stdout).toString("utf8").trim() });
-      else finish({ ok: false, error: Buffer.concat(stderr).toString("utf8").trim() || `${command} exited with code ${code}`, ...(code === null ? {} : { code }) });
+      const out = Buffer.concat(stdout).toString("utf8");
+      const err = Buffer.concat(stderr).toString("utf8");
+      if (code === 0) finish({ ok: true, out: out.trim(), raw: out });
+      else finish({ ok: false, error: err.trim() || `${command} exited with code ${code}`, ...(code === null ? {} : { code }), out, err });
     });
   });
 }
 
-export type PaneInfo = {
+type Reply = { status: number; body: string } | { error: string };
+
+const apiArgs = (method: string, path: string, body: unknown): string[] => [
+  "api",
+  ...(method === "GET" ? [] : ["-X", method]),
+  ...(body === undefined ? [] : ["--input", "-"]),
+  path,
+];
+
+async function apiCall(method: string, path: string, body?: unknown, timeoutMs = KO_TIMEOUT_MS): Promise<Reply> {
+  const res = await runCommand("ko", apiArgs(method, path, body), { timeoutMs, input: body === undefined ? undefined : JSON.stringify(body) });
+  if (res.ok) return { status: 200, body: res.raw };
+  const status = /ko api: HTTP (\d+)/.exec(res.err)?.[1];
+  return status ? { status: Number(status), body: res.out.trim() } : { error: res.error };
+}
+
+const apiBody = (reply: Reply): string | undefined => ("error" in reply || reply.status !== 200 ? undefined : reply.body);
+
+const apiJson = (reply: Reply): unknown => {
+  const body = apiBody(reply);
+  if (body === undefined) return undefined;
+  try {
+    return JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+};
+
+// The server's error body: its kind and message; a transport failure has the kind io.
+const apiError = (reply: Reply): { kind: Api["Error"]["kind"]; message: string } => {
+  if ("error" in reply) return { kind: "io", message: reply.error };
+  try {
+    const failure: unknown = JSON.parse(reply.body);
+    if (isRecord(failure) && typeof failure.message === "string" && isErrorKind(failure.kind)) return { kind: failure.kind, message: failure.message };
+  } catch {}
+  return { kind: "io", message: `HTTP ${reply.status}` };
+};
+
+const ERROR_KINDS = ["invalid", "refused", "gone", "io", "precondition_failed", "not_found", "protocol_mismatch", "vt_mismatch"];
+
+function isErrorKind(value: unknown): value is Api["Error"]["kind"] {
+  return typeof value === "string" && ERROR_KINDS.includes(value);
+}
+
+type PaneInfo = {
   pane: string;
   session: string;
   window: string;
   agentSession: string;
   name: string;
-  inbox: string;
   activity: string;
   cwd: string;
-  dead: boolean;
+  dead: Dead | null;
   root: { app: string; state: string } | null;
   title: string;
+  parent: string;
+  inbox: boolean;
+  task: unknown;
 };
 
 function rootRecord(programStatus: Api["ProgramStatus"] | null): { app: string; state: string } | null {
@@ -262,35 +192,37 @@ function parsePanes(layout: Api["LayoutPanes"]): PaneInfo[] {
       window: place?.window ?? "",
       agentSession: str(row.vars[VAR_SESSION]),
       name: str(row.vars[VAR_NAME]),
-      inbox: str(row.vars[VAR_INBOX]),
       activity: str(row.vars[VAR_ACTIVITY]),
       cwd: row.cwd,
-      dead: row.dead !== null,
+      dead: row.dead,
       root: rootRecord(row.status?.program_status ?? null),
       title: row.title,
+      parent: row.parent ?? "",
+      inbox: row.inbox === true,
+      task: row.vars[VAR_TASK],
     };
   });
 }
 
-async function listPanesResult(timeoutMs = KO_TIMEOUT_MS): Promise<{ ok: boolean; panes: PaneInfo[]; lastWindows: Map<string, string> }> {
-  const res = await runCommand("ko", ["api", "/layout"], { timeoutMs });
-  if (!res.ok) return { ok: false, panes: [], lastWindows: new Map() };
+async function listPanesResult(timeoutMs = KO_TIMEOUT_MS): Promise<{ ok: boolean; panes: PaneInfo[] }> {
+  const body = apiBody(await apiCall("GET", "/layout", undefined, timeoutMs));
+  if (body === undefined) return { ok: false, panes: [] };
   try {
-    const layout: Api["LayoutPanes"] = JSON.parse(res.out);
-    const lastWindows = new Map<string, string>();
-    for (const session of layout.layout.sessions) {
-      const last = session.windows.at(-1);
-      if (last) lastWindows.set(session.id, last.id);
-    }
-    return { ok: true, panes: parsePanes(layout), lastWindows };
+    const layout: Api["LayoutPanes"] = JSON.parse(body);
+    return { ok: true, panes: parsePanes(layout) };
   } catch {
-    return { ok: false, panes: [], lastWindows: new Map() };
+    return { ok: false, panes: [] };
   }
 }
 
-async function listPanes(timeoutMs = KO_TIMEOUT_MS): Promise<PaneInfo[]> {
-  return (await listPanesResult(timeoutMs)).panes;
-}
+const SIGNALS: Record<number, string> = { 1: "HUP", 2: "INT", 3: "QUIT", 6: "ABRT", 9: "KILL", 11: "SEGV", 13: "PIPE", 14: "ALRM", 15: "TERM" };
+
+const causeText = (dead: Dead): string => {
+  const cause = dead.cause;
+  if (cause.type === "exited") return `exit ${cause.code}`;
+  if (cause.type === "signaled") return `signal ${SIGNALS[cause.signal] ?? cause.signal}`;
+  return `failed: ${cause.message}`;
+};
 
 const NOTICE_CUSTOM_TYPE = "ko-notice";
 
@@ -300,18 +232,17 @@ const MESSAGE_CUSTOM_TYPE = "ko-message";
 
 const STEER_CUSTOM_TYPE = "ko-steer";
 
-const RELATIONS = ["parent", "child", "peer"] as const;
-type SenderRelation = (typeof RELATIONS)[number];
+type Relation = Api["Relation"];
 
-export const MESSAGE_RELATION: Record<SenderRelation, string> = {
+export const RELATION_TEXT: Record<Relation, string> = {
   parent: "your parent, who spawned you",
   child: "your subagent",
-  peer: "another agent in this session, not the user",
+  sibling: "another agent in this session, not the user",
+  descendant: "a subagent of your subagent",
+  sibling_descendant: "a subagent of another agent in this session",
 };
 
-export const senderHeader = (from: string, relation: SenderRelation): string =>
-  `message from @${from} (${MESSAGE_RELATION[relation]}):`;
-
+export const senderHeader = (from: string, relation: Relation): string => `message from @${from} (${RELATION_TEXT[relation]}):`;
 
 const steerHeader = (from: string): string => `${from} is redirecting this work: `;
 
@@ -326,9 +257,23 @@ const MAX_AGENT_COMPLETIONS = 10;
 
 const MAX_NOTICE_BYTES = 4000;
 
-const MAX_TASK_BYTES = 1024 * 1024;
+const MAX_REPORT_BYTES = 1000;
+
+const MAX_TASK_BYTES = 1044480;
+
+const MAX_MESSAGE_BYTES = 1000000;
 
 const MAX_DEPTH = 2;
+
+// How long a stop waits for the pane to end by itself, and the cap of the whole call: that wait, the
+// server's escalation and a margin.
+const STOP_WAIT_MS = 5000;
+
+const STOP_CALL_MS = STOP_WAIT_MS + 5000 + 1500;
+
+const RECEIVED_RING = 4096;
+
+const RESEND_TRIES = 3;
 
 const STREAM_CUSTOM_TYPE = "ko-stream";
 
@@ -339,7 +284,7 @@ const STREAM_BATCH_BYTES = 16 * 1024;
 const STREAM_BUFFER_LINES = 5000;
 
 export const PARENT_GUIDANCE =
-  "\n\nThe child stays alive after it reports. End it with stop_run when you need nothing more from it. To continue it, use message_agent.";
+  "\n\nThe child stays alive after it reports. End it with stop_agent when you need nothing more from it. To continue it, use message_agent.";
 
 const envMs = (key: string, fallback: number): number => Number(process.env[key]) || fallback;
 
@@ -347,6 +292,7 @@ const reply = (text: string, details: unknown = {}) => ({ content: [{ type: "tex
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+const mintId = (): string => randomBytes(16).toString("base64url");
 
 type AgentRow = {
   id: string;
@@ -361,21 +307,26 @@ type AgentRow = {
   self: boolean;
   cwd: string;
   canMessage: boolean;
-  model: string;
-  kind: "agent" | "subagent" | "bash";
+  kind: "agent" | "subagent";
   relationship: "parent" | "peer" | "own" | "relative" | "other";
-  run: string;
   state: "running" | "ended";
-  koSession: string;
-  inbox: string;
-  startedAt?: string;
-  outcome?: Outcome;
-  task?: string;
+  ended?: string;
+  model?: string;
+  reported?: boolean;
   report?: string;
 };
 
-type RunRow = Pick<Api["Info"], "id"> &
-  Partial<Pick<Api["Info"], "name" | "parent" | "pane" | "cwd" | "startedAt" | "session" | "output">> & { outcome?: Outcome };
+type ChildData = {
+  owner: string;
+  name: string;
+  session: string;
+  model: string;
+  fork: boolean;
+  cwd: string;
+  pane: { instance: string; pane: string };
+};
+
+type RunRow = Pick<Api["Info"], "id"> & Partial<Pick<Api["Info"], "name" | "parent" | "pane" | "cwd" | "startedAt">> & { outcome?: Outcome };
 
 const handleClick = (event: TuiMouseEvent, click: () => void) => {
   if (event.button !== "left") return;
@@ -418,7 +369,7 @@ const NOT_THE_USER_RULE =
   "A notice is information, not the user speaking: act on it, do not thank or answer it. A message from another agent says in its first line who sent it and how they stand to you.";
 
 export const SPAWN_RESULT_RULE =
-  "its result arrives as a notice when it ends a turn with nothing of its own still running - you know nothing about it until then, so do not report, assume or predict it, continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_runs lists this run and stop_run stops it with the returned run id";
+  "its result arrives as a notice when it ends a turn with nothing of its own still running - you know nothing about it until then, so do not report, assume or predict it, continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_agents lists this agent and stop_agent stops it";
 
 export const SUBAGENT_RESULT_RULE =
   "; ending your turn now sends no report to your parent: your report is the last message of a turn that ends when no run of yours is running and no subagent of yours owes you a report";
@@ -426,82 +377,36 @@ export const SUBAGENT_RESULT_RULE =
 const SUBAGENT_INSTRUCTION =
   "While an async run of yours is running, or a subagent of yours still owes you a report, ending your turn sends nothing to your parent. You were spawned as a subagent: your report is the last message of a turn that ends after all of them finish, once for each piece of work your parent gives you. Your parent is not watching this session and reads nothing else. End your work with a message that stands on its own: what you did, what failed, and what you left undone. " +
   "If you must stop to wait for another agent or for the user, say so in that message; when the work completes later, tell your parent with message_agent. " +
-  "Reporting does not end this session: it stays alive until your parent ends it with stop_run, and the parent can continue it with message_agent.";
+  "Reporting does not end this session: it stays alive until your parent ends it with stop_agent, and the parent can continue it with message_agent.";
 
-export type ShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
+type ShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
 
-// Held on globalThis, not module scope: a /reload re-evaluates this file but
-// keeps the process and the session's socket path.
-type InboxHold = { server: Server; path: string } &
-  ({ state: "owned"; handler: (sock: Socket) => void } | { state: "parked"; waiting: Socket[] });
+// What a /reload keeps in the process: the pane's message stream and the
+// received-id ring survive it, and the run watches resume at their offsets.
+type ReceiverHold = { child: ChildProcess; partial: Buffer };
 
-type WatchData = {
+type ParkedWatch = {
   run: string;
   name: string;
-  output: string;
-  target: { kind: "agent"; entry: AgentEntry } | { kind: "bash"; stream: boolean };
+  pane: string;
+  stream: boolean;
   offset: number;
   lines: string[];
   dropped: number;
-  partial: string;
+  skipped: number;
+  split: SplitState;
+  carry: Buffer;
   budget: number;
   budgetTold: boolean;
-  idleDelay: number;
-  silenced: boolean;
 };
 
 declare global {
-  var __koPiExtensionInbox: InboxHold | undefined;
-  var __koPiExtensionWatches: WatchData[] | undefined;
+  var __koPiExtensionReceiver: ReceiverHold | undefined;
+  var __koPiExtensionReceived: string[] | undefined;
+  var __koPiExtensionWatches: ParkedWatch[] | undefined;
   var __koPiExtensionCopy: string | undefined;
   var __koPiExtensionClearQueue: AgentSession["clearQueue"] | undefined;
   var __koPiExtensionExit: (() => void) | undefined;
-}
-
-// A live listener answers; a stale file from a killed process does not, and only
-// then may it be unlinked. Two pis on one session id share the socket, so the
-// second binds nothing.
-function answered(path: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const sock = createConnection(path);
-    const finish = (live: boolean): void => {
-      clearTimeout(timer);
-      sock.destroy();
-      resolve(live);
-    };
-    const timer = setTimeout(() => finish(false), 200);
-    timer.unref();
-    sock.on("error", () => finish(false));
-    sock.on("connect", () => finish(true));
-  });
-}
-
-function heldInbox(): InboxHold | null {
-  return globalThis.__koPiExtensionInbox ?? null;
-}
-
-function setHeldInbox(hold: InboxHold | null): void {
-  globalThis.__koPiExtensionInbox = hold ?? undefined;
-}
-
-// Outlives every module that owns the inbox: reads the slot per connection rather
-// than closing over a handler, so a parked socket loses nothing across a /reload.
-function dispatchInbox(sock: Socket): void {
-  const hold = heldInbox();
-  if (!hold) {
-    sock.destroy();
-    return;
-  }
-  if (hold.state === "owned") {
-    hold.handler(sock);
-    return;
-  }
-  sock.on("error", () => {});
-  sock.once("close", () => {
-    const i = hold.waiting.indexOf(sock);
-    if (i >= 0) hold.waiting.splice(i, 1);
-  });
-  hold.waiting.push(sock);
 }
 
 // One copy per process: pi dedupes extensions by real path only, so a second
@@ -530,32 +435,110 @@ function atToken(textBeforeCursor: string): string | undefined {
 
 function normalizeAddress(to: string): { wanted: string; mention: boolean } {
   const raw = to.replace(/^@/, "");
-  const id = raw.match(/^(?:.* )?\((?:run|session) ([^\s()]+)\)$/)?.[1];
+  const id = raw.match(/^(?:.* )?\(session ([^\s()]+)\)$/)?.[1];
   return { wanted: id ?? raw, mention: id !== undefined };
 }
 
-function rowIds(row: { id: string; run: string }): string[] {
-  return [row.id, row.run].filter(Boolean);
+type Held = { from: Api["Sender"]; relation?: Relation; text: string };
+
+const isString = (value: unknown): value is string => typeof value === "string";
+
+function isRelation(value: unknown): value is Relation {
+  return isString(value) && Object.hasOwn(RELATION_TEXT, value);
 }
 
-function matchesId(row: { id: string; run: string }, wanted: string, prefix = false): boolean {
-  return rowIds(row).some((id) => prefix ? wanted.length >= MIN_ID_PREFIX && id.startsWith(wanted) : id === wanted);
+function isCause(value: unknown): value is Dead["cause"] {
+  if (!isRecord(value)) return false;
+  return (value.type === "exited" && typeof value.code === "number")
+    || (value.type === "signaled" && typeof value.signal === "number")
+    || (value.type === "failed" && isString(value.message));
 }
 
-function completionValue(ids: Array<{ row: AgentRow; id: string }>, agent: AgentRow): string {
-  const id = agent.run || agent.id;
+function isEnd(value: unknown): value is Api["End"] {
+  return isRecord(value) && (value.type === "gone" || (value.type === "dead" && typeof value.at === "number" && isCause(value.cause)));
+}
+
+function isSender(value: unknown): value is Api["Sender"] {
+  return isRecord(value) && (value.type === "user" || (value.type === "pane" && isString(value.pane)));
+}
+
+const MESSAGE_KINDS = ["message", "steer", "interrupt", "stop", "notice", "user"];
+
+// A message has its shape or it is refused: a pane sender always comes with its relation.
+function isMessage(value: unknown): value is Api["Message"] {
+  if (!isRecord(value) || typeof value.seq !== "number" || !isString(value.id) || !isSender(value.from)) return false;
+  if (value.from.type === "pane" && !isRelation(value.relation)) return false;
+  if (value.kind === "ended") return isEnd(value.end);
+  return isString(value.kind) && MESSAGE_KINDS.includes(value.kind) && isString(value.text);
+}
+
+function isPlacement(value: unknown): value is Api["Placement"] {
+  return isRecord(value) && isString(value.pane) && isString(value.session) && isString(value.window);
+}
+
+function isStarted(value: unknown): value is Api["Started"] {
+  return isRecord(value) && isString(value.id) && isString(value.pane) && isString(value.window);
+}
+
+function isOutputEvent(value: unknown): value is Api["OutputEvent"] {
+  if (!isRecord(value)) return false;
+  if (value.type === "bytes") return isString(value.data) && typeof value.offset === "number";
+  if (value.type === "skip") return typeof value.from === "number" && typeof value.to === "number";
+  return value.type === "dead" && typeof value.at === "number" && isCause(value.cause);
+}
+
+// The complete UTF-8 of the carry and the bytes, and the incomplete tail that waits for the next bytes.
+function utf8Complete(carry: Buffer, bytes: Buffer): { text: string; carry: Buffer } {
+  const all = Buffer.concat([carry, bytes]);
+  let end = all.length;
+  for (let i = all.length - 1; i >= Math.max(0, all.length - 3); i--) {
+    const byte = all[i] ?? 0;
+    if ((byte & 0xc0) === 0x80) continue;
+    const need = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+    if (all.length - i < need) end = i;
+    break;
+  }
+  return { text: all.subarray(0, end).toString("utf8"), carry: Buffer.from(all.subarray(end)) };
+}
+
+// A data handler that hands over each complete line of a process's output.
+function lineReader(hold: { partial: Buffer }, onLine: (line: string) => void): (chunk: Buffer) => void {
+  return (chunk) => {
+    let rest = Buffer.concat([hold.partial, chunk]);
+    for (let at = rest.indexOf(0x0a); at >= 0; at = rest.indexOf(0x0a)) {
+      const line = rest.subarray(0, at).toString("utf8");
+      rest = rest.subarray(at + 1);
+      if (line) onLine(line);
+    }
+    hold.partial = Buffer.from(rest);
+  };
+}
+
+function openStream(ko: string, path: string, stdin: "pipe" | "ignore"): ChildProcess {
+  const child = spawn(ko, ["api", "--stream", path], { stdio: [stdin, "pipe", "ignore"], env: process.env });
+  child.on("error", () => {});
+  child.stdin?.on("error", () => {});
+  return child;
+}
+
+type Addressable = { id: string; pane: string; name: string; named: boolean; state: "running" | "ended" };
+
+function isPosted(value: unknown): value is Api["Posted"] {
+  return isRecord(value) && typeof value.seq === "number" && (value.state === "queued" || value.state === "delivered" || value.state === "acked");
+}
+
+function matchesId(row: { id: string; pane: string }, wanted: string, prefix = false): boolean {
+  return prefix ? wanted.length >= MIN_ID_PREFIX && row.id.startsWith(wanted) : row.id === wanted || (row.pane !== "" && row.pane === wanted);
+}
+
+function completionValue(ids: AgentRow[], agent: AgentRow): string {
   let n = MIN_ID_PREFIX;
-  while (n < id.length && ids.some((other) => other.row !== agent && other.id.startsWith(id.slice(0, n)))) n++;
-  return `@${agent.name} (${agent.run ? "run" : "session"} ${id.slice(0, n)})`;
+  while (n < agent.id.length && ids.some((other) => other !== agent && other.id.startsWith(agent.id.slice(0, n)))) n++;
+  return `@${agent.name} (session ${agent.id.slice(0, n)})`;
 }
 
 function agentCompletionItems(agents: AgentRow[], all: AgentRow[], token: string): AutocompleteItem[] {
-  const ids = all.flatMap((row) => rowIds(row).map((id) => ({ row, id })));
-  const nameByID = new Map<string, string>();
-  for (const a of agents) {
-    nameByID.set(a.id, a.name);
-    if (a.run) nameByID.set(a.run, a.name);
-  }
+  const nameByID = new Map(agents.map((a) => [a.id, a.name]));
   const wanted = token.toLowerCase();
   const matched: Array<{ agent: AgentRow; rank: number }> = [];
   for (const a of agents) {
@@ -567,12 +550,11 @@ function agentCompletionItems(agents: AgentRow[], all: AgentRow[], token: string
   matched.sort((x, y) => x.rank - y.rank);
   return matched.slice(0, MAX_AGENT_COMPLETIONS).map(({ agent: a }) => {
     const parent = a.parent ? nameByID.get(a.parent) || a.parent : "";
-    const value = completionValue(ids, a);
     const description = [
       a.activity ? `${a.status || "agent"} - ${a.activity}` : a.status || "agent",
       parent ? `subagent of ${parent}` : "",
     ].filter(Boolean).join(", ");
-    return { value, label: `@${a.name}`, description };
+    return { value: completionValue(all, a), label: `@${a.name}`, description };
   });
 }
 
@@ -587,6 +569,14 @@ function utf8Prefix(text: string, max: number): string {
     used += n;
   }
   return out;
+}
+
+function utf8Suffix(text: string, max: number): string {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= max) return text;
+  let start = bytes.length - max;
+  while (start < bytes.length && ((bytes[start] ?? 0) & 0xc0) === 0x80) start++;
+  return bytes.subarray(start).toString("utf8");
 }
 
 // Go-style %q: escapes quotes, backslashes and control characters but keeps
@@ -605,7 +595,65 @@ function quote(s: string): string {
   return out + '"';
 }
 
-export function streamBatch(lines: string[], output: string, alreadyDropped = 0): string {
+// Output text for the model: escape sequences gone; a carriage return that is
+// not followed by a line feed starts the line over.
+type SplitState = {
+  mode: "text" | "esc" | "intermediate" | "csi" | "string" | "string-esc";
+  line: string;
+  cr: boolean;
+};
+
+export const newSplit = (): SplitState => ({ mode: "text", line: "", cr: false });
+
+export function splitLines(state: SplitState, text: string): string[] {
+  const lines: string[] = [];
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    switch (state.mode) {
+      case "esc":
+        if (ch === "[") state.mode = "csi";
+        else if (ch === "]" || ch === "P" || ch === "X" || ch === "^" || ch === "_") state.mode = "string";
+        else if (code >= 0x20 && code <= 0x2f) state.mode = "intermediate";
+        else state.mode = "text";
+        continue;
+      case "intermediate":
+        if (code < 0x20 || code > 0x2f) state.mode = "text";
+        continue;
+      case "csi":
+        if (code >= 0x40 && code <= 0x7e) state.mode = "text";
+        continue;
+      case "string":
+        if (ch === "\x07" || ch === "\x9c") state.mode = "text";
+        else if (ch === "\x1b") state.mode = "string-esc";
+        continue;
+      case "string-esc":
+        state.mode = ch === "\\" ? "text" : "string";
+        continue;
+      case "text":
+        break;
+    }
+    if (ch === "\x1b") {
+      state.mode = "esc";
+      continue;
+    }
+    if (ch === "\x9b") {
+      state.mode = "csi";
+      continue;
+    }
+    if (state.cr) {
+      state.cr = false;
+      if (ch !== "\n") state.line = "";
+    }
+    if (ch === "\r") state.cr = true;
+    else if (ch === "\n") {
+      lines.push(state.line);
+      state.line = "";
+    } else if (ch === "\t" || code >= 0x20) state.line += ch;
+  }
+  return lines;
+}
+
+export function streamBatch(lines: string[], alreadyDropped = 0, skippedBytes = 0): string {
   let start = Math.max(0, lines.length - STREAM_BATCH_LINES);
   let bytes = 0;
   for (let i = lines.length - 1; i >= start; i--) {
@@ -618,8 +666,10 @@ export function streamBatch(lines: string[], output: string, alreadyDropped = 0)
   if (start >= lines.length && lines.length > 0) start = lines.length - 1;
   const kept = lines.slice(start).map((line) => utf8Prefix(line, STREAM_BATCH_BYTES));
   const omitted = lines.length - kept.length + alreadyDropped;
-  if (omitted === 0) return kept.join("\n");
-  return [`... ${omitted} lines omitted (see ${output})`, ...kept].join("\n");
+  const notes: string[] = [];
+  if (omitted > 0) notes.push(`... ${omitted} lines omitted (the pane's screen has them)`);
+  if (skippedBytes > 0) notes.push(`... ${skippedBytes} bytes omitted (the pane's screen has them)`);
+  return [...notes, ...kept].join("\n");
 }
 
 function checkName(name: string): string | null {
@@ -661,8 +711,6 @@ function validateModelRows(argument: string, rows: ModelRow[]): string | null {
   return `model ${quote(argument)} is not a model of a configured provider; configured: ${configuredList}`;
 }
 
-type ParentEdge = { parent: string; run: string; dir: string };
-
 async function gitCommonDir(cwd: string): Promise<string | undefined> {
   const env = { ...process.env };
   delete env.GIT_DIR;
@@ -673,38 +721,33 @@ async function gitCommonDir(cwd: string): Promise<string | undefined> {
   try { return realpathSync(result.out.trim()); } catch { return undefined; }
 }
 
+function realpathOf(path: string): string | undefined {
+  try { return realpathSync(path); } catch { return undefined; }
+}
+
 export default function (pi: ExtensionAPI) {
   if (!isFirstCopy()) return;
   pi.on("project_trust", async (event) => {
-    const root = process.env.KO_AGENT_TRUSTED_ROOT;
-    if (root && await gitCommonDir(event.cwd) === root) return { trusted: "yes" };
+    const trusted = process.env.KO_AGENT_TRUSTED_CWD;
+    const want = trusted ? realpathOf(trusted) : undefined;
+    if (want !== undefined && realpathOf(event.cwd) === want) return { trusted: "yes" };
     return { trusted: "undecided" };
   });
   let ko: string | null = null;
   let session: ExtensionContext | null = null;
   let ownSessionId: string | null = null;
-  let edge: ParentEdge | null = null;
-  const liveRunRule = (rule: string): string => rule + (edge ? SUBAGENT_RESULT_RULE : "");
+  let edge: { parent: string } | null = null;
   let pane: string | null = null;
-  let dir: string | null = null;
   let active = false;
+  let instance = "";
+  let leaving: "control" | null = null;
+  const liveRunRule = (rule: string): string => rule + (edge ? SUBAGENT_RESULT_RULE : "");
 
   const written = new Map<string, string>();
 
-  const own = (entries: AgentEntry[]): AgentEntry[] =>
-    ownSessionId ? entries.filter((e) => e.parent === ownSessionId) : [];
-
-  const ownEntry = (row: AgentRow, entries: AgentEntry[]): AgentEntry | undefined => {
-    const ownEntries = own(entries);
-    return ownEntries.find((e) => e.session === row.id) ?? ownEntries.find((e) => e.run !== "" && e.run === row.run);
-  };
-
-  const parentKey = (): string | null => (edge ? edge.run : pane);
-
   let completion: { rows: AgentRow[]; all: AgentRow[]; at: number; refreshing: Promise<void> | null } | null = null;
 
-  const insideKo = (): boolean =>
-    !!process.env.KO_RUN_ID || (!!process.env.KO_SOCKET && findKo() !== null);
+  const insideKo = (): boolean => !!process.env.KO_SOCKET && findKo() !== null;
 
   const varsPath = (): string => `/panes/${pane}/vars`;
 
@@ -715,63 +758,344 @@ export default function (pi: ExtensionAPI) {
     const fresh = entries.filter(([key, value]) => written.get(key) !== value);
     for (const [key, value] of fresh) {
       written.set(key, value);
-      await runCommand("ko", ["api", "-X", "PUT", "--input", "-", varPath(key)], { timeoutMs: 2000, input: JSON.stringify(value) });
+      await apiCall("PUT", varPath(key), value, 2000);
     }
   };
 
   // The server deletes the names only while pi.session still holds this
   // session's id (412 otherwise), so a new owner of the pane keeps its variables.
-  const unsetVarsArgv = (): string[] => ["api", "-X", "DELETE", "--input", "-", varsPath()];
-  const unsetVarsBody = (): string => {
-    const body: Api["DeleteVars"] = { names: VAR_KEYS, if: { name: VAR_SESSION, value: ownSessionId } };
-    return JSON.stringify(body);
-  };
+  const unsetVarsBody = (): Api["DeleteVars"] => ({ names: VAR_KEYS, if: { name: VAR_SESSION, value: ownSessionId } });
 
   const unsetVars = async (): Promise<void> => {
     if (!pane || !ownSessionId) return;
     for (const key of VAR_KEYS) written.delete(key);
-    await runCommand("ko", unsetVarsArgv(), { timeoutMs: 2000, input: unsetVarsBody() });
+    await apiCall("DELETE", varsPath(), unsetVarsBody(), 2000);
   };
 
   // An uncaught crash exits without session_shutdown, so this runs at exit and
   // leaves a killed process (SIGKILL, SIGTERM) with the variables still set.
   const unsetVarsSync = (): void => {
     if (!pane || !ownSessionId) return;
-    spawnSync("ko", unsetVarsArgv(), { timeout: 1000, input: unsetVarsBody(), stdio: ["pipe", "ignore", "ignore"] });
+    spawnSync("ko", apiArgs("DELETE", varsPath(), unsetVarsBody()), { timeout: 1000, input: JSON.stringify(unsetVarsBody()), stdio: ["pipe", "ignore", "ignore"] });
   };
+
+  // ---- the registry: custom entries of the own session ----
+
+  type Entry = { index: number; customType: string; data: Record<string, unknown> };
+
+  const entries = (): Entry[] => {
+    const out: Entry[] = [];
+    const branch: unknown[] = session?.sessionManager.getBranch() ?? [];
+    branch.forEach((entry, index) => {
+      if (!isRecord(entry) || entry.type !== "custom" || typeof entry.customType !== "string" || !entry.customType.startsWith("ko-pi.")) return;
+      if (isRecord(entry.data) && entry.data.owner === ownSessionId) out.push({ index, customType: entry.customType, data: entry.data });
+    });
+    return out;
+  };
+
+  const append = (customType: string, data: Record<string, unknown>): void => {
+    pi.appendEntry(customType, { owner: ownSessionId, at: Date.now(), ...data });
+  };
+
+  const lastIndex = (all: Entry[], customType: string, match: (data: Record<string, unknown>) => boolean): number =>
+    all.findLast((entry) => entry.customType === customType && match(entry.data))?.index ?? -1;
+
+  const childOf = (data: Record<string, unknown>): ChildData | undefined => {
+    const { name, session: id, model, cwd, pane: where } = data;
+    if (typeof name !== "string" || typeof id !== "string" || typeof model !== "string" || typeof cwd !== "string" || !isRecord(where)) return undefined;
+    return { owner: ownSessionId ?? "", name, session: id, model, fork: data.fork === true, cwd, pane: { instance: str(where.instance), pane: str(where.pane) } };
+  };
+
+  const children = (all = entries()): ChildData[] => {
+    const current = new Map<string, ChildData>();
+    for (const entry of all) {
+      if (entry.customType !== ENTRY_CHILD) continue;
+      const child = childOf(entry.data);
+      if (child) current.set(child.name, child);
+    }
+    return [...current.values()];
+  };
+
+  const childReports = (child: ChildData): Array<{ text: string; at: number }> =>
+    entries()
+      .filter((entry) => entry.customType === ENTRY_REPORT && entry.data.child === child.session)
+      .map((entry) => ({ text: str(entry.data.text), at: Number(entry.data.at) || 0 }));
+
+  type Marks = Map<string, { work: number; report: number; text?: string }>;
+
+  // Where in the branch each child last got work and last reported, in one pass.
+  const childMarks = (all = entries()): Marks => {
+    const marks: Marks = new Map();
+    for (const entry of all) {
+      const child = entry.data.child;
+      if (typeof child !== "string" || (entry.customType !== ENTRY_WORK && entry.customType !== ENTRY_REPORT)) continue;
+      const mark = marks.get(child) ?? { work: -1, report: -1 };
+      if (entry.customType === ENTRY_WORK) mark.work = entry.index;
+      else {
+        mark.report = entry.index;
+        mark.text = str(entry.data.text);
+      }
+      marks.set(child, mark);
+    }
+    return marks;
+  };
+
+  // The parent's rule: the child's last report is later than the last work it was given, or it was given none.
+  const childReported = (child: ChildData, marks = childMarks()): boolean => {
+    const mark = marks.get(child.session);
+    return !mark || mark.work === -1 || mark.report > mark.work;
+  };
+
+  const markChildWork = (child: ChildData): void => append(ENTRY_WORK, { child: child.session });
+
+  // The child's rule, about itself.
+  const ownReported = (): boolean => {
+    const all = entries();
+    const work = lastIndex(all, ENTRY_WORK, (data) => data.child === undefined);
+    return work === -1 || lastIndex(all, ENTRY_REPORT, (data) => data.child === undefined) > work;
+  };
+
+  const markOwnWork = (): void => append(ENTRY_WORK, {});
+
+  const endedAfter = (child: ChildData): boolean => {
+    const all = entries();
+    const spawned = lastIndex(all, ENTRY_CHILD, (data) => data.name === child.name);
+    return lastIndex(all, ENTRY_ENDED, (data) => data.child === child.session) > spawned;
+  };
+
+  // True for the one caller that gets to announce this ending.
+  const claimEnding = (child: ChildData): boolean => {
+    if (endedAfter(child)) return false;
+    append(ENTRY_ENDED, { child: child.session, pane: child.pane.pane });
+    return true;
+  };
+
+  // ---- the panes ----
+
+  const readInstance = async (): Promise<string> => {
+    if (!instance) {
+      const version = apiJson(await apiCall("GET", "/version"));
+      if (isRecord(version)) instance = str(version.instance);
+    }
+    return instance;
+  };
+
+  type Snapshot = { rows: AgentRow[]; all: AgentRow[]; elsewhere: AgentRow[]; panes: PaneInfo[]; ok: boolean; me: PaneInfo | undefined; depth: number; ancestors: string[] };
+
+  const discovery = async (): Promise<Snapshot> => {
+    const [{ ok, panes }] = await Promise.all([listPanesResult(), readInstance()]);
+    const byPane = new Map(panes.map((p) => [p.pane, p]));
+    const me = panes.find((p) => p.pane === pane);
+    const ancestorsOf = (p: PaneInfo): PaneInfo[] => {
+      const chain: PaneInfo[] = [];
+      let cur = byPane.get(p.parent);
+      while (cur && !chain.includes(cur)) {
+        chain.push(cur);
+        cur = byPane.get(cur.parent);
+      }
+      return chain;
+    };
+    const mySession = me?.session ?? "";
+    const relationship = new Map<string, AgentRow["relationship"]>();
+    if (me) {
+      const ancestors = ancestorsOf(me);
+      const peers = (of: PaneInfo): PaneInfo[] => panes.filter((p) => p.session === mySession && p.pane !== of.pane && p.parent === of.parent);
+      ancestors.forEach((a, i) => {
+        relationship.set(a.pane, i === 0 ? "parent" : "relative");
+        for (const peer of peers(a)) if (!relationship.has(peer.pane)) relationship.set(peer.pane, "relative");
+      });
+      for (const peer of peers(me)) relationship.set(peer.pane, "peer");
+      for (const p of panes) if (p.parent === me.pane && p.session === mySession) relationship.set(p.pane, "own");
+    }
+    const branch = entries();
+    const marks = childMarks(branch);
+    const registry = children(branch);
+    const alive = new Map(registry.filter((c) => c.pane.instance === instance).map((c) => [c.pane.pane, c]));
+    const reportOf = (child: ChildData): string | undefined => marks.get(child.session)?.text;
+    const all: AgentRow[] = [];
+    const elsewhere: AgentRow[] = [];
+    for (const p of panes) {
+      const child = alive.get(p.pane);
+      const self = p.pane === pane;
+      if (p.dead || !(isAgentPane(p) || (child && p.parent === pane))) continue;
+      const parentPane = byPane.get(p.parent);
+      const row: AgentRow = {
+        id: p.agentSession || child?.session || p.pane,
+        name: p.name || child?.name || p.title,
+        named: p.name !== "" || !!child,
+        pane: p.pane,
+        window: p.window,
+        status: p.root?.state ?? "starting",
+        activity: p.activity,
+        parent: parentPane?.agentSession ?? (p.parent === pane ? ownSessionId ?? "" : ""),
+        depth: ancestorsOf(p).length,
+        self,
+        cwd: p.cwd,
+        canMessage: p.inbox,
+        kind: parentPane && (isAgentPane(parentPane) || parentPane.pane === pane) ? "subagent" : "agent",
+        relationship: self ? "own" : relationship.get(p.pane) ?? "other",
+        state: "running",
+      };
+      if (child) {
+        row.model = child.model;
+        row.reported = childReported(child, marks);
+        const report = reportOf(child);
+        if (report !== undefined) row.report = utf8Prefix(report, MAX_REPORT_BYTES);
+      }
+      (p.session === mySession ? all : elsewhere).push(row);
+    }
+    for (const child of registry) {
+      const lingering = child.pane.instance === instance ? byPane.get(child.pane.pane) : undefined;
+      if (lingering && !lingering.dead) continue;
+      const report = reportOf(child);
+      all.push({
+        id: child.session,
+        name: child.name,
+        named: true,
+        pane: lingering?.pane ?? "",
+        window: lingering?.window ?? "",
+        status: "ended",
+        activity: "",
+        parent: ownSessionId ?? "",
+        depth: (me ? ancestorsOf(me).length : 0) + 1,
+        self: false,
+        cwd: child.cwd,
+        canMessage: false,
+        kind: "subagent",
+        relationship: "own",
+        state: "ended",
+        ended: lingering?.dead ? causeText(lingering.dead) : "its pane is gone",
+        model: child.model,
+        reported: childReported(child, marks),
+        ...(report === undefined ? {} : { report: utf8Prefix(report, MAX_REPORT_BYTES) }),
+      });
+    }
+    const rows = all.filter((a) => !a.self && a.relationship !== "other");
+    const ancestors = me ? ancestorsOf(me) : [];
+    return { rows, all, elsewhere, panes, ok, me, depth: ancestors.length, ancestors: ancestors.map((a) => a.agentSession).filter(Boolean) };
+  };
+
+  const toolRow = (a: AgentRow) => {
+    const { named: _named, self: _self, ...rest } = a;
+    return rest;
+  };
+
+  const agentName = (a: AgentRow): string => a.name || a.id;
+
+  type Resolution<T extends Addressable = AgentRow> = { agent: T } | { error: string };
+
+  const decide = <T extends Addressable>(candidates: T[], wanted: string, by: "name" | "id"): Resolution<T> | null => {
+    const only = candidates[0];
+    if (candidates.length === 1 && only) return { agent: only };
+    if (candidates.length > 1) {
+      const list = candidates
+        .map((a) => `${a.id} (${a.name || a.id})`)
+        .sort()
+        .join(", ");
+      return { error: `"${wanted}" matches several by ${by}: ${list}` };
+    }
+    return null;
+  };
+
+  const matchAddress = <T extends Addressable>(rows: T[], { wanted, mention }: ReturnType<typeof normalizeAddress>): Resolution<T> | null => {
+    const live = rows.filter((a) => a.state !== "ended");
+    const either = <R>(f: (group: T[]) => R | null): R | null => f(live) ?? f(rows);
+    const named = either((group) => decide(group.filter((a) => a.named && a.name && a.name.toLowerCase() === wanted.toLowerCase()), wanted, "name"));
+    if (!mention && named) return named;
+    const exact = either((group) => decide(group.filter((a) => matchesId(a, wanted)), wanted, "id"));
+    if (exact) return exact;
+    return either((group) => decide(group.filter((a) => matchesId(a, wanted, true)), wanted, "id"));
+  };
+
+  const resolveIn = (snapshot: Snapshot, address: ReturnType<typeof normalizeAddress>): Resolution => {
+    const { wanted, mention } = address;
+    const known = [...snapshot.all, ...snapshot.elsewhere];
+    if (wanted.length < MIN_ID_PREFIX &&
+        !known.some((a) => matchesId(a, wanted) || (!mention && a.named && a.name.toLowerCase() === wanted.toLowerCase())) &&
+        known.some((a) => a.id.startsWith(wanted))) {
+      return { error: `id prefixes need at least ${MIN_ID_PREFIX} characters` };
+    }
+    const first = matchAddress(snapshot.all, address);
+    if (first) return first;
+    const second = matchAddress(snapshot.elsewhere, address);
+    if (second && "agent" in second) return { error: `${wanted} (${second.agent.id}) is in another session, not this one` };
+    if (second) return { error: `${second.error}, none in this session` };
+    return { error: `no agent session matches "${wanted}"` };
+  };
+
+  // ---- sending ----
+
+  // The answer of a post: the state of the message, or why there is none (a transport failure is io).
+  type SendOutcome = Api["Posted"] | { state: Api["Error"]["kind"]; message: string };
+
+  const postOnce = async (target: string, kind: SendKind, text: string, id: string, data?: unknown): Promise<SendOutcome> => {
+    const body: Api["SendMessage"] = { id, kind, text, ...(data === undefined ? {} : { data }) };
+    const answer = await apiCall("POST", `/panes/${target}/messages`, body);
+    const posted = apiJson(answer);
+    if (isPosted(posted)) return posted;
+    const failure = apiError(answer);
+    return { state: failure.kind, message: "error" in answer || answer.status !== 200 ? failure.message : "ko answered with no state" };
+  };
+
+  // One id for one intent: a delivered or io answer sends the same id again, so the pane reads it once.
+  const sendIntent = async (target: string, kind: SendKind, text: string, opts: { id?: string; data?: unknown; once?: boolean } = {}): Promise<SendOutcome> => {
+    const id = opts.id ?? mintId();
+    let last = await postOnce(target, kind, text, id, opts.data);
+    for (let again = 1; !opts.once && again < RESEND_TRIES && (last.state === "delivered" || last.state === "io"); again++) {
+      await sleep(envMs("KO_RESEND_MS", 1000));
+      last = await postOnce(target, kind, text, id, opts.data);
+    }
+    return last;
+  };
+
+  const deliveryText = (name: string, kind: string, result: SendOutcome, working = false, steerable = false): { ok: boolean; text: string } => {
+    switch (result.state) {
+      case "queued":
+        return { ok: true, text: `queued for ${name}: it is not receiving messages now and reads this when its message stream returns` };
+      case "delivered":
+        return { ok: true, text: `sent to ${name}: written to its message stream, not yet confirmed` };
+      case "acked":
+        return kind === "message" && working
+          ? { ok: true, text: `queued for ${name}: it is running and reads this when its current turn ends${steerable ? "; to reach it now, use message_agent with mode steer" : ""}` }
+          : { ok: true, text: `delivered to ${name}` };
+      case "refused":
+        return { ok: false, text: `${name} refused the ${kind}: ${result.message}` };
+      case "gone":
+        return { ok: false, text: `${name} is dead: ${result.message}` };
+      default:
+        return { ok: false, text: result.message };
+    }
+  };
+
+  // ---- delivering to this agent ----
+
+  let settled = true;
+  let turnEndedByControl = false;
+  let workGeneration = 0;
+
+  type Ending =
+    | { kind: "awaiting-first-turn" }
+    | { kind: "aborted" }
+    | { kind: "error"; text: string; notified: boolean; id: string }
+    | { kind: "ended"; text: string };
+  let ending: Ending = { kind: "ended", text: "" };
+
+  const beginWork = (): void => {
+    settled = false;
+    if (ending.kind === "awaiting-first-turn") ending = { kind: "ended", text: "" };
+  };
+
+  const workStarted = (): void => {
+    turnEndedByControl = false;
+    workGeneration++;
+    beginWork();
+  };
+
+  const trimErrorMessage = (msg: string): string => (msg.length > 400 ? `${msg.slice(0, 400)}…` : msg);
 
   const deliver = (text: string): void => {
     workStarted();
     pi.sendUserMessage(text, { deliverAs: "followUp" });
-  };
-
-  const labelFrom = (from: Sender): string => from.name || from.session || from.pane || "another agent";
-
-  const messageSender = (from: Sender): { name: string; relation: SenderRelation } | null => {
-    if (!from.session) return null;
-    const entries = dir ? agentEntries(dir) : [];
-    const sender = entries.find((a) => a.session === from.session);
-    const isParent = !!edge && from.session === edge.parent;
-    const isChild = !!ownSessionId && !!sender && sender.parent === ownSessionId;
-    return { name: sender?.name || labelFrom(from), relation: isParent ? "parent" : isChild ? "child" : "peer" };
-  };
-
-  const handleInboundMessage = async (env: Envelope): Promise<void> => {
-    if (!env.text) return;
-    const sender = messageSender(env.from);
-    if (!sender) {
-      deliver(env.text);
-      return;
-    }
-    pi.sendMessage(
-      {
-        customType: MESSAGE_CUSTOM_TYPE,
-        content: `${senderHeader(sender.name, sender.relation)}\n${env.text}`,
-        display: true,
-        details: { from: sender.name, relation: sender.relation, work: sender.relation === "parent" },
-      },
-      { deliverAs: "followUp", triggerTurn: true },
-    );
   };
 
   const pendingNotices = new Map<string, { from: string; text: string }>();
@@ -794,562 +1118,240 @@ export default function (pi: ExtensionAPI) {
   };
 
   const deliverNotice = (text: string, from: string): void => {
-    const noticeId = randomUUID();
+    const noticeId = mintId();
     pendingNotices.set(noticeId, { from, text });
     renderNoticeWidget();
     pi.sendMessage({ customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, noticeId } }, { deliverAs: "steer", triggerTurn: true });
   };
 
-  const bySessionOf = (entries: AgentEntry[]): Map<string, AgentEntry> => new Map(entries.map((e) => [e.session, e]));
-  const byRunOf = (entries: AgentEntry[]): Map<string, AgentEntry> => new Map(entries.map((e) => [e.run, e]));
+  const labelOf = (from: Api["Sender"]): string => (from.type === "pane" ? from.name || from.session || from.pane : "the user");
 
-  const isAncestorOf = (entries: AgentEntry[], ancestor: string, descendant: string): boolean =>
-    chain(bySessionOf(entries), descendant).includes(ancestor);
-
-  const isAncestor = (entries: AgentEntry[], selfSession: string, target: AgentEntry): boolean =>
-    selfSession !== target.session && isAncestorOf(entries, selfSession, target.session);
-
-  const senderIsAncestor = (env: Envelope): boolean => {
-    const sender = env.from;
-    if (!sender.session || sender.session === ownSessionId) return false;
-    if (edge && sender.session === edge.parent) return true;
-    if (!dir || !ownSessionId) return false;
-    return isAncestorOf(agentEntries(dir), sender.session, ownSessionId);
+  const deliverAgentMessage = (from: string, relation: Relation, text: string, work: boolean): void => {
+    const header = senderHeader(from, relation);
+    pi.sendMessage(
+      { customType: MESSAGE_CUSTOM_TYPE, content: `${header}\n${text}`, display: true, details: { from, header, relation, work } },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
   };
 
-  const handleInboundSteer = async (env: Envelope): Promise<"ok" | "refused"> => {
-    if (!senderIsAncestor(env)) return "refused";
-    if (env.text) {
-      const from = labelFrom(env.from);
-      workStarted();
-      // pi drains followUp only once the agent has decided to stop; steer joins the run under way.
-      pi.sendMessage(
-        {
-          customType: STEER_CUSTOM_TYPE,
-          content: steerHeader(from) + env.text,
-          display: true,
-          details: { from, work: !!edge && env.from.session === edge.parent },
-        },
-        { deliverAs: "steer", triggerTurn: true },
-      );
+  // A message from a pane that has a pi identity gets the sender header; any other is plain text.
+  const deliverMessage = (held: Held): void => {
+    if (!held.text) return;
+    const { from, relation } = held;
+    if (from.type !== "pane" || !relation || !(from.name || from.session)) {
+      deliver(held.text);
+      return;
     }
-    return "ok";
+    deliverAgentMessage(labelOf(from), relation, held.text, relation === "parent");
   };
 
-  const interruptedMessages: Envelope[] = [];
+  const interrupted: Held[] = [];
 
-  const handleEnvelope = async (env: Envelope): Promise<"ok" | "refused"> => {
-    switch (env.kind) {
+  const reportNotice = (child: ChildData, text: string): string => {
+    const budget = MAX_NOTICE_BYTES - Buffer.byteLength(PARENT_GUIDANCE, "utf8");
+    if (Buffer.byteLength(text, "utf8") <= budget) return text + PARENT_GUIDANCE;
+    const suffix = `\n\nfull report: read_report(${JSON.stringify(child.name)})`;
+    return utf8Prefix(text, budget - Buffer.byteLength(suffix, "utf8")) + suffix + PARENT_GUIDANCE;
+  };
+
+  const currentChild = (sessionId: string, paneId: string): ChildData | undefined =>
+    children().find((c) => (sessionId !== "" && c.session === sessionId) || (paneId !== "" && c.pane.pane === paneId));
+
+  const handleNotice = (id: string, from: Api["Sender"], text: string, data: unknown): void => {
+    const report = isRecord(data) && data.report === true;
+    const child = from.type === "pane" ? currentChild(from.session ?? "", from.pane) : undefined;
+    if (!report || !child) {
+      if (text) deliverNotice(text, labelOf(from));
+      return;
+    }
+    if (entries().some((entry) => entry.customType === ENTRY_REPORT && entry.data.id === id)) return;
+    append(ENTRY_REPORT, { child: child.session, name: child.name, text, id });
+    deliverNotice(reportNotice(child, text), child.name);
+  };
+
+  const SCREEN_TAIL_BYTES = 4000;
+
+  const screenTail = async (route: string): Promise<string | undefined> => {
+    const body = apiBody(await apiCall("GET", route));
+    return body === undefined ? undefined : utf8Suffix(body, SCREEN_TAIL_BYTES);
+  };
+
+  const announceEnding = async (child: ChildData, end: Api["End"] | { type: "missing" }): Promise<void> => {
+    if (!claimEnding(child)) return;
+    const reported = childReported(child);
+    const how = end.type === "dead" ? causeText(end) : end.type === "gone" ? "its pane was removed" : "its pane is gone";
+    let body = `subagent ${quote(child.name)} ended: ${how}; it had ${reported ? "reported" : "not reported on its last work"}`;
+    if (!reported) {
+      const tail = end.type === "dead" ? await screenTail(`/panes/${child.pane.pane}/screen?history=all`) : undefined;
+      if (tail !== undefined) body += `\n--- last ${SCREEN_TAIL_BYTES} bytes of its screen ---\n${tail}`;
+      body += "\nmessage it to continue it, or stop_agent to end it";
+    }
+    deliverNotice(body, child.name);
+  };
+
+  const handleEnded = async (source: string, end: Api["End"]): Promise<void> => {
+    await readInstance();
+    const target = children().find((c) => c.pane.pane === source && c.pane.instance === instance);
+    if (target) await announceEnding(target, end);
+  };
+
+  const handleIncoming = async (m: Api["Message"]): Promise<"ack" | "refuse"> => {
+    switch (m.kind) {
+      case "user":
+        if (m.text) deliver(m.text);
+        return "ack";
       case "message":
-        await handleInboundMessage(env);
-        return "ok";
-      case "notice":
-        if (env.text) deliverNotice(env.text, labelFrom(env.from));
-        return "ok";
-      case "steer":
-        return handleInboundSteer(env);
-      case "interrupt-and-steer": {
-        if (!senderIsAncestor(env)) return "refused";
+        deliverMessage({ from: m.from, relation: m.relation, text: m.text });
+        return "ack";
+      case "steer": {
+        if (!m.text) return "ack";
+        const from = labelOf(m.from);
+        workStarted();
+        // pi drains followUp only once the agent has decided to stop; steer joins the run under way.
+        pi.sendMessage(
+          { customType: STEER_CUSTOM_TYPE, content: steerHeader(from) + m.text, display: true, details: { from, work: m.relation === "parent" } },
+          { deliverAs: "steer", triggerTurn: true },
+        );
+        return "ack";
+      }
+      case "interrupt": {
         turnEndedByControl = true;
         const busy = !settled;
         // pi's extension abort returns void before the active tool and run end.
         session?.abort();
-        if (busy) interruptedMessages.push(env);
-        else await handleInboundMessage(env);
-        return "ok";
+        const held = { from: m.from, relation: m.relation, text: m.text };
+        if (busy) interrupted.push(held);
+        else deliverMessage(held);
+        return "ack";
       }
       case "stop":
-        if (!senderIsAncestor(env)) return "refused";
-        interruptedMessages.length = 0;
+        interrupted.length = 0;
         turnEndedByControl = true;
-        session?.shutdown();
-        return "ok";
-      case "unrecognised":
-        if (env.text) {
-          deliver(`[unrecognised message kind ${JSON.stringify(env.claimed)} from ${labelFrom(env.from)}] ${env.text}`);
+        leaving = "control";
+        return "ack";
+      case "notice":
+        try {
+          handleNotice(m.id, m.from, m.text, m.data);
+        } catch {
+          return "refuse";
         }
-        return "ok";
+        return "ack";
+      case "ended":
+        if (m.from.type === "pane") await handleEnded(m.from.pane, m.end);
+        return "ack";
     }
   };
 
+  // ---- the message stream: ko api --stream /panes/$KO_PANE/messages ----
 
-  const readTextFile = (path: string): string | undefined => {
+  const received = (): string[] => (globalThis.__koPiExtensionReceived ??= []);
+
+  let receiver: ReceiverHold | null = null;
+  let receiverData: ((chunk: Buffer) => void) | null = null;
+  let receiverTimer: NodeJS.Timeout | null = null;
+  let receiverBackoff = 0;
+  let receiving = false;
+  let queue: Promise<void> = Promise.resolve();
+
+  const answerStream = (id: string, type: "ack" | "refuse"): void => {
+    receiver?.child.stdin?.write(JSON.stringify({ type, id } satisfies Api["StreamRequest"]) + "\n");
+  };
+
+  const onStreamLine = (line: string): void => {
+    let decoded: unknown;
     try {
-      return readFileSync(path, "utf8");
+      decoded = JSON.parse(line);
     } catch {
-      return undefined;
-    }
-  };
-
-  const fileTime = (path: string): number | undefined => {
-    try {
-      return statSync(path).mtimeMs;
-    } catch {
-      return undefined;
-    }
-  };
-
-  const exists = (path: string): boolean => fileTime(path) !== undefined;
-
-  const owesWork = (task: string): boolean => task.trim().length > 0;
-
-  const reportState = (dir: string): { report: number | undefined; work: number | undefined; reported: boolean } => {
-    const report = fileTime(join(dir, "report"));
-    const work = fileTime(join(dir, "work"));
-    if (report !== undefined && (work === undefined || report > work)) return { report, work, reported: true };
-    let task: string | undefined;
-    if (work === undefined) {
-      const path = join(dir, "task");
-      try { task = statSync(path).size === 0 ? "" : readTextFile(path); } catch {}
-    }
-    return { report, work, reported: task !== undefined && !owesWork(task) };
-  };
-
-  const reported = (entry: AgentEntry): boolean => reportState(entry.dir).reported;
-
-  const writeWork = (dir: string): void => {
-    try {
-      writeFileSync(join(dir, "work"), "");
-    } catch {}
-  };
-
-  const markWork = (target: AgentRow, entries: AgentEntry[]): void => {
-    const entry = ownEntry(target, entries);
-    if (!entry) return;
-    writeWork(entry.dir);
-  };
-
-  const agentRun = (run: RunRow, byRun: Map<string, AgentEntry>, bySession: Map<string, AgentEntry>): AgentEntry | undefined =>
-    byRun.get(run.id) ?? (run.session ? bySession.get(run.session) : undefined);
-
-  const depthOfSession = (session: string, bySession: Map<string, AgentEntry>): number => chain(bySession, session).length - 1;
-
-  const runRow = (value: unknown): RunRow | null => {
-    if (!isRecord(value) || typeof value.id !== "string") return null;
-    const outcome = parseOutcome(value.outcome);
-    return {
-      id: value.id,
-      name: str(value.name),
-      parent: str(value.parent),
-      pane: str(value.pane),
-      cwd: str(value.cwd),
-      startedAt: str(value.startedAt),
-      session: str(value.session),
-      output: str(value.output),
-      outcome,
-    };
-  };
-
-  const readRuns = async (args: string[]): Promise<unknown> => {
-    const command = ko;
-    if (!command) return undefined;
-    const res = await runCommand(command, ["runs", "--json", ...args], { timeoutMs: 2000 });
-    if (!res.ok) return undefined;
-    try {
-      return JSON.parse(res.out);
-    } catch {
-      return undefined;
-    }
-  };
-
-  const myRunsOnce = async (): Promise<RunRow[] | undefined> => {
-    const key = parentKey();
-    if (!key) return [];
-    const parsed = await readRuns(["--all", "--parent", key]);
-    if (!Array.isArray(parsed)) return undefined;
-    const rows: RunRow[] = [];
-    for (const value of parsed) {
-      const row = runRow(value);
-      if (row) rows.push(row);
-    }
-    return rows;
-  };
-
-  const myRuns = async (): Promise<RunRow[]> => (await myRunsOnce()) ?? [];
-
-  type Snapshot = { rows: AgentRow[]; all: AgentRow[]; panes: PaneInfo[]; mySession: string; lastWindow: string | undefined; entries: AgentEntry[]; runs: RunRow[] };
-
-  const discovery = async (): Promise<Snapshot> => {
-    const [{ panes, lastWindows }, runs] = await Promise.all([listPanesResult(), myRuns()]);
-    const entries = dir ? agentEntries(dir) : [];
-    const ownEntries = own(entries);
-    const bySession = bySessionOf(entries);
-    const ownBySession = bySessionOf(ownEntries);
-    const ownByRun = byRunOf(ownEntries);
-    const mySession = panes.find((p) => p.pane === pane)?.session ?? "";
-    const all: AgentRow[] = [];
-    const parents = new Set(["", ...chain(bySession, edge?.parent ?? "")]);
-
-    for (const p of panes) {
-      if (!isAgentPane(p)) continue;
-      const entry = bySession.get(p.agentSession);
-      const self = p.agentSession === ownSessionId;
-      const isParent = !!edge && p.agentSession === edge.parent;
-      const isPeer = (entry?.parent ?? "") === (edge?.parent ?? "");
-      all.push({
-        id: p.agentSession,
-        name: p.name || p.title,
-        named: p.name !== "",
-        pane: p.pane,
-        window: p.window,
-        status: p.root?.state ?? "unknown",
-        activity: p.activity,
-        parent: entry?.parent ?? "",
-        depth: depthOfSession(p.agentSession, bySession),
-        self,
-        cwd: p.cwd,
-        canMessage: !p.dead && p.inbox !== "",
-        model: entry?.model ?? "",
-        kind: entry?.parent ? "subagent" : "agent",
-        relationship: self || entry?.parent === ownSessionId ? "own" : isParent ? "parent" : isPeer ? "peer" : parents.has(entry?.parent ?? "") ? "relative" : "other",
-        run: entry?.run ?? "",
-        state: p.dead ? "ended" : "running",
-        koSession: p.session,
-        inbox: p.inbox,
-      });
-    }
-
-    const myDepth = ownSessionId ? depthOfSession(ownSessionId, bySession) : 0;
-    let ended = 0;
-    for (const r of runs) {
-      if (r.outcome) {
-        ended++;
-        if (ended > 20) continue;
-      }
-      const entry = agentRun(r, ownByRun, ownBySession);
-      const current = !entry || entry.run === r.id;
-      const paneInfo = r.pane ? panes.find((p) => p.pane === r.pane) : undefined;
-      const live = current && !!paneInfo && isAgentPane(paneInfo) && (!entry || paneInfo.agentSession === entry.session);
-      const livePane = live ? paneInfo : undefined;
-      const name = entry?.name || r.name || "";
-      const liveRow = entry && livePane ? all.find((a) => a.id === livePane.agentSession) : undefined;
-      if (liveRow) {
-        liveRow.relationship = "own";
-        liveRow.run = r.id;
-        liveRow.state = r.outcome ? "ended" : "running";
-        liveRow.startedAt = r.startedAt;
-        liveRow.outcome = r.outcome;
-        continue;
-      }
-      all.push({
-        id: r.id,
-        name,
-        named: current && name !== "",
-        pane: r.pane ?? "",
-        window: livePane?.window ?? "",
-        status: livePane ? (livePane.root?.state ?? "unknown") : "unknown",
-        activity: livePane?.activity ?? "",
-        parent: r.parent ?? "",
-        depth: myDepth + 1,
-        self: false,
-        cwd: r.cwd ?? "",
-        canMessage: !!entry && !!livePane && livePane.inbox !== "",
-        model: entry?.model ?? "",
-        kind: entry ? "subagent" : "bash",
-        relationship: "own",
-        run: r.id,
-        state: r.outcome ? "ended" : "running",
-        koSession: livePane?.session ?? mySession,
-        inbox: livePane?.inbox ?? "",
-        outcome: r.outcome,
-        startedAt: r.startedAt,
-      });
-    }
-    const rows = all.filter((a) => !a.self && a.relationship !== "other" &&
-      (a.relationship === "own" || a.koSession === mySession));
-    return { rows, all, panes, mySession, lastWindow: lastWindows.get(mySession), entries, runs };
-  };
-
-  const toolRow = (a: AgentRow) => {
-    const { koSession: _session, inbox: _inbox, ...rest } = a;
-    return rest;
-  };
-
-  const agentName = (a: AgentRow): string => a.name || a.id;
-
-  type Address = { agent: AgentRow } | { error: string };
-
-  const decide = (candidates: AgentRow[], wanted: string, by: "name" | "id"): Address | null => {
-    const only = candidates[0];
-    if (candidates.length === 1 && only) return { agent: only };
-    if (candidates.length > 1) {
-      const list = candidates
-        .map((a) => `${a.id} (${agentName(a)})`)
-        .sort()
-        .join(", ");
-      return { error: `"${wanted}" matches several agents by ${by}: ${list}` };
-    }
-    return null;
-  };
-
-  const matchAddress = (rows: AgentRow[], { wanted, mention }: ReturnType<typeof normalizeAddress>): Address | null => {
-    const live = rows.filter((a) => a.state !== "ended");
-    const either = <T>(f: (group: AgentRow[]) => T | null): T | null => f(live) ?? f(rows);
-    const named = either((group) => decide(group.filter((a) => a.named && a.name && a.name.toLowerCase() === wanted.toLowerCase()), wanted, "name"));
-    if (!mention && named) return named;
-    const exact = either((group) => decide(group.filter((a) => matchesId(a, wanted)), wanted, "id"));
-    if (exact) return exact;
-    const prefixes = (group: AgentRow[]) => group.filter((a) => matchesId(a, wanted, true));
-    return either((group) => decide(prefixes(group), wanted, "id"));
-  };
-
-  type Resolution = { snapshot: Snapshot } & ({ agent: AgentRow } | { error: string; agent?: undefined });
-
-  const resolveIn = (snapshot: Snapshot, address: ReturnType<typeof normalizeAddress>): Resolution => {
-    const { wanted, mention } = address;
-    if (wanted.length < MIN_ID_PREFIX &&
-        !snapshot.all.some((a) => matchesId(a, wanted) || (!mention && a.named && a.name.toLowerCase() === wanted.toLowerCase())) &&
-        snapshot.all.some((a) => rowIds(a).some((id) => id.startsWith(wanted)))) {
-      return { snapshot, error: `id prefixes need at least ${MIN_ID_PREFIX} characters` };
-    }
-    const mine = snapshot.mySession ? snapshot.all.filter((a) => a.koSession === snapshot.mySession) : [];
-    const first = matchAddress(mine, address);
-    if (first) return { snapshot, ...first };
-    const second = matchAddress(snapshot.all, address);
-    if (second && "agent" in second) {
-      if (second.agent.koSession !== snapshot.mySession) return { snapshot, error: `${wanted} (${second.agent.id}) is in another session, not this one` };
-      return { snapshot, ...second };
-    }
-    if (second && "error" in second) return { snapshot, error: `${second.error}, none in this session` };
-    return { snapshot, error: `no agent session matches "${wanted}"` };
-  };
-
-  const resolutionError = (resolution: Resolution): string =>
-    "error" in resolution ? resolution.error : "no agent session matches";
-
-  const isMyself = (target: AgentRow): boolean => target.self || target.id === ownSessionId || (!!edge && target.id === edge.run);
-
-  type Created = Api["Started"];
-  type Started = { created: Created } | { error: string };
-  type Spawned = { created: { window: string; pane: string; id?: string } } | { error: string };
-
-  const spawnBase = async (): Promise<{ executable: string; trustedRoot: string | undefined; timeoutMs: number } | { error: string }> => {
-    if (!ko) return { error: "ko is not on PATH" };
-    const trustedRoot = session?.isProjectTrusted() ? await gitCommonDir(session.cwd) : undefined;
-    return { executable: ko, trustedRoot, timeoutMs: envMs("KO_SPAWN_TIMEOUT_MS", 5000) };
-  };
-
-  const startChild = async (parent: string, name: string, agentDir: string | null, command: string[], cwd?: string): Promise<Started> => {
-    const base = await spawnBase();
-    if ("error" in base) return base;
-    const args = [
-      "run-child", parent, "--name", name,
-      ...(cwd ? ["--cwd", cwd] : []),
-      ...(base.trustedRoot ? ["--env", `KO_AGENT_TRUSTED_ROOT=${base.trustedRoot}`] : []),
-      ...(agentDir === null ? [] : ["--env", `KO_AGENT_PARENT_SESSION=${ownSessionId}`, "--env", `KO_AGENT_DIR=${agentDir}`]),
-      "--", ...command,
-    ];
-    const res = await runCommand(base.executable, args, { timeoutMs: base.timeoutMs });
-    if (!res.ok) return { error: res.error };
-    let created: Created | null = null;
-    try {
-      const parsed: unknown = JSON.parse(res.out);
-      if (isRecord(parsed) && typeof parsed.id === "string" && typeof parsed.window === "string" && typeof parsed.pane === "string" && typeof parsed.output === "string") {
-        created = { id: parsed.id, window: parsed.window, pane: parsed.pane, output: parsed.output };
-      }
-    } catch {}
-    return created ? { created } : { error: "ko printed no run" };
-  };
-
-  type NewPane = { cwd: string; command: { type: "argv"; argv: string[] }; env: Array<{ name: string; value: string }> };
-  type LayoutEdit = { type: "add_window"; session: string; after: string; new: NewPane } | { type: "rename_window"; window: string; name: string };
-  type Edited = { snapshot: Api["Snapshot"]; created?: { type: "window"; window: string } | { type: "session" | "pane" } };
-
-  const editLayout = async (base: { executable: string; timeoutMs: number }, edit: LayoutEdit): Promise<{ edited: Edited } | { error: string }> => {
-    const res = await runCommand(base.executable, ["layout", "edit", JSON.stringify(edit)], { timeoutMs: base.timeoutMs });
-    if (!res.ok) return { error: res.error };
-    try {
-      return { edited: JSON.parse(res.out) };
-    } catch {
-      return { error: "ko printed no layout edit" };
-    }
-  };
-
-  const openWindow = async (name: string, command: string[], cwd: string, place: { session: string; after: string }): Promise<Spawned> => {
-    const base = await spawnBase();
-    if ("error" in base) return base;
-    const env = base.trustedRoot ? [{ name: "KO_AGENT_TRUSTED_ROOT", value: base.trustedRoot }] : [];
-    const added = await editLayout(base, { type: "add_window", ...place, new: { cwd, command: { type: "argv", argv: command }, env } });
-    if ("error" in added) return added;
-    const made = added.edited.created;
-    if (made?.type !== "window") return { error: "ko made no window" };
-    const window = added.edited.snapshot.layout.sessions.flatMap((s) => s.windows).find((w) => w.id === made.window);
-    if (!window || !("pane" in window.tree)) return { error: "the new window is not one pane" };
-    const renamed = await editLayout(base, { type: "rename_window", window: made.window, name });
-    if ("error" in renamed) return { error: `window ${made.window} was created but not named: ${renamed.error}` };
-    return { created: { window: made.window, pane: window.tree.pane } };
-  };
-
-  const writeAgentJson = (agentDir: string, record: AgentRecord): void => {
-    const { session, run, model, fork } = record;
-    writeFileSync(join(agentDir, "agent.json"), JSON.stringify({ session, run, model, fork }));
-  };
-
-  const piArgs = (entry: AgentEntry, policy: { sessionFile: string | null; fork: string | null }): string[] => {
-    const args = ["ko-pi"];
-    if (policy.sessionFile) args.push("--session", policy.sessionFile);
-    else args.push("--session-id", entry.session);
-    args.push("--name", entry.name);
-    args.push("--model", entry.model);
-    if (policy.fork) args.push("--fork", policy.fork);
-    return ko ? [ko, "shell", "--", ...args] : args;
-  };
-
-  const adopt = (created: Created, entry: AgentEntry): void => {
-    writeAgentJson(entry.dir, { session: entry.session, run: created.id, model: entry.model, fork: entry.fork });
-    watch(watchData(created.id, entry.name, created.output, { ...entry, run: created.id }, false));
-  };
-
-  type SendResult = { ok: true } | { ok: false; kind: "unavailable" | "refused" | "failed"; message: string };
-
-  const newId = (): string => randomUUID().replace(/-/g, "");
-
-  const sendEnvelope = (path: string, kind: Envelope["kind"], text: string): Promise<SendResult> =>
-    new Promise((resolve) => {
-      if (!path) {
-        resolve({ ok: false, kind: "unavailable", message: "no inbox" });
-        return;
-      }
-      const from: { session: string; name?: string; pane?: string } = { session: ownSessionId ?? "" };
-      const name = pi.getSessionName() ?? "";
-      if (name) from.name = name;
-      if (pane) from.pane = pane;
-      const envelope: Record<string, unknown> = { v: 1, kind, id: newId(), from, text };
-      const payload = JSON.stringify(envelope);
-      const sock = createConnection(path);
-      let out = "";
-      let finished = false;
-      let sent = false;
-      const failure = (detail: string): SendResult =>
-        sent
-          ? { ok: false, kind: "failed", message: `inbox ${path}: ${detail} after the request was sent; it may have arrived` }
-          : { ok: false, kind: "unavailable", message: `inbox ${path}: ${detail}` };
-      const finish = (result: SendResult): void => {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timer);
-        sock.destroy();
-        resolve(result);
-      };
-      const timer = setTimeout(() => finish(failure("timed out")), 2000);
-      timer.unref();
-      sock.on("connect", () => {
-        sent = true;
-        sock.end(payload);
-      });
-      sock.on("data", (chunk: Buffer) => {
-        out += chunk.toString("utf8");
-      });
-      sock.on("end", () => {
-        const reply = out.trim();
-        if (reply === "ok") finish({ ok: true });
-        else if (reply === "refused") finish({ ok: false, kind: "refused", message: `inbox ${path}: refused` });
-        else finish({ ok: false, kind: "failed", message: `inbox ${path}: answered ${JSON.stringify(reply)}, want "ok"` });
-      });
-      sock.on("error", (err) => finish(failure(err.message)));
-    });
-
-  const notAccepting = (name: string): string => `${name} is not accepting messages`;
-
-  const deliveryText = (name: string, kind: string, result: SendResult, working = false, steerable = false): { ok: boolean; text: string } => {
-    if (!result.ok) {
-      if (result.kind === "refused") return { ok: false, text: `${name} refused the ${kind}` };
-      if (result.kind === "unavailable") return { ok: false, text: notAccepting(name) };
-      return { ok: false, text: result.message };
-    }
-    if (kind === "message" && working) {
-      return {
-        ok: true,
-        text: `queued for ${name}: it is running and reads this when its current turn ends${steerable ? "; to reach it now, use message_agent with mode steer" : ""}`,
-      };
-    }
-    return { ok: true, text: `delivered to ${name} by inbox` };
-  };
-
-  const sendText = (target: AgentRow, kind: string, result: SendResult, entries: AgentEntry[]): { ok: boolean; text: string } =>
-    deliveryText(agentName(target), kind, result, target.status === "working", isDescendant(target, entries));
-
-  const isDescendant = (target: AgentRow, entries: AgentEntry[]): boolean => {
-    if (!ownSessionId) return false;
-    const entry = entries.find((e) => e.session === target.id) ?? entries.find((e) => e.run === target.id);
-    return !!entry && isAncestor(entries, ownSessionId, entry);
-  };
-
-  const reportNotice = (text: string, path: string): string => {
-    if (text === "") return `subagent ${quote(pi.getSessionName() ?? "")} ended its turn with no message${PARENT_GUIDANCE}`;
-    const budget = MAX_NOTICE_BYTES - Buffer.byteLength(PARENT_GUIDANCE, "utf8");
-    if (Buffer.byteLength(text, "utf8") <= budget) return text + PARENT_GUIDANCE;
-    const suffix = `\n\nfull report: ${path}`;
-    return utf8Prefix(text, budget - Buffer.byteLength(suffix, "utf8")) + suffix + PARENT_GUIDANCE;
-  };
-
-  type ParentNotice = { kind: "report"; text: string } | { kind: "status"; text: string };
-
-  const notifyParent = async (parent: ParentEdge, notice: ParentNotice, still: () => boolean): Promise<"superseded" | undefined> => {
-    const found = await sessionPane(parent.parent, parentPane);
-    if (!still()) return "superseded";
-    if (found === "unknown") return;
-    const path = join(parent.dir, "report");
-    if (notice.kind === "report") {
-      try {
-        writeFileSync(path, notice.text);
-      } catch {
-        return;
-      }
-    }
-    if (!found?.inbox) {
-      session?.ui?.notify?.(`the parent has no inbox: the ${notice.kind} was not delivered`, "warning");
       return;
     }
-    const body = notice.kind === "status" ? utf8Prefix(notice.text, MAX_NOTICE_BYTES) : reportNotice(notice.text, path);
-    const sent = await sendEnvelope(found.inbox, "notice", body);
-    if (!sent.ok) session?.ui?.notify?.(`the ${notice.kind} was not delivered: ${sent.message}`, "warning");
+    if (!isMessage(decoded)) {
+      if (isRecord(decoded) && typeof decoded.id === "string") answerStream(decoded.id, "refuse");
+      return;
+    }
+    const message = decoded;
+    receiverBackoff = 0;
+    queue = queue.then(async () => {
+      if (received().includes(message.id)) {
+        answerStream(message.id, "ack");
+        return;
+      }
+      let verdict: "ack" | "refuse";
+      try {
+        verdict = await handleIncoming(message);
+      } catch {
+        verdict = "refuse";
+      }
+      if (verdict === "ack") {
+        const ring = received();
+        ring.push(message.id);
+        if (ring.length > RECEIVED_RING) ring.splice(0, ring.length - RECEIVED_RING);
+      }
+      answerStream(message.id, verdict);
+      if (verdict === "ack" && message.kind === "stop") session?.shutdown();
+    });
   };
 
-  type Watch = WatchData & {
-    timer: NodeJS.Timeout | null;
-    flushTimer: NodeJS.Timeout | null;
+  const onStreamExit = (): void => {
+    if (!receiving) return;
+    receiver = null;
+    receiverBackoff = Math.min(receiverBackoff ? receiverBackoff * 2 : envMs("KO_RECEIVER_BACKOFF_MS", 200), 5000);
+    receiverTimer = setTimeout(openReceiver, receiverBackoff);
+    receiverTimer.unref();
+  };
+
+  function attachReceiver(hold: ReceiverHold): void {
+    receiver = hold;
+    receiverData = lineReader(hold, onStreamLine);
+    hold.child.stdout?.on("data", receiverData);
+    hold.child.stdout?.resume();
+    hold.child.on("exit", onStreamExit);
+  }
+
+  function openReceiver(): void {
+    receiverTimer = null;
+    if (!receiving || !ko || !pane) return;
+    attachReceiver({ child: openStream(ko, `/panes/${pane}/messages`, "pipe"), partial: Buffer.alloc(0) });
+  }
+
+  const startReceiver = (): void => {
+    receiving = true;
+    const held = globalThis.__koPiExtensionReceiver;
+    globalThis.__koPiExtensionReceiver = undefined;
+    if (held && held.child.exitCode === null && held.child.signalCode === null) attachReceiver(held);
+    else openReceiver();
+  };
+
+  const stopReceiver = (park: boolean): void => {
+    receiving = false;
+    if (receiverTimer) clearTimeout(receiverTimer);
+    receiverTimer = null;
+    const hold = receiver;
+    receiver = null;
+    if (!hold) return;
+    if (receiverData) hold.child.stdout?.removeListener("data", receiverData);
+    hold.child.stdout?.pause();
+    hold.child.removeListener("exit", onStreamExit);
+    if (park) globalThis.__koPiExtensionReceiver = hold;
+    else hold.child.kill();
+  };
+
+  // ---- async_bash runs ----
+
+  type Watch = ParkedWatch & {
+    silenced: boolean;
     waiter: ChildProcess | null;
-    detach: (() => void) | null;
-    outcome?: { result: string; text: string };
+    reader: ChildProcess | null;
+    readerClosed: Promise<void>;
+    flushTimer: NodeJS.Timeout | null;
+    idleDelay: number;
   };
 
   const watches = new Map<string, Watch>();
 
-  const watchData = (run: string, name: string, output: string, agent: AgentEntry | null, stream: boolean): WatchData => ({
-    run,
-    name,
-    output,
-    target: agent ? { kind: "agent", entry: agent } : { kind: "bash", stream },
-    offset: 0,
-    lines: [],
-    dropped: 0,
-    partial: "",
-    budget: envMs("KO_STREAM_BUDGET_BYTES", 256 * 1024),
-    budgetTold: false,
-    idleDelay: streamFlushMs(),
-    silenced: false,
-  });
+  const streamFlushMs = (): number => envMs("KO_STREAM_FLUSH_MS", 1000);
+  const streamCap = (): number => envMs("KO_STREAM_MAX_WAIT_MS", 30000);
 
-  type TailRead = { data: Buffer; skipped: number; end: number } | { error: string };
-
-  const readTail = (path: string, from: number, max: number): TailRead => {
-    try {
-      const size = statSync(path).size;
-      if (size <= from) return { data: Buffer.alloc(0), skipped: 0, end: from };
-      const start = Math.max(from, size - max);
-      const buffer = Buffer.alloc(size - start);
-      const fd = openSync(path, "r");
-      try {
-        readSync(fd, buffer, 0, buffer.length, start);
-      } finally {
-        closeSync(fd);
-      }
-      return { data: buffer, skipped: start - from, end: size };
-    } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err) };
-    }
-  };
+  let agentWorking = false;
 
   const sendStream = (watch: Watch, body: string): void => {
     pi.sendMessage(
@@ -1357,28 +1359,28 @@ export default function (pi: ExtensionAPI) {
         customType: STREAM_CUSTOM_TYPE,
         content: `async run ${JSON.stringify(watch.name)} output (run ${watch.run})\n${body}`,
         display: true,
-        details: { from: watch.name, run: watch.run, output: watch.output },
+        details: { from: watch.name, run: watch.run, pane: watch.pane },
       },
       { deliverAs: "steer", triggerTurn: true },
     );
   };
 
   const flushWatch = (watch: Watch): boolean => {
-    if (watch.lines.length === 0) return false;
+    if (watch.lines.length === 0 && watch.skipped === 0) return false;
     if (watch.budget <= 0) {
       watch.lines = [];
       watch.dropped = 0;
-      if (watch.timer) clearInterval(watch.timer);
-      watch.timer = null;
+      watch.skipped = 0;
       if (!watch.budgetTold) {
         watch.budgetTold = true;
-        sendStream(watch, `... output budget spent; the rest is only in ${watch.output}`);
+        sendStream(watch, `... output budget spent; the rest is only on the pane's screen (ko api '/panes/${watch.pane}/screen?history=all')`);
       }
       return true;
     }
-    const batch = streamBatch(watch.lines, watch.output, watch.dropped);
+    const batch = streamBatch(watch.lines, watch.dropped, watch.skipped);
     watch.lines = [];
     watch.dropped = 0;
+    watch.skipped = 0;
     watch.budget -= Buffer.byteLength(batch, "utf8");
     sendStream(watch, batch);
     return true;
@@ -1389,14 +1391,8 @@ export default function (pi: ExtensionAPI) {
     watch.flushTimer = null;
   };
 
-  const streamFlushMs = (): number => envMs("KO_STREAM_FLUSH_MS", 1000);
-  const streamBase = streamFlushMs;
-  const streamCap = (): number => envMs("KO_STREAM_MAX_WAIT_MS", 30000);
-
-  let agentWorking = false;
-
   const scheduleFlush = (watch: Watch): void => {
-    if (agentWorking || watch.lines.length === 0 || watch.flushTimer || !watch.timer) return;
+    if (agentWorking || (watch.lines.length === 0 && watch.skipped === 0) || watch.flushTimer) return;
     watch.idleDelay = Math.min(watch.idleDelay, streamCap());
     watch.flushTimer = setTimeout(() => {
       watch.flushTimer = null;
@@ -1405,357 +1401,291 @@ export default function (pi: ExtensionAPI) {
     watch.flushTimer.unref();
   };
 
-  const scheduleIdleStreams = (): void => {
-    for (const watch of watches.values()) {
-      if (watch.target.kind !== "bash" || !watch.target.stream) continue;
-      scheduleFlush(watch);
-    }
-  };
-
   const finishWorking = (): void => {
     agentWorking = false;
-    scheduleIdleStreams();
+    for (const watch of watches.values()) if (watch.stream) scheduleFlush(watch);
   };
 
   const flushStreams = (): void => {
     for (const watch of watches.values()) {
-      if (watch.target.kind !== "bash" || !watch.target.stream) continue;
+      if (!watch.stream) continue;
       clearFlush(watch);
-      watch.idleDelay = streamBase();
+      watch.idleDelay = streamFlushMs();
       flushWatch(watch);
     }
   };
 
-  const tailWatch = (watch: Watch, final: boolean): void => {
-    const read = readTail(watch.output, watch.offset, 256 * 1024);
-    if ("error" in read) return;
-    watch.offset = read.end;
-    let text = watch.partial;
-    if (read.skipped > 0) {
-      if (text) watch.lines.push(text);
-      watch.partial = "";
-      watch.dropped += 1;
-      const newline = read.data.indexOf(0x0a);
-      text = newline >= 0 ? read.data.subarray(newline + 1).toString("utf8") : "";
-    } else {
-      text += read.data.toString("utf8");
-    }
-    const parts = text.split("\n");
-    watch.partial = final ? "" : (parts.pop() ?? "");
-    for (const line of parts) watch.lines.push(line);
+  const pushLines = (watch: Watch, lines: string[]): void => {
+    if (lines.length === 0) return;
+    watch.lines.push(...lines);
     if (watch.lines.length > STREAM_BUFFER_LINES) {
       watch.dropped += watch.lines.length - STREAM_BUFFER_LINES;
       watch.lines = watch.lines.slice(watch.lines.length - STREAM_BUFFER_LINES);
     }
-    if (final) {
-      clearFlush(watch);
-      flushWatch(watch);
-    } else if (!agentWorking) {
+    scheduleFlush(watch);
+  };
+
+  const onOutputRecord = (watch: Watch, line: string): void => {
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (!isOutputEvent(record)) return;
+    if (record.type === "bytes") {
+      const bytes = Buffer.from(record.data, "base64");
+      watch.offset = record.offset + bytes.length;
+      const decoded = utf8Complete(watch.carry, bytes);
+      watch.carry = decoded.carry;
+      pushLines(watch, splitLines(watch.split, decoded.text));
+    } else if (record.type === "skip") {
+      watch.skipped += record.to - record.from;
+      watch.offset = record.to;
+      watch.split = newSplit();
+      watch.carry = Buffer.alloc(0);
       scheduleFlush(watch);
     }
   };
 
-  const lastOutput = (path: string): { tail: string; omitted: number } | { error: string } => {
-    const read = readTail(path, 0, MAX_NOTICE_BYTES);
-    if ("error" in read) return read;
-    let start = 0;
-    while (start < read.data.length && ((read.data.at(start) ?? 0) & 0xc0) === 0x80) start++;
-    return { tail: read.data.subarray(start).toString("utf8"), omitted: read.skipped + start };
+  const openReader = (watch: Watch): void => {
+    if (!ko) return;
+    const child = openStream(ko, `/panes/${watch.pane}/output?offset=${watch.offset}`, "ignore");
+    watch.reader = child;
+    child.stdout?.on("data", lineReader({ partial: Buffer.alloc(0) }, (line) => onOutputRecord(watch, line)));
+    watch.readerClosed = new Promise((resolve) => child.on("close", () => resolve()));
   };
 
-  const endingBody = (watch: Watch, outcome: { result: string; text: string }): string => {
-    let body = "";
-    if (watch.target.kind === "bash") {
-      body += `async run ${quote(watch.name)} ${outcome.result}: ${outcome.text}\nrun: ${watch.run}\noutput: ${watch.output}\n`;
-      const tail = lastOutput(watch.output);
-      if ("error" in tail) body += `--- output unreadable: ${tail.error} ---`;
-      else if (!tail.tail) body += "--- no output ---";
-      else if (tail.omitted > 0) {
-        body += `--- last ${Buffer.byteLength(tail.tail, "utf8")} bytes of output (${tail.omitted} omitted) ---\n${tail.tail}`;
-      } else body += `--- output ---\n${tail.tail}`;
-      return body;
-    }
-    const state = reportState(watch.target.entry.dir);
-    const reportPath = join(watch.target.entry.dir, "report");
-    const head = `subagent ${quote(watch.name)} ${outcome.result}`;
-    body += state.reported
-      ? `${head}${state.report === undefined ? "; no report was owed" : ""}\n`
-      : state.report !== undefined
-        ? `${head} without reporting on its last work: its earlier report is ${reportPath}\n`
-        : `${head} without a report: none of its turns ended in a report, so this is the whole account of it\n`;
-    if (outcome.text) body += `detail: ${outcome.text}\n`;
-    body += `run: ${watch.run}\n`;
-    if (!state.reported) body += "message it to continue it, or stop_run to end it\n";
+  const endingBody = async (watch: Watch, outcome: Outcome): Promise<string> => {
+    let body = `async run ${quote(watch.name)} ${outcome.result}${outcome.text ? `: ${outcome.text}` : ""}\npane: ${watch.pane}\n`;
+    const tail = (await screenTail(`/panes/${watch.pane}/screen?history=all`)) ?? (await screenTail(`/runs/${watch.run}/screen`));
+    if (tail === undefined) body += "--- its screen is gone ---";
+    else if (!tail.trim()) body += "--- no output ---";
+    else body += `--- last ${SCREEN_TAIL_BYTES} bytes of its screen ---\n${tail}`;
     return body;
   };
 
-  const watch = (data: WatchData): void => {
+  const finishWatch = async (watch: Watch, out: string): Promise<void> => {
+    if (watches.get(watch.run) !== watch) return;
+    const outcome = outcomeOf(out);
+    if (!outcome) {
+      watches.delete(watch.run);
+      return;
+    }
+    if (watch.reader) {
+      await Promise.race([watch.readerClosed, sleep(envMs("KO_STREAM_DRAIN_MS", 1500))]);
+      watch.reader.kill();
+    }
+    clearFlush(watch);
+    watches.delete(watch.run);
+    if (watch.silenced) return;
+    if (watch.stream) {
+      const rest = watch.split.line;
+      watch.split.line = "";
+      pushLines(watch, rest ? [rest] : []);
+      clearFlush(watch);
+      flushWatch(watch);
+    }
+    deliverNotice(await endingBody(watch, outcome), watch.name);
+  };
+
+  const watchRun = (data: Pick<Watch, "run" | "name" | "pane" | "stream"> & Partial<ParkedWatch>): void => {
     const command = ko;
     if (!command || watches.has(data.run)) return;
-    const entry: Watch = { ...data, timer: null, flushTimer: null, waiter: null, detach: null };
-    watches.set(data.run, entry);
-    if (entry.target.kind === "bash" && entry.target.stream) {
-      entry.timer = setInterval(() => tailWatch(entry, false), envMs("KO_STREAM_POLL_MS", 1000));
-      entry.timer.unref();
-      if (entry.lines.length > 0) scheduleFlush(entry);
+    const watch: Watch = {
+      run: data.run,
+      name: data.name,
+      pane: data.pane,
+      stream: data.stream,
+      silenced: false,
+      waiter: null,
+      reader: null,
+      readerClosed: Promise.resolve(),
+      offset: data.offset ?? 0,
+      lines: data.lines ?? [],
+      dropped: data.dropped ?? 0,
+      skipped: data.skipped ?? 0,
+      split: data.split ?? newSplit(),
+      carry: data.carry ?? Buffer.alloc(0),
+      budget: data.budget ?? envMs("KO_STREAM_BUDGET_BYTES", 256 * 1024),
+      budgetTold: data.budgetTold ?? false,
+      flushTimer: null,
+      idleDelay: streamFlushMs(),
+    };
+    watches.set(watch.run, watch);
+    if (watch.stream) {
+      openReader(watch);
+      scheduleFlush(watch);
     }
-    const waiter = spawn(command, ["run-wait", entry.run, "--json"], { stdio: ["ignore", "pipe", "ignore"], env: process.env });
-    entry.waiter = waiter;
+    const waiter = spawn(command, ["run-wait", watch.run, "--json"], { stdio: ["ignore", "pipe", "ignore"], env: process.env });
+    watch.waiter = waiter;
     const chunks: Buffer[] = [];
-    const onData = (chunk: Buffer): void => {
-      chunks.push(chunk);
-    };
-    const onError = (): void => {};
-    const onClose = (): void => {
-      if (entry.timer) clearInterval(entry.timer);
-      clearFlush(entry);
-      watches.delete(entry.run);
-      const outcome = outcomeOf(Buffer.concat(chunks).toString("utf8"));
-      if (!outcome) return;
-      entry.outcome = outcome;
-      if (entry.silenced) return;
-      if (entry.target.kind === "bash" && entry.target.stream) tailWatch(entry, true);
-      deliverNotice(endingBody(entry, outcome), entry.name);
-    };
-    waiter.stdout?.on("data", onData);
-    waiter.on("error", onError);
-    waiter.on("close", onClose);
-    entry.detach = () => {
-      waiter.stdout?.removeListener("data", onData);
-      waiter.removeListener("close", onClose);
-      waiter.removeListener("error", onError);
-    };
+    waiter.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk));
+    waiter.on("error", () => {});
+    waiter.on("close", () => void finishWatch(watch, Buffer.concat(chunks).toString("utf8")));
   };
 
-  let parentPane: string | null = null;
-  let parentTimer: NodeJS.Timeout | null = null;
-  let parentReading = false;
+  const parkWatches = (): ParkedWatch[] =>
+    [...watches.values()].map((watch) => ({
+      run: watch.run,
+      name: watch.name,
+      pane: watch.pane,
+      stream: watch.stream,
+      offset: watch.offset,
+      lines: watch.lines,
+      dropped: watch.dropped,
+      skipped: watch.skipped,
+      split: watch.split,
+      carry: watch.carry,
+      budget: watch.budget,
+      budgetTold: watch.budgetTold,
+    }));
 
-  const stopParentWatch = (): void => {
-    if (parentTimer) {
-      clearInterval(parentTimer);
-      parentTimer = null;
+  const dropWatches = (): void => {
+    const gone = [...watches.values()];
+    watches.clear();
+    for (const watch of gone) {
+      clearFlush(watch);
+      watch.reader?.kill();
+      watch.waiter?.kill();
     }
-    parentReading = false;
   };
 
-  type PaneReading = { ok: true; pane: PaneInfo } | { ok: false };
-
-  const paneReading = async (target: string): Promise<PaneReading> => {
-    const { ok, panes } = await listPanesResult(2000);
-    const found = ok ? panes.find((p) => p.pane === target) : undefined;
-    return found ? { ok: true, pane: found } : { ok: false };
-  };
-
-  // A session is live while a pane holds pi.session and is not dead; pi's
-  // root comes and goes with its ui (the external editor, Ctrl+Z). A failed
-  // read is no evidence.
-  const sessionPane = async (session: string, paneHint: string | null): Promise<PaneInfo | null | "unknown"> => {
-    if (paneHint) {
-      const reading = await paneReading(paneHint);
-      if (reading.ok && reading.pane.agentSession === session && !reading.pane.dead) return reading.pane;
+  const readRuns = async (args: string[]): Promise<RunRow[] | undefined> => {
+    const command = ko;
+    if (!command) return undefined;
+    const res = await runCommand(command, ["runs", "--json", ...args], { timeoutMs: 2000 });
+    if (!res.ok) return undefined;
+    try {
+      const parsed: unknown = JSON.parse(res.out);
+      if (!Array.isArray(parsed)) return undefined;
+      return parsed.flatMap((value): RunRow[] =>
+        isRecord(value) && typeof value.id === "string"
+          ? [{ id: value.id, name: str(value.name), parent: str(value.parent), pane: str(value.pane), cwd: str(value.cwd), startedAt: str(value.startedAt), outcome: parseOutcome(value.outcome) }]
+          : [],
+      );
+    } catch {
+      return undefined;
     }
-    const { ok, panes } = await listPanesResult();
-    if (!ok) return "unknown";
-    return panes.find((p) => p.agentSession === session && !p.dead) ?? null;
   };
 
-  const startParentWatch = (): void => {
+  const ownRuns = async (all: boolean): Promise<RunRow[] | undefined> => (pane ? readRuns([...(all ? ["--all"] : []), "--parent", pane]) : []);
+
+  const adoptLiveRuns = async (): Promise<RunRow[] | undefined> => {
+    const live = await ownRuns(false);
+    for (const run of live ?? []) {
+      if (!run.outcome) watchRun({ run: run.id, name: run.name ?? run.id, pane: run.pane ?? "", stream: false });
+    }
+    return live;
+  };
+
+  // ---- the parent: reports, the watch, the exit notice ----
+
+  let parentPane = "";
+  let tick: NodeJS.Timeout | null = null;
+  let ticking = false;
+
+  const leave = (): void => {
+    leaving = "control";
+    turnEndedByControl = true;
+    session?.shutdown();
+  };
+
+  // One id for one notice: every attempt at it carries the same id.
+  const statusNotice = async (text: string, id: string): Promise<boolean> => {
+    if (!parentPane) return false;
+    const result = await sendIntent(parentPane, "notice", utf8Prefix(text, MAX_NOTICE_BYTES), { id });
+    return result.state === "acked" || result.state === "queued";
+  };
+
+  let exitNoticeId = "";
+
+  type OwnReport = { id: string; text: string };
+
+  // Every report that has no sent mark yet, oldest first.
+  const pendingReports = (): OwnReport[] => {
+    const all = entries();
+    const sent = new Set(all.filter((entry) => entry.customType === ENTRY_SENT).map((entry) => entry.data.id));
+    return all
+      .filter((entry) => entry.customType === ENTRY_REPORT && entry.data.child === undefined && !sent.has(entry.data.id))
+      .map((entry) => ({ id: str(entry.data.id), text: str(entry.data.text) }));
+  };
+
+  const sendReport = async (report: OwnReport, once: boolean): Promise<void> => {
+    if (!parentPane) return;
+    const result = await sendIntent(parentPane, "notice", report.text, { id: report.id, data: { report: true }, once });
+    if (result.state === "acked") append(ENTRY_SENT, { id: report.id });
+    else if (result.state === "refused") append(ENTRY_SENT, { id: report.id, refused: true });
+  };
+
+  const watchParent = async (): Promise<void> => {
     if (!edge) return;
-    const parentSession = edge.parent;
-    stopParentWatch();
-    parentTimer = setInterval(() => {
-      if (parentReading) return;
-      parentReading = true;
+    const { ok, panes } = await listPanesResult(2000);
+    if (!ok) return;
+    const me = panes.find((p) => p.pane === pane);
+    if (!me?.parent) return;
+    parentPane = me.parent;
+    const parent = panes.find((p) => p.pane === me.parent);
+    if (parent && !parent.dead && parent.agentSession === edge.parent) return;
+    stopTick();
+    leave();
+  };
+
+  const stopTick = (): void => {
+    if (tick) clearInterval(tick);
+    tick = null;
+  };
+
+  const startTick = (): void => {
+    if (!edge) return;
+    stopTick();
+    tick = setInterval(() => {
+      if (ticking) return;
+      ticking = true;
       void (async () => {
         try {
-          const found = await sessionPane(parentSession, parentPane);
-          if (found === "unknown") return;
-          if (found) {
-            parentPane = found.pane;
-            return;
-          }
-          stopParentWatch();
-          session?.shutdown();
+          await watchParent();
+          for (const report of pendingReports()) await sendReport(report, true);
         } finally {
-          parentReading = false;
+          ticking = false;
         }
       })();
     }, envMs("KO_PARENT_POLL_MS", 5000));
-    parentTimer.unref();
+    tick.unref();
   };
 
-  let settled = true;
-  let turnEndedByControl = false;
-  let workGeneration = 0;
-
-  const NO_FIRST_TURN_TEXT =
-    "no turn ever ran: the task was delivered and the session never started work on it (the pane's own screen, kept with the run, is the only account of why)";
-
-  type Ending =
-    | { kind: "awaiting-first-turn" }
-    | { kind: "aborted" }
-    | { kind: "error"; text: string; notified: boolean }
-    | { kind: "ended"; text: string };
-  let ending: Ending = { kind: "ended", text: "" };
-
-  const beginWork = (): void => {
-    settled = false;
-    if (ending.kind === "awaiting-first-turn") ending = { kind: "ended", text: "" };
+  // True while a bash run of this agent lives or a child of it owes a report; undefined when that is unreadable.
+  const ownLiveWork = async (): Promise<boolean | undefined> => {
+    const live = await adoptLiveRuns();
+    if (!live) return undefined;
+    if (live.length > 0) return true;
+    const snapshot = await listPanesResult();
+    if (!snapshot.ok) return undefined;
+    await readInstance();
+    const marks = childMarks();
+    return children().some((child) => {
+      const row = child.pane.instance === instance ? snapshot.panes.find((p) => p.pane === child.pane.pane) : undefined;
+      return !!row && !row.dead && !childReported(child, marks);
+    });
   };
 
-  const workStarted = (): void => {
-    turnEndedByControl = false;
-    workGeneration++;
-    beginWork();
-  };
-
-  const trimErrorMessage = (msg: string): string => (msg.length > 400 ? `${msg.slice(0, 400)}…` : msg);
-
-  // Records how this process's own run ended. Gated on a real ending, not a
-  // /reload: an outcome is first-write-wins, so a reload's would hide the real one.
-  const endOwnRun = async (reason?: ShutdownReason): Promise<void> => {
-    const run = edge?.run;
-    const command = ko;
-    if (!run || !command || (reason !== undefined && reason !== "quit")) return;
-    const [result, text] =
-      ending.kind === "awaiting-first-turn"
-        ? ["failed", NO_FIRST_TURN_TEXT]
-        : [settled ? "completed" : "failed", ending.kind === "error" ? `its last turn failed: ${trimErrorMessage(ending.text)}` : ""];
-    const args = ["run-outcome", "--result", result];
-    if (text) args.push("--text", text);
-    await runCommand(command, [...args, "--", run], { timeoutMs: 3000 });
-  };
-
-  const sessionFileOf = (entry: AgentEntry): string => readTextFile(join(entry.dir, "session-file"))?.trim() ?? "";
-
-  const childInbox = (entry: AgentEntry): string => (dir ? inboxPath(dir, entry.session)?.path ?? "" : "");
-
-  const entryRow = (entry: AgentEntry): AgentRow => ({
-    id: entry.session,
-    name: entry.name,
-    named: true,
-    pane: "",
-    window: "",
-    status: "unknown",
-    activity: "",
-    parent: entry.parent,
-    depth: 0,
-    self: false,
-    cwd: "",
-    canMessage: true,
-    model: entry.model,
-    kind: "subagent",
-    relationship: "own",
-    run: entry.run,
-    state: "running",
-    koSession: "",
-    inbox: childInbox(entry),
-  });
-
-  const childStarting = (entry: AgentEntry, runs: RunRow[]): boolean => entry.run !== "" && runs.some((r) => r.id === entry.run && !r.outcome);
-
-  const endedChild = ({ wanted, mention }: ReturnType<typeof normalizeAddress>, own: AgentEntry[], live: Set<string>, runs: RunRow[]): AgentEntry | null => {
-    const matches = own.filter(
-      (e) =>
-        !live.has(e.session) &&
-        ((!mention && e.name.toLowerCase() === wanted.toLowerCase()) ||
-          matchesId({ id: e.session, run: e.run }, wanted) || matchesId({ id: e.session, run: e.run }, wanted, true)),
-    );
-    if (matches.length <= 1) return matches[0] ?? null;
-    const startedAt = (e: AgentEntry): string => runs.find((r) => r.id === e.run)?.startedAt ?? "";
-    return matches.sort((a, b) => startedAt(b).localeCompare(startedAt(a))).at(0) ?? null;
-  };
-
-  const endedTarget = (to: ReturnType<typeof normalizeAddress>, resolved: Resolution): { entry: AgentEntry; starting: boolean } | null => {
-    const ownEntries = own(resolved.snapshot.entries);
-    const live = new Set(resolved.snapshot.all.filter((a) => a.state === "running").map((a) => a.id));
-    const row = resolved.agent;
-    let entry: AgentEntry | undefined;
-    if (row && row.relationship === "own" && row.kind === "subagent" && !row.canMessage) {
-      entry = ownEntry(row, resolved.snapshot.entries);
-    } else if (!row) {
-      entry = endedChild(to, ownEntries, live, resolved.snapshot.runs) ?? undefined;
+  const exitNoticeText = (): string | undefined => {
+    const name = quote(pi.getSessionName() ?? "");
+    if (ownReported()) return undefined;
+    if (ending.kind === "awaiting-first-turn") return `subagent ${name} is exiting before its first turn ran`;
+    if (ending.kind === "error" && !ending.notified) {
+      return `subagent ${name} is exiting without a report on its last work: its last turn failed: ${trimErrorMessage(ending.text)}`;
     }
-    return entry ? { entry, starting: childStarting(entry, resolved.snapshot.runs) } : null;
+    return `subagent ${name} is exiting without a report on its last work`;
   };
 
-  const restartLocks = new Map<string, Promise<unknown>>();
-
-  const withRestartLock = <T>(session: string, fn: () => Promise<T>): Promise<T> => {
-    const previous = restartLocks.get(session) ?? Promise.resolve();
-    const run = previous.then(fn, fn);
-    restartLocks.set(
-      session,
-      run.then(
-        () => undefined,
-        () => undefined,
-      ),
-    );
-    return run;
-  };
-
-  type RestartPrep =
-    | { error: string }
-    | { snapshot: Snapshot; entry: AgentEntry | null; created: { run: Created; delivery: "task" | "inbox" } | null };
-
-  const restartAgent = async (entry: AgentEntry, task: string | null, policy: { sessionFile: string | null; fork: string | null }, cwd?: string): Promise<Started> => {
-    const parent = parentKey();
-    if (!parent) return { error: "this session has no run or pane" };
-    if (task !== null) writeFileSync(join(entry.dir, "task"), task);
-    if (policy.sessionFile) writeFileSync(join(entry.dir, "session-file"), policy.sessionFile);
-    if (task === null || owesWork(task)) rmSync(join(entry.dir, "delivered"), { force: true });
-    else writeFileSync(join(entry.dir, "delivered"), "");
-    rmSync(join(entry.dir, "report"), { force: true });
-    rmSync(join(entry.dir, "work"), { force: true });
-    writeAgentJson(entry.dir, entry);
-    const started = await startChild(parent, entry.name, entry.dir, piArgs(entry, policy), cwd);
-    if (!("error" in started)) adopt(started.created, entry);
-    return started;
-  };
-
-  const prepareRestart = async (
-    address: ReturnType<typeof normalizeAddress>,
-    message: string,
-    initial: Snapshot,
-    resume?: { model: string; sessionFile: string; cwd: string },
-  ): Promise<RestartPrep> => {
-    const first = endedTarget(address, resolveIn(initial, address));
-    if (!first) return { snapshot: initial, entry: null, created: null };
-    const restart = async (snapshot: Snapshot): Promise<RestartPrep> => {
-      const ended = endedTarget(address, resolveIn(snapshot, address));
-      if (!ended) return { snapshot, entry: null, created: null };
-      if (ended.starting) return { snapshot, entry: ended.entry, created: null };
-      const entry = resume ? { ...ended.entry, model: resume.model } : ended.entry;
-      const sessionFile = resume?.sessionFile ?? sessionFileOf(entry);
-      const started = await restartAgent(entry, sessionFile ? message : null, { sessionFile, fork: null }, resume?.cwd);
-      if ("error" in started) return { error: started.error };
-      return { snapshot, entry, created: { run: started.created, delivery: sessionFile ? "task" : "inbox" } };
-    };
-    return resume ? restart(initial) : withRestartLock(first.entry.session, async () => restart(await discovery()));
-  };
-
-  const sendWhenBound = async (path: string, kind: Envelope["kind"], text: string, deadline: number): Promise<SendResult> => {
-    for (;;) {
-      const result = await sendEnvelope(path, kind, text);
-      if (result.ok || result.kind !== "unavailable" || Date.now() > deadline) return result;
-      await sleep(50);
-    }
-  };
-
-  const restartedReply = (name: string, run: string): string => `restarted ${name} as run ${run}; ${liveRunRule(SPAWN_RESULT_RULE)}`;
+  // ---- spawning ----
 
   const validateModel = async (model: string | undefined): Promise<string | null> => {
     if (!model) return null;
     const res = await runCommand("pi", ["--list-models"], { timeoutMs: 10000 });
     if (!res.ok) return `could not validate model ${quote(model)}: pi --list-models: ${res.error}`;
     return validateModelRows(model, modelRows(res.out));
-  };
-
-  const nameTaken = async (name: string, entries = dir ? agentEntries(dir) : [], runs?: RunRow[]): Promise<boolean> => {
-    const wanted = name.toLowerCase();
-    if (own(entries).some((e) => e.name.toLowerCase() === wanted)) return true;
-    return (runs ?? await myRuns()).some((r) => (r.name ?? "").toLowerCase() === wanted);
   };
 
   const nameClaims = new Set<string>();
@@ -1769,133 +1699,139 @@ export default function (pi: ExtensionAPI) {
     nameClaims.delete(name.toLowerCase());
   };
 
-  let liveWatch: Promise<boolean> | undefined;
+  const restartLocks = new Map<string, Promise<unknown>>();
 
-  const watchLiveChildren = async (): Promise<boolean> => {
-    liveWatch ??= (async () => {
-      const runs = await myRunsOnce();
-      if (!runs) return false;
-      const entries = own(dir ? agentEntries(dir) : []);
-      const bySession = bySessionOf(entries);
-      const byRun = byRunOf(entries);
-      for (const run of runs) {
-        if (run.outcome || watches.has(run.id) || !run.output) continue;
-        const entry = agentRun(run, byRun, bySession);
-        watch(watchData(run.id, entry?.name || run.name || run.id, run.output, entry ?? null, false));
-      }
-      return true;
-    })();
-    const found = await liveWatch;
-    if (!found) liveWatch = undefined;
-    return found;
+  const withRestartLock = <T>(key: string, fn: () => Promise<T>): Promise<T> => {
+    const previous = restartLocks.get(key) ?? Promise.resolve();
+    const run = previous.then(fn, fn);
+    restartLocks.set(
+      key,
+      run.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return run;
   };
 
-  const handleInbound = async (prompt: string): Promise<"ok" | "refused"> => {
-    const env = parseEnvelope(prompt);
-    if (!env) {
-      if (prompt) deliver(prompt);
-      return "ok";
-    }
-    return handleEnvelope(env);
+  const trustedCwd = async (cwd: string): Promise<string | undefined> => {
+    if (!session?.isProjectTrusted()) return undefined;
+    const [mine, theirs] = await Promise.all([gitCommonDir(session.cwd), gitCommonDir(cwd)]);
+    return mine !== undefined && mine === theirs ? cwd : undefined;
   };
 
-  const onConnection = (sock: Socket): void => {
-    const chunks: Buffer[] = [];
-    let total = 0;
-    let dropped = false;
-    sock.on("error", () => {});
-    sock.on("data", (chunk: Buffer) => {
-      if (dropped) return;
-      total += chunk.length;
-      if (total > MAX_PROMPT_BYTES) {
-        dropped = true;
-        chunks.length = 0;
-        sock.destroy();
-        return;
-      }
-      chunks.push(chunk);
+  type Plan = {
+    name: string;
+    session: string;
+    model: string;
+    cwd: string;
+    task: string;
+    mode: { kind: "fresh" } | { kind: "continue"; file: string } | { kind: "copy"; file: string };
+    toplevel: boolean;
+    koSession: string;
+  };
+
+  const taskVar = (task: string): unknown => ({ text: task, from: { session: ownSessionId, name: pi.getSessionName() ?? "", pane } });
+
+  const taskTooLarge = (task: string): boolean => Buffer.byteLength(JSON.stringify(taskVar(task)), "utf8") > MAX_TASK_BYTES;
+
+  const createPane = async (plan: Plan): Promise<{ placement: Api["Placement"] } | { error: string }> => {
+    if (!ko) return { error: "ko is not on PATH" };
+    const trusted = await trustedCwd(plan.cwd);
+    const argv = [
+      ko, "shell", "--", "ko-pi",
+      ...(plan.mode.kind === "continue" ? ["--session", plan.mode.file] : ["--session-id", plan.session]),
+      "--name", plan.name,
+      "--model", plan.model,
+      ...(plan.mode.kind === "copy" ? ["--fork", plan.mode.file] : []),
+    ];
+    const env: Api["Variable"][] = [
+      { name: "KO_AGENT_SESSION", value: plan.session },
+      ...(plan.toplevel ? [] : [{ name: "KO_AGENT_PARENT_SESSION", value: ownSessionId ?? "" }]),
+      ...(trusted ? [{ name: "KO_AGENT_TRUSTED_CWD", value: trusted }] : []),
+    ];
+    const body: Api["NewWindow"] = {
+      name: plan.name,
+      cwd: plan.cwd,
+      command: { type: "argv", argv },
+      env,
+      ...(plan.toplevel ? { session: plan.koSession } : { parent: pane ?? undefined, close: "on_exit" as const }),
+      ...(plan.task ? { vars: { [VAR_TASK]: taskVar(plan.task) } } : {}),
+    };
+    const answer = await apiCall("POST", "/panes", body, envMs("KO_SPAWN_TIMEOUT_MS", 5000));
+    const placement = apiJson(answer);
+    return isPlacement(placement) ? { placement } : { error: apiError(answer).message };
+  };
+
+  const recordChild = (plan: Plan, placement: Api["Placement"]): void => {
+    append(ENTRY_CHILD, {
+      name: plan.name,
+      session: plan.session,
+      model: plan.model,
+      fork: plan.mode.kind === "copy",
+      cwd: plan.cwd,
+      pane: { instance, pane: placement.pane },
     });
-    sock.on("end", async () => {
-      if (dropped) return;
-      const text = Buffer.concat(chunks).toString("utf8");
-      const prompt = text.trim();
-      const response = prompt ? await handleInbound(prompt) : "ok";
-      try {
-        sock.end(response + "\n");
-      } catch {}
+    if (plan.task) append(ENTRY_WORK, { child: plan.session });
+  };
+
+  const restartChild = (child: ChildData, task: string): Promise<{ placement: Api["Placement"] } | { running: AgentRow } | { error: string }> =>
+    withRestartLock(child.session, async () => {
+      const snapshot = await discovery();
+      if (!snapshot.ok) return { error: "could not read the layout" };
+      const row = snapshot.all.find((a) => a.id === child.session);
+      if (row && row.state === "running") return { running: row };
+      const plan: Plan = { name: child.name, session: child.session, model: child.model, cwd: child.cwd, task, mode: { kind: "fresh" }, toplevel: false, koSession: snapshot.me?.session ?? "" };
+      const made = await createPane(plan);
+      if ("error" in made) return made;
+      recordChild(plan, made.placement);
+      return made;
     });
-  };
 
-  const stopInbox = (opts: { keepListening?: boolean } = {}): void => {
-    const hold = heldInbox();
-    if (!hold) return;
-    if (opts.keepListening) {
-      if (hold.state === "owned") setHeldInbox({ server: hold.server, path: hold.path, state: "parked", waiting: [] });
-      return;
-    }
-    setHeldInbox(null);
-    if (hold.state === "parked") for (const sock of hold.waiting.splice(0)) sock.destroy();
-    try {
-      hold.server.close();
-    } catch {}
-    try {
-      unlinkSync(hold.path);
-    } catch {}
-  };
+  // ---- the task and the endings that happened while this agent was away ----
 
-  const adoptInbox = (): boolean => {
-    const hold = heldInbox();
-    if (hold?.state !== "parked") return false;
-    setHeldInbox({ server: hold.server, path: hold.path, state: "owned", handler: onConnection });
-    for (const sock of hold.waiting.splice(0)) onConnection(sock);
-    return true;
-  };
-
-  const inboxOpen = (): boolean => {
-    const hold = heldInbox();
-    return hold?.state === "owned" && hold.handler === onConnection;
-  };
-
-  const startInbox = async (sessionId: string, base: string): Promise<string | undefined> => {
-    const place = inboxPath(base, sessionId);
-    if (!place) return `no inbox: no socket path for session ${sessionId} fits ${SOCKET_PATH_MAX} bytes`;
-    const { path } = place;
-    const inboxDir = dirname(path);
-    if (place.fallback) {
-      const problem = privateDir(inboxDir);
-      if (problem) return `no inbox: ${problem}`;
-    } else {
-      try {
-        mkdirSync(inboxDir, { recursive: true, mode: 0o700 });
-      } catch (err) {
-        return `no inbox: cannot create ${inboxDir}: ${err instanceof Error ? err.message : err}`;
+  const deliverTask = async (): Promise<void> => {
+    if (!pane) return;
+    const { ok, panes } = await listPanesResult();
+    if (!ok) return;
+    const me = panes.find((p) => p.pane === pane);
+    if (me?.parent) parentPane = me.parent;
+    const task = me?.task;
+    if (!isRecord(task)) return;
+    const text = str(task.text);
+    const from = isRecord(task.from) ? task.from : {};
+    if (text.trim()) {
+      if (edge && from.session === edge.parent) {
+        markOwnWork();
+        deliver(text);
+        ending = { kind: "awaiting-first-turn" };
+      } else {
+        deliverAgentMessage(str(from.name) || str(from.session) || "another agent", "sibling", text, false);
       }
     }
-    if (await answered(path)) return;
-    try {
-      unlinkSync(path);
-    } catch {}
-    const server = createServer({ allowHalfOpen: true }, dispatchInbox);
-    server.on("error", () => {});
-    const bound = await new Promise<boolean>((resolve) => {
-      server.once("error", () => resolve(false));
-      server.listen(path, () => resolve(true));
-    });
-    if (!bound) return `no inbox: cannot listen on ${path}`;
-    server.unref();
-    setHeldInbox({ server, path, state: "owned", handler: onConnection });
+    await apiCall("DELETE", varPath(VAR_TASK));
   };
 
-  // The child trusts the parent edge only when its own directory records its own
-  // session id: a pi that an agent's bash starts inherits the environment but
-  // mints a different session.
-  const readEdge = (sessionId: string): ParentEdge | null => {
-    const agentDir = process.env.KO_AGENT_DIR;
-    if (!agentDir) return null;
-    const record = readAgentRecord(agentDir);
-    if (!record || record.session !== sessionId) return null;
-    return { parent: dirname(agentDir).split("/").at(-1) ?? "", run: process.env.KO_RUN_ID ?? record.run, dir: agentDir };
+  const reconcileChildren = async (): Promise<void> => {
+    const { ok, panes } = await listPanesResult();
+    if (!ok) return;
+    await readInstance();
+    for (const child of children()) {
+      if (endedAfter(child)) continue;
+      const row = child.pane.instance === instance ? panes.find((p) => p.pane === child.pane.pane) : undefined;
+      if (row && !row.dead) continue;
+      await announceEnding(child, row?.dead ? { type: "dead", ...row.dead } : { type: "missing" });
+    }
   };
+
+  const stopOwnRuns = async (): Promise<void> => {
+    const command = ko;
+    const live = command ? await ownRuns(false) : undefined;
+    if (!command || !live) return;
+    await Promise.all(live.filter((run) => !run.outcome).map((run) => runCommand(command, ["run-stop", run.id], { timeoutMs: 3000 })));
+  };
+
+  // ---- rendering ----
 
   const inboundExpanded = new Map<string, boolean>();
 
@@ -1914,14 +1850,10 @@ export default function (pi: ExtensionAPI) {
     };
   };
 
-  pi.registerMessageRenderer<{ from: string }>(MESSAGE_CUSTOM_TYPE, (message, _options, theme) => {
-    const from = message.details?.from || "another agent";
+  pi.registerMessageRenderer<{ from: string; header?: string }>(MESSAGE_CUSTOM_TYPE, (message, _options, theme) => {
     const raw = typeof message.content === "string" ? message.content : "";
-    const header = RELATIONS
-      .map((relation) => `${senderHeader(from, relation)}\n`)
-      .find((line) => raw.startsWith(line));
-    const content = header ? raw.slice(header.length) : raw;
-    return renderInbound(message, theme, message.details?.from, "says", content);
+    const header = message.details?.header ? `${message.details.header}\n` : "";
+    return renderInbound(message, theme, message.details?.from, "says", header && raw.startsWith(header) ? raw.slice(header.length) : raw);
   });
 
   pi.registerMessageRenderer<{ from: string }>(STEER_CUSTOM_TYPE, (message, _options, theme) => {
@@ -1946,7 +1878,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_start", (event) => {
     const m = event?.message;
     const details = isRecord(m) && isRecord(m.details) ? m.details : undefined;
-    if (edge && details?.work === true) writeWork(edge.dir);
+    if (edge && details?.work === true) markOwnWork();
     if (m?.role !== "custom" || m.customType !== NOTICE_CUSTOM_TYPE) return;
     const noticeId = details?.noticeId;
     if (typeof noticeId !== "string" || !noticeId || !pendingNotices.has(noticeId)) return;
@@ -1954,22 +1886,78 @@ export default function (pi: ExtensionAPI) {
     renderNoticeWidget();
   });
 
+  // ---- tools ----
+
+  const rowsOf = (snapshot: Snapshot, which: "all" | "peers" | "subagents"): AgentRow[] =>
+    snapshot.rows.filter((row) => which === "all" || (which === "peers" ? row.relationship === "peer" : row.relationship === "own"));
+
   pi.registerTool({
-    name: "list_runs",
-    label: "List Runs",
+    name: "list_agents",
+    label: "List Agents",
     description:
-      "List agents in your discovery scope (top-level agents, your peers, each ancestor and its peers, and your direct subagents in this session), plus your own async_bash jobs: all running and the newest 20 ended, newest first. message_agent can also address agents outside this list in the same session. Use stop_run with a run id to stop your runs.",
-    promptSnippet: "list_runs() - discover agents, and your own subagents and jobs to stop with stop_run",
+      "List the agents you can message: your subagents, your peers, each ancestor and its peers, in this session. which selects all (default), peers or subagents. An own subagent's row says whether it has reported on its last work and starts its last report; read_report gives the whole text. Bash jobs are in list_async_bash.",
+    promptSnippet: "list_agents(which?) - discover the agents you can message, and your own subagents to stop with stop_agent",
+    parameters: Type.Object(
+      {
+        which: Type.Optional(Type.Union([Type.Literal("all"), Type.Literal("peers"), Type.Literal("subagents")], { description: "all (default), peers, or subagents (your own)." })),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_toolCallId, params) {
+      const listed = rowsOf(await discovery(), params.which ?? "all").map(toolRow);
+      return reply(JSON.stringify(listed), listed);
+    },
+  });
+
+  pi.registerTool({
+    name: "read_report",
+    label: "Read Report",
+    description: "The whole last report of one of your subagents, or all of its reports in order, as they reached you.",
+    promptSnippet: "read_report(agent, which?) - the whole report of one of your subagents",
+    parameters: Type.Object(
+      {
+        agent: Type.String({ description: "A subagent of yours: its exact name, session id, a unique id prefix of at least eight characters, or an @-mention." }),
+        which: Type.Optional(Type.Union([Type.Literal("last"), Type.Literal("all")], { description: "last (default) or all of its reports, in order." })),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_toolCallId, params) {
+      const snapshot = await discovery();
+      const mine: Snapshot = { ...snapshot, all: snapshot.all.filter((a) => a.relationship === "own" && !a.self), elsewhere: [] };
+      const resolved = resolveIn(mine, normalizeAddress(params.agent));
+      if ("error" in resolved) return reply(`could not read a report of ${params.agent}: ${resolved.error}`);
+      const child = children().find((c) => c.session === resolved.agent.id);
+      if (!child) return reply(`could not read a report of ${params.agent}: it is not a subagent of this session`);
+      const reports = childReports(child);
+      if (reports.length === 0) return reply(`${child.name} has not reported`);
+      if (params.which !== "all") return reply(reports.at(-1)?.text ?? "");
+      return reply(reports.map((r, i) => `--- report ${i + 1} of ${reports.length}, ${new Date(r.at).toISOString()} ---\n${r.text}`).join("\n\n"));
+    },
+  });
+
+  pi.registerTool({
+    name: "list_async_bash",
+    label: "List Async Bash",
+    description:
+      "List your own async_bash jobs: all running and the newest 20 ended, newest first, with the run id that stop_async_bash takes and the pane whose screen holds the output.",
+    promptSnippet: "list_async_bash() - your own async_bash jobs, with the pane whose screen holds the output",
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute() {
-      const { rows, entries } = await discovery();
-      const listed = rows.map((row) => {
-        const entry = ownEntry(row, entries);
-        if (!entry) return toolRow(row);
-        const task = readTextFile(join(entry.dir, "task"));
-        const report = join(entry.dir, "report");
-        return toolRow({ ...row, task, report: exists(report) ? report : undefined });
-      });
+      const runs = await ownRuns(true);
+      if (!runs) return reply("could not list async_bash jobs: ko runs failed");
+      const newest = [...runs].sort((a, b) => (b.startedAt ?? "").localeCompare(a.startedAt ?? ""));
+      let ended = 0;
+      const listed = newest
+        .filter((run) => !run.outcome || ++ended <= 20)
+        .map((run) => ({
+          run: run.id,
+          name: run.name,
+          state: run.outcome ? "ended" : "running",
+          outcome: run.outcome,
+          startedAt: run.startedAt,
+          pane: run.pane,
+          screen: `ko api '/panes/${run.pane}/screen?history=all'`,
+        }));
       return reply(JSON.stringify(listed), listed);
     },
   });
@@ -1978,16 +1966,16 @@ export default function (pi: ExtensionAPI) {
     name: "message_agent",
     label: "Message Agent",
     description:
-      "Send text to an agent by name, session id, or unique id prefix. message (default) queues for any agent until its current turn ends; to an ended subagent of yours it resumes that subagent in its own session, with its history, and the message is its next turn. steer joins a descendant's current turn. interrupt-and-steer aborts a descendant's current turn, then starts a new turn with the text.",
+      "Send text to an agent by name, session id, or unique id prefix. message (default) queues for any agent until its current turn ends; to an ended subagent of yours it resumes that subagent in its own session, with its history, and the message is its next turn. steer joins the current turn of any agent in your scope. interrupt-and-steer aborts the current turn of any agent in your scope, then starts a new turn with the text.",
     promptSnippet: "message_agent(to, message, mode?) - send a message to another agent in this session",
     parameters: Type.Object(
       {
         to: Type.String({
-          description: `Who to message: an agent's exact name, session id, run id, a unique id prefix of at least ${MIN_ID_PREFIX} characters, or an @-mention from the prompt such as @impl (run 9702ddd1).`,
+          description: `Who to message: an agent's exact name, session id, a unique id prefix of at least ${MIN_ID_PREFIX} characters, or an @-mention from the prompt such as @impl (session 9702ddd1).`,
         }),
         message: Type.String({ description: "The message text to deliver." }),
         mode: Type.Optional(Type.Union([Type.Literal("message"), Type.Literal("steer"), Type.Literal("interrupt-and-steer")], {
-          description: "message queues until the turn ends, and resumes an ended subagent of yours with its history (default). steer joins a descendant's current turn. interrupt-and-steer aborts a descendant's turn, then starts a new turn with the text.",
+          description: "message queues until the turn ends, and resumes an ended subagent of yours with its history (default). steer joins the current turn of any agent in your scope. interrupt-and-steer aborts its current turn, then starts a new turn with the text.",
         })),
       },
       { additionalProperties: false },
@@ -1995,32 +1983,28 @@ export default function (pi: ExtensionAPI) {
     async execute(_toolCallId, params) {
       if (!params.message) return reply(`could not message ${params.to}: the message is empty; nothing sent`);
       if (!params.message.isWellFormed()) return reply(`could not message ${params.to}: the message is not valid UTF-8`);
-      const kind = params.mode ?? "message";
-      const address = normalizeAddress(params.to);
+      if (Buffer.byteLength(params.message, "utf8") > MAX_MESSAGE_BYTES) return reply(`could not message ${params.to}: the message is over ${MAX_MESSAGE_BYTES} bytes`);
+      const mode = params.mode ?? "message";
       const snapshot = await discovery();
-      const prep: RestartPrep = kind === "message"
-        ? await prepareRestart(address, params.message, snapshot)
-        : { snapshot, entry: null, created: null };
-      if ("error" in prep) return reply(`could not message ${params.to}: ${prep.error}`);
-      if (prep.entry && prep.created?.delivery === "task") return reply(restartedReply(prep.entry.name, prep.created.run.id));
-      const resolved = resolveIn(prep.snapshot, address);
-      const target = prep.entry ? entryRow(prep.entry) : resolved.agent;
-      if (!target) return reply(`could not message ${params.to}: ${resolutionError(resolved)}`);
+      if (!snapshot.ok) return reply(`could not message ${params.to}: could not read the layout`);
+      const resolved = resolveIn(snapshot, normalizeAddress(params.to));
+      if ("error" in resolved) return reply(`could not message ${params.to}: ${resolved.error}`);
+      let target = resolved.agent;
       const name = agentName(target);
-      if (isMyself(target)) return reply(`${name} is this agent`);
-      if (target.kind === "bash") return reply(`could not message ${params.to}: ${name} is a background command, not an agent; it cannot be messaged`);
-      if (!target.canMessage) return reply(`could not message ${params.to}: ${name} has no inbox to reach it on`);
-      if (kind !== "message") {
-        if (!isDescendant(target, prep.snapshot.entries)) return reply(`${name} is not this agent's descendant`);
-        if (target.state === "ended") return reply(`could not message ${params.to}: ${name} is no longer running`);
+      if (target.self) return reply(`${name} is this agent`);
+      const child = target.relationship === "own" ? children().find((c) => c.session === target.id) : undefined;
+      if (target.state === "ended") {
+        if (!child || mode !== "message") return reply(`could not message ${params.to}: ${name} is no longer running`);
+        const restarted = await restartChild(child, params.message);
+        if ("error" in restarted) return reply(`could not message ${params.to}: ${restarted.error}`);
+        if ("placement" in restarted) return reply(`restarted ${name} in pane ${restarted.placement.pane}; ${liveRunRule(SPAWN_RESULT_RULE)}`);
+        target = restarted.running;
       }
-      markWork(target, prep.snapshot.entries);
-      const result = prep.entry
-        ? await sendWhenBound(target.inbox, kind, params.message, Date.now() + 5000)
-        : await sendEnvelope(target.inbox, kind, params.message);
-      const sent = sendText(target, kind, result, prep.snapshot.entries);
-      if (!sent.ok) return reply(`could not message ${params.to}: ${sent.text}`);
-      return reply(prep.created ? `restarted ${name} as run ${prep.created.run.id} and ${sent.text}; ${liveRunRule(SPAWN_RESULT_RULE)}` : sent.text);
+      if (child) markChildWork(child);
+      const kind: SendKind = mode === "interrupt-and-steer" ? "interrupt" : mode;
+      const result = await sendIntent(target.pane, kind, params.message);
+      const sent = deliveryText(name, mode, result, target.status === "working", true);
+      return reply(sent.ok ? sent.text : `could not message ${params.to}: ${sent.text}`);
     },
   });
 
@@ -2032,7 +2016,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet:
       "spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?) - start, resume or copy an agent in a new window; returns its pi session id; toplevel starts an independent peer, not a child",
     promptGuidelines: [
-      "A subagent's result arrives on its own as a notice when it finishes; never poll list_runs for it; list_runs lists the run and stop_run stops it with the returned run id.",
+      "A subagent's result arrives on its own as a notice when it finishes; never poll list_agents for it; list_agents lists the agent and stop_agent stops it.",
       "Trust but verify: a child's report says what it intended to do, not what it did - check the diff before relaying success.",
       NOT_THE_USER_RULE,
     ],
@@ -2066,13 +2050,12 @@ export default function (pi: ExtensionAPI) {
       if (!ko) return refuse("ko is not on PATH");
       if (!ownSessionId) return refuse("this session has no id");
       if (!pane) return refuse("this session has no pane");
-      const parentSession = ownSessionId;
       const name = params.name;
       if (!name) return refuse("name is required");
       const nameError = checkName(name);
       if (nameError) return refuse(nameError);
-      if (Buffer.byteLength(params.task, "utf8") > MAX_TASK_BYTES) return refuse(`the task is over the ${MAX_TASK_BYTES} byte task limit`);
-      const task = owesWork(params.task) ? params.task : "";
+      const task = params.task.trim().length > 0 ? params.task : "";
+      if (taskTooLarge(task)) return refuse(`the task does not fit the ${MAX_TASK_BYTES} byte limit of a pane variable`);
       if (!task && (!params.resume_from || params.fork)) return refuse("task is required unless resuming without fork");
       const model = params.model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}:${pi.getThinkingLevel()}` : null);
       if (!model) return refuse("caller has no model; specify model");
@@ -2125,75 +2108,49 @@ export default function (pi: ExtensionAPI) {
         } catch { return refuse(`invalid session header: ${file.path}`); }
         finally { closeSync(fd); }
       }
-      type Session = { kind: "fresh" } | { kind: "continue"; source: { id: string; path: string; cwd: string } } | { kind: "copy"; file: string };
       const forkFile = params.fork ? source?.path ?? ctx.sessionManager.getSessionFile() : undefined;
       if (params.fork && !forkFile) return refuse("caller has no session file to copy");
-      const session: Session = forkFile ? { kind: "copy", file: forkFile } : source ? { kind: "continue", source } : { kind: "fresh" };
-      const target = params.toplevel ? "toplevel" : "child";
+      const mode: Plan["mode"] = forkFile ? { kind: "copy", file: forkFile } : source ? { kind: "continue", file: source.path } : { kind: "fresh" };
+      const toplevel = !!params.toplevel;
       const cwd = resolve(ctx.cwd, params.cwd ?? source?.cwd ?? ctx.cwd);
-      if (session.kind === "continue" && cwd !== resolve(session.source.cwd)) return refuse(`a continued session runs in its recorded directory ${session.source.cwd}; fork copies it into another`);
+      if (mode.kind === "continue" && source && cwd !== resolve(source.cwd)) return refuse(`a continued session runs in its recorded directory ${source.cwd}; fork copies it into another`);
       let directoryExists = false;
       try { directoryExists = statSync(cwd).isDirectory(); } catch {}
       if (!directoryExists) return refuse(`cwd is not a directory: ${cwd}`);
-      const childSession = session.kind === "continue" ? session.source.id : newId();
-      const taken = () => refuse(`the name ${quote(name)} is already taken by ${target === "toplevel" ? "a live agent in this session" : "one of this session's runs; message it instead"}`);
+      const childSession = mode.kind === "continue" && source ? source.id : randomBytes(16).toString("hex");
+      const taken = () => refuse(`the name ${quote(name)} is already taken by ${toplevel ? "a live agent in this session" : "one of this session's agents; message it instead"}`);
       return withRestartLock(childSession, async () => {
-        const snapshot = session.kind === "continue" || target === "toplevel" ? await discovery() : null;
-        const entries = snapshot?.entries ?? (dir ? agentEntries(dir) : []);
-        if (session.kind === "continue" && target === "child" && chain(bySessionOf(entries), parentSession).includes(childSession)) return refuse(`session ${childSession} is an ancestor of this session`);
-        if (session.kind === "continue" && snapshot?.panes.some((agent) => agent.agentSession === childSession && !agent.dead)) return refuse(`session ${childSession} is live in a pane`);
-        const existing = session.kind === "continue" ? bySessionOf(own(entries)).get(childSession) : undefined;
-        if (existing && (target === "toplevel" || existing.name !== name)) return refuse("resume this child with its existing name and without toplevel");
+        const snapshot = await discovery();
+        if (!snapshot.ok || !snapshot.me) return refuse("could not read the layout");
+        if (mode.kind === "continue" && !toplevel && snapshot.ancestors.includes(childSession)) return refuse(`session ${childSession} is an ancestor of this session`);
+        if (mode.kind === "continue" && snapshot.panes.some((p) => p.agentSession === childSession && !p.dead)) return refuse(`session ${childSession} is live in a pane`);
+        const existing = mode.kind === "continue" ? children().find((c) => c.session === childSession) : undefined;
+        if (existing && (toplevel || existing.name !== name)) return refuse("resume this child with its existing name and without toplevel");
         if (!claimName(name)) return taken();
         try {
-          if (target === "toplevel" ? snapshot?.all.some((agent) => agent.koSession === snapshot.mySession && agent.state === "running" && agent.name.toLowerCase() === name.toLowerCase() && snapshot.panes.some((pane) => pane.pane === agent.pane && !pane.dead)) : !existing && await nameTaken(name, entries, snapshot?.runs)) return taken();
-          const depth = depthOfSession(parentSession, bySessionOf(entries)) + 1;
-          if (target === "child" && depth > MAX_DEPTH) return refuse(`refusing to spawn at depth ${depth}: maximum nesting is ${MAX_DEPTH} (root 0, subagent 1, subagent 2)`);
-          const childDir = existing?.dir ?? join(dir ?? "", "agents", parentSession, name);
-          const entry: AgentEntry = { session: childSession, run: existing?.run ?? "", model, fork: session.kind === "copy", name, parent: parentSession, dir: childDir };
-          const policy = { sessionFile: session.kind === "continue" ? session.source.path : null, fork: session.kind === "copy" ? session.file : null };
-          let started: Spawned;
-          if (target === "toplevel") {
-            if (!snapshot?.mySession || !snapshot.lastWindow) return refuse("caller's session is unknown");
-            started = await openWindow(name, piArgs(entry, policy), cwd, { session: snapshot.mySession, after: snapshot.lastWindow });
-          } else if (existing && snapshot && session.kind === "continue") {
-            const prepared = await prepareRestart(normalizeAddress(childSession), task, snapshot, { model, sessionFile: session.source.path, cwd });
-            if ("error" in prepared) return refuse(prepared.error);
-            if (!prepared.created) return refuse(`session ${childSession} already has a live run`);
-            started = { created: prepared.created.run };
-          } else {
-            mkdirSync(childDir, { recursive: true, mode: 0o700 });
-            started = await restartAgent(entry, task, policy, cwd);
-          }
-          if ("error" in started) {
-            if (!existing && target === "child") rmSync(childDir, { recursive: true, force: true });
-            return refuse(started.error);
-          }
-          const created = started.created;
-          if (session.kind === "continue") {
-            for (const previous of entries) {
-              if (previous.session === childSession && previous.parent !== parentSession) rmSync(join(previous.dir, "agent.json"), { force: true });
-            }
-          }
-          let deliveryError = "";
-          if (target === "toplevel") {
-            const deadline = Date.now() + envMs("KO_INBOX_WAIT_MS", 30000);
-            for (;;) {
-              const live = (await listPanes()).find((agent) => agent.agentSession === childSession && !agent.dead && agent.inbox);
-              if (live) {
-                if (task) {
-                  const sent = await sendWhenBound(live.inbox, "message", task, deadline);
-                  if (!sent.ok) deliveryError = `; task delivery failed: ${sent.message}`;
-                }
-                break;
-              }
-              if (Date.now() >= deadline) { deliveryError = "; timed out waiting for its inbox; no task was delivered"; break; }
-              await sleep(50);
-            }
-          }
+          const wanted = name.toLowerCase();
+          const holds = toplevel
+            ? [...snapshot.all].some((a) => a.state === "running" && a.name.toLowerCase() === wanted)
+            : !existing && ([...children()].some((c) => c.name.toLowerCase() === wanted) || snapshot.all.some((a) => a.relationship === "own" && a.name.toLowerCase() === wanted));
+          if (holds) return taken();
+          if (!toplevel && snapshot.depth + 1 > MAX_DEPTH) return refuse(`refusing to spawn at depth ${snapshot.depth + 1}: maximum nesting is ${MAX_DEPTH} (root 0, subagent 1, subagent 2)`);
+          const plan: Plan = {
+            name,
+            session: childSession,
+            model,
+            cwd,
+            task,
+            mode,
+            toplevel,
+            koSession: snapshot.me.session,
+          };
+          const made = await createPane(plan);
+          if ("error" in made) return refuse(made.error);
+          if (!toplevel) recordChild(plan, made.placement);
+          const { window, pane: childPane } = made.placement;
           return reply(
-            `spawned ${name} (session ${childSession}, window ${created.window}, pane ${created.pane}${created.id ? `, run ${created.id}` : ""})${session.kind === "copy" ? `, forked from session ${source?.id ?? parentSession}` : ""}; session id is what resume_from takes later; ${target === "toplevel" ? "independent peer; no report or ending notice" : owesWork(task) ? liveRunRule(SPAWN_RESULT_RULE) : SPAWN_RESULT_RULE}${deliveryError}`,
-            { session: childSession, name, window: created.window, pane: created.pane, run: created.id, fork: session.kind === "copy" },
+            `spawned ${name} (session ${childSession}, window ${window}, pane ${childPane})${mode.kind === "copy" ? `, forked from session ${source?.id ?? ownSessionId}` : ""}; session id is what resume_from takes later; ${toplevel ? "independent peer; no report or ending notice" : task ? liveRunRule(SPAWN_RESULT_RULE) : SPAWN_RESULT_RULE}`,
+            { session: childSession, name, window, pane: childPane, fork: mode.kind === "copy" },
           );
         } finally { releaseName(name); }
       });
@@ -2201,16 +2158,68 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
+    name: "stop_agent",
+    label: "Stop Agent",
+    description:
+      "Stop one agent in your scope: a subagent, a peer, an ancestor or a pi the user started. It asks the agent to shut down and then kills its pane. force kills an agent that is not receiving messages. The result is the only signal: a subagent you stop sends no ending notice. Stopping an ancestor ends you with it.",
+    promptSnippet: "stop_agent(agent, force?) - end one agent in your scope",
+    parameters: Type.Object(
+      {
+        agent: Type.String({
+          description: `An address: session id, unique id prefix of at least ${MIN_ID_PREFIX} characters, name, or an @-mention such as @impl (session 9702ddd1).`,
+        }),
+        force: Type.Optional(
+          Type.Boolean({
+            description: "For an agent that is not receiving messages, kill its pane without asking it first. Destructive and irreversible.",
+          }),
+        ),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_toolCallId, params) {
+      const snapshot = await discovery();
+      if (!snapshot.ok) return reply("could not stop: could not read the layout");
+      const resolved = resolveIn(snapshot, normalizeAddress(params.agent));
+      if ("error" in resolved) return { ...reply(`${quote(params.agent)}: error: ${resolved.error}`), isError: true };
+      const target = resolved.agent;
+      const name = agentName(target);
+      if (target.self) return { ...reply(`refusing to stop ${name}: it is this agent`), isError: true };
+      const child = target.relationship === "own" ? children().find((c) => c.session === target.id) : undefined;
+      const reportedText = child ? (childReported(child) ? "; it had reported" : "; it had not reported on its last work") : "";
+      if (target.state === "ended") {
+        if (child) claimEnding(child);
+        return reply(`${name} had already ended: ${target.ended ?? "its pane is gone"}`);
+      }
+      if (!params.force && !target.canMessage) {
+        return { ...reply(`${name} is not receiving messages; pass force to kill its pane`), isError: true };
+      }
+      if (child) claimEnding(child);
+      let requestFailure = "";
+      if (!params.force) {
+        const request = await sendIntent(target.pane, "stop", "");
+        if (request.state !== "acked" && request.state !== "refused") requestFailure = "message" in request ? request.message : request.state;
+      }
+      const stopped = await apiCall("POST", `/panes/${target.pane}/stop`, { wait_ms: params.force ? 0 : STOP_WAIT_MS } satisfies Api["StopPane"], STOP_CALL_MS);
+      if ("error" in stopped || stopped.status !== 200) {
+        const failure = apiError(stopped);
+        if (failure.kind === "not_found") return reply(`${name} had already ended: its pane was removed`);
+        return { ...reply(`could not stop ${name}: ${failure.message}`), isError: true };
+      }
+      return reply(`stopped ${name}${reportedText}${requestFailure ? `; the stop request failed: ${requestFailure}` : ""}`);
+    },
+  });
+
+  pi.registerTool({
     name: "async_bash",
     label: "Async Bash",
     description:
-      "Run a shell command in the background, for a command whose result you do not need for your next step - this session keeps working while it runs. Exactly one notice arrives when the command ends, carrying its exit status and a tail of its output; read the output file with the ordinary read tool at any time before then to check on progress. With stream=true the output also arrives in batches as it runs - between your own tool calls while you are working, on a slowing schedule when you are idle, capped per batch and per run, so some lines are only ever in the file, which always has all of them. If your next step needs the result and you have nothing else to do meanwhile, use bash with a timeout instead; list_runs lists its run and stop_run stops it with the returned run id.",
+      "Run a shell command in the background, for a command whose result you do not need for your next step - this session keeps working while it runs. Exactly one notice arrives when the command ends, carrying its exit status and a tail of its output. Its output is the pane's screen: read it with ko api /panes/PANE/screen?history=all meanwhile. With stream=true the new lines arrive in batches. list_async_bash lists it and stop_async_bash stops it. If your next step needs the result and you have nothing else to do meanwhile, use bash with a timeout instead.",
     promptSnippet:
-      "async_bash(command, name, stream?) - run a command in the background; a notice with its exit status arrives when it ends, read the output file meanwhile; list_runs lists it and stop_run stops it with its run id",
+      "async_bash(command, name, stream?) - run a command in the background; a notice with its exit status arrives when it ends, read the pane's screen meanwhile; list_async_bash lists it and stop_async_bash stops it",
     promptGuidelines: [
-      "Use async_bash when you can do other work while a command runs, when someone (the user, your parent or a child) may need an answer from you meanwhile, when you start several independent jobs at once, or for a server that keeps running. Once a command is in async_bash, its notice is the only way you learn that it ended: never run `sleep` in bash to wait for it, and never loop over its output file. If you have nothing else to do, end your turn; the notice wakes you.",
+      "Use async_bash when you can do other work while a command runs, when someone (the user, your parent or a child) may need an answer from you meanwhile, when you start several independent jobs at once, or for a server that keeps running. Once a command is in async_bash, its notice is the only way you learn that it ended: never run `sleep` in bash to wait for it, and never loop over its screen. If you have nothing else to do, end your turn; the notice wakes you.",
       "Use async_bash instead of background bash jobs (`nohup`, a trailing `&`, `setsid`, `disown`).",
-      "list_runs lists an async_bash run and stop_run stops it with the returned run id.",
+      "list_async_bash lists an async_bash job and stop_async_bash stops it by its run id.",
       NOT_THE_USER_RULE,
     ],
     parameters: Type.Object(
@@ -2235,29 +2244,29 @@ export default function (pi: ExtensionAPI) {
       if (!params.name) return reply("could not start background command: --name is required");
       const nameError = checkName(params.name);
       if (nameError) return reply(`could not start background command: ${nameError}`);
-      if (!claimName(params.name)) {
-        return reply(`could not start background command: the name ${quote(params.name)} is already taken by one of this session's runs; choose another name`);
-      }
+      const taken = `could not start background command: the name ${quote(params.name)} is already taken by one of this session's runs; choose another name`;
+      if (!claimName(params.name)) return reply(taken);
       try {
-      if (await nameTaken(params.name)) {
-        return reply(`could not start background command: the name ${quote(params.name)} is already taken by one of this session's runs; choose another name`);
-      }
-      const parent = parentKey();
-      if (!parent) return reply("could not start background command: this session has no pane to parent a run from");
-      const line = `{\n${params.command}\n} 2>&1 | tee "$KO_RUN_OUTPUT"`;
-      const started = await startChild(parent, params.name, null, ["bash", "-o", "pipefail", "-c", line]);
-      if ("error" in started) return reply(`could not start background command: ${started.error}`);
-      const created = started.created;
-      watch(watchData(created.id, params.name, created.output, null, !!params.stream));
-      
-      return reply(
-        `started run ${created.id}${params.name ? ` (${params.name})` : ""} in window ${created.window}; list_runs lists it and stop_run(["${created.id}"]) stops it; ` +
-          `a notice with its exit status and a tail of its output arrives when it ends and starts your next turn; you stay alive while it runs, so ending your turn now is safe - do not sleep or poll for it, and end your turn if nothing else is left - ` +
-          liveRunRule(params.stream
-            ? `batches of its output arrive meanwhile, capped, with anything they leave out in ${created.output}`
-            : `read ${created.output} with the read tool to check on it meanwhile`),
-        { name: params.name, window: created.window, pane: created.pane, run: created.id, output: created.output, stream: !!params.stream },
-      );
+        if (!pane) return reply("could not start background command: this session has no pane to parent a run from");
+        const wanted = params.name.toLowerCase();
+        const runs = (await ownRuns(true)) ?? [];
+        if (runs.some((r) => (r.name ?? "").toLowerCase() === wanted) || children().some((c) => c.name.toLowerCase() === wanted)) return reply(taken);
+        const res = await runCommand(command, ["run-child", pane, "--name", params.name, "--", "bash", "-o", "pipefail", "-c", params.command], { timeoutMs: envMs("KO_SPAWN_TIMEOUT_MS", 5000) });
+        if (!res.ok) return reply(`could not start background command: ${res.error}`);
+        let started: unknown;
+        try {
+          started = JSON.parse(res.out);
+        } catch {}
+        if (!isStarted(started)) return reply("could not start background command: ko printed no run");
+        watchRun({ run: started.id, name: params.name, pane: started.pane, stream: !!params.stream });
+        return reply(
+          `started run ${started.id} (${params.name}) in window ${started.window}, pane ${started.pane}; list_async_bash lists it and stop_async_bash stops it; ` +
+            `a notice with its exit status and a tail of its screen arrives when it ends and starts your next turn; you stay alive while it runs, so ending your turn now is safe - do not sleep or poll for it, and end your turn if nothing else is left - ` +
+            liveRunRule(params.stream
+              ? `batches of its new lines arrive meanwhile, capped; its whole output is the pane's screen: ko api '/panes/${started.pane}/screen?history=all'`
+              : `its output is the pane's screen: read it with ko api '/panes/${started.pane}/screen?history=all' to check on it meanwhile`),
+          { name: params.name, window: started.window, pane: started.pane, run: started.id, stream: !!params.stream },
+        );
       } finally {
         releaseName(params.name);
       }
@@ -2265,129 +2274,54 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerTool({
-    name: "stop_run",
-    label: "Stop Run",
+    name: "stop_async_bash",
+    label: "Stop Async Bash",
     description:
-      "Stop own runs and descendant subagents in parallel. Pass an address or a non-empty list of addresses. Each address gets one result line in input order; duplicate addresses for the same run stop it once. Errors do not block other stops; isError is true only if every result is an error. Asks subagents to shut down, killing their panes if needed; sends TERM to bash process groups. A child that already reported ends as completed; one stopped before it reported ends as stopped. Each line names the outcome with the report path or output path; a run that had already ended says how. The result is the only signal: a run you stop gets no ending notice.",
-    promptSnippet: "stop_run(to, force?) - end own runs and descendant subagents in parallel; to is an address or a non-empty list of addresses",
+      "Stop one of your async_bash jobs by run id, name or unique id prefix; its pane is killed and lingers for a while with its last output.",
+    promptSnippet: "stop_async_bash(run) - stop one of your async_bash jobs",
     parameters: Type.Object(
       {
-        to: Type.Union([Type.String(), Type.Array(Type.String(), { minItems: 1 })], {
-          description:
-            `An address or a list of addresses: run or session id, unique id prefix of at least ${MIN_ID_PREFIX} characters, unambiguous running name, or an @-mention such as @impl (run 9702ddd1).`,
-        }),
-        force: Type.Optional(
-          Type.Boolean({
-            description:
-              "For a subagent with no usable inbox, allow killing its pane instead. Not needed for bash runs. Destructive and irreversible.",
-          }),
-        ),
+        run: Type.String({ description: `A run id of list_async_bash, its name, or a unique id prefix of at least ${MIN_ID_PREFIX} characters.` }),
       },
       { additionalProperties: false },
     ),
     async execute(_toolCallId, params) {
-      const addresses = typeof params.to === "string" ? [params.to] : params.to;
       const command = ko;
       if (!command) return reply("could not stop: ko is not on PATH");
-      const { all, entries, runs } = await discovery();
-      const force = !!params.force;
-      const candidates = all.filter((a) => !a.self && (a.relationship === "own" || isDescendant(a, entries)));
-      const resolved = addresses.map((address): { target: AgentRow } | { error: string } => {
-        const { wanted, mention } = normalizeAddress(address);
-        let matches = candidates.filter((a) => matchesId(a, wanted));
-        if (!matches.length) {
-          matches = candidates.filter((a) => matchesId(a, wanted, true));
-        }
-        if (!matches.length) {
-          matches = candidates.filter((a) => !mention && a.named && a.name.toLowerCase() === wanted.toLowerCase() && a.state === "running");
-        }
-        if (!matches.length && wanted.length < MIN_ID_PREFIX && candidates.some((a) => rowIds(a).some((id) => id.startsWith(wanted)))) return { error: `id prefixes need at least ${MIN_ID_PREFIX} characters` };
-        const [target, ...rest] = matches;
-        if (!target) return { error: `no run matches ${quote(address)}` };
-        if (rest.length) {
-          return { error: `${quote(address)} matches several runs: ${matches.map((a) => a.run || a.id).sort().join(", ")}` };
-        }
-        return { target };
-      });
-      const stops = new Map<string, Promise<{ text: string } | { error: string }>>();
-      const stop = async (target: AgentRow, run: string): Promise<{ text: string } | { error: string }> => {
-        const stopWait = 5;
-        const stopDeadline = (wait: number): number => wait * 1000 + envMs("KO_STOP_ESCALATION_MS", 5000) + 1500;
-        const watched = watches.get(run);
-        const entry = target.kind === "bash" ? undefined : entries.find((e) => e.session === target.id) ?? entries.find((e) => e.run === target.run);
-        const output = runs.find((r) => r.id === run)?.output;
-        const path = entry ? (reportState(entry.dir).report === undefined ? "" : `report: ${join(entry.dir, "report")}`) : output ? `output: ${output}` : "";
-        const withPath = (text: string): string => (path ? `${text}; ${path}` : text);
-        const endedText = (ended: { result: string; text?: string } | undefined): string =>
-          withPath(`run ${run} has already ended${ended ? ` ${ended.result}${ended.text ? `: ${ended.text}` : ""}` : ""}`);
-        const endingOf = async (): Promise<{ result: string; text: string } | undefined> => {
-          if (watched?.outcome) return watched.outcome;
-          const waited = await runCommand(command, ["run-wait", run, "--json"], { timeoutMs: stopDeadline(0) });
-          return waited.ok ? outcomeOf(waited.out) : undefined;
-        };
-        const alreadyEnded = async (): Promise<{ error: string }> => ({ error: endedText(await endingOf()) });
-        if (target.state === "ended") {
-          if (watched) watched.silenced = true;
-          return { error: endedText(target.outcome) };
-        }
-        if (target.kind !== "bash" && !force && !target.inbox) return { error: `subagent ${target.name || target.id} has no inbox for a stop request; pass --force to kill its window instead` };
-        if (watched) watched.silenced = true;
-        const failed = async (error: string): Promise<{ error: string }> => {
-          const live = watches.get(run);
-          if (live) live.silenced = false;
-          else if (watched) return { error: `${error}; ${endedText(await endingOf())}` };
-          return { error };
-        };
-        if (target.kind === "bash") {
-          const res = await runCommand(command, ["run-stop", run], { timeoutMs: stopDeadline(0) });
-          if (res.ok) return { text: withPath(res.out) };
-          return res.code === 5 ? alreadyEnded() : failed(res.error);
-        }
-        const name = target.name || target.id;
-        const outcome = entry && reported(entry) ? "completed" : "stopped";
-        const recordArgs = ["run-outcome", run, "--result", outcome];
-        const recorded = await runCommand(command, recordArgs, { timeoutMs: stopDeadline(stopWait) });
-        if (!recorded.ok) return recorded.code === 5 ? alreadyEnded() : failed(recorded.error);
-        let requestFailure = "";
-        if (!force && target.inbox) {
-          const request = await sendEnvelope(target.inbox, "stop", "");
-          if (!request.ok && request.kind !== "refused") requestFailure = request.message;
-        }
-        const res = await runCommand(command, ["run-stop", run, "--wait", String(stopWait)], { timeoutMs: stopDeadline(stopWait) });
-        if (res.ok) return { text: withPath(requestFailure ? `${outcome} ${name}; ${res.out}; the stop request failed: ${requestFailure}` : `${outcome} ${name}; ${res.out}`) };
-        if (res.code === 5) return { text: withPath(`${outcome} ${name}; its pane was already gone`) };
-        return failed(requestFailure ? `${res.error}; the stop request failed: ${requestFailure}` : res.error);
-      };
-      const results = await Promise.all(resolved.map((result) => {
-        if ("error" in result) return result;
-        const run = result.target.run || result.target.id;
-        let pending = stops.get(run);
-        if (!pending) {
-          pending = stop(result.target, run);
-          stops.set(run, pending);
-        }
-        return pending;
-      }));
-      return {
-        ...reply(results.map((result, i) => "error" in result
-          ? `${quote(addresses[i] ?? "")}: error: ${result.error}`
-          : result.text).map((line) => line.trim().replace(/\s*\n\s*/g, "; ")).join("\n")),
-        isError: results.every((result) => "error" in result),
-      };
+      const runs = await ownRuns(true);
+      if (!runs) return { ...reply("could not stop: ko runs failed"), isError: true };
+      const jobs = runs.map((job) => ({ id: job.id, pane: job.pane ?? "", name: job.name ?? "", named: true, state: job.outcome ? ("ended" as const) : ("running" as const), job }));
+      const found = matchAddress(jobs, normalizeAddress(params.run));
+      if (!found) return { ...reply(`${quote(params.run)}: error: no async_bash job matches`), isError: true };
+      if ("error" in found) return { ...reply(`${quote(params.run)}: error: ${found.error}`), isError: true };
+      const run = found.agent.job;
+      const screen = `ko api '/panes/${run.pane}/screen?history=all' while the pane lingers, then ko api /runs/${run.id}/screen`;
+      const had = `run ${run.id} (${run.name}) had already ended`;
+      if (run.outcome) return reply(`${had}: ${run.outcome.result}${run.outcome.text ? `: ${run.outcome.text}` : ""}; its output: ${screen}`);
+      const watch = watches.get(run.id);
+      if (watch) watch.silenced = true;
+      const res = await runCommand(command, ["run-stop", run.id], { timeoutMs: STOP_CALL_MS });
+      if (res.ok) return reply(`${res.out}; pane ${run.pane}; its output: ${screen}`);
+      if (res.code === 5) return reply(`${had}; its output: ${screen}`);
+      if (watch) watch.silenced = false;
+      return { ...reply(`could not stop ${run.id}: ${res.error}`), isError: true };
     },
   });
+
   pi.on("before_agent_start", (event) => {
     event.systemPromptOptions.promptGuidelines.push(NEVER_SLEEP_RULE);
     if (edge) event.systemPromptOptions.promptGuidelines.push(SUBAGENT_INSTRUCTION);
   });
 
+  // ---- the session ----
+
   pi.on("session_start", async (_event, ctx) => {
     ko = insideKo() ? findKo() : null;
     session = ctx;
     ownSessionId = ctx.sessionManager.getSessionId() || null;
-    dir = stateDir();
     pane = process.env.KO_PANE || null;
-    edge = ownSessionId ? readEdge(ownSessionId) : null;
+    const parent = process.env.KO_AGENT_PARENT_SESSION;
+    edge = ownSessionId && parent && process.env.KO_AGENT_SESSION === ownSessionId ? { parent } : null;
     const previousExit = globalThis.__koPiExtensionExit;
     if (previousExit) process.removeListener("exit", previousExit);
     globalThis.__koPiExtensionExit = unsetVarsSync;
@@ -2397,7 +2331,8 @@ export default function (pi: ExtensionAPI) {
     ending = { kind: "ended", text: "" };
     settled = true;
     turnEndedByControl = false;
-    liveWatch = undefined;
+    leaving = null;
+    parentPane = "";
 
     // A headless session has no ui, and an older pi has one without this method:
     // both simply get no `@name` completion.
@@ -2414,7 +2349,7 @@ export default function (pi: ExtensionAPI) {
             cache.refreshing = discovery()
               .then(({ rows, all }) => {
                 cache.all = all;
-                cache.rows = rows.filter((a) => a.kind !== "bash" && a.state !== "ended");
+                cache.rows = rows.filter((a) => a.state !== "ended");
                 cache.at = Date.now();
               })
               .catch(() => {})
@@ -2437,55 +2372,22 @@ export default function (pi: ExtensionAPI) {
     }
 
     active = false;
-    if (!ctx.hasUI || !ownSessionId || !ko) return;
+    if (!ctx.hasUI || !ownSessionId || !ko || !pane) return;
     active = true;
 
-    if (!adoptInbox()) {
-      stopInbox();
-      try {
-        const failure = await startInbox(ownSessionId, dir);
-        if (failure) ctx.ui?.notify?.(failure, "warning");
-      } catch (err) {
-        ctx.ui?.notify?.(`no inbox: ${err instanceof Error ? err.message : err}`, "warning");
-      }
-    }
-    const hold = inboxOpen() ? heldInbox() : null;
-    const options: Array<[string, string]> = [
+    startReceiver();
+    await writeVars([
       [VAR_SESSION, ownSessionId],
       [VAR_NAME, pi.getSessionName() ?? ""],
-    ];
-    if (hold) options.push([VAR_INBOX, hold.path]);
-    await writeVars(options);
-
-    // The task file is the run's record; the sibling "delivered" marker, written
-    // only after a successful read, stops a /reload from delivering it twice.
-    if (edge) {
-      const sessionFile = ctx.sessionManager.getSessionFile();
-      if (sessionFile) {
-        try {
-          writeFileSync(join(edge.dir, "session-file"), sessionFile);
-        } catch {}
-      }
-      const marker = join(edge.dir, "delivered");
-      if (!exists(marker)) {
-        const task = readTextFile(join(edge.dir, "task"));
-        if (task !== undefined) {
-          try {
-            writeFileSync(marker, "");
-          } catch {}
-          if (owesWork(task)) {
-            deliver(task);
-            ending = { kind: "awaiting-first-turn" };
-          }
-        }
-      }
-    }
+    ]);
+    await readInstance();
+    await deliverTask();
     const parked = globalThis.__koPiExtensionWatches;
     globalThis.__koPiExtensionWatches = undefined;
-    if (parked) {
-      for (const data of parked) watch(data);
-    }
-    startParentWatch();
+    for (const data of parked ?? []) watchRun(data);
+    await adoptLiveRuns();
+    await reconcileChildren();
+    startTick();
   });
 
   pi.on("session_info_changed", async () => {
@@ -2495,7 +2397,6 @@ export default function (pi: ExtensionAPI) {
   const running = (): void => {
     agentWorking = true;
     beginWork();
-    void watchLiveChildren();
   };
   pi.on("agent_start", () => {
     workStarted();
@@ -2520,7 +2421,7 @@ export default function (pi: ExtensionAPI) {
     const text = blocks.flatMap((block) => (isRecord(block) && block.type === "text" && typeof block.text === "string" ? [block.text] : [])).join("");
     ending =
       last.stopReason === "error"
-        ? { kind: "error", text: last.errorMessage || "no error message given", notified: false }
+        ? { kind: "error", text: last.errorMessage || "no error message given", notified: false, id: mintId() }
         : last.stopReason === "aborted"
           ? { kind: "aborted" }
           : { kind: "ended", text };
@@ -2530,71 +2431,54 @@ export default function (pi: ExtensionAPI) {
     if (!ctx.isIdle()) return;
     finishWorking();
     settled = true;
-    for (const env of interruptedMessages.splice(0)) await handleInboundMessage(env);
+    for (const held of interrupted.splice(0)) deliverMessage(held);
     if (!edge) return;
     if (event?.aborted) return;
     if (turnEndedByControl) return;
     if (ending.kind === "aborted") return;
     if (ending.kind === "error") {
       if (ending.notified) return;
-      const generation = workGeneration;
-      const run = await readRuns([edge.run]);
-      if (turnEndedByControl || generation !== workGeneration) return;
-      if (isRecord(run) && runRow(run)?.outcome !== undefined) return;
       ending.notified = true;
-      const superseded = await notifyParent(
-        edge,
-        { kind: "status", text: `subagent stopped on an error: ${trimErrorMessage(ending.text)}\nrun: ${edge.run}\nmessage it to retry, or stop_run to end it` },
-        () => !turnEndedByControl,
-      );
-      if (superseded) ending.notified = false;
+      const sent = await statusNotice(`subagent stopped on an error: ${trimErrorMessage(ending.text)}\nmessage it to retry, or stop_agent to end it`, ending.id);
+      if (!sent && ending.kind === "error") ending.notified = false;
       return;
     }
+    if (ownReported()) return;
     const generation = workGeneration;
-    const ownDir = edge.dir;
-    const state = reportState(ownDir);
-    if (state.reported) return;
-    if (!(await watchLiveChildren())) return;
-    if (turnEndedByControl || generation !== workGeneration) return;
-    for (const watch of watches.values()) {
-      if (watch.target.kind === "bash" || !reported(watch.target.entry)) return;
-    }
-    await notifyParent(edge, { kind: "report", text: ending.kind === "ended" ? ending.text : "" }, () => !turnEndedByControl && reportState(ownDir).work === state.work);
+    if ((await ownLiveWork()) !== false) return;
+    if (turnEndedByControl || generation !== workGeneration || ownReported()) return;
+    const name = quote(pi.getSessionName() ?? "");
+    const last = ending.kind === "ended" ? ending.text : "";
+    const text = utf8Prefix(last || `subagent ${name} ended its turn with no message`, MAX_MESSAGE_BYTES);
+    const report = { id: mintId(), text };
+    append(ENTRY_REPORT, { text, id: report.id, sent: false });
+    await sendReport(report, false);
   });
 
   pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {
-    const reload = event?.reason === "reload";
-    stopInbox({ keepListening: reload });
-    stopParentWatch();
-    if (reload) {
-      globalThis.__koPiExtensionWatches = [...watches.values()].map(
-        ({ timer, flushTimer, waiter, detach, outcome, ...data }): WatchData => {
-          void outcome;
-          void timer;
-          void flushTimer;
-          void waiter;
-          void detach;
-          return data;
-        },
-      );
+    const reason = event?.reason;
+    stopTick();
+    if (reason === "reload") {
+      stopReceiver(true);
+      globalThis.__koPiExtensionWatches = parkWatches();
+      dropWatches();
     } else {
       globalThis.__koPiExtensionWatches = undefined;
-    }
-    for (const entry of watches.values()) {
-      if (entry.timer) clearInterval(entry.timer);
-      clearFlush(entry);
-      if (reload) entry.detach?.();
-      entry.waiter?.kill();
-    }
-    watches.clear();
-    await endOwnRun(event?.reason);
-    if (active && !reload) await unsetVars();
-    if (!reload && globalThis.__koPiExtensionExit === unsetVarsSync) {
-      process.removeListener("exit", unsetVarsSync);
-      globalThis.__koPiExtensionExit = undefined;
+      if (reason === "quit" && edge && leaving === null && active) {
+        const text = exitNoticeText();
+        exitNoticeId ||= mintId();
+        if (text) await statusNotice(text, exitNoticeId);
+      }
+      if (active) await stopOwnRuns();
+      dropWatches();
+      stopReceiver(false);
+      if (active) await unsetVars();
+      if (globalThis.__koPiExtensionExit === unsetVarsSync) {
+        process.removeListener("exit", unsetVarsSync);
+        globalThis.__koPiExtensionExit = undefined;
+      }
     }
     active = false;
     session = null;
   });
 }
-

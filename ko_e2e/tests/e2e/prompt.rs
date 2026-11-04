@@ -1,6 +1,3 @@
-use std::io::{Read, Write};
-use std::os::unix::net::UnixListener;
-use std::sync::{Arc, Mutex};
 use std::thread;
 
 use serde_json::{Value, json};
@@ -12,11 +9,8 @@ use crate::runs::{caller, code, ko_as, ko_command, run_of};
 
 const AGENT: &str = "printf '\\033]7501;state=idle:app=pi\\007'; printf 'TOKEN<%s>' \"$KO_PANE_TOKEN\"; while read line; do echo \"got: $line\"; done";
 
-fn agent_of(name: &str, inbox: Option<&str>) -> Value {
-    let mut vars = json!({"pi.session": format!("session-{name}"), "pi.name": name});
-    if let Some(inbox) = inbox {
-        vars["pi.inbox"] = json!(inbox);
-    }
+fn agent_of(name: &str) -> Value {
+    let vars = json!({"pi.session": format!("session-{name}"), "pi.name": name});
     json!({"command": {"type": "shell", "command": AGENT}, "vars": vars})
 }
 
@@ -29,7 +23,7 @@ fn rooted(s: &Server, pane: &str) {
 }
 
 fn agent(s: &Server, name: &str) -> String {
-    let pane = s.new_pane(agent_of(name, None));
+    let pane = s.new_pane(agent_of(name));
     rooted(s, &pane);
     pane
 }
@@ -74,74 +68,14 @@ fn silent(s: &Server, pane: &str, text: &str) -> bool {
     !s.screen(pane).contains(&format!("got: {text}"))
 }
 
-#[derive(Debug)]
-struct Inbox {
-    path: String,
-    received: Arc<Mutex<Vec<String>>>,
-}
-
-fn inbox(s: &Server, name: &str, reply: &'static str) -> Inbox {
-    let path = s.scratch.join(format!("{name}.sock"));
-    let listener = UnixListener::bind(&path).unwrap();
-    let received = Arc::new(Mutex::new(Vec::new()));
-    let log = received.clone();
-    thread::spawn(move || {
-        while let Ok((mut peer, _)) = listener.accept() {
-            let mut text = String::new();
-            let _ = peer.read_to_string(&mut text);
-            log.lock().unwrap().push(text);
-            let _ = peer.write_all(reply.as_bytes());
-        }
-    });
-    Inbox {
-        path: path.to_str().unwrap().to_owned(),
-        received,
-    }
-}
-
-fn stale_socket(s: &Server) -> String {
-    let path = s.scratch.join("stale.sock");
-    drop(UnixListener::bind(&path).unwrap());
-    assert!(path.exists());
-    path.to_str().unwrap().to_owned()
-}
-
 #[test]
-fn a_prompt_goes_by_the_inbox_when_the_agent_has_one_and_by_paste_only_when_it_has_none() {
+fn a_prompt_goes_by_paste_when_the_agent_has_no_stream() {
     let s = start(&[]);
     let from = caller(&s);
     let pane = agent(&s, "pastee");
 
     assert_eq!(prompt(&s, &from, "hi claude", false), (0, String::new()));
     arrived(&s, &pane, "hi claude");
-
-    let stale = stale_socket(&s);
-    s.set_var(&pane, "pi.inbox", &json!(stale));
-    let (status, stderr) = prompt(&s, &from, "hello", false);
-    assert_eq!(status, 1);
-    assert!(
-        stderr.contains("pastee is not accepting messages"),
-        "{stderr}"
-    );
-    poll("the pane to be quiet", || silent(&s, &pane, "hello"));
-
-    let served = inbox(&s, "served", "ok\n");
-    s.set_var(&pane, "pi.inbox", &json!(served.path));
-    assert_eq!(
-        prompt(&s, &from, "over the socket", false),
-        (0, String::new())
-    );
-    assert_eq!(*served.received.lock().unwrap(), ["over the socket"]);
-    assert!(
-        silent(&s, &pane, "over the socket"),
-        "an inbox send types nothing"
-    );
-
-    let refusing = inbox(&s, "refusing", "no\n");
-    s.set_var(&pane, "pi.inbox", &json!(refusing.path));
-    let (status, stderr) = prompt(&s, &from, "refused", false);
-    assert_eq!(status, 1);
-    assert!(stderr.contains("answered \"no\""), "{stderr}");
 }
 
 #[test]
@@ -205,7 +139,7 @@ fn the_scope_is_the_callers_window_then_its_session_and_never_a_run() {
     assert_eq!(resolve(""), [elsewhere.as_str(), second.as_str()]);
     assert_eq!(resolve("&window=true"), Vec::<String>::new());
 
-    let here = split_into(&s, &from, agent_of("here", None));
+    let here = split_into(&s, &from, agent_of("here"));
     rooted(&s, &here);
     assert_eq!(prompt(&s, &from, "window scope", false), (0, String::new()));
     arrived(&s, &here, "window scope");
@@ -280,8 +214,6 @@ fn a_prompt_goes_through_the_message_queue_when_the_agent_has_a_stream() {
     let from = caller(&s);
     let pane = agent(&s, "streamer");
     let mut stream = open(&s, &pane);
-    let stale = stale_socket(&s);
-    s.set_var(&pane, "pi.inbox", &json!(stale));
     let mut next = || {
         let message = received(&mut stream);
         ack(&mut stream, message["id"].as_str().unwrap());
@@ -310,7 +242,7 @@ fn a_prompt_goes_through_the_message_queue_when_the_agent_has_a_stream() {
             json!({"type": "pane", "pane": from}),
             Some("sibling")
         ),
-        "an open stream wins over a trusted inbox, and a pane sender is stamped"
+        "a pane sender is stamped"
     );
     assert!(
         silent(&s, &pane, "over the stream"),
@@ -347,7 +279,7 @@ fn a_prompt_goes_through_the_message_queue_when_the_agent_has_a_stream() {
             200,
             json!({"via": {"type": "message", "state": "queued", "seq": 3, "duplicate": true}})
         ),
-        "a repeat of a prompt id that the queue knows goes by the queue, not by the stale inbox"
+        "a repeat of a prompt id that the queue knows goes by the queue, not by a paste"
     );
 }
 

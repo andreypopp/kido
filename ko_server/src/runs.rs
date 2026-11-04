@@ -191,10 +191,6 @@ fn run_dir(root: &Path, id: &RunId) -> PathBuf {
     root.join(id.to_string())
 }
 
-pub(crate) fn output_path(root: &Path, id: &RunId) -> PathBuf {
-    run_dir(root, id).join("output")
-}
-
 fn file(root: &Path, id: &RunId, name: &str) -> PathBuf {
     run_dir(root, id).join(name)
 }
@@ -402,7 +398,6 @@ pub(crate) fn closing(root: &Path, panes: &[Seen<'_>], removed: &[PaneId]) -> Ve
 
 fn info(root: &Path, panes: &[Seen<'_>], meta: Meta) -> Info {
     Info {
-        output: output_path(root, &meta.id).to_string_lossy().into_owned(),
         session: None,
         run: RunRow {
             outcome: ending(root, panes, &meta),
@@ -845,7 +840,6 @@ mod tests {
                 "argv": ["run"],
                 "cwd": "/tmp",
                 "startedAt": "1970-01-01T00:00:01Z",
-                "output": output_path(root, &m.id).to_string_lossy(),
             })
         );
         assert_eq!(

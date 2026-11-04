@@ -1,8 +1,9 @@
 // The fixture for the ko-pi.ts suite. A real pi host loads one extension and
-// drives it only through registered tools, registered lifecycle events, and a
-// real unix socket speaking the inbox wire protocol. A fake stands in for the
-// program the extension runs: `ko`, for the run commands and for `ko api`, which
-// reads the pane table and records the pane variables.
+// drives it only through registered tools, registered lifecycle events and the
+// processes the extension runs. A fake stands in for the program the extension
+// runs: `ko`, for the run commands, for `ko api` (the pane table, the posts,
+// the vars) and for `ko api --stream` (the message stream and the output
+// stream). Delays are gates that a test releases, never timers.
 
 import childProcess from "node:child_process";
 
@@ -10,123 +11,116 @@ import assert from "node:assert/strict";
 
 import { syncBuiltinESMExports } from "node:module";
 
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync } from "node:fs";
 
-import { dirname, join, delimiter } from "node:path";
-
-import net from "node:net";
+import { join, delimiter } from "node:path";
 
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
-import koPi, { PARENT_GUIDANCE } from "./ko-pi.ts";
+import koPi from "./ko-pi.ts";
 
-export interface AgentRecord {
-  session: string;
-  run?: string;
-  model?: string;
-  fork?: boolean;
-}
-
-export interface PaneRow {
-  pane_id: string;
+interface PaneRow {
+  id: string;
   session?: string;
   window?: string;
-  pi_session?: string;
-  pi_name?: string;
-  pi_inbox?: string;
-  pi_activity?: string;
-  pane_dead?: string;
-  pane_current_path?: string;
-  pane_program_status?: string;
-  pane_title?: string;
+  parent?: string;
+  close?: string;
+  inbox?: boolean;
+  dead?: unknown;
+  cwd?: string;
+  title?: string;
+  vars?: Record<string, unknown>;
+  program_status?: unknown;
 }
 
-export type ApiCall = { method: string; path: string; body: string };
+type ApiCall = { method: string; path: string; body: string };
 
-export type Inbox = { path: string; received(): string[]; setReply(reply: string): void; hold(): () => void };
+const piStatus = (state = "idle") => ({ serial: 1, records: [{ id: "", state, app: "pi" }] });
 
-export const piStatus = (state = "idle"): string => JSON.stringify({ serial: 1, records: [{ id: "", state, app: "pi" }] });
+export const exited = (code: number) => ({ at: 1, cause: { type: "exited", code } });
 
-export const shellStatus = (state = "idle"): string => JSON.stringify({ serial: 1, records: [{ id: "", state }] });
+function paneRow(row: PaneRow): PaneRow {
+  return {
+    session: "session_1",
+    window: `window_${row.id.replace("pane_", "")}`,
+    cwd: "/tmp",
+    title: "",
+    dead: null,
+    program_status: piStatus(),
+    ...row,
+    vars: row.vars ?? {},
+  };
+}
 
 export function selfPane(row: Partial<PaneRow> = {}): PaneRow {
-  return paneRow({ pane_id: "pane_1", pi_session: "self-session", pi_name: "Self", pane_title: "π - Self", ...row });
+  return paneRow({ id: "pane_1", title: "π - Self", ...row, vars: { "pi.session": "self-session", "pi.name": "Self", ...row.vars } });
 }
 
 export function agentPane(row: {
   pane: string;
   session: string;
   name?: string;
-  inbox?: string;
+  inbox?: boolean;
   state?: string;
   koSession?: string;
-  window?: string;
+  parent?: string;
+  close?: string;
   title?: string;
   cwd?: string;
+  dead?: unknown;
+  vars?: Record<string, unknown>;
 }): PaneRow {
   return paneRow({
-    pane_id: row.pane,
+    id: row.pane,
     session: row.koSession ?? "session_1",
-    window: row.window ?? "window_1",
-    pi_session: row.session,
-    pi_name: row.name ?? "",
-    pi_inbox: row.inbox ?? "",
-    pane_program_status: piStatus(row.state ?? "idle"),
-    pane_title: row.title ?? "",
-    pane_current_path: row.cwd ?? "/tmp",
+    parent: row.parent,
+    close: row.close,
+    inbox: row.inbox ?? true,
+    dead: row.dead ?? null,
+    program_status: piStatus(row.state ?? "idle"),
+    title: row.title ?? "",
+    cwd: row.cwd ?? "/tmp",
+    vars: { "pi.session": row.session, "pi.name": row.name ?? "", ...row.vars },
   });
 }
 
-export function paneRow(row: Partial<PaneRow> & { pane_id: string }): PaneRow {
-  return {
-    session: "session_1",
-    window: "window_1",
-    pi_session: "",
-    pi_name: "",
-    pi_inbox: "",
-    pi_activity: "",
-    pane_dead: "0",
-    pane_current_path: "/tmp",
-    pane_program_status: piStatus(),
-    pane_title: "",
-    ...row,
-  };
-}
+type FeedMessage = {
+  id: string;
+  kind: string;
+  text?: string;
+  data?: unknown;
+  relation?: string;
+  from?: unknown;
+  end?: unknown;
+};
 
 export interface Fixture {
-  stateDir: string;
+  dir: string;
   binDir: string;
-  apiLogFile: string;
-  panesFile: string;
-  koLogFile: string;
-  runsFile: string;
-  runLogFile: string;
-  runWaitLogFile: string;
-  runStopLogFile: string;
-  runOutcomeLogFile: string;
-  runOutcomeCalls(): string[][];
-  runsCalls(): string[][];
+  sessions: Array<() => Promise<unknown>>;
   setPi(script: string): void;
+  setPanes(panes: PaneRow[]): void;
+  panes(): PaneRow[];
+  row(pane: string): PaneRow | undefined;
+  apiCalls(): ApiCall[];
+  posts(path: string): Array<Record<string, any>>;
+  streamOpens(path: string): number;
+  feed(message: FeedMessage): void;
+  acks(): Array<{ type: string; id: string }>;
+  forgetAcks(): void;
+  dropStream(): void;
+  setScreen(name: string, text: string): void;
+  scriptSends(replies: Array<{ status: number; body: unknown }>): void;
+  output(record: Record<string, unknown>): void;
+  setRuns(rows: unknown[]): void;
   runCalls(): string[][];
   runWaitCalls(): string[][];
   runStopCalls(): string[][];
-  sessions: Array<() => Promise<unknown>>;
-  setPanes(panes: PaneRow[]): void;
-  panes(): PaneRow[];
-  setRuns(rows: unknown[]): void;
-  apiCalls(): ApiCall[];
-  layoutEdits(): Array<Record<string, unknown>>;
-  layoutReads(): number;
-  optionWrites(): Array<{ key: string; value: string | undefined }>;
-  agentDir(parent: string, name: string): string;
-  writeAgent(parent: string, name: string, record: AgentRecord): string;
-  inboxPath(session: string): string;
-  startInbox(reply?: string): Promise<Inbox>;
-  startInboxAt(path: string, reply?: string): Promise<Inbox>;
+  runsCalls(): string[][];
   restore(): Promise<void>;
 }
 
-export function jsonLines(file: string): any[] {
+function jsonLines(file: string): any[] {
   let raw: string;
   try {
     raw = readFileSync(file, "utf8");
@@ -140,13 +134,9 @@ export function jsonLines(file: string): any[] {
     .map((l) => JSON.parse(l));
 }
 
-export function last<T>(items: T[]): T | undefined {
-  return items.at(-1);
-}
+const commandWork = new Map<string, Set<childProcess.ChildProcess>>();
 
-export const commandWork = new Map<string, Set<childProcess.ChildProcess>>();
-
-export const spawn = childProcess.spawn;
+const spawn = childProcess.spawn;
 
 childProcess.spawn = ((command: string, args: string[] = [], options: childProcess.SpawnOptions = {}) => {
   const child = spawn(command, args, options);
@@ -160,7 +150,6 @@ childProcess.spawn = ((command: string, args: string[] = [], options: childProce
 
 syncBuiltinESMExports();
 
-
 let cachedFakeKo: string | null = null;
 
 export function makeFixture(): Fixture {
@@ -168,8 +157,6 @@ export function makeFixture(): Fixture {
   if (!cachedFakeKo || !existsSync(cachedFakeKo)) {
     throw new Error("KO_FAKE_KO is not set or not built; run scripts/test-ts.sh");
   }
-  // A short root: the extension refuses an inbox path over 103 bytes, and a
-  // spawned child's socket is named after its 32-hex session id.
   const dir = mkdtempSync(join("/tmp", "ko-pi-test-"));
   const binDir = join(dir, "bin");
   mkdirSync(binDir);
@@ -178,32 +165,21 @@ export function makeFixture(): Fixture {
   const work = new Set<childProcess.ChildProcess>();
   commandWork.set(command, work);
   const sessions: Array<() => Promise<unknown>> = [];
-  const inboxes: Array<{ close(): Promise<void> }> = [];
-  const stateDir = join(dir, "state");
-  const apiLogFile = join(dir, "api.jsonl");
-  const layoutEditLogFile = join(dir, "layout-edits.jsonl");
-  const panesFile = join(dir, "panes.json");
-  const koLogFile = join(dir, "ko.jsonl");
-  const runsFile = join(dir, "runs.json");
-  const runLogFile = join(dir, "run.jsonl");
-  const runWaitLogFile = join(dir, "run-wait.jsonl");
-  const runStopLogFile = join(dir, "run-stop.jsonl");
-  const runOutcomeLogFile = join(dir, "run-outcome.jsonl");
-  const runsLogFile = join(dir, "runs-log.jsonl");
-  mkdirSync(stateDir);
-  writeFileSync(apiLogFile, "");
+  const file = (name: string) => join(dir, name);
+  const [apiLog, panesFile, feedFile, acksFile, dropFile, sendScript, outputFile, runsFile] = [
+    "api.jsonl", "panes.json", "feed.jsonl", "acks.jsonl", "drop", "sends.json", "output.jsonl", "runs.json",
+  ].map(file);
+  const screens = file("screens");
+  mkdirSync(screens);
+  for (const empty of [apiLog, feedFile, acksFile, outputFile, file("run.jsonl"), file("run-wait.jsonl"), file("run-stop.jsonl"), file("runs-log.jsonl"), file("ko.jsonl")]) writeFileSync(empty, "");
   writeFileSync(panesFile, "[]");
-  writeFileSync(koLogFile, "");
   writeFileSync(runsFile, "[]");
-  writeFileSync(runLogFile, "");
-  writeFileSync(runWaitLogFile, "");
-  writeFileSync(runStopLogFile, "");
-  writeFileSync(runOutcomeLogFile, "");
-  writeFileSync(runsLogFile, "");
+  writeFileSync(sendScript, "[]");
+  writeFileSync(file("sent.json"), "[]");
 
   const saved: Record<string, string | undefined> = {};
   for (const key of Object.keys(process.env)) {
-    if (key.startsWith("KO_") || key === "PATH" || key === "XDG_STATE_HOME") saved[key] = process.env[key];
+    if (key.startsWith("KO_") || key === "PATH") saved[key] = process.env[key];
   }
   for (const key of Object.keys(process.env)) {
     if (key.startsWith("KO_AGENT_") || key.startsWith("KO_FAKE_")) delete process.env[key];
@@ -211,111 +187,101 @@ export function makeFixture(): Fixture {
   process.env.PATH = binDir + delimiter + (saved.PATH ?? "");
   process.env.KO_SOCKET = "/tmp/ko-pi-test/socket";
   process.env.KO_PANE = "pane_1";
-  process.env.KO_PI_STATE_DIR = stateDir;
-  delete process.env.XDG_STATE_HOME;
   process.env.KO_FAKE_KO = cachedFakeKo;
-  process.env.KO_FAKE_API_LOG = apiLogFile;
-  process.env.KO_FAKE_LAYOUT_EDIT_LOG = layoutEditLogFile;
+  process.env.KO_FAKE_API_LOG = apiLog;
   process.env.KO_FAKE_PANES = panesFile;
-  process.env.KO_FAKE_STATE_DIR = stateDir;
-  process.env.KO_FAKE_LOG = koLogFile;
+  process.env.KO_FAKE_FEED = feedFile;
+  process.env.KO_FAKE_ACKS = acksFile;
+  process.env.KO_FAKE_STREAM_DROP = dropFile;
+  process.env.KO_FAKE_SEND_SCRIPT = sendScript;
+  process.env.KO_FAKE_SENT = file("sent.json");
+  process.env.KO_FAKE_OUTPUT = outputFile;
+  process.env.KO_FAKE_SCREENS = screens;
+  process.env.KO_FAKE_INSTANCE = "a".repeat(32);
+  process.env.KO_FAKE_LOG = file("ko.jsonl");
   process.env.KO_FAKE_RUNS_FILE = runsFile;
-  process.env.KO_FAKE_RUN_LOG = runLogFile;
-  process.env.KO_FAKE_RUN_WAIT_LOG = runWaitLogFile;
-  process.env.KO_FAKE_RUN_STOP_LOG = runStopLogFile;
-  process.env.KO_FAKE_RUN_OUTCOME_LOG = runOutcomeLogFile;
-  process.env.KO_FAKE_RUNS_LOG = runsLogFile;
-  delete process.env.KO_FAKE_RUN_WAIT_GATE;
-  delete process.env.KO_FAKE_RUN_WAIT_OUTCOME;
-  delete process.env.KO_FAKE_RUN_ID;
+  process.env.KO_FAKE_RUN_LOG = file("run.jsonl");
+  process.env.KO_FAKE_RUN_WAIT_LOG = file("run-wait.jsonl");
+  process.env.KO_FAKE_RUN_STOP_LOG = file("run-stop.jsonl");
+  process.env.KO_FAKE_RUNS_LOG = file("runs-log.jsonl");
+  process.env.KO_RESEND_MS = "5";
+  process.env.KO_RECEIVER_BACKOFF_MS = "5";
+  process.env.KO_STREAM_DRAIN_MS = "300";
+  globalThis.__koPiExtensionReceiver = undefined;
+  globalThis.__koPiExtensionReceived = undefined;
+  globalThis.__koPiExtensionWatches = undefined;
 
-  const agentDir = (parent: string, name: string) => join(stateDir, "agents", parent, name);
+  let seq = 0;
+  const calls = (): ApiCall[] => jsonLines(apiLog);
 
   return {
-    stateDir,
+    dir,
     binDir,
-    apiLogFile,
-    panesFile,
-    koLogFile,
-    runsFile,
-    runLogFile,
-    runWaitLogFile,
-    runStopLogFile,
-    runOutcomeLogFile,
-    runOutcomeCalls() {
-      return jsonLines(runOutcomeLogFile);
-    },
-    runsCalls() {
-      return jsonLines(runsLogFile);
-    },
+    sessions,
     setPi(script) {
       writeFileSync(join(binDir, "pi"), script, { mode: 0o755 });
     },
-    runCalls() {
-      return jsonLines(runLogFile);
-    },
-    runWaitCalls() {
-      return jsonLines(runWaitLogFile);
-    },
-    runStopCalls() {
-      return jsonLines(runStopLogFile);
-    },
-    sessions,
     setPanes(panes) {
       writeFileSync(panesFile, JSON.stringify(panes));
     },
     panes() {
       return JSON.parse(readFileSync(panesFile, "utf8"));
     },
+    row(pane) {
+      return this.panes().find((row) => row.id === pane);
+    },
+    apiCalls: calls,
+    posts(path) {
+      return calls().filter((call) => call.method === "POST" && call.path === path).map((call) => JSON.parse(call.body));
+    },
+    streamOpens(path) {
+      return calls().filter((call) => call.method === "STREAM" && call.path === path).length;
+    },
+    feed(message) {
+      seq++;
+      const from = message.from ?? { type: "pane", pane: "pane_2", session: "boss-session", name: "boss" };
+      const pane = typeof from === "object" && from !== null && "type" in from && from.type === "pane";
+      appendFileSync(feedFile, JSON.stringify({ seq, text: "", relation: pane ? "sibling" : undefined, ...message, from }) + "\n");
+    },
+    acks() {
+      return jsonLines(acksFile);
+    },
+    forgetAcks() {
+      writeFileSync(acksFile, "");
+    },
+    dropStream() {
+      writeFileSync(dropFile, "");
+    },
+    setScreen(name, text) {
+      writeFileSync(join(screens, name), text);
+    },
+    scriptSends(replies) {
+      writeFileSync(sendScript, JSON.stringify(replies));
+    },
+    output(record) {
+      appendFileSync(outputFile, JSON.stringify(record) + "\n");
+    },
     setRuns(rows) {
       writeFileSync(runsFile, JSON.stringify(rows));
     },
-    apiCalls() {
-      return jsonLines(apiLogFile);
+    runCalls() {
+      return jsonLines(file("run.jsonl"));
     },
-    layoutEdits() {
-      return jsonLines(layoutEditLogFile);
+    runWaitCalls() {
+      return jsonLines(file("run-wait.jsonl"));
     },
-    layoutReads() {
-      return (jsonLines(apiLogFile) as ApiCall[]).filter((call) => call.method === "GET" && call.path === "/layout").length;
+    runStopCalls() {
+      return jsonLines(file("run-stop.jsonl"));
     },
-    optionWrites() {
-      const writes: Array<{ key: string; value: string | undefined }> = [];
-      for (const call of jsonLines(apiLogFile) as ApiCall[]) {
-        if (call.method === "DELETE" && call.path.endsWith("/vars")) {
-          for (const key of JSON.parse(call.body).names) writes.push({ key, value: undefined });
-          continue;
-        }
-        const key = call.path.split("/vars/")[1];
-        if (key === undefined) continue;
-        if (call.method === "PUT") writes.push({ key, value: JSON.parse(call.body) });
-        else if (call.method === "DELETE") writes.push({ key, value: undefined });
-      }
-      return writes;
-    },
-    agentDir,
-    writeAgent(parent, name, record) {
-      const child = agentDir(parent, name);
-      mkdirSync(child, { recursive: true });
-      writeFileSync(join(child, "agent.json"), JSON.stringify({ run: record.session, model: "acme/caller:high", fork: false, ...record }));
-      return child;
-    },
-    inboxPath(session) {
-      return join(stateDir, "inbox", session + ".sock");
-    },
-    async startInbox(reply = "ok") {
-      return serveInbox(join(stateDir, "inbox", "peer-" + inboxes.length + "-" + process.pid + ".sock"), reply);
-    },
-    async startInboxAt(path, reply = "ok") {
-      return serveInbox(path, reply);
+    runsCalls() {
+      return jsonLines(file("runs-log.jsonl"));
     },
     async restore() {
       for (const shutdown of sessions.reverse()) await shutdown();
-      for (const inbox of inboxes) await inbox.close();
       await pollUntil(() => work.size === 0, 15000, "all fake commands to close");
       commandWork.delete(command);
       for (const key of Object.keys(process.env)) {
-        if (key.startsWith("KO_") || key === "XDG_STATE_HOME") delete process.env[key];
+        if (key.startsWith("KO_")) delete process.env[key];
       }
       for (const [k, v] of Object.entries(saved)) {
         if (v !== undefined) process.env[k] = v;
@@ -323,58 +289,18 @@ export function makeFixture(): Fixture {
       rmSync(dir, { recursive: true, force: true });
     },
   };
-
-  async function serveInbox(path: string, reply: string): Promise<Inbox> {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    const received: string[] = [];
-    let answer = reply;
-    let gate: Promise<void> | null = null;
-    let openGate: (() => void) | null = null;
-    const server = net.createServer({ allowHalfOpen: true }, (sock) => {
-      const chunks: Buffer[] = [];
-      sock.on("error", () => {});
-      sock.on("data", (chunk: Buffer) => chunks.push(chunk));
-      sock.on("end", () => {
-        received.push(Buffer.concat(chunks).toString("utf8"));
-        const held = gate;
-        if (held) held.then(() => sock.end(answer + "\n"));
-        else sock.end(answer + "\n");
-      });
-    });
-    await new Promise<void>((resolve) => server.listen(path, resolve));
-    const inbox: Inbox = {
-      path,
-      received: () => received,
-      setReply(next) {
-        answer = next;
-      },
-      hold() {
-        gate = new Promise<void>((resolve) => {
-          openGate = resolve;
-        });
-        return () => {
-          gate = null;
-          openGate?.();
-          openGate = null;
-        };
-      },
-    };
-    inboxes.push({
-      close: async () => {
-        await new Promise<void>((resolve) => server.close(() => resolve()));
-      },
-    });
-    return inbox;
-  }
 }
 
-export function createFakePi(sessionDir = "/tmp/ko-pi-no-sessions/caller") {
+type Entry = { type: "custom"; customType: string; data: Record<string, any> };
+
+export function createFakePi(sessionDir = "/tmp/ko-pi-no-sessions/caller", entries: Entry[] = []) {
   const tools = new Map<string, any>();
   const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
   const delivered: Array<{ text: string; opts: unknown }> = [];
   const messages: Array<{ message: any; opts: unknown }> = [];
   const renderers = new Map<string, (message: any, options: any, theme: any) => { render(width: number): string[]; handleMouse(event: any): unknown }>();
   const widgets = new Map<string, { content: ((tui: unknown, theme: any) => { render(width: number): string[]; handleMouse?(event: any): unknown }) | undefined; options?: unknown }>();
+  const failAppends = new Set<string>();
   const pi = {
     sessionName: undefined as string | undefined,
     getSessionName: (): string | undefined => pi.sessionName,
@@ -383,7 +309,7 @@ export function createFakePi(sessionDir = "/tmp/ko-pi-no-sessions/caller") {
     getAllTools: () => [...tools.values()],
     registerTool(tool: any) {
       const execute = tool.execute;
-      tools.set(tool.name, { ...tool, execute: (id: string, params: unknown, signal?: AbortSignal, update?: unknown, ctx = fakeCtx("self-session", undefined, () => true, sessionDir)) => execute(id, params, signal, update, ctx) });
+      tools.set(tool.name, { ...tool, execute: (id: string, params: unknown, signal?: AbortSignal, update?: unknown, ctx = fakeCtx("self-session", undefined, () => true, sessionDir, () => entries)) => execute(id, params, signal, update, ctx) });
     },
     on(event: string, handler: (...args: any[]) => unknown) {
       (handlers.get(event) ?? handlers.set(event, []).get(event)!).push(handler);
@@ -393,6 +319,10 @@ export function createFakePi(sessionDir = "/tmp/ko-pi-no-sessions/caller") {
     },
     sendMessage(message: any, opts: unknown) {
       messages.push({ message, opts });
+    },
+    appendEntry(customType: string, data: Record<string, any>) {
+      if (failAppends.has(customType)) throw new Error(`cannot append ${customType}`);
+      entries.push({ type: "custom", customType, data });
     },
     registerMessageRenderer(customType: string, renderer: Parameters<typeof renderers.set>[1]) {
       renderers.set(customType, renderer);
@@ -428,6 +358,8 @@ export function createFakePi(sessionDir = "/tmp/ko-pi-no-sessions/caller") {
     autocompleteFactories,
     ui,
     emit,
+    entries,
+    failAppends,
   };
 }
 
@@ -438,22 +370,6 @@ export function savedSession(dir: string, cwd: string, id: string): string {
   assert.ok(path);
   writeFileSync(path, JSON.stringify(session.getHeader()) + "\n");
   return path;
-}
-
-export const fakeTheme = {
-  fg: (_color: string, text: string) => text,
-  bgCalls: [] as Array<{ color: string; text: string }>,
-  bg(color: string, text: string) {
-    this.bgCalls.push({ color, text });
-    return text;
-  },
-} as any;
-
-export function parentSetup(fx: Fixture, inboxPath: string, workerInbox = ""): void {
-  fx.setPanes([
-    agentPane({ pane: "pane_1", session: "self-session", name: "worker", inbox: workerInbox }),
-    agentPane({ pane: "pane_2", session: "boss-session", name: "boss", inbox: inboxPath }),
-  ]);
 }
 
 export function assistant(stopReason: string, text?: string, errorMessage?: string) {
@@ -470,13 +386,13 @@ export async function idleTurn(
   await s.emit("agent_settled", settle, { isIdle: () => true });
 }
 
-export function assertReport(inbox: Inbox, index: number, text: string): void {
-  const notice: { kind?: string; text?: string } = JSON.parse(inbox.received()[index]!);
-  assert.equal(notice.kind, "notice");
-  assert.equal(notice.text, text + PARENT_GUIDANCE);
-}
-
-export function fakeCtx(sessionId: string | undefined = "self-session", ui?: unknown, idle: () => boolean = () => true, sessionDir = "/tmp/ko-pi-no-sessions/caller") {
+function fakeCtx(
+  sessionId: string | undefined = "self-session",
+  ui?: unknown,
+  idle: () => boolean = () => true,
+  sessionDir = "/tmp/ko-pi-no-sessions/caller",
+  branch: () => Entry[] = () => [],
+) {
   return {
     hasUI: true,
     sessionManager: {
@@ -484,6 +400,7 @@ export function fakeCtx(sessionId: string | undefined = "self-session", ui?: unk
       getSessionName: () => undefined,
       getSessionDir: () => sessionDir,
       getSessionFile: () => (sessionId ? "/tmp/" + sessionId + ".json" : undefined),
+      getBranch: () => branch(),
     },
     cwd: process.cwd(),
     model: { provider: "acme", id: "caller" },
@@ -496,39 +413,34 @@ export function fakeCtx(sessionId: string | undefined = "self-session", ui?: unk
   };
 }
 
-export async function startSessionCore(
-  fx: Fixture,
-  factory: (pi: never) => void,
-  buildCtx: (created: ReturnType<typeof createFakePi>) => unknown,
-  { record = true }: { record?: boolean } = {},
-) {
-  const created = createFakePi(join(fx.stateDir, "sessions", "caller"));
-  factory(created.pi as never);
-  const ctx = buildCtx(created);
-  if (record) fx.sessions.push(() => created.emit("session_shutdown", { reason: "new" }));
-  await created.emit("session_start", {}, ctx);
-  return created;
-}
-
-// A session with a live pi name, so pi.name and an envelope's from.name agree.
-export async function startNamedSession(fx: Fixture, name: string, sessionId = "self-session", factory: (pi: never) => void = koPi) {
-  const created = await startSessionCore(fx, factory, (c) => {
-    c.pi.sessionName = name;
-    return fakeCtx(sessionId, c.ui);
-  });
-  return { ...created, inboxPath: fx.inboxPath(sessionId) };
-}
+export type Started = ReturnType<typeof createFakePi> & { aborts(): number; shutdowns(): number };
 
 export async function startSession(
   fx: Fixture,
-  { factory = koPi, sessionId = "self-session", idle }: { factory?: (pi: never) => void; sessionId?: string; idle?: () => boolean } = {},
-) {
-  const created = await startSessionCore(fx, factory, (c) => fakeCtx(sessionId, c.ui, idle));
-  return { ...created, inboxPath: fx.inboxPath(sessionId) };
+  opts: { factory?: (pi: never) => void; sessionId?: string; name?: string; idle?: () => boolean; entries?: Entry[]; ctx?: Record<string, unknown>; record?: boolean } = {},
+): Promise<Started> {
+  const { factory = koPi, sessionId = "self-session", name, idle, entries = [], ctx, record = true } = opts;
+  const created = createFakePi(join(fx.dir, "sessions", "caller"), entries);
+  if (name) created.pi.sessionName = name;
+  factory(created.pi as never);
+  let aborts = 0;
+  let shutdowns = 0;
+  const context = {
+    ...fakeCtx(sessionId, created.ui, idle, join(fx.dir, "sessions", "caller"), () => created.entries),
+    abort: () => {
+      aborts++;
+    },
+    shutdown: () => {
+      shutdowns++;
+    },
+    ...ctx,
+  };
+  if (record) fx.sessions.push(() => created.emit("session_shutdown", { reason: "new" }));
+  await created.emit("session_start", {}, context);
+  return { ...created, aborts: () => aborts, shutdowns: () => shutdowns };
 }
 
-// Reimports the extension under a cache-busting specifier: the module reads the
-// state directory and the environment at call time, but a /reload is a fresh
+// Reimports the extension under a cache-busting specifier: a /reload is a fresh
 // module instance in the same process and must be played as one.
 let freshImportCounter = 0;
 
@@ -555,14 +467,10 @@ export async function withEnv<T>(vars: Record<string, string | undefined>, fn: (
   }
 }
 
-// A real child: its own agent directory records its own session id, which is
-// what makes the parent edge trustworthy.
-export async function asSubagent<T>(fx: Fixture, sessionId: string, fn: () => Promise<T>, opts: { parent?: string; name?: string; run?: string; extra?: Record<string, string> } = {}): Promise<T> {
-  const parent = opts.parent ?? "boss-session";
-  const name = opts.name ?? "worker";
-  const run = opts.run ?? sessionId;
-  const agentDir = fx.writeAgent(parent, name, { session: sessionId, run });
-  return withEnv({ KO_RUN_ID: run, KO_AGENT_DIR: agentDir, KO_AGENT_PARENT_SESSION: parent, ...opts.extra }, fn);
+// A real child: its environment names its own session and its parent's, which
+// is what makes the parent edge trustworthy.
+export async function asSubagent<T>(sessionId: string, fn: () => Promise<T>, parent = "boss-session"): Promise<T> {
+  return withEnv({ KO_AGENT_SESSION: sessionId, KO_AGENT_PARENT_SESSION: parent }, fn);
 }
 
 export async function pollUntil(cond: () => boolean | Promise<boolean>, ms = 2000, what = "a condition"): Promise<void> {
@@ -574,46 +482,6 @@ export async function pollUntil(cond: () => boolean | Promise<boolean>, ms = 200
   }
 }
 
-export async function pollForStable(read: () => number, quietMs: number, timeoutMs: number, what: string): Promise<number> {
-  const deadline = Date.now() + timeoutMs;
-  let previous = read();
-  let lastChange = Date.now();
-  for (;;) {
-    await new Promise((r) => setTimeout(r, 20));
-    const cur = read();
-    if (cur !== previous) {
-      previous = cur;
-      lastChange = Date.now();
-    } else if (Date.now() - lastChange >= quietMs) {
-      return previous;
-    }
-    if (Date.now() > deadline) throw new Error(`timed out after ${timeoutMs}ms waiting for ${what} to stabilise`);
-  }
-}
-
-// sendToInbox plays a peer's half of the wire protocol: connect, write the
-// payload, half-close, and read back "ok\n" or "refused\n".
-export function sendToInbox(path: string, payload: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const sock = net.createConnection(path);
-    let out = "";
-    sock.on("connect", () => sock.end(payload));
-    sock.on("data", (c) => (out += c.toString("utf8")));
-    sock.on("end", () => resolve(out.trim()));
-    sock.on("error", reject);
-  });
-}
-
-export function envelope(kind: string, text: string, extra: { from?: { session: string; name?: string; pane?: string } } = {}): string {
-  return JSON.stringify({
-    v: 1,
-    kind,
-    id: "env-" + Math.random().toString(36).slice(2),
-    from: extra.from ?? { session: "peer-x", name: "peer-x" },
-    text,
-  });
-}
-
 export function customMessages(s: Pick<ReturnType<typeof createFakePi>, "messages">, customType: string) {
   return s.messages.filter((m) => m.message.customType === customType);
 }
@@ -622,42 +490,8 @@ export function notices(s: Pick<ReturnType<typeof createFakePi>, "messages">): s
   return customMessages(s, "ko-notice").map((m) => String(m.message.content));
 }
 
-export function agentJson(fx: Fixture, parent: string, name: string): { session: string; run: string; model: string; fork: boolean } {
-  return JSON.parse(readFileSync(join(fx.agentDir(parent, name), "agent.json"), "utf8"));
+export function entriesOf(s: Pick<ReturnType<typeof createFakePi>, "entries">, customType: string): Array<Record<string, any>> {
+  return s.entries.filter((entry) => entry.customType === customType).map((entry) => entry.data);
 }
 
-export function argAfter(args: string[] | undefined, flag: string): string | undefined {
-  if (!args) return undefined;
-  const i = args.indexOf(flag);
-  return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
-}
-
-export function pendingState(p: Promise<unknown>, ms = 30): Promise<"pending" | "settled"> {
-  const timeout = Symbol();
-  return Promise.race([p.then(() => "settled" as const), new Promise((r) => setTimeout(() => r(timeout), ms))]).then(
-    (v) => (v === timeout ? "pending" : (v as "settled")),
-  );
-}
-
-export function settlesWithin<T = { content: Array<{ text: string }> }>(p: Promise<T>, ms: number): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  const timeout = new Promise<T>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`did not settle within ${ms}ms`)), ms);
-  });
-  return Promise.race([p, timeout]).finally(() => clearTimeout(timer));
-}
-
-export async function startWithSpies(fx: Fixture, factory: (pi: never) => void, sessionId?: string) {
-  let aborts = 0;
-  let shutdowns = 0;
-  const created = await startSessionCore(fx, factory, (c) => ({
-    ...fakeCtx(sessionId, c.ui),
-    abort: () => {
-      aborts++;
-    },
-    shutdown: () => {
-      shutdowns++;
-    },
-  }));
-  return { ...created, inboxPath: fx.inboxPath(sessionId ?? "self-session"), aborts: () => aborts, shutdowns: () => shutdowns };
-}
+export const text = (result: { content: Array<{ text: string }> }): string => result.content[0]!.text;

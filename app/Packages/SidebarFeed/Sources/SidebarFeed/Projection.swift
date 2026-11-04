@@ -74,7 +74,7 @@ private struct Projection {
             program_status: programStatus(pane.status?.programStatus),
             run: run?.id,
             started: pane.dead == nil && run?.outcome == nil ? run.flatMap { Self.wallClock($0.startedAt) } : nil,
-            children: children, mark: pane.mark, recordsSeen: pane.recordsSeen, inbox: pane.inbox == true || pane.vars["pi.inbox"] != nil)
+            children: children, mark: pane.mark, recordsSeen: pane.recordsSeen, inbox: pane.inbox == true)
     }
 
     private func lifecycle(_ pane: KoSchema.PaneJson) -> Lifecycle {
