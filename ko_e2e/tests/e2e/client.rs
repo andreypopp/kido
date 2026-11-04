@@ -243,6 +243,95 @@ fn client_splits_zoom_and_directional_select() {
 }
 
 #[test]
+fn client_resize_mode_and_divider_drag() {
+    let s = start(&[]);
+    split_echo_window(&s);
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.resize(105, 25);
+    o.attach("cat");
+    o.contains("READY-one");
+    let first_cols = || {
+        windows(&s.doc())[0]["tree"]["children"][0]["cols"]
+            .as_u64()
+            .unwrap() as usize
+    };
+    let before = first_cols();
+    o.prefix("R");
+    o.contains("[resize]");
+    o.raw("hhh\r");
+    o.wait("resize mode moves the divider three cells", || {
+        first_cols() == before - 3
+    });
+    o.raw("a");
+    o.contains("one-KEY-61");
+
+    let before = first_cols();
+    let x = PANE_X + before;
+    o.press(x + 1, 3);
+    o.raw(&format!("\x1b[<32;{};3M\x1b[<0;{};3m", x + 5, x + 5));
+    o.wait("drag moves the divider four cells", || {
+        first_cols() == before + 4
+    });
+    o.raw("c");
+    o.contains("one-KEY-63");
+    o.raw(&format!("\x1b[<32;{};3M", x + 8));
+    o.raw("d");
+    o.contains("one-KEY-64");
+    assert_eq!(first_cols(), before + 4);
+
+    let x = PANE_X + first_cols();
+    o.press(x + 1, 3);
+    o.raw(&format!("\x1b[<32;{};3M", x + 3));
+    o.wait("drag without release moves the divider", || {
+        first_cols() == before + 6
+    });
+    o.click(PANE_X + 3, 3);
+    o.raw("e");
+    o.contains("one-KEY-65");
+    o.raw(&format!("\x1b[<32;{};3M", x + 8));
+    o.raw("f");
+    o.contains("one-KEY-66");
+    assert_eq!(first_cols(), before + 6);
+
+    put_edit(
+        &s,
+        &serde_json::json!({"type":"split", "pane":"pane_1", "axis":"h", "new":{"command":{"type":"shell","command":format!("exec python3 -u -c {} four", quote(SPLIT_ECHO))}}}),
+    );
+    o.contains("READY-four");
+    let sizes = || {
+        let d = s.doc();
+        let children = windows(&d)[0]["tree"]["children"].as_array().unwrap();
+        (
+            children[0]["cols"].as_u64().unwrap() as usize,
+            children[1]["cols"].as_u64().unwrap() as usize,
+        )
+    };
+    let (first, second) = sizes();
+    let divider = PANE_X + first + 1 + second;
+    o.press(divider + 1, 3);
+    put_edit(
+        &s,
+        &serde_json::json!({"type":"resize_pair", "first":"pane_1", "second":"pane_4", "first_size":first - 2}),
+    );
+    o.wait("the earlier divider changes the drag origin", || {
+        o.cell(PANE_X + first - 2, 0).text == "│"
+    });
+    o.raw(&format!(
+        "\x1b[<32;{};3M\x1b[<0;{};3m",
+        divider + 4,
+        divider + 4
+    ));
+    o.wait(
+        "the refreshed grip puts the divider under the pointer",
+        || {
+            let (a, b) = sizes();
+            PANE_X + a + 1 + b == divider + 3
+        },
+    );
+    o.detach();
+}
+
+#[test]
 fn client_mouse_release_stays_with_the_pressed_pane() {
     use serde_json::json;
     let s = start(&[]);

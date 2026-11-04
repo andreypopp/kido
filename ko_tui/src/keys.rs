@@ -24,6 +24,7 @@ pub(crate) enum State {
     Prefix,
     Repeat { until: Instant },
     Help,
+    Resize,
     Rename { of: Rename, text: String },
     Confirm(Kill),
     Chooser(PaneId),
@@ -55,7 +56,7 @@ pub(crate) enum Step {
     Swallow,
 }
 
-pub(crate) const HELP: [&str; 25] = [
+pub(crate) const HELP: [&str; 26] = [
     "C-a C-a  send C-a to the pane",
     "d        detach",
     "r        redraw",
@@ -66,6 +67,7 @@ pub(crate) const HELP: [&str; 25] = [
     "n p      next / previous window",
     "% / \"    split left/right / top/bottom",
     "z        toggle zoom",
+    "R        resize mode",
     "o ;      next / last pane",
     "arrows   select neighbour (repeatable)",
     "hjkl C-hjkl select neighbour (repeatable)",
@@ -181,17 +183,17 @@ impl Keys {
     }
 
     pub(crate) fn paste(&mut self, text: String) -> Option<String> {
-        match std::mem::replace(&mut self.state, State::Normal) {
+        match &mut self.state {
             State::Normal => Some(text),
-            State::Rename {
-                of,
-                text: mut typed,
-            } => {
+            State::Rename { text: typed, .. } => {
                 typed.extend(text.chars().filter(|c| !c.is_control()));
-                self.state = State::Rename { of, text: typed };
                 None
             }
-            _ => None,
+            State::Resize => None,
+            _ => {
+                self.state = State::Normal;
+                None
+            }
         }
     }
 
@@ -229,6 +231,7 @@ impl Keys {
                 None => self.normal(event, dead),
             },
             State::Help => Step::Swallow,
+            State::Resize => self.resize(event),
             State::Rename { of, text } => self.renaming(of, text, event),
             State::Confirm(kill) => match event.character() {
                 Some('y') => Step::Act(Action::Kill(kill)),
@@ -305,6 +308,7 @@ impl Keys {
             'n' => act(Action::Switch(Over::Window, Direction::Next)),
             'L' => act(Action::LastSession),
             's' | 'w' => act(Action::Chooser),
+            'R' => self.enter(State::Resize),
             '?' => self.enter(State::Help),
             '$' => self.enter(State::Rename {
                 of: Rename::Session,
@@ -323,6 +327,40 @@ impl Keys {
     fn enter(&mut self, state: State) -> Step {
         self.state = state;
         Step::Swallow
+    }
+
+    fn resize(&mut self, event: &KeyEvent) -> Step {
+        if event.ctrl() == Some('a') {
+            return self.enter(State::Prefix);
+        }
+        if matches!(event.name, Name::Enter | Name::Escape) || event.character() == Some('q') {
+            return Step::Swallow;
+        }
+        self.state = State::Resize;
+        let character = event.character();
+        let command = match character {
+            Some('=') => PaneEdit::Equalize,
+            Some('z') => PaneEdit::Zoom,
+            _ => {
+                let edge = match (event.name, character) {
+                    (Name::Left, _) | (_, Some('h' | 'H')) => Edge::Left,
+                    (Name::Down, _) | (_, Some('j' | 'J')) => Edge::Bottom,
+                    (Name::Up, _) | (_, Some('k' | 'K')) => Edge::Top,
+                    (Name::Right, _) | (_, Some('l' | 'L')) => Edge::Right,
+                    _ => return Step::Swallow,
+                };
+                if character.is_none() && !event.mods.plain() {
+                    return Step::Swallow;
+                }
+                let amount = if event.mods.shift() || character.is_some_and(|c| c.is_uppercase()) {
+                    Amount::Five
+                } else {
+                    Amount::One
+                };
+                PaneEdit::Resize(edge, amount)
+            }
+        };
+        Step::Act(Action::Pane(PaneCommand::Edit(command)))
     }
 
     fn renaming(&mut self, of: Rename, mut text: String, event: &KeyEvent) -> Step {
@@ -391,6 +429,61 @@ mod tests {
 
     fn pane(number: u64) -> PaneId {
         format!("pane_{number}").parse().unwrap()
+    }
+
+    #[test]
+    fn resize_mode_keeps_its_table_until_explicit_exit() {
+        let mut keys = Keys::new();
+        let resize = |edge, amount| {
+            act(Action::Pane(PaneCommand::Edit(PaneEdit::Resize(
+                edge, amount,
+            ))))
+        };
+        assert_eq!(
+            steps(&mut keys, "\x01Rhh\r"),
+            [
+                Step::Swallow,
+                Step::Swallow,
+                resize(Edge::Left, Amount::One),
+                resize(Edge::Left, Amount::One),
+                Step::Swallow
+            ]
+        );
+        assert_eq!(keys.state(), &State::Normal);
+        steps(&mut keys, "\x01R");
+        for (text, expected) in [
+            ("H", resize(Edge::Left, Amount::Five)),
+            ("j", resize(Edge::Bottom, Amount::One)),
+            ("K", resize(Edge::Top, Amount::Five)),
+            ("l", resize(Edge::Right, Amount::One)),
+            ("\x1b[A", resize(Edge::Top, Amount::One)),
+            ("\x1b[1;65A", resize(Edge::Top, Amount::One)),
+            ("\x1b[1;66A", resize(Edge::Top, Amount::Five)),
+            ("\x1b[1;2C", resize(Edge::Right, Amount::Five)),
+            (
+                "=",
+                act(Action::Pane(PaneCommand::Edit(PaneEdit::Equalize))),
+            ),
+            ("z", act(Action::Pane(PaneCommand::Edit(PaneEdit::Zoom)))),
+            ("x", Step::Swallow),
+            ("\x1b[1;5D", Step::Swallow),
+            ("\x1b[1;7D", Step::Swallow),
+        ] {
+            assert_eq!(steps(&mut keys, text), [expected]);
+            assert_eq!(keys.state(), &State::Resize);
+        }
+        let mut release = events("h").remove(0);
+        release.kind = Kind::Release;
+        assert_eq!(keys.feed(&release, false, Instant::now()), Step::Swallow);
+        assert_eq!(keys.state(), &State::Resize);
+        assert_eq!(steps(&mut keys, "\x01"), [Step::Swallow]);
+        assert_eq!(keys.state(), &State::Prefix);
+        assert_eq!(steps(&mut keys, "d"), [act(Action::Detach)]);
+        for exit in ["q", "\x1b[27u"] {
+            steps(&mut keys, "\x01R");
+            assert_eq!(steps(&mut keys, exit), [Step::Swallow]);
+            assert_eq!(keys.state(), &State::Normal);
+        }
     }
 
     #[test]

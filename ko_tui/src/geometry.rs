@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use ko_client::edit::Edge;
 use ko_server::ids::PaneId;
-use ko_server::protocol::{Axis, Leaf, Node, Window, pick};
+use ko_server::protocol::{Axis, Cells, Leaf, Node, Window, pick};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Rect {
@@ -74,6 +74,7 @@ pub(crate) struct Divider {
     pub(crate) rect: Rect,
     pub(crate) connections: Vec<Connections>,
     pub(crate) panes: Vec<PaneId>,
+    pub(crate) grip: Grip,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -86,6 +87,16 @@ impl Geometry {
     pub(crate) fn top(&self, x: usize, y: usize) -> Option<&Pane> {
         self.panes.iter().rev().find(|pane| pane.covers(x, y))
     }
+
+    pub(crate) fn divider(&self, x: usize, y: usize) -> Option<Grip> {
+        if self.top(x, y).is_some() {
+            return None;
+        }
+        self.dividers
+            .iter()
+            .find(|line| line.rect.contains(x, y))
+            .map(|line| line.grip)
+    }
 }
 
 fn walk(
@@ -93,7 +104,7 @@ fn walk(
     x: usize,
     y: usize,
     panes: &mut Vec<Pane>,
-    lines: &mut Vec<(Axis, Rect)>,
+    lines: &mut Vec<(Grip, Rect)>,
 ) {
     match node {
         Node::Leaf(leaf) => panes.push(Pane {
@@ -108,7 +119,10 @@ fn walk(
         }),
         Node::Split { split, children } => {
             let mut offset = 0;
+            let mut previous = None;
             for (at, child) in children.iter().enumerate() {
+                let first = panes.len();
+                let start = pick(*split, x, y) + offset;
                 walk(
                     child,
                     x + pick(*split, offset, 0),
@@ -116,21 +130,50 @@ fn walk(
                     panes,
                     lines,
                 );
-                offset += child.known(*split).unwrap_or(0);
-                if at + 1 < children.len() {
-                    lines.push((
-                        *split,
-                        Rect {
-                            x: x + pick(*split, offset, 0),
-                            y: y + pick(*split, 0, offset),
-                            cols: pick(*split, 1, node.known(Axis::Horizontal).unwrap_or(0)),
-                            rows: pick(*split, node.known(Axis::Vertical).unwrap_or(0), 1),
-                        },
-                    ));
-                    offset += 1;
+                if let Some(pane) = panes.get(first) {
+                    if let Some((first, start, rect)) = previous.take() {
+                        lines.push((
+                            Grip {
+                                first,
+                                second: pane.pane,
+                                axis: *split,
+                                start,
+                            },
+                            rect,
+                        ));
+                    }
+                    offset += child.known(*split).unwrap_or(0);
+                    if at + 1 < children.len() {
+                        previous = Some((
+                            pane.pane,
+                            start,
+                            Rect {
+                                x: x + pick(*split, offset, 0),
+                                y: y + pick(*split, 0, offset),
+                                cols: pick(*split, 1, node.known(Axis::Horizontal).unwrap_or(0)),
+                                rows: pick(*split, node.known(Axis::Vertical).unwrap_or(0), 1),
+                            },
+                        ));
+                        offset += 1;
+                    }
                 }
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Grip {
+    pub(crate) first: PaneId,
+    pub(crate) second: PaneId,
+    axis: Axis,
+    start: usize,
+}
+
+impl Grip {
+    pub(crate) fn first_size(self, x: usize, y: usize) -> Option<Cells> {
+        let size = pick(self.axis, x, y).checked_sub(self.start)?;
+        Cells::try_from(u16::try_from(size).unwrap_or(u16::MAX)).ok()
     }
 }
 
@@ -204,7 +247,8 @@ pub(crate) fn window(window: &Window) -> Geometry {
             }
         }
     }
-    for (axis, r) in lines {
+    for (grip, r) in lines {
+        let axis = grip.axis;
         let start = pick(axis, r.y, r.x);
         let end = start + pick(axis, r.rows, r.cols);
         let mut cuts = BTreeSet::from([start, end]);
@@ -260,6 +304,7 @@ pub(crate) fn window(window: &Window) -> Geometry {
                 }
             }
             result.dividers.push(Divider {
+                grip,
                 rect,
                 connections,
                 panes,
@@ -289,6 +334,32 @@ mod tests {
 
     fn sample() -> Window {
         ko_server::protocol::decode(br#"{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"focus":"pane_1","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"split":"v","children":[{"pane":"pane_2","cols":39,"rows":12},{"pane":"pane_3","cols":39,"rows":11}]}]},"floats":[]}"#).unwrap()
+    }
+
+    #[test]
+    fn divider_hits_use_adjacent_children_first_leaves_and_parent_junctions() {
+        let mut w = sample();
+        let panes = w.panes();
+        for (point, pair, moved, size) in [
+            ((40, 3), (panes[0], panes[1]), (37, 3), 37),
+            ((40, 20), (panes[0], panes[1]), (43, 20), 43),
+            ((50, 12), (panes[1], panes[2]), (50, 10), 10),
+            ((40, 12), (panes[0], panes[1]), (38, 12), 38),
+        ] {
+            let hit = window(&w).divider(point.0, point.1).unwrap();
+            assert_eq!((hit.first, hit.second), pair);
+            assert_eq!(
+                hit.first_size(moved.0, moved.1),
+                Some(Cells::try_from(size as u16).unwrap())
+            );
+            assert_eq!(hit.first_size(0, 0), None);
+        }
+        assert_eq!(window(&w).divider(3, 3), None);
+        w.floats.push(ko_server::protocol::decode(br#"{"pane":"pane_4","x":40,"y":10,"cols":5,"rows":4,"z":0,"border":true,"title":""}"#).unwrap());
+        assert_eq!(window(&w).divider(40, 12), None);
+        assert_eq!(window(&w).divider(40, 9), None);
+        w.zoom = Some(panes[0]);
+        assert_eq!(window(&w).divider(40, 3), None);
     }
 
     #[test]

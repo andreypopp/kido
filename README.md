@@ -62,11 +62,13 @@ terminal. A status line at the bottom shows the session, its windows
 | `C-a C-`arrow / `M-`arrow | move the pane's divider by 1 / 5 cells (r) |
 | `C-a {` / `}` | swap the pane with the previous / next pane |
 | `C-a E` | give the panes of the split equal sizes |
+| `C-a R` | resize mode: `h` `j` `k` `l` or arrows move the pane's divider by 1, `H` `J` `K` `L` or Shift+arrows by 5, `=` equal sizes, `z` zoom; `Enter`, `Escape` or `q` leaves |
 | `C-a s` or `w` | choose a pane from the list with `Up`, `Down`, `Enter`; `Escape` leaves |
 | `C-a C-s` | show or hide the list |
 | `C-a e` | open the pane's scrollback in `$PAGER` |
 | `Ctrl+D` on an exited pane | remove it |
 | click a row | show that pane |
+| drag a divider | move it |
 
 A key marked (r) repeats: for 500 ms after it, another key marked (r)
 acts without the prefix, and each one restarts the 500 ms. Without
@@ -76,7 +78,8 @@ is `C-a Tab`.
 
 The terminal client shows the window's splits, zoom and floats as
 Kido.app does, and both edit the same layout. A click in a pane
-selects it, and the wheel scrolls the pane under the pointer. The
+selects it, a drag on a divider moves it, and the wheel scrolls the
+pane under the pointer. The
 terminal client has no copy mode yet: the scrollback goes to
 `$PAGER`.
 

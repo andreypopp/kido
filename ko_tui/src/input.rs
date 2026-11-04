@@ -48,6 +48,10 @@ impl Mods {
         self.0 & !(Mods::CAPS | Mods::NUM) == Mods::ALT | Mods::META
     }
 
+    pub(crate) fn plain(self) -> bool {
+        self.0 & !(Mods::SHIFT | Mods::CAPS | Mods::NUM) == 0
+    }
+
     pub(crate) fn shift(self) -> bool {
         self.has(Mods::SHIFT)
     }

@@ -42,6 +42,7 @@ pub(crate) fn status(
     let _ = match (reconnect, state) {
         (Some(host), _) => write!(right, "[reconnecting to {host} \u{2014} C-a d to detach]"),
         (None, State::Prefix) => right.write_str("C-a"),
+        (None, State::Resize) => right.write_str("[resize]"),
         (None, State::Rename { of, text }) => {
             let what = match of {
                 Rename::Session => "rename-session",
@@ -68,6 +69,7 @@ pub(crate) struct Layout {
     pub(crate) pane_rows: usize,
     pub(crate) status: Status,
     pub(crate) help: bool,
+    pub(crate) resizing: bool,
     pub(crate) geometry: std::rc::Rc<Geometry>,
     pub(crate) active: Option<PaneId>,
     pub(crate) sidebar: Vec<Line>,
@@ -344,7 +346,7 @@ impl Renderer {
             for divider in &l.geometry.dividers {
                 let style = Style {
                     fg: if l.active.is_some_and(|pane| divider.panes.contains(&pane)) {
-                        Colour::Indexed(2)
+                        Colour::Indexed(if l.resizing { 3 } else { 2 })
                     } else {
                         Colour::Default
                     },
@@ -580,6 +582,7 @@ mod tests {
             pane_rows: 2,
             status: quiet(),
             help: false,
+            resizing: false,
             geometry: Default::default(),
             active: Some(pane_id()),
             sidebar: vec![line(1, "\u{754c}", true), line(2, "/tmp", false)],
@@ -618,6 +621,7 @@ mod tests {
             pane_rows: 3,
             status: quiet(),
             help: false,
+            resizing: false,
             geometry: Default::default(),
             active: Some(pane_id()),
             sidebar: vec![
@@ -663,6 +667,7 @@ mod tests {
                 ..quiet()
             },
             help: false,
+            resizing: false,
             geometry: Default::default(),
             active: Some(pane_id()),
             sidebar: vec![line(1, "sh", true)],
@@ -680,6 +685,7 @@ mod tests {
             pane_rows: 2,
             status: quiet(),
             help: false,
+            resizing: false,
             geometry: std::rc::Rc::new(geometry(4, 2)),
             active: Some(pane_id()),
             sidebar: Vec::new(),
@@ -730,6 +736,7 @@ mod tests {
             pane_rows: 3,
             status: quiet(),
             help: false,
+            resizing: false,
             geometry: std::rc::Rc::new(geometry(6, 3)),
             active: Some(pane_id()),
             sidebar: Vec::new(),
@@ -776,6 +783,7 @@ mod tests {
                 right: "C-a".to_owned(),
             },
             help: false,
+            resizing: false,
             geometry: Default::default(),
             active: Some(pane_id()),
             sidebar: Vec::new(),
@@ -806,6 +814,7 @@ mod tests {
             pane_rows: 19,
             status: quiet(),
             help: true,
+            resizing: false,
             geometry: std::rc::Rc::new(geometry(40, 19)),
             active: Some(pane_id()),
             sidebar: Vec::new(),
@@ -859,6 +868,7 @@ mod tests {
             pane_rows: 5,
             status: quiet(),
             help: false,
+            resizing: false,
             geometry: std::rc::Rc::new(crate::geometry::window(&window)),
             active: Some(pane_id()),
             sidebar: Vec::new(),
@@ -893,6 +903,12 @@ mod tests {
         assert_eq!(at(1, 0).text.trim(), "");
         assert_eq!(at(0, 1).text.trim(), "");
 
+        layout.resizing = true;
+        let frame = composed(&layout, &input);
+        assert_eq!(frame.cells[4].style.fg, Colour::Indexed(3));
+        assert_eq!(frame.cells[2 * 9 + 4].style.fg, Colour::Indexed(3));
+        assert_eq!(frame.cells[2 * 9 + 5].style.fg, Colour::Default);
+        layout.resizing = false;
         layout.active = Some("pane_2".parse().unwrap());
         let frame = composed(&layout, &input);
         assert_eq!(frame.cells[2 * 9 + 4].style.fg, Colour::Indexed(2));
@@ -978,6 +994,7 @@ mod tests {
             pane_rows: 3,
             status: quiet(),
             help: false,
+            resizing: false,
             geometry: std::rc::Rc::new(geometry),
             active: Some(floating),
             sidebar: Vec::new(),
@@ -1082,6 +1099,7 @@ mod tests {
         assert_eq!(status(None, last, &State::Normal, None).left, "");
         assert_eq!(right(&State::Normal, None), "");
         assert_eq!(right(&State::Prefix, None), "C-a");
+        assert_eq!(right(&State::Resize, None), "[resize]");
         assert_eq!(
             right(
                 &State::Rename {
@@ -1115,6 +1133,7 @@ mod tests {
                 right: "C-a".to_owned(),
             },
             help: false,
+            resizing: false,
             geometry: Default::default(),
             active: Some(pane_id()),
             sidebar: Vec::new(),

@@ -13,7 +13,9 @@ their first callers. Unit 3 is built: the `Repeat` state and
 `Keys::deadline`, the pane commands (`%` `"` `z` `o` `;`, directional
 select, the resize keys, `{` `}` `E`) and `geometry::neighbour`
 (docs/design-ko.md 4.11). `C-a l` selects the right neighbour (section
-12), so the last window is `C-a Tab`. The divider hit test is unit 4.
+12), so the last window is `C-a Tab`. Unit 4 is built: resize mode
+(`C-a R`) and the divider drag with `geometry::divider`
+(docs/design-ko.md 4.11).
 
 The terminal client `ko` (`ko_tui/`) shows one pane at a time, lists
 the panes in a sidebar and takes Ctrl+Shift chords under the kitty

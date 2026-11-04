@@ -330,6 +330,11 @@ struct Client {
     last: Last,
     pending_selection: Option<PaneId>,
     mouse_down: Option<PaneId>,
+    divider_drag: Option<(
+        geometry::Grip,
+        protocol::Cells,
+        ko_pane_wire::frame::MouseButton,
+    )>,
     geometry: Geometry,
     focused: bool,
     immediate: bool,
@@ -403,6 +408,7 @@ impl Client {
             last: Last::default(),
             pending_selection: None,
             mouse_down: None,
+            divider_drag: None,
             geometry,
             focused: true,
             immediate: true,
@@ -481,6 +487,7 @@ impl Client {
                     .map(Remote::host),
             ),
             help: *self.keys.state() == State::Help,
+            resizing: *self.keys.state() == State::Resize,
             geometry: self
                 .view
                 .as_ref()
@@ -599,6 +606,17 @@ impl Client {
         let window_id = window.id;
         let zoom = window.zoom;
         let geometry = geometry::window(window);
+        if let Some((grip, _, button)) = self.divider_drag {
+            self.divider_drag = geometry
+                .dividers
+                .iter()
+                .find(|line| line.grip.first == grip.first && line.grip.second == grip.second)
+                .and_then(|line| {
+                    line.grip
+                        .first_size(line.rect.x, line.rect.y)
+                        .map(|size| (line.grip, size, button))
+                });
+        }
         if let Some(zoom) = zoom
             && self.reconnecting.is_none()
             && self.pending_selection.is_none()
@@ -720,6 +738,10 @@ impl Client {
     }
 
     fn close_view(&mut self) {
+        self.divider_drag = None;
+        if *self.keys.state() == State::Resize {
+            self.keys.end();
+        }
         if let Some(shown) = self.view.take() {
             for pane in shown.panes {
                 pane.mirror.close(&mut self.poll);
@@ -1056,7 +1078,51 @@ impl Client {
         Ok(())
     }
 
+    fn grab(&mut self, geometry: &geometry::Geometry, event: &input::MouseEvent, x: usize) -> bool {
+        if let MouseKind::Down(button) = event.kind
+            && let Some(grip) = geometry.divider(x, event.y)
+            && let Some(size) = grip.first_size(x, event.y)
+        {
+            self.divider_drag = Some((grip, size, button));
+            self.mouse_down = None;
+            return true;
+        }
+        false
+    }
+
+    fn drag(&mut self, event: &input::MouseEvent) -> Result<bool, String> {
+        let Some((grip, last, button)) = self.divider_drag else {
+            return Ok(false);
+        };
+        match event.kind {
+            MouseKind::Down(_) => {
+                self.divider_drag = None;
+                return Ok(false);
+            }
+            MouseKind::Up(_) | MouseKind::Move => self.divider_drag = None,
+            MouseKind::Drag(held) if held == button => {
+                let x = event.x.saturating_sub(self.panel.x(self.geometry.cols));
+                if let Some(size) = grip.first_size(x, event.y)
+                    && size != last
+                {
+                    self.divider_drag = Some((grip, size, button));
+                    self.edit(Edit::ResizePair {
+                        first: grip.first,
+                        second: grip.second,
+                        first_size: size,
+                    })?;
+                }
+            }
+            MouseKind::Drag(_) => self.divider_drag = None,
+            MouseKind::Scroll { .. } => {}
+        }
+        Ok(true)
+    }
+
     fn mouse(&mut self, mut event: input::MouseEvent) -> Result<(), String> {
+        if self.drag(&event)? {
+            return Ok(());
+        }
         let layout = self.layout();
         let captured = match event.kind {
             MouseKind::Scroll { .. } | MouseKind::Down(_) => None,
@@ -1079,6 +1145,9 @@ impl Client {
                 {
                     self.switch(pane)?;
                 }
+                return Ok(());
+            }
+            if self.grab(&layout.geometry, &event, event.x - layout.pane_x) {
                 return Ok(());
             }
             layout
@@ -1159,6 +1228,9 @@ impl Client {
                 }
             }
             Event::Focus(focused) => {
+                if !focused {
+                    self.divider_drag = None;
+                }
                 self.focused = focused;
                 self.client_send(&ClientRequest::Focused { focused })
             }
@@ -1344,7 +1416,7 @@ impl Client {
         if retry {
             self.attempt()?;
         }
-        for event in incoming {
+        for event in coalesce_drag(incoming) {
             if self.quit {
                 break;
             }
@@ -1540,7 +1612,20 @@ impl Client {
                     }
                     Next::Text(event) => {
                         let event = protocol::decode(event.as_bytes()).map_err(text)?;
+                        let resizing = (*self.keys.state() == State::Resize)
+                            .then(|| {
+                                self.pane().and_then(|pane| {
+                                    self.model.locate(pane).map(|(_, window)| (pane, window))
+                                })
+                            })
+                            .flatten();
                         let applied = self.model.apply(event);
+                        if let Some((pane, window)) = resizing
+                            && (self.model.locate(pane).map(|(_, id)| id) != Some(window)
+                                || self.shown().map(|(_, shown)| shown.id) != Some(window))
+                        {
+                            self.keys.end();
+                        }
                         match applied {
                             Applied::Nothing | Applied::State => {}
                             Applied::Layout if self.reconnecting.is_none() => self.sync_views()?,
@@ -1550,7 +1635,10 @@ impl Client {
                                 self.pending_selection = None;
                                 if !matches!(
                                     self.keys.state(),
-                                    State::Normal | State::Prefix | State::Repeat { .. }
+                                    State::Normal
+                                        | State::Prefix
+                                        | State::Repeat { .. }
+                                        | State::Resize
                                 ) {
                                     self.keys.end();
                                 }
@@ -1570,7 +1658,7 @@ impl Client {
     }
 
     fn begin(&mut self) -> Result<(), String> {
-        for event in std::mem::take(&mut self.pending) {
+        for event in coalesce_drag(std::mem::take(&mut self.pending)) {
             self.event(event)?;
         }
         Ok(())
@@ -1594,6 +1682,26 @@ impl Client {
         }
         Ok(())
     }
+}
+
+fn coalesce_drag(events: Vec<Event>) -> Vec<Event> {
+    let mut out = Vec::new();
+    for event in events {
+        if let Event::Mouse(input::MouseEvent {
+            kind: MouseKind::Drag(button),
+            ..
+        }) = &event
+            && let Some(Event::Mouse(input::MouseEvent {
+                kind: MouseKind::Drag(previous),
+                ..
+            })) = out.last()
+            && button == previous
+        {
+            out.pop();
+        }
+        out.push(event);
+    }
+    out
 }
 
 fn hello(geometry: Geometry, panel: Panel, focused: bool) -> Hello {
@@ -1687,6 +1795,18 @@ pub fn run_remote(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn consecutive_drag_motions_keep_only_the_last_before_other_events() {
+        let mut events = Vec::new();
+        Input::default().feed(
+            b"\x1b[<0;10;3M\x1b[<32;11;3M\x1b[<32;12;3Mx\x1b[<32;13;3M\x1b[<32;14;3M\x1b[<0;14;3m",
+            Instant::now(),
+            &mut events,
+        );
+        let expected = [0, 2, 3, 5, 6].map(|at| events[at].clone());
+        assert_eq!(coalesce_drag(events), expected);
+    }
 
     #[test]
     fn a_remote_attach_sends_no_cwd_because_the_local_one_may_not_exist_there() {

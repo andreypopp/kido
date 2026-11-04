@@ -503,6 +503,28 @@ Enter, so directly after the prefix those two keys also select; in
 the repeat window they go to the program. Outer mouse reporting stays on while a pane is shown,
 so selecting text in the outer terminal needs its override modifier.
 
+Resize mode (`C-a R`) is a state of the key machine: each key is one
+layout edit of the active pane, sent at once, so two fast keys are two
+steps, as in Kido.app. A resize of a zoomed pane ends the zoom, which
+`Edit::ResizeBy` does. The status line shows `[resize]` and the active
+pane's dividers turn yellow instead of green. `C-a` leaves the mode
+for the prefix, so `C-a d` works in it; the mode also ends when the
+active pane leaves the shown window, or the view closes.
+
+A press on a divider starts a drag. The motions of one read of stdin
+become one step, the last position, which goes as one
+`Edit::ResizePair` with Kido.app's arguments
+(`PaneGeometry/Layout.swift`): the first leaves of the two children
+beside the divider, and the position less the first child's origin as
+the first size. Where dividers meet, the outer split's divider wins.
+A layout change during the drag finds the pair's divider again in the
+new geometry, or ends the drag when the pair has none. The drag never
+reaches a pane and selects none. It ends at the release, and also at
+a focus loss, a motion without its button or a new press, because a
+terminal can lose the release outside its window; that new press then
+acts as usual. A zoomed window has no dividers, and a float's border
+is not one.
+
 The client restores the outer terminal's modes exactly on every exit
 path, and never sends RIS or clears the screen. It queries the outer
 terminal at start, so replies arrive on stdin among keystrokes; the
