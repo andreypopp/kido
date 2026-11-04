@@ -430,8 +430,10 @@ the zoomed pane, and only that pane has a view: closing the hidden
 panes' views keeps the server's write work proportional to the screen,
 and a snapshot reload on unzoom costs milliseconds. Floats are drawn
 after the tree in `z` order, with their border outside the content
-and clipped to the pane area. A dead pane's line is the last row of
-its rectangle. Keys go to the active pane, the client's current pane;
+and clipped to the pane area. The module is pure, in `ko_tui` and not
+in `ko_client`, because it has one user: Kido.app computes its
+rectangles in Swift (`PaneGeometry`) and keeps them. A dead pane's
+line is the last row of its rectangle. Keys go to the active pane, the client's current pane;
 the outer terminal's cursor and modes follow it. A press in another
 pane selects that pane; a pane that tracks the mouse gets the press,
 drags and release in its own coordinates, and the wheel scrolls the
@@ -475,7 +477,10 @@ the panes and requires nothing of it.
 Copy mode (`ko_tui/src/copy.rs`) uses vi keys, as Kido.app's copy
 mode does: one vocabulary serves both clients, the emacs table needs
 `C-Space` and `M-w`, which many terminals do not deliver, and choosing
-by `EDITOR` would be configuration by environment. Its coordinates are
+by `EDITOR` would be configuration by environment. Three keys differ
+from tmux's vi table, for vim's and Kido.app's vocabulary: `v` begins
+a selection (tmux's `v` toggles a rectangle), `C-v` toggles the
+rectangle, and `y` copies beside tmux's `Enter`. Its coordinates are
 history rows, counted from the top of the mirror's history, the row
 space of `ko_vt::Terminal::total_rows`. On entry the mirror freezes: it
 still reads its link, so the server's backpressure does not build, but
@@ -521,7 +526,13 @@ each visible cell by binary search.
 The status line has tmux's default shape and colours: the session and
 its windows by position on the left, `*` on the shown window and `-`
 on the last one, and on the right the pending prefix, a prompt (a
-rename or a kill confirmation) or the reconnect notice. The window
+rename or a kill confirmation) or the reconnect notice. Windows are
+numbered from 0, tmux's `base-index`, so the label and the key `C-a 0`
+to `9` agree; the sidebar numbers panes from 1. The status line is
+always on and has no key to hide it: it carries the prefix indicator
+and the modes, which have no other place when the sidebar is hidden.
+tmux shows nothing while its prefix is pending; ko shows `C-a`,
+because it costs one word and makes a stuck prefix visible. The window
 commands go to the server as `ClientRequest::Switch` (next and
 previous window or session) or `Select` (a position, the last window
 or session); renames are layout edits, and kills are `DELETE` of the
@@ -592,6 +603,40 @@ running agent or command, a waiting agent, an unseen success, an
 unseen failure. The seen rule is in `ko_client/src/status.rs`, shared
 with Kido.app: a visit acknowledges an outcome or exit, and a later
 one with a new serial shows again.
+
+`C-a e`, the pager over the pane's scrollback, stays although copy
+mode covers the history: it is built and tested and costs one row of
+the table. A later cleanup removes it if the user does not use it.
+
+**Not built.** The terminal client reads no configuration: the user
+asked for zero configuration, and the non-goal of a multiplexer's
+configuration files and key tables holds. A `tui:` key of
+`config.yaml` (the prefix key, the status line on or off, the
+sidebar's width and default visibility, the copy-mode key table) is
+not planned. These tmux bindings have no ko equivalent and are not
+built:
+
+- The command prompt (`:`), a command language, hooks and key tables:
+  the non-goal above.
+- Preset layouts (`M-1` to `M-7`, `Space`) and rotate (`C-o`, `M-o`):
+  the layout document has no preset shapes.
+- Pane marks (`m`, `M`), pane titles (`T`), the clock (`t`) and the
+  information popups (`i`, `~`, `q`): no need.
+- Window index prompts (`'`, `.`) and the fuzzy chooser (tmux's
+  `Tab`): the sidebar chooser is the one list, and ko's `C-a Tab` is
+  the last window.
+- Buffer lists (`#`, `-`, `=`) and server-side paste buffers: the
+  copy buffer is one buffer in the client process.
+- Activity markers (`M-n`, `M-p`): the status marks of the sidebar
+  cover them.
+- Detach another client (`D`): no route moves another client (decided
+  2026-11-03).
+- Suspend (`C-z`): a signal to the own pid, which `ko_sys::pid`
+  refuses.
+- Emacs copy-mode keys: the reason in the copy-mode paragraph above.
+- Float creation by drag and float move keys (`g`): a float is
+  created, focused, read and removed; its geometry changes through
+  Kido.app or `ko layout edit`.
 
 ### 4.12 Images
 
@@ -1001,13 +1046,24 @@ Each decision names its date. The code states the rest.
 
 2026-11-04:
 
-- The terminal client becomes tmux-like (plans/ko-tui.md): a `C-a`
-  prefix with tmux's default bindings, which works in every terminal,
-  and a status line. The Ctrl+Shift chords, the kitty keyboard
-  requirement and its warning row go. This reverses the decisions of
-  2026-10-30 that the terminal client never shows splits, tabs or
-  windows and that a terminal without extended keys gets no chords
-  and no prefix fallback.
+- The terminal client becomes tmux-like (4.11): a `C-a` prefix with
+  tmux's default bindings, which works in every terminal, and a status
+  line. The Ctrl+Shift chords, the kitty keyboard requirement and its
+  warning row go. This reverses the decisions of 2026-10-30 that the
+  terminal client never shows splits, tabs or windows and that a
+  terminal without extended keys gets no chords and no prefix
+  fallback. The prefix is not configurable, and the client reads no
+  file: zero configuration, the user's choice.
+- Where the terminal client differs from tmux's defaults: windows are
+  numbered from 0 and the status line is always on with the pending
+  prefix shown; `C-a l` selects the right neighbour and `C-a Tab` is
+  the last window; `C-a h/j/k/l` and `C-a C-h/j/k/l` also select,
+  repeatable; `C-a *` toggles a float of the active pane instead of
+  creating a new one; `C-a !` is the shared `Edit::BreakPane`; copy
+  mode is vi with `v` begin, `C-v` rectangle and `y` copy; its search
+  is local on the frozen mirror; the mouse is on, because the sidebar
+  needs it; `C-a e` keeps the pager; `C-a C-s` shows or hides the
+  sidebar. The reasons are in 4.11.
 - The terminal client shows the window's splits, zoom and floats and
   sizes windows by the same rule as Kido.app. The server's gate that
   let a terminal client size only a window with one leaf, and the
