@@ -185,8 +185,8 @@ These requirements are fixed:
   pinned Verus release. They move together. Homebrew's keg-only
   `rustup` formula supplies it (`brew install rustup`, then
   `$(brew --prefix rustup)/bin/rustup toolchain install`, which reads
-  `rust-toolchain.toml`; since rustup 1.28, `rustup show` installs
-  nothing). Its `bin` is not on PATH, and Kido does not ask the user
+  `rust-toolchain.toml`; with rustup 1.28 or later, `rustup show`
+  installs nothing). Its `bin` is not on PATH, and Kido does not ask the user
   to change PATH. The Makefile is the one place that finds cargo: it
   puts that `bin` first on PATH, and it calls `$(CARGO)` by its full
   path, because make 3.81 on macOS looks up a recipe's command
@@ -203,8 +203,10 @@ These requirements are fixed:
   install` adds them. For them, `.cargo/config.toml` names the linker
   wrappers `scripts/zig-cc-<arch>-linux-musl` (`zig cc -target
   <arch>-linux-musl`) and sets `-C link-self-contained=no`: with
-  rustc's own `crt1.o`, `_start` is defined twice. The aarch64 wrapper
-  drops `-Wl,--fix-cortex-a53-843419`, which zig's linker refuses.
+  rustc's own `crt1.o`, `_start` is defined twice. Both names are
+  symlinks to `scripts/zig-cc-musl`, which reads the target from its
+  own name and drops `-Wl,--fix-cortex-a53-843419`, which zig's
+  linker refuses.
   Nightly exists only for cargo-fuzz
   and Miri: `scripts/nightly.sh` pins it, and `scripts/fuzz.sh`,
   `scripts/miri.sh` and `.github/workflows/ko-nightly.yml` source it.
@@ -255,10 +257,12 @@ These requirements are fixed:
   every crate inherits them. `clippy.toml` permits `unwrap`, `expect`,
   `panic!` and indexing in tests. The readers of untrusted bytes
   (`ko_pane_wire`'s `frame.rs` and `ring.rs`, `ko_server`'s
-  `pane_proc.rs` and `exec_wire.rs`, `ko_pane`'s `io.rs`) also deny `clippy::indexing_slicing` and
+  `pane_proc.rs`, `exec_wire.rs`, `http.rs` and `ws.rs`, `ko_pane`'s
+  `io.rs`) also deny `clippy::indexing_slicing` and
   `clippy::arithmetic_side_effects`. `print_stdout` and `print_stderr`
   are denied: the CLI writes through `writeln!` on a locked stream, and
-  only `ko_bench/src/main.rs` allows the macros. Inside `verus!`, Verus
+  only `ko_bench/src/main.rs` and the fake ko's `main.rs` allow the
+  macros. Inside `verus!`, Verus
   also proves that each index is in bounds and that no arithmetic
   overflows.
 - **The command line is a contract** with `ko_e2e/`, `bench/`,
@@ -683,7 +687,7 @@ Conventions:
   modules without sockets, FFI or processes: `frame`, the ring,
   `ids`, `protocol` and `http`'s head reader. It selects them by
   name and skips the proptest tests and the 16 MiB frame stream,
-  which ran out of memory under Miri in a 6 GiB container. Under `cfg(miri)`, `ko_sys`'s
+  which runs out of memory under Miri in a 6 GiB container. Under `cfg(miri)`, `ko_sys`'s
   `Mapping` is heap memory (`ko_sys/src/mapping/heap.rs`), so the
   ring's writer and reader run on it.
 - **Allocation.** The coordinator allocates nothing on the heap for
@@ -720,12 +724,15 @@ maps the coordinator's modules.
     .pi/prompts/        gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed;
                         release.md, /release: Kido.app first, then ko
     .pi/extensions/     no-git-writes, the spawned agent's bash-tool guard
+    .pi/tests/          no-git-writes.test.ts, the guard's suite, which
+                        scripts/test-ts.sh runs with the ko-pi suite
     scripts/            verify.sh, scrubbed verification; release.sh, the
                         Homebrew tap release; lint.sh, code hygiene, signal
                         calls, doc references, schemas and prompt snapshots;
                         test-ts.sh; dump-prompts.ts, every prompt text pi
                         registers; main-watch.sh, CI for each observed main
-                        head; ci-website-watch.sh; ci-like.sh and
+                        head; watch-peer.sh, the live peer run of a script
+                        under the same parent; ci-website-watch.sh; ci-like.sh and
                         ci-like/Dockerfile, the Linux reproduction;
                         install-zig.sh, the zig pin; zig-cc-musl, the musl
                         linker wrapper of .cargo/config.toml, under its
@@ -775,7 +782,8 @@ the app's link refuses the duplicates. A new exported function goes
 into `ko_client.h`, `ffi.rs` and `exports.txt` together.
 `make build-bench` builds the C helpers of `bench/` into
 `build/bench/`, beside `ko-bench` in `target/release/`; `bench/run.sh`,
-`bench/flood.sh` and `bench/rtt.sh` call it. `bench/client.py` runs
+`bench/flood.sh` and `bench/rtt.sh` call it through `bench/setup.sh`,
+which they source. `bench/client.py` runs
 the `ko` that `KO_BIN` names, which measures a reference build
 (docs/design-ko.md, "Performance"), else it runs `make build` and
 uses `build/ko/bin/ko`.
@@ -797,7 +805,7 @@ JSON are the contract between the two. ko is the mediator: the
 extension never reads ko's state directory or another agent's files
 and has no state directory of its own; its registry and reports are
 custom entries in its own pi session (docs/design-subagents.md, "The
-registry"). ko never reads the extension's files. Its knobs are
+registry: the own pi session"). ko never reads the extension's files. Its knobs are
 `KO_*`.
 
 ## The server
@@ -850,7 +858,7 @@ Claude Code 2.1.295 queries OSC 7501. Then it emits a root
 permission/question kind and a base64 message. Escape on a permission
 dialog emits idle immediately. Exit clears all records.
 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` also disables this reporting.
-Its OSC 0 title was "Claude Code" at startup and "Reply with ok" for
+Its OSC 0 title is "Claude Code" at startup and "Reply with ok" for
 the session. Kido ships no Claude Code shim.
 
 **Runs.** docs/design.md, "Who is authoritative for what" and "Window
@@ -887,19 +895,15 @@ shadowing it silently stops the precmd hook. The local is called
 
 ## Proved modules
 
-Verus is ko's one specification ("Verus" under "Rust"). The reference
-copy of the earlier F*/Pulse proofs is in `~/Workspace/kido-ko`.
+Verus is ko's one specification ("Verus" under "Rust").
 
 **The ring indices are sequentially consistent.** The wakeup
 handshake between `head` and `read` is a store-buffering pattern:
 each side stores its index, then loads the other's. Under
-acquire/release, both loads can read the old values, and a wakeup is
+acquire/release, both loads can read the stale values, and a wakeup is
 lost. The proof assumes one interleaving, which only `seq_cst` gives.
-The ring's accesses are `SeqCst` ("Atomics" under "Rust"). A GenMC
-model of an earlier C ring showed it: the ring model passed 17,519
-executions with no error, and the wakeup model lost a wakeup under
-acquire/release and none under `seq_cst`. The loom models of
-`ko_pane_wire::ring::model` replace them on the Rust code:
+The ring's accesses are `SeqCst` ("Atomics" under "Rust"). The loom
+models of `ko_pane_wire::ring::model` show it on the Rust code:
 `records_reach_the_reader_whole_and_in_order`,
 `a_seq_cst_handshake_loses_no_wakeup`, and
 `an_acquire_release_handshake_loses_a_wakeup` (`#[should_panic]`).
@@ -1027,8 +1031,8 @@ mount the `/tmp` alias.
 
 **Fuzzing.** ko has no VT-parser target: Ghostty fuzzes libghostty-vt
 upstream. `scripts/fuzz.sh` names the targets, all cargo-fuzz targets
-in `fuzz/fuzz_targets/`, with a dictionary and `max_len` in
-`fuzz/<target>.options`:
+in `fuzz/fuzz_targets/`, each with a dictionary in
+`fuzz/<target>.dict` and its `max_len` in `fuzz/<target>.options`:
 
 - `frame` and `control`: `ko-pane`'s frame sizes and its control
   dispatch in process (`ko_pane::control`). The first byte of a

@@ -9,13 +9,12 @@ with their dates.
 
 ## 1. Why
 
-Kido's first implementation ran on a terminal multiplexer and read its
-state through a control protocol made for another client. Two
-emulators had to agree, content was mirrored through text captures,
-status came from polling with whole-second times, two app windows
-shared one current window, and every change of the multiplexer's
-configuration restarted the server. A purpose-built server removes
-each cause instead of patching each symptom.
+Kido does not run on a terminal multiplexer with a control protocol
+made for another client. That design has these costs: two emulators
+must agree, content goes through text captures, status comes from
+polling with whole-second times, two app windows share one current
+window, and each change of the multiplexer's configuration restarts
+the server. A purpose-built server removes each cause.
 
 ## 2. Goals and non-goals
 
@@ -45,17 +44,18 @@ Non-goals:
 - Compatibility with any multiplexer's clients, commands, configuration
   files, plugins, hooks or key tables. ko's one configuration file
   (4.14) holds only what cannot be derived.
-- Linked and grouped sessions. Per-client current window is what they
-  were for.
+- Linked and grouped sessions. A per-client current window covers
+  their use.
 - Scripting the server from the shell beyond the `ko` CLI and `ko api`.
 - Surviving a reboot.
 
 ## 3. How a client gets content
 
-Three ways were considered:
+Three designs are possible:
 
-- **Bytes to the client, the client emulates.** The first
-  implementation. Rejected: it is the cause of the content bugs.
+- **Bytes to the client, the client emulates.** Rejected: two
+  emulators must agree on every byte, and each difference is a
+  content bug.
 - **Render state to the client, the client only draws.** The purest
   design, but Kido.app has no renderer that takes external rows, and
   it moves per-row serialization into the server's hot path.
@@ -70,7 +70,7 @@ Three ways were considered:
   input, the modes, the images with pending pixels), and whose later
   records carry the history pages and the image pixels.
 
-The third is built. The reasons:
+ko uses the third. The reasons:
 
 - Kido.app keeps its Ghostty surface and renderer and gains one entry
   point: restore a surface from a snapshot stream.
@@ -267,9 +267,9 @@ least one cell, a `PUT` of the normalized document is a fixed point).
 A client changes it by a whole-document `PUT` with the revision it
 read; a stale revision gets `409` with the current document, and the
 client reapplies its edit (`ko_client/src/edit.rs` and `layout.rs`).
-Normalization was chosen over an exact rule so that one engine does
-every split, resize, equalize and scale computation and a `409` retry
-never has to recompute every size.
+Normalization, not an exact rule, lets one engine do every split,
+resize, equalize and scale computation, and a `409` retry never
+recomputes every size.
 
 A **client** is one open `/client` WebSocket: it exists from the hello
 to the close, with no linger and no orphans. The client owns what it
@@ -325,8 +325,8 @@ closes the view with a close frame (protocol.md, section 4). The cap
 and the spill limit are `KO_VIEW_QUEUE_BYTES` and
 `KO_VIEW_SPILL_BYTES`, read by `ko_server/src/config.rs`.
 
-Measured in the first build: on macOS a non-blocking writer on a unix
-stream socket accepts exactly its own `SO_SNDBUF` before it blocks,
+Measurements that fix the design: on macOS a non-blocking writer on a
+unix stream socket accepts exactly its own `SO_SNDBUF` before it blocks,
 whatever the reader's buffer, so the server sets `SO_SNDBUF` and the
 client `SO_RCVBUF` to 1 MiB on view connections. With 8 KiB, reader
 stalls of 20 ms skipped; with 1 MiB, stalls of 50 ms every 100 ms did
@@ -401,9 +401,7 @@ the pane rows' `parent` (`ko_client/src/model.rs`).
 Runs are in the server (protocol.md, section 10): the run records on
 disk, the sweep over the pane rows on each event that can end a pane,
 and `run-wait` as a
-long poll.
-design.md gives the rules that the runs keep from the first
-implementation.
+long poll. design.md gives the run rules.
 
 **The loop rule.** Coordinator state changes only on the loop thread.
 A long poll or a deadline is a stored waiter in the state plus a loop
@@ -570,7 +568,7 @@ geometry, and a float docks on the right of a tiled pane of its
 window. `C-a !` is `Edit::BreakPane`, an edit of `ko_client`, so
 Kido.app and `ko layout edit` share it: the pane, tiled or a float,
 leaves its window and becomes the tree of a new window after it,
-which takes the old window's name. After a break the client selects
+which takes the name of the window it leaves. After a break the client selects
 the pane, so it shows the new window.
 
 Resize mode (`C-a R`) is a state of the key machine: each key is one
@@ -655,16 +653,14 @@ path, and never sends RIS or clears the screen. It queries the outer
 terminal at start, so replies arrive on stdin among keystrokes; the
 input decoder (vte, then `ko_tui/src/input.rs`) routes them.
 
-The status column shows one mark for each pane row with the glyphs and
-colours of the first implementation (`ko_tui/src/renderer.rs`): a
-running agent or command, a waiting agent, an unseen success, an
+The status column shows one mark for each pane row
+(`ko_tui/src/renderer.rs`): a running agent or command, a waiting agent, an unseen success, an
 unseen failure. The seen rule is in `ko_client/src/status.rs`, shared
 with Kido.app: a visit acknowledges an outcome or exit, and a later
 one with a new serial shows again.
 
-`C-a e`, the pager over the pane's scrollback, stays although copy
-mode covers the history: it is built and tested and costs one row of
-the table. A later cleanup removes it if the user does not use it.
+`C-a e` opens the pager over the pane's scrollback. Copy mode also
+covers the history; the pager costs one row of the table and stays.
 
 **Not built.** The terminal client reads no configuration: the user
 asked for zero configuration, and the non-goal of a multiplexer's
@@ -708,10 +704,9 @@ object by name; remotely it gets the pixels as a body, streamed from
 the coordinator's own mapping. `ko-pane` owns the objects; the
 coordinator keeps the leak record (`ko_server/src/shm.rs`) because it
 is the one process that outlives a pane, and macOS cannot enumerate
-POSIX shared memory. Animation was done properly from the start, with
-no fallback: the Ghostty fork reads frame `n` and attaches fetched
-pixels to a pending frame outside the snapshot decoder
-(`ko_vt/src/frames.rs`).
+POSIX shared memory. Animation has no fallback: the Ghostty fork
+reads frame `n` and attaches fetched pixels to a pending frame outside
+the snapshot decoder (`ko_vt/src/frames.rs`).
 
 The pane's terminal decodes PNG (`f=100`) to RGBA frames with wuffs.
 Upstream's lib-vt artifact leaves the decoder out; the fork keeps it
@@ -851,11 +846,11 @@ reload command, and nothing watches the file:
 
 A file that does not decode gives the `server:` defaults, so a typo
 never stops the user from opening a shell to fix it. The runtime
-requests fail with the error. The `server:` keys replace the options
-`--shell`, `--scrollback-bytes`, `--scrollback-lines` and
-`--no-scrollback` and the variables of the image limit, the linger and
-the runtime idle: each setting has one source. The knobs that only
-tests and tuning need stay environment variables (design.md, "Knobs").
+requests fail with the error. Each setting has one source: the shell,
+the scrollback, the image limit, the linger and the runtime idle are
+`server:` keys and have no option or environment variable. The knobs
+that only tests and tuning need are environment variables (design.md,
+"Knobs").
 
 **`app:`.** Kido.app's terminal settings: the theme pair, the font,
 the keyboard, the mouse, the clipboard, the window shades
@@ -929,10 +924,9 @@ mixed lines loaded in 4.9 s at 150 ms RTT in place of 8.7 s, at about
 0.26 s of server CPU for each such history; level 6 saved few bytes
 more at ten times the CPU. Live output stays raw because it is small
 and latency-bound. The coordinator's one thread deflates each view's
-slices, so N views that attach at once cost N times the deflate.
-Before the spill file of protocol.md, section 4, a compressed
-snapshot over the 64 MiB queue cap closed its view with a bare EOF;
-now it reaches the client whole. Measured through Kido.app at 50,
+slices, so N views that attach at once cost N times the deflate. A
+snapshot over the queue cap reaches the client whole through the
+spill file (protocol.md, section 4). Measured through Kido.app at 50,
 150 and 300 ms RTT, echo adds under 1 ms over the RTT at p50, and the
 100k-line mixed history restores whole in every cell.
 
@@ -964,13 +958,12 @@ measures it first, in the same session, on AC power, at a load average
 under 2. A change that moves a row past its rule names the new
 reference commit with the reason.
 
-What the first build measured on an M5 Max, which fixed the design:
-the pty read and the parse share one thread in `ko-pane`, and each
-1 KiB read waits for the parse of the one before, so ingest is bound
-by the parser and the ring and the coordinator hop cost nothing
-measurable; a 100k-line history encodes in a few milliseconds and
-decodes in under ten, so snapshots go over the socket and no file path
-is needed; the hop from a pty byte to the coordinator's socket write
+Measurements on an M5 Max that fix the design: the pty read and the
+parse share one thread in `ko-pane`, and each 1 KiB read waits for the
+parse of the one before, so ingest is bound by the parser, and the
+ring and the coordinator hop cost nothing measurable; a 100k-line
+history encodes in a few milliseconds and decodes in under ten, so
+snapshots go over the socket and need no file path; the hop from a pty byte to the coordinator's socket write
 is tens of microseconds; the coordinator idles under 15 MiB and an
 idle `ko-pane` under 2 MiB of footprint; and on macOS the memory rows
 are judged by `phys_footprint`, because libghostty-vt frees compressed
@@ -984,31 +977,24 @@ Each decision names its date. The code states the rest.
 2026-10-29:
 
 - The executable is `ko`. The server is a thin terminal client's and
-  Kido.app's server, with no compatibility with the first
-  implementation's multiplexer, no linked or grouped sessions, a
-  per-client current window, clipboard requests routed by the server,
-  and upgrade in place as a goal.
+  Kido.app's server, with no compatibility with a terminal
+  multiplexer, no linked or grouped sessions, a per-client current
+  window, clipboard requests routed by the server, and upgrade in
+  place as a goal.
 
 2026-10-30:
 
-- Kido's first implementation ends and ko replaces it. The terminal
-  client shows one pane at a time from a list grouped by session,
-  never splits, tabs or windows. Kido.app keeps sessions, windows,
-  splits, floats, zoom and its sidebar.
 - The layout is one server-validated JSON document, changed by a
   whole-document `PUT` with a revision check. Panes carry arbitrary
-  client-set JSON variables in place of a multiplexer's user options.
+  client-set JSON variables.
 - The server is two programs: the coordinator and one `ko-pane` for
   each pane, with a shared ring and no copy between them, and the
   control channel on `ko-pane`'s stdio.
 - Every pane runs `TERM=xterm-ghostty`. Scrollback compression is
   always on. The pane's foreground process is read only on events.
-- A terminal without extended keys gets no chords and no prefix
-  fallback. The outer mouse reporting stays on while a pane is shown.
-- No `ko.conf`. No daemon that survives a coordinator crash. The
-  status glyphs and colours of the first implementation stay in the
-  terminal client; its 0.5 s hold of a finished command's row is
-  dropped, because events arrive at once.
+- The outer mouse reporting stays on while a pane is shown.
+- No daemon survives a coordinator crash. The terminal client does
+  not hold a finished command's row, because events arrive at once.
 - There are no `ko pane` commands: variables go through the HTTP API
   only, by hand with `ko api`, and `ko ssh` writes the API directly.
   The OSC 7501 record set lives in the coordinator.
@@ -1031,7 +1017,7 @@ Each decision names its date. The code states the rest.
 
 - The protocol version changes only with a release; between releases
   a change of shape changes the docs and both clients in one commit.
-  ko has had no release, so the version is 1.0.
+  The version is 1.0 (`ko_server/src/protocol.rs`).
 - Tagged serde enums for the status shape; both clients share
   `ko_client`, which Kido.app links through a hand-written C ABI with
   no libghostty-vt inside the core. The seen record lives in the core.
@@ -1050,11 +1036,8 @@ Each decision names its date. The code states the rest.
   at once.
 - `SSH_AUTH_SOCK` is `<dir>/agent.sock` in every pane; there is no
   server-environment route.
-- The cut-over deletes the first implementation and its build system;
-  the repo is a cargo workspace with `share/` and the TypeScript
-  harness. A `ko_shell` crate holds the shell priming. The cut-over
-  comes after remote. Linux lands before remote.
-- ko-pi's state directory starts empty; nothing migrates.
+- The repo is one cargo workspace with `share/` and the TypeScript
+  harness. A `ko_shell` crate holds the shell priming.
 
 2026-11-03:
 
@@ -1070,8 +1053,9 @@ Each decision names its date. The code states the rest.
   `bench/rtt_proxy.py` at 150 ms RTT and 100 Mbit/s, a 100k-line
   history of mixed lines (a 77 MB snapshot), medians of 3; "history
   loaded" is from the spawn of `ko HOST` to the last history row in
-  the client, "transfer" the first to last snapshot slice; miniz was a
-  scratch build that deflated snapshot slices only:
+  the client, "transfer" the first to last snapshot slice; the miniz
+  columns come from a scratch build that deflated snapshot slices
+  only:
 
   | 150 ms, 100 Mbit/s | none | `ssh -C` | miniz level 1 | level 6 |
   |---|---|---|---|---|
@@ -1086,20 +1070,17 @@ Each decision names its date. The code states the rest.
   (`ssh -C`), 8.8 s (level 1) and 8.2 s (level 6). Unlimited bandwidth
   gave the same times as 100 Mbit/s: OpenSSH's 2 MiB channel window
   counts uncompressed bytes, so `ssh -C` sends a third of the bytes
-  and gains nothing. The shipped level 1, measured again in the same
-  cell: history loaded 4.90 s against 8.69 s, transfer 2.38 s against
-  6.19 s, wire bytes 29.7 MB against 77.4 MB; the local floor rose
-  from 0.33 s to 0.59 s and the server's CPU from 0.01 s to 0.26 s.
+  and gains nothing. The shipped level 1 in the same cell, with the
+  figures of no compression in parentheses: history loaded 4.90 s
+  (8.69 s), transfer 2.38 s (6.19 s), wire bytes 29.7 MB (77.4 MB),
+  the local floor 0.59 s (0.33 s) and the server's CPU 0.26 s
+  (0.01 s).
   Through Kido.app (`app/scripts/rtt.py`, one run for each cell, the
   same proxy, a 81.6 MB snapshot over 30.4 MB on the wire): attach
   0.9 s at 50 ms, 2.5 s at 150 ms and 4.3 s at 300 ms RTT, with and
   without compression; echo p50 under 1 ms over the RTT in every cell;
   the mixed restore 1.0 s, 2.9 s and 5.7 s at unlimited bandwidth,
   2.6 s, 3.0 s and 5.7 s at 100 Mbit/s, and about 25 s at 10 Mbit/s.
-  Before compression every mixed restore in the app stalled after
-  about 1.9 MB, because the per-view queue cap closed the view with a
-  bare EOF that the client missed (the spill file and the close frame
-  of protocol.md, section 4, fixed that).
 - A shared-memory object lives as long as its frame does, outside the
   kitty storage limit; a limit for the objects is open.
 - A view's output past the connection's queue cap goes to an unlinked
@@ -1110,20 +1091,16 @@ Each decision names its date. The code states the rest.
   view.
 - Remote setup is administrative and may write in the server's state
   directory; client actions only connect to the socket.
-- Kido.app and ko ship from `main`; the first ko release is the tap
-  formula `ko`, version 0.1.0, built from source with the pinned
-  toolchains.
+- Kido.app and ko ship from `main`; ko releases as the tap formula
+  `ko`, built from source with the pinned toolchains.
 
 2026-11-04:
 
-- The terminal client becomes tmux-like (4.11): a `C-a` prefix with
+- The terminal client is tmux-like (4.11): a `C-a` prefix with
   tmux's default bindings, which works in every terminal, and a status
-  line. The Ctrl+Shift chords, the kitty keyboard requirement and its
-  warning row go. This reverses the decisions of 2026-10-30 that the
-  terminal client never shows splits, tabs or windows and that a
-  terminal without extended keys gets no chords and no prefix
-  fallback. The prefix is not configurable, and the client reads no
-  file: zero configuration, the user's choice.
+  line. It needs no kitty keyboard protocol. The prefix is not
+  configurable, and the client reads no file: zero configuration, the
+  user's choice.
 - Where the terminal client differs from tmux's defaults: windows are
   numbered from 0 and the status line is always on with the pending
   prefix shown; `C-a l` selects the right neighbour and `C-a Tab` is
@@ -1135,13 +1112,11 @@ Each decision names its date. The code states the rest.
   needs it; `C-a e` keeps the pager; `C-a C-s` shows or hides the
   sidebar. The reasons are in 4.11.
 - The terminal client shows the window's splits, zoom and floats and
-  sizes windows by the same rule as Kido.app. The server's gate that
-  let a terminal client size only a window with one leaf, and the
-  hello's client kind that it read, go.
-- Runtimes get a configuration file, the `runtimes:` key of
-  `config.yaml`, because a runtime cannot be derived. The file has one
-  top-level key for each owner; Kido.app's settings join it
-  (4.14), and everything that can be derived stays
-  without a file. Runtimes are managed through the HTTP API
-  only: a runtime starts with its first pane or exec session and stops
-  by the idle rule.
+  sizes windows by the same rule as Kido.app. The server has no
+  client kind in the hello and no size gate for one kind of client.
+- Runtimes come from the `runtimes:` key of `config.yaml`, because a
+  runtime cannot be derived. The file has one top-level key for each
+  owner, and Kido.app's settings are its `app:` key (4.14).
+  Everything that can be derived has no file. Runtimes are managed
+  through the HTTP API only: a runtime starts with its first pane or
+  exec session and stops by the idle rule.

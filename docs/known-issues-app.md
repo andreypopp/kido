@@ -1,14 +1,14 @@
 # Correctness gaps
 
-## Main can still wait on renderer mailboxes
+## Main can wait on renderer mailboxes
 
-A full renderer mailbox can block main; this is not a reproduced universal
-UI deadlock. `.forever` sends remain, for example in
-`third_party/ghostty/src/Surface.zig:2573` and `src/termio/Termio.zig:712`.
+A full renderer mailbox can block main. This is not a reproduced universal
+UI deadlock. Ghostty pushes to the renderer mailbox with `.forever` in
+`third_party/ghostty/src/Surface.zig` and `src/termio/Termio.zig`.
 Search-input capacity does not block main, but that guarantee does not cover
 all Ghostty sends; see [Threads](design-app.md#threads).
-It affects responsiveness under renderer pressure and ordinarily heals when
-the consumer drains. Audit main-callable sends and use ordered nonblocking
+It affects responsiveness under renderer pressure and heals when the
+consumer drains. Audit main-callable sends and use ordered nonblocking
 queues/coalescing where appropriate (large cross-cutting change).
 Status: parked; a blanket no-mailbox-waits guarantee is unverified.
 
@@ -20,20 +20,19 @@ construction fails before renderer-thread cleanup
 (`third_party/ghostty/src/renderer/generic.zig`). Ghostty 1.4.0 frees the
 derived configs, the environment and the font-grid reference when renderer or
 termio initialization fails (`src/Surface.zig`); stale copies after a
-successful initialization are not examined. These inherited error-path leaks
-are outside the renderer-thread ownership fix. Status: parked by decision; not
-fixed or covered.
+successful initialization are not examined. These are inherited error-path
+leaks. Status: parked by decision; not fixed or covered.
 
 # Unverified
 
 ## A stress jump can miss its selection deadline
 
-One `make stress` run on 2026-11-03 failed the `jump-selects` check: the
-sidebar jump's selection did not reach the model within the 5 s of
-`afterSelection`, 15.7 s into the run, before any mid-run server restart.
-The same seed passed on the rerun, and the failed run's logs were
-overwritten. Probable cause: the `selected` event waits on a main queue
-that the output flood keeps busy. Status: seen once.
+A `make stress` run can fail the `jump-selects` check: the sidebar jump's
+selection does not reach the model within the 5 s of `afterSelection`
+(`app/App/Stress.swift`), before any mid-run server restart. The same
+seed passes on a rerun, and a rerun overwrites the failed run's logs.
+Probable cause: the `selected` event waits on a main queue that the output
+flood keeps busy. Status: seen once.
 
 ## Late GPU completion after resize
 
@@ -45,26 +44,25 @@ ordering/fencing depends on its result. Status: unverified.
 
 ## Stale row after pi /reload
 
-Before step 4, after `/reload` in pi, a pane of the first implementation
-showed a stale "Reloading keybindings…" row above "Reloaded". The
-multiplexer's own grid held both rows, so the row came from pi's output, not from the app or a restore. A
-likely cause is pi-plain patches that survive `/reload` with stale
-closures. It is not checked on a ko server. Status: parked by the user.
+After `/reload` in pi, a pane can show a stale "Reloading keybindings…"
+row above "Reloaded". The pane's own grid holds both rows, so the row
+comes from pi's output, not from the app or a restore. A likely cause is
+pi-plain patches that survive `/reload` with stale closures. It is not
+checked on a ko server. Status: parked by the user.
 
-## Never-focused pane frame rate
+## Unfocused pane frame rate
 
-The renderer's unfocused pacer targets about 30 fps
-(`third_party/ghostty/src/renderer/Thread.zig:25`). The reported off-screen
-measurement is about 44 fps; the on-screen rate is unmeasured.
-Code inspection cannot establish that measurement or its present validity.
-The possible cost is excess rendering for unfocused visible panes, not lost
-content. Measure on screen first (small investigation), then tune scheduling
-if needed (medium). Status: unverified.
+The frame rate of an unfocused visible pane is not measured, off screen or
+on screen. The renderer thread (`third_party/ghostty/src/renderer/Thread.zig`)
+schedules wakeups and animation deadlines; it has no frame-rate target for
+unfocused panes. The possible cost is excess rendering for unfocused visible
+panes, not lost content. Measure on screen first (small investigation), then
+tune scheduling if needed (medium). Status: unmeasured.
 
 ## Scroll and idle wakeups on screen
 
-The scroller layer, fade deadline, compression timer and blink timer changes
-were measured off screen only. Off screen, Ghostty sends no SCROLLBAR action,
+The scroller layer, the fade deadline, the compression timer and the blink
+timer are measured off screen only. Off screen, Ghostty sends no SCROLLBAR action,
 so the skipped scroller refresh has tests but no measured effect. The 120 Hz
 effect is unmeasured. Measure with the profile recipe on a 120 Hz display (small
 investigation). Status: unverified.
@@ -81,15 +79,17 @@ current layout. Add a forced-stale pixel fixture and inspect a real window
 
 ## App Intent signing and URL-launch ordering
 
-The cold-launch gate passed on screen through Shortcuts with a team-signed
-build: one remote window, no Local. Spotlight does not list the action directly.
-Release builds use Apple Development (Personal Team) signing, supplying the
-TeamIdentifier Linkd requires. Ad-hoc Debug/demo builds still fail with
-`requiresValidatedBundle`; use the unsigned `kido-app://<host>` Shortcuts
-recipe in [Remote hosts](design-app.md#remote-hosts) for those builds.
-Internal URL parsing and queued-cold/warm routing are off-screen tested;
-actual URL-launch notification/event ordering still needs the user's on-screen
-retest. No timer guesses are used. Status: URL OS-delivery unverified.
+The cold-launch gate passes on screen through Shortcuts with a team-signed
+build: one remote window, no Local. Spotlight does not list the action
+directly. Release builds use Apple Development (Personal Team) signing,
+which supplies the TeamIdentifier that Linkd requires. Ad-hoc Debug and
+demo builds fail with `requiresValidatedBundle`; use the unsigned
+`kido-app://<host>` Shortcuts recipe in
+[Remote hosts](design-app.md#remote-hosts) for those builds.
+Internal URL parsing and queued-cold/warm routing are tested off screen;
+the actual URL-launch notification/event ordering needs the user's
+on-screen test. No timer guesses are used. Status: URL OS-delivery
+unverified.
 
 # Test coverage gaps
 
@@ -119,7 +119,7 @@ targeted internal tests for individual contracts (small each). Status: untested.
 Off-screen `sendEvent` does not reliably deliver grip, scroller or floating
 edge-resize presses. Stress invokes their existing entry points instead;
 see [Stress harness](design-app.md#stress-harness).
-Gesture logic is exercised, but hit testing and real delivery can still fail
+Gesture logic is exercised, but hit testing and real delivery can fail
 for users without a stress failure. An on-screen event harness is medium-to-large
 work; a manual smoke test is small. Status: untested.
 
@@ -153,19 +153,18 @@ pin the runner environment (medium). Status: accepted coverage limitation.
 `RendererTests.testWindowDisplayIDReachesNativeLink` times out in a
 session without an active display: Ghostty logs `error creating display
 link … CreationFailed`, because `CVDisplayLinkCreateWithActiveCGDisplays`
-fails. The test is unchanged by step 4. Status: environment limit.
+fails. Status: environment limit.
 
 ## A priority-inversion warning in one test is unexplained
 
-XCTest reports "waiting on a lower QoS thread" now and then at
-`app.renameSession()` in `testCloseSessionConfirmsAndKills`, and it was
-seen once in two other tests. It fires in 9 of 9 fresh-process runs.
-It still fires in 9 of 9 runs in each of these cases: ko_client's I/O,
-fetch and decoder threads at user-initiated QoS; no main-thread
-`ghostty_surface_set_focus`; no pane view attached, so no decoder thread
-and no feed. Thus the waiting thread is on the rename panel's AppKit path,
-not on ko_client or Ghostty. The xcresult holds no stacks. Status: open,
-probably AppKit.
+XCTest reports "waiting on a lower QoS thread" at `app.renameSession()`
+in `testCloseSessionConfirmsAndKills` (`app/VisualTests/PaletteTests.swift`),
+and rarely in other tests. It fires in every fresh-process run. It also
+fires in each of these cases: ko_client's I/O, fetch and decoder threads at
+user-initiated QoS; no main-thread `ghostty_surface_set_focus`; no pane
+view attached, so no decoder thread and no feed. Thus the waiting thread is
+on the rename panel's AppKit path, not on ko_client or Ghostty. The
+xcresult holds no stacks. Status: open, probably AppKit.
 
 # Accepted limitations
 
@@ -195,11 +194,13 @@ no attended window shows. An elected client whose window is occluded or
 hidden refuses an unapproved read at once; it is not deferred until the
 pane becomes visible.
 
-Always allow is per exact configured host key, including Local. Edit → Reset Clipboard Permissions revokes all grants and connection answers. Retargeting an SSH alias does not revoke its stored grant;
-SSH host-key policy remains OpenSSH's. Local grants also cover applications
-reached through SSH inside its panes because OSC carries no authenticated
-remote identity. The app's 8s deadline cannot detect an application's
-earlier cancellation. Status: accepted scope.
+Always allow is per exact configured host key, including Local. Edit →
+Reset Clipboard and Upload Permissions revokes all grants and connection
+answers. Retargeting an SSH alias does not revoke its stored grant; SSH
+host-key policy is OpenSSH's. Local grants also cover applications reached
+through SSH inside its panes, because OSC carries no authenticated remote
+identity. The app's 8 s deadline cannot detect an application's earlier
+cancellation. Status: accepted scope.
 
 ## A frame that the server does not find stays blank
 
@@ -332,33 +333,33 @@ hosts. The app's own paths and knobs keep the Kido name: the server and
 its code are `ko`, the app is Kido.app (docs/design-ko.md, "Decisions",
 2026-11-03). Status: accepted.
 
-## The remote restore and echo are not measured yet
+## The remote restore and echo are not measured
 
-`make rtt` has run only a 2000-row smoke on localhost without delay. The
-100k-line restore, the echo at 50, 150 and 300 ms and the compression
-decision wait for ko's delay proxy (kido-app-notes/k7-rtt-plan.md). The
-generator's `--line-bytes` default needs calibration against the 78 MB
-snapshot on that run. Status: open.
+`make rtt` (`app/scripts/rtt.py`) is measured only as a 2000-row smoke on
+localhost without delay. The 100k-line restore, the echo at 50, 150 and
+300 ms and the compression decision wait for ko's delay proxy
+(`~/Workspace/kido-app-notes/k7-rtt-plan.md`). Status: open.
 
 # Dev/tooling
 
 ## make -j can race on the xcframework
 
-`make` writes `app/build/ko_client.xcframework` in place. No target starts
-two builds at once, but `make -j` with several targets can run two of them
-on the same xcframework. Status: accepted; run targets one at a time.
+The app's build writes `app/build/ko_client.xcframework` in place
+(`app/project.yml`). No target starts two builds at once, but `make -j`
+with several targets can run two of them on the same xcframework. Status:
+accepted; run targets one at a time.
 
 ## AppKit warns about the sidebar's theme-frame overlays
 
 `make visual` prints "adding an unknown subview: Kido.FocusEdge" once
-for each window. The sidebar's `viewDidLayout` adds the focus edge, the
-separator and the shadow to the window's theme frame
-(`contentView.superview`), so they draw over the toolbar region, and
+for each window. The sidebar's `viewDidLayout` (`app/App/Sidebar.swift`)
+adds the focus edge, the separator and the shadow to the window's theme
+frame (`contentView.superview`), so they draw over the toolbar region, and
 AppKit warns on every subview of the theme frame that it does not know.
-Moving them into the `contentView` (the window has
-`.fullSizeContentView`) puts them under the titlebar container and
-changed 56 snapshots; `addSubview(_:positioned:relativeTo:)` keeps the
-warning. The warning has no other effect. Status: accepted.
+The views stay out of the `contentView` (the window has
+`.fullSizeContentView`), because there they go under the titlebar
+container; `addSubview(_:positioned:relativeTo:)` keeps the warning. The
+warning has no other effect. Status: accepted.
 
 ## Xcode output can be misleading
 
@@ -369,21 +370,21 @@ cannot reproduce these diagnostics or prove the latter cannot be silenced.
 These affect developer logs, not app output; check exit status and test results.
 Status: unverified diagnostics, not evidence of a failing visual suite.
 
-## Embedding fork rebases carry risk
+## Embedding fork pin bumps carry risk
 
-The Ghostty pin is an andreypopp fork on the manaflow-ai embedding lineage;
-the upstream embedding API is internal, not a stable compatibility contract.
-See `third_party/ghostty/include/ghostty.h` and `.gitmodules`.
-Rebases can break app builds or behavior for developers and users; nothing
-heals until integration is repaired. Audit each rebase with targeted tests
-(medium recurring work), or own a narrower embedding boundary (large).
-Status: accepted dependency risk.
+The Ghostty pin is the `kido-upstream` branch of `andreypopp/ghostty`, a
+linear stack of commits on upstream (`.gitmodules`); the upstream embedding
+API (`third_party/ghostty/include/ghostty.h`) is internal, not a stable
+compatibility contract. A pin bump can break app builds or behaviour for
+developers and users; nothing heals until integration is repaired. Audit
+each pin bump with targeted tests (medium recurring work), or own a
+narrower embedding boundary (large). Status: accepted dependency risk.
 
 ## Ghostty clone cost before CI
 
-The Ghostty submodule is a substantial additional source checkout; CLI CI
-currently avoids app builds. Fetch/build cost needs measuring before adding
-an app job, rather than assuming an acceptable CI budget.
+The Ghostty submodule is a substantial additional source checkout; the CLI
+CI does not build the app. Measure the fetch and build cost before you add
+an app job; do not assume an acceptable CI budget.
 This affects CI startup and developer setup, not running panes. Cache the
 pinned checkout/artifact or use a suitable shallow fetch (medium tooling
 work). Status: parked pending app CI; cost unverified here.

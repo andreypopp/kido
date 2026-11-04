@@ -147,7 +147,8 @@ text from stdin to the agent in your window, over its message stream or
 as a paste for a native agent.
 
 `ko --help` lists the commands: the server, `ko api` for one request
-to the server, the run commands, `ko panes` and `ko layout`.
+to the server, the run commands, `ko prompt`, `ko panes`, `ko layout`,
+`ko shell` and `ko ssh`.
 
 ## Development
 
@@ -158,7 +159,7 @@ ko is a Rust cargo workspace. It needs:
   `$(brew --prefix rustup)/bin/rustup toolchain install`, which reads
   `rust-toolchain.toml`). The Makefile finds that cargo itself.
 - zig at the release of `scripts/install-zig.sh`, on PATH
-- make, a C compiler and `tic`
+- make and `tic`; a C compiler only for `make build-bench`
 - Node 24 or newer for the pi extension's tests
 
 ```sh
@@ -166,7 +167,7 @@ git clone --recurse-submodules https://github.com/andreypopp/kido.git && cd kido
 make build   # the installed layout under build/ko/
 make build-linux  # the static Linux ko under build/ko/share/ko/linux/<arch>/
 make install    # binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/ko
-make verify     # the whole verification: build, unit tests, e2e, lint, the pi extension's suite, Verus
+make verify     # the whole verification: build, the static Linux ko, lint, unit tests, e2e, the pi extension's suite, Verus
 ```
 
 The first build compiles libghostty-vt and the crates in a few

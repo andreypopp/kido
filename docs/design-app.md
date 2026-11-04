@@ -27,12 +27,12 @@ script verifies the final bundle with `codesign --verify --strict --deep`
 before packaging.
 
 The certificate-based designated requirement keeps TCC grants such as Screen
-Recording stable across upgrades, unlike an ad-hoc cdhash requirement. Expect
-one last permission re-grant after installing the first team-signed release.
-Team signing also supplies the TeamIdentifier required by Shortcuts/App Intents.
-Renew the Apple Development certificate in Xcode roughly yearly, retaining the
-same Personal Team. Rebuild and check the designated requirement after renewal;
-a team or signing-identity change can require another TCC grant.
+Recording stable across upgrades. An ad-hoc cdhash requirement changes with
+every build. Team signing also supplies the TeamIdentifier that Shortcuts and
+App Intents require. Renew the Apple Development certificate in Xcode about
+once a year, with the same Personal Team. Rebuild and check the designated
+requirement after the renewal. A change of team or signing identity can
+require another TCC grant.
 
 Hardened runtime is disabled and no entitlements are added: notarization is not
 part of this release path, and enabling runtime/JIT or library-validation
@@ -60,9 +60,9 @@ model; the layout editor still gets every layout revision. The owner's link is
 (`ko_client_image`) is one request on its own short connection.
 
 The server directory is `$XDG_STATE_HOME/ko-app`, else
-`~/.local/state/ko-app`, so a socket of an older Kido.app is never opened
-as a ko socket. `KIDO_APP_SERVER` overrides it, in VISUAL and STRESS builds
-only. A server starts only on an explicit connection or the banner's Start
+`~/.local/state/ko-app`: the app's server does not share a directory with
+the user's `ko` server. `KIDO_APP_SERVER` overrides it, in VISUAL and STRESS
+builds only. A server starts only on an explicit connection or the banner's Start
 button: `KoServer.launch` runs `ko_client_launch(dir, bundled ko)` on a
 detached task. It starts a server unless one runs there and returns the
 socket; then the owner dials. `ko_client_launch` starts the server with
@@ -199,19 +199,18 @@ the probe) only connect to `<dir>/socket`.
 The entry points below route every remote request to a remote owner.
 
 On macOS Tahoe, the Shortcuts action **Connect to Remote Host in Kido**
-has a required Host string in its parameter summary. It works only in
-team-signed builds: Linkd rejects ad-hoc bundles with `requiresValidatedBundle`.
-Spotlight does not list the action directly. The cold-launch gate passed on
-screen through Shortcuts with a team-signed build.
+(`app/App/RemoteIntent.swift`) has a required Host string in its parameter
+summary. It works only in team-signed builds: Linkd rejects ad-hoc bundles
+with `requiresValidatedBundle`. Spotlight does not list the action directly.
 
 The unsigned alternative is `kido-app://<host>`: in Shortcuts use
 **Ask for Input** with prompt **Host**, then **Open URLs** with
 `kido-app://<Provided Input>`. It needs no signing. The percent-decoded
 authority is the SSH destination: `kido-app://localhost` or
 `kido-app://user@myhost`. An empty path or `/` connects to the default
-session; non-empty paths are reserved for future session selection and rejected
-for now. Ports, passwords, queries, fragments, empty hosts, whitespace,
-controls, SSH options and shell syntax are rejected with one stderr line.
+session. A non-empty path is refused. Ports, passwords, queries, fragments,
+empty hosts, whitespace, controls, SSH options and shell syntax are refused
+with one stderr line (`app/App/Host.swift`).
 URL delivery and the App Intent share Host validation and window routing. Each request
 creates a new native window, including repeated requests for one alias.
 Host is trimmed and accepts an SSH alias or user@hostname, not options,
@@ -225,15 +224,15 @@ you close the Local window while a remote window stays open. The Dock menu has
 the same two items, with the same actions, and the root palette has the same
 two rows. A Dock menu item does not activate the app, so Connect to Remote
 Host… activates it before it opens the palette. The cold remote-launch gate
-still holds back ordinary Local opens (launch, reopen, New Session); Connect
+holds back ordinary Local opens (launch, reopen, New Session); Connect
 to Local Host is a new-window request, which the gate does not hold back. Dock
-reopen still focuses existing windows; with no window it opens a Local window.
+reopen focuses an existing window; with no window it opens a Local window.
 The app opts out of automatic termination at launch: AppKit marks a
 windowless app as terminated by the transparent app lifecycle (TAL), and a
-Dock reopen then does not reach the process. The recent list lives in preferences (`recentHosts`) and is
-refreshed by every remote path, palette, URL or intent alike. There is no
-remote restore. Off-screen FileMenuTests create inert window owners without
-starting a server.
+Dock reopen then does not reach the process. The recent list lives in
+preferences (`recentHosts`), and every remote path, palette, URL or intent
+alike refreshes it. There is no remote restore. The off-screen
+`FileMenuTests` create inert window owners without a server.
 Local keeps `SessionModel.title` (session and current window); remote prefixes
 it with resolved `user@host / `. The original dialing alias is the window
 content's tooltip. Offline titles drop the session/window name.
@@ -249,10 +248,8 @@ Closing a native window closes only its client, never a pane, so it never
 asks for confirmation; reopening dials again. Quit closes every owner and
 replies after that. The terminate-later reply is a common-mode main RunLoop
 block, not a main DispatchQueue block: AppKit's nested termination event
-loop cannot re-enter a main-dispatch callback that called terminate. A
-bounded off-screen quit probe reproduced that wait in
-`NSApplication._shouldTerminate` before the reply fix. Closing the last
-window leaves the app available for another intent.
+loop cannot re-enter a main-dispatch callback that called terminate.
+Closing the last window leaves the app available for another intent.
 
 Launch bootstrap initializes shared resources and drains queued Host requests;
 it does not open Local. Ordinary AppKit untitled/reopen delivery opens Local
@@ -267,8 +264,8 @@ defines non-default launches as false. URL launch is a non-default `GURL`
 request, handled by
 [application(_:open:)](https://developer.apple.com/documentation/appkit/nsapplicationdelegate/application(_:open:)).
 This uses the same gate without timers, whether URL delivery precedes or
-follows launch completion. Actual URL-launch notification/event ordering is
-not measured by off-screen routing tests; the user retests it on screen.
+follows launch completion. The off-screen routing tests do not measure the
+order of a URL launch's notification and event; that check is on screen.
 
 ## Panes
 
@@ -298,15 +295,15 @@ file, `$XDG_CONFIG_HOME/ko/config.yaml`, else `~/.config/ko/config.yaml`
 (design-ko.md, 4.14). The app reads the Mac's file, also for a remote
 window, through `ko_config_load` of `ko_client`, so it needs no server;
 `ko_config_defaults` gives the default path and the defaults.
-No Ghostty file reaches Ghostty: Ghostty's own config, `config-file`
-includes and the old `~/.config/kido` are not read.
+No Ghostty file reaches Ghostty: the app does not read Ghostty's own config
+or `config-file` includes.
 `app/App/GhosttyConf.swift` maps the typed `KoSchema.App` to one
 Ghostty config string, and `GhosttyRuntime.loadConfig` loads only that
 string (named `/kido`), then the theme override (`/kido-theme`).
 `GhosttyConf.text` gives the order: the app's fixed lines, which no key
 changes, come first; the mirror's clipboard deny comes last, because the
-server, not the mirror, answers OSC 52. The cursor's style and blink are
-fixed (design-ko.md, 4.14). A Ghostty diagnostic on the string is a
+server, not the mirror, answers OSC 52. The cursor does not blink, and no
+key changes that (design-ko.md, 4.14). A Ghostty diagnostic on the string is a
 fault of the mapping, not of the user's file: the app writes it to
 stderr, and the tests fail on it. An absent `font.family` is the
 system's monospaced font: the family name of
@@ -397,15 +394,16 @@ quit.
 The picker writes through `ko_config_set_theme` (design-ko.md, 4.14),
 which edits only `app.theme` and keeps every other byte. The written
 value is always the pair; a pair equal to the file's pair writes nothing.
-A conflict (the file changed during the write) is the status "The file
-changed. Choose the theme again." with the theme kept for the session.
-The watcher sees the rename and reloads; the override is cleared before,
-so the reload shows the written theme with no flash.
+A file that changed during the write is not replaced (`SetError::Changed`);
+the app shows it as a write failure (Theme mode, below), with the theme
+kept for the session. The watcher sees the rename and reloads; the override
+is cleared before, so the reload shows the written theme with no flash.
 
-The built-in defaults unbind Ghostty's `super+k`. The app has no Clear
-command, and Ghostty binds Command-K to `clear_screen` by default. That
-action clears only the Ghostty surface, which the server owns, so the key
-does nothing.
+The fixed lines unbind Ghostty's `super+k`, `super+j`, `super+s` and
+`super+shift+s`. The app has no Clear command, and Ghostty binds Command-K to
+`clear_screen` by default. That action clears only the Ghostty surface,
+which the server owns, so the key does nothing. Command-S and
+Shift-Command-S are the sidebar's keys ([Sidebar](#sidebar)).
 
 The sidebar list's background is a shade of the terminal background.
 The shade mixes the terminal background toward black on a light
@@ -525,9 +523,8 @@ presentation, then applies a changed target.
 Ghostty paces rendering with its own CVDisplayLink
 (see [Threads](#threads)); token presentation remains immediate.
 The app adds no deferred packet, easing or momentum filter.
-The `mouse.scroll_multiplier` precision value remains the user's speed
-override; precision 2 restores the previous speed. Discrete wheel notches
-are unchanged. An active selection gesture uses integral wheel steps.
+The `mouse.scroll_multiplier` precision value is the user's speed
+override. An active selection gesture uses integral wheel steps.
 Thumb drags replace the target; a thumb press snaps once and suppresses
 old momentum. Snaps apply the integral viewport directly on main before the
 triggering input reaches Ghostty. A short viewport lock excludes worker applies
@@ -854,7 +851,12 @@ contents are not logged.
 Before accessing the pasteboard, the first read asks: “Allow applications on “HOST” to read your Mac clipboard?” The sheet notes
 that this also permits applications reached through SSH inside its panes.
 **Allow for this connection**, **Always allow** and **Deny** grant or deny that
-window's connection. A connection's Deny wins over its Allow, then persisted host grants; otherwise the read asks. Edit → Reset Clipboard Permissions clears all persisted grants and every open window's connection answer, without confirmation. Always allow is shared between windows and persisted in
+window's connection. A connection's Deny wins over its Allow, then persisted host grants; otherwise the read asks. A grant has one of three
+capabilities (`ClipboardConsent.Capability` in `app/App/Host.swift`): a plain
+clipboard read, a rich read of images, HTML and file lists, which asks with
+its own sheet text, and an upload. Edit → Reset Clipboard and Upload
+Permissions clears all persisted grants and every open window's connection
+answer, without confirmation. Always allow is shared between windows and persisted in
 UserDefaults by exact configured destination, with Local separately keyed.
 SSH aliases are not merged with resolved hostnames; retargeting an allowed alias
 retains its grant. Local is not implicitly trusted and includes SSH launched
@@ -1042,7 +1044,7 @@ core's message. A divider drag is a `resize_pair` edit, a float move or
 resize a `float` edit, a grip drop a `swap`, `dock` or `dock_window` edit.
 The pane commands map to `split`, `resize_by`, `toggle_zoom` and
 `equalize` edits. The core evaluates `resize_by {pane, edge, delta}` and
-`toggle_zoom` against the newest layout, as the first implementation did, so
+`toggle_zoom` against the newest layout, so
 two presses inside one round trip are two steps: the divider on the
 `edge` side of the pane moves toward that edge (for the last pane of a
 split, the divider before it), and a resize while zoomed unzooms first.
@@ -1156,8 +1158,8 @@ the mutex and wake; the consumer detaches one batch and processes it outside
 the mutex, freeing unprocessed needles on stop or failure. Main never waits
 for search-input capacity, including navigation bursts while search is waiting
 for main's app mailbox. Pending growth under an indefinite producer is the
-tradeoff for preserving command order. Other main-to-renderer blocking sends
-are not removed by this change.
+tradeoff for preserving command order. The other blocking sends from main to
+the renderer stay.
 
 ## Sidebar
 
@@ -1193,8 +1195,8 @@ when its runtime equals that of the nearest ancestor pane row, so a
 routed pi's runs and children in its runtime show none.
 
 `Sidebar` is an `NSSplitViewController` with a sidebar item, which
-supplies the floating glass, collapse animation and saved width (236pt,
-200-360pt). The window has an icon-only unified toolbar only because the
+supplies the floating glass, collapse animation and saved width (200pt to
+360pt). The window has an icon-only unified toolbar only because the
 sidebar's glass reaches the top of the window, traffic lights inside it,
 when there is one; without it AppKit adds a plain titlebar strip. The
 chrome follows the Ghostty theme background. The native header band, the
@@ -1229,8 +1231,8 @@ modes; the sidebar shadows are the app's own ([Focus treatment](#focus-treatment
 WindowTabs paints no background of its own.
 
 Next Window and Previous Window (Command-} and Command-{, the menu, the
-palette and Ghostty's tab actions) keep the first implementation's
-window-cycling rule ([design.md](design.md#the-sidebar-tree)). One pure
+palette and Ghostty's tab actions) follow the window-cycling rule of
+[design.md](design.md#the-sidebar-tree). One pure
 function, `adjacentWindow` in `SidebarFeed/Windows.swift`, computes the
 step. It reads the displayed order, so a pending reorder counts. From a
 top-level window, a step goes to the adjacent top-level window. It never
@@ -1267,7 +1269,7 @@ Command-T.
 `SidebarView` is a reusable `NSTableView` backed by the pure row model in
 `SidebarFeed/Rows.swift`. Sessions have noninteractive 29pt headers with
 11pt semibold secondary labels and an always-visible, separately accessible
-new-window plus; hovering brightens only its icon. No session folding remains.
+new-window plus; hovering brightens only its icon. Sessions do not fold.
 Each pane's child-window trees immediately follow that pane, before its
 next sibling; drawn order and navigation share the row-model traversal.
 OSC 7501 non-root records follow their pane before its child windows, ordered
@@ -1322,7 +1324,8 @@ trailing column holds only the 10pt tabular clock. The activity line is one
 line, truncated with an ellipsis, from the title's leading edge to the
 trailing inset. Nesting steps 15pt at every depth. Only the focused pane row has a 10%
 labelColor fill, with 7pt corners. Independent keyboard selection also has
-7pt corners and clears on mouse press. No window-wide fills or focus marks remain.
+7pt corners and clears on mouse press. There is no window-wide fill or focus
+mark.
 
 Vertical hierarchy guides draw above fills: opaque 1pt lines, light #bfbab1
 or dark #4f555c, aligned to backing pixels, without horizontal arms or
@@ -1397,8 +1400,8 @@ Show/Hide title follows its collapsed state. Focus Sidebar uses
 Command-S. Control-Command-F enters full screen.
 Command-{/} and Ghostty previous/next tab step through every window of
 every session in sidebar tree order, nested run windows after their
-parent, with wraparound, and select it with `ko_client_select`. There are
-no Control-Command-J/K shortcuts. Option-Command-]/[ switches sessions
+parent, with wraparound, and select it with `ko_client_select`.
+Option-Command-]/[ switches sessions
 with `ko_client_switch`, in the server's session order, with wraparound
 and a single-session no-op. Numbered and last tabs, absolute sessions and
 the sidebar jump use `ko_client_select`. A jump to a pane that a zoom
@@ -1552,7 +1555,8 @@ characters gets a fill of the terminal foreground at 14% with a 3pt radius;
 the text keeps its colour and weight. With no match, the list shows "No
 matches".
 
-The palette has five modes besides the root. A mode shows a chip left of the
+The palette has six modes besides the root (`PaletteMode` in
+`app/App/Palette.swift`). A mode shows a chip left of the
 field (22pt, the mode's symbol and name) and a foot that names its keys.
 Entering a mode clears the query and the error. An error is a red line between
 the field and the list; an edit clears it.
@@ -1757,7 +1761,7 @@ removes the key. A delivery removes it. A picker change from A to B stores the
 field under A. If B has a draft, the field shows it. Else the field keeps its
 text, A's key is removed, and the content belongs to B. Each owner
 snapshot drops the drafts of that host whose instance differs or whose pane is
-no longer in the snapshot, and an owner close drops its host's drafts. A pane
+not in the snapshot, and an owner close drops its host's drafts. A pane
 that stops being an agent for a while keeps its draft: pi clears its root
 while it runs an external editor or is suspended.
 
@@ -1904,7 +1908,7 @@ On every error-free snapshot of an owner, for each wanting pane:
 - otherwise a new or changed reason posts, replacing an earlier post;
 - an unchanged reason does nothing, posted or acknowledged.
 
-A pane that stops wanting (seen, new work, success, no longer waiting,
+A pane that stops wanting (seen, new work, success, not waiting,
 or gone from the snapshot) is withdrawn and forgotten. Error snapshots
 produce nothing and keep the baseline pending. Closing a window withdraws
 its entries; quit withdraws everything, so Notification Center never
@@ -1952,8 +1956,8 @@ launches the app reaches only a handler already in place.
 **Authorization and builds.** Alert, sound and badge permission is
 requested once, when the first owner connects, if still undetermined; a
 denial and every posting failure are logged once and otherwise silent,
-and there is no in-app toggle. `SystemNotifications` is the only file
-importing UserNotifications. Background, visual and stress builds use
+and there is no in-app toggle. `App/Notifications.swift` is the only file
+that imports UserNotifications. Background, visual and stress builds use
 `RecordedNotifications`, which records posts, withdrawals, badge counts
 and authorization calls and never touches Notification Center.
 `NotificationsTests` in SidebarFeed cover the step: attendance,
@@ -2012,10 +2016,14 @@ and layout diffs. References live in `app/VisualTests/__Snapshots__`.
 `PaletteTests` records one image of the palette's content view for each
 state of the approved mockup, `app/design/palette/` (`mockup.html` with its
 `NOTES.md`), in light and dark: `palette.<theme>-<state>.png` for root,
-filtered, filtered2, nomatch, connect, connect-typing, connect-invalid,
-connect-none, rename, rename-error, rename-error2, nowindow, match-run,
-theme, theme-filtered, theme-preview, theme-save, theme-save-session,
-theme-err-write and theme-err-file. The theme images are recorded last in the same test. Their
+filtered, match-run, filtered2, nomatch, connect, connect-typing,
+connect-invalid, connect-none, new-session, new-session-error, rename,
+rename-error, rename-error2, root-agent and nowindow; the prompt states
+(prompt, prompt-typing, prompt-quote, prompt-markdown, prompt-twoquotes,
+prompt-picker, prompt-draft, prompt-sending, prompt-refused,
+prompt-unknown, prompt-invalid and prompt-paneclosed); and the theme states
+(theme, theme-filtered, theme-preview, theme-save, theme-save-session,
+theme-err-write and theme-err-file). The theme images are recorded last in the same test. Their
 config lives in the visual scheme's private `HOME` (`XDG_CONFIG_HOME` is
 `$HOME/.config`), so the paths read `~/.config/ko`; the test checks that
 `HOME` is that private directory before it writes. theme-err-file removes the
@@ -2035,7 +2043,7 @@ label-find, starting, failed, float, colour-hash and colour-config
 (the terminal area, against a private server), and rows, routed,
 palette-root, palette-step, palette-step-failed, palette-step-host and
 palette-step-nofocus (a model fixture). The mockup's alternatives
-(stripe-2pt, label-left, label-tag, tui-stripe) were rejected and
+(stripe-2pt, label-left, label-tag, tui-stripe) are not the design and
 have no image. The server's runtimes are `command` runtimes: the
 Visual scheme sets `KO_RUNTIME_COMMAND_KIND=1`, and a test writes
 `config.yaml` under `ko/` in the scheme's private `XDG_CONFIG_HOME` and
@@ -2111,9 +2119,10 @@ uses `--ssh-config` and `--host`; it refuses `localhost` without
 
 The Swift model types (`Packages/KoModel/Sources/KoModel/KoSchema.swift`)
 are generated by `make ko-model` (`scripts/gen-ko-model.py`) from
-`share/ko/openapi.json` and `share/ko/client-model.json`, which
-`ko api-schema` and `ko api-schema --client` write. `scripts/lint.sh`
-checks both schemas, and `KoSchemaTests` checks that the committed Swift
+`share/ko/openapi.json`, `share/ko/client-model.json` and
+`share/ko/config-schema.json`, which `make schemas` writes from
+`ko api-schema`. `scripts/lint.sh`
+checks the schemas, and `KoSchemaTests` checks that the committed Swift
 file is the generator's output. The generator refuses a schema shape that
 it does not support. A struct with a bounded integer field (through its
 `$ref`) gets an `init(from:)` that refuses a value out of the schema's
@@ -2128,8 +2137,7 @@ race on `build/ko_client.xcframework`.
 
 Test steps print one line per test case. Every build or test run that can
 take more than 10 s runs under `quiet-limit 60`, which stops it after 60 s
-without output. In step 4 the longest silence was 10.6 s (`make visual`),
-so no app step needs a longer limit.
+without output. No app step needs a longer limit.
 
 `make tsan` and `make asan` build Debug with ReleaseSafe GhosttyKit into
 `build/xcode.noindex/derived-{tsan,asan}`. ASan defaults to `use_sigaltstack=0` because Zig
@@ -2221,7 +2229,7 @@ call site.
 `scripts/stress.py` (stdlib Python) starts `ko server` in a private
 directory and puts a demo-like layout with `ko api`: four sessions of
 windows with three panes, including 1M- and 100k-line history panes and a
-float, with `scrollback-limit = 8 MiB`. Every 0.4 s it applies a server
+float. Every 0.4 s it applies a server
 action chosen from `SEED`: a client select, layout edits (split, zoom, add
 or move a float, add or drop a session, add a window, rename, swap
 windows) with `ko layout edit`; pane and window deletes; text input; `clear_history`; `ko run`
@@ -2234,8 +2242,8 @@ window resize bursts, pane grip drags (some deleted mid-drag), edge
 resizes, layout edits through the `LayoutEditor`, appearance, tabs and
 sidebar jumps. After a sidebar jump it waits up to 5 s until the model
 selects the row's pane (`jump-selects`). It writes one JSON line per action
-to stderr (`build/stress/<target>-<seed>/stderr.log`; `actions.jsonl` is the
-server side; `summary.json` the counts). `FIND=0` swaps the find actions
+to stderr (`build/bundle/stress/<target>-<seed>/stderr.log`; `actions.jsonl`
+is the server side; `summary.json` the counts). `FIND=0` swaps the find actions
 for scroll requests. A run fails, exits 1 and prints its replay command on
 a sanitizer report, panic, non-zero exit, an app that did not finish, a new
 `Kido*.ips`, a UI action that was never delivered, or a step that saw the

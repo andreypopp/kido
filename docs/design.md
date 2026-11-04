@@ -86,9 +86,9 @@ directory is `$KO_STATE_DIR`, else `$XDG_STATE_HOME/ko`, else
 Every run has one directory `<state>/runs/<run-id>/`
 (`ko_server/src/runs.rs`). Each write replaces a whole file:
 
-- `meta.json`: written at the start. It contains the id, name, parent,
-  pane, argv, cwd and start time. The parent is optional: absent for
-  a top-level run, a run id for a run that owns it, or the pane id
+- `meta.json`: written at the start. Its fields are `runs::Meta` in
+  `ko_server/src/runs.rs`. The parent is optional: absent for a
+  top-level run, a run id for a run that owns it, or the pane id
   `pane_N` of the pane that started it (`ko run-child pane_N`). A run
   id is 32 lowercase hex characters, so no id looks like `pane_N`.
 - `outcome`: written once by the server, which refuses a second
@@ -127,11 +127,11 @@ variable is set. A bare `pi` in a pane is plain pi: it reports OSC
 
 After interactive terminal feature detection, pi natively emits OSC
 7501 root records with `app=pi`. Its lifecycle supplies working,
-blocked, done, idle and error. Native dialogs report blocked;
-extension custom UI does not. `PI_PROGRAM_STATUS=0` disables reporting,
-and `=1` forces it. OSC 0/2 sets the pane title to "π - <name> -
-<cwd>". The caption omits a local pi message that duplicates its
-session name.
+blocked, done, idle and error. pi reports blocked for its own
+dialogs and for an extension dialog that declares itself blocked.
+`PI_PROGRAM_STATUS=0` disables reporting, and `=1` forces it. OSC 0
+sets the pane title to "π - <session name> - <cwd basename>". The
+caption omits a local pi message that duplicates its session name.
 
 The extension uses only these interfaces of ko:
 
@@ -357,9 +357,10 @@ stream is down.
 The extension never pastes. A target without an open stream gets
 the message queued: the server keeps it until the target's stream
 returns, and the tool says so. Model-authored text must not run as a
-command line in the target's pane. The extension refuses three sends
-before sending: a message to the caller itself, an empty message and
-text that is not valid UTF-8.
+command line in the target's pane. The extension refuses four sends
+before sending: a message to the caller itself, an empty message,
+text that is not valid UTF-8 and text over `MAX_MESSAGE_BYTES`
+(1 MB).
 
 ## Addressing
 
@@ -404,8 +405,8 @@ last list without waiting for discovery. If the list is older than
 
 `spawn_agent` starts a child or a top-level agent with one `POST
 /panes` (design-subagents.md, "What a child is given" and "A
-top-level agent"). The window goes after the caller's window; no
-client switches to it. The pi in it runs under `ko shell --` ("The
+top-level agent"). The window goes after the parent pane's window,
+else after the caller's window; no client switches to it. The pi in it runs under `ko shell --` ("The
 login environment", below). The request carries the cwd and each
 environment variable, because a new pane gets the server's
 environment, not the caller's.
@@ -459,17 +460,23 @@ the old document and answers `io`.
 
 ## Window lifecycle
 
-**Run commands.** ko starts a run without the harness
-(`ko/src/runs.rs`):
+**Run commands.** ko starts a run without the harness. The commands
+and their arguments are the clap definitions in `ko/src/runs.rs`:
 
-| command | does |
-|---|---|
-| `ko run --name N [--cwd D] [--session S] [--env K=V]... -- CMD...` | starts a parentless run; prints the JSON of `Started` (`ko_server/src/protocol.rs`): the id, window and pane |
-| `ko run-child PARENT ...` | the same, under PARENT: a live run id, or a pane `pane_N` that is not dead; a caller in a pane names only its own pane or one of its runs |
-| `ko runs [--json] [--all] [--parent P] [ID]` | lists live runs newest first, with a SESSION column, or one run in any state with its argv and, without `--json`, its screen (`GET /runs/<id>/screen`); `--all` also lists ended runs |
-| `ko run-outcome ID --result completed\|failed\|stopped [--text T]` | records an ending; a second write exits 5 |
-| `ko run-wait ID [--json]` | blocks until the run has ended; prints the result, or the outcome object |
-| `ko run-stop ID [--wait SECS] [--result stopped\|completed]` | records the result, then ends the process and removes its pane |
+- `ko run` starts a parentless run and prints the JSON of `Started`
+  (`ko_server/src/protocol.rs`): the id, window and pane.
+- `ko run-child PARENT` does the same under PARENT: a live run id, or
+  a pane `pane_N` that is not dead. A caller in a pane names only its
+  own pane, or a run whose pane is its own pane.
+- `ko runs` lists live runs newest first, with a SESSION column.
+  `--all` also lists ended runs. With a run id, it shows one run in
+  any state with its argv and, without `--json`, its screen (`GET
+  /runs/<id>/screen`).
+- `ko run-outcome` records an ending; a second write exits 5.
+- `ko run-wait` blocks until the run has ended and prints the result,
+  or the outcome object with `--json`.
+- `ko run-stop` records the result, then ends the process and
+  removes its pane.
 
 `--name` is required, because a command's first word (`bash`, `pi`)
 says nothing. `--session` takes a session id or name and defaults to
@@ -936,10 +943,10 @@ Each decision names its date. The code states the rest.
 - `ended` carries no count of the messages that died with the child's
   queue: the parent knows what it sent, and a count would not say
   which.
-- Message ids are the sender's and idempotent, which replaced "never
-  resend": a sender resends after a timeout, an `io` error or a
-  dropped connection and learns the truth, and no receiver reads a
-  message twice. The 16-message window and the 2 s ack wait stay.
+- Message ids are the sender's and idempotent: a sender resends after
+  a timeout, an `io` error or a dropped connection and learns the
+  truth, and no receiver reads a message twice. The server keeps its
+  16-message window and its 2 s ack wait.
 - A report that is not acked is resent with the same id until it is;
   the parent keeps the whole text in its session, and `read_report`
   is the reference of a capped report notice.
@@ -954,10 +961,10 @@ Each decision names its date. The code states the rest.
   repository root: it holds for the one directory that the parent
   chose, and it compares paths of the child's own filesystem, so it
   holds in a runtime.
-- `close` is `keep` or `on_exit`. An `on_success`, which would remove
-  only a pane that exited 0, was considered and not built.
+- `close` is `keep` or `on_exit`. There is no `on_success`, which
+  would remove only a pane that exited 0.
 - An agent's pane gets no screen capture: the ending notice reads the
-  screen while the pane lingers, and a run's capture stays for runs.
-- The run's output file and its `tee` wrapper went with the output
-  stream: a run's output is its pane's content, and a `tee` to a host
-  path cannot run inside a runtime.
+  screen while the pane lingers. The screen capture is for runs.
+- A run has no output file and no `tee` wrapper: a run's output is
+  its pane's content, and a `tee` to a host path cannot run inside a
+  runtime.

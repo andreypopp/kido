@@ -113,10 +113,10 @@ The shell phase:
   gives no exit; a later prompt does not mean success.
 - Running: the model observes a command for 0.2 s on its clock, from
   the first observation (`DEBOUNCE` in `pane_status.rs`). Until
-  promotion, it reports the previous Idle, so a short command never
-  reports running. Promotion removes the previous exit and any report
-  outcome from before the command. The model arms one 200 ms timer for
-  a pane with a pending promotion.
+  promotion, it reports the Idle that came before, so a short command
+  never reports running. Promotion removes the last exit and any
+  report outcome from before the command. The model arms one timer of
+  `DEBOUNCE` for a pane with a pending promotion (`ko_server/src/model.rs`).
 - The alternate screen reports running at once (`fullscreen`). It
   keeps the OSC 133 command if known. If that command still runs when
   the alternate screen ends, the phase remains running.
@@ -144,10 +144,10 @@ Every run has one record, `<state>/runs/<run-id>/` (design.md, "Who is
 authoritative for what"). The server ties a run to its pane when it
 creates the pane; the pane's row carries the run.
 
-A local pi that runs ko's harness (`ko-pi`) owns the four `pi.*`
-variables. The server reads only these, and trusts them only while
-the pane has an OSC 7501 root with `app=pi`. ko stores nothing for a
-pi session.
+A local pi that runs ko's harness (`ko-pi`) owns the `pi.*`
+variables (`share/pi/ko-pi.ts`). The server reads only `pi.session`,
+`pi.name` and `pi.activity`, and trusts them only while the pane has
+an OSC 7501 root with `app=pi`. ko stores nothing for a pi session.
 
 ### The ssh mark
 

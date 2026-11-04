@@ -78,8 +78,8 @@ forward, `ssh -O forward -L <local>:<dir>/socket host`, and connects to
 `<local>` as if the server were local. Each connection is one
 `direct-streamlocal` channel with SSH's per-channel window as the
 remote backpressure. These channels are not sessions, so sshd's
-`MaxSessions` does not cap the number of views. Nothing on the remote
-side differs from local: no `attach-stdio`, no stdio bridge. The
+`MaxSessions` does not cap the number of views. The remote side does
+not differ from the local side: there is no stdio bridge. The
 client finds `<dir>/socket` through the master with `ko server
 --print-socket`, which starts nothing; the remote server starts only
 when the user runs `ssh host ko server`. OpenSSH reports a refused
@@ -151,8 +151,7 @@ mirror before it opens a view. The `Welcome` event also carries
 the OS, made once at server start. Two server starts never share an
 instance, and every client of one server gets the same one. The
 value is opaque to a client, which only compares it for equality
-(section 12). An upgrade in place (plans/ko-upgrade.md) keeps it, because the
-panes and their offsets survive.
+(section 12).
 
 Every other request carries the `Ko-Protocol` and `Ko-Vt` headers; a
 request without them is refused as a mismatch. The protocol version
@@ -270,7 +269,7 @@ id for a one-shot read; it acts as the pane it runs in (section 1).
 ## 4. Views: terminal content, resume, backpressure
 
 `GET /panes/pane_N/view` upgrades to a view, with the query parameters
-`offset`, `history` (`none` or `all`) and `images` (`none` or `all`).
+`offset`, `history` (`none` or `all`) and `images` (`none` only).
 Server to client, each message is one record: a binary `bytes` or
 `snapshot` record with its offset, or a text message with a marker, a
 skip or a paste result.
@@ -309,7 +308,8 @@ terminal completes it from the bytes after the snapshot's offset.
 limit for such a sequence, the value that the terminals of its panes
 use. A client gives this value, unchanged, to the decoder of every
 snapshot that it restores. A smaller local limit drops a sequence
-that the server kept: a fixed 1 MiB failed on an APC of 1.5 MB in Kido.app. A reconnect takes the value from its new `Welcome`.
+that the server kept. A reconnect takes the value from its new
+`Welcome`.
 
 Client to server, each text message is one input event of section 8,
 applied in order, or a resync request for a new snapshot of the given
@@ -327,8 +327,8 @@ wants history resyncs with `history=all` and swaps terminals.
 Opening: without `offset`, or with an `offset` outside the pane's
 ring, the view begins with a snapshot of the requested kinds
 (`history` and `images` default to `none`; placements and metadata are
-in the records either way, `images=all` adds the pixel payload
-records). With an `offset` inside the ring, and either a full mirror
+in the records, and the pixels are resources of section 5). With an
+`offset` inside the ring, and either a full mirror
 or no resize marker in the range, the view begins with the bytes and
 markers since that offset and no snapshot. This is the reconnect path
 and costs nothing.
@@ -370,14 +370,14 @@ gets a new snapshot. A connection whose output waits and makes no
 progress closes, whether a pong or the close frame waits: the ping
 timer finds the stall, and the close comes 10 s later. While the
 output drains, the pong deadline restarts, because a ping waits
-behind the queued messages. Rationale: a close without a frame gave
-the client no reason, and a cap without a spill closed every
-snapshot that was larger than the cap, again after each reconnect
-(design-ko.md, "Remote").
+behind the queued messages. Rationale: the close frame gives the
+client the reason, and the spill lets a snapshot larger than the cap
+reach a slow reader, where a cap alone closes the view at each
+reconnect (design-ko.md, "Remote").
 
 `GET /panes/pane_N/screen` returns text from the server's formatter
-(`format` plain or ansi, `history` rows), for the CLI's `runs` screen
-capture and for tests.
+(`format` plain or ansi, `history` rows), for the terminal client's
+pager and for tests.
 
 ### The output stream
 
@@ -462,7 +462,8 @@ placements on screen, one connection each, in parallel, and caches by
 `(pane, image_id, frame, generation)`. A mirror that received the
 pixels inline (`t=d` in the live bytes) fetches nothing.
 `images=all`, a snapshot that keeps the payload records for a mirror
-that wants them inline, is still refused.
+that wants them inline, is refused (`Images` in
+`ko_server/src/api.rs`).
 
 Pixels come from `ko-pane` through shared memory objects, never
 through the ring: an image can be larger than the 1 MiB ring, every
@@ -516,7 +517,7 @@ in the order the server produced them. The kinds, as `ClientEvent` in
 `ko_server/src/protocol.rs` defines them: the whole layout document on every
 change, with the rows of the panes that the change adds (section 7);
 a window's new `focus` when only the focus changed (section 7); a
-pane's title, pwd, foreground, status, variable, death, bell,
+pane's title, pwd, pid, foreground, status, variable, death, bell,
 notification, progress and message stream (`inbox`, section 7); a pane's clipboard write and clipboard
 read (section 9), a run's outcome (section 10), a runtime's entry and
 its removal (section 15), and this client's
@@ -602,7 +603,7 @@ invariants.
   `invalid` with the document unchanged. A pane without `command` runs
   `ko shell`. `parent` and `close` are the pane's for its life, and
   its row carries them from the layout event that adds it. `parent`
-  must name a pane that is not dead: an unknown one is `missing`, a
+  must name a pane that is not dead: an unknown one is `not_found`, a
   dead one `gone`; a caller that acts as a pane may name only itself.
   No cycle can form, because the parent exists before the child.
   `runtime` names the runtime that runs the pane, for its life, and
@@ -669,7 +670,7 @@ invariants.
 - `POST /panes/pane_N/stop` (`StopPane`) records nothing. It waits up
   to `wait_ms` (at most one hour) for the pane to die, then removes
   it; a dead pane and `wait_ms: 0` remove it at once, and an unknown
-  pane is `missing`. The removal hangs up the program (`ko-pane`
+  pane is `not_found`. The removal hangs up the program (`ko-pane`
   sends `SIGHUP`, then `SIGKILL` 250 ms later); if the removed pane
   still lives after `KO_STOP_ESCALATION_MS`, the coordinator kills
   it. A caller that acts as a pane may stop only a pane in its scope:
@@ -703,7 +704,7 @@ stamps the sender, enforces the scope and carries the bytes.
   pane's death close the stream.
 - A caller that acts as a pane sends only to a pane in its scope (the
   scope of the stop above); the user sends to any pane. A dead target
-  is `gone` ("pane_N is dead"), an unknown one `missing`. `data` is
+  is `gone` ("pane_N is dead"), an unknown one `not_found`. `data` is
   any JSON of at most 4 KiB encoded; `text` is bounded by the body
   limit.
 - The server stamps `from` from the caller's identity: a pane, with
@@ -768,9 +769,8 @@ When the `if` variable is absent or has another value, it changes
 nothing and is `precondition_failed`. A harness that ends uses it to
 remove its own variables and no other owner's: the pane can have a
 new owner before the old one cleans up. A value is any JSON, at most 1 MiB minus 4 KiB
-(1,044,480 bytes) of encoded JSON. The limit dates from a 1 MiB limit
-on server messages too, which it fitted with its `var` event; it stays
-a constant that does not depend on the name (decided 2026-11-02). One pane holds
+(1,044,480 bytes) of encoded JSON. The limit is a constant that does
+not depend on the name (decided 2026-11-02). One pane holds
 at most 8 MiB and 1,024 names. All variables of the server, of panes,
 sessions and windows together, are at most 16 MiB of encoded JSON
 (`SERVER_MAX_TOTAL` in `ko_server/src/vars.rs`), so a welcome with
@@ -800,15 +800,15 @@ none): libghostty-vt's encoder finds the kitty keyboard code of a
 printable key only through it, and without it `Ctrl+A` encodes as
 plain `a` instead of `CSI 97;5u` (`src/input/key_encode.zig` of
 Ghostty).
-The server does not guess it from a keyboard layout. The event carries
-no consumed modifiers: the server treats Shift as consumed when the
+ko does not guess it from a keyboard layout. The event carries
+no consumed modifiers: `ko-pane` treats Shift as consumed when the
 text is one character other than the unshifted codepoint and no Ctrl,
-Alt or Super is held. Without that, a pane under kitty flags 1 or 3
+Alt or Super is held (`ko_vt/src/input.rs`). Without that, a pane under kitty flags 1 or 3
 (nvim pushes 3) gets `:` as `CSI 59;2u`, which nvim's normal mode does
 not map; with it, the pane gets `:`, and Shift+Space stays
 `CSI 32;2u`. The encoder treats macOS Option as Alt: the client's
 terminal already decided what Option means, so an Alt in the
-modifiers is Alt. The server encodes with the pane's current modes and
+modifiers is Alt. `ko-pane` encodes with the pane's current modes and
 writes the pty. Events from one connection are applied in order. A
 paste with an id is answered after the pty accepted every byte, as a
 text message on the view, or as the response body of the `POST` form.
@@ -897,12 +897,12 @@ section 1.
   the tie later: no variable names a run. The run's pane enters the
   document in one layout event whose row carries the `run` field. A
   parent (a run id or `pane_N`) that is unknown, or a run parent that
-  has no pane, is `missing`; one that has ended is `gone`.
+  has no pane, is `not_found`; one that has ended is `gone`.
 - `GET /runs` lists runs, newest first: `live` (no outcome),
   `present` (the pane still exists and names the run) or `all`, and
   optionally only the children of one parent. Each entry carries the
   run's argv. `GET /runs/<id>/screen` is the captured screen as
-  `text/plain`, `missing` when there is none. A run whose
+  `text/plain`, `not_found` when there is none. A run whose
   pane is gone stays in this history; an active run is one whose pane
   is in the layout.
 - `GET /runs/<id>/wait` is a long poll (design-ko.md, "The loop rule"): the
@@ -943,7 +943,7 @@ the run's row (which names its pane) when an outcome is recorded, and
 when the run's pane dies with no recorded outcome, with the outcome
 that the death gives; it does not move the revision. A run's start has
 no `run` event: its layout event carries the row. The same `RunRow`
-is a `GET /runs` entry. The CLI maps the error kinds to exit codes: `missing`
+is a `GET /runs` entry. The CLI maps the error kinds to exit codes: `not_found`
 or `gone` of a parent to 2, an unknown run to 3, a refused name to 4
 (the CLI checks it before the request), `refused` to 5.
 
@@ -1080,9 +1080,9 @@ is this check and the only constructor of the group that the
 coordinator can signal. A pid that fails
 this check fails the pane as an invalid frame. A pid with no process
 (the program exited and `ko-pane` reaped it) records no child and is
-not an error. A second `ready` is invalid. A `version` the coordinator does not know is a refusal at
-`init`; the coordinator then restarts the pane with a snapshot
-(plans/ko-upgrade.md).
+not an error. A second `ready` is invalid. An `init` whose `version`
+is not `INIT_VERSION` of `ko_pane_wire/src/frame.rs` is malformed
+(plans/ko-upgrade.md describes the upgrade in place).
 
 The frame kinds of both directions are `Kind` in
 `ko_pane_wire/src/frame.rs`.
@@ -1122,9 +1122,7 @@ output after the window has ended checks at once, and output inside
 the window arms one deadline at the window's end in `ko-pane`'s loop,
 which only new output arms again. Thus a program that prints once and
 then waits (an ssh password question) is seen, and an idle pane never
-wakes. `A` and the trailing deadline are the top-level session's
-decisions within the user's rule, not separate user decisions. There
-is no recheck on a timer after `C`. The known limit: a shell sends
+wakes. There is no recheck on a timer after `C`. The known limit: a shell sends
 `C` before it forks, so the check at `C` usually sees the shell, and
 a program that prints nothing shows the shell as the foreground until
 its first output or its `D`. This is accepted, because the case that
@@ -1146,7 +1144,7 @@ it.
 of `PUT /layout` take `runtime`. A pane's runtime is the connection's
 runtime on a runtime connection, else the body's, else the host. A
 runtime caller that names another runtime is `refused`. A name that
-the configuration does not have is `missing` ("no runtime NAME in
+the configuration does not have is `not_found` ("no runtime NAME in
 FILE"); a configuration that does not parse is `invalid` with its
 line. The request returns when the pane exists. A runtime that is
 `Down` or `Failed` starts with it; the pane shows `starting runtime
@@ -1158,7 +1156,7 @@ from a caller inside the target runtime, whose string passes as a
 runtime path. `{pane}` names a source pane whose directory the new
 pane starts in; the server resolves it when it creates the pane. The
 caller must be able to read the source as `GET /panes/{id}`: an
-unknown pane is `missing`, and on a runtime connection a pane outside
+unknown pane is `not_found`, and on a runtime connection a pane outside
 the caller's scope is `refused`. A dead source whose row exists gives
 its last directory. The source's directory is its last OSC 7 pwd,
 else, for a host pane only, its start directory; a runtime pane that
@@ -1180,7 +1178,7 @@ pane starts in.
 
 **Reads on a runtime connection** are narrowed to the caller's
 runtime and its agent scope; a hidden pane is `refused`, not
-`missing`. Every route outside the list of design-runtimes.md
+`not_found`. Every route outside the list of design-runtimes.md
 ("Identity on a runtime connection") is `refused` there, `/client`,
 views, search, `PUT /layout` and the `/runtimes` routes among them.
 

@@ -58,30 +58,28 @@ orphan rule.
 
 **list_agents** lists the scope, without the caller. `which` selects
 `all` (the default), `peers` or `subagents` (the caller's own). A
-row has `id` (the pi session), `name`, `pane`, `window`, `status`
-(the root's OSC 7501 state, `starting` before it has one, `ended`),
-`activity`, `parent` (the parent's pi session), `depth`, `cwd`,
-`runtime` (the row's field, else a trusted `pi.runtime`; a routed
-agent's `cwd` is that variable's), `canMessage` (the row's `inbox`: the pane's message stream is open),
-`kind` (`agent` or `subagent`), `relationship` (`own`, `parent`,
-`peer`, `relative`) and `state` (`running` or `ended`). An own child
-adds `model`, `reported` and `report`: the first 1000 bytes of its
-last report. `read_report` gives the rest. An ended child is a
-registry entry whose pane is gone, dead or of another server
-instance (`/version`'s `instance`); every ended child lists, with
-`ended`, its cause or "its pane is gone". The agents come from the
-panes with a pi root and `pi.session` (design.md, "The trust rule")
-and from the caller's own children whose pane has not yet published
-`pi.session`.
+row is an `AgentRow` of `ko-pi.ts`. Its `id` is the pi session. Its
+`status` is the root's OSC 7501 state, `starting` before the pane
+has one, or `ended`. Its `runtime` is the row's field, else a trusted
+`pi.runtime`; a routed agent's `cwd` is that variable's. Its
+`canMessage` is the row's `inbox`: the pane's message stream is
+open. An own child adds `model`, `reported` and `report`: the first
+1000 bytes of its last report. `read_report` gives the rest. An
+ended child is a registry entry whose pane is gone, dead or of
+another server instance (`/version`'s `instance`); every ended child
+lists, with `ended`, its cause or "its pane is gone". The agents
+come from the panes with a pi root and `pi.session` (design.md, "The
+trust rule") and from the caller's own children whose pane has not
+yet published `pi.session`.
 
 **read_report** returns the whole text of an own child's last report,
 or with `which: all` every report in order with its time, from the
 caller's own session. It never reads the child's session.
 
 **list_async_bash** lists the caller's own runs: all running and the
-newest 20 ended, newest first, with `run`, `name`, `state`,
-`outcome`, `startedAt`, `pane` and the `ko api` command that reads
-the pane's screen.
+newest 20 ended, newest first. Each row names the run, its state and
+outcome, its pane and the `ko api` command that reads the pane's
+screen.
 
 A report notice has a bound of 4000 bytes. The parent keeps the
 report whole, because it is a work product ("Reporting", below).
@@ -114,7 +112,7 @@ In the parent:
 
 | entry | when | data |
 |---|---|---|
-| `ko-pi.child` | at each spawn and restart | `name`, `session`, `model`, `fork`, `cwd`, `pane: { instance, pane }`; the last entry of a name is current |
+| `ko-pi.child` | at each spawn and restart | `name`, `session`, `model`, `fork`, `cwd`, the `runtime`, and `pane: { instance, pane }`; the last entry of a name is current |
 | `ko-pi.work` | before it sends an own child work, in any mode, and at a spawn or restart with a task | `child` |
 | `ko-pi.report` | when a child's report arrives, before the ack | `child`, `name`, `text`, `id` |
 | `ko-pi.ended` | when it announces a child's ending, and when it stops the child | `child`, `pane` |
@@ -140,8 +138,9 @@ nothing reads the other side.
 refuses a name over 64 bytes or with a control character (design.md,
 "Spawning"); the harness also refuses an empty name, `.`, `..` and a
 name with `/`. A child's name is unique among the caller's registry
-children, its live own children and its runs. A reused name is
-refused with "message it instead" (spawn) or "choose another name"
+children and its live own children. A run's name is unique among the
+caller's runs and its registry children. A reused name is refused
+with "message it instead" (spawn) or "choose another name"
 (async_bash). A `toplevel` name is unique among the live agents of
 the caller's session instead.
 
@@ -152,21 +151,20 @@ no model is refused. An explicit `model` is checked with `pi
 runs the model that the child ran. `cwd` must be an existing
 directory. Without it, the child starts in the caller's directory, or
 in a resumed session's own directory. Then the harness reads
-`/layout` and checks the depth: the length of the caller's `parent`
-chain over the rows, at most 2. Then it sends one `POST /panes`
-(protocol.md, section 7):
-
-    name: N, cwd: C
-    command: [ko, shell, --, ko-pi, --session-id ID | --session FILE, --name N, --model M, --fork FILE?]
-    env: KO_AGENT_SESSION=ID, KO_AGENT_PARENT_SESSION=S, KO_AGENT_TRUSTED_CWD=C?
-    parent: $KO_PANE, close: on_exit
-    vars: { "ko-pi.task": { text, from: { session, name, pane } } }   (a non-empty task)
-
+`/layout` and checks the depth: the child's depth, the length of the
+caller's `parent` chain over the rows plus one, is at most 2. Then
+`createPane` in `ko-pi.ts` sends one `POST /panes` (protocol.md,
+section 7). The pane's command is `ko shell -- ko-pi` with the
+session (`--session-id` for a fresh or copied session, `--session`
+for a continued one), the name, the model, for a copy `--fork` and,
+for a routed child, `--runtime`.
 `ko shell --` starts pi through the user's login shell, so the child
 has the environment of an interactive pane (design.md, "The login
-environment"). S is the caller's own pi session id. The harness mints
-the child's session id, 32 hex characters. The task never enters a
-command line: it is the pane variable `ko-pi.task`, and its JSON
+environment"). The pane has the caller's pane as `parent` and `close:
+on_exit`, and the three variables below in its environment. The
+harness mints the child's session id, 32 hex characters. The task
+never enters a command line: it is the pane variable `ko-pi.task`,
+with the text and the sender's session, name and pane, and its JSON
 must fit the variable limit of 1,044,480 bytes. After the request
 returns, the harness appends `ko-pi.child` and, with a task,
 `ko-pi.work`.
@@ -246,7 +244,7 @@ under another pane and cannot restart it. The checks and the request
 run under the restart lock for that session.
 
 **Copy** (`resume_from` with `fork: true`) starts `ko-pi --session-id
-<minted id> --fork <session file>`. The original stays as it was, and
+<minted id> --fork <session file>`. The original is unchanged, and
 a live original is not refused, because pi only reads it.
 
 **An empty task** is allowed only to continue a session. The session
@@ -358,7 +356,7 @@ the append throws, it answers `refuse`, and the child retries. A
 report id that the parent has already stored is acked and not
 delivered again. The parent's model gets a notice of at most 4000
 bytes with the guidance included: a report that does not fit sends
-its start and a final line `full report: read_report("<name>")`.
+its start and the line `full report: read_report("<name>")`.
 
 **A child that waits on something ko cannot see**, such as a peer's
 message or a file, reports when its turn ends. Its last message says
@@ -461,8 +459,9 @@ There is no interrupt without text.
 **Sending.** Every send mints one id, 128 random bits as 22 base64url
 characters, for one intent, and keeps it for that intent's retries: a
 `message_agent` call, the stop request, each error and exit notice,
-each report. A tool call resends on `delivered` or `io` up to three
-times, `KO_RESEND_MS` (1 s) apart, then reports the last state:
+each report. A tool call posts up to three times, again on
+`delivered` or `io`, `KO_RESEND_MS` (1 s) apart, then reports the
+last state:
 `delivered to N` (acked), `queued for N` (the agent is not receiving
 and reads it when its stream returns), or `sent to N: written ..., not
 yet confirmed`. An acked `message` to a working agent says that it
@@ -483,7 +482,7 @@ reported on its last work`, `stopped NAME` for a peer or ancestor,
 **The result is the only signal.** Before it stops an own child,
 `stop_agent` appends `ko-pi.ended` for it, so the server's `ended`
 message for that pane sends no notice. A child that ends any other way
-notifies as before.
+notifies through that message ("Endings").
 
 **The orphan rule.** The server removes a pane whose `parent` pane is
 gone or dead (design.md, "Window lifecycle"). It reads no pi
@@ -615,11 +614,11 @@ nested while its window lingers. A child whose parent is absent or in
 another session is a root.
 
 In Kido.app, a lingering run window shows its run's result in the
-status slot, by the Ended rule of design-app.md ("Sidebar"): a green
-`✓` for `completed`, a red dot for `failed` and `died`, a gray dot for
-`stopped`. A subagent's pane has no run and has `close: on_exit`: it
-shows a dimmed `✓` for exit 0 and a dimmed `×` otherwise until the
-sweep removes it.
+status slot, by the Ended rule of design-app.md ("Sidebar"): the
+green check for `completed`, the error dot for `failed` and `died`,
+and the quiet dot of an idle pane for `stopped`. A subagent's pane
+has no run and has `close: on_exit`: it shows a dimmed check for exit
+0 and a dimmed `×` otherwise until the sweep removes it.
 
 These nested windows do not follow the document's window order.
 

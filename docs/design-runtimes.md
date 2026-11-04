@@ -13,7 +13,7 @@ repeat them.
 
 ## The model
 
-A runtime has a name (`RuntimeName` in `ko_server/src/ids.rs`), a
+A runtime has a name (`RuntimeName` in `ko_config/src/values.rs`), a
 kind, a link and a listener. The pane record and its row carry
 `runtime`, immutable, absent for the host. A runtime pane's `ko-pane`
 runs on the host with a host pty, as every pane's does. Its program
@@ -114,9 +114,11 @@ whose runtime is not in the list still shows the name, without a
 state.
 
 **The colour** is the configured `color`, else a hue from the name
-(FNV-1a of the UTF-8 name, mod 360) with a saturation and brightness
-for each theme; the client computes it, so the server stores no
-colour that the configuration does not have. It is for display only.
+(FNV-1a of the UTF-8 name, mod 360; `app/App/RuntimeTint.swift`).
+Kido.app computes it, so the server stores no colour that the
+configuration does not have. It is for display only. The terminal
+client draws no colour: its suffix is the name, with a glyph for a
+`Starting` or `Failed` link (`ko_tui/src/sidebar.rs`).
 
 **A new pane inherits** the runtime of the focused pane's row, not of
 a routed pi's variable: a split or a new window from a routed pi is a
@@ -137,8 +139,8 @@ is a state machine driven by `SIGCHLD`, readiness and timers, with no
 thread and no blocking wait. The states are `Down`, `Starting`, `Up`
 and `Failed` with a message (`LinkState` in
 `ko_server/src/protocol.rs`). A runtime's entry in the registry is
-optional: a runtime that was never started, or that went down, has
-none, and a later bridge kind can have panes without one link.
+optional: a runtime that has not started, or that is down, has
+none, and a kind can have panes without a link.
 
 **The first pane starts the runtime.** No request brings a runtime
 up. A request that creates a pane in a runtime that is `Down` or
@@ -156,7 +158,8 @@ socket and the token files, runs the kind's cleanup, and answers every
 waiter with the message.
 
 The pane's host-side program is `ko runtime-exec NAME -- ARGV`
-(`ko/src/runtime.rs`). It long-polls `GET /runtimes/NAME/wait` over
+(`ko/src/runtime.rs`, over `bring_up` in `ko_client/src/runtimes.rs`).
+It long-polls `GET /runtimes/NAME/wait` over
 the host socket with its own pane identity and prints `starting
 runtime NAME` once while it waits. On `Up` it execs ARGV without the
 host's `KO_SOCKET`, `KO_PANE` and `KO_PANE_TOKEN`. On `Failed` it
@@ -164,7 +167,8 @@ prints `runtime NAME: <message>` and exits 1, so the pane dies with
 the failure on its screen, and a parent gets the death as any pane
 death. After 120 s it prints `runtime NAME: still starting` and exits
 1; the link continues. The wait is a waiter of the loop
-(`WaitKind::RuntimeUp`). Concurrent first panes wait on one start.
+(`Wait` in `ko_server/src/runtime/mod.rs`). Concurrent first panes
+wait on one start.
 
 **Leader election.** When the start has a `lead` step, the first
 waiter that asks gets the step's argv in the wait's reply; the others
@@ -203,7 +207,7 @@ listener admits only the server's uid. A runtime listener admits any
 peer uid, because the peer of a relay or a forward is not the
 process inside, and tags the connection for its life; a WebSocket
 upgraded on it keeps the tag. Nothing below `State::accept` knows
-which socket delivered a connection, so a later bridge can hand a
+which socket delivered a connection, so a kind can hand a
 socketpair end to it with the same tag.
 
 On a runtime connection every request must carry the identity
@@ -329,7 +333,7 @@ fallback.
 `GET /runtimes/NAME/exec` is a WebSocket that runs one command inside
 the runtime without a pane: no pty, separate stdout and stderr, an
 exit status and stdin from the client. It is the host's way into a
-runtime, which a routed agent's tools will use. The user and every
+runtime, which a routed agent's tools use. The user and every
 host pane identity may open one in any runtime, because a host pane
 may already create a pane there; on a runtime connection the route is
 `refused`, so it is never a runtime's way into another.
@@ -387,9 +391,8 @@ A helper that ends without one is classified by the kind
 transport's own error); a missing program or cwd is the inside ko's
 exit 127 or 1 with its message on stderr. A frame that does not parse
 ends the session at once with `error`; output that a remote login
-shell prints before the ko starts is such a frame. The kinds still to come plug in at the launch
-and at that classification; a bridge kind can serve the session by
-the same frames with no process.
+shell prints before the ko starts is such a frame. A kind plugs in
+at the launch and at that classification.
 
 **The environment** of the command is the runtime's `env`, then the
 request's, then the forced `KO_RUNTIME`. Nothing of the caller's or
@@ -427,8 +430,7 @@ whose master carries panes and sessions as channels of one
 connection, which sshd's `MaxSessions` bounds, 10 by default; the
 other kinds keep it for one behaviour. The cap has no configuration
 field: it bounds what ko admits to the loop, and sshd's limit is met
-on the retry path; a host that shows the need can get a
-`max_sessions` field later. A helper exit that the kind classifies as a
+on the retry path. A helper exit that the kind classifies as a
 refused channel is retried once, after the next session of that
 runtime ends (at once when one ended since it started), then reported
 as `error`. Only the ssh kind classifies one.
@@ -458,8 +460,8 @@ and names that `-v`.
 **Measured** (2026-11-03, `container` 1.5.0, macOS 27.0.1): a `GET
 /version` through the relay on one keep-alive connection has a round
 trip of about 100 us (p50 98 us, p99 668 us), and an echo through
-`--publish-socket`, the other direction, p50 80 us, so the relay costs
-no more than the fallback that it replaces. `--ssh` relays the host's
+`--publish-socket`, the other direction, p50 80 us, so the relay is
+as fast as `--publish-socket`. `--ssh` relays the host's
 `SSH_AUTH_SOCK` the same way (its documentation calls it the
 equivalent of a `--volume` of that socket), which is why a socket
 volume carries the runtime socket and `--ssh` stays for the agent
@@ -478,7 +480,7 @@ of its own. A missing layout fails only a start that must create the
 container, with the path and `make build-linux`. `{ "mount": DIR }`
 mounts another layout there, and `"path"` uses the image's `ko`. The
 layout is always aarch64, because the VM's kernel is arm64 whatever
-the image; an amd64 image under Rosetta was not measured.
+the image; ko has no measurement of an amd64 image under Rosetta.
 
 **The start stages**, each a helper child (`Plan::next` in
 `container.rs`, a pure function of the stage and its outcome):
@@ -784,9 +786,9 @@ Fixed before the design, 2026-11-03:
   A runtime starts with its first pane and stops by the idle rule,
   600 s.
 - ko ships a static musl Linux `ko` for the container kind. The
-  Homebrew formula builds the host's architecture only; x86_64 joins
-  when ssh starts copying ko. Until then an ssh host needs an
-  installed ko, and the upload comes with the bridge ("Not built").
+  Homebrew formula builds the host's architecture only. An ssh host
+  needs an installed ko; an upload belongs to the bridge transport
+  ("Not built").
 - The `command` kind is test-only, and the container e2e runs locally
   behind `KO_E2E_CONTAINER=1`.
 - ssh panes ride the master: one authentication and one connection.
