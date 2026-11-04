@@ -1071,7 +1071,7 @@ private class AlertEscape: NSView {
     }
 
     func createSession(_ name: String, done: @escaping (String?) -> Void) {
-        guard let koModel else { return create(.addSession(.init(name: name, new: .init(cwd: NSHomeDirectory()))), done: done) }
+        guard let koModel else { return create(.addSession(.init(name: name, new: .init(cwd: .absPath(NSHomeDirectory())))), done: done) }
         create(koModel.newSession(name), done: done)
     }
 

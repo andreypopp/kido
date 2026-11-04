@@ -1,13 +1,16 @@
+use std::path::Path;
 use std::time::Instant;
 
 use super::runtime_ops::resolve_runtime;
 use super::*;
 use crate::api::{WaitMs, routes};
+use crate::pane_proc::Place;
 use crate::panes::{self, Edge, Standing, acts_as, scope};
 use crate::protocol::{
-    DraftLayout, DraftSession, DraftWindow, Empty, Error, ErrorKind, NewWindow, Placement,
-    SessionRef,
+    CreatePane, Cwd, DraftLayout, DraftSession, DraftWindow, Empty, Error, ErrorKind, NewWindow,
+    Placement, SessionRef,
 };
+use crate::runtime::pane::{Dir, host_cwd};
 use crate::server::Origin;
 
 #[derive(Debug, Clone, Copy)]
@@ -114,6 +117,85 @@ impl State {
         }
     }
 
+    pub(super) fn admit_cwd(
+        &self,
+        caller: Option<PaneId>,
+        origin: &Origin,
+        cwd: Option<&Cwd>,
+    ) -> Result<(), Error> {
+        let Some(Cwd::Pane { pane }) = cwd else {
+            return Ok(());
+        };
+        if self.panes.find(*pane).is_none() {
+            return Err(Error::new(
+                ErrorKind::Missing,
+                format!("no pane {pane} to start in"),
+            ));
+        }
+        match (origin, caller) {
+            (Origin::Host, _) => Ok(()),
+            (Origin::Runtime(runtime), Some(caller)) => self.shown_to(runtime, caller, *pane),
+            (Origin::Runtime(_), None) => Err(Error::new(
+                ErrorKind::Refused,
+                "a runtime connection must act as one of its panes",
+            )),
+        }
+    }
+
+    pub(super) fn start_dir(&mut self, request: &CreatePane, caller: Option<PaneId>) -> Dir {
+        match &request.cwd {
+            None => Dir::Default,
+            Some(Cwd::Path(path)) => {
+                let path = std::path::PathBuf::from(path.as_str());
+                let inside = request
+                    .runtime
+                    .as_ref()
+                    .zip(caller)
+                    .is_some_and(|(name, caller)| self.panes.is_in(caller, name));
+                if inside {
+                    Dir::Runtime(path)
+                } else {
+                    Dir::Host(path)
+                }
+            }
+            Some(Cwd::Pane { pane }) => {
+                let Some(source) = self.panes.find(*pane) else {
+                    return Dir::Default;
+                };
+                let own = source.runtime().cloned();
+                let place = match &own {
+                    None => Place::Host(&self.config.hostname),
+                    Some(_) => Place::Runtime,
+                };
+                let Some(path) = source.proc().directory().path(place) else {
+                    return Dir::Default;
+                };
+                match own {
+                    None => Dir::Host(path),
+                    Some(own) if Some(&own) == request.runtime.as_ref() => Dir::Runtime(path),
+                    Some(own) => self
+                        .runtimes
+                        .settings(&own)
+                        .ok()
+                        .and_then(|runtime| host_cwd(&runtime.paths(), &path))
+                        .map_or(Dir::Default, Dir::Host),
+                }
+            }
+        }
+    }
+
+    pub(super) fn recorded_dir(
+        &mut self,
+        request: &CreatePane,
+        dir: &Dir,
+    ) -> Result<String, Error> {
+        let start = match &request.runtime {
+            None => dir.host().map(Path::to_path_buf),
+            Some(name) => dir.in_runtime(&self.runtimes.settings(name)?),
+        };
+        Ok(start.map_or_else(String::new, |path| path.to_string_lossy().into_owned()))
+    }
+
     pub(crate) fn new_pane(
         &mut self,
         poll: &mut Poll,
@@ -139,6 +221,7 @@ impl State {
         run: Option<RunId>,
     ) -> Result<Placement, Error> {
         pane.runtime = resolve_runtime(origin, pane.runtime)?;
+        self.admit_cwd(caller, origin, pane.cwd.as_ref())?;
         if let Some(parent) = pane.parent {
             self.admit_parent(caller, parent)?;
         }

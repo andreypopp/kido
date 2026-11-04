@@ -889,7 +889,7 @@
             "$ref": "#/components/schemas/Command"
           },
           "cwd": {
-            "type": "string"
+            "$ref": "#/components/schemas/Cwd"
           },
           "env": {
             "default": [],
@@ -910,6 +910,25 @@
           }
         },
         "type": "object"
+      },
+      "Cwd": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/AbsPath"
+          },
+          {
+            "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              }
+            },
+            "required": [
+              "pane"
+            ],
+            "type": "object"
+          }
+        ],
+        "description": "Where a new pane starts: an absolute path of the host, or the directory of another pane. The\npane form needs a pane that the caller may read. The server maps the pane's directory into the\nnew pane's runtime, or to the host, through the runtimes' `paths`. When the pane's directory is\nunknown or does not map, the new pane starts in the default directory."
       },
       "Data": {
         "description": "Any JSON value of at most 4096 bytes when encoded."
@@ -2471,7 +2490,7 @@
             "$ref": "#/components/schemas/Command"
           },
           "cwd": {
-            "type": "string"
+            "$ref": "#/components/schemas/Cwd"
           },
           "env": {
             "default": [],
@@ -3710,7 +3729,7 @@
             "type": "array"
           },
           "cwd": {
-            "type": "string"
+            "$ref": "#/components/schemas/Cwd"
           },
           "env": {
             "default": [],

@@ -7,6 +7,7 @@ pub mod fd;
 pub mod file;
 #[cfg(any(test, feature = "fuzz"))]
 pub mod fuzz;
+pub mod host;
 pub mod mapping;
 pub mod pid;
 pub mod pty;

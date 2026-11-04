@@ -11,11 +11,12 @@ use ko_client::launch::{self, BACKOFF_FIRST, PATIENCE, backoff_after};
 use ko_client::model::{Applied, Model, Notice, Rejoin};
 use ko_client::remote::{Progress, Remote};
 use ko_client::wire::{self, Link, Next, WATCHDOG, silent, text};
+use ko_config::values::{AbsPath, RuntimeName};
 use ko_pane_wire::frame::{Dim, ScreenFormat, ScreenRows, Size};
 use ko_server::api::Route;
 use ko_server::ids::PaneId;
 use ko_server::protocol::{
-    self, ClientKind, ClientRequest, ClipboardContent, ClipboardServed, CreatePane, Hello,
+    self, ClientKind, ClientRequest, ClipboardContent, ClipboardServed, CreatePane, Cwd, Hello,
     Input as Wire, Key as WireKey, Mouse as WireMouse, Paste, Selection, ViewRequest, json,
 };
 use ko_sys::event::{Due, Events, Interest, Mode, Poll, Ready, Timer, Token};
@@ -529,7 +530,7 @@ impl Client {
         let pane = ko_client::layout::add_session(
             &self.socket,
             (Some(self.model.client), None),
-            &new_pane(self.remote.is_some()),
+            &new_pane(here(self.remote.is_some()), None),
         )?;
         self.switch(pane)
     }
@@ -557,20 +558,23 @@ impl Client {
     }
 
     fn new_window(&mut self) -> Result<(), String> {
-        let Some(place) = self.pane().and_then(|pane| self.model.locate(pane)) else {
+        let Some((source, place)) = self
+            .pane()
+            .and_then(|pane| Some((pane, self.model.locate(pane)?)))
+        else {
             return self.create_pane();
         };
+        let runtime = self
+            .model
+            .panes
+            .iter()
+            .find(|shown| shown.row.id == source)
+            .and_then(|shown| shown.row.runtime.clone());
         let pane = ko_client::layout::add_window(
             &self.socket,
             (Some(self.model.client), None),
             place,
-            &CreatePane {
-                runtime: self
-                    .pane()
-                    .and_then(|pane| self.model.panes.iter().find(|shown| shown.row.id == pane))
-                    .and_then(|shown| shown.row.runtime.clone()),
-                ..new_pane(self.remote.is_some())
-            },
+            &new_pane(Some(Cwd::Pane { pane: source }), runtime),
         )?;
         self.switch(pane)
     }
@@ -1261,21 +1265,25 @@ fn hello(geometry: Geometry, panel: Panel, warning: bool, focused: bool) -> Hell
     }
 }
 
-fn new_pane(remote: bool) -> CreatePane {
+fn here(remote: bool) -> Option<Cwd> {
+    if remote {
+        return None;
+    }
+    let dir = std::env::current_dir().ok()?;
+    AbsPath::try_from(dir.to_string_lossy().into_owned())
+        .ok()
+        .map(Cwd::Path)
+}
+
+fn new_pane(cwd: Option<Cwd>, runtime: Option<RuntimeName>) -> CreatePane {
     CreatePane {
-        cwd: if remote {
-            None
-        } else {
-            std::env::current_dir()
-                .map(|dir| dir.to_string_lossy().into_owned())
-                .ok()
-        },
+        cwd,
         command: None,
         env: Vec::new(),
         vars: Default::default(),
         parent: None,
         close: Default::default(),
-        runtime: None,
+        runtime,
     }
 }
 
@@ -1341,7 +1349,7 @@ mod tests {
 
     #[test]
     fn a_remote_attach_sends_no_cwd_because_the_local_one_may_not_exist_there() {
-        assert_eq!(new_pane(true).cwd, None);
-        assert!(new_pane(false).cwd.is_some());
+        assert_eq!(here(true), None);
+        assert!(matches!(here(false), Some(Cwd::Path(_))));
     }
 }

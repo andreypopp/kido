@@ -365,7 +365,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
 
 // The commands that make a pane from another: the pane's runtime and directory, in the request and in the row.
 @MainActor final class RuntimeActionTests: VisualTestCase {
-    func testANewPaneTakesItsRuntimeFromThePaneItIsMadeFromAndItsDirectoryOnlyFromAHostPane() async throws {
+    func testANewPaneTakesItsRuntimeFromThePaneItIsMadeFromAndAsksTheServerForItsDirectory() async throws {
         try koRuntimes(["box": ["command": [String: Any]()]])
         let dir = try koServerDir()
         _ = try await KoServer.launch(dir: dir)
@@ -389,12 +389,12 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
             return marks?[box]?.state == .up && marks?[routed]?.routed == true && owner.testSession?.cell != nil
         }
         let model = try XCTUnwrap(owner.testModel)
-        let cwd = { (pane: PaneID) in model.pane(pane)?.cwd }
-        XCTAssertEqual(model.newPane(from: host), KoSchema.CreatePane(cwd: cwd(host), runtime: nil), "a host pane keeps its directory")
-        XCTAssertEqual(model.newPane(from: routed), KoSchema.CreatePane(cwd: cwd(routed), runtime: nil), "a routed pi's pane is a host pane")
-        XCTAssertEqual(model.newPane(from: box), KoSchema.CreatePane(cwd: nil, runtime: "box"), "a runtime pane's directory is a path in the runtime, so nothing goes with it")
-        XCTAssertEqual(model.newPane(from: box, .host), KoSchema.CreatePane(cwd: nil, runtime: nil))
-        XCTAssertEqual(model.newPane(from: host, .named("box")), KoSchema.CreatePane(cwd: cwd(host), runtime: "box"), "the server maps a host directory into a runtime")
+        let from = { (pane: PaneID) in KoSchema.Cwd.pane(.init(pane: pane)) }
+        XCTAssertEqual(model.newPane(from: host), KoSchema.CreatePane(cwd: from(host), runtime: nil), "a host pane keeps its directory")
+        XCTAssertEqual(model.newPane(from: routed), KoSchema.CreatePane(cwd: from(routed), runtime: nil), "a routed pi's pane is a host pane")
+        XCTAssertEqual(model.newPane(from: box), KoSchema.CreatePane(cwd: from(box), runtime: "box"), "the server takes a runtime pane's directory as it is")
+        XCTAssertEqual(model.newPane(from: box, .host), KoSchema.CreatePane(cwd: from(box), runtime: nil), "the server maps it back to the host or uses the default")
+        XCTAssertEqual(model.newPane(from: host, .named("box")), KoSchema.CreatePane(cwd: from(host), runtime: "box"), "the server maps a host directory into a runtime")
         func made(_ number: UInt32, runtime: String?, _ command: () -> Void) async throws {
             command()
             try await wait("pane \(number)", within: 10) { owner.testModel?.pane(PaneID(number: number)) != nil }
@@ -404,6 +404,6 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
         try await made(5, runtime: "box") { owner.paneCommand(.split(.right), host, .named("box")) }
         try await made(6, runtime: nil) { owner.paneCommand(.split(.down), routed) }
         try await made(7, runtime: "box") { owner.paneCommand(.split(.down), box) }
-        XCTAssertEqual(owner.testModel?.pane(PaneID(number: 6))?.cwd, cwd(routed), "a split of a host pane keeps its directory")
+        XCTAssertEqual(owner.testModel?.pane(PaneID(number: 6))?.cwd, model.pane(routed)?.cwd, "a split of a host pane keeps its directory")
     }
 }

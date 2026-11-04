@@ -1,11 +1,13 @@
 #![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::io;
 use std::os::fd::AsFd;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ko_pane_wire::frame::{
     self, FromPane, History, ImageKey, Init, Key, MAX_FRAME_BYTES, Malformed, Mouse, Oversize, Req,
@@ -276,13 +278,75 @@ pub(crate) struct PaneProc {
     pid: Pid,
     child: Claim,
     title: Vec<u8>,
-    cwd: Vec<u8>,
+    cwd: Directory,
     dead: Option<Death>,
     input: Vec<u8>,
     filled: usize,
     pending: BTreeMap<Req, Reply>,
     observed: Pos,
     busy: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Directory {
+    Spawned(Vec<u8>),
+    Reported(Vec<u8>),
+}
+
+pub(crate) enum Place<'a> {
+    Host(&'a str),
+    Runtime,
+}
+
+impl Directory {
+    pub(crate) fn bytes(&self) -> &[u8] {
+        match self {
+            Directory::Spawned(bytes) | Directory::Reported(bytes) => bytes,
+        }
+    }
+
+    pub(crate) fn path(&self, place: Place<'_>) -> Option<PathBuf> {
+        match (self, place) {
+            (Directory::Spawned(bytes), Place::Host(_)) => {
+                Some(PathBuf::from(OsString::from_vec(bytes.clone())))
+            }
+            (Directory::Spawned(_), Place::Runtime) => None,
+            (Directory::Reported(uri), place) => file_uri_path(uri, place),
+        }
+    }
+}
+
+fn file_uri_path(uri: &[u8], place: Place<'_>) -> Option<PathBuf> {
+    let rest = uri.strip_prefix(b"file://")?;
+    let start = rest.iter().position(|byte| *byte == b'/')?;
+    if let Place::Host(own) = place {
+        let host = rest.get(..start)?;
+        let ours = host.is_empty()
+            || host.eq_ignore_ascii_case(b"localhost")
+            || host.eq_ignore_ascii_case(own.as_bytes());
+        if !ours {
+            return None;
+        }
+    }
+    let mut encoded = rest.get(start..)?.iter().copied();
+    let mut decoded = Vec::new();
+    while let Some(byte) = encoded.next() {
+        if byte != b'%' {
+            decoded.push(byte);
+            continue;
+        }
+        let high = hex_digit(encoded.next()?)?;
+        let low = hex_digit(encoded.next()?)?;
+        decoded.push(high.checked_mul(16)?.checked_add(low)?);
+    }
+    let path = PathBuf::from(OsString::from_vec(decoded));
+    path.is_absolute().then_some(path)
+}
+
+fn hex_digit(digit: u8) -> Option<u8> {
+    char::from(digit)
+        .to_digit(16)
+        .and_then(|value| u8::try_from(value).ok())
 }
 
 fn store(text: &mut Vec<u8>, value: &[u8]) -> bool {
@@ -360,7 +424,7 @@ impl PaneProc {
             pid,
             child: Claim::Awaiting,
             title: Vec::new(),
-            cwd: cwd.as_os_str().as_encoded_bytes().to_vec(),
+            cwd: Directory::Spawned(cwd.as_os_str().as_encoded_bytes().to_vec()),
             dead: None,
             input: vec![0; INPUT],
             filled: 0,
@@ -412,6 +476,10 @@ impl PaneProc {
     }
 
     pub(crate) fn cwd(&self) -> &[u8] {
+        self.cwd.bytes()
+    }
+
+    pub(crate) fn directory(&self) -> &Directory {
         &self.cwd
     }
 
@@ -752,7 +820,8 @@ impl PaneProc {
                 }
             }
             FromPane::Pwd(cwd) => {
-                if store(&mut self.cwd, cwd) {
+                if !matches!(&self.cwd, Directory::Reported(old) if old == cwd) {
+                    self.cwd = Directory::Reported(cwd.to_vec());
                     io.events.push(Event::Pwd);
                 }
             }
@@ -956,6 +1025,35 @@ impl PaneProc {
 #[cfg(test)]
 #[allow(clippy::arithmetic_side_effects)]
 mod tests {
+    #[test]
+    fn a_reported_directory_decodes_and_a_host_pane_must_name_this_host() {
+        let at = |uri: &str, place: Place<'_>| Directory::Reported(uri.into()).path(place);
+        let host = || Place::Host("mac.local");
+        assert_eq!(
+            at("file://localhost/tmp", host()),
+            Some(PathBuf::from("/tmp"))
+        );
+        assert_eq!(
+            at("file:///tmp/a%20b", host()),
+            Some(PathBuf::from("/tmp/a b"))
+        );
+        assert_eq!(
+            at("file://MAC.local/a%25b%3B", host()),
+            Some(PathBuf::from("/a%b;"))
+        );
+        assert_eq!(at("file://elsewhere.example/tmp", host()), None);
+        assert_eq!(
+            at("file://elsewhere.example/tmp", Place::Runtime),
+            Some(PathBuf::from("/tmp"))
+        );
+        for bad in ["file://host", "file:///a%2", "file:///a%zz", "/tmp", ""] {
+            assert_eq!(at(bad, Place::Runtime), None, "{bad}");
+        }
+        let spawned = Directory::Spawned(b"/work".to_vec());
+        assert_eq!(spawned.path(host()), Some(PathBuf::from("/work")));
+        assert_eq!(spawned.path(Place::Runtime), None);
+    }
+
     use super::*;
     use ko_pane_wire::frame::Kind;
     use ko_pane_wire::ring::{Commit, RecordKind, Writer};
@@ -1484,7 +1582,7 @@ mod tests {
         (
             events,
             fake.proc.title.clone(),
-            fake.proc.cwd.clone(),
+            fake.proc.cwd().to_vec(),
             fake.proc.dead.clone().map(|death| death.cause),
             fake.proc.child_pid(),
         )

@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 
 use ko_config::values::{RuntimeName, env_valid};
@@ -100,18 +100,16 @@ fn environment(
 
 pub(crate) type Wrap<'a> = &'a dyn Fn(Option<&[Vec<u8>]>) -> Vec<Vec<u8>>;
 
+pub(crate) enum Start<'a> {
+    Host(Option<&'a Path>),
+    Runtime(Wrap<'a>),
+}
+
 pub(crate) fn program(
     config: &Config,
     request: &CreatePane,
-    wrap: Option<Wrap<'_>>,
+    start: Start<'_>,
 ) -> Result<Program, AddError> {
-    if request
-        .cwd
-        .as_ref()
-        .is_some_and(|cwd| !cwd.starts_with('/'))
-    {
-        return Err(AddError::Invalid("cwd must be absolute"));
-    }
     if request
         .env
         .iter()
@@ -120,9 +118,9 @@ pub(crate) fn program(
         return Err(AddError::Invalid("invalid environment"));
     }
     let bytes = |path: &std::path::Path| path.as_os_str().as_encoded_bytes().to_vec();
-    let shell = match wrap {
-        Some(_) => b"/bin/sh".to_vec(),
-        None => bytes(&config.shell),
+    let shell = match start {
+        Start::Runtime(_) => b"/bin/sh".to_vec(),
+        Start::Host(_) => bytes(&config.shell),
     };
     let inner: Option<Vec<Vec<u8>>> = match &request.command {
         None => None,
@@ -136,17 +134,14 @@ pub(crate) fn program(
     let record = inner
         .clone()
         .unwrap_or_else(|| vec![bytes(&config.exe), b"shell".to_vec()]);
-    Ok(match wrap {
-        None => Program {
+    Ok(match start {
+        Start::Host(cwd) => Program {
             argv: record.clone(),
             record,
-            cwd: request
-                .cwd
-                .as_ref()
-                .map_or_else(|| config.cwd.clone(), PathBuf::from),
+            cwd: cwd.map_or_else(|| config.cwd.clone(), Path::to_path_buf),
             env: request.env.clone(),
         },
-        Some(wrap) => Program {
+        Start::Runtime(wrap) => Program {
             argv: wrap(inner.as_deref()),
             record,
             cwd: config.cwd.clone(),
@@ -480,6 +475,7 @@ pub(crate) fn relation(edges: &[Edge], sender: PaneId, receiver: PaneId) -> Opti
 mod tests {
     use super::*;
     use crate::config::BUILD;
+    use std::path::PathBuf;
 
     #[test]
     fn a_descendant_is_a_child_or_a_child_of_a_descendant() {
@@ -583,6 +579,7 @@ mod tests {
                 b"LANG=C".to_vec(),
             ],
             cwd: PathBuf::from("/"),
+            hostname: String::new(),
             linger: crate::config::LINGER,
             stop_escalation: crate::config::STOP_ESCALATION,
             run_screen_bytes: crate::config::RUN_SCREEN_BYTES,
@@ -717,8 +714,8 @@ mod tests {
             events: &mut events,
             sink: &mut crate::pane_proc::discard,
         };
-        let request = |cwd: &str, command: Option<Command>, env: &[(&str, &str)]| CreatePane {
-            cwd: Some(cwd.to_owned()),
+        let request = |command: Option<Command>, env: &[(&str, &str)]| CreatePane {
+            cwd: None,
             command,
             env: env
                 .iter()
@@ -739,24 +736,26 @@ mod tests {
         };
         let cases = [
             (
-                request("/", argv(&["sh"]), &[]),
+                "/",
+                request(argv(&["sh"]), &[]),
                 "command executable must be absolute",
             ),
-            (request("tmp", None, &[]), "cwd must be absolute"),
             (
-                request("/", argv(&["/bin/sh", "a\0b"]), &[]),
+                "/",
+                request(argv(&["/bin/sh", "a\0b"]), &[]),
                 "NUL in pane request",
             ),
             (
-                request("/nonexistent", None, &[]),
+                "/nonexistent",
+                request(None, &[]),
                 "cwd must be a directory",
             ),
-            (request("/etc/hosts", None, &[]), "cwd must be a directory"),
-            (request("/", None, &[("A=B", "c")]), "invalid environment"),
-            (request("/", None, &[("", "c")]), "invalid environment"),
+            ("/etc/hosts", request(None, &[]), "cwd must be a directory"),
+            ("/", request(None, &[("A=B", "c")]), "invalid environment"),
+            ("/", request(None, &[("", "c")]), "invalid environment"),
         ];
-        let add = |panes: &mut Panes, io: &mut Io<'_>, request: &CreatePane| {
-            let program = program(&config(), request, None)?;
+        let add = |panes: &mut Panes, io: &mut Io<'_>, (cwd, request): (&str, &CreatePane)| {
+            let program = program(&config(), request, Start::Host(Some(Path::new(cwd))))?;
             let birth = Birth {
                 vars: Default::default(),
                 run: None,
@@ -767,11 +766,11 @@ mod tests {
             };
             panes.add(&config(), PaneId::new(1), Size::DEFAULT, birth, io)
         };
-        for (request, message) in cases {
-            let refused = add(&mut panes, &mut io, &request).unwrap_err();
+        for (cwd, request, message) in cases {
+            let refused = add(&mut panes, &mut io, (cwd, &request)).unwrap_err();
             assert_eq!(refused.to_string(), message);
         }
-        let spawned = add(&mut panes, &mut io, &request("/", None, &[]));
+        let spawned = add(&mut panes, &mut io, ("/", &request(None, &[])));
         assert!(matches!(spawned, Err(AddError::Io(_))));
         assert!(panes.iter().next().is_none());
     }
@@ -779,7 +778,7 @@ mod tests {
     #[test]
     fn a_runtime_pane_records_the_command_that_was_asked_for_and_runs_the_wrapper() {
         let request = CreatePane {
-            cwd: Some("/work".to_owned()),
+            cwd: None,
             command: Some(Command::Shell {
                 command: "echo hi".to_owned(),
             }),
@@ -794,7 +793,7 @@ mod tests {
             argv.extend(inner.unwrap_or_default().iter().cloned());
             argv
         };
-        let program = program(&config(), &request, Some(&wrap)).unwrap();
+        let program = program(&config(), &request, Start::Runtime(&wrap)).unwrap();
         let text = |argv: &[Vec<u8>]| {
             argv.iter()
                 .map(|arg| String::from_utf8_lossy(arg).into_owned())

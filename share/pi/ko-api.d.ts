@@ -767,7 +767,7 @@ export interface components {
         CreatePane: {
             close?: components["schemas"]["Close"];
             command?: components["schemas"]["Command"];
-            cwd?: string;
+            cwd?: components["schemas"]["Cwd"];
             /** @default [] */
             env?: components["schemas"]["Variable"][];
             parent?: components["schemas"]["PaneId"];
@@ -775,6 +775,15 @@ export interface components {
             vars?: {
                 [key: string]: unknown;
             };
+        };
+        /**
+         * @description Where a new pane starts: an absolute path of the host, or the directory of another pane. The
+         *     pane form needs a pane that the caller may read. The server maps the pane's directory into the
+         *     new pane's runtime, or to the host, through the runtimes' `paths`. When the pane's directory is
+         *     unknown or does not map, the new pane starts in the default directory.
+         */
+        Cwd: components["schemas"]["AbsPath"] | {
+            pane: components["schemas"]["PaneId"];
         };
         /** @description Any JSON value of at most 4096 bytes when encoded. */
         Data: unknown;
@@ -1190,7 +1199,7 @@ export interface components {
         NewWindow: {
             close?: components["schemas"]["Close"];
             command?: components["schemas"]["Command"];
-            cwd?: string;
+            cwd?: components["schemas"]["Cwd"];
             /** @default [] */
             env?: components["schemas"]["Variable"][];
             name?: components["schemas"]["Name"];
@@ -1527,7 +1536,7 @@ export interface components {
         };
         StartRun: {
             argv: string[];
-            cwd?: string;
+            cwd?: components["schemas"]["Cwd"];
             /** @default [] */
             env?: components["schemas"]["Variable"][];
             name: components["schemas"]["RunName"];

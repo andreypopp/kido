@@ -1,14 +1,15 @@
 use std::path::{Path, PathBuf};
 
 use super::pane_ops::Via;
+use super::runtime_ops::resolve_runtime;
 use super::*;
 use crate::api::routes;
 use crate::ids::RunId;
 use crate::pane_kind::{self, Kind};
 use crate::panes::{self, Condition, Seen};
 use crate::protocol::{
-    Close, Command, Empty, Error, ErrorKind, Info, ReportOutcome, Reported, RunRow, SessionRef,
-    Show, StartRun, Started, StopResult, StopRun, Variable, Waited,
+    Close, Command, CreatePane, Empty, Error, ErrorKind, Info, ReportOutcome, Reported, RunRow,
+    SessionRef, Show, StartRun, Started, StopResult, StopRun, Variable, Waited,
 };
 use crate::runs::{self, Closing, Ended, Meta, RunOutcome, RunResult};
 use crate::timestamp::Timestamp;
@@ -374,19 +375,9 @@ impl State {
         if let Some(parent) = parent {
             self.admit_parent(caller, parent)?;
         }
+        self.admit_cwd(caller, origin, request.cwd.as_ref())?;
         let io = |error: std::io::Error| Error::new(ErrorKind::Io, error.to_string());
         let id = RunId::mint().map_err(io)?;
-        let mut meta = runs::Meta {
-            id: id.clone(),
-            name: request.name.clone(),
-            parent: request.parent.clone(),
-            pane: None,
-            runtime: None,
-            argv: request.argv.clone(),
-            cwd: request.cwd.clone().unwrap_or_default(),
-            started_at: Timestamp::now(),
-        };
-        runs::write_meta(&self.runs.root, &meta).map_err(io)?;
         let mut env = vec![Variable {
             name: "KO_RUN_ID".to_owned(),
             value: id.to_string(),
@@ -394,13 +385,27 @@ impl State {
         env.extend(request.env);
         let create = CreatePane {
             cwd: request.cwd,
-            command: Some(Command::Argv { argv: request.argv }),
+            command: Some(Command::Argv {
+                argv: request.argv.clone(),
+            }),
             env,
             vars: Loose::new(),
             parent,
             close: Close::OnExit,
-            runtime: request.runtime,
+            runtime: resolve_runtime(origin, request.runtime)?,
         };
+        let dir = self.start_dir(&create, caller);
+        let mut meta = runs::Meta {
+            id: id.clone(),
+            name: request.name.clone(),
+            parent: request.parent.clone(),
+            pane: None,
+            runtime: None,
+            argv: request.argv,
+            cwd: self.recorded_dir(&create, &dir)?,
+            started_at: Timestamp::now(),
+        };
+        runs::write_meta(&self.runs.root, &meta).map_err(io)?;
         let name =
             Name::try_from(request.name.as_str().to_owned()).map_err(|m| invalid(m.to_owned()))?;
         let placed = self.place_pane(

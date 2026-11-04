@@ -606,7 +606,9 @@ invariants.
   dead one `gone`; a caller that acts as a pane may name only itself.
   No cycle can form, because the parent exists before the child.
   `runtime` names the runtime that runs the pane, for its life, and
-  the row carries it (section 15); absent is the host.
+  the row carries it (section 15); absent is the host. `cwd` is an
+  absolute host path or `{pane}`, the directory of that pane
+  (section 15, "The cwd of a new pane").
   `close` is `keep` (the default) or `on_exit`; both, and the orphan
   rule on `parent`, act through the sweep (section 10). Every pane gets
   `SSH_AUTH_SOCK=<dir>/agent.sock` unless its `env` names that
@@ -1149,6 +1151,31 @@ line. The request returns when the pane exists. A runtime that is
 `Down` or `Failed` starts with it; the pane shows `starting runtime
 NAME` until the link is up, and dies with `runtime NAME: <message>`
 on its screen when the start fails.
+
+**The cwd of a new pane.** A string `cwd` is a host path, except
+from a caller inside the target runtime, whose string passes as a
+runtime path. `{pane}` names a source pane whose directory the new
+pane starts in; the server resolves it when it creates the pane. The
+caller must be able to read the source as `GET /panes/{id}`: an
+unknown pane is `missing`, and on a runtime connection a pane outside
+the caller's scope is `refused`. A dead source whose row exists gives
+its last directory. The source's directory is its last OSC 7 pwd,
+else, for a host pane only, its start directory; a runtime pane that
+never reported one has none. After a report, the row's `cwd` is the
+raw `file://` URI; the server decodes its percent escapes. A host
+pane's report counts only when the URI's host is empty, `localhost`
+or the server's hostname, so a shell on the far side of `ssh` gives
+no directory; a runtime pane's host is ignored. Between the source's
+place and the new pane's, the server moves the directory through the
+configured `paths` of the runtimes, whatever their link state: in
+the same place it passes unchanged; from the host into a runtime it
+maps forward; from a runtime to the host it maps back by the longest
+runtime prefix; between two runtimes it maps back to the host and
+then forward. A directory with a `..` component does not map. A
+directory that is unknown or does not map gives the new pane's
+default: in a runtime its `cwd`, else the transport's directory; on
+the host the server's directory. A run records the directory that its
+pane starts in.
 
 **Reads on a runtime connection** are narrowed to the caller's
 runtime and its agent scope; a hidden pane is `refused`, not

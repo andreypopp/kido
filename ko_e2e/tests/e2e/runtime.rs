@@ -1737,3 +1737,260 @@ runtimes:
     s.server.stop();
     wait_gone(step, "the start step that ignores SIGTERM");
 }
+
+#[test]
+fn a_pane_starts_in_the_directory_of_another_pane_mapped_through_the_paths_of_the_runtimes() {
+    let maps = Dir::new("ko-rtd-");
+    let canon = |path: PathBuf| {
+        fs::canonicalize(path)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    };
+    for sub in [
+        "host/sub",
+        "host/sp ace",
+        "rt/sub",
+        "rt/sp ace",
+        "outside",
+        "other",
+    ] {
+        fs::create_dir_all(maps.join(sub)).unwrap();
+    }
+    let s = serve(
+        &format!(
+            r#"
+runtimes:
+  dev:
+    command: {{}}
+    cwd: /
+    paths:
+      - host: {host}
+        runtime: {rt}
+  other:
+    command: {{}}
+    cwd: {other}
+"#,
+            host = text_of(&maps.join("host")),
+            rt = text_of(&maps.join("rt")),
+            other = text_of(&maps.join("other")),
+        ),
+        &[],
+    );
+    let reports_from = |machine: &str, dir: &Path| {
+        let uri = format!("file://{machine}{}", dir.display()).replace(' ', "%20");
+        format!(
+            "stty raw -echo; printf '\\033]7;%s\\a' {}; exec cat",
+            quote(&uri)
+        )
+    };
+    let reports = |dir: &Path| reports_from("somewhere", dir);
+    let reported = |pane: String| {
+        s.wait_row(&pane, &format!("{pane} to report its directory"), |row| {
+            row["cwd"].as_str().unwrap().starts_with("file://")
+        });
+        pane
+    };
+    let at = |new: Value| {
+        let mut request = sh("pwd -P; echo DONE; exec cat");
+        request.as_object_mut().unwrap().remove("cwd");
+        request
+            .as_object_mut()
+            .unwrap()
+            .extend(new.as_object().unwrap().clone());
+        let pane = post(&s, None, "/panes", &request)["pane"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        s.screen_has(&pane, "DONE");
+        s.screen(&pane).lines().next().unwrap().trim().to_owned()
+    };
+    let from = |pane: &str| json!({"cwd": {"pane": pane}});
+    let into = |pane: &str, runtime: &str| json!({"cwd": {"pane": pane}, "runtime": runtime});
+
+    let spawned = {
+        let mut request = sh("exec cat");
+        request["cwd"] = json!(text_of(&maps.join("host/sub")));
+        s.new_pane(request)
+    };
+    let host = reported(s.pane(&reports_from("localhost", &maps.join("host/sp ace"))));
+    let rt_reports = |dir: &str| reported(rt_pane(&s, "dev", &reports(&maps.join(dir))));
+    let rt = rt_reports("rt/sp ace");
+    let rt_outside = rt_reports("outside");
+    let foreign = reported(s.pane(&reports_from("elsewhere.example", &maps.join("host/sub"))));
+    let rt_unknown = rt_pane(&s, "dev", "exec cat");
+    let plain = at(json!({}));
+
+    assert_eq!(
+        at(from(&spawned)),
+        canon(maps.join("host/sub")),
+        "the spawn directory of a host pane"
+    );
+    assert_eq!(
+        at(from(&host)),
+        canon(maps.join("host/sp ace")),
+        "a reported directory is decoded"
+    );
+    assert_eq!(
+        at(into(&spawned, "dev")),
+        canon(maps.join("rt/sub")),
+        "host to runtime maps"
+    );
+    assert_eq!(at(into(&host, "dev")), canon(maps.join("rt/sp ace")));
+    assert_eq!(
+        at(into(&rt, "dev")),
+        canon(maps.join("rt/sp ace")),
+        "runtime to its runtime is as it is"
+    );
+    assert_eq!(
+        at(from(&rt)),
+        canon(maps.join("host/sp ace")),
+        "runtime to host maps back"
+    );
+    assert_eq!(
+        at(from(&rt_outside)),
+        plain,
+        "no path maps back: the default"
+    );
+    assert_eq!(
+        at(from(&rt_unknown)),
+        plain,
+        "a runtime pane that reported nothing has no directory"
+    );
+    assert_eq!(
+        at(from(&foreign)),
+        plain,
+        "a host pane that reports another machine has no directory"
+    );
+    assert_eq!(at(into(&foreign, "dev")), "/");
+    assert_eq!(at(into(&rt_unknown, "dev")), "/", "the runtime's default");
+    assert_eq!(
+        at(into(&rt, "other")),
+        canon(maps.join("other")),
+        "another runtime: the default when nothing maps"
+    );
+    assert_eq!(at(into(&rt_outside, "dev")), canon(maps.join("outside")));
+
+    let put = s.new_pane(json!({"cwd": {"pane": rt}, "command": {"type": "shell", "command": "pwd -P; echo DONE; exec cat"}}));
+    s.screen_has(&put, "DONE");
+    assert_eq!(
+        s.screen(&put).lines().next().unwrap().trim(),
+        canon(maps.join("host/sp ace"))
+    );
+    let started = post(
+        &s,
+        None,
+        "/runs",
+        &json!({
+            "name": "r", "session": "test", "cwd": {"pane": rt}, "runtime": "dev",
+            "argv": ["/bin/sh", "-c", "pwd -P; echo DONE; exec cat"],
+        }),
+    );
+    let run_pane = started["pane"].as_str().unwrap();
+    s.screen_has(run_pane, "DONE");
+    assert_eq!(
+        s.screen(run_pane).lines().next().unwrap().trim(),
+        canon(maps.join("rt/sp ace"))
+    );
+    let recorded = |started: &Value| {
+        let meta = s
+            .dir
+            .join("runs")
+            .join(started["id"].as_str().unwrap())
+            .join("meta.json");
+        let meta: Value = serde_json::from_slice(&fs::read(meta).unwrap()).unwrap();
+        meta["cwd"].as_str().unwrap().to_owned()
+    };
+    assert_eq!(
+        recorded(&started),
+        text_of(&maps.join("rt/sp ace")),
+        "a runtime run records the path in the runtime"
+    );
+    let to_host = post(
+        &s,
+        None,
+        "/runs",
+        &json!({
+            "name": "h", "session": "test", "cwd": {"pane": rt},
+            "argv": ["/bin/sh", "-c", "exec cat"],
+        }),
+    );
+    assert_eq!(
+        recorded(&to_host),
+        text_of(&maps.join("host/sp ace")),
+        "a host run records the mapped host path"
+    );
+    let by_default = post(
+        &s,
+        None,
+        "/runs",
+        &json!({
+            "name": "d", "session": "test", "cwd": {"pane": rt_unknown},
+            "argv": ["/bin/sh", "-c", "exec cat"],
+        }),
+    );
+    assert_eq!(
+        recorded(&by_default),
+        "",
+        "the default records no directory"
+    );
+
+    let elsewhere = token_pane_in_new_session(&s, "elsewhere");
+    let caller = rt_token_pane(&s, "dev");
+    let token = s.token(&caller).unwrap();
+    let who = Some((caller.as_str(), token.as_str()));
+    let cat = json!({"type": "shell", "command": "pwd -P; echo DONE; exec cat"});
+    let reply = via(
+        &s,
+        "dev",
+        ("POST", "/panes"),
+        who,
+        &json!({"command": cat, "cwd": {"pane": rt}}),
+    );
+    assert_eq!(reply.0, 200, "{}", reply.1);
+    let pane = reply.1["pane"].as_str().unwrap();
+    s.screen_has(pane, "DONE");
+    assert_eq!(
+        s.screen(pane).lines().next().unwrap().trim(),
+        canon(maps.join("rt/sp ace"))
+    );
+    refuses(
+        via(
+            &s,
+            "dev",
+            ("POST", "/panes"),
+            who,
+            &json!({"command": cat, "cwd": {"pane": elsewhere}}),
+        ),
+        "is not visible to",
+    );
+    refuses(
+        via(
+            &s,
+            "dev",
+            ("POST", "/runs"),
+            who,
+            &json!({"name": "hidden", "argv": ["/bin/true"], "cwd": {"pane": elsewhere}}),
+        ),
+        "is not visible to",
+    );
+    let (status, missing) = via(
+        &s,
+        "dev",
+        ("POST", "/panes"),
+        who,
+        &json!({"command": cat, "cwd": {"pane": "pane_999"}}),
+    );
+    assert_eq!(
+        (status, missing["kind"].as_str()),
+        (404, Some("not_found")),
+        "{missing}"
+    );
+    assert!(
+        missing["message"]
+            .as_str()
+            .unwrap()
+            .contains("no pane pane_999 to start in"),
+        "{missing}"
+    );
+}

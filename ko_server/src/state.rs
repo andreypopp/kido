@@ -35,7 +35,8 @@ use crate::router;
 use crate::runs;
 use crate::runtime::Registry;
 use crate::runtime::leaving::Leaving;
-use crate::server::Verified;
+use crate::runtime::pane::Dir;
+use crate::server::{Origin, Verified};
 use crate::shm::Leaks;
 use crate::vars::{Refusal as VarRefusal, SERVER_MAX_TOTAL};
 use crate::view::View;
@@ -422,7 +423,12 @@ impl State {
         let admitted = created
             .iter()
             .filter_map(|(_, request, _)| request.parent)
-            .try_for_each(|parent| self.admit_parent(caller, parent));
+            .try_for_each(|parent| self.admit_parent(caller, parent))
+            .and_then(|()| {
+                created.iter().try_for_each(|(_, request, _)| {
+                    self.admit_cwd(caller, &Origin::Host, request.cwd.as_ref())
+                })
+            });
         let chosen = admitted.and_then(|()| self.choose_runtimes(created.iter().map(|c| &c.1)));
         let chosen = match chosen {
             Ok(chosen) => chosen,
@@ -431,6 +437,10 @@ impl State {
                 return Err(PutFailure::Rejected(error));
             }
         };
+        let dirs: Vec<Dir> = created
+            .iter()
+            .map(|(_, request, _)| self.start_dir(request, caller))
+            .collect();
         let added: usize = created.iter().map(|(_, _, vars)| vars.bytes()).sum();
         if self.vars_used().saturating_add(added) > SERVER_MAX_TOTAL {
             self.document.rollback(before);
@@ -442,10 +452,10 @@ impl State {
             self.document.layout().pane_sizes().into_iter().collect();
         let mut started = Vec::new();
         self.withheld.extend(created.iter().map(|(id, _, _)| *id));
-        for (id, request, vars) in created {
+        for ((id, request, vars), dir) in created.into_iter().zip(dirs) {
             let size = sizes.get(&id).copied().unwrap_or(Size::DEFAULT);
             let added = self
-                .birth(id, &request, (vars, run.clone()), (caller, &chosen))
+                .birth(id, &request, (vars, run.clone()), (&chosen, &dir))
                 .and_then(|birth| self.add_pane(poll, id, size, birth));
             match added {
                 Ok(()) => started.push(id),

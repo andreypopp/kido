@@ -162,10 +162,12 @@ a routed pi's variable: a split or a new window from a routed pi is a
 host pane, as the pi's own shell is. The terminal client's
 `Ctrl+Shift+N` and Kido.app's split and new-window commands follow
 this rule; Kido.app's command palette names a runtime or `Host`
-explicitly. Kido.app sends the source pane's cwd only from a host
-pane, which the server maps into a runtime ("The cwd"): a runtime
-pane's directory is not a host path. The terminal client sends its
-own host cwd.
+explicitly. Both clients name the source pane as the new pane's
+`cwd` (`{pane}`), and the server moves its directory into the new
+pane's place ("The cwd"), so a split of a runtime pane starts in the
+same runtime directory. Without a source pane, Kido.app sends the home
+directory and the terminal client its own host cwd (none when it is
+remote).
 
 ## The link
 
@@ -302,7 +304,13 @@ because the host's shell path means nothing there. The row's
 unchanged. A host path maps through the longest `paths` entry whose
 host prefix matches whole components; no match gives the runtime's
 `cwd`; without one, `ko enter` gets no `--cwd` and stays in the
-transport's directory.
+transport's directory. A cwd that names a source pane (docs/protocol.md,
+section 15, "The cwd of a new pane") takes that pane's OSC 7 pwd.
+A runtime pane's pwd maps back to the host through the same entries,
+by the longest runtime prefix, so a pane on the host made from a
+runtime pane starts in the host directory that the runtime mounts.
+The server keeps no host path for a runtime pane that never reported
+a pwd: its start directory is the wrapper's, on the host.
 
 **The token** never appears in an argv, because `ps` shows every
 user's arguments. For the `command` and `container` kinds, the server
@@ -742,7 +750,9 @@ refuses `resume_from` and `fork` into such a runtime.
 **Spawning.** `spawn_agent`'s `runtime` reads `GET /runtimes/NAME`
 and starts a routed child (a host pane whose command gains `--runtime
 NAME`) or an inside child (`POST /panes` with `runtime`; the server
-maps its host cwd). Without `runtime`, a routed spawner's child is
+maps its host cwd). An inside spawner sends its runtime cwd as a
+string, which passes unchanged because the caller is in the target
+runtime; it does not name its own pane, because pi reports no OSC 7. Without `runtime`, a routed spawner's child is
 routed in the same runtime, and an inside spawner's child is in its
 runtime by the server's inheritance; an inside spawner refuses another
 runtime. `KO_AGENT_TRUSTED_CWD` is the host cwd for a routed child

@@ -1396,11 +1396,10 @@ current window is the client's, else that window's `focus`: another
 client can move the document's focus. The menu's splits make the new
 pane from the pane they act on. The new pane takes the source row's
 `runtime` (`KoModel.newPane`), so a routed pi's pane gives a host
-pane. It takes the source's cwd only when the source is a host pane:
-the server reads a request's cwd as a host path and maps it into a
-runtime, and a runtime pane's directory is a path inside the
-runtime, so a pane made from a runtime pane starts in the runtime's
-default directory, or the home directory on the host. In the table,
+pane. Its `cwd` names the source pane, and the server moves that
+pane's directory into the new pane's place (docs/protocol.md,
+section 15, "The cwd of a new pane"); a new session with no focused
+pane starts in the home directory. In the table,
 arrows and j/k move pane-only selection, Return activates with exactly one
 select, and Escape releases side focus and returns to the pane, also
 without a connection. Left/Right do nothing; headers do not activate or

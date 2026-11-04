@@ -26,6 +26,7 @@ pub struct Config {
     pub media: Vec<Medium>,
     pub env: Vec<Vec<u8>>,
     pub cwd: PathBuf,
+    pub hostname: String,
     pub linger: Duration,
     pub stop_escalation: Duration,
     pub run_screen_bytes: usize,
@@ -99,6 +100,7 @@ pub fn scratch(dir: &Path, pane_exe: PathBuf, limits: Limits) -> Config {
         media: Vec::new(),
         env: Vec::new(),
         cwd: PathBuf::from("/"),
+        hostname: String::new(),
         linger: LINGER,
         stop_escalation: STOP_ESCALATION,
         run_screen_bytes: RUN_SCREEN_BYTES,
@@ -356,6 +358,7 @@ impl Config {
                 .map(|(name, value)| variable(name.as_encoded_bytes(), value.as_encoded_bytes()))
                 .collect(),
             cwd,
+            hostname: ko_sys::host::name().unwrap_or_default(),
             linger: seconds(set("KO_LINGER_SECONDS")).unwrap_or(LINGER),
             stop_escalation: positive("KO_STOP_ESCALATION_MS")
                 .map_or(STOP_ESCALATION, Duration::from_millis),

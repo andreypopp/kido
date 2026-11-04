@@ -406,6 +406,7 @@ name = "ko_bench"
 version = "0.0.0"
 dependencies = [
  "ko_client",
+ "ko_config",
  "ko_pane_wire",
  "ko_server",
  "ko_sys",
@@ -515,6 +516,7 @@ name = "ko_tui"
 version = "0.0.0"
 dependencies = [
  "ko_client",
+ "ko_config",
  "ko_pane_wire",
  "ko_server",
  "ko_sys",

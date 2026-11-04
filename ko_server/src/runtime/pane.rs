@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use ko_config::runtime::PathMap;
 use ko_config::values::RuntimeName;
@@ -28,16 +28,70 @@ pub(crate) fn token_path(socket: &Path, runtime: &Runtime, pane: PaneId) -> Opti
     }
 }
 
-fn map_cwd(paths: &[PathMap], default: Option<&Path>, host_cwd: &Path) -> Option<PathBuf> {
-    paths
-        .iter()
-        .filter_map(|map| {
-            let rest = host_cwd.strip_prefix(Path::new(map.host.as_str())).ok()?;
-            Some((Path::new(map.host.as_str()).components().count(), map, rest))
+fn translate<'a>(
+    pairs: impl Iterator<Item = (&'a Path, &'a Path)>,
+    path: &Path,
+) -> Option<PathBuf> {
+    if path.components().any(|part| part == Component::ParentDir) {
+        return None;
+    }
+    pairs
+        .filter_map(|(from, to)| {
+            let rest = path.strip_prefix(from).ok()?;
+            Some((from.components().count(), to, rest))
         })
         .max_by_key(|(depth, ..)| *depth)
-        .map(|(_, map, rest)| Path::new(map.runtime.as_str()).join(rest))
-        .or_else(|| default.map(Path::to_path_buf))
+        .map(|(_, to, rest)| to.join(rest))
+}
+
+fn map_cwd(paths: &[PathMap], default: Option<&Path>, host_cwd: &Path) -> Option<PathBuf> {
+    translate(
+        paths.iter().map(|map| {
+            (
+                Path::new(map.host.as_str()),
+                Path::new(map.runtime.as_str()),
+            )
+        }),
+        host_cwd,
+    )
+    .or_else(|| default.map(Path::to_path_buf))
+}
+
+pub(crate) fn host_cwd(paths: &[PathMap], runtime_cwd: &Path) -> Option<PathBuf> {
+    translate(
+        paths.iter().map(|map| {
+            (
+                Path::new(map.runtime.as_str()),
+                Path::new(map.host.as_str()),
+            )
+        }),
+        runtime_cwd,
+    )
+}
+
+#[derive(Debug)]
+pub(crate) enum Dir {
+    Default,
+    Host(PathBuf),
+    Runtime(PathBuf),
+}
+
+impl Dir {
+    pub(crate) fn host(&self) -> Option<&Path> {
+        match self {
+            Dir::Host(path) => Some(path),
+            Dir::Runtime(_) | Dir::Default => None,
+        }
+    }
+
+    pub(crate) fn in_runtime(&self, runtime: &Runtime) -> Option<PathBuf> {
+        let default = runtime.cwd.as_ref().map(|cwd| Path::new(cwd.as_str()));
+        match self {
+            Dir::Runtime(cwd) => Some(cwd.clone()),
+            Dir::Host(cwd) => map_cwd(&runtime.paths(), default, cwd),
+            Dir::Default => default.map(Path::to_path_buf),
+        }
+    }
 }
 
 pub(crate) struct Wrap<'a> {
@@ -46,10 +100,9 @@ pub(crate) struct Wrap<'a> {
     pub(crate) name: &'a RuntimeName,
     pub(crate) runtime: &'a Runtime,
     pub(crate) pane: PaneId,
-    pub(crate) cwd: Option<&'a str>,
+    pub(crate) cwd: &'a Dir,
     pub(crate) env: &'a [Variable],
     pub(crate) server_env: &'a [Vec<u8>],
-    pub(crate) from_runtime: bool,
 }
 
 fn bytes(path: &Path) -> Vec<u8> {
@@ -70,17 +123,8 @@ pub(crate) fn wrapper(wrap: &Wrap<'_>, inner: Option<&[Vec<u8>]>) -> Vec<Vec<u8>
         cwd,
         env,
         server_env,
-        from_runtime,
     } = wrap;
-    let cwd = match (cwd, from_runtime) {
-        (Some(cwd), true) => Some(PathBuf::from(cwd)),
-        (Some(cwd), false) => map_cwd(
-            &runtime.paths(),
-            runtime.cwd.as_ref().map(|cwd| Path::new(cwd.as_str())),
-            Path::new(cwd),
-        ),
-        (None, _) => runtime.cwd.as_ref().map(|cwd| PathBuf::from(cwd.as_str())),
-    };
+    let cwd = cwd.in_runtime(runtime);
     let socket = socket_path(root, name);
     let entry = super::entry(
         runtime,
@@ -151,5 +195,22 @@ mod tests {
         assert_eq!(at("/home/mex", Some("/root")), Some(PathBuf::from("/root")));
         assert_eq!(at("/home/mex", None), None);
         assert_eq!(at("/elsewhere", None), None);
+        assert_eq!(
+            at("/home/me/../you", Some("/root")),
+            Some(PathBuf::from("/root"))
+        );
+        assert_eq!(at("/home/me/src/..", None), None);
+    }
+
+    #[test]
+    fn a_runtime_cwd_maps_back_by_the_longest_matching_prefix_on_whole_components() {
+        let paths = [map("/home/me", "/mnt/home"), map("/home/me/src", "/code")];
+        let at = |cwd: &str| host_cwd(&paths, Path::new(cwd));
+        assert_eq!(at("/code/ko"), Some(PathBuf::from("/home/me/src/ko")));
+        assert_eq!(at("/code"), Some(PathBuf::from("/home/me/src")));
+        assert_eq!(at("/mnt/home/doc"), Some(PathBuf::from("/home/me/doc")));
+        assert_eq!(at("/codex"), None);
+        assert_eq!(at("/tmp"), None);
+        assert_eq!(at("/code/../etc"), None);
     }
 }

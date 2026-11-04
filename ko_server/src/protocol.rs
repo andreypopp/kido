@@ -711,10 +711,21 @@ impl Close {
     }
 }
 
+/// Where a new pane starts: an absolute path of the host, or the directory of another pane. The
+/// pane form needs a pane that the caller may read. The server maps the pane's directory into the
+/// new pane's runtime, or to the host, through the runtimes' `paths`. When the pane's directory is
+/// unknown or does not map, the new pane starts in the default directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Cwd {
+    Path(AbsPath),
+    Pane { pane: PaneId },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CreatePane {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<String>,
+    pub cwd: Option<Cwd>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<Command>,
     #[serde(default)]
@@ -1835,7 +1846,7 @@ impl From<SessionRef> for String {
 pub struct StartRun {
     pub name: RunName,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<String>,
+    pub cwd: Option<Cwd>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2251,6 +2262,7 @@ mod tests {
         }
         for json in [
             r#"{"name":"w","env":[],"argv":["/bin/sh"]}"#,
+            r#"{"name":"w","cwd":{"pane":"pane_4"},"env":[],"argv":["/bin/sh"]}"#,
             r#"{"name":"w","cwd":"/tmp","session":"session_2","parent":"pane_1","env":[{"name":"X","value":"y"}],"argv":["/bin/sh","-c","x"]}"#,
             r#"{"name":"w","session":"work","parent":"0123456789abcdef0123456789abcdef","env":[],"argv":["/bin/sh"]}"#,
         ] {
@@ -2480,6 +2492,13 @@ mod tests {
             decoded::<CreatePane>(r#"{"cwd":null,"command":null}"#),
             Ok(r#"{"env":[]}"#.to_owned())
         );
+        for refused in [
+            r#"{"cwd":{"pane":"x"}}"#,
+            r#"{"cwd":{}}"#,
+            r#"{"cwd":["pane_1"]}"#,
+        ] {
+            assert!(decoded::<CreatePane>(refused).is_err(), "{refused}");
+        }
         assert_eq!(
             decoded::<ViewRequest>(r#"{"type":"resync"}"#),
             Ok(r#"{"type":"resync","history":"none","images":"none"}"#.to_owned())

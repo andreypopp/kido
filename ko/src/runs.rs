@@ -5,12 +5,13 @@ use std::time::Duration;
 
 use clap::{Args, ValueEnum};
 use ko_client::runs::{self, Failure};
+use ko_config::values::AbsPath;
 use ko_server::api::WaitMs;
 use ko_server::config::look_path;
 use ko_server::ids::{MessageId, RunId};
 use ko_server::protocol::{
-    self, Error, ErrorKind, Info, ReportOutcome, Reported, SendPrompt, SessionRef, Show, StartRun,
-    StopResult, StopRun, Variable,
+    self, Cwd, Error, ErrorKind, Info, ReportOutcome, Reported, SendPrompt, SessionRef, Show,
+    StartRun, StopResult, StopRun, Variable,
 };
 use ko_server::runs::{Parent, RunName, RunOutcome};
 use ko_server::timestamp::Timestamp;
@@ -219,6 +220,10 @@ fn start(name: &str, parent: Option<Parent>, args: RunArgs) -> ExitCode {
         Ok(cwd) => cwd,
         Err(error) => return fail(name, error),
     };
+    let cwd = match AbsPath::try_from(cwd.to_string_lossy().into_owned()) {
+        Ok(cwd) => cwd,
+        Err(message) => return fail(name, message),
+    };
     let mut argv = args.command;
     if !argv[0].contains('/') {
         let path = std::env::var("PATH").unwrap_or_default();
@@ -240,7 +245,7 @@ fn start(name: &str, parent: Option<Parent>, args: RunArgs) -> ExitCode {
     };
     let request = StartRun {
         name: run_name,
-        cwd: Some(cwd.to_string_lossy().into_owned()),
+        cwd: Some(Cwd::Path(cwd)),
         session,
         parent: parent.clone(),
         env,

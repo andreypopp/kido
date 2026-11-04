@@ -73,7 +73,7 @@ fn defaults_and_pane_environment() {
         .http_error(400)
     };
     let error = refused(json!({"cwd": "relative"}));
-    assert!(error.contains("cwd must be absolute"), "{error}");
+    assert!(error.contains(r#""kind":"invalid""#), "{error}");
     let error = refused(json!([]));
     assert!(error.contains("a record must be a JSON object"), "{error}");
 }

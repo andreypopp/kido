@@ -112,9 +112,6 @@ enum NewPaneRuntime: Equatable {
 }
 
 extension KoModel {
-    // The pane that a command makes from `pane`. A host pane's directory is a host path, which the server maps into
-    // a runtime; a runtime pane's directory is a path inside the runtime, which means nothing as a host path, so
-    // a pane made from a runtime pane starts in the default of its own place.
     func newPane(from pane: PaneID?, _ choice: NewPaneRuntime = .inherit) -> KoSchema.CreatePane {
         let source = pane.flatMap(self.pane)
         let runtime: String? = switch choice {
@@ -122,7 +119,7 @@ extension KoModel {
         case .host: nil
         case .named(let name): name
         }
-        return KoSchema.CreatePane(cwd: source?.runtime == nil ? source?.cwd : nil, runtime: runtime)
+        return KoSchema.CreatePane(cwd: source.map { .pane(.init(pane: $0.id)) }, runtime: runtime)
     }
 }
 
@@ -168,7 +165,7 @@ extension PaneCommand {
 // The edits that make sessions and windows, in the directory of the pane that the user works in.
 extension KoModel {
     func newSession(_ name: String) -> KoSchema.Edit {
-        let cwd = current.flatMap { pane($0.window.focus)?.cwd } ?? NSHomeDirectory()
+        let cwd: KoSchema.Cwd = current.flatMap { pane($0.window.focus) }.map { .pane(.init(pane: $0.id)) } ?? .absPath(NSHomeDirectory())
         return .addSession(KoSchema.EditAddSession(name: name, new: KoSchema.CreatePane(cwd: cwd)))
     }
 

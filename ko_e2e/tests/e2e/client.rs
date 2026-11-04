@@ -983,7 +983,7 @@ fn client_a_signal_ends_it_while_the_pager_runs_and_removes_the_pager_file() {
 }
 
 #[test]
-fn client_a_new_pane_of_a_local_attach_has_the_cwd_of_the_client() {
+fn client_a_new_window_starts_in_the_directory_of_the_focused_pane() {
     let s = start(&[]);
     let first = s.pane("printf 'pane-one\\n'; exec /bin/sh");
     let o = Outer::new(&s.dir, Keys::Extended);
@@ -996,13 +996,7 @@ fn client_a_new_pane_of_a_local_attach_has_the_cwd_of_the_client() {
         .into_iter()
         .find(|row| row["id"] != first.as_str())
         .unwrap();
-    assert!(
-        created["cwd"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("ko-tui-"),
-        "{created}"
-    );
+    assert_eq!(created["cwd"], "/tmp", "{created}");
     assert_eq!(created["runtime"], serde_json::Value::Null, "{created}");
     o.detach();
 }

@@ -34,6 +34,8 @@ public enum KoSchema {
         }
     }
 
+    public typealias AbsPath = String
+
     public struct Agent: Codable, Equatable, Sendable {
         public var msg: String?
         public var since: Int
@@ -313,12 +315,12 @@ public enum KoSchema {
     public struct CreatePane: Codable, Equatable, Sendable {
         public var close: Close?
         public var command: Command?
-        public var cwd: String?
+        public var cwd: Cwd?
         public var env: [Variable]?
         public var parent: PaneId?
         public var runtime: RuntimeName?
         public var vars: [String: JSONValue]?
-        public init(close: Close? = nil, command: Command? = nil, cwd: String? = nil, env: [Variable]? = nil, parent: PaneId? = nil, runtime: RuntimeName? = nil, vars: [String: JSONValue]? = nil) {
+        public init(close: Close? = nil, command: Command? = nil, cwd: Cwd? = nil, env: [Variable]? = nil, parent: PaneId? = nil, runtime: RuntimeName? = nil, vars: [String: JSONValue]? = nil) {
             self.close = close
             self.command = command
             self.cwd = cwd
@@ -377,6 +379,29 @@ public enum KoSchema {
         public var window: WindowId
         public init(window: WindowId) {
             self.window = window
+        }
+    }
+
+    public enum Cwd: Codable, Equatable, Sendable {
+        case absPath(AbsPath)
+        case pane(CwdPane)
+        public init(from decoder: Decoder) throws {
+            if let value = try? AbsPath(from: decoder) { self = .absPath(value); return }
+            if let value = try? CwdPane(from: decoder) { self = .pane(value); return }
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "no Cwd alternative matches"))
+        }
+        public func encode(to encoder: Encoder) throws {
+            switch self {
+            case .absPath(let value): try value.encode(to: encoder)
+            case .pane(let value): try value.encode(to: encoder)
+            }
+        }
+    }
+
+    public struct CwdPane: Codable, Equatable, Sendable {
+        public var pane: PaneId
+        public init(pane: PaneId) {
+            self.pane = pane
         }
     }
 

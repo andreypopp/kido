@@ -2,12 +2,13 @@ use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
+use ko_config::values::AbsPath;
 use ko_pane_wire::frame::History;
 use ko_server::api::Route;
 use ko_server::http::{Response, Upgrade, call, read_response, read_upgrade};
 use ko_server::ids::PaneId;
 use ko_server::protocol::{
-    self, Command, CreatePane, Images, Input, Marker, Row, Text, ViewEvent, json,
+    self, Command, CreatePane, Cwd, Images, Input, Marker, Row, Text, ViewEvent, json,
 };
 use ko_server::ws::{Parsed, accepted, masked, parse_frame, parse_record, upgrade_request};
 use ko_sys::clock::Mono;
@@ -28,7 +29,7 @@ pub(crate) fn create_pane(socket: &Path, argv: &[String]) -> io::Result<PaneId> 
         socket,
         (None, None),
         &CreatePane {
-            cwd: Some("/".to_owned()),
+            cwd: AbsPath::try_from("/".to_owned()).ok().map(Cwd::Path),
             command: Some(Command::Argv {
                 argv: argv.to_vec(),
             }),

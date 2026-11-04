@@ -806,6 +806,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::protocol::Cwd;
+    use ko_config::values::AbsPath;
 
     fn new_pane() -> Value {
         json!({"new": {}})
@@ -1070,7 +1072,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["pane_2"]
         );
-        assert_eq!(created[0].1.cwd.as_deref(), Some("/tmp"));
+        assert_eq!(
+            created[0].1.cwd,
+            Some(Cwd::Path(AbsPath::try_from("/tmp".to_owned()).unwrap()))
+        );
     }
 
     #[test]

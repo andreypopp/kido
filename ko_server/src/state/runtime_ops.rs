@@ -3,11 +3,11 @@ use std::collections::BTreeMap;
 use super::*;
 use crate::api::{Route, WaitMs, routes};
 use crate::pane::Birth;
-use crate::panes::{AddError, is_descendant, program, scope};
+use crate::panes::{AddError, Start, is_descendant, program, scope};
 use crate::protocol::{
     ClientRuntime, Empty, Error, ErrorKind, Info, LeadReport, LinkState, RuntimeInfo, RuntimeWait,
 };
-use crate::runtime::pane::{self, Wrap as Entering, socket_path};
+use crate::runtime::pane::{self, Dir, Wrap as Entering, socket_path};
 use crate::runtime::{CLEANUP_LIMIT, Due, PASS_HOLD, Wait, Who};
 use crate::server::Origin;
 use crate::vars::Vars;
@@ -46,10 +46,10 @@ impl State {
         id: PaneId,
         request: &CreatePane,
         (vars, run): (Vars, Option<RunId>),
-        (caller, chosen): (Option<PaneId>, &BTreeMap<RuntimeName, Runtime>),
+        (chosen, dir): (&BTreeMap<RuntimeName, Runtime>, &Dir),
     ) -> Result<Birth, AddError> {
         let program = match &request.runtime {
-            None => program(&self.config, request, None)?,
+            None => program(&self.config, request, Start::Host(dir.host()))?,
             Some(name) => {
                 let runtime = chosen
                     .get(name)
@@ -60,15 +60,14 @@ impl State {
                     name,
                     runtime,
                     pane: id,
-                    cwd: request.cwd.as_deref(),
+                    cwd: dir,
                     env: &request.env,
                     server_env: &self.config.env,
-                    from_runtime: caller.is_some_and(|caller| self.panes.is_in(caller, name)),
                 };
                 program(
                     &self.config,
                     request,
-                    Some(&|inner| pane::wrapper(&entering, inner)),
+                    Start::Runtime(&|inner| pane::wrapper(&entering, inner)),
                 )?
             }
         };
@@ -80,6 +79,19 @@ impl State {
             runtime: request.runtime.clone(),
             program,
         })
+    }
+
+    pub(super) fn shown_to(
+        &self,
+        runtime: &RuntimeName,
+        caller: PaneId,
+        id: PaneId,
+    ) -> Result<(), Error> {
+        if self.panes.is_in(id, runtime) || self.visible_to(runtime, caller).contains(&id) {
+            Ok(())
+        } else {
+            Err(State::hidden(caller, id, runtime))
+        }
     }
 
     fn occupied(&self, name: &RuntimeName) -> bool {
@@ -401,12 +413,7 @@ impl State {
                 Err(State::hidden(caller, id, runtime))
             }
         };
-        let shown = |id: PaneId| {
-            allow(
-                self.panes.is_in(id, runtime) || self.visible_to(runtime, caller).contains(&id),
-                id,
-            )
-        };
+        let shown = |id: PaneId| self.shown_to(runtime, caller, id);
         let reached = |id: PaneId| {
             allow(
                 self.panes.is_in(id, runtime) || is_descendant(&self.edges(), caller, id),

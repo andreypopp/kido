@@ -477,6 +477,7 @@ pub(crate) mod tests {
             media: Vec::new(),
             env: Vec::new(),
             cwd: PathBuf::from("/"),
+            hostname: String::new(),
             linger: crate::config::LINGER,
             stop_escalation: crate::config::STOP_ESCALATION,
             run_screen_bytes: crate::config::RUN_SCREEN_BYTES,
