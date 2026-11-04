@@ -653,7 +653,12 @@ Total: 13.5 agent-days. Units 5 and 6 can run in parallel with 3 and
 4 after unit 2, in their own worktrees, because they touch `copy.rs`,
 `mirror.rs` and ko_vt, not `geometry.rs` or the edits.
 
-## 12. Open questions
+## 12. Open questions (decided)
+
+The user accepted every recommendation below on 2026-11-04. One key
+question is still open: whether `C-h/j/k/l` move between the panes of
+a window without the prefix, or after `C-a`.
+
 
 Each with a recommendation. The user decides.
 
