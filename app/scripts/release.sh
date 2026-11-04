@@ -65,7 +65,8 @@ cask "kido-app" do
   caveats <<~EOS
     Kido.app is Apple Development (Personal Team) signed, not notarized.
     Upgrades require relaunching the app
-    and confirming a restart of its separate app server. If macOS refuses to open it, run:
+    and can require a restart of the shared local ko server.
+    A restart stops all its sessions, commands and agents. If macOS refuses to open it, run:
       xattr -dr com.apple.quarantine "#{appdir}/Kido.app"
   EOS
 end

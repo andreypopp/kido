@@ -365,6 +365,14 @@ ko_code ko_client_connect(const char *socket,
 ko_code ko_client_close(ko_client *client);
 
 /*
+ * Writes to `out` the absolute path of the server directory that ko uses without
+ * --server. The caller frees `out`. KO_ERR_IO: the path cannot be made absolute or
+ * is not UTF-8; `out` holds the error text. KO_ERR_ARGUMENT: `out` is NULL.
+ * It does not block.
+ */
+ko_code ko_client_default_dir(ko_buffer *out);
+
+/*
  * Starts the ko server of the state directory `dir` with the executable `executable`
  * (`ko server --server dir`), unless one runs there, and returns the path of its unix
  * socket in `socket`. It waits up to five seconds. On a code other than KO_OK `socket`

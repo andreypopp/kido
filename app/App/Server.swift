@@ -12,7 +12,7 @@ struct BundledTools: Sendable {
         ko = prefix + "/bin/ko"
         build = try? String(contentsOfFile: prefix + "/BUILD-ID", encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
         // ko_client_launch starts the server with the environment of this process.
-        for key in environment.keys where key == "KO_PANE" || key.hasPrefix("KO_AGENT_") {
+        for key in environment.keys where ["KO_PANE", "KO_SOCKET", "KO_PANE_TOKEN", "KO_RUN_ID"].contains(key) || key.hasPrefix("KO_AGENT_") {
             unsetenv(key)
         }
         if !["LC_ALL", "LC_CTYPE", "LANG"].contains(where: { environment[$0]?.uppercased().contains("UTF-8") == true || environment[$0]?.uppercased().contains("UTF8") == true }) {
@@ -20,12 +20,10 @@ struct BundledTools: Sendable {
             let name = "\(locale.language.languageCode?.identifier ?? "en")_\(locale.region?.identifier ?? "US").UTF-8"
             setenv("LANG", FileManager.default.fileExists(atPath: "/usr/share/locale/" + name) ? name : "en_US.UTF-8", 1)
         }
-        let home = environment["HOME"] ?? NSHomeDirectory()
-        let state = environment["XDG_STATE_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? home + "/.local/state"
         #if KIDO_VISUAL || KIDO_STRESS
-        serverDir = environment["KIDO_APP_SERVER"] ?? URL(fileURLWithPath: state).appendingPathComponent("ko-app").standardizedFileURL.path
+        serverDir = environment["KIDO_APP_SERVER"] ?? KoClient.defaultDir()
         #else
-        serverDir = URL(fileURLWithPath: state).appendingPathComponent("ko-app").standardizedFileURL.path
+        serverDir = KoClient.defaultDir()
         #endif
     }
 

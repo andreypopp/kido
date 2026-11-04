@@ -5,11 +5,11 @@
 set -e
 D=${KIDO_DEMO_DIR:?}
 export XDG_STATE_HOME=$D/state
-unset KO_PANE KO_SOCKET
+unset KO_STATE_DIR KO_PANE KO_SOCKET KO_PANE_TOKEN KO_RUN_ID KIDO_APP_SERVER
 APP=${2:-$1}
 KO=$(cd "$(dirname "$APP")/../Resources/ko/bin" && pwd)/ko
-# The app's server directory: a Release build always uses $XDG_STATE_HOME/ko-app.
-SERVER=$XDG_STATE_HOME/ko-app
+# The app and ko use the private XDG state home.
+SERVER=$XDG_STATE_HOME/ko
 k() { local command=$1; shift; "$KO" "$command" --server "$SERVER" "$@"; }
 
 case $1 in

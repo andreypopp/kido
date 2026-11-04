@@ -774,6 +774,30 @@ pub unsafe extern "C" fn ko_client_connect(
 
 /// # Safety
 ///
+/// `out` is writable for one `ko_buffer`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ko_client_default_dir(out: *mut Buffer) -> Code {
+    if out.is_null() {
+        return Code::Argument;
+    }
+    match std::path::absolute(ko_server::config::dir(None)) {
+        Ok(path) => {
+            let Some(path) = path.to_str() else {
+                hand_over(out, b"the server directory is not UTF-8".to_vec());
+                return Code::Io;
+            };
+            hand_over(out, path.as_bytes().to_vec());
+            Code::Ok
+        }
+        Err(error) => {
+            hand_over(out, error.to_string().into_bytes());
+            Code::Io
+        }
+    }
+}
+
+/// # Safety
+///
 /// `dir` and `executable` are NUL-terminated strings. `socket` is writable for
 /// one `ko_buffer`.
 #[unsafe(no_mangle)]

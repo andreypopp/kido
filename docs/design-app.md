@@ -59,15 +59,20 @@ model; the layout editor still gets every layout revision. The owner's link is
 `connected`. There is no second long-lived connection: an image fetch
 (`ko_client_image`) is one request on its own short connection.
 
-The server directory is `$XDG_STATE_HOME/ko-app`, else
-`~/.local/state/ko-app`: the app's server does not share a directory with
-the user's `ko` server. `KIDO_APP_SERVER` overrides it, in VISUAL and STRESS
-builds only. A server starts only on an explicit connection or the banner's Start
+The app and `ko` share one server: the server directory is ko's default
+directory, which `ko_client_default_dir` reads from
+`ko_server::config::dir` with the app's environment, so the rule has one
+source. A `ko` in a terminal and Kido.app attach to the same sessions. An app that
+Finder or the Dock opens gets launchd's environment, not the shell's: a
+`KO_STATE_DIR` or `XDG_STATE_HOME` that only the shell sets selects another
+server for `ko`. `KIDO_APP_SERVER` overrides the directory, in VISUAL and STRESS
+builds only. The app never stops the server on quit; only the local
+mismatch sheet's Restart stops it. A server starts only on an explicit connection or the banner's Start
 button: `KoServer.launch` runs `ko_client_launch(dir, bundled ko)` on a
 detached task. It starts a server unless one runs there and returns the
 socket; then the owner dials. `ko_client_launch` starts the server with
-the app's own environment, so `app/App/Server.swift` removes `KO_PANE`
-and `KO_AGENT_*` from it and sets a UTF-8 `LANG` when none
+the app's own environment, so `app/App/Server.swift` removes the pane
+identity variables from it and sets a UTF-8 `LANG` when none
 is set. The core reaps the server process that it
 started. Every dial is one stderr line, `dialing SOCKET (cause) [owner]`.
 

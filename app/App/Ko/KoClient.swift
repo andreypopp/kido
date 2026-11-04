@@ -248,6 +248,15 @@ private final class ClientHandle: @unchecked Sendable {
         }
     }
 
+    nonisolated static func defaultDir() -> String {
+        var buffer = ko_buffer()
+        do {
+            return String(decoding: try take(ko_client_default_dir(&buffer), &buffer), as: UTF8.self)
+        } catch {
+            fatalError("Kido cannot resolve ko's server directory: \(error)")
+        }
+    }
+
     // These two block until the server started or ended: run them off the main queue.
     // The state directory's server is started with `executable` unless one runs there. Returns its socket path.
     nonisolated static func launch(dir: String, executable: String) throws -> String {

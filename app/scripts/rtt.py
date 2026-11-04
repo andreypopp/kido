@@ -134,7 +134,7 @@ class Private:
         return (up, down) if files else None
 
     def close(self, ko):
-        for server in (self.server_dir, f"{self.root}/app-state/ko-app"):
+        for server in (self.server_dir, f"{self.root}/app-state/ko"):
             if server:
                 subprocess.run([ko, "kill-server", "--server", server], env=scrubbed(HOME=f"{self.root}/state"),
                                stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
@@ -158,7 +158,7 @@ class App:
         d = private.root
         env = scrubbed(HOME=f"{d}/app-home", XDG_STATE_HOME=f"{d}/app-state", XDG_CONFIG_HOME=f"{d}/app-config",
                        KIDO_APP_BACKGROUND="1", KIDO_APP_TIMING="1", KIDO_APP_CONNECT=host, KIDO_APP_SSH_CONFIG=private.config,
-                       KIDO_APP_RTT_REQUESTS=f"{d}/requests.json", KIDO_APP_SERVER=f"{d}/app-state/ko-app")
+                       KIDO_APP_RTT_REQUESTS=f"{d}/requests.json", KIDO_APP_SERVER=f"{d}/app-state/ko")
         self.requests = f"{d}/requests.json"
         self.proc = subprocess.Popen([args.app], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
