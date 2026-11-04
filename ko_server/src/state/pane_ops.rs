@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use super::runtime_ops::resolve_runtime;
 use super::*;
 use crate::api::{WaitMs, routes};
 use crate::panes::{self, Edge, Standing, acts_as, scope};
@@ -7,6 +8,7 @@ use crate::protocol::{
     DraftLayout, DraftSession, DraftWindow, Empty, Error, ErrorKind, NewWindow, Placement,
     SessionRef,
 };
+use crate::server::Origin;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Via {
@@ -116,6 +118,7 @@ impl State {
         &mut self,
         poll: &mut Poll,
         caller: Option<PaneId>,
+        origin: &Origin,
         request: NewWindow,
     ) -> Result<Placement, Error> {
         let NewWindow {
@@ -123,18 +126,19 @@ impl State {
             name,
             pane,
         } = request;
-        self.place_pane(poll, caller, session, name, pane, None)
+        self.place_pane(poll, (caller, origin), session, name, pane, None)
     }
 
     pub(super) fn place_pane(
         &mut self,
         poll: &mut Poll,
-        caller: Option<PaneId>,
+        (caller, origin): (Option<PaneId>, &Origin),
         session: Option<SessionRef>,
         name: Option<Name>,
-        pane: CreatePane,
+        mut pane: CreatePane,
         run: Option<RunId>,
     ) -> Result<Placement, Error> {
+        pane.runtime = resolve_runtime(origin, pane.runtime)?;
         if let Some(parent) = pane.parent {
             self.admit_parent(caller, parent)?;
         }
@@ -205,7 +209,7 @@ impl State {
                     layout: draft,
                 },
                 run,
-                None,
+                caller,
             )
             .map_err(Error::from)?;
         snapshot
@@ -305,7 +309,7 @@ impl State {
         }
     }
 
-    fn kill_pane(&mut self, poll: &mut Poll, pane: PaneId) {
+    pub(super) fn kill_pane(&mut self, poll: &mut Poll, pane: PaneId) {
         let lives = self
             .panes
             .find(pane)

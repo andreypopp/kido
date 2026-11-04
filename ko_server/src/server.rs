@@ -7,7 +7,7 @@ use ko_sys::event::{Events, Interest, Mode, Poll, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
 
 use crate::config::Config;
-use crate::ids::Instance;
+use crate::ids::{Instance, RuntimeName};
 use crate::state::{State, Wake};
 
 const ACCEPT_BURST: usize = 16;
@@ -28,16 +28,30 @@ impl Timing {
     };
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Origin {
+    Host,
+    Runtime(RuntimeName),
+}
+
 #[derive(Debug)]
-pub(crate) struct Verified(UnixStream);
+pub(crate) struct Verified(UnixStream, Origin);
 
 impl Verified {
+    #[cfg(any(test, feature = "fuzz"))]
     pub(crate) fn admit(stream: UnixStream) -> Option<Verified> {
-        let same = ko_sys::sock::peer_uid(stream.as_fd()).ok()? == ko_sys::sock::uid();
-        let ready = same
+        Verified::admit_from(stream, Origin::Host)
+    }
+
+    pub(crate) fn admit_from(stream: UnixStream, origin: Origin) -> Option<Verified> {
+        let allowed = match origin {
+            Origin::Host => ko_sys::sock::peer_uid(stream.as_fd()).ok()? == ko_sys::sock::uid(),
+            Origin::Runtime(_) => true,
+        };
+        let ready = allowed
             && ko_sys::sock::set_send_buffer(stream.as_fd(), SEND_BUFFER).is_ok()
             && stream.set_nonblocking(true).is_ok();
-        ready.then_some(Verified(stream))
+        ready.then_some(Verified(stream, origin))
     }
 
     #[cfg(test)]
@@ -46,34 +60,43 @@ impl Verified {
         self
     }
 
-    pub(crate) fn into_stream(self) -> UnixStream {
-        self.0
+    pub(crate) fn into_parts(self) -> (UnixStream, Origin) {
+        (self.0, self.1)
     }
 }
 
 #[derive(Debug)]
-struct Listener {
+pub(crate) struct Listener {
     socket: UnixListener,
     token: Token,
     resume: Timer,
     retry: Duration,
+    origin: Origin,
 }
 
 impl Listener {
-    fn new(socket: UnixListener, poll: &mut Poll, retry: Duration) -> io::Result<Listener> {
+    pub(crate) fn new(
+        socket: UnixListener,
+        poll: &mut Poll,
+        retry: Duration,
+        origin: Origin,
+    ) -> io::Result<Listener> {
         socket.set_nonblocking(true)?;
         Ok(Listener {
             token: poll.watch(socket.as_fd(), Interest::Read),
             socket,
             resume: poll.timer(),
             retry,
+            origin,
         })
     }
 
-    fn accept(&self, poll: &mut Poll, accepted: &mut Vec<Verified>) -> io::Result<()> {
+    pub(crate) fn accept(&self, poll: &mut Poll, accepted: &mut Vec<Verified>) -> io::Result<()> {
         for _ in 0..ACCEPT_BURST {
             match ko_sys::retry::retry(|| self.socket.accept()) {
-                Ok((stream, _)) => accepted.extend(Verified::admit(stream)),
+                Ok((stream, _)) => {
+                    accepted.extend(Verified::admit_from(stream, self.origin.clone()));
+                }
                 Err(error) if error.raw_os_error() == Some(libc::ECONNABORTED) => {}
                 Err(error)
                     if matches!(
@@ -90,11 +113,19 @@ impl Listener {
         Ok(())
     }
 
-    fn resume(&self, poll: &mut Poll) {
+    pub(crate) fn token(&self) -> Token {
+        self.token
+    }
+
+    pub(crate) fn resume_timer(&self) -> Timer {
+        self.resume
+    }
+
+    pub(crate) fn resume(&self, poll: &mut Poll) {
         poll.interest(self.token, Interest::Read);
     }
 
-    fn close(self, poll: &mut Poll) {
+    pub(crate) fn close(self, poll: &mut Poll) {
         poll.unwatch(self.token);
         poll.free(self.resume);
     }
@@ -124,7 +155,7 @@ impl Server {
         let signals = Signals::install(&[Signal::Child, Signal::Term, Signal::Int, Signal::Hup])?;
         let mut poll = Poll::new();
         let signal_token = poll.watch(signals.fd(), Interest::Read);
-        let listener = Listener::new(socket, &mut poll, timing.accept_retry)?;
+        let listener = Listener::new(socket, &mut poll, timing.accept_retry, Origin::Host)?;
         let state = State::new(config, Instance::mint()?, &mut poll, timing.output_tick);
         Ok(Server {
             timing,
@@ -191,6 +222,7 @@ impl Server {
                         listener.resume(poll);
                     } else if Some(timer) == *stopping {
                         state.panes.kill()?;
+                        state.kill_helpers();
                         state.reap(poll)?;
                         match std::fs::remove_file(&state.config.socket) {
                             Err(error) if error.kind() != io::ErrorKind::NotFound => {
@@ -278,6 +310,7 @@ pub(crate) mod tests {
             UnixListener::bind(&path).unwrap(),
             &mut poll,
             Duration::from_millis(1),
+            Origin::Host,
         )
         .unwrap();
         let clients: Vec<_> = (0..20)
@@ -308,6 +341,7 @@ pub(crate) mod tests {
             ],
             &[(stdout.as_fd(), 1)],
             ko_sys::spawn::Env::Inherit,
+            None,
         )
         .unwrap();
         assert_eq!(child.wait().unwrap(), Waited::Ended(Exit::Exited(0)));
@@ -323,6 +357,7 @@ pub(crate) mod tests {
             UnixListener::bind(&path).unwrap(),
             &mut poll,
             Duration::from_millis(1),
+            Origin::Host,
         )
         .unwrap();
         let null = std::fs::File::open("/dev/null").unwrap();
@@ -396,6 +431,7 @@ pub(crate) mod tests {
                 ],
                 &[(writer.as_fd(), 1)],
                 ko_sys::spawn::Env::Inherit,
+                None,
             )
             .unwrap();
             drop(writer);
@@ -446,6 +482,12 @@ pub(crate) mod tests {
             clipboard_wait: crate::config::CLIPBOARD_WAIT,
             message_ack: crate::config::MESSAGE_ACK,
             view_queue: crate::config::ViewQueue::default(),
+            runtimes: crate::config::RuntimesConfig {
+                file: dir.join("runtimes.json"),
+                idle: crate::config::RuntimeIdle::Never,
+                exec_wait: crate::config::RUNTIME_EXEC_WAIT,
+                command_kind: false,
+            },
         };
         let timing = Timing {
             shutdown_grace: Duration::from_millis(100),
@@ -461,6 +503,7 @@ pub(crate) mod tests {
             vars: Default::default(),
             parent: None,
             close: Default::default(),
+            runtime: None,
         };
         let id = server
             .state

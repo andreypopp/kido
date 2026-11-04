@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::os::fd::AsFd;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,7 +17,9 @@ use crate::conn::{Conn, Phase};
 use crate::deflate::Deflate;
 use crate::delivery::{Delivery, Handle};
 use crate::http::lossy;
-use crate::ids::{ClientId, Instance, Name, PaneId, RunId, SessionId, VarName, WindowId};
+use crate::ids::{
+    ClientId, Instance, Name, PaneId, RunId, RuntimeName, SessionId, VarName, WindowId,
+};
 use crate::layout::{Document, PutError, Removal, Resized};
 use crate::link::{Role, Wire};
 use crate::model::{self, Model};
@@ -30,17 +33,22 @@ use crate::protocol::{
 };
 use crate::router;
 use crate::runs;
+use crate::runtime::Registry;
+use crate::runtime::file::Runtime;
+use crate::runtime::leaving::Leaving;
 use crate::server::Verified;
 use crate::shm::Leaks;
-use crate::vars::{Refusal as VarRefusal, SERVER_MAX_TOTAL, Vars};
+use crate::vars::{Refusal as VarRefusal, SERVER_MAX_TOTAL};
 use crate::view::View;
 use crate::ws::{Next, Ping};
 
+mod exec_ops;
 mod media;
 mod messages;
 mod pane_ops;
 mod prompt;
 mod run_ops;
+mod runtime_ops;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Owner {
@@ -98,6 +106,9 @@ pub(crate) struct State {
     tick: Duration,
     model: Model,
     runs: run_ops::RunState,
+    runtimes: Registry,
+    execs: exec_ops::Execs,
+    leaving: Leaving,
     stops: pane_ops::Stops,
     prompts: prompt::PromptState,
     messages: messages::Waits,
@@ -119,14 +130,16 @@ pub(crate) enum Wake {
 pub(crate) fn client_of(conn: &Conn) -> Option<&Client> {
     match conn.role()? {
         Role::Client(client) => Some(client),
-        Role::View(_) | Role::Tail(_) | Role::Search(_) | Role::Messages(_) => None,
+        Role::View(_) | Role::Tail(_) | Role::Search(_) | Role::Messages(_) | Role::Exec(_) => None,
     }
 }
 
 fn view_of(conn: &Conn) -> Option<&View> {
     match conn.role()? {
         Role::View(view) => Some(view),
-        Role::Client(_) | Role::Tail(_) | Role::Search(_) | Role::Messages(_) => None,
+        Role::Client(_) | Role::Tail(_) | Role::Search(_) | Role::Messages(_) | Role::Exec(_) => {
+            None
+        }
     }
 }
 
@@ -134,7 +147,7 @@ fn streamed_pane(conn: &Conn) -> Option<PaneId> {
     match conn.role()? {
         Role::View(view) => Some(view.pane),
         Role::Tail(tail) => Some(tail.pane),
-        Role::Client(_) | Role::Search(_) | Role::Messages(_) => None,
+        Role::Client(_) | Role::Search(_) | Role::Messages(_) | Role::Exec(_) => None,
     }
 }
 
@@ -156,6 +169,7 @@ fn pane_listing(pane: &Pane, root: &Path) -> Listing {
             parent: pane.parent(),
             close: pane.close(),
             inbox: pane.inbox().stream().is_some(),
+            runtime: pane.runtime().cloned(),
         },
         vars: pane.vars().clone(),
     }
@@ -204,6 +218,9 @@ impl State {
         tick: Duration,
     ) -> State {
         let runs = run_ops::RunState::new(&config, poll);
+        let runtimes = Registry::new(&config);
+        let execs = exec_ops::Execs::new();
+        let leaving = Leaving::new(poll);
         let stops = pane_ops::Stops::new(poll);
         let document = Document::new(&config.shell);
         let leaks = Leaks::new(&config.dir);
@@ -223,6 +240,9 @@ impl State {
             tick,
             model: Model::new(poll),
             runs,
+            runtimes,
+            execs,
+            leaving,
             stops,
             prompts: prompt::PromptState::default(),
             messages: messages::Waits::default(),
@@ -316,23 +336,15 @@ impl State {
         poll: &mut Poll,
         id: PaneId,
         size: Size,
-        request: &CreatePane,
-        vars: Vars,
-        run: Option<RunId>,
+        birth: Birth,
     ) -> Result<(), AddError> {
-        let has_vars = !vars.is_empty();
+        let has_vars = !birth.vars.is_empty();
         let mut events = self.spare.pop().unwrap_or_default();
         let added = self.panes.add(
             &self.config,
             id,
             size,
-            request,
-            Birth {
-                vars,
-                run,
-                parent: request.parent,
-                close: request.close,
-            },
+            birth,
             &mut Io {
                 poll,
                 events: &mut events,
@@ -353,6 +365,12 @@ impl State {
 
     pub(crate) fn layout_panes(&self) -> LayoutPanes {
         layout_panes(&self.document, &self.panes, self.runs.root(), |_| true)
+    }
+
+    pub(crate) fn visible_layout(&self, visible: &BTreeSet<PaneId>) -> LayoutPanes {
+        layout_panes(&self.document, &self.panes, self.runs.root(), |pane| {
+            visible.contains(&pane)
+        })
     }
 
     pub(crate) fn pane_listing(&self, id: PaneId) -> Option<Listing> {
@@ -408,10 +426,14 @@ impl State {
             .iter()
             .filter_map(|(_, request, _)| request.parent)
             .try_for_each(|parent| self.admit_parent(caller, parent));
-        if let Err(error) = admitted {
-            self.document.rollback(before);
-            return Err(PutFailure::Rejected(error));
-        }
+        let chosen = admitted.and_then(|()| self.choose_runtimes(created.iter().map(|c| &c.1)));
+        let chosen = match chosen {
+            Ok(chosen) => chosen,
+            Err(error) => {
+                self.document.rollback(before);
+                return Err(PutFailure::Rejected(error));
+            }
+        };
         let added: usize = created.iter().map(|(_, _, vars)| vars.bytes()).sum();
         if self.vars_used().saturating_add(added) > SERVER_MAX_TOTAL {
             self.document.rollback(before);
@@ -425,7 +447,10 @@ impl State {
         self.withheld.extend(created.iter().map(|(id, _, _)| *id));
         for (id, request, vars) in created {
             let size = sizes.get(&id).copied().unwrap_or(Size::DEFAULT);
-            match self.add_pane(poll, id, size, &request, vars, run.clone()) {
+            let added = self
+                .birth(id, &request, (vars, run.clone()), (caller, &chosen))
+                .and_then(|birth| self.add_pane(poll, id, size, birth));
+            match added {
                 Ok(()) => started.push(id),
                 Err(error) => {
                     for id in started {
@@ -445,6 +470,11 @@ impl State {
             self.changed(poll, before.layout());
         }
         self.release(poll);
+        for (name, settings) in chosen {
+            self.runtimes.begin(poll, &name, settings);
+            self.touch_runtime(poll, &name);
+        }
+        self.runtimes_changed(poll);
         Ok(self.document.snapshot())
     }
 
@@ -703,6 +733,7 @@ impl State {
     }
 
     fn stop_pane(&mut self, poll: &mut Poll, id: PaneId) {
+        let runtime = self.panes.find(id).and_then(|pane| pane.runtime().cloned());
         self.pane_ended(poll, id);
         self.clipboard.drop_where(poll, |read| read.pane == id);
         if let Some(timer) = self
@@ -723,9 +754,19 @@ impl State {
         );
         self.dispatch(poll, id, events);
         self.leaks.release_pane(id);
+        if let Some(runtime) = &runtime {
+            self.runtimes.remove_token(runtime, id);
+            self.touch_runtime(poll, runtime);
+        }
+        self.runtimes.pane_ended(poll, id);
+        self.runtimes_changed(poll);
     }
 
     pub(crate) fn reap(&mut self, poll: &mut Poll) -> std::io::Result<()> {
+        self.runtimes.reap(poll);
+        self.runtimes_changed(poll);
+        self.exec_reap(poll);
+        self.leaving.reap();
         for index in 0..self.panes.len() {
             let Some(id) = self.panes.iter().nth(index).map(Pane::id) else {
                 break;
@@ -750,6 +791,9 @@ impl State {
             sink: &mut discard,
         });
         self.leaks.release_all();
+        self.exec_shutdown(poll);
+        self.runtimes.shutdown(poll);
+        self.runtimes_changed(poll);
         poll.stop(self.ticker);
         self.model.stop(poll);
         self.runs.stop(poll);
@@ -885,6 +929,8 @@ impl State {
                 if let pane_proc::Cause::Failed(_) = death.cause {
                     self.delete_pane(poll, id);
                 }
+                self.runtimes.pane_ended(poll, id);
+                self.runtimes_changed(poll);
                 self.runs_changed(poll);
             }
             Event::Prompt(prompt) => {
@@ -1063,6 +1109,14 @@ impl State {
                 Some(Owner::Snapshot(_)) | None => {}
             },
         }
+    }
+
+    fn leaving_due(&mut self, poll: &mut Poll, timer: Timer) -> bool {
+        let ours = self.leaving.is_timer(timer);
+        if ours {
+            self.leaving.escalate(poll);
+        }
+        ours
     }
 
     fn watched(&self) -> bool {
@@ -1268,6 +1322,8 @@ impl State {
                 if !own(self, poll, Wake::Ready(ready))?
                     && !self.pane_ready(poll, ready)
                     && !self.prompt_ready(poll, ready)
+                    && !self.runtime_ready(poll, ready)
+                    && !self.exec_ready(poll, ready)
                 {
                     self.conn_ready(poll, ready);
                 }
@@ -1284,6 +1340,9 @@ impl State {
                     self.escalate(poll);
                 } else if self.prompt_due(poll, due.timer)
                     || self.wait_due(poll, due.timer)
+                    || self.runtime_due(poll, due.timer)
+                    || self.leaving_due(poll, due.timer)
+                    || self.exec_due(poll, due.timer)
                     || self.stop_due(poll, due.timer)
                     || self.message_due(poll, due.timer)
                     || self.image_due(poll, due.timer)
@@ -1324,6 +1383,7 @@ impl State {
                 }
                 self.pump_link(poll, index);
             }
+            self.pump_exec(poll, index);
         }
         if ready.read {
             match self.conns[index].phase {
@@ -1367,6 +1427,9 @@ impl State {
             else {
                 return;
             };
+            if !link.role.reads() {
+                return;
+            }
             let text = match link.ws.next(out, poll, token, &mut reads) {
                 Next::Text(text) => text,
                 Next::Wait | Next::Close => return,
@@ -1376,6 +1439,7 @@ impl State {
                 Role::View(_) => self.view_text(poll, index, text.as_bytes()),
                 Role::Tail(_) | Role::Search(_) => link.ws.reject(out, "invalid"),
                 Role::Messages(pane) => self.stream_text(poll, index, pane, text.as_bytes()),
+                Role::Exec(_) => self.exec_text(poll, index, text.as_bytes()),
             }
         }
     }
@@ -1550,9 +1614,21 @@ impl State {
             phase: Phase::Ws(link),
             ..
         }) = self.conns.iter_mut().find(|conn| conn.timer == timer)
-            && let Ping::After(left) = link.ws.ping(out, Instant::now())
         {
-            let _ = poll.start(timer, left, None);
+            let now = Instant::now();
+            let left = if link.role.paused() {
+                if ko_sys::sock::peer_closed(out.parts().0.as_fd()) {
+                    out.shut();
+                    return;
+                }
+                link.ws.keep_alive(now);
+                Ping::After(crate::ws::FIRST_PING)
+            } else {
+                link.ws.ping(out, now)
+            };
+            if let Ping::After(left) = left {
+                let _ = poll.start(timer, left, None);
+            }
         }
     }
 
@@ -1569,6 +1645,7 @@ impl State {
             poll.unwatch(conn.token);
             poll.free(conn.timer);
             self.runs.forget(conn.token);
+            self.runtimes.forget_wait(conn.token);
             self.forget_stops(poll, conn.token);
             self.prompts.forget(conn.token);
             self.messages.forget(conn.token);
@@ -1588,6 +1665,7 @@ impl State {
                     }
                     Role::Search(search) => self.cancel_search(poll, search),
                     Role::Messages(pane) => self.stream_closed(poll, pane, conn.token),
+                    Role::Exec(session) => self.exec_gone(poll, conn.token, session),
                     Role::View(_) | Role::Tail(_) => {}
                 }
             }
@@ -1628,6 +1706,7 @@ mod tests {
             vars: Default::default(),
             parent: None,
             close: Default::default(),
+            runtime: None,
         };
         let pane = rig.state.new_session(&mut rig.poll, &request).unwrap();
         assert_eq!(rig.state.pane_listing(pane).unwrap().row.pid, None);
@@ -1655,6 +1734,7 @@ mod tests {
             vars: Default::default(),
             parent,
             close: Default::default(),
+            runtime: None,
         };
         let parent = rig
             .state
@@ -1667,7 +1747,7 @@ mod tests {
                 pane: request(command, Some(parent)),
             };
             rig.state
-                .new_pane(&mut rig.poll, None, window)
+                .new_pane(&mut rig.poll, None, &crate::server::Origin::Host, window)
                 .unwrap()
                 .pane
         };

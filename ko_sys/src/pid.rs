@@ -340,8 +340,14 @@ mod tests {
     #[test]
     fn a_stopped_child_has_not_exited_and_its_exit_follows_a_kill() {
         use std::time::{Duration, Instant};
-        let pid =
-            spawn::program(Path::new("/bin/sleep"), &["30"], &[], spawn::Env::Inherit).unwrap();
+        let pid = spawn::program(
+            Path::new("/bin/sleep"),
+            &["30"],
+            &[],
+            spawn::Env::Inherit,
+            None,
+        )
+        .unwrap();
         let id = libc::id_t::try_from(pid.get()).unwrap();
         pid.signal(Signal::Stop).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -387,8 +393,14 @@ mod tests {
         ] {
             assert_eq!(Pid::new(raw), None, "{raw}");
         }
-        let pid =
-            spawn::program(Path::new("/bin/sleep"), &["30"], &[], spawn::Env::Inherit).unwrap();
+        let pid = spawn::program(
+            Path::new("/bin/sleep"),
+            &["30"],
+            &[],
+            spawn::Env::Inherit,
+            None,
+        )
+        .unwrap();
         pid.signal(Signal::Kill).unwrap();
         assert!(killed_by_sigkill(pid));
         pid.signal(Signal::Kill).unwrap();
@@ -401,6 +413,7 @@ mod tests {
             &["-c", "exit 7"],
             &[],
             spawn::Env::Inherit,
+            None,
         )
         .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -453,6 +466,7 @@ mod tests {
             &["-e", program],
             &[(writer.as_fd(), 1)],
             spawn::Env::Inherit,
+            None,
         )
         .unwrap();
         drop(writer);

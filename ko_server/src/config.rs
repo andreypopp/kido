@@ -32,7 +32,25 @@ pub struct Config {
     pub clipboard_wait: Duration,
     pub message_ack: Duration,
     pub view_queue: ViewQueue,
+    pub runtimes: RuntimesConfig,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeIdle {
+    After(Duration),
+    Never,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimesConfig {
+    pub file: PathBuf,
+    pub idle: RuntimeIdle,
+    pub exec_wait: Duration,
+    pub command_kind: bool,
+}
+
+pub const RUNTIME_IDLE: Duration = Duration::from_secs(600);
+pub const RUNTIME_EXEC_WAIT: Duration = Duration::from_secs(30);
 
 pub(crate) const QUEUE_BYTES: usize = 64 << 20;
 const SPILL_BYTES: u64 = 1 << 30;
@@ -87,6 +105,12 @@ pub fn scratch(dir: &Path, pane_exe: PathBuf, limits: Limits) -> Config {
         clipboard_wait: CLIPBOARD_WAIT,
         message_ack: MESSAGE_ACK,
         view_queue: ViewQueue::default(),
+        runtimes: RuntimesConfig {
+            file: dir.join("runtimes.json"),
+            idle: RuntimeIdle::After(RUNTIME_IDLE),
+            exec_wait: RUNTIME_EXEC_WAIT,
+            command_kind: false,
+        },
     }
 }
 
@@ -127,6 +151,27 @@ pub fn dir(chosen: Option<PathBuf>) -> PathBuf {
     home.join(".local/state/ko")
 }
 
+pub fn runtimes_file(chosen: Option<PathBuf>) -> PathBuf {
+    if let Some(file) = chosen {
+        return file;
+    }
+    if let Some(config) = set("XDG_CONFIG_HOME") {
+        return PathBuf::from(config).join("ko/runtimes.json");
+    }
+    let home = set("HOME")
+        .map(PathBuf::from)
+        .or_else(env::home_dir)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    home.join(".config/ko/runtimes.json")
+}
+
+fn runtime_idle(value: Option<OsString>) -> RuntimeIdle {
+    match value {
+        Some(value) if value == "none" => RuntimeIdle::Never,
+        value => RuntimeIdle::After(seconds(value).unwrap_or(RUNTIME_IDLE)),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dir {
     Create,
@@ -165,6 +210,47 @@ pub fn socket(mode: Dir, dir: &Path) -> Result<PathBuf, String> {
     }
 }
 
+pub fn terminal(terminfo: Option<&Path>) -> Vec<(&'static str, Vec<u8>)> {
+    let mut found = vec![
+        ("TERM", b"xterm-ghostty".to_vec()),
+        ("TERM_PROGRAM", b"ko".to_vec()),
+        ("TERM_PROGRAM_VERSION", BUILD.as_bytes().to_vec()),
+    ];
+    if let Some(terminfo) = terminfo {
+        let mut dirs = terminfo.as_os_str().as_encoded_bytes().to_vec();
+        dirs.push(b':');
+        found.push(("TERMINFO_DIRS", dirs));
+    }
+    found
+}
+
+pub fn path_with(dir: &Path, inherited: &[u8]) -> Vec<u8> {
+    let mut path = dir.as_os_str().as_encoded_bytes().to_vec();
+    for entry in inherited
+        .split(|&byte| byte == b':')
+        .filter(|entry| !entry.is_empty())
+    {
+        if entry != dir.as_os_str().as_encoded_bytes() {
+            path.push(b':');
+            path.extend_from_slice(entry);
+        }
+    }
+    path
+}
+
+pub fn look_path(path: &str, name: &str) -> Option<PathBuf> {
+    path.split(':')
+        .map(|dir| Path::new(if dir.is_empty() { "." } else { dir }).join(name))
+        .find(|candidate| is_executable(candidate))
+}
+
+pub fn terminfo_of(exe: &Path) -> Option<PathBuf> {
+    candidates(exe)
+        .iter()
+        .filter_map(|exe| Some(exe.parent()?.join("../share/ko/terminfo")))
+        .find(|path| path.exists())
+}
+
 pub fn candidates(exe: &Path) -> Vec<PathBuf> {
     let resolved = fs::canonicalize(exe)
         .ok()
@@ -186,9 +272,8 @@ fn shipped(exe: &Path) -> Result<(PathBuf, PathBuf), String> {
     let pane_exe = beside("ko-pane")
         .find(|path| is_executable(path))
         .ok_or("ko-pane was not found beside ko")?;
-    let terminfo = beside("../share/ko/terminfo")
-        .find(|path| path.exists())
-        .unwrap_or_else(|| pane_exe.with_file_name("../share/ko/terminfo"));
+    let terminfo =
+        terminfo_of(exe).unwrap_or_else(|| pane_exe.with_file_name("../share/ko/terminfo"));
     Ok((pane_exe, terminfo))
 }
 
@@ -199,6 +284,7 @@ impl Config {
         shell: Option<PathBuf>,
         bin_dir: Option<PathBuf>,
         scrollback: Scrollback,
+        runtimes: Option<PathBuf>,
     ) -> Result<Config, String> {
         let shell = shell
             .or_else(|| set("SHELL").map(PathBuf::from))
@@ -211,6 +297,8 @@ impl Config {
         let bin_dir = bin_dir
             .map(|dir| std::path::absolute(dir).map_err(|error| error.to_string()))
             .transpose()?;
+        let runtimes =
+            std::path::absolute(runtimes_file(runtimes)).map_err(|error| error.to_string())?;
         let dir = dir(chosen);
         let socket = socket(Dir::Create, &dir)?;
         let cwd = env::current_dir().map_err(|error: io::Error| error.to_string())?;
@@ -247,6 +335,13 @@ impl Config {
                     .and_then(|bytes| usize::try_from(bytes).ok())
                     .unwrap_or(QUEUE_BYTES),
                 spill_bytes: positive("KO_VIEW_SPILL_BYTES").unwrap_or(SPILL_BYTES),
+            },
+            runtimes: RuntimesConfig {
+                file: runtimes,
+                idle: runtime_idle(env::var_os("KO_RUNTIME_IDLE_SECONDS")),
+                exec_wait: positive("KO_RUNTIME_EXEC_WAIT_MS")
+                    .map_or(RUNTIME_EXEC_WAIT, Duration::from_millis),
+                command_kind: set("KO_RUNTIME_COMMAND_KIND").is_some_and(|value| value == "1"),
             },
         })
     }
@@ -302,6 +397,20 @@ mod tests {
         assert_eq!(read("0.2"), Some(Duration::from_millis(200)));
         for text in ["0", "-1", "nan", "inf", "1e300", "", "x"] {
             assert_eq!(read(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn the_runtime_idle_takes_seconds_or_none_else_ten_minutes() {
+        let read = |text: Option<&str>| runtime_idle(text.map(OsString::from));
+        assert_eq!(read(None), RuntimeIdle::After(RUNTIME_IDLE));
+        assert_eq!(read(Some("none")), RuntimeIdle::Never);
+        assert_eq!(
+            read(Some("0.5")),
+            RuntimeIdle::After(Duration::from_millis(500))
+        );
+        for text in ["0", "-1", "x", ""] {
+            assert_eq!(read(Some(text)), RuntimeIdle::After(RUNTIME_IDLE), "{text}");
         }
     }
 

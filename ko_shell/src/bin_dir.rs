@@ -23,12 +23,6 @@ pub fn of_exe(exe: &Path) -> Option<PathBuf> {
         .filter(|dir| !dir.as_os_str().as_encoded_bytes().contains(&b':'))
 }
 
-pub fn look_path(path: &str, name: &str) -> Option<PathBuf> {
-    path.split(':')
-        .map(|dir| Path::new(if dir.is_empty() { "." } else { dir }).join(name))
-        .find(|candidate| is_executable(candidate))
-}
-
 pub fn look_path_past(path: &str, dir: &Path, name: &str) -> Option<PathBuf> {
     let shim = dir.join(name);
     let entries: Vec<&Path> = path

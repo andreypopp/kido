@@ -301,13 +301,15 @@ public enum KoSchema {
         public var cwd: String?
         public var env: [Variable]?
         public var parent: PaneId?
+        public var runtime: RuntimeName?
         public var vars: [String: JSONValue]?
-        public init(close: Close? = nil, command: Command? = nil, cwd: String? = nil, env: [Variable]? = nil, parent: PaneId? = nil, vars: [String: JSONValue]? = nil) {
+        public init(close: Close? = nil, command: Command? = nil, cwd: String? = nil, env: [Variable]? = nil, parent: PaneId? = nil, runtime: RuntimeName? = nil, vars: [String: JSONValue]? = nil) {
             self.close = close
             self.command = command
             self.cwd = cwd
             self.env = env
             self.parent = parent
+            self.runtime = runtime
             self.vars = vars
         }
     }
@@ -1082,10 +1084,11 @@ public enum KoSchema {
         public var progress: Progress?
         public var recordsSeen: Bool
         public var run: RunRow?
+        public var runtime: RuntimeName?
         public var status: PaneStatus?
         public var title: String
         public var vars: [String: JSONValue]
-        public init(close: Close? = nil, command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, inbox: Bool? = nil, label: String, mark: Mark, parent: PaneId? = nil, pid: Int? = nil, progress: Progress? = nil, recordsSeen: Bool, run: RunRow? = nil, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
+        public init(close: Close? = nil, command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, inbox: Bool? = nil, label: String, mark: Mark, parent: PaneId? = nil, pid: Int? = nil, progress: Progress? = nil, recordsSeen: Bool, run: RunRow? = nil, runtime: RuntimeName? = nil, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
             self.close = close
             self.command = command
             self.cwd = cwd
@@ -1100,6 +1103,7 @@ public enum KoSchema {
             self.progress = progress
             self.recordsSeen = recordsSeen
             self.run = run
+            self.runtime = runtime
             self.status = status
             self.title = title
             self.vars = vars
@@ -1119,6 +1123,7 @@ public enum KoSchema {
             case progress
             case recordsSeen = "records_seen"
             case run
+            case runtime
             case status
             case title
             case vars
@@ -1484,8 +1489,9 @@ public enum KoSchema {
         public var outcome: RunOutcome?
         public var pane: PaneId?
         public var parent: Parent?
+        public var runtime: RuntimeName?
         public var startedAt: Timestamp
-        public init(argv: [String], cwd: String, id: RunId, name: RunName, outcome: RunOutcome? = nil, pane: PaneId? = nil, parent: Parent? = nil, startedAt: Timestamp) {
+        public init(argv: [String], cwd: String, id: RunId, name: RunName, outcome: RunOutcome? = nil, pane: PaneId? = nil, parent: Parent? = nil, runtime: RuntimeName? = nil, startedAt: Timestamp) {
             self.argv = argv
             self.cwd = cwd
             self.id = id
@@ -1493,9 +1499,12 @@ public enum KoSchema {
             self.outcome = outcome
             self.pane = pane
             self.parent = parent
+            self.runtime = runtime
             self.startedAt = startedAt
         }
     }
+
+    public typealias RuntimeName = String
 
     public struct Selection: Codable, Equatable, Sendable {
         public var pane: PaneId?

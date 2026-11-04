@@ -41,6 +41,15 @@ pub(crate) fn refused(run: Run, status: u16, kind: &str, why: &str) {
     assert!(body["message"].as_str().unwrap().contains(why), "{body}");
 }
 
+pub(crate) fn refuses((status, reply): (u16, Value), why: &str) {
+    assert_eq!(
+        (status, reply["kind"].as_str()),
+        (409, Some("refused")),
+        "{reply}"
+    );
+    assert!(reply["message"].as_str().unwrap().contains(why), "{reply}");
+}
+
 pub(crate) fn headers(s: &Server, extra: &[(&str, &str)]) -> Headers {
     let mut headers = s.headers();
     headers.extend(
@@ -63,12 +72,22 @@ pub(crate) fn raw(
     headers: &Headers,
     body: &Value,
 ) -> (u16, Value) {
+    raw_on(s, &s.dir.join("socket"), (method, path), headers, body)
+}
+
+pub(crate) fn raw_on(
+    s: &Server,
+    socket: &std::path::Path,
+    (method, path): (&str, &str),
+    headers: &Headers,
+    body: &Value,
+) -> (u16, Value) {
     let body = if body.is_null() {
         String::new()
     } else {
         body.to_string()
     };
-    let (status, data) = s.exchange(method, path, headers, body.as_bytes());
+    let (status, data) = s.exchange_on(socket, method, path, headers, body.as_bytes());
     let text = String::from_utf8_lossy(&data).into_owned();
     (
         status,
@@ -498,14 +517,6 @@ fn identity(s: &Server) {
             headers,
             &json!(1),
         )
-    };
-    let refuses = |(status, reply): (u16, Value), why: &str| {
-        assert_eq!(
-            (status, reply["kind"].as_str()),
-            (409, Some("refused")),
-            "{reply}"
-        );
-        assert!(reply["message"].as_str().unwrap().contains(why), "{reply}");
     };
 
     refuses(

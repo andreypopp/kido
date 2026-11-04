@@ -447,14 +447,13 @@ pub(crate) fn pending(t: &Track) -> Option<u64> {
 }
 
 pub(crate) fn label(t: &Track, telemetry: &Telemetry, records: &[ProgramRecord]) -> String {
+    let foreground = telemetry.foreground_name();
     match representative(&t.episode, records) {
         Some(ProgramRecord {
             title: Some(title), ..
         }) => title.clone(),
-        Some(record) => app(records, record)
-            .unwrap_or(telemetry.foreground_name())
-            .to_owned(),
-        None => telemetry.foreground_name().to_owned(),
+        Some(record) => app(records, record).unwrap_or(foreground).to_owned(),
+        None => foreground.to_owned(),
     }
 }
 

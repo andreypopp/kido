@@ -1,6 +1,11 @@
 {
   "components": {
     "schemas": {
+      "AbsPath": {
+        "description": "An absolute path.",
+        "pattern": "^/",
+        "type": "string"
+      },
       "Agent": {
         "properties": {
           "msg": {
@@ -833,6 +838,9 @@
           "parent": {
             "$ref": "#/components/schemas/PaneId"
           },
+          "runtime": {
+            "$ref": "#/components/schemas/RuntimeName"
+          },
           "vars": {
             "additionalProperties": true,
             "type": "object"
@@ -882,6 +890,16 @@
           "previous"
         ],
         "type": "string"
+      },
+      "DownRuntime": {
+        "properties": {
+          "force": {
+            "default": false,
+            "description": "Remove the live panes of the runtime first, as a stop does. Without force, live panes\nrefuse the request.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
       },
       "DraftFloat": {
         "properties": {
@@ -1201,6 +1219,214 @@
         ],
         "type": "object"
       },
+      "ExecClient": {
+        "description": "A message of the client of an exec session. The first one must be exec. The data of stdin is\nat most 64 KiB before its encoding.",
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ExecRequest"
+              }
+            ],
+            "properties": {
+              "type": {
+                "const": "exec",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/Base64"
+              },
+              "type": {
+                "const": "stdin",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Closes the input of the command.",
+            "properties": {
+              "type": {
+                "const": "eof",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "signal": {
+                "$ref": "#/components/schemas/KillSignal"
+              },
+              "type": {
+                "const": "signal",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "signal"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ExecRequest": {
+        "description": "Runs argv inside the runtime without a shell. The cwd is a path of the runtime. The env\napplies after the env of the runtime. Without stdin the command reads an empty input.",
+        "properties": {
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "$ref": "#/components/schemas/AbsPath"
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "type": "object"
+          },
+          "stdin": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "argv",
+          "stdin"
+        ],
+        "type": "object"
+      },
+      "ExecServer": {
+        "description": "A message of the server in an exec session. After exit the server closes with 1000, and\nafter error with 1011. Error is the one way a session ends without exit.",
+        "oneOf": [
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/Base64"
+              },
+              "type": {
+                "const": "stdout",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/Base64"
+              },
+              "type": {
+                "const": "stderr",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "data"
+            ],
+            "type": "object"
+          },
+          {
+            "anyOf": [
+              {
+                "properties": {
+                  "status": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "status"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "signal": {
+                    "$ref": "#/components/schemas/ExitSignal"
+                  }
+                },
+                "required": [
+                  "signal"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "How the command ended: with an exit status, or by a signal.",
+            "properties": {
+              "type": {
+                "const": "exit",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "type": {
+                "const": "error",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "message"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ExitSignal": {
+        "description": "The signals by which a command can end. Other is any signal that this list does not name.",
+        "enum": [
+          "HUP",
+          "INT",
+          "QUIT",
+          "ILL",
+          "TRAP",
+          "ABRT",
+          "BUS",
+          "FPE",
+          "KILL",
+          "USR1",
+          "SEGV",
+          "USR2",
+          "PIPE",
+          "ALRM",
+          "TERM",
+          "OTHER"
+        ],
+        "type": "string"
+      },
       "Float": {
         "properties": {
           "border": {
@@ -1402,6 +1628,9 @@
           "parent": {
             "$ref": "#/components/schemas/Parent"
           },
+          "runtime": {
+            "$ref": "#/components/schemas/RuntimeName"
+          },
           "session": {
             "type": "string"
           },
@@ -1550,6 +1779,15 @@
         ],
         "type": "string"
       },
+      "KillSignal": {
+        "description": "The signals that a client can send to the command of an exec session.",
+        "enum": [
+          "term",
+          "kill",
+          "int"
+        ],
+        "type": "string"
+      },
       "Layout": {
         "properties": {
           "sessions": {
@@ -1584,6 +1822,23 @@
           "revision",
           "layout",
           "panes"
+        ],
+        "type": "object"
+      },
+      "LeadReport": {
+        "description": "How the interactive step of a start ended, as the elected pane reports it.",
+        "properties": {
+          "exit": {
+            "type": "integer"
+          },
+          "stderr": {
+            "default": "",
+            "description": "The tail of the error output of the step. Its last line is the message of a failed start.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "exit"
         ],
         "type": "object"
       },
@@ -1649,6 +1904,63 @@
         ],
         "type": "object"
       },
+      "LinkState": {
+        "description": "The state of a runtime's link. The first pane of a runtime starts it, and the idle rule or a\nrequest takes it down.",
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "down",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "starting",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "up",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "type": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "message"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "Listing": {
         "properties": {
           "close": {
@@ -1694,6 +2006,9 @@
           },
           "run": {
             "$ref": "#/components/schemas/RunRow"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/RuntimeName"
           },
           "status": {
             "$ref": "#/components/schemas/PaneStatus"
@@ -2112,6 +2427,9 @@
           "parent": {
             "$ref": "#/components/schemas/PaneId"
           },
+          "runtime": {
+            "$ref": "#/components/schemas/RuntimeName"
+          },
           "session": {
             "$ref": "#/components/schemas/SessionRef"
           },
@@ -2382,6 +2700,22 @@
         "required": [
           "pasted",
           "unsafe"
+        ],
+        "type": "object"
+      },
+      "PathMap": {
+        "description": "A directory of the host and the directory of the runtime that holds the same files.",
+        "properties": {
+          "host": {
+            "$ref": "#/components/schemas/AbsPath"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/AbsPath"
+          }
+        },
+        "required": [
+          "host",
+          "runtime"
         ],
         "type": "object"
       },
@@ -2814,6 +3148,9 @@
           "parent": {
             "$ref": "#/components/schemas/Parent"
           },
+          "runtime": {
+            "$ref": "#/components/schemas/RuntimeName"
+          },
           "startedAt": {
             "$ref": "#/components/schemas/Timestamp"
           }
@@ -2824,6 +3161,73 @@
           "argv",
           "cwd",
           "startedAt"
+        ],
+        "type": "object"
+      },
+      "RuntimeInfo": {
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/RuntimeKind"
+          },
+          "name": {
+            "$ref": "#/components/schemas/RuntimeName"
+          },
+          "panes": {
+            "description": "The panes of the document that the runtime runs, dead ones included.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "paths": {
+            "description": "The effective host-to-runtime prefix list that maps a host cwd.",
+            "items": {
+              "$ref": "#/components/schemas/PathMap"
+            },
+            "type": "array"
+          },
+          "socket": {
+            "description": "The path of the runtime's listener on the host, bound while the link is up.",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/LinkState"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "state",
+          "panes",
+          "socket",
+          "paths"
+        ],
+        "type": "object"
+      },
+      "RuntimeKind": {
+        "enum": [
+          "command"
+        ],
+        "type": "string"
+      },
+      "RuntimeName": {
+        "description": "One to 32 bytes of a to z, 0 to 9 and -. host is not a runtime name.",
+        "pattern": "^[a-z0-9-]{1,32}$",
+        "type": "string"
+      },
+      "RuntimeWait": {
+        "description": "The reply of a wait on a runtime: its state when the wait ends. Only the one waiter that was\nelected to run the interactive step gets lead, with the argv of that step.",
+        "properties": {
+          "lead": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "state": {
+            "$ref": "#/components/schemas/LinkState"
+          }
+        },
+        "required": [
+          "state"
         ],
         "type": "object"
       },
@@ -3227,6 +3631,9 @@
           },
           "parent": {
             "$ref": "#/components/schemas/Parent"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/RuntimeName"
           },
           "session": {
             "$ref": "#/components/schemas/SessionRef"
@@ -5298,6 +5705,354 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Waited"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/runtimes": {
+      "get": {
+        "description": "The runtimes of the configuration file and of the links that are up, with their state.",
+        "operationId": "ListRuntimes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RuntimeInfo"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/runtimes/{name}": {
+      "delete": {
+        "description": "Takes the runtime down, as down without force does, and removes its directory.",
+        "operationId": "DeleteRuntime",
+        "parameters": [
+          {
+            "example": "dev",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RuntimeName"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      },
+      "get": {
+        "description": "One runtime.",
+        "operationId": "GetRuntime",
+        "parameters": [
+          {
+            "example": "dev",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RuntimeName"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeInfo"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/runtimes/{name}/down": {
+      "post": {
+        "description": "Takes the link of a runtime down. With live panes it is refused, unless force removes the panes first, as a stop does.",
+        "operationId": "DownRuntime",
+        "parameters": [
+          {
+            "example": "dev",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RuntimeName"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DownRuntime"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/runtimes/{name}/exec": {
+      "get": {
+        "description": "Runs one command inside a runtime, without a terminal: separate stdout and stderr, an exit status or signal, and stdin from the client. Each message is JSON text, and the first client message must be exec. The server reads the socket only while the command takes its stdin, and it sends output only while the connection's queue has room, so nothing is dropped. After exit the server closes with 1000, and after error with 1011. A runtime that is down starts as for a first pane. If its start needs a pane to log in, the session ends with an error. At most 32 sessions of one runtime run at once, and the others wait in order for KO_RUNTIME_EXEC_WAIT_MS. A closed socket stops the command. The route is for the host: a runtime connection is refused.",
+        "operationId": "Exec",
+        "parameters": [
+          {
+            "example": "dev",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RuntimeName"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        },
+        "x-ko-websocket": {
+          "recv": {
+            "$ref": "#/components/schemas/ExecServer"
+          },
+          "send": {
+            "$ref": "#/components/schemas/ExecClient"
+          }
+        }
+      }
+    },
+    "/runtimes/{name}/lead": {
+      "post": {
+        "description": "The pane that was elected to run the interactive step of a start reports how it ended.",
+        "operationId": "ReportLead",
+        "parameters": [
+          {
+            "example": "dev",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RuntimeName"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeadReport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/runtimes/{name}/wait": {
+      "get": {
+        "description": "Waits up to the timeout for the link of the runtime to be up or failed. Only a pane of the runtime may wait. The first waiter while the start has an interactive step gets that step's argv in lead, and an Up reply for a pane comes after the server wrote its token file.",
+        "operationId": "WaitRuntime",
+        "parameters": [
+          {
+            "example": "dev",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RuntimeName"
+            }
+          },
+          {
+            "example": "250",
+            "in": "query",
+            "name": "timeout_ms",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/WaitMs",
+              "default": "30000"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeWait"
                 }
               }
             },

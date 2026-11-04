@@ -327,6 +327,11 @@ impl Ws {
         self.close_with(out, CloseCode::Error, reason, send);
     }
 
+    pub(crate) fn keep_alive(&mut self, now: Instant) {
+        self.last = now;
+        self.ping = None;
+    }
+
     pub(crate) fn finish(&mut self, out: &mut Output) {
         let send = out.is_open();
         self.close_with(out, CloseCode::Normal, "done", send);

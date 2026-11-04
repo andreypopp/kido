@@ -124,6 +124,7 @@ mod tests {
                 parent: None,
                 close: Default::default(),
                 inbox: false,
+                runtime: None,
             },
             vars: Default::default(),
         }

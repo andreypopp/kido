@@ -972,6 +972,7 @@ mod tests {
                 &[],
                 &[],
                 ko_sys::spawn::Env::Inherit,
+                None,
             )
             .unwrap();
             child.wait().unwrap();

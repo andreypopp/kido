@@ -147,7 +147,7 @@ pub(crate) fn lingering() -> Server {
     start_with(Path::new("/bin/sh"), &[("KO_LINGER_SECONDS", "0.2")], &[])
 }
 
-fn ids(rows: &Value) -> Vec<&str> {
+pub(crate) fn ids(rows: &Value) -> Vec<&str> {
     rows.as_array()
         .unwrap()
         .iter()

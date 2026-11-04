@@ -340,6 +340,7 @@ impl Remote {
             &args,
             &[(null.as_fd(), 0), (out.as_fd(), 1), (err.as_fd(), 2)],
             Env::Inherit,
+            None,
         )
         .map_err(|error| Error::Ssh(format!("cannot run {}: {error}", self.ssh.display())))
     }

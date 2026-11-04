@@ -36,6 +36,7 @@ pub(crate) fn create_pane(socket: &Path, argv: &[String]) -> io::Result<PaneId> 
             vars: Default::default(),
             parent: None,
             close: Default::default(),
+            runtime: None,
         },
     )
     .map_err(io::Error::other)

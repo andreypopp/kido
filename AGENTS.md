@@ -13,7 +13,9 @@ protocol and addressing, spawning and the window lifecycle, run
 outcomes, and the boundary between ko and its pi extension.
 [docs/design-subagents.md](docs/design-subagents.md) describes
 subagents. [docs/design-program-status.md](docs/design-program-status.md)
-describes pane classification and status. [docs/design-app.md](docs/design-app.md)
+describes pane classification and status. [docs/design-runtimes.md](docs/design-runtimes.md)
+describes runtimes: the configuration, the link, the identity on a
+runtime connection and the exec session. [docs/design-app.md](docs/design-app.md)
 describes Kido.app. Before you change these mechanisms, read these
 files. The code comments and this file do not repeat them.
 
@@ -791,6 +793,21 @@ no caller otherwise: `run-child` takes its parent as an argument.
 docs/design-ko.md, "Lifecycle and the command line", gives the
 directory rules, the server's options and every variable that a pane
 gets.
+
+**Runtimes** (docs/design-runtimes.md). The rules a change breaks
+most easily:
+
+- A connection's `Origin` comes from the listener that accepted it
+  and lives with the connection. On a runtime connection every request
+  acts as a live pane of that runtime, with its token; the user does
+  not exist there, and a route that the runtime gate does not name is
+  refused.
+- A pane token never appears in an argv: the server writes it to a
+  `0600` file or an environment, and `ko enter` reads it from there.
+- An exec session's command gets no caller or server environment:
+  only the runtime's `env`, the request's `env` and `KO_RUNTIME`.
+- The server signals only an exec helper or a step that it spawned.
+- The `command` kind is test-only, behind `KO_RUNTIME_COMMAND_KIND=1`.
 
 **Native agent status.** Only OSC 7501 root apps `pi` and
 `claude-code` identify agent panes. Four pane variables supply local pi

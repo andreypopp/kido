@@ -798,6 +798,7 @@ mod tests {
             vars: Default::default(),
             parent: None,
             close: Default::default(),
+            runtime: None,
         }
     }
 

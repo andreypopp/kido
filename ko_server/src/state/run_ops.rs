@@ -344,6 +344,7 @@ impl State {
         &mut self,
         poll: &mut Poll,
         caller: Option<PaneId>,
+        origin: &crate::server::Origin,
         request: StartRun,
     ) -> Result<Started, Error> {
         let invalid = |message: String| Error::new(ErrorKind::Invalid, message);
@@ -380,6 +381,7 @@ impl State {
             name: request.name.clone(),
             parent: request.parent.clone(),
             pane: None,
+            runtime: None,
             argv: request.argv.clone(),
             cwd: request.cwd.clone().unwrap_or_default(),
             started_at: Timestamp::now(),
@@ -406,12 +408,13 @@ impl State {
             vars: Loose::new(),
             parent,
             close: Close::OnExit,
+            runtime: request.runtime,
         };
         let name =
             Name::try_from(request.name.as_str().to_owned()).map_err(|m| invalid(m.to_owned()))?;
         let placed = self.place_pane(
             poll,
-            caller,
+            (caller, origin),
             Some(SessionRef::Id(session_id)),
             Some(name),
             create,
@@ -434,6 +437,10 @@ impl State {
         };
         let (window, pane) = (placement.window, placement.pane);
         meta.pane = Some(pane);
+        meta.runtime = self
+            .panes
+            .find(pane)
+            .and_then(|found| found.runtime().cloned());
         if let Err(failed) = runs::write_meta(&self.runs.root, &meta) {
             self.delete_pane(poll, pane);
             return Err(io(failed));
@@ -604,6 +611,7 @@ mod tests {
                 name: crate::runs::RunName::new("r").unwrap(),
                 parent: None,
                 pane: None,
+                runtime: None,
                 argv: Vec::new(),
                 cwd: String::new(),
                 started_at: Timestamp::from_micros(0),

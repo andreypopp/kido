@@ -296,6 +296,7 @@ fn dead_pid() -> Option<Pid> {
             &[],
             &[],
             ko_sys::spawn::Env::Inherit,
+            None,
         )
         .ok()?;
         child.wait().ok()?;
@@ -405,6 +406,7 @@ impl Rig {
             vars: Default::default(),
             parent: None,
             close: Default::default(),
+            runtime: None,
         };
         let pane = state
             .new_session(&mut poll, &request)

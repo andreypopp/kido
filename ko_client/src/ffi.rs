@@ -2576,6 +2576,7 @@ mod tests {
             parent: None,
             close: Default::default(),
             inbox: false,
+            runtime: None,
         };
         Listing {
             row,

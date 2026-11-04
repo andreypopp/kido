@@ -10,7 +10,7 @@ use ko_sys::pid::Exit;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{PaneId, RunId};
+use crate::ids::{PaneId, RunId, RuntimeName};
 use crate::pane_proc::Cause;
 use crate::panes::{Condition, Seen};
 use crate::protocol::{Info, RunRow, Show};
@@ -162,6 +162,9 @@ pub struct Meta {
     pub parent: Option<Parent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane: Option<PaneId>,
+    /// The runtime of the run's pane. The host has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeName>,
     pub argv: Vec<String>,
     pub cwd: String,
     #[serde(rename = "startedAt")]
@@ -482,6 +485,7 @@ mod tests {
             name: RunName::new(&format!("run-{index}")).unwrap(),
             parent,
             pane: on.map(pane),
+            runtime: None,
             argv: vec!["run".to_owned()],
             cwd: "/tmp".to_owned(),
             started_at: Timestamp::from_micros(i64::from(index) * 1_000_000),

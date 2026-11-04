@@ -21,6 +21,13 @@ unsafe extern "C" {
     ) -> libc::c_int;
 }
 
+unsafe extern "C" {
+    fn posix_spawn_file_actions_addchdir_np(
+        actions: *mut libc::posix_spawn_file_actions_t,
+        path: *const libc::c_char,
+    ) -> libc::c_int;
+}
+
 #[derive(Debug)]
 struct Actions(libc::posix_spawn_file_actions_t);
 
@@ -67,6 +74,7 @@ pub fn pane(program: &Path, control: BorrowedFd<'_>, mapping: BorrowedFd<'_>) ->
         &[],
         &[(control, 0), (control, 1), (mapping, 3)],
         Env::Inherit,
+        None,
     )
 }
 
@@ -93,7 +101,7 @@ pub fn detached(program: &Path, args: &[&str], log: BorrowedFd<'_>) -> io::Resul
         program,
         args,
         &[(log, 0), (log, 1), (log, 2)],
-        Env::Inherit,
+        (Env::Inherit, None),
         Session::New,
     )
 }
@@ -103,8 +111,9 @@ pub fn program(
     args: &[&str],
     targets: &[(BorrowedFd<'_>, u8)],
     env: Env<'_>,
+    dir: Option<&Path>,
 ) -> io::Result<Pid> {
-    start(program, args, targets, env, Session::Inherit)
+    start(program, args, targets, (env, dir), Session::Inherit)
 }
 
 // Every descriptor but the targets and stderr closes in the child. It returns the spawn flags
@@ -174,7 +183,7 @@ fn start(
     program: &Path,
     args: &[&str],
     targets: &[(BorrowedFd<'_>, u8)],
-    env: Env<'_>,
+    (env, dir): (Env<'_>, Option<&Path>),
     session: Session,
 ) -> io::Result<Pid> {
     let invalid = |_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in a spawn argument");
@@ -203,6 +212,13 @@ fn start(
     let mut actions = Actions(unsafe { std::mem::zeroed() });
     // SAFETY: actions receives an initialized file action list.
     check_code(unsafe { libc::posix_spawn_file_actions_init(&mut actions.0) })?;
+    let dir = dir
+        .map(|dir| CString::new(dir.as_os_str().as_bytes()).map_err(invalid))
+        .transpose()?;
+    if let Some(dir) = &dir {
+        // SAFETY: the actions are initialized, and dir is NUL-terminated and outlives the spawn.
+        check_code(unsafe { posix_spawn_file_actions_addchdir_np(&mut actions.0, dir.as_ptr()) })?;
+    }
     for (fd, target) in &copies {
         // SAFETY: fd is open for the borrow, and the actions are initialized.
         check_code(unsafe {
@@ -302,6 +318,7 @@ mod tests {
             &["-c", &report],
             &[(writer.as_fd(), 1), (writer.as_fd(), 12)],
             Env::Inherit,
+            None,
         );
         // SAFETY: gap is the copy made above, closed once.
         unsafe { libc::close(gap) };

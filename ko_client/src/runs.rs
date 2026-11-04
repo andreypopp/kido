@@ -20,7 +20,7 @@ pub enum Failure {
     Refused(Error),
 }
 
-fn call<T: Serialize + DeserializeOwned>(
+pub(crate) fn call<T: Serialize + DeserializeOwned>(
     dir: &Path,
     route: &Route,
     caller: Option<Caller>,

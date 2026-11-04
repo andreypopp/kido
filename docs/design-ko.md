@@ -152,7 +152,10 @@ and the OpenAPI document. The status model is `telemetry.rs`,
 `agent.rs` own the variables, the runs, the `pi.inbox` send, a pane's
 message queue (its routes in `state/messages.rs`), the clipboard answerer, the
 shared-memory leak record and the `agent.sock` link; `config.rs` the
-state directory, the options and the knobs.
+state directory, the options and the knobs. `runtime/` holds the
+runtimes' configuration, registry, links and exec helpers, with
+`state/runtime_ops.rs` and `state/exec_ops.rs` over them
+([design-runtimes.md](design-runtimes.md)).
 
 `ko_vt` is the safe binding of libghostty-vt for both processes: the
 terminal, the snapshot encoder and decoder, the render state, the
@@ -497,7 +500,10 @@ reads its environment knobs, and `ko_server/src/panes.rs` sets the
 variables of every pane, `SSH_AUTH_SOCK=<dir>/agent.sock` among them,
 which a pane's `env` can replace. `--bin-dir` is the shim directory put
 first on every pane's PATH (design.md, "The bin directory"); `--shell`
-reaches every pane as `KO_SHELL`.
+reaches every pane as `KO_SHELL`. `--runtimes FILE` names the
+runtime configuration (design-runtimes.md). A runtime's listener is
+in `DIR/runtimes/<name>/`; a socket path there that is too long fails
+that runtime's start, not the server.
 At start the server links `agent.sock` to its own inherited agent only
 when the path is absent or a link to no socket file
 (`ko_server/src/agent.rs`), so Kido.app's publication wins.
@@ -716,3 +722,11 @@ Each decision names its date. The code states the rest.
 - Kido.app and ko ship from `main`; the first ko release is the tap
   formula `ko`, version 0.1.0, built from source with the pinned
   toolchains.
+
+2026-11-04:
+
+- Runtimes get one configuration file, `runtimes.json`, because a
+  runtime cannot be derived. It holds runtimes only; everything else
+  stays without a file. Runtimes are managed through the HTTP API
+  only: a runtime starts with its first pane or exec session and stops
+  by the idle rule.

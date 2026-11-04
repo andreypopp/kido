@@ -21,6 +21,7 @@ mod protocol;
 mod reap;
 mod remote;
 mod runs;
+mod runtime;
 mod search;
 mod shell;
 mod spawn_tree;

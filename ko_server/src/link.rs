@@ -3,6 +3,7 @@ use ko_pane_wire::frame::Req;
 use crate::client::Client;
 use crate::conn::Output;
 use crate::ids::PaneId;
+use crate::runtime::exec::Session;
 use crate::tail::Tail;
 use crate::view::View;
 use crate::ws::Ws;
@@ -15,6 +16,24 @@ pub(crate) enum Role {
     Tail(Tail),
     Search(Searching),
     Messages(PaneId),
+    Exec(Session),
+}
+
+impl Role {
+    pub(crate) fn paused(&self) -> bool {
+        matches!(self, Role::Exec(session) if session.paused())
+    }
+
+    pub(crate) fn reads(&self) -> bool {
+        match self {
+            Role::Exec(session) => session.reads(),
+            Role::Client(_)
+            | Role::View(_)
+            | Role::Tail(_)
+            | Role::Search(_)
+            | Role::Messages(_) => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

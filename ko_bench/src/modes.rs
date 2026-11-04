@@ -367,6 +367,7 @@ pub(crate) fn cpu_check() -> Result<(), String> {
         &[],
         &[(std::os::fd::AsFd::as_fd(&null), 1)],
         ko_sys::spawn::Env::Inherit,
+        None,
     )
     .map_err(failed)?;
     std::thread::sleep(Duration::from_secs(1));

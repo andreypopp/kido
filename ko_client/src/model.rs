@@ -733,6 +733,7 @@ mod tests {
                 name: ko_server::runs::RunName::new("r").unwrap(),
                 parent,
                 pane: Some(pane(on)),
+                runtime: None,
                 argv: vec!["cmd".to_owned()],
                 cwd: String::new(),
                 started_at: ko_server::timestamp::Timestamp::from_micros(0),

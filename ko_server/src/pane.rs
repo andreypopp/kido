@@ -1,23 +1,34 @@
 use std::io;
+use std::path::PathBuf;
 
 use ko_pane_wire::frame::Size;
 
 use crate::config::Config;
 use crate::delivery::Stamps;
-use crate::ids::{PaneId, PaneToken, RunId};
+use crate::ids::{PaneId, PaneToken, RunId, RuntimeName};
 use crate::inbox::Inbox;
 use crate::model::PaneModel;
 use crate::pane_proc::{Input, Io, Launch, PaneProc};
-use crate::protocol::Close;
+use crate::protocol::{Close, Variable};
 use crate::telemetry::Telemetry;
 use crate::vars::Vars;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
+pub(crate) struct Program {
+    pub(crate) argv: Vec<Vec<u8>>,
+    pub(crate) record: Vec<Vec<u8>>,
+    pub(crate) cwd: PathBuf,
+    pub(crate) env: Vec<Variable>,
+}
+
+#[derive(Debug)]
 pub(crate) struct Birth {
     pub(crate) vars: Vars,
     pub(crate) run: Option<RunId>,
     pub(crate) parent: Option<PaneId>,
     pub(crate) close: Close,
+    pub(crate) runtime: Option<RuntimeName>,
+    pub(crate) program: Program,
 }
 
 #[derive(Debug)]
@@ -32,6 +43,7 @@ pub(crate) struct Pane {
     run: Option<RunId>,
     parent: Option<PaneId>,
     close: Close,
+    runtime: Option<RuntimeName>,
     token: PaneToken,
     model: PaneModel,
     inbox: Inbox,
@@ -49,14 +61,18 @@ impl Pane {
         Ok(Pane {
             id: launch.id,
             proc: PaneProc::spawn(config, launch, stamps, io)?,
-            command: launch.argv.to_vec(),
+            command: birth.program.record,
             size: launch.size,
             focused: false,
-            telemetry: Telemetry::default(),
+            telemetry: Telemetry {
+                in_runtime: birth.runtime.is_some(),
+                ..Telemetry::default()
+            },
             vars: birth.vars,
             run: birth.run,
             parent: birth.parent,
             close: birth.close,
+            runtime: birth.runtime,
             token,
             model: PaneModel::default(),
             inbox: Inbox::default(),
@@ -97,6 +113,10 @@ impl Pane {
 
     pub(crate) fn close(&self) -> Close {
         self.close
+    }
+
+    pub(crate) fn runtime(&self) -> Option<&RuntimeName> {
+        self.runtime.as_ref()
     }
 
     pub(crate) fn token(&self) -> &PaneToken {

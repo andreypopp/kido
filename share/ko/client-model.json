@@ -614,6 +614,9 @@
           "run": {
             "$ref": "#/components/schemas/RunRow"
           },
+          "runtime": {
+            "$ref": "#/components/schemas/RuntimeName"
+          },
           "status": {
             "$ref": "#/components/schemas/PaneStatus"
           },

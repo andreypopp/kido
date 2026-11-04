@@ -480,6 +480,7 @@ mod tests {
             ],
             &[(stdout.as_fd(), 1)],
             crate::spawn::Env::Inherit,
+            None,
         )
         .unwrap();
         assert_eq!(child.wait().unwrap(), Waited::Ended(Exit::Exited(0)));

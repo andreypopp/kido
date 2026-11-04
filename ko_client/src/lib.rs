@@ -7,6 +7,7 @@ pub mod layout;
 pub mod model;
 pub mod remote;
 pub mod runs;
+pub mod runtimes;
 pub mod schema;
 pub mod status;
 mod tree;

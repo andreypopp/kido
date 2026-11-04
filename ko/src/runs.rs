@@ -6,6 +6,7 @@ use std::time::Duration;
 use clap::{Args, ValueEnum};
 use ko_client::runs::{self, Failure};
 use ko_server::api::WaitMs;
+use ko_server::config::look_path;
 use ko_server::ids::{MessageId, RunId};
 use ko_server::protocol::{
     self, Error, ErrorKind, Info, ReportOutcome, Reported, SendPrompt, SessionRef, Show, StartRun,
@@ -13,9 +14,8 @@ use ko_server::protocol::{
 };
 use ko_server::runs::{Parent, RunName, RunOutcome};
 use ko_server::timestamp::Timestamp;
-use ko_shell::bin_dir;
 
-use crate::{Target, complain, fail, server_message, table, target};
+use crate::{Target, assignment, complain, fail, server_message, table, target};
 
 const WAIT_POLL: Duration = Duration::from_secs(30);
 
@@ -222,19 +222,16 @@ fn start(name: &str, parent: Option<Parent>, args: RunArgs) -> ExitCode {
     let mut argv = args.command;
     if !argv[0].contains('/') {
         let path = std::env::var("PATH").unwrap_or_default();
-        match bin_dir::look_path(&path, &argv[0]) {
+        match look_path(&path, &argv[0]) {
             Some(found) => argv[0] = found.to_string_lossy().into_owned(),
             None => return fail(name, format!("{}: command not found", argv[0])),
         }
     }
     let mut env = Vec::new();
     for entry in args.env {
-        match entry.split_once('=') {
-            Some((key, value)) if !key.is_empty() => env.push(Variable {
-                name: key.to_owned(),
-                value: value.to_owned(),
-            }),
-            _ => return fail(name, format!("invalid --env {entry:?}, want K=V")),
+        match assignment(&entry) {
+            Ok((name, value)) => env.push(Variable { name, value }),
+            Err(want) => return fail(name, format!("invalid --env {entry:?}, {want}")),
         }
     }
     let session = match args.session.map(SessionRef::try_from).transpose() {
@@ -247,6 +244,7 @@ fn start(name: &str, parent: Option<Parent>, args: RunArgs) -> ExitCode {
         session,
         parent: parent.clone(),
         env,
+        runtime: None,
         argv,
     };
     let Target { dir, caller } = target(args.server);

@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Runtimes",
+  "description": "The runtime configuration file: the runtimes that panes can run in, by name.",
+  "type": "object",
+  "properties": {
+    "runtimes": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z0-9-]{1,32}$": {
+          "$ref": "#/$defs/Runtime"
+        }
+      }
+    }
+  },
+  "required": [
+    "runtimes"
+  ],
+  "$defs": {
+    "AbsPath": {
+      "description": "An absolute path.",
+      "type": "string",
+      "pattern": "^/"
+    },
+    "Command": {
+      "type": "object",
+      "properties": {
+        "lead": {
+          "description": "An interactive step of the start. One waiting pane runs it on its own terminal and\nreports the result.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "prefix": {
+          "description": "The argv that goes before `ko enter` in a pane's program.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "socket": {
+          "description": "Where the runtime's socket is reached inside the runtime. Default: the host path.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "up": {
+          "description": "A step of the start that the server runs as its own child. Exit 0 continues the start.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "PathMap": {
+      "description": "A directory of the host and the directory of the runtime that holds the same files.",
+      "type": "object",
+      "properties": {
+        "host": {
+          "$ref": "#/$defs/AbsPath"
+        },
+        "runtime": {
+          "$ref": "#/$defs/AbsPath"
+        }
+      },
+      "required": [
+        "host",
+        "runtime"
+      ]
+    },
+    "Runtime": {
+      "type": "object",
+      "properties": {
+        "cwd": {
+          "description": "The directory inside the runtime for a pane whose request names none that maps.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "env": {
+          "description": "Variables for every pane of the runtime, applied before the variables of the request.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        },
+        "paths": {
+          "description": "A host directory that a host caller names as cwd maps to the runtime directory of the\nlongest matching host prefix.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PathMap"
+          }
+        }
+      },
+      "oneOf": [
+        {
+          "description": "A runtime on the host, for the tests of the link machinery. The server accepts it only\nwith KO_RUNTIME_COMMAND_KIND=1 in its environment.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "command"
+            }
+          },
+          "$ref": "#/$defs/Command",
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    }
+  }
+}

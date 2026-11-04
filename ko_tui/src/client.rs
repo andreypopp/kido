@@ -1265,6 +1265,7 @@ fn new_pane(remote: bool) -> CreatePane {
         vars: Default::default(),
         parent: None,
         close: Default::default(),
+        runtime: None,
     }
 }
 

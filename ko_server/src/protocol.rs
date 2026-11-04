@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroU16, NonZeroUsize};
 
 use ko_pane_wire::frame::{
@@ -16,7 +16,7 @@ use crate::api::WaitMs;
 use crate::config::BUILD;
 use crate::http::Status;
 use crate::ids::{
-    ClientId, Instance, MessageId, Name, PaneId, RunId, SessionId, VarName, WindowId,
+    ClientId, Instance, MessageId, Name, PaneId, RunId, RuntimeName, SessionId, VarName, WindowId,
 };
 use crate::pane_proc::{self, Death};
 use crate::route::{Body, Invalid};
@@ -490,6 +490,9 @@ pub struct Row {
     /// True while the pane has its message stream open.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub inbox: bool,
+    /// The runtime that runs the pane's program, for the pane's life. The host has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -722,6 +725,10 @@ pub struct CreatePane {
     pub parent: Option<PaneId>,
     #[serde(default, skip_serializing_if = "Close::is_keep")]
     pub close: Close,
+    /// The runtime that runs the pane's program, for the pane's life. A caller on a runtime's
+    /// socket creates panes in its own runtime only. Otherwise the host runs the pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeName>,
 }
 
 /// A window of one pane.
@@ -1816,6 +1823,9 @@ pub struct StartRun {
     pub parent: Option<Parent>,
     #[serde(default)]
     pub env: Vec<Variable>,
+    /// The runtime of the run's pane, with the rules of a new pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeName>,
     pub argv: Vec<String>,
 }
 
@@ -2711,4 +2721,249 @@ mod tests {
         }
         assert_eq!(PixelFormat::from_header("RGB"), None);
     }
+}
+
+/// An absolute path, as the runtime configuration and the API name it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct AbsPath(String);
+
+impl AbsPath {
+    pub fn as_path(&self) -> &std::path::Path {
+        std::path::Path::new(&self.0)
+    }
+}
+
+impl JsonSchema for AbsPath {
+    fn schema_name() -> Cow<'static, str> {
+        "AbsPath".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "string", "pattern": "^/", "description": "An absolute path."})
+    }
+}
+
+impl TryFrom<String> for AbsPath {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<AbsPath, String> {
+        if text.starts_with('/') && !text.contains('\0') {
+            Ok(AbsPath(text))
+        } else {
+            Err(format!("{text:?} is not an absolute path"))
+        }
+    }
+}
+
+impl From<AbsPath> for String {
+    fn from(AbsPath(text): AbsPath) -> String {
+        text
+    }
+}
+
+/// A directory of the host and the directory of the runtime that holds the same files.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PathMap {
+    pub host: AbsPath,
+    pub runtime: AbsPath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeKind {
+    Command,
+}
+
+/// The state of a runtime's link. The first pane of a runtime starts it, and the idle rule or a
+/// request takes it down.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LinkState {
+    Down,
+    Starting,
+    Up,
+    Failed { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RuntimeInfo {
+    pub name: RuntimeName,
+    pub kind: RuntimeKind,
+    pub state: LinkState,
+    /// The panes of the document that the runtime runs, dead ones included.
+    pub panes: u32,
+    /// The path of the runtime's listener on the host, bound while the link is up.
+    pub socket: String,
+    /// The effective host-to-runtime prefix list that maps a host cwd.
+    pub paths: Vec<PathMap>,
+}
+
+/// The reply of a wait on a runtime: its state when the wait ends. Only the one waiter that was
+/// elected to run the interactive step gets lead, with the argv of that step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RuntimeWait {
+    pub state: LinkState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead: Option<Vec<String>>,
+}
+
+/// How the interactive step of a start ended, as the elected pane reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LeadReport {
+    pub exit: i32,
+    /// The tail of the error output of the step. Its last line is the message of a failed start.
+    #[serde(default)]
+    pub stderr: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DownRuntime {
+    /// Remove the live panes of the runtime first, as a stop does. Without force, live panes
+    /// refuse the request.
+    #[serde(default)]
+    pub force: bool,
+}
+
+pub const EXEC_CHUNK: usize = 64 << 10;
+
+/// The signals that a client can send to the command of an exec session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum KillSignal {
+    Term,
+    Kill,
+    Int,
+}
+
+pub(crate) fn env_valid(name: &str, value: &str) -> bool {
+    !name.is_empty() && !name.contains(['=', '\0']) && !value.contains('\0')
+}
+
+pub const STDERR_TAIL: usize = 4096;
+
+/// Runs argv inside the runtime without a shell. The cwd is a path of the runtime. The env
+/// applies after the env of the runtime. Without stdin the command reads an empty input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ExecRequest {
+    pub argv: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<AbsPath>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    pub stdin: bool,
+}
+
+impl ExecRequest {
+    pub(crate) fn invalid(&self) -> Option<&'static str> {
+        if self.argv.first().is_none_or(String::is_empty) {
+            Some("argv needs a program")
+        } else if self.argv.iter().any(|arg| arg.contains('\0'))
+            || self.env.iter().any(|(name, value)| !env_valid(name, value))
+        {
+            Some("invalid argv or env")
+        } else {
+            None
+        }
+    }
+}
+
+/// A message of the client of an exec session. The first one must be exec. The data of stdin is
+/// at most 64 KiB before its encoding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ExecClient {
+    Exec(ExecRequest),
+    Stdin {
+        data: Text,
+    },
+    /// Closes the input of the command.
+    Eof {},
+    Signal {
+        signal: KillSignal,
+    },
+}
+
+/// The signals by which a command can end. Other is any signal that this list does not name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum ExitSignal {
+    Hup,
+    Int,
+    Quit,
+    Ill,
+    Trap,
+    Abrt,
+    Bus,
+    Fpe,
+    Kill,
+    Usr1,
+    Segv,
+    Usr2,
+    Pipe,
+    Alrm,
+    Term,
+    Other,
+}
+
+impl From<i32> for ExitSignal {
+    fn from(number: i32) -> ExitSignal {
+        match number {
+            libc::SIGHUP => ExitSignal::Hup,
+            libc::SIGINT => ExitSignal::Int,
+            libc::SIGQUIT => ExitSignal::Quit,
+            libc::SIGILL => ExitSignal::Ill,
+            libc::SIGTRAP => ExitSignal::Trap,
+            libc::SIGABRT => ExitSignal::Abrt,
+            libc::SIGBUS => ExitSignal::Bus,
+            libc::SIGFPE => ExitSignal::Fpe,
+            libc::SIGKILL => ExitSignal::Kill,
+            libc::SIGUSR1 => ExitSignal::Usr1,
+            libc::SIGSEGV => ExitSignal::Segv,
+            libc::SIGUSR2 => ExitSignal::Usr2,
+            libc::SIGPIPE => ExitSignal::Pipe,
+            libc::SIGALRM => ExitSignal::Alrm,
+            libc::SIGTERM => ExitSignal::Term,
+            _ => ExitSignal::Other,
+        }
+    }
+}
+
+/// How the command ended: with an exit status, or by a signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Ended {
+    Status { status: i32 },
+    Signal { signal: ExitSignal },
+}
+
+impl From<Exit> for Ended {
+    fn from(exit: Exit) -> Ended {
+        match exit {
+            Exit::Exited(status) => Ended::Status { status },
+            Exit::Signaled(signal) => Ended::Signal {
+                signal: signal.into(),
+            },
+        }
+    }
+}
+
+/// A message of the server in an exec session. After exit the server closes with 1000, and
+/// after error with 1011. Error is the one way a session ends without exit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ExecServer {
+    Stdout {
+        data: Text,
+    },
+    Stderr {
+        data: Text,
+    },
+    Exit {
+        #[serde(flatten)]
+        ended: Ended,
+    },
+    Error {
+        message: String,
+    },
 }

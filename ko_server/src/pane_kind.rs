@@ -43,8 +43,7 @@ fn destination(vars: &Vars) -> Option<String> {
 pub(crate) fn classify(telemetry: &Telemetry, vars: &Vars, records: &[ProgramRecord]) -> Kind {
     let root_app = root(records).and_then(|record| app(records, record));
     let ssh = telemetry
-        .foreground
-        .as_ref()
+        .status_foreground()
         .is_some_and(|foreground| foreground.name == "ssh")
         .then(|| destination(vars))
         .flatten();

@@ -9,6 +9,7 @@ ko_client = { path = "../ko_client" }
 ko_pane_wire = { path = "../ko_pane_wire" }
 ko_server = { path = "../ko_server" }
 ko_sys = { path = "../ko_sys" }
+libc.workspace = true
 serde_json.workspace = true
 
 [lints]

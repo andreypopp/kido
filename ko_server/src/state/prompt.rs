@@ -5,10 +5,11 @@ use crate::api::routes;
 use crate::ids::WindowId;
 use crate::msg::{self, Delivery, Step};
 use crate::pane_kind::{self, Kind, RemoteKind};
-use crate::panes::acts_as;
+use crate::panes::{acts_as, is_descendant};
 use crate::protocol::{
     Candidate, Content, Error, ErrorKind, Payload, SendPrompt, Sent, Via, Window,
 };
+use crate::server::Origin;
 
 use super::messages::{Posting, Reply};
 
@@ -143,7 +144,7 @@ impl State {
         &mut self,
         poll: &mut Poll,
         index: usize,
-        caller: Option<PaneId>,
+        (caller, origin): (Option<PaneId>, &Origin),
         request: SendPrompt,
     ) -> Option<Result<Sent, Error>> {
         if request.text.is_empty() {
@@ -185,6 +186,9 @@ impl State {
         }
         let token = self.conns[index].token;
         let Some(inbox) = target.inbox else {
+            if let Err(refused) = self.may_paste(caller, origin, request.target) {
+                return Some(Err(refused));
+            }
             return self.paste_prompt(poll, index, request.target, &request.text);
         };
         let mut delivery = match Delivery::start(poll, &inbox, &request.text, INBOX_TIMEOUT) {
@@ -209,6 +213,31 @@ impl State {
                 });
                 None
             }
+        }
+    }
+
+    // A paste is input to the target's terminal, so a runtime connection may paste only where it
+    // may send input: into its own runtime or into a descendant of the caller.
+    fn may_paste(
+        &self,
+        caller: Option<PaneId>,
+        origin: &Origin,
+        target: PaneId,
+    ) -> Result<(), Error> {
+        let Origin::Runtime(runtime) = origin else {
+            return Ok(());
+        };
+        let allowed = self.panes.is_in(target, runtime)
+            || caller.is_some_and(|caller| is_descendant(&self.edges(), caller, target));
+        if allowed {
+            Ok(())
+        } else {
+            Err(Error::new(
+                ErrorKind::Refused,
+                format!(
+                    "{target} would get a paste, which a connection of runtime {runtime} may not send there"
+                ),
+            ))
         }
     }
 

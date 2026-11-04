@@ -6,6 +6,27 @@ use std::path::Path;
 use crate::pid::Pid;
 use crate::retry::check;
 
+pub fn peer_closed(fd: BorrowedFd<'_>) -> bool {
+    let mut byte = 0u8;
+    // SAFETY: byte is writable for one byte, and fd is open for the borrow; MSG_PEEK consumes nothing.
+    let count = unsafe {
+        libc::recv(
+            fd.as_raw_fd(),
+            (&raw mut byte).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    match count {
+        0 => true,
+        count if count > 0 => false,
+        _ => !matches!(
+            io::Error::last_os_error().kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+        ),
+    }
+}
+
 fn set(fd: BorrowedFd<'_>, option: libc::c_int, bytes: usize) -> io::Result<()> {
     let value = libc::c_int::try_from(bytes)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "socket buffer too large"))?;

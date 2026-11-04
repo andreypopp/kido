@@ -27,6 +27,7 @@ use ko_sys::signal::{Signal, Signals};
 use ko_tui::client;
 
 mod runs;
+mod runtime;
 
 const USAGE_ERROR: u8 = 124;
 
@@ -66,8 +67,11 @@ enum Command {
     /// response and the x-ko-websocket extension, which names the schemas of their messages.
     ApiSchema {
         /// Print the schema of the client core's model and edit documents instead.
-        #[arg(long)]
+        #[arg(long, group = "schema")]
         client: bool,
+        /// Print the JSON schema of the runtime configuration file instead.
+        #[arg(long, group = "schema")]
+        runtimes: bool,
     },
     /// Send one HTTP request to the ko server and print the response.
     ///
@@ -106,6 +110,12 @@ enum Command {
         )]
         args: Vec<OsString>,
     },
+    /// Start a pane's program inside its runtime.
+    #[command(hide = true)]
+    Enter(runtime::EnterArgs),
+    /// Wait for a pane's runtime to be up, then run the program.
+    #[command(hide = true)]
+    RuntimeExec(runtime::RuntimeExecArgs),
     /// List the panes of the ko server.
     Panes(PanesArgs),
     /// Print the layout document, the sessions and windows with their splits and floats.
@@ -246,6 +256,10 @@ struct ServerArgs {
     /// share/ko/bin beside the installed ko, if it exists.
     #[arg(long, value_name = "DIR")]
     bin_dir: Option<PathBuf>,
+    /// The runtime configuration file. The default is $XDG_CONFIG_HOME/ko/runtimes.json, else
+    /// ~/.config/ko/runtimes.json.
+    #[arg(long, value_name = "FILE")]
+    runtimes: Option<PathBuf>,
     /// Print the absolute path of the socket that the server would use, and start nothing.
     #[arg(long)]
     print_socket: bool,
@@ -304,6 +318,17 @@ pub(crate) fn complain(message: impl std::fmt::Display) {
     let _ = writeln!(io::stderr().lock(), "{message}");
 }
 
+pub(crate) fn assignment(text: &str) -> Result<(String, String), String> {
+    match text.split_once('=') {
+        Some((name, value)) if !name.is_empty() => Ok((name.to_owned(), value.to_owned())),
+        _ => Err("want K=V".to_owned()),
+    }
+}
+
+pub(crate) fn say(text: &str) {
+    let _ = writeln!(io::stdout().lock(), "{text}");
+}
+
 pub(crate) fn fail(name: &str, message: impl std::fmt::Display) -> ExitCode {
     complain(format_args!("ko {name}: {message}"));
     ExitCode::FAILURE
@@ -351,6 +376,7 @@ fn server(args: ServerArgs) -> ExitCode {
         args.shell,
         args.bin_dir.or_else(|| bin_dir::of_exe(&invoked())),
         scrollback,
+        args.runtimes,
     ) {
         Ok(config) => config,
         Err(message) => return fail("server", message),
@@ -508,7 +534,7 @@ fn ssh_binary() -> Result<PathBuf, String> {
     match bin_dir::of_exe(&invoked()) {
         Some(dir) => bin_dir::look_path_past(&path, &dir, "ssh")
             .ok_or_else(|| format!("no ssh on PATH past {}", dir.display())),
-        None => bin_dir::look_path(&path, "ssh").ok_or_else(|| "ssh not found on PATH".to_owned()),
+        None => config::look_path(&path, "ssh").ok_or_else(|| "ssh not found on PATH".to_owned()),
     }
 }
 
@@ -586,7 +612,7 @@ fn panes(args: PanesArgs) -> ExitCode {
         Err(error) => return fail("panes", error),
     };
     let mut lines = vec![
-        ["PANE", "PID", "STATE", "TITLE", "CWD"]
+        ["PANE", "PID", "STATE", "RUNTIME", "TITLE", "CWD"]
             .map(str::to_owned)
             .to_vec(),
     ];
@@ -596,6 +622,9 @@ fn panes(args: PanesArgs) -> ExitCode {
             row.pid
                 .map_or_else(|| "-".to_owned(), |pid| pid.to_string()),
             state(row),
+            row.runtime
+                .as_ref()
+                .map_or_else(|| "-".to_owned(), ToString::to_string),
             row.title.clone(),
             row.cwd.clone(),
         ]
@@ -653,6 +682,13 @@ fn layout_edit(server: Option<PathBuf>, edit: &str) -> ExitCode {
 }
 
 fn attach(server: Option<PathBuf>, host: Option<String>) -> ExitCode {
+    if let Some(runtime) = std::env::var_os("KO_RUNTIME").filter(|runtime| !runtime.is_empty()) {
+        complain(format_args!(
+            "ko: inside runtime {}; attach from the host",
+            runtime.to_string_lossy()
+        ));
+        return ExitCode::FAILURE;
+    }
     let pager = std::env::var("PAGER")
         .ok()
         .filter(|pager| !pager.is_empty())
@@ -695,11 +731,21 @@ fn main() -> ExitCode {
             let _ = writeln!(out, "{}", protocol::json(&protocol::version()));
             ExitCode::SUCCESS
         }
-        Command::ApiSchema { client: false } => {
-            let _ = writeln!(io::stdout().lock(), "{}", schema::openapi());
+        Command::ApiSchema {
+            client: false,
+            runtimes: true,
+        } => {
+            say(&schema::runtimes());
             ExitCode::SUCCESS
         }
-        Command::ApiSchema { client: true } => match ko_client::schema::client_model() {
+        Command::ApiSchema {
+            client: false,
+            runtimes: false,
+        } => {
+            say(&schema::openapi());
+            ExitCode::SUCCESS
+        }
+        Command::ApiSchema { client: true, .. } => match ko_client::schema::client_model() {
             Ok(document) => {
                 let _ = writeln!(io::stdout().lock(), "{document}");
                 ExitCode::SUCCESS
@@ -709,6 +755,8 @@ fn main() -> ExitCode {
         Command::Api(args) => api(args),
         Command::Shell { command } => fail("shell", shell::exec(&command, &invoked())),
         Command::Ssh { args } => ssh(&args),
+        Command::Enter(args) => runtime::enter(args),
+        Command::RuntimeExec(args) => runtime::runtime_exec(args),
         Command::Panes(args) => panes(args),
         Command::Layout(args) => layout(args),
         Command::Run(args) => runs::run(args),

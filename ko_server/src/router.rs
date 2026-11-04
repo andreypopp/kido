@@ -18,6 +18,8 @@ use crate::protocol::{
     InputResult, PROTOCOL_HEADER, PasteResult, ServerVersion, VT_HEADER, check_version,
 };
 use crate::route::{self, Alt, Endpoint, Invalid};
+use crate::runtime::exec::Session;
+use crate::server::Origin;
 use crate::state::{Owner, PutFailure, State};
 use crate::tail::Tail;
 use crate::view::View;
@@ -103,6 +105,24 @@ fn upgrade(state: &mut State, poll: &mut Poll, index: usize, response: Vec<u8>, 
 fn acting(
     state: &State,
     (pane, token): (Option<&str>, Option<&str>),
+    origin: &Origin,
+) -> Result<Option<PaneId>, Error> {
+    let acted = acting_pane(state, (pane, token));
+    let Origin::Runtime(runtime) = origin else {
+        return acted;
+    };
+    match acted? {
+        Some(caller) if state.panes.is_in(caller, runtime) => Ok(Some(caller)),
+        _ => Err(Error::new(
+            ErrorKind::Refused,
+            "a runtime connection must act as one of its panes",
+        )),
+    }
+}
+
+fn acting_pane(
+    state: &State,
+    (pane, token): (Option<&str>, Option<&str>),
 ) -> Result<Option<PaneId>, Error> {
     let refuse = |message: &str| Err(Error::new(ErrorKind::Refused, message));
     let Some(pane) = pane else {
@@ -172,9 +192,11 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
         return error(&mut state.conns[index], ErrorKind::Gone, "client is closed");
     }
     let client = client.flatten();
+    let origin = state.conns[index].origin.clone();
     let caller = match acting(
         state,
         (head.header("ko-pane"), head.header("ko-pane-token")),
+        &origin,
     ) {
         Ok(caller) => caller,
         Err(Error { kind, message }) => {
@@ -196,6 +218,11 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             ErrorKind::Missing,
             "pane not found",
         );
+    }
+    if let (Origin::Runtime(runtime), Some(caller)) = (&origin, caller)
+        && let Err(Error { kind, message }) = state.runtime_gate(runtime, caller, &route)
+    {
+        return error(&mut state.conns[index], kind, message);
     }
     let Some(token) = state.token(index) else {
         return;
@@ -223,7 +250,14 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             ok::<routes::Version>(&mut state.conns[index], &version);
         }
         Request::ListPanes {} => {
-            let listing = state.layout_panes().panes;
+            let listing = match (&origin, caller) {
+                (Origin::Runtime(runtime), Some(caller)) => {
+                    state
+                        .visible_layout(&state.visible_to(runtime, caller))
+                        .panes
+                }
+                _ => state.layout_panes().panes,
+            };
             ok::<routes::ListPanes>(&mut state.conns[index], &listing);
         }
         Request::GetPane { id } => {
@@ -232,7 +266,12 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             }
         }
         Request::GetLayout {} => {
-            let layout = state.layout_panes();
+            let layout = match (&origin, caller) {
+                (Origin::Runtime(runtime), Some(caller)) => {
+                    state.visible_layout(&state.visible_to(runtime, caller))
+                }
+                _ => state.layout_panes(),
+            };
             ok::<routes::GetLayout>(&mut state.conns[index], &layout);
         }
         Request::PutLayout { body } => match state.put_layout(poll, body, None, caller) {
@@ -245,7 +284,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             }
         },
         Request::NewPane { body } => {
-            let result = state.new_pane(poll, caller, body);
+            let result = state.new_pane(poll, caller, &origin, body);
             reply::<routes::NewPane>(&mut state.conns[index], result);
         }
         Request::StopPane { id, body } => {
@@ -346,11 +385,14 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             ok::<routes::DeleteVar>(&mut state.conns[index], &Empty {});
         }
         Request::StartRun { body } => {
-            let result = state.start_run(poll, caller, body);
+            let result = state.start_run(poll, caller, &origin, body);
             reply::<routes::StartRun>(&mut state.conns[index], result);
         }
         Request::ListRuns { show, parent } => {
-            let infos = state.list_runs(show, parent.as_ref());
+            let mut infos = state.list_runs(show, parent.as_ref());
+            if let (Origin::Runtime(runtime), Some(caller)) = (&origin, caller) {
+                infos = state.visible_runs(runtime, caller, infos);
+            }
             ok::<routes::ListRuns>(&mut state.conns[index], &infos);
         }
         Request::RunScreen { id } => {
@@ -376,12 +418,53 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                 reply::<routes::StopRun>(&mut state.conns[index], result);
             }
         }
+        Request::ListRuntimes {} => {
+            let result = state.list_runtimes();
+            reply::<routes::ListRuntimes>(&mut state.conns[index], result);
+        }
+        Request::GetRuntime { name } => {
+            let result = state.get_runtime(&name);
+            reply::<routes::GetRuntime>(&mut state.conns[index], result);
+        }
+        Request::WaitRuntime { name, timeout_ms } => {
+            if let Some(result) = state.wait_runtime(poll, index, caller, name, timeout_ms) {
+                reply::<routes::WaitRuntime>(&mut state.conns[index], result);
+            }
+        }
+        Request::ReportLead { name, body } => {
+            let result = state.report_lead(poll, caller, name, body);
+            reply::<routes::ReportLead>(&mut state.conns[index], result);
+        }
+        Request::DownRuntime { name, body } => {
+            let result = state
+                .down_runtime(poll, &name, body.force)
+                .map(|()| Empty {});
+            reply::<routes::DownRuntime>(&mut state.conns[index], result);
+        }
+        Request::DeleteRuntime { name } => {
+            let result = state.delete_runtime(poll, &name);
+            reply::<routes::DeleteRuntime>(&mut state.conns[index], result);
+        }
+        Request::Exec { name } => {
+            let Some(response) = ws::handshake(&head) else {
+                return error(
+                    &mut state.conns[index],
+                    ErrorKind::Invalid,
+                    "Didn't pass scrutiny",
+                );
+            };
+            if let Err(Error { kind, message }) = state.get_runtime(&name) {
+                return error(&mut state.conns[index], kind, message);
+            }
+            upgrade(state, poll, index, response, Role::Exec(Session::new(name)));
+            state.read_ws(poll, index);
+        }
         Request::PromptResolve { from, window } => {
             let result = state.resolve_prompt(caller, from, window.is_some());
             reply::<routes::PromptResolve>(&mut state.conns[index], result);
         }
         Request::SendPrompt { body } => {
-            if let Some(result) = state.send_prompt(poll, index, caller, body) {
+            if let Some(result) = state.send_prompt(poll, index, (caller, &origin), body) {
                 reply::<routes::SendPrompt>(&mut state.conns[index], result);
             }
         }

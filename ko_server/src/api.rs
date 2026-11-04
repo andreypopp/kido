@@ -7,13 +7,13 @@ use serde::de::value::Error as ValueError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ids::{ClientId, PaneId, RunId, SessionId, VarName, WindowId};
+use crate::ids::{ClientId, PaneId, RunId, RuntimeName, SessionId, VarName, WindowId};
 use crate::protocol::{
-    Candidate, ClientEvent, ClientRequest, DeleteVars, Empty, HistoryDef, Images, Info, Input,
-    InputResult, LayoutPanes, Listing, Message, NewWindow, OutputEvent, Placement, Posted,
-    PutLayout, ReportOutcome, SearchEvent, SendMessage, SendPrompt, Sent, ServerVersion, Show,
-    Snapshot, StartRun, Started, StopPane, StopRun, StreamRequest, VarValue, ViewEvent,
-    ViewRequest, Waited,
+    Candidate, ClientEvent, ClientRequest, DeleteVars, DownRuntime, Empty, ExecClient, ExecServer,
+    HistoryDef, Images, Info, Input, InputResult, LayoutPanes, LeadReport, Listing, Message,
+    NewWindow, OutputEvent, Placement, Posted, PutLayout, ReportOutcome, RuntimeInfo, RuntimeWait,
+    SearchEvent, SendMessage, SendPrompt, Sent, ServerVersion, Show, Snapshot, StartRun, Started,
+    StopPane, StopRun, StreamRequest, VarValue, ViewEvent, ViewRequest, Waited,
 };
 use crate::route::{Invalid, Param, binary, pixels, routes, text};
 
@@ -304,6 +304,24 @@ impl Param for VarName {
 
     fn schema(generator: &mut SchemaGenerator) -> Schema {
         generator.subschema_for::<VarName>()
+    }
+}
+
+impl Param for RuntimeName {
+    const EXAMPLE: &'static str = "dev";
+
+    fn parse(value: &str) -> Result<RuntimeName, Invalid> {
+        value
+            .parse()
+            .map_err(|_| Invalid::message("invalid runtime name"))
+    }
+
+    fn render(&self) -> String {
+        self.to_string()
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<RuntimeName>()
     }
 }
 
@@ -752,6 +770,55 @@ routes! {
         body: StopRun,
         reply: Empty,
     }
+    /// The runtimes of the configuration file and of the links that are up, with their state.
+    ListRuntimes { method: GET, path: /runtimes, reply: Vec<RuntimeInfo> }
+    /// One runtime.
+    GetRuntime { method: GET, path: /runtimes/{name: RuntimeName}, reply: RuntimeInfo }
+    /// Waits up to the timeout for the link of the runtime to be up or failed. Only a pane of the
+    /// runtime may wait. The first waiter while the start has an interactive step gets that
+    /// step's argv in lead, and an Up reply for a pane comes after the server wrote its token
+    /// file.
+    WaitRuntime {
+        method: GET,
+        path: /runtimes/{name: RuntimeName}/wait,
+        query: { timeout_ms: WaitMs = DEFAULT },
+        caller: optional,
+        reply: RuntimeWait,
+    }
+    /// The pane that was elected to run the interactive step of a start reports how it ended.
+    ReportLead {
+        method: POST,
+        path: /runtimes/{name: RuntimeName}/lead,
+        body: LeadReport,
+        caller: optional,
+        reply: Empty,
+    }
+    /// Takes the link of a runtime down. With live panes it is refused, unless force removes the
+    /// panes first, as a stop does.
+    DownRuntime {
+        method: POST,
+        path: /runtimes/{name: RuntimeName}/down,
+        body: DownRuntime,
+        reply: Empty,
+    }
+    /// Runs one command inside a runtime, without a terminal: separate stdout and stderr, an exit
+    /// status or signal, and stdin from the client. Each message is JSON text, and the first
+    /// client message must be exec. The server reads the socket only while the command takes
+    /// its stdin, and it sends output only while the connection's queue has room, so nothing is
+    /// dropped. After exit the server closes with 1000, and after error with 1011. A runtime that
+    /// is down starts as for a first pane. If its start needs a pane to log in, the session
+    /// ends with an error. At most 32 sessions of one runtime run at once, and the others wait in
+    /// order for KO_RUNTIME_EXEC_WAIT_MS. A closed socket stops the command. The route is for
+    /// the host: a runtime connection is refused.
+    Exec {
+        method: WS,
+        path: /runtimes/{name: RuntimeName}/exec,
+        caller: optional,
+        send: ExecClient,
+        recv: ExecServer,
+    }
+    /// Takes the runtime down, as down without force does, and removes its directory.
+    DeleteRuntime { method: DELETE, path: /runtimes/{name: RuntimeName}, reply: Empty }
     /// The agents that a prompt can reach from the pane `from`. A pane identity may name only itself.
     PromptResolve {
         method: GET,
@@ -860,6 +927,26 @@ mod tests {
             Route::GetLayout {},
             Route::PutLayout {},
             Route::GetPane { id },
+            Route::ListRuntimes {},
+            Route::GetRuntime {
+                name: "dev".parse().unwrap(),
+            },
+            Route::WaitRuntime {
+                name: "dev".parse().unwrap(),
+                timeout_ms: WaitMs::clamped(250),
+            },
+            Route::ReportLead {
+                name: "dev".parse().unwrap(),
+            },
+            Route::DownRuntime {
+                name: "dev".parse().unwrap(),
+            },
+            Route::DeleteRuntime {
+                name: "dev".parse().unwrap(),
+            },
+            Route::Exec {
+                name: "dev".parse().unwrap(),
+            },
             Route::ClearHistory { id },
             Route::Client {},
             Route::DeletePane { id },

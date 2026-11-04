@@ -200,7 +200,7 @@ impl Child {
         env: &[Vec<u8>],
         targets: &[(std::os::fd::BorrowedFd<'_>, u8)],
     ) -> Child {
-        let pid = spawn::program(program, args, targets, Env::Only(env)).unwrap();
+        let pid = spawn::program(program, args, targets, Env::Only(env), None).unwrap();
         let (sender, exited) = mpsc::channel();
         let reaped = Arc::new(Mutex::new(false));
         let flag = reaped.clone();
@@ -721,7 +721,10 @@ fn spawn_server(
 }
 
 pub(crate) fn start_with(shell: &Path, env: &[(&str, &str)], args: &[&str]) -> Server {
-    let dir = Dir::new("ko-");
+    start_in(Dir::new("ko-"), shell, env, args)
+}
+
+pub(crate) fn start_in(dir: Dir, shell: &Path, env: &[(&str, &str)], args: &[&str]) -> Server {
     std::fs::write(dir.join(".zshrc"), "").unwrap();
     let log = PathBuf::from(format!("{}.log", dir.display()));
     let child = spawn_server(&dir, &log, shell, env, args);
@@ -888,7 +891,18 @@ impl Server {
         headers: &Headers,
         body: &[u8],
     ) -> (u16, Vec<u8>) {
-        self.read_reply(self.send_request(method, path, headers, body))
+        self.exchange_on(&self.dir.join("socket"), method, path, headers, body)
+    }
+
+    pub(crate) fn exchange_on(
+        &self,
+        socket: &Path,
+        method: &str,
+        path: &str,
+        headers: &Headers,
+        body: &[u8],
+    ) -> (u16, Vec<u8>) {
+        self.read_reply(self.send_request_on(socket, method, path, headers, body))
     }
 
     // The send half of `exchange`: the reply stays unread, so a test can act while the server
@@ -900,7 +914,18 @@ impl Server {
         headers: &Headers,
         body: &[u8],
     ) -> Steady {
-        let mut stream = self.dial().unwrap();
+        self.send_request_on(&self.dir.join("socket"), method, path, headers, body)
+    }
+
+    fn send_request_on(
+        &self,
+        socket: &Path,
+        method: &str,
+        path: &str,
+        headers: &Headers,
+        body: &[u8],
+    ) -> Steady {
+        let mut stream = UnixStream::connect(socket).map(Steady).unwrap();
         within(&stream, Instant::now() + DEADLINE);
         self.write_request(&mut stream, method, path, headers, body);
         stream
@@ -973,6 +998,16 @@ impl Server {
     }
 
     pub(crate) fn dial_ws(&self, path: &str, headers: Option<Headers>, status: u16) -> Option<Ws> {
+        self.dial_ws_on(&self.dir.join("socket"), path, headers, status)
+    }
+
+    pub(crate) fn dial_ws_on(
+        &self,
+        socket: &Path,
+        path: &str,
+        headers: Option<Headers>,
+        status: u16,
+    ) -> Option<Ws> {
         let headers = headers.unwrap_or_else(|| self.headers());
         let mut request =
             tungstenite::client::IntoClientRequest::into_client_request(format!("ws://ko{path}"))
@@ -983,7 +1018,7 @@ impl Server {
                 HeaderValue::from_str(value).unwrap(),
             );
         }
-        let stream = self.dial().unwrap();
+        let stream = UnixStream::connect(socket).map(Steady).unwrap();
         stream.set_read_timeout(Some(DEADLINE)).unwrap();
         stream.set_write_timeout(Some(DEADLINE)).unwrap();
         let shaken = tungstenite::client::client(request, stream);
@@ -1105,7 +1140,15 @@ impl Server {
 
     // A pane whose program printed its token with PRINT_TOKEN before it ran `command`.
     pub(crate) fn token_pane(&self, command: &str) -> String {
-        let pane = self.pane(&format!("stty raw -echo; {PRINT_TOKEN}; {command}"));
+        self.token_pane_with(json!({}), command)
+    }
+
+    pub(crate) fn token_pane_with(&self, extra: Value, command: &str) -> String {
+        let mut new = sh(&format!("stty raw -echo; {PRINT_TOKEN}; {command}"));
+        if let (Value::Object(fields), Value::Object(extra)) = (&mut new, extra) {
+            fields.extend(extra);
+        }
+        let pane = self.new_pane(new);
         self.screen_has(&pane, "TOKEN<");
         pane
     }

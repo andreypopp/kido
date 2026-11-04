@@ -929,8 +929,11 @@ that the process under test reads when it uses it:
   duration, so that a test reaches the capture's cap),
   `KO_CLIPBOARD_TIMEOUT_MS`, `KO_MESSAGE_ACK_MS` (a message's wait
   for its ack),
-  `KO_VIEW_QUEUE_BYTES` and `KO_VIEW_SPILL_BYTES`, read by `ko server`
-  (`ko_server/src/config.rs`);
+  `KO_VIEW_QUEUE_BYTES`, `KO_VIEW_SPILL_BYTES`,
+  `KO_RUNTIME_IDLE_SECONDS` (with an optional fraction, or `none`) and
+  `KO_RUNTIME_EXEC_WAIT_MS`, read by `ko server`
+  (`ko_server/src/config.rs`), beside `KO_RUNTIME_COMMAND_KIND=1`,
+  which admits the test-only runtime kind (design-runtimes.md);
 - `KO_PARENT_POLL_MS`, `KO_SPAWN_TIMEOUT_MS`, `KO_INBOX_WAIT_MS`,
   `KO_AGENT_LIST_TTL_MS`, `KO_STREAM_POLL_MS`, `KO_STREAM_FLUSH_MS`,
   `KO_STREAM_MAX_WAIT_MS`, `KO_STREAM_BUDGET_BYTES` and

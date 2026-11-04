@@ -9,12 +9,14 @@ use ko_pane_wire::frame::Size;
 use ko_sys::clock::Mono;
 use ko_sys::event::Token;
 
-use crate::config::{BUILD, Config, variable};
+use crate::config::{Config, path_with, terminal, variable};
 use crate::delivery::{Stamps, mint_stamps};
-use crate::ids::{PaneId, PaneToken, RunId, SessionId};
-use crate::pane::{Birth, Pane};
+use crate::ids::{PaneId, PaneToken, RunId, RuntimeName, SessionId};
+use crate::pane::{Birth, Pane, Program};
 use crate::pane_proc::{Cause, Io, Launch, Life};
-use crate::protocol::{Close, Command, CreatePane, Error, ErrorKind, Relation, Variable};
+use crate::protocol::{
+    Close, Command, CreatePane, Error, ErrorKind, Relation, Variable, env_valid,
+};
 
 #[derive(Debug)]
 pub(crate) enum AddError {
@@ -54,13 +56,8 @@ fn environment(
     token: &PaneToken,
     requested: &[Variable],
 ) -> Vec<Vec<u8>> {
-    let mut terminfo = config.terminfo.as_os_str().as_encoded_bytes().to_vec();
-    terminfo.push(b':');
-    let mut forced: Vec<(&str, Vec<u8>)> = vec![
-        ("TERM", b"xterm-ghostty".to_vec()),
-        ("TERM_PROGRAM", b"ko".to_vec()),
-        ("TERM_PROGRAM_VERSION", BUILD.as_bytes().to_vec()),
-        ("TERMINFO_DIRS", terminfo),
+    let mut forced: Vec<(&str, Vec<u8>)> = terminal(Some(&config.terminfo));
+    forced.extend([
         (
             "KO_SOCKET",
             config.socket.as_os_str().as_encoded_bytes().to_vec(),
@@ -71,23 +68,14 @@ fn environment(
             "KO_SHELL",
             config.shell.as_os_str().as_encoded_bytes().to_vec(),
         ),
-    ];
+    ]);
     if let Some(dir) = &config.bin_dir {
         let inherited = config
             .env
             .iter()
             .find_map(|entry| entry.strip_prefix(b"PATH="))
             .unwrap_or_default();
-        let mut path = dir.as_os_str().as_encoded_bytes().to_vec();
-        for entry in inherited
-            .split(|&byte| byte == b':')
-            .filter(|entry| !entry.is_empty())
-        {
-            if entry != dir.as_os_str().as_encoded_bytes() {
-                path.push(b':');
-                path.extend_from_slice(entry);
-            }
-        }
+        let path = path_with(dir, inherited);
         forced.push(("PATH", path));
     }
     let agent = (
@@ -124,6 +112,63 @@ fn environment(
         .map(|(name, value)| variable(name.as_bytes(), &value))
         .chain(inherited)
         .collect()
+}
+
+pub(crate) type Wrap<'a> = &'a dyn Fn(Option<&[Vec<u8>]>) -> Vec<Vec<u8>>;
+
+pub(crate) fn program(
+    config: &Config,
+    request: &CreatePane,
+    wrap: Option<Wrap<'_>>,
+) -> Result<Program, AddError> {
+    if request
+        .cwd
+        .as_ref()
+        .is_some_and(|cwd| !cwd.starts_with('/'))
+    {
+        return Err(AddError::Invalid("cwd must be absolute"));
+    }
+    if request
+        .env
+        .iter()
+        .any(|variable| !env_valid(&variable.name, &variable.value))
+    {
+        return Err(AddError::Invalid("invalid environment"));
+    }
+    let bytes = |path: &std::path::Path| path.as_os_str().as_encoded_bytes().to_vec();
+    let shell = match wrap {
+        Some(_) => b"/bin/sh".to_vec(),
+        None => bytes(&config.shell),
+    };
+    let inner: Option<Vec<Vec<u8>>> = match &request.command {
+        None => None,
+        Some(Command::Argv { argv }) => {
+            Some(argv.iter().map(|arg| arg.clone().into_bytes()).collect())
+        }
+        Some(Command::Shell { command }) => {
+            Some(vec![shell, b"-c".to_vec(), command.clone().into_bytes()])
+        }
+    };
+    let record = inner
+        .clone()
+        .unwrap_or_else(|| vec![bytes(&config.exe), b"shell".to_vec()]);
+    Ok(match wrap {
+        None => Program {
+            argv: record.clone(),
+            record,
+            cwd: request
+                .cwd
+                .as_ref()
+                .map_or_else(|| config.cwd.clone(), PathBuf::from),
+            env: request.env.clone(),
+        },
+        Some(wrap) => Program {
+            argv: wrap(inner.as_deref()),
+            record,
+            cwd: config.cwd.clone(),
+            env: Vec::new(),
+        },
+    })
 }
 
 impl Panes {
@@ -165,41 +210,27 @@ impl Panes {
         config: &Config,
         id: PaneId,
         size: Size,
-        request: &CreatePane,
         birth: Birth,
         io: &mut Io<'_>,
     ) -> Result<(), AddError> {
-        let cwd = request
-            .cwd
-            .as_ref()
-            .map_or_else(|| config.cwd.clone(), PathBuf::from);
-        let shell = || config.shell.as_os_str().as_encoded_bytes().to_vec();
-        let command: Vec<Vec<u8>> = match &request.command {
-            None => vec![
-                config.exe.as_os_str().as_encoded_bytes().to_vec(),
-                b"shell".to_vec(),
-            ],
-            Some(Command::Argv { argv }) => {
-                argv.iter().map(|arg| arg.clone().into_bytes()).collect()
-            }
-            Some(Command::Shell { command }) => {
-                vec![shell(), b"-c".to_vec(), command.clone().into_bytes()]
-            }
-        };
-        if !command
+        let program = &birth.program;
+        if !program
+            .record
             .first()
             .is_some_and(|executable| executable.starts_with(b"/"))
         {
             return Err(AddError::Invalid("command executable must be absolute"));
         }
-        if cwd.is_relative() {
+        if program.cwd.is_relative() {
             return Err(AddError::Invalid("cwd must be absolute"));
         }
         let nul = |bytes: &[u8]| bytes.contains(&0);
-        if nul(cwd.as_os_str().as_encoded_bytes()) || command.iter().any(|arg| nul(arg)) {
+        if nul(program.cwd.as_os_str().as_encoded_bytes())
+            || program.argv.iter().any(|arg| nul(arg))
+        {
             return Err(AddError::Invalid("NUL in pane request"));
         }
-        match fs::metadata(&cwd) {
+        match fs::metadata(&program.cwd) {
             Ok(meta) if meta.is_dir() => {}
             Ok(_) => return Err(AddError::Invalid("cwd must be a directory")),
             Err(error)
@@ -214,31 +245,38 @@ impl Panes {
             }
             Err(error) => return Err(AddError::Io(error)),
         }
-        let invalid = |Variable { name, value }: &Variable| {
-            name.is_empty() || name.contains(['=', '\0']) || value.contains('\0')
-        };
-        if request.env.iter().any(invalid) {
-            return Err(AddError::Invalid("invalid environment"));
-        }
         let token = PaneToken::mint().map_err(AddError::Io)?;
-        let env = environment(config, id, &token, &request.env);
-        let pane = Pane::spawn(
-            config,
-            &Launch {
-                id,
-                cwd: &cwd,
-                argv: &command,
-                env: &env,
-                size,
-            },
-            birth,
-            token,
-            &mut self.stamps,
-            io,
-        )
-        .map_err(AddError::Io)?;
+        let env = environment(config, id, &token, &program.env);
+        let (cwd, argv) = (program.cwd.clone(), program.argv.clone());
+        let launch = Launch {
+            id,
+            cwd: &cwd,
+            argv: &argv,
+            env: &env,
+            size,
+        };
+        let pane = Pane::spawn(config, &launch, birth, token, &mut self.stamps, io)
+            .map_err(AddError::Io)?;
         self.panes.push(pane);
         Ok(())
+    }
+
+    pub(crate) fn in_runtime<'a>(
+        &'a self,
+        runtime: &'a RuntimeName,
+    ) -> impl Iterator<Item = &'a Pane> {
+        self.panes
+            .iter()
+            .filter(move |pane| pane.runtime() == Some(runtime))
+    }
+
+    pub(crate) fn is_in(&self, id: PaneId, runtime: &RuntimeName) -> bool {
+        self.find(id)
+            .is_some_and(|pane| pane.runtime() == Some(runtime))
+    }
+
+    pub(crate) fn any_in(&self, runtime: &RuntimeName) -> bool {
+        self.in_runtime(runtime).next().is_some()
     }
 
     pub(crate) fn remove(&mut self, id: PaneId, io: &mut Io<'_>) {
@@ -418,6 +456,17 @@ pub(crate) fn scope(edges: &[Edge], caller: PaneId) -> BTreeSet<PaneId> {
     reach
 }
 
+pub(crate) fn is_descendant(edges: &[Edge], caller: PaneId, target: PaneId) -> bool {
+    edges
+        .iter()
+        .find(|edge| edge.pane == target)
+        .is_some_and(|edge| {
+            ancestors(edges, edge)
+                .iter()
+                .any(|above| above.pane == caller)
+        })
+}
+
 pub(crate) fn relation(edges: &[Edge], sender: PaneId, receiver: PaneId) -> Option<Relation> {
     let find = |pane| edges.iter().find(|edge| edge.pane == pane);
     let (from, to) = (find(sender)?, find(receiver)?);
@@ -446,6 +495,25 @@ pub(crate) fn relation(edges: &[Edge], sender: PaneId, receiver: PaneId) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::BUILD;
+
+    #[test]
+    fn a_descendant_is_a_child_or_a_child_of_a_descendant() {
+        let edge = |pane, parent: Option<u64>| Edge {
+            pane: PaneId::new(pane),
+            parent: parent.map(PaneId::new),
+            session: SessionId::new(1),
+        };
+        let edges = [
+            edge(1, None),
+            edge(2, Some(1)),
+            edge(3, Some(2)),
+            edge(4, None),
+        ];
+        let is = |caller, target| is_descendant(&edges, PaneId::new(caller), PaneId::new(target));
+        assert!(is(1, 2) && is(1, 3) && is(2, 3));
+        assert!(!is(3, 1) && !is(1, 4) && !is(1, 1) && !is(1, 9));
+    }
 
     // 1 and 2 are roots; 3 and 4 are children of 1; 5 is a child of 3;
     // 6 is a root of another session; 7 is a child of 1 in another session.
@@ -537,6 +605,12 @@ mod tests {
             clipboard_wait: crate::config::CLIPBOARD_WAIT,
             message_ack: crate::config::MESSAGE_ACK,
             view_queue: crate::config::ViewQueue::default(),
+            runtimes: crate::config::RuntimesConfig {
+                file: PathBuf::from("/tmp/runtimes.json"),
+                idle: crate::config::RuntimeIdle::Never,
+                exec_wait: crate::config::RUNTIME_EXEC_WAIT,
+                command_kind: false,
+            },
         }
     }
 
@@ -672,6 +746,7 @@ mod tests {
             vars: Default::default(),
             parent: None,
             close: Default::default(),
+            runtime: None,
         };
         let argv = |argv: &[&str]| {
             Some(Command::Argv {
@@ -696,28 +771,60 @@ mod tests {
             (request("/", None, &[("A=B", "c")]), "invalid environment"),
             (request("/", None, &[("", "c")]), "invalid environment"),
         ];
+        let add = |panes: &mut Panes, io: &mut Io<'_>, request: &CreatePane| {
+            let program = program(&config(), request, None)?;
+            let birth = Birth {
+                vars: Default::default(),
+                run: None,
+                parent: None,
+                close: Default::default(),
+                runtime: None,
+                program,
+            };
+            panes.add(&config(), PaneId::new(1), Size::DEFAULT, birth, io)
+        };
         for (request, message) in cases {
-            let refused = panes
-                .add(
-                    &config(),
-                    PaneId::new(1),
-                    Size::DEFAULT,
-                    &request,
-                    Birth::default(),
-                    &mut io,
-                )
-                .unwrap_err();
+            let refused = add(&mut panes, &mut io, &request).unwrap_err();
             assert_eq!(refused.to_string(), message);
         }
-        let spawned = panes.add(
-            &config(),
-            PaneId::new(1),
-            Size::DEFAULT,
-            &request("/", None, &[]),
-            Birth::default(),
-            &mut io,
-        );
+        let spawned = add(&mut panes, &mut io, &request("/", None, &[]));
         assert!(matches!(spawned, Err(AddError::Io(_))));
         assert!(panes.iter().next().is_none());
+    }
+
+    #[test]
+    fn a_runtime_pane_records_the_command_that_was_asked_for_and_runs_the_wrapper() {
+        let request = CreatePane {
+            cwd: Some("/work".to_owned()),
+            command: Some(Command::Shell {
+                command: "echo hi".to_owned(),
+            }),
+            env: Vec::new(),
+            vars: Default::default(),
+            parent: None,
+            close: Default::default(),
+            runtime: None,
+        };
+        let wrap = |inner: Option<&[Vec<u8>]>| {
+            let mut argv = vec![b"/bin/ko".to_vec(), b"runtime-exec".to_vec()];
+            argv.extend(inner.unwrap_or_default().iter().cloned());
+            argv
+        };
+        let program = program(&config(), &request, Some(&wrap)).unwrap();
+        let text = |argv: &[Vec<u8>]| {
+            argv.iter()
+                .map(|arg| String::from_utf8_lossy(arg).into_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(text(&program.record), ["/bin/sh", "-c", "echo hi"]);
+        assert_eq!(
+            text(&program.argv),
+            ["/bin/ko", "runtime-exec", "/bin/sh", "-c", "echo hi"]
+        );
+        assert_eq!(
+            program.cwd,
+            config().cwd,
+            "the wrapper runs where the server does"
+        );
     }
 }

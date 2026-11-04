@@ -13,8 +13,9 @@ use ko_sys::mapping::Named;
 use vstd::prelude::*;
 
 use crate::http::{self, Framing, Head, MAX_HEAD, Parsed, Status};
+use crate::ids::RuntimeName;
 use crate::link::{Link, Role, Wire};
-use crate::server::Verified;
+use crate::server::{Origin, Verified};
 use crate::spill::Spill;
 use crate::ws::{Header, Record};
 
@@ -321,6 +322,14 @@ impl Output {
 
     pub(crate) fn backed_up(&self) -> bool {
         self.queue.bytes >= self.queue.cap
+    }
+
+    pub(crate) fn room(&self) -> usize {
+        if self.is_open() {
+            self.queue.cap.saturating_sub(self.queue.bytes)
+        } else {
+            0
+        }
     }
 
     pub(crate) fn waiting(&self) -> bool {
@@ -747,11 +756,12 @@ pub(crate) struct Conn {
     scanned: usize,
     eof: bool,
     pub(crate) phase: Phase,
+    pub(crate) origin: Origin,
 }
 
 impl Conn {
     pub(crate) fn new(stream: Verified, poll: &mut Poll, cap: usize) -> Conn {
-        let stream = stream.into_stream();
+        let (stream, origin) = stream.into_parts();
         let token = poll.watch(stream.as_fd(), Interest::Read);
         Conn {
             token,
@@ -763,6 +773,7 @@ impl Conn {
             scanned: 0,
             eof: false,
             phase: Phase::Head,
+            origin,
         }
     }
 
@@ -771,6 +782,10 @@ impl Conn {
             Phase::Ws(link) => Some(&link.role),
             _ => None,
         }
+    }
+
+    pub(crate) fn runs_exec(&self, runtime: &RuntimeName) -> bool {
+        matches!(self.role(), Some(Role::Exec(session)) if session.runtime == *runtime && session.live())
     }
 
     pub(crate) fn role_mut(&mut self) -> Option<(&mut Role, Wire<'_>)> {
@@ -783,11 +798,11 @@ impl Conn {
     }
 
     pub(crate) fn interest(&self) -> Interest {
-        let read = match self.phase {
+        let read = match &self.phase {
             Phase::Head | Phase::Body { .. } | Phase::Oversized { .. } => {
                 !self.eof && !self.out.backed_up()
             }
-            Phase::Ws(_) => !self.eof,
+            Phase::Ws(link) => !self.eof && link.role.reads(),
             Phase::Handling => !self.eof,
             Phase::Streaming | Phase::Closing => false,
         };

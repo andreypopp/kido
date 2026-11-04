@@ -215,8 +215,14 @@ mod tests {
         assert_eq!(users(&pending), []);
         let deadline = poll.timer();
         poll.start(deadline, Duration::from_secs(5), None).unwrap();
-        let child =
-            spawn::program(Path::new("/usr/bin/true"), &[], &[], spawn::Env::Inherit).unwrap();
+        let child = spawn::program(
+            Path::new("/usr/bin/true"),
+            &[],
+            &[],
+            spawn::Env::Inherit,
+            None,
+        )
+        .unwrap();
         let start = Instant::now();
         while !pending.contains(&Signal::Child) && poll.is_active(deadline) {
             turn(&mut poll, Mode::Wait, &mut pending);

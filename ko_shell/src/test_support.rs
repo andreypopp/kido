@@ -37,6 +37,7 @@ pub(crate) fn run(program: &Path, args: &[&str], stdin: &str, env: &[(&str, &str
         args,
         &[(input.as_fd(), 0), (sink.as_fd(), 1), (sink.as_fd(), 2)],
         Env::Only(&env),
+        None,
     )
     .unwrap();
     drop(spawned);

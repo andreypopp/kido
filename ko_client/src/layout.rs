@@ -256,6 +256,7 @@ mod tests {
             vars: Default::default(),
             parent: None,
             close: Default::default(),
+            runtime: None,
         };
         let edge = Edge::Right;
         let cells = |count| Cells::new(count).unwrap();
@@ -414,6 +415,7 @@ mod tests {
             vars: Default::default(),
             parent: None,
             close: Default::default(),
+            runtime: None,
         };
         assert_eq!(
             created(

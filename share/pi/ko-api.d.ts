@@ -401,6 +401,109 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runtimes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description The runtimes of the configuration file and of the links that are up, with their state. */
+        get: operations["ListRuntimes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runtimes/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description One runtime. */
+        get: operations["GetRuntime"];
+        put?: never;
+        post?: never;
+        /** @description Takes the runtime down, as down without force does, and removes its directory. */
+        delete: operations["DeleteRuntime"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runtimes/{name}/down": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Takes the link of a runtime down. With live panes it is refused, unless force removes the panes first, as a stop does. */
+        post: operations["DownRuntime"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runtimes/{name}/exec": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Runs one command inside a runtime, without a terminal: separate stdout and stderr, an exit status or signal, and stdin from the client. Each message is JSON text, and the first client message must be exec. The server reads the socket only while the command takes its stdin, and it sends output only while the connection's queue has room, so nothing is dropped. After exit the server closes with 1000, and after error with 1011. A runtime that is down starts as for a first pane. If its start needs a pane to log in, the session ends with an error. At most 32 sessions of one runtime run at once, and the others wait in order for KO_RUNTIME_EXEC_WAIT_MS. A closed socket stops the command. The route is for the host: a runtime connection is refused. */
+        get: operations["Exec"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runtimes/{name}/lead": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description The pane that was elected to run the interactive step of a start reports how it ended. */
+        post: operations["ReportLead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runtimes/{name}/wait": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Waits up to the timeout for the link of the runtime to be up or failed. Only a pane of the runtime may wait. The first waiter while the start has an interactive step gets that step's argv in lead, and an Up reply for a pane comes after the server wrote its token file. */
+        get: operations["WaitRuntime"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sessions/{id}": {
         parameters: {
             query?: never;
@@ -456,6 +559,8 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description An absolute path. */
+        AbsPath: string;
         Agent: {
             msg?: string;
             since: number;
@@ -650,6 +755,7 @@ export interface components {
             /** @default [] */
             env?: components["schemas"]["Variable"][];
             parent?: components["schemas"]["PaneId"];
+            runtime?: components["schemas"]["RuntimeName"];
             vars?: {
                 [key: string]: unknown;
             };
@@ -666,6 +772,14 @@ export interface components {
         };
         /** @enum {string} */
         Direction: "next" | "previous";
+        DownRuntime: {
+            /**
+             * @description Remove the live panes of the runtime first, as a stop does. Without force, live panes
+             *     refuse the request.
+             * @default false
+             */
+            force?: boolean;
+        };
         DraftFloat: {
             /** @default false */
             border?: boolean;
@@ -750,6 +864,67 @@ export interface components {
             /** @constant */
             kind: "vt_mismatch";
         } & components["schemas"]["Version"]));
+        /**
+         * @description A message of the client of an exec session. The first one must be exec. The data of stdin is
+         *     at most 64 KiB before its encoding.
+         */
+        ExecClient: ({
+            /** @constant */
+            type: "exec";
+        } & components["schemas"]["ExecRequest"]) | {
+            data: components["schemas"]["Base64"];
+            /** @constant */
+            type: "stdin";
+        } | {
+            /** @constant */
+            type: "eof";
+        } | {
+            signal: components["schemas"]["KillSignal"];
+            /** @constant */
+            type: "signal";
+        };
+        /**
+         * @description Runs argv inside the runtime without a shell. The cwd is a path of the runtime. The env
+         *     applies after the env of the runtime. Without stdin the command reads an empty input.
+         */
+        ExecRequest: {
+            argv: string[];
+            cwd?: components["schemas"]["AbsPath"];
+            /** @default {} */
+            env?: {
+                [key: string]: string;
+            };
+            stdin: boolean;
+        };
+        /**
+         * @description A message of the server in an exec session. After exit the server closes with 1000, and
+         *     after error with 1011. Error is the one way a session ends without exit.
+         */
+        ExecServer: {
+            data: components["schemas"]["Base64"];
+            /** @constant */
+            type: "stdout";
+        } | {
+            data: components["schemas"]["Base64"];
+            /** @constant */
+            type: "stderr";
+        } | ({
+            /** @constant */
+            type: "exit";
+        } | {
+            status: number;
+        } | {
+            signal: components["schemas"]["ExitSignal"];
+        }) | {
+            message: string;
+            /** @constant */
+            type: "error";
+        };
+        /**
+         * @description The signals by which a command can end. Other is any signal that this list does not name.
+         * @enum {string}
+         */
+        ExitSignal: "HUP" | "INT" | "QUIT" | "ILL" | "TRAP" | "ABRT" | "BUS" | "FPE" | "KILL" | "USR1" | "SEGV" | "USR2" | "PIPE" | "ALRM" | "TERM" | "OTHER";
         Float: {
             border: boolean;
             cols: components["schemas"]["Cells"];
@@ -804,6 +979,7 @@ export interface components {
             output: string;
             pane?: components["schemas"]["PaneId"];
             parent?: components["schemas"]["Parent"];
+            runtime?: components["schemas"]["RuntimeName"];
             session?: string;
             startedAt: components["schemas"]["Timestamp"];
         };
@@ -834,6 +1010,11 @@ export interface components {
         };
         /** @enum {string} */
         KeyAction: "release" | "press" | "repeat";
+        /**
+         * @description The signals that a client can send to the command of an exec session.
+         * @enum {string}
+         */
+        KillSignal: "term" | "kill" | "int";
         Layout: {
             sessions: components["schemas"]["Session"][];
         };
@@ -841,6 +1022,15 @@ export interface components {
             layout: components["schemas"]["Layout"];
             panes: components["schemas"]["Listing"][];
             revision: number;
+        };
+        /** @description How the interactive step of a start ended, as the elected pane reports it. */
+        LeadReport: {
+            exit: number;
+            /**
+             * @description The tail of the error output of the step. Its last line is the message of a failed start.
+             * @default
+             */
+            stderr?: string;
         };
         Leaf: {
             cols: components["schemas"]["Cells"];
@@ -855,6 +1045,24 @@ export interface components {
             media: components["schemas"]["Medium"][];
             terminal: components["schemas"]["Terminal"];
         };
+        /**
+         * @description The state of a runtime's link. The first pane of a runtime starts it, and the idle rule or a
+         *     request takes it down.
+         */
+        LinkState: {
+            /** @constant */
+            type: "down";
+        } | {
+            /** @constant */
+            type: "starting";
+        } | {
+            /** @constant */
+            type: "up";
+        } | {
+            message: string;
+            /** @constant */
+            type: "failed";
+        };
         Listing: {
             close?: components["schemas"]["Close"];
             command: string[];
@@ -868,6 +1076,7 @@ export interface components {
             pid?: number;
             progress?: components["schemas"]["Progress"];
             run?: components["schemas"]["RunRow"];
+            runtime?: components["schemas"]["RuntimeName"];
             status?: components["schemas"]["PaneStatus"];
             title: string;
             /** @default {} */
@@ -971,6 +1180,7 @@ export interface components {
             env?: components["schemas"]["Variable"][];
             name?: components["schemas"]["Name"];
             parent?: components["schemas"]["PaneId"];
+            runtime?: components["schemas"]["RuntimeName"];
             session?: components["schemas"]["SessionRef"];
             vars?: {
                 [key: string]: unknown;
@@ -1041,6 +1251,11 @@ export interface components {
             id?: number;
             pasted: boolean;
             unsafe: boolean;
+        };
+        /** @description A directory of the host and the directory of the runtime that holds the same files. */
+        PathMap: {
+            host: components["schemas"]["AbsPath"];
+            runtime: components["schemas"]["AbsPath"];
         };
         Payload: {
             data?: components["schemas"]["Data"];
@@ -1159,7 +1374,31 @@ export interface components {
             outcome?: components["schemas"]["RunOutcome"];
             pane?: components["schemas"]["PaneId"];
             parent?: components["schemas"]["Parent"];
+            runtime?: components["schemas"]["RuntimeName"];
             startedAt: components["schemas"]["Timestamp"];
+        };
+        RuntimeInfo: {
+            kind: components["schemas"]["RuntimeKind"];
+            name: components["schemas"]["RuntimeName"];
+            /** @description The panes of the document that the runtime runs, dead ones included. */
+            panes: number;
+            /** @description The effective host-to-runtime prefix list that maps a host cwd. */
+            paths: components["schemas"]["PathMap"][];
+            /** @description The path of the runtime's listener on the host, bound while the link is up. */
+            socket: string;
+            state: components["schemas"]["LinkState"];
+        };
+        /** @enum {string} */
+        RuntimeKind: "command";
+        /** @description One to 32 bytes of a to z, 0 to 9 and -. host is not a runtime name. */
+        RuntimeName: string;
+        /**
+         * @description The reply of a wait on a runtime: its state when the wait ends. Only the one waiter that was
+         *     elected to run the interactive step gets lead, with the argv of that step.
+         */
+        RuntimeWait: {
+            lead?: string[];
+            state: components["schemas"]["LinkState"];
         };
         Scrollback: {
             /** @constant */
@@ -1270,6 +1509,7 @@ export interface components {
             env?: components["schemas"]["Variable"][];
             name: components["schemas"]["RunName"];
             parent?: components["schemas"]["Parent"];
+            runtime?: components["schemas"]["RuntimeName"];
             session?: components["schemas"]["SessionRef"];
         };
         Started: {
@@ -2455,6 +2695,251 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Waited"];
+                };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    ListRuntimes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeInfo"][];
+                };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    GetRuntime: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example dev */
+                name: components["schemas"]["RuntimeName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeInfo"];
+                };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    DeleteRuntime: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example dev */
+                name: components["schemas"]["RuntimeName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Empty"];
+                };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    DownRuntime: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example dev */
+                name: components["schemas"]["RuntimeName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DownRuntime"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Empty"];
+                };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    Exec: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
+            path: {
+                /** @example dev */
+                name: components["schemas"]["RuntimeName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Switching Protocols */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    ReportLead: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
+            path: {
+                /** @example dev */
+                name: components["schemas"]["RuntimeName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LeadReport"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Empty"];
+                };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    WaitRuntime: {
+        parameters: {
+            query?: {
+                /** @example 250 */
+                timeout_ms?: components["schemas"]["WaitMs"];
+            };
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
+            path: {
+                /** @example dev */
+                name: components["schemas"]["RuntimeName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeWait"];
                 };
             };
             /** @description The common error body. */
