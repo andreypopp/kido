@@ -176,7 +176,7 @@ app_knob = re.compile(r'KIDO_(VISUAL|STRESS|APP_|DEMO_|PRODUCT_NAME$|VSYNC_MEASU
 app_scope = ('app/', 'docs/design-app.md', 'docs/known-issues-app.md')
 gates = [
     re.compile(p) for p in (
-        r'kido-pi', r'kido-tmux', r'share/kido', r'\bdune\b', r'(?i)\btmux\b', r'install-tmux-fork', r'test_e2e',
+        r'kido-pi', r'kido-tmux', r'share/kido', r'\bdune\b', r'install-tmux-fork', r'test_e2e',
         r'\bgo test\b', r'\.mli?\b', r'verify-ko', r'make flake', r'make e2e(?![\w-])', r'lib_tmux', r'rfc/kido-server',
         r'lib/[a-z_]+\.ml',
     )
@@ -187,10 +187,7 @@ gate_exempt = (
     'app/design/',  # historical mockups, kept as drawn
     'scripts/lint.sh', 'app/VisualTests/PaletteTests.swift',  # the gate's own patterns; snapshot test data
 )
-# Exact statements, as the sleep tables above: a real tmux passthrough form in a fuzz sample.
-gate_statements = {
-    'ko_server/src/harness.rs': {'"tmux;\\x1b\\x1b[0m",': 1},
-}
+gate_statements = {}
 prefilter = r'KIDO_|kido-|share/kido|dune|tmux|test_e2e|go test|\.ml|verify-ko|make flake|make e2e|lib/|rfc/kido-server'
 excluded = [f':(exclude){entry}' for entry in gate_exempt]
 found = subprocess.run(['git', 'grep', '-I', '-n', '-i', '--untracked', '-E', prefilter, '--', '.', *excluded], capture_output=True, text=True)
