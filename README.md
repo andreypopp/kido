@@ -66,6 +66,9 @@ terminal. A status line at the bottom shows the session, its windows
 | `C-a s` or `w` | choose a pane from the list with `Up`, `Down`, `Enter`; `Escape` leaves |
 | `C-a C-s` | show or hide the list |
 | `C-a e` | open the pane's scrollback in `$PAGER` |
+| `C-a [` | enter copy mode on the active pane |
+| `C-a PageUp` | enter copy mode one page up |
+| `C-a ]` | paste the copy buffer into the active pane |
 | `Ctrl+D` on an exited pane | remove it |
 | click a row | show that pane |
 | drag a divider | move it |
@@ -79,9 +82,35 @@ is `C-a Tab`.
 The terminal client shows the window's splits, zoom and floats as
 Kido.app does, and both edit the same layout. A click in a pane
 selects it, a drag on a divider moves it, and the wheel scrolls the
-pane under the pointer. The
-terminal client has no copy mode yet: the scrollback goes to
-`$PAGER`.
+pane under the pointer.
+
+Copy mode uses vi keys over the pane's whole history. The pane's
+output stops on the screen until you leave, and the pane's top right
+shows `[offset/history]`.
+
+| key in copy mode | action |
+|-----|--------|
+| `h` `j` `k` `l`, arrows | move the cursor |
+| `w` `b` `e`, `W` `B` `E` | move by word |
+| `0` `^` `$` | start, first non-blank, end of the line |
+| `H` `M` `L` | top, middle, bottom of the screen |
+| `g` / `G` | top / bottom of the history |
+| `C-b` `PageUp` / `C-f` `PageDown` | one page up / down |
+| `C-u` / `C-d` | half a page up / down |
+| `C-y` / `C-e` | scroll one line up / down |
+| `f` `F` `t` `T` and a character | jump in the line; `;` again, `,` reverse |
+| `Space` or `v` | begin a selection |
+| `V` | select whole lines |
+| `C-v` | toggle a rectangle selection |
+| `o` | go to the other end of the selection |
+| `Escape` | clear the selection, or leave with none |
+| `Enter` or `y` | copy the selection to the clipboard and the copy buffer, and leave |
+| `q` | leave |
+| `C-a` | leave, then take a prefix key |
+
+In copy mode a click places the cursor, a drag selects, a double
+click selects a word, a triple click a line, and the wheel scrolls;
+the pane gets no mouse event.
 
 `ko HOST` attaches to a ko server on another machine over ssh, and
 reconnects when the connection drops. It never starts a server there:

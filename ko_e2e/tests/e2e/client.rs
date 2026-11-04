@@ -30,6 +30,68 @@ fn split_echo_window(s: &Server) {
 }
 
 #[test]
+fn client_copy_mode_copies_and_pastes() {
+    let s = start(&[]);
+    let fixture = r#"import os,tty
+tty.setraw(0)
+os.write(1,b'\x1b[?2004hCOPY-one\r\nCOPY-two\r\nREADY-copy')
+b=b''
+while True:
+ c=os.read(0,1)
+ if c==b'!': os.write(1,b'\r\nOUTPUT-during-copy'); continue
+ b+=c
+ if b.endswith(b'\x1b[201~'):
+  os.write(1,b'\r\nPASTED:'+b.hex().encode()); b=b''
+"#;
+    let pane = s.pane(&format!("exec python3 -u -c {}", quote(fixture)));
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.attach("cat");
+    o.contains("READY-copy");
+    o.prefix("[");
+    o.contains("[copy]");
+    o.raw("kVy");
+    o.wait("copy writes OSC 52", || o.clipboard() == b"COPY-two");
+    o.gone("[copy]");
+    o.prefix("]");
+    let pasted = format!("PASTED:{}", hex("\x1b[200~COPY-two\x1b[201~"));
+    o.contains(&pasted);
+    o.prefix("[");
+    o.contains("[copy]");
+    o.raw("k");
+    o.quiet();
+    let before = o.screen();
+    let cursor = o.cursor();
+    assert!(!cursor.0, "copy mode hides the real cursor");
+    let inverse_cursor = || {
+        assert!(
+            o.cell(PANE_X + pasted.len(), 2)
+                .style
+                .attrs
+                .has(ko_vt::render::Attribute::Inverse)
+        )
+    };
+    inverse_cursor();
+    s.text(&pane, "!");
+    s.screen_has(&pane, "OUTPUT-during-copy");
+    o.quiet();
+    assert_eq!(
+        o.screen(),
+        before,
+        "output must not move the frozen viewport"
+    );
+    assert_eq!(o.cursor(), cursor);
+    inverse_cursor();
+    o.raw("q");
+    o.contains("OUTPUT-during-copy");
+    o.gone("[copy]");
+    o.prefix("[");
+    o.contains("[copy]");
+    o.resize(125, 30);
+    o.gone("[copy]");
+    o.detach();
+}
+
+#[test]
 fn client_two_clients_one_window_and_the_sizer() {
     let s = start(&[]);
     split_echo_window(&s);

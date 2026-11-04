@@ -14,8 +14,12 @@ use ko_sys::clock::Mono;
 use ko_sys::event::{Poll, Ready, Token};
 use ko_vt::compress::{Compress, Tick};
 use ko_vt::render::Frame;
-use ko_vt::{Extent, ReadyScan, Terminal};
+use ko_vt::{Extent, ReadyScan, Shape as SelectionShape, Span, Terminal};
 use tungstenite::Bytes;
+
+use crate::copy::{self, Entry, Outcome, Row};
+use crate::input::{KeyEvent, MouseKind};
+use ko_pane_wire::frame::Cell;
 
 const OPTIONS: ViewOptions = ViewOptions {
     history: History::All,
@@ -173,6 +177,30 @@ fn apply(vt: &mut Terminal, marker: &Marker) -> Result<(), ko_vt::Error> {
 }
 
 #[derive(Debug)]
+struct Frozen {
+    copy: copy::Mode,
+    dirty: bool,
+}
+
+fn copy_row(vt: &Terminal, cols: u16, row: u32) -> Result<Row, String> {
+    let bytes = vt
+        .text_between(Span {
+            start: Cell { col: 0, row },
+            end: Cell {
+                col: cols.saturating_sub(1),
+                row,
+            },
+            shape: SelectionShape::Rectangle,
+        })
+        .map_err(text)?;
+    let wraps = vt.row_wraps(row).map_err(text)?;
+    Ok(Row {
+        text: String::from_utf8_lossy(&bytes).into_owned(),
+        wraps,
+    })
+}
+
+#[derive(Debug)]
 pub(crate) struct Mirror {
     link: Link,
     token: Token,
@@ -182,6 +210,8 @@ pub(crate) struct Mirror {
     assembly: Option<Assembly>,
     dead: Option<protocol::Dead>,
     resume: Resume,
+    frozen: Option<Frozen>,
+    awaiting_snapshot: bool,
 }
 
 impl Mirror {
@@ -232,6 +262,8 @@ impl Mirror {
             assembly: None,
             dead: None,
             resume: Resume::default(),
+            frozen: None,
+            awaiting_snapshot: false,
         };
         mirror.handle(poll, wire::buffered(token), Instant::now())?;
         Ok(mirror)
@@ -313,6 +345,13 @@ impl Mirror {
     }
 
     fn marker(&mut self, state: &mut State, event: &str) -> Result<(), String> {
+        if let Some(frozen) = &mut self.frozen {
+            frozen.dirty = true;
+            return Ok(());
+        }
+        if self.awaiting_snapshot {
+            return Ok(());
+        }
         let ViewEvent::Marked(marked) = protocol::decode(event.as_bytes()).map_err(text)? else {
             return Ok(());
         };
@@ -328,7 +367,23 @@ impl Mirror {
     }
 
     fn record(&mut self, state: &mut State, record: &Bytes) -> Result<(), String> {
-        match parse_record(record) {
+        if let Some(frozen) = &mut self.frozen {
+            frozen.dirty = true;
+            return Ok(());
+        }
+        let parsed = parse_record(record);
+        if self.awaiting_snapshot {
+            match &parsed {
+                Ok(Parsed::Snapshot { slice, .. })
+                    if Slice::decode(slice).is_some_and(|(slice, _)| slice.first) =>
+                {
+                    self.awaiting_snapshot = false
+                }
+                Ok(_) => return Ok(()),
+                Err(_) => {}
+            }
+        }
+        match parsed {
             Ok(Parsed::Output { offset, data }) => self.output(state, record, offset, data),
             Ok(Parsed::Snapshot { offset, slice }) => self.snapshot(state, offset, &slice),
             Err(BadRecord::Short) => Err("short record".to_owned()),
@@ -452,7 +507,123 @@ impl Mirror {
         Ok(())
     }
 
+    pub(crate) fn copy(&self) -> Option<&copy::Mode> {
+        self.frozen.as_ref().map(|frozen| &frozen.copy)
+    }
+
+    pub(crate) fn freeze(&mut self, entry: Entry) -> Result<bool, String> {
+        if self.assembly.is_some() || self.awaiting_snapshot {
+            return Ok(false);
+        }
+        let mut state = self.shared.lock();
+        let Surface::Full(screen) = &mut state.surface else {
+            return Ok(false);
+        };
+        if screen.vt.hold().is_some() {
+            return Ok(false);
+        }
+        let size = screen.vt.size();
+        let size = (size.cols.get(), size.rows.get());
+        let total = u32::try_from(screen.vt.total_rows().map_err(text)?).map_err(text)?;
+        let offset = u32::try_from(screen.vt.viewport_offset().map_err(text)?).map_err(text)?;
+        let copy = copy::Mode::open(
+            screen.vt.cursor().map_err(text)?,
+            total,
+            offset,
+            size,
+            entry,
+            |row| copy_row(&screen.vt, size.0, row),
+        )?;
+        if copy.offset() != offset {
+            screen.vt.scroll_to(copy.offset()).map_err(text)?;
+            state.generation += 1;
+            state.drawn = Drawn::Fresh;
+        }
+        self.frozen = Some(Frozen { copy, dirty: false });
+        Ok(true)
+    }
+
+    pub(crate) fn copy_key(&mut self, key: &KeyEvent) -> Result<Outcome, String> {
+        self.copy_change(|copy, vt, cols| {
+            copy.feed(
+                key,
+                |row| copy_row(vt, cols, row),
+                |row| vt.row_wraps(row).map_err(text),
+            )
+        })
+    }
+
+    pub(crate) fn copy_mouse(
+        &mut self,
+        kind: MouseKind,
+        col: u16,
+        row: u32,
+        clicks: u8,
+    ) -> Result<(), String> {
+        if matches!(kind, MouseKind::Up(_) | MouseKind::Move) {
+            return Ok(());
+        }
+        self.copy_change(|copy, vt, cols| {
+            copy.mouse(
+                kind,
+                Cell { col, row },
+                clicks,
+                |row| copy_row(vt, cols, row),
+                |row| vt.row_wraps(row).map_err(text),
+            )
+        })
+    }
+
+    fn copy_change<T>(
+        &mut self,
+        change: impl FnOnce(&mut copy::Mode, &Terminal, u16) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let frozen = self.frozen.as_mut().ok_or("copy mode is not active")?;
+        let mut state = self.shared.lock();
+        let screen = state
+            .surface
+            .screen_mut()
+            .ok_or("copy screen is not ready")?;
+        let before = frozen.copy;
+        let result = change(&mut frozen.copy, &screen.vt, before.size().0)?;
+        if frozen.copy.offset() != before.offset() {
+            screen.vt.scroll_to(frozen.copy.offset()).map_err(text)?;
+            state.generation += 1;
+            state.drawn = Drawn::Fresh;
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn copy_text(&self) -> Result<Option<Vec<u8>>, String> {
+        let Some(span) = self.copy().and_then(copy::Mode::range) else {
+            return Ok(None);
+        };
+        let state = self.shared.lock();
+        let screen = state.surface.screen().ok_or("copy screen is not ready")?;
+        screen.vt.text_between(span).map(Some).map_err(text)
+    }
+
+    pub(crate) fn thaw(&mut self, poll: &mut Poll) -> Result<(), String> {
+        if let Some(frozen) = self.frozen.take() {
+            self.bottom()?;
+            if frozen.dirty {
+                self.resync(poll)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn resync(&mut self, poll: &mut Poll) -> Result<(), String> {
+        self.resume.clear();
+        self.assembly = None;
+        self.awaiting_snapshot = true;
+        self.send(poll, &ViewRequest::Resync(OPTIONS))
+    }
+
     pub(crate) fn bottom(&mut self) -> Result<(), String> {
+        if self.frozen.is_some() {
+            return Ok(());
+        }
         let mut state = self.shared.lock();
         if state.scroll_bottom().map_err(text)? {
             state.generation += 1;
@@ -478,7 +649,7 @@ impl Mirror {
             }
         });
         if resync {
-            self.send(poll, &ViewRequest::Resync(OPTIONS))?;
+            self.resync(poll)?;
         }
         Ok(())
     }
@@ -512,6 +683,9 @@ impl Mirror {
     }
 
     pub(crate) fn unwatch(&mut self, poll: &mut Poll) {
+        if self.frozen.take().is_some() {
+            self.resume.clear();
+        }
         self.link.unwatch(poll);
     }
 
@@ -626,6 +800,90 @@ mod tests {
             Surface::Partial(_) => "partial",
             Surface::Loading(..) => "loading",
         }
+    }
+
+    #[test]
+    fn copy_row_stops_before_a_wrapped_wide_character() {
+        let vt = server(8, 3, "1234567界tail");
+        assert_eq!(copy_row(&vt, 8, 0).unwrap().text, "1234567");
+        let mut mode = copy::Mode::open(
+            ko_vt::Cursor {
+                x: 7,
+                y: 0,
+                visible: true,
+                pending_wrap: false,
+            },
+            3,
+            0,
+            (8, 3),
+            Entry::Here,
+            |row| copy_row(&vt, 8, row),
+        )
+        .unwrap();
+        let mut events = Vec::new();
+        crate::input::Input::default().feed(b"l", Instant::now(), &mut events);
+        for event in events {
+            if let crate::input::Event::Key(key) = event {
+                mode.feed(
+                    &key,
+                    |row| copy_row(&vt, 8, row),
+                    |row| vt.row_wraps(row).map_err(text),
+                )
+                .unwrap();
+            }
+        }
+        assert!(mode.highlights(None, 6, 0, 1));
+        assert!(!mode.highlights(None, 7, 0, 1));
+    }
+
+    #[test]
+    fn copy_freezes_output_and_resyncs_after_a_dirty_exit() {
+        let (mut mirror, theirs, mut poll) = mirror();
+        theirs
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut server = tungstenite::WebSocket::from_raw_socket(
+            theirs,
+            tungstenite::protocol::Role::Server,
+            None,
+        );
+        assert!(!mirror.freeze(Entry::Here).unwrap());
+        let snapshot = slices(
+            &self::server(8, 2, "old").snapshot_bytes(false).unwrap(),
+            4096,
+        );
+        feed(&mut mirror, &snapshot[0]).unwrap();
+        assert!(mirror.freeze(Entry::Here).unwrap());
+        let frozen = *mirror.copy().unwrap();
+        feed(&mut mirror, &output(b"\r\nnew\r\nlatest")).unwrap();
+        let in_transit = slices(
+            &self::server(8, 2, "stale").snapshot_bytes(false).unwrap(),
+            40,
+        );
+        feed(&mut mirror, &in_transit[0]).unwrap();
+        assert_eq!(row(&mirror, 0), "old");
+        assert_eq!(*mirror.copy().unwrap(), frozen);
+        mirror.thaw(&mut poll).unwrap();
+        let request = server.read().unwrap().into_text().unwrap();
+        assert_eq!(
+            protocol::decode::<ViewRequest>(request.as_bytes()).unwrap(),
+            ViewRequest::Resync(OPTIONS)
+        );
+        assert!(!mirror.freeze(Entry::Here).unwrap());
+        for continuation in &in_transit[1..] {
+            feed(&mut mirror, continuation).unwrap();
+        }
+        feed(&mut mirror, &output(b"must be discarded")).unwrap();
+        assert_eq!(row(&mirror, 0), "old");
+        let fresh = slices(
+            &self::server(8, 2, "new\r\nlatest")
+                .snapshot_bytes(false)
+                .unwrap(),
+            4096,
+        );
+        feed(&mut mirror, &fresh[0]).unwrap();
+        assert_eq!(row(&mirror, 1), "latest");
+        assert!(mirror.copy().is_none());
     }
 
     #[test]

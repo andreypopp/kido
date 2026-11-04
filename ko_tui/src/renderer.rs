@@ -1,10 +1,11 @@
 use std::fmt::Write;
 
+use crate::copy;
 use ko_client::status::Mark;
 use ko_server::ids::{PaneId, WindowId};
 use ko_server::protocol::{Session, Window};
 use ko_vt::render::{Attribute, Attributes, Cell, Colour, CursorShape, Frame, Style};
-use ko_vt::unicode::clusters;
+use ko_vt::unicode::{clusters, width};
 
 use crate::differ::Differ;
 use crate::geometry::{Connections, Geometry, Rect};
@@ -70,6 +71,7 @@ pub(crate) struct Layout {
     pub(crate) status: Status,
     pub(crate) help: bool,
     pub(crate) resizing: bool,
+    pub(crate) copy: Option<(PaneId, copy::Mode)>,
     pub(crate) geometry: std::rc::Rc<Geometry>,
     pub(crate) active: Option<PaneId>,
     pub(crate) sidebar: Vec<Line>,
@@ -205,20 +207,13 @@ fn draw_line(
     draw_row(grid, cols, at, width, base, &[(text, base)]);
 }
 
-fn columns(text: &str) -> usize {
-    clusters(text)
-        .iter()
-        .map(|(_, wide)| usize::from(*wide))
-        .sum()
-}
-
 fn draw_status(grid: &mut [Cell], cols: usize, y: usize, status: &Status) {
     let base = Style {
         fg: Colour::Indexed(0),
         bg: Colour::Indexed(2),
         ..Style::default()
     };
-    let right = columns(&status.right).min(cols);
+    let right = width(&status.right).min(cols);
     draw_line(grid, cols, (0, y), cols - right, base, &status.left);
     draw_line(grid, cols, (cols - right, y), right, base, &status.right);
 }
@@ -303,7 +298,15 @@ fn draw_ui(l: &Layout) -> Vec<Cell> {
         }
     }
     if let Some(y) = l.rows.checked_sub(1) {
-        draw_status(&mut grid, l.cols, y, &l.status);
+        let status = if l.copy.is_some() {
+            Status {
+                left: l.status.left.clone(),
+                right: "[copy]".to_owned(),
+            }
+        } else {
+            l.status.clone()
+        };
+        draw_status(&mut grid, l.cols, y, &status);
     }
     grid
 }
@@ -373,6 +376,12 @@ impl Renderer {
             for pane in &l.geometry.panes {
                 let r = pane.rect;
                 let shown = frames.iter().find(|frame| frame.pane == pane.pane);
+                let copy = l
+                    .copy
+                    .as_ref()
+                    .filter(|(id, _)| *id == pane.pane)
+                    .map(|(_, mode)| mode);
+                let span = copy.and_then(copy::Mode::range);
                 if let Some(title) = &pane.border {
                     let outer = pane.outer();
                     for y in outer.y..outer.y + outer.rows {
@@ -428,6 +437,17 @@ impl Renderer {
                         });
                         let empty = blank();
                         let cell = source.unwrap_or(&empty);
+                        let mut style = cell.style;
+                        if copy.is_some_and(|mode| {
+                            mode.highlights(
+                                span,
+                                u16::try_from(x).unwrap_or(u16::MAX),
+                                u32::try_from(y).unwrap_or(u32::MAX),
+                                cell.width,
+                            )
+                        }) {
+                            style.attrs = style.attrs.with(Attribute::Inverse);
+                        }
                         let clipped = (cell.width == 2
                             && (x + 1 >= r.cols || !area.contains(r.x + x + 1, r.y + y)))
                             || (cell.width == 0 && x == 0);
@@ -437,15 +457,36 @@ impl Renderer {
                                 l.cols,
                                 l.pane_x + r.x + x,
                                 r.y + y,
-                                &Cell {
-                                    style: cell.style,
-                                    ..blank()
-                                },
+                                &Cell { style, ..blank() },
                             );
                         } else {
                             put(&mut self.cells, l.cols, l.pane_x + r.x + x, r.y + y, cell);
+                            if let Some(cell) =
+                                self.cells.get_mut((r.y + y) * l.cols + l.pane_x + r.x + x)
+                            {
+                                cell.style = style;
+                            }
                         }
                     }
+                }
+                if let Some(copy) = copy
+                    && r.rows > 0
+                    && area.contains(r.x, r.y)
+                {
+                    let available = r.cols.min(area.cols.saturating_sub(r.x));
+                    let indicator = format!("[{}/{}]", copy.offset(), copy.history());
+                    let length = width(&indicator).min(available);
+                    draw_line(
+                        &mut self.cells,
+                        l.cols,
+                        (l.pane_x + r.x + available - length, r.y),
+                        length,
+                        Style {
+                            fg: Colour::Indexed(3),
+                            ..Style::default()
+                        },
+                        &indicator,
+                    );
                 }
                 if let Some(dead) = shown.and_then(|pane| pane.dead)
                     && r.rows > 0
@@ -484,6 +525,7 @@ impl Renderer {
                 let (x, y) = (usize::from(c.x), usize::from(c.y));
                 if pane.dead.is_some()
                     || l.help
+                    || l.copy.as_ref().is_some_and(|(id, _)| *id == pane.pane)
                     || x >= r.cols
                     || y >= r.rows
                     || !area.contains(r.x + x, r.y + y)
@@ -574,6 +616,55 @@ mod tests {
     }
 
     #[test]
+    fn copy_status_indicator_selection_and_cursor_are_drawn() {
+        let copy = copy::Mode::open(
+            ko_vt::Cursor {
+                x: 2,
+                y: 0,
+                visible: true,
+                pending_wrap: false,
+            },
+            12,
+            4,
+            (20, 3),
+            copy::Entry::Here,
+            |_| {
+                Ok(copy::Row {
+                    text: String::new(),
+                    wraps: false,
+                })
+            },
+        )
+        .unwrap();
+        let layout = Layout {
+            cols: 20,
+            rows: 4,
+            pane_x: 0,
+            pane_rows: 3,
+            status: status(None, None, &State::Normal, None),
+            help: false,
+            resizing: false,
+            copy: Some((pane_id(), copy)),
+            geometry: std::rc::Rc::new(geometry(20, 3)),
+            active: Some(pane_id()),
+            sidebar: Vec::new(),
+            choosing: None,
+        };
+        let frame = composed(&layout, &[]);
+        let row = |y: usize| {
+            frame.cells[y * 20..(y + 1) * 20]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>()
+        };
+        assert!(row(0).ends_with("[4/9]"));
+        assert!(row(3).ends_with("[copy]"));
+        assert_eq!(frame.cells[19].style.fg, Colour::Indexed(3));
+        assert!(frame.cells[42].style.attrs.has(Attribute::Inverse));
+        assert_eq!(frame.cursor, None);
+    }
+
+    #[test]
     fn only_the_highlighted_row_is_reversed_and_the_bar_sits_left_of_the_pane() {
         let layout = Layout {
             cols: 30,
@@ -583,6 +674,7 @@ mod tests {
             status: quiet(),
             help: false,
             resizing: false,
+            copy: None,
             geometry: Default::default(),
             active: Some(pane_id()),
             sidebar: vec![line(1, "\u{754c}", true), line(2, "/tmp", false)],
@@ -622,6 +714,7 @@ mod tests {
             status: quiet(),
             help: false,
             resizing: false,
+            copy: None,
             geometry: Default::default(),
             active: Some(pane_id()),
             sidebar: vec![
@@ -668,6 +761,7 @@ mod tests {
             },
             help: false,
             resizing: false,
+            copy: None,
             geometry: Default::default(),
             active: Some(pane_id()),
             sidebar: vec![line(1, "sh", true)],
@@ -686,6 +780,7 @@ mod tests {
             status: quiet(),
             help: false,
             resizing: false,
+            copy: None,
             geometry: std::rc::Rc::new(geometry(4, 2)),
             active: Some(pane_id()),
             sidebar: Vec::new(),
@@ -737,6 +832,7 @@ mod tests {
             status: quiet(),
             help: false,
             resizing: false,
+            copy: None,
             geometry: std::rc::Rc::new(geometry(6, 3)),
             active: Some(pane_id()),
             sidebar: Vec::new(),
@@ -784,6 +880,7 @@ mod tests {
             },
             help: false,
             resizing: false,
+            copy: None,
             geometry: Default::default(),
             active: Some(pane_id()),
             sidebar: Vec::new(),
@@ -815,6 +912,7 @@ mod tests {
             status: quiet(),
             help: true,
             resizing: false,
+            copy: None,
             geometry: std::rc::Rc::new(geometry(40, 19)),
             active: Some(pane_id()),
             sidebar: Vec::new(),
@@ -869,6 +967,7 @@ mod tests {
             status: quiet(),
             help: false,
             resizing: false,
+            copy: None,
             geometry: std::rc::Rc::new(crate::geometry::window(&window)),
             active: Some(pane_id()),
             sidebar: Vec::new(),
@@ -995,6 +1094,7 @@ mod tests {
             status: quiet(),
             help: false,
             resizing: false,
+            copy: None,
             geometry: std::rc::Rc::new(geometry),
             active: Some(floating),
             sidebar: Vec::new(),
@@ -1134,6 +1234,7 @@ mod tests {
             },
             help: false,
             resizing: false,
+            copy: None,
             geometry: Default::default(),
             active: Some(pane_id()),
             sidebar: Vec::new(),

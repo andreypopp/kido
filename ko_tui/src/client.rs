@@ -26,10 +26,11 @@ use ko_sys::event::{Due, Events, Interest, Mode, Poll, Ready, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
 use ko_vt::render::{Frame, MouseTracking};
 
+use crate::copy::Outcome;
 use crate::geometry;
 use crate::input::{self, Event, Input, KeyEvent, MouseKind, Reply};
 use crate::keys::{
-    Action, Amount, Keys, Kill, PaneCommand, PaneEdit, PaneSelect, Rename, State, Step,
+    Action, Amount, Context, Keys, Kill, PaneCommand, PaneEdit, PaneSelect, Rename, State, Step,
 };
 use crate::mirror::Mirror;
 use crate::modes::{self, Modes};
@@ -308,6 +309,36 @@ struct Reconnecting {
     restore: Restore,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Click {
+    pane: PaneId,
+    x: usize,
+    y: usize,
+    at: Instant,
+    count: u8,
+}
+
+impl Click {
+    fn count(previous: Option<Click>, pane: PaneId, event: &input::MouseEvent) -> Click {
+        let at = Instant::now();
+        let count = previous
+            .filter(|last| {
+                last.pane == pane
+                    && last.x == event.x
+                    && last.y == event.y
+                    && at.duration_since(last.at) <= Duration::from_millis(500)
+            })
+            .map_or(1, |last| last.count % 3 + 1);
+        Click {
+            pane,
+            x: event.x,
+            y: event.y,
+            at,
+            count,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Client {
     view: Option<Shown>,
@@ -343,6 +374,8 @@ struct Client {
     quit: bool,
     pending: Vec<Event>,
     clipboard_reads: clipboard::Pending,
+    paste_buffer: String,
+    copy_click: Option<Click>,
     wake: Deadline,
     escape: Deadline,
     repeat: Deadline,
@@ -417,6 +450,8 @@ impl Client {
             quit: false,
             pending: probed.events,
             clipboard_reads: clipboard::Pending::default(),
+            paste_buffer: String::new(),
+            copy_click: None,
             wake,
             escape,
             repeat,
@@ -488,6 +523,8 @@ impl Client {
             ),
             help: *self.keys.state() == State::Help,
             resizing: *self.keys.state() == State::Resize,
+            copy: panes(&self.view)
+                .find_map(|pane| pane.mirror.copy().map(|copy| (pane.pane, *copy))),
             geometry: self
                 .view
                 .as_ref()
@@ -590,6 +627,9 @@ impl Client {
     }
 
     fn select(&mut self, pane: PaneId) -> Result<(), String> {
+        if self.pane() != Some(pane) {
+            self.leave_copy()?;
+        }
         self.client_send(&ClientRequest::Select(Selection {
             pane: Some(pane),
             ..Selection::default()
@@ -599,6 +639,10 @@ impl Client {
     }
 
     fn sync_views(&mut self) -> Result<(), String> {
+        let active = self.pane();
+        if panes(&self.view).any(|pane| pane.mirror.copy().is_some() && Some(pane.pane) != active) {
+            self.leave_copy()?;
+        }
         let Some((_, window)) = self.shown() else {
             self.close_view();
             return Ok(());
@@ -616,6 +660,23 @@ impl Client {
                         .first_size(line.rect.x, line.rect.y)
                         .map(|size| (line.grip, size, button))
                 });
+        }
+        let resized = self.view.as_ref().is_some_and(|shown| {
+            shown.panes.iter().any(|pane| {
+                pane.mirror.copy().is_some() && {
+                    let size = |geometry: &geometry::Geometry| {
+                        geometry
+                            .panes
+                            .iter()
+                            .find(|placement| placement.pane == pane.pane)
+                            .map(|placement| (placement.rect.cols, placement.rect.rows))
+                    };
+                    size(&shown.geometry) != size(&geometry)
+                }
+            })
+        });
+        if resized {
+            self.leave_copy()?;
         }
         if let Some(zoom) = zoom
             && self.reconnecting.is_none()
@@ -878,12 +939,64 @@ impl Client {
         Ok(())
     }
 
+    fn leave_copy(&mut self) -> Result<(), String> {
+        for pane in panes_mut(&mut self.view) {
+            pane.mirror.thaw(&mut self.poll)?;
+        }
+        self.copy_click = None;
+        self.immediate = true;
+        Ok(())
+    }
+
+    fn copy_key(&mut self, key: &KeyEvent) -> Result<(), String> {
+        let outcome = match self.active() {
+            Some(pane) if pane.mirror.copy().is_some() => pane.mirror.copy_key(key)?,
+            _ => return Ok(()),
+        };
+        if outcome == Outcome::Copy {
+            let bytes = self
+                .active()
+                .map(|pane| pane.mirror.copy_text())
+                .transpose()?
+                .flatten();
+            if let Some(bytes) = bytes {
+                self.paste_buffer = String::from_utf8_lossy(&bytes).into_owned();
+                self.session
+                    .write(&ko_pane_wire::frame::ClipboardLocation::Standard.osc52(&bytes))?;
+            }
+        }
+        if outcome != Outcome::Stay {
+            self.leave_copy()?;
+        }
+        Ok(())
+    }
+
+    fn key_context(&self) -> Context {
+        if panes(&self.view)
+            .any(|pane| Some(pane.pane) == self.pane() && pane.mirror.copy().is_some())
+        {
+            Context::Copying
+        } else if self.dead().is_some() {
+            Context::Dead
+        } else {
+            Context::Live
+        }
+    }
+
+    fn paste(&mut self, text: String) -> Result<(), String> {
+        self.input_send(Wire::Paste(Paste {
+            text,
+            check_safe: false,
+            id: None,
+        }))
+    }
+
     fn key(&mut self, key: KeyEvent) -> Result<(), String> {
         self.immediate = true;
         if let Some(pane) = self.active() {
             pane.mirror.bottom()?;
         }
-        match self.keys.feed(&key, self.dead().is_some(), Instant::now()) {
+        match self.keys.feed(&key, self.key_context(), Instant::now()) {
             Step::Pane(key) => match input::key(&key) {
                 Some(key) => self.input_send(Wire::Key(WireKey(key))),
                 None => Ok(()),
@@ -958,6 +1071,18 @@ impl Client {
             Action::Select(pane) => {
                 if self.model.order().contains(&pane) {
                     self.switch(pane)?;
+                }
+            }
+            Action::EnterCopy(entry) => {
+                if let Some(pane) = self.active() {
+                    pane.mirror.freeze(entry)?;
+                }
+            }
+            Action::CopyKey(key) => self.copy_key(&key)?,
+            Action::LeaveCopy => self.leave_copy()?,
+            Action::PasteBuffer => {
+                if !self.paste_buffer.is_empty() {
+                    self.paste(self.paste_buffer.clone())?;
                 }
             }
             Action::Pager => self.pager()?,
@@ -1178,9 +1303,25 @@ impl Client {
         event.y = event
             .y
             .clamp(origin.1, origin.1 + rect.rows.saturating_sub(1));
+        let clicks = if matches!(event.kind, MouseKind::Down(_)) {
+            let click = Click::count(self.copy_click, pane, &event);
+            self.copy_click = Some(click);
+            click.count
+        } else {
+            1
+        };
         let Some(shown) = self.view.as_mut().and_then(|shown| shown.pane_mut(pane)) else {
             return Ok(());
         };
+        if shown.mirror.copy().is_some() {
+            self.immediate = true;
+            return shown.mirror.copy_mouse(
+                event.kind,
+                u16::try_from(event.x - origin.0).unwrap_or(u16::MAX),
+                u32::try_from(event.y - origin.1).unwrap_or(u32::MAX),
+                clicks,
+            );
+        }
         if shown.serial.is_some() && shown.frame.mouse != MouseTracking::Off {
             return shown.mirror.send(
                 &mut self.poll,
@@ -1202,7 +1343,7 @@ impl Client {
         if self.reconnecting.is_some() {
             match event {
                 Event::Key(key) => {
-                    let step = self.keys.feed(&key, self.dead().is_some(), Instant::now());
+                    let step = self.keys.feed(&key, self.key_context(), Instant::now());
                     if !matches!(self.keys.state(), State::Normal | State::Prefix) {
                         self.keys.end();
                     }
@@ -1217,13 +1358,12 @@ impl Client {
             Event::Key(key) => self.key(key),
             Event::Mouse(mouse) => self.mouse(mouse),
             Event::Paste(body) => {
+                if self.key_context() == Context::Copying {
+                    return Ok(());
+                }
                 self.immediate = true;
                 match self.keys.paste(body) {
-                    Some(text) => self.input_send(Wire::Paste(Paste {
-                        text,
-                        check_safe: false,
-                        id: None,
-                    })),
+                    Some(text) => self.paste(text),
                     None => Ok(()),
                 }
             }
@@ -1322,7 +1462,11 @@ impl Client {
                     pane: pane.pane,
                     serial: pane.serial?,
                     frame: &pane.frame,
-                    dead: pane.death.as_ref().map(|(_, line)| line.as_str()),
+                    dead: pane
+                        .death
+                        .as_ref()
+                        .filter(|_| pane.mirror.copy().is_none())
+                        .map(|(_, line)| line.as_str()),
                 })
             })
             .collect();
@@ -1343,6 +1487,7 @@ impl Client {
     fn winch(&mut self) -> Result<(), String> {
         let size = self.session.tty.size();
         if size != self.geometry {
+            self.leave_copy()?;
             self.geometry = size;
             self.resize()?;
             self.immediate = true;

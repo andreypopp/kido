@@ -38,7 +38,7 @@ Goals, in priority order:
 7. **A terminal client in tmux's shape** for a plain terminal: a
    `C-a` prefix, a status line, a list grouped by session and the
    shown window with its splits, zoom and floats, as Kido.app shows
-   it. A copy mode and a resize mode are planned (plans/ko-tui.md).
+   it, a resize mode and a copy mode.
 
 Non-goals:
 
@@ -471,6 +471,25 @@ any terminal and as `CSI 97;5u` under the kitty keyboard protocol;
 both decode to the same key, so the client works the same in every
 terminal. It pushes kitty keyboard flag 1 on the outer terminal for
 the panes and requires nothing of it.
+
+Copy mode (`ko_tui/src/copy.rs`) uses vi keys, as Kido.app's copy
+mode does: one vocabulary serves both clients, the emacs table needs
+`C-Space` and `M-w`, which many terminals do not deliver, and choosing
+by `EDITOR` would be configuration by environment. Its coordinates are
+history rows, counted from the top of the mirror's history, the row
+space of `ko_vt::Terminal::total_rows`. On entry the mirror freezes: it
+still reads its link, so the server's backpressure does not build, but
+it drops the records; on exit a mirror that dropped records asks for a
+resync and discards records until the new snapshot begins. So the
+history does not move under the cursor, and the position indicator is
+exact. The client refuses to enter while the mirror restores a
+snapshot or holds synchronized output, because its rows are not yet
+the pane's. A line selection takes whole logical lines, across soft
+wraps. Only one pane is in copy mode, and the mirror is the one record
+of it; selecting another pane, a reconnect or a change of the pane's
+size leaves it. In copy mode no mouse event reaches the pane. A copy
+goes to the outer terminal as OSC 52 and into the client's one paste
+buffer, which lives in the client process, not in the server.
 
 The status line has tmux's default shape and colours: the session and
 its windows by position on the left, `*` on the shown window and `-`

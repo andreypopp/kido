@@ -4,6 +4,7 @@ use ko_client::edit::Edge;
 use ko_server::ids::PaneId;
 use ko_server::protocol::{Axis, Direction, Over};
 
+use crate::copy::Entry;
 use crate::input::{KeyEvent, Kind, Name};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +37,10 @@ pub(crate) enum Action {
     Redraw,
     ToggleSidebar,
     Pager,
+    EnterCopy(Entry),
+    CopyKey(KeyEvent),
+    LeaveCopy,
+    PasteBuffer,
     NewWindow,
     Switch(Over, Direction),
     LastSession,
@@ -56,7 +61,7 @@ pub(crate) enum Step {
     Swallow,
 }
 
-pub(crate) const HELP: [&str; 26] = [
+pub(crate) const HELP: [&str; 29] = [
     "C-a C-a  send C-a to the pane",
     "d        detach",
     "r        redraw",
@@ -83,6 +88,9 @@ pub(crate) const HELP: [&str; 26] = [
     ",        rename window",
     "&        kill window",
     "x        kill pane",
+    "[        copy mode (vi keys; q leaves)",
+    "PageUp   copy mode, one page up",
+    "]        paste the copy buffer",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,6 +164,12 @@ fn pane_command(event: &KeyEvent) -> Option<PaneCommand> {
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Context {
+    Live,
+    Dead,
+    Copying,
+}
 #[derive(Debug)]
 pub(crate) struct Keys {
     state: State,
@@ -210,8 +224,9 @@ impl Keys {
         }
     }
 
-    pub(crate) fn feed(&mut self, event: &KeyEvent, dead: bool, now: Instant) -> Step {
+    pub(crate) fn feed(&mut self, event: &KeyEvent, context: Context, now: Instant) -> Step {
         self.expire(now);
+        let dead = context == Context::Dead;
         let consumed = self.consumed.iter().position(|name| *name == event.name);
         if event.kind == Kind::Release {
             return match consumed {
@@ -219,11 +234,21 @@ impl Keys {
                     self.consumed.remove(at);
                     Step::Swallow
                 }
-                None if self.state == State::Normal => Step::Pane(event.clone()),
+                None if self.state == State::Normal && context != Context::Copying => {
+                    Step::Pane(event.clone())
+                }
                 None => Step::Swallow,
             };
         }
         let step = match std::mem::replace(&mut self.state, State::Normal) {
+            State::Normal if context == Context::Copying => {
+                if event.ctrl() == Some('a') {
+                    self.state = State::Prefix;
+                    Step::Act(Action::LeaveCopy)
+                } else {
+                    Step::Act(Action::CopyKey(event.clone()))
+                }
+            }
             State::Normal => self.normal(event, dead),
             State::Prefix => self.prefixed(event, now),
             State::Repeat { .. } => match repeatable(event) {
@@ -290,6 +315,9 @@ impl Keys {
             Some('s') => return Step::Act(Action::ToggleSidebar),
             _ => {}
         }
+        if event.name == Name::PageUp {
+            return Step::Act(Action::EnterCopy(Entry::PageUp));
+        }
         let Some(key) = event.character() else {
             return Step::Swallow;
         };
@@ -298,6 +326,8 @@ impl Keys {
             return act(Action::Window(digit));
         }
         match key {
+            '[' => act(Action::EnterCopy(Entry::Here)),
+            ']' => act(Action::PasteBuffer),
             'd' => act(Action::Detach),
             'r' => act(Action::Redraw),
             'e' => act(Action::Pager),
@@ -415,7 +445,7 @@ mod tests {
     fn steps(keys: &mut Keys, text: &str) -> Vec<Step> {
         events(text)
             .iter()
-            .map(|event| keys.feed(event, false, Instant::now()))
+            .map(|event| keys.feed(event, Context::Live, Instant::now()))
             .collect()
     }
 
@@ -474,7 +504,10 @@ mod tests {
         }
         let mut release = events("h").remove(0);
         release.kind = Kind::Release;
-        assert_eq!(keys.feed(&release, false, Instant::now()), Step::Swallow);
+        assert_eq!(
+            keys.feed(&release, Context::Live, Instant::now()),
+            Step::Swallow
+        );
         assert_eq!(keys.state(), &State::Resize);
         assert_eq!(steps(&mut keys, "\x01"), [Step::Swallow]);
         assert_eq!(keys.state(), &State::Prefix);
@@ -492,11 +525,11 @@ mod tests {
         let mut keys = Keys::new();
         let prefix = events("\x01").remove(0);
         let up = events("\x1b[A").remove(0);
-        keys.feed(&prefix, false, now);
+        keys.feed(&prefix, Context::Live, now);
         for ms in [0, 400, 800] {
             let at = now + Duration::from_millis(ms);
             assert_eq!(
-                keys.feed(&up, false, at),
+                keys.feed(&up, Context::Live, at),
                 act(Action::Pane(PaneCommand::Select(PaneSelect::Edge(
                     Edge::Top
                 ))))
@@ -504,20 +537,20 @@ mod tests {
             assert_eq!(keys.deadline(), Some(at + Duration::from_millis(500)));
         }
         assert_eq!(
-            keys.feed(&up, false, now + Duration::from_millis(1300)),
+            keys.feed(&up, Context::Live, now + Duration::from_millis(1300)),
             Step::Pane(up.clone())
         );
         assert_eq!(keys.deadline(), None);
-        keys.feed(&prefix, false, now);
-        keys.feed(&up, false, now);
+        keys.feed(&prefix, Context::Live, now);
+        keys.feed(&up, Context::Live, now);
         let x = events("x").remove(0);
-        assert_eq!(keys.feed(&x, false, now), Step::Pane(x));
+        assert_eq!(keys.feed(&x, Context::Live, now), Step::Pane(x));
         assert_eq!(keys.state(), &State::Normal);
-        keys.feed(&prefix, false, now);
-        keys.feed(&up, false, now);
-        keys.feed(&prefix, false, now);
+        keys.feed(&prefix, Context::Live, now);
+        keys.feed(&up, Context::Live, now);
+        keys.feed(&prefix, Context::Live, now);
         assert_eq!(keys.state(), &State::Prefix);
-        keys.feed(&up, false, now);
+        keys.feed(&up, Context::Live, now);
         keys.expire(now + Duration::from_millis(500));
         assert_eq!(keys.state(), &State::Normal);
     }
@@ -531,7 +564,10 @@ mod tests {
                 act(Action::Pane(PaneCommand::Select(PaneSelect::Edge(edge))))
             );
             let event = events(text).remove(0);
-            assert_eq!(keys.feed(&event, false, Instant::now()), Step::Pane(event));
+            assert_eq!(
+                keys.feed(&event, Context::Live, Instant::now()),
+                Step::Pane(event)
+            );
             assert_eq!(keys.state(), &State::Normal);
         }
     }
@@ -601,10 +637,57 @@ mod tests {
     }
 
     #[test]
+    fn copy_entry_clears_repeat_and_copy_and_resize_leave_through_prefix() {
+        let mut keys = Keys::new();
+        steps(&mut keys, "\x01h");
+        assert!(keys.deadline().is_some());
+        assert_eq!(
+            steps(&mut keys, "\x01["),
+            [Step::Swallow, act(Action::EnterCopy(Entry::Here))]
+        );
+        assert_eq!(keys.state(), &State::Normal);
+        assert_eq!(keys.deadline(), None);
+        let h = events("h").remove(0);
+        let prefix = events("\x01").remove(0);
+        assert_eq!(
+            keys.feed(&h, Context::Copying, Instant::now()),
+            act(Action::CopyKey(h.clone()))
+        );
+        assert_eq!(
+            keys.feed(&prefix, Context::Copying, Instant::now()),
+            act(Action::LeaveCopy)
+        );
+        assert_eq!(keys.state(), &State::Prefix);
+        assert_eq!(steps(&mut keys, "R"), [Step::Swallow]);
+        assert_eq!(keys.state(), &State::Resize);
+        assert_eq!(
+            steps(&mut keys, "\x01\x1b[5~"),
+            [Step::Swallow, act(Action::EnterCopy(Entry::PageUp))]
+        );
+        assert_eq!(keys.state(), &State::Normal);
+        assert_eq!(keys.deadline(), None);
+        assert_eq!(
+            keys.feed(&h, Context::Copying, Instant::now()),
+            act(Action::CopyKey(h))
+        );
+    }
+
+    #[test]
+    fn ctrl_a_inside_copy_leaves_and_d_detaches() {
+        let mut keys = Keys::new();
+        assert_eq!(
+            keys.feed(&events("\x01").remove(0), Context::Copying, Instant::now()),
+            act(Action::LeaveCopy)
+        );
+        assert_eq!(steps(&mut keys, "d"), [act(Action::Detach)]);
+        assert_eq!(keys.state(), &State::Normal);
+    }
+
+    #[test]
     fn a_plain_key_goes_to_the_pane_and_the_prefix_is_a_pending_mode() {
         let mut keys = Keys::new();
         let x = events("x").remove(0);
-        assert_eq!(keys.feed(&x, false, Instant::now()), Step::Pane(x));
+        assert_eq!(keys.feed(&x, Context::Live, Instant::now()), Step::Pane(x));
         assert_eq!(steps(&mut keys, "\x01"), [Step::Swallow]);
         assert_eq!(keys.state(), &State::Prefix);
     }
@@ -782,7 +865,7 @@ mod tests {
         let mut keys = Keys::new();
         let ctrl_d = events("\x04").remove(0);
         assert_eq!(
-            keys.feed(&ctrl_d, true, Instant::now()),
+            keys.feed(&ctrl_d, Context::Dead, Instant::now()),
             act(Action::Kill(Kill::Pane))
         );
         assert!(matches!(steps(&mut keys, "\x1b[100;5u")[0], Step::Pane(_)));
@@ -856,7 +939,7 @@ mod tests {
         let mut keys = Keys::new();
         keys.choose(pane(1));
         let x = events("x").remove(0);
-        assert_eq!(keys.feed(&x, false, Instant::now()), Step::Pane(x));
+        assert_eq!(keys.feed(&x, Context::Live, Instant::now()), Step::Pane(x));
         assert_eq!(keys.state(), &State::Normal);
         keys.choose(pane(1));
         assert_eq!(steps(&mut keys, "\x01"), [Step::Swallow]);

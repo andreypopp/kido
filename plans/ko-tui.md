@@ -15,7 +15,11 @@ select, the resize keys, `{` `}` `E`) and `geometry::neighbour`
 (docs/design-ko.md 4.11). `C-a l` selects the right neighbour (section
 12), so the last window is `C-a Tab`. Unit 4 is built: resize mode
 (`C-a R`) and the divider drag with `geometry::divider`
-(docs/design-ko.md 4.11).
+(docs/design-ko.md 4.11). Unit 5 is built: copy mode in `ko_tui/src/copy.rs`, the
+freeze and resync in `ko_tui/src/mirror.rs`, and the viewport,
+wrap and selection-text calls of ko_vt
+(docs/design-ko.md 4.11). The client refuses copy mode while a mirror
+restores a snapshot or holds synchronized output.
 
 The terminal client `ko` (`ko_tui/`) shows one pane at a time, lists
 the panes in a sidebar and takes Ctrl+Shift chords under the kitty

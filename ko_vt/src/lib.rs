@@ -7,8 +7,8 @@ use std::num::NonZeroUsize;
 use std::ptr::{self, NonNull};
 
 use ko_pane_wire::frame::{
-    ClipboardLocation, Dim, Limits, Medium, MimesBuf, ProgramKind, ProgramState, ProgressReport,
-    ProgressState, PromptStep, Scrollback, Served, Size,
+    Cell, ClipboardLocation, Dim, Limits, Medium, MimesBuf, ProgramKind, ProgramState,
+    ProgressReport, ProgressState, PromptStep, Scrollback, Served, Size,
 };
 use ko_vt_sys as sys;
 
@@ -82,6 +82,19 @@ pub enum Format {
 pub enum Extent {
     Screen,
     Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    Linear,
+    Rectangle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub start: Cell,
+    pub end: Cell,
+    pub shape: Shape,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -883,15 +896,19 @@ impl Terminal {
     }
 
     pub fn scroll(&mut self, delta: isize) {
+        self.scroll_viewport(sys::GHOSTTY_SCROLL_VIEWPORT_DELTA, delta);
+    }
+
+    fn scroll_viewport(&mut self, tag: sys::GhosttyTerminalScrollViewportTag, delta: isize) {
         let to = sys::GhosttyTerminalScrollViewport {
-            tag: sys::GHOSTTY_SCROLL_VIEWPORT_DELTA,
+            tag,
             value: sys::GhosttyTerminalScrollViewportValue { delta },
         };
         // SAFETY: the handle is live, and the viewport request is initialized.
         unsafe { sys::ghostty_terminal_scroll_viewport(self.vt.as_ptr(), to) };
     }
 
-    fn scrollbar(&self) -> Result<u64, Error> {
+    pub fn viewport_offset(&self) -> Result<u64, Error> {
         let bar = sys::GhosttyTerminalScrollbar {
             total: 0,
             offset: 0,
@@ -901,14 +918,76 @@ impl Terminal {
     }
 
     pub fn bottom(&mut self) -> Result<bool, Error> {
-        let before = self.scrollbar()?;
-        let to = sys::GhosttyTerminalScrollViewport {
-            tag: sys::GHOSTTY_SCROLL_VIEWPORT_BOTTOM,
-            value: sys::GhosttyTerminalScrollViewportValue { delta: 0 },
+        let before = self.viewport_offset()?;
+        self.scroll_viewport(sys::GHOSTTY_SCROLL_VIEWPORT_BOTTOM, 0);
+        Ok(before != self.viewport_offset()?)
+    }
+
+    pub fn scroll_to(&mut self, row: u32) -> Result<(), Error> {
+        let delta = isize::try_from(row).map_err(|_| Error::Rows(row as usize))?;
+        self.scroll_viewport(sys::GHOSTTY_SCROLL_VIEWPORT_TOP, 0);
+        self.scroll(delta);
+        Ok(())
+    }
+
+    fn grid_ref(
+        &self,
+        tag: sys::GhosttyPointTag,
+        cell: Cell,
+    ) -> Result<sys::GhosttyGridRef, Error> {
+        let point = sys::GhosttyPoint {
+            tag,
+            value: sys::GhosttyPointValue {
+                coordinate: sys::GhosttyPointCoordinate {
+                    x: cell.col,
+                    y: cell.row,
+                },
+            },
         };
-        // SAFETY: the handle is live, and the viewport request is initialized.
-        unsafe { sys::ghostty_terminal_scroll_viewport(self.vt.as_ptr(), to) };
-        Ok(before != self.scrollbar()?)
+        let mut grid = sys::GhosttyGridRef {
+            size: size_of::<sys::GhosttyGridRef>(),
+            ..Default::default()
+        };
+        // SAFETY: the live terminal validates the point and writes the grid ref.
+        check(unsafe { sys::ghostty_terminal_grid_ref(self.vt.as_ptr(), point, &mut grid) })?;
+        Ok(grid)
+    }
+
+    pub fn row_wraps(&self, row: u32) -> Result<bool, Error> {
+        let grid = self.grid_ref(sys::GHOSTTY_POINT_TAG_SCREEN, Cell { col: 0, row })?;
+        let mut row = 0;
+        // SAFETY: the grid ref is valid until the next terminal mutation; row is writable.
+        check(unsafe { sys::ghostty_grid_ref_row(&grid, &mut row) })?;
+        let mut wraps = false;
+        // SAFETY: the row is live, and WRAP writes a bool.
+        check(unsafe {
+            sys::ghostty_row_get(
+                row,
+                sys::GHOSTTY_ROW_DATA_WRAP,
+                ptr::from_mut(&mut wraps).cast(),
+            )
+        })?;
+        Ok(wraps)
+    }
+
+    pub fn text_between(&self, span: Span) -> Result<Vec<u8>, Error> {
+        let selection = sys::GhosttySelection {
+            size: size_of::<sys::GhosttySelection>(),
+            rectangle: span.shape == Shape::Rectangle,
+            start: self.grid_ref(sys::GHOSTTY_POINT_TAG_SCREEN, span.start)?,
+            end: self.grid_ref(sys::GHOSTTY_POINT_TAG_SCREEN, span.end)?,
+        };
+        let options = sys::GhosttyFormatterTerminalOptions {
+            size: size_of::<sys::GhosttyFormatterTerminalOptions>(),
+            emit: sys::GHOSTTY_FORMATTER_FORMAT_PLAIN,
+            trim: true,
+            unwrap: span.shape == Shape::Linear,
+            selection: &selection,
+            ..Default::default()
+        };
+        let mut out = Vec::new();
+        self.format_selection(options, writer(&mut out))?;
+        Ok(out)
     }
 
     pub fn memory(&self) -> Result<Memory, Error> {
@@ -1002,6 +1081,10 @@ impl Terminal {
         Ok(self.get(sys::GHOSTTY_TERMINAL_DATA_MODE, mode)?.value)
     }
 
+    pub fn size(&self) -> Size {
+        self.notes.size
+    }
+
     pub fn cursor(&self) -> Result<Cursor, Error> {
         Ok(Cursor {
             x: self.get(sys::GHOSTTY_TERMINAL_DATA_CURSOR_X, 0u16)?,
@@ -1027,33 +1110,24 @@ impl Terminal {
         let last = total.saturating_sub(1);
         let start = total.saturating_sub(usize::from(rows));
         let start = usize::try_from(history).map_or(0, |history| start.saturating_sub(history));
-        let point = |x: u16, y: usize| -> Result<sys::GhosttyPoint, Error> {
-            Ok(sys::GhosttyPoint {
-                tag: sys::GHOSTTY_POINT_TAG_SCREEN,
-                value: sys::GhosttyPointValue {
-                    coordinate: sys::GhosttyPointCoordinate {
-                        x,
-                        y: u32::try_from(y).map_err(|_| Error::Rows(y))?,
-                    },
-                },
-            })
-        };
-        let mut selection = sys::GhosttySelection {
+        let selection = sys::GhosttySelection {
             size: size_of::<sys::GhosttySelection>(),
+            start: self.grid_ref(
+                sys::GHOSTTY_POINT_TAG_SCREEN,
+                Cell {
+                    col: 0,
+                    row: u32::try_from(start).map_err(|_| Error::Rows(start))?,
+                },
+            )?,
+            end: self.grid_ref(
+                sys::GHOSTTY_POINT_TAG_SCREEN,
+                Cell {
+                    col: cols.saturating_sub(1),
+                    row: u32::try_from(last).map_err(|_| Error::Rows(last))?,
+                },
+            )?,
             ..Default::default()
         };
-        // SAFETY: both points lie inside the terminal's grid, and the refs receive their result.
-        check(unsafe {
-            sys::ghostty_terminal_grid_ref(self.vt.as_ptr(), point(0, start)?, &mut selection.start)
-        })?;
-        // SAFETY: as above.
-        check(unsafe {
-            sys::ghostty_terminal_grid_ref(
-                self.vt.as_ptr(),
-                point(cols.saturating_sub(1), last)?,
-                &mut selection.end,
-            )
-        })?;
         let options = sys::GhosttyFormatterTerminalOptions {
             size: size_of::<sys::GhosttyFormatterTerminalOptions>(),
             emit: if format == Format::Vt {
@@ -1073,22 +1147,7 @@ impl Terminal {
             selection: &selection,
             ..Default::default()
         };
-        let mut formatter = ptr::null_mut();
-        // SAFETY: the options and the selection outlive the formatter, which is freed below.
-        check(unsafe {
-            sys::ghostty_formatter_terminal_new(
-                ptr::null(),
-                &mut formatter,
-                self.vt.as_ptr(),
-                options,
-            )
-        })?;
-        // SAFETY: the formatter is live, and the writer's sink outlives the call.
-        let result =
-            unsafe { sys::ghostty_formatter_format(formatter, callback_writer(&mut emit)) };
-        // SAFETY: the formatter was created above and is not used again.
-        unsafe { sys::ghostty_formatter_free(formatter) };
-        check(result)
+        self.format_selection(options, callback_writer(&mut emit))
     }
 
     pub fn dump(&self, format: Format) -> Result<Vec<u8>, Error> {
@@ -1109,28 +1168,18 @@ impl Terminal {
             Extent::Full => (sys::GHOSTTY_POINT_TAG_SCREEN, self.total_rows()?),
         };
         let last = u32::try_from(rows.saturating_sub(1)).map_err(|_| Error::Rows(rows))?;
-        let point = |x, y| sys::GhosttyPoint {
-            tag,
-            value: sys::GhosttyPointValue {
-                coordinate: sys::GhosttyPointCoordinate { x, y },
-            },
-        };
-        let mut selection = sys::GhosttySelection {
+        let selection = sys::GhosttySelection {
             size: size_of::<sys::GhosttySelection>(),
+            start: self.grid_ref(tag, Cell { col: 0, row: 0 })?,
+            end: self.grid_ref(
+                tag,
+                Cell {
+                    col: cols.saturating_sub(1),
+                    row: last,
+                },
+            )?,
             ..Default::default()
         };
-        // SAFETY: both points lie inside the terminal's grid, and the refs receive their result.
-        check(unsafe {
-            sys::ghostty_terminal_grid_ref(self.vt.as_ptr(), point(0, 0), &mut selection.start)
-        })?;
-        // SAFETY: as above.
-        check(unsafe {
-            sys::ghostty_terminal_grid_ref(
-                self.vt.as_ptr(),
-                point(cols.saturating_sub(1), last),
-                &mut selection.end,
-            )
-        })?;
         let vt = format == Format::Vt;
         let options = sys::GhosttyFormatterTerminalOptions {
             size: size_of::<sys::GhosttyFormatterTerminalOptions>(),
@@ -1163,8 +1212,18 @@ impl Terminal {
             selection: &selection,
             ..Default::default()
         };
+        let mut out = Vec::new();
+        self.format_selection(options, writer(&mut out))?;
+        Ok(out)
+    }
+
+    fn format_selection(
+        &self,
+        options: sys::GhosttyFormatterTerminalOptions,
+        writer: sys::GhosttyWriter,
+    ) -> Result<(), Error> {
         let mut formatter = ptr::null_mut();
-        // SAFETY: the options and the selection outlive the formatter, which is freed below.
+        // SAFETY: the options and its selection outlive the formatter, which is freed below.
         check(unsafe {
             sys::ghostty_formatter_terminal_new(
                 ptr::null(),
@@ -1173,13 +1232,11 @@ impl Terminal {
                 options,
             )
         })?;
-        let mut out = Vec::new();
-        // SAFETY: the formatter is live, and the writer's Vec outlives the call.
-        let result = unsafe { sys::ghostty_formatter_format(formatter, writer(&mut out)) };
+        // SAFETY: the formatter is live, and the caller's writer outlives the call.
+        let result = unsafe { sys::ghostty_formatter_format(formatter, writer) };
         // SAFETY: the formatter was created above and is not used again.
         unsafe { sys::ghostty_formatter_free(formatter) };
-        check(result)?;
-        Ok(out)
+        check(result)
     }
 }
 
@@ -1288,6 +1345,74 @@ mod tests {
 
     fn decode(bytes: &[u8], extent: Extent) -> Terminal {
         Terminal::decode(&mut Chunks { bytes, chunk: 7 }, extent).unwrap()
+    }
+
+    #[test]
+    fn copy_viewport_and_selection_use_history_rows() {
+        let mut vt = make(8, 2);
+        vt.write(b"one\r\ntwo\r\nthree\r\nfour");
+        assert_eq!(vt.viewport_offset().unwrap(), 2);
+        vt.scroll_to(0).unwrap();
+        assert_eq!(vt.viewport_offset().unwrap(), 0);
+        vt.scroll(1);
+        assert_eq!(vt.viewport_offset().unwrap(), 1);
+        let cell = |row, col| Cell { row, col };
+        assert_eq!(
+            vt.text_between(Span {
+                start: cell(1, 1),
+                end: cell(2, 2),
+                shape: Shape::Linear
+            })
+            .unwrap(),
+            b"wo\nthr"
+        );
+        assert_eq!(
+            vt.text_between(Span {
+                start: cell(1, 1),
+                end: cell(2, 2),
+                shape: Shape::Rectangle
+            })
+            .unwrap(),
+            b"wo\nhr"
+        );
+        vt.bottom().unwrap();
+        assert_eq!(vt.viewport_offset().unwrap(), 2);
+        let mut wrapped = make(8, 3);
+        wrapped.write("1234567界tail".as_bytes());
+        assert_eq!(
+            wrapped
+                .text_between(Span {
+                    start: cell(0, 0),
+                    end: cell(0, 7),
+                    shape: Shape::Rectangle
+                })
+                .unwrap(),
+            b"1234567"
+        );
+        let mut rectangle = make(8, 3);
+        rectangle.write(b"abcdefghIJKLMNO");
+        assert_eq!(
+            rectangle
+                .text_between(Span {
+                    start: cell(0, 1),
+                    end: cell(1, 3),
+                    shape: Shape::Rectangle
+                })
+                .unwrap(),
+            b"bcd\nJKL"
+        );
+        assert!(wrapped.row_wraps(0).unwrap());
+        assert!(!wrapped.row_wraps(1).unwrap());
+        assert_eq!(
+            wrapped
+                .text_between(Span {
+                    start: cell(0, 0),
+                    end: cell(1, 7),
+                    shape: Shape::Linear
+                })
+                .unwrap(),
+            "1234567界tail".as_bytes()
+        );
     }
 
     #[test]

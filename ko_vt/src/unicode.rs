@@ -1,5 +1,12 @@
 use ko_vt_sys as sys;
 
+pub fn width(text: &str) -> usize {
+    clusters(text)
+        .iter()
+        .map(|(_, width)| usize::from(*width))
+        .sum()
+}
+
 pub fn clusters(text: &str) -> Vec<(&str, u8)> {
     let points: Vec<(usize, u32)> = text
         .char_indices()
