@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kido sidebar — hierarchy and grouping variants</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#eeece8;color:#393939;font:13px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;padding:24px}
+.top{height:60px}.top h1{font-size:14px;margin:0 0 4px;line-height:18px}.top p{margin:0;font-size:12px;color:#777;line-height:16px}
+.theme{margin-bottom:28px}.theme h2{height:20px;font-size:12px;font-weight:600;color:#444;margin:0;line-height:20px}
+.grid{display:flex;gap:18px;align-items:flex-start;margin-bottom:22px}
+.col{width:var(--w);flex-shrink:0}.col h3{height:18px;margin:0;font-size:12px;font-weight:600;color:#444;line-height:18px;white-space:nowrap}
+.col .blurb{height:70px;margin:0;font-size:11px;color:#777;line-height:14px;overflow:hidden}
+.narrow .col .blurb{height:14px}
+
+.theme.dark{--bg:#171717;--text:#dddddd;--muted:#9a9a9a;--focus:#ffffff1a;--tree:#4f555c;--card:#ffffff0f;--marker:#ffffffd9;--running:#30d158;--error:#ff453a;--attention:#ff9f0a}
+.theme.light{--bg:#fff9ec;--text:#000000d9;--muted:#00000080;--focus:#0000001a;--tree:#bfbab1;--card:#0000000d;--marker:#000000bf;--running:#34c759;--error:#ff3b30;--attention:#ff9500}
+.theme.dark{--hair:#ffffff13}.theme.light{--hair:#00000013}
+.theme{--sidebar-fill:color-mix(in srgb,var(--bg) 90%,#000)}
+
+.sidebar{width:var(--w);height:var(--h);background:var(--sidebar-fill);color:var(--text);border-radius:12px;overflow:hidden;box-shadow:0 0 0 .5px #0002;position:relative}
+.list{padding:2px 8px 10px}
+.session-head{height:29px;display:flex;align-items:flex-start;padding:0 1px 0 12px}
+.session-label{flex:1;color:var(--muted);font-size:11px;font-weight:600;line-height:18px;padding-top:6.5px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.add{border:0;background:none;color:var(--muted);width:28px;height:28px;margin-top:.5px;padding:0;flex-shrink:0;display:grid;place-items:center}.add svg{width:11px;height:11px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round}
+.session-body{display:flow-root}
+.window-block{position:relative}
+.overlay{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;fill:none;stroke:var(--tree);stroke-width:1;shape-rendering:crispEdges;overflow:visible}
+.row{position:relative;display:flex;align-items:flex-start;gap:8px;padding:7px 12px;height:32px}
+.row.two-line{height:48px}
+.row.focused{background:var(--focus);border-radius:7px}
+.copy{flex:1;min-width:0;margin-right:1px}.row:has(.elapsed) .copy{margin-right:-2px}
+.title{font-size:13px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.title.agent{font-weight:600}.title.quiet-shell{color:var(--muted)}
+.pane-icon{width:16px;height:18px;flex-shrink:0;display:grid;place-items:center}
+.activity{position:absolute;top:26px;left:36px;right:12px;font-size:11px;line-height:15px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.meta{display:flex;align-items:flex-start;height:18px;flex-shrink:0}
+.elapsed{color:var(--muted);font-size:10px;font-variant-numeric:tabular-nums;text-align:right;line-height:14px;margin-top:2px}
+.dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}.dot.idle{background:var(--muted);opacity:.45}.dot.running{background:var(--running)}.dot.error{background:var(--error)}.dot.attention{background:var(--attention)}
+svg.dot.done{display:block;overflow:visible;border-radius:0;background:none;fill:none;stroke:var(--running);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.children{margin-left:15px}
+
+/* A — cards: indent only, rounded fill behind each multi-pane window */
+.vA .window-block.multi{background:var(--card);border-radius:11px;margin:0 -4px;padding:4px}
+.vA .session-body>.window-block+.window-block{margin-top:4px}
+
+/* B — outline: elbow tree lines, panes bracketed */
+
+/* C — window header rows */
+.vC .window-head{height:24px;padding:5px 12px 0;font-size:11px;font-weight:600;line-height:18px;color:var(--muted);display:flex;gap:6px;align-items:baseline;white-space:nowrap;overflow:hidden}
+.vC .window-head .count{font-size:10px;font-weight:400;font-variant-numeric:tabular-nums}
+.vC .window-block.multi>.panes{margin-left:15px}
+
+/* E — hybrid: B's elbows, A's card, no bracket */
+.vE .session-body>.window-block.multi{background:var(--card);border-radius:11px;margin:0 -4px;padding:4px}
+.vE .session-body>.window-block+.window-block{margin-top:4px}
+
+/* F — pane strip: one row per multi-pane window, panes as chips */
+.vF .chips{display:flex;flex-wrap:wrap;gap:4px;padding:0 12px 8px 36px}
+.vF .chip{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px 0 7px;border-radius:6px;background:var(--card);font-size:11px;line-height:20px;max-width:150px;white-space:nowrap}
+.vF .chip .dot{margin:0}.vF .chip span{overflow:hidden;text-overflow:ellipsis}.vF .chip .agent{font-weight:600}.vF .chip .quiet-shell{color:var(--muted)}
+.vF .chip .elapsed{margin:0;line-height:20px}
+.vF .chip.focused{background:var(--focus);box-shadow:inset 0 0 0 1px var(--focus)}
+.vF .window-row .title{font-weight:400}
+
+/* G — layout glyph */
+.vG .glyph{flex-shrink:0;width:16px;height:12px;margin-top:3px;overflow:visible}
+.vG .glyph rect,.vG .glyph path{fill:none;stroke:var(--muted);stroke-width:1;shape-rendering:crispEdges}
+.vG .glyph rect.on{fill:var(--muted);stroke:none}
+.vG .window-row .pane-icon{visibility:hidden}
+.vG .row:has(.glyph) .activity{left:60px}
+
+/* H — dim ancestors, hairlines around multi-pane windows */
+.vH .window-block.multi{border-top:1px solid var(--hair);border-bottom:1px solid var(--hair);margin:0 12px;padding:3px 0}
+.vH .window-block.multi>.panes{margin:0 -12px}
+.vH .window-block.multi+.window-block.multi{border-top:0}
+.vH .title.dim{color:var(--muted)}
+.vH .overlay{stroke-dasharray:1 2}
+
+/* D — disclosure triangles, dot leader, whitespace and a focused-window rail */
+.vD .session-body>.window-block+.window-block{margin-top:6px}
+.vD .chevron{position:absolute;left:4px;top:13px;width:6px;height:6px;fill:none;stroke:var(--muted);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.vD .window-block.multi.focused-window>.rail{position:absolute;left:0;top:7px;bottom:7px;width:2px;border-radius:1px;background:var(--marker)}
+.vD .overlay{stroke-dasharray:1 2}
+</style></head><body>
+<div class="top"><h1>Sidebar hierarchy and grouping — eight variants</h1><p>Same fixture in every column: session <b>main</b> with a single-pane window, a 3-pane window (kido-app focused; sidebar-tests owns two subagent windows, one of them with a nested run window), and a top-level run window. 292pt and 200pt widths. Add <code>?theme=Light</code> or <code>?theme=Dark</code> for one theme.</p></div>
+<div id="themes"></div>
+<script>
+const P=(title,kind,status,tail='',clock='',children=[])=>({title,kind,status,tail,clock,children});
+const W=(name,...panes)=>({name,panes});
+const session={name:'main',windows:[
+  W('kido',P('working-on-kido','agent','done')),
+  W('app',
+    P('kido-app','agent','running','Refining the native sidebar'),
+    P('sidebar-tests','agent','attention','Allow running make test?','5m27s',[
+      W('review',P('review-notes','agent','running','Checking the feed contract','1m38s',[W('checks',P('lint','run','running','','24s'),P('zsh','shell','idle'))])),
+      W('perf-notes',P('perf-notes','run','idle','','2s'))]),
+    P('zsh','shell','idle')),
+  W('main-watch',P('main-watch','run','running','','515h21m'))]};
+const FOCUSED='kido-app';
+const variants=[
+  {id:'A',name:'A · Cards',blurb:'Indent only, no guides. Each multi-pane window sits on a rounded card (label 5%, 11pt radius, 4pt wider than rows); its panes and all their descendants stay inside the card. Windows have 4pt gaps.'},
+  {id:'B',name:'B · Outline',blurb:'Classic tree: a 1pt stem from the parent indicator with 9pt elbow arms to each child window. Multi-pane windows are bracketed by a [ at x=5 with 4pt ticks; a nested bracket receives the arm.'},
+  {id:'C',name:'C · Window headers',blurb:'A 24pt caption row names each multi-pane window (11pt semibold, muted, pane count). Its panes indent 15pt under it; children are sub-rows at the next step. No guides, no fills besides focus.'},
+  {id:'D',name:'D · Disclosure',blurb:'A 6pt chevron in the gutter on rows that own windows; a 1pt dot leader (1 on, 2 off) drops from it over the children. 6pt whitespace between windows; a 2pt rail marks the focused multi-pane window.'},
+  {id:'D',name:'D · collapsed',blurb:'The same as D with sidebar-tests collapsed: the chevron points right and its two subagent windows are hidden.',collapse:'sidebar-tests'},
+  {id:'E',name:'E · Hybrid (recommended)',blurb:'B\u2019s elbows on A\u2019s card: stem from the parent indicator, 9pt arms to each child row, no bracket. Only a top-level multi-pane window gets the label 5% card; a nested multi-pane window gets an arm to each of its panes and no card.'},
+  {id:'F',name:'F · Pane strip',blurb:'A multi-pane window is one row named after the window, with its worst pane status leading. Its panes are 20pt chips (dot, name, clock, 6pt radius) under it; the focused chip is filled. Children of a pane hang under the window row at the next indent.'},
+  {id:'G',name:'G · Layout glyph',blurb:'No guides. A multi-pane window starts with a row that carries a 16\u00d712pt miniature of its tmux layout, the focused pane filled. Its panes follow flat, each with the glyph highlighting that pane; children of a pane indent one step.'},
+  {id:'H',name:'H · Dim ancestors',blurb:'Hierarchy by type: an ancestor of a running child has a muted title; a 1pt dotted elbow joins the parent indicator to its first child only. Multi-pane windows are framed by 1pt hairlines above and below, inset 12pt, no fill.'}];
+function el(tag,cls){const e=document.createElement(tag);if(cls)e.className=cls;return e}
+const svgNS='http://www.w3.org/2000/svg';
+function svg(cls,view,d,attrs={}){const s=document.createElementNS(svgNS,'svg');s.setAttribute('class',cls);s.setAttribute('viewBox',view);const p=document.createElementNS(svgNS,'path');p.setAttribute('d',d);for(const k in attrs)p.setAttribute(k,attrs[k]);s.append(p);return s}
+function indicator(status){return status==='done'?svg('dot done','0 0 6 6','M0.2 3.2 2.1 5.1 5.8 1.1'):Object.assign(el('span','dot '+status))}
+const rank={error:4,attention:3,running:2,done:1,idle:0};
+const worst=panes=>panes.reduce((a,p)=>rank[p.status]>rank[a]?p.status:a,'idle');
+const label=p=>p.kind==='shell'&&p.status!=='running'?'Terminal':p.kind==='agent'?'@'+p.title:p.title;
+const layouts={app:[[0,0,8,12],[8,0,8,6],[8,6,8,6]],checks:[[0,0,8,12],[8,0,8,12]]};
+function glyph(w,on){const s=document.createElementNS(svgNS,'svg');s.setAttribute('class','glyph');s.setAttribute('viewBox','0 0 16 12');const cells=layouts[w.name];w.panes.forEach((p,i)=>{if(p!==on)return;const [x,y,ww,hh]=cells[i],r=document.createElementNS(svgNS,'rect');r.setAttribute('class','on');r.setAttribute('x',x);r.setAttribute('y',y);r.setAttribute('width',ww);r.setAttribute('height',hh);s.append(r)});const o=document.createElementNS(svgNS,'rect');o.setAttribute('x',.5);o.setAttribute('y',.5);o.setAttribute('width',15);o.setAttribute('height',11);s.append(o);const d=document.createElementNS(svgNS,'path');d.setAttribute('d',w.name==='app'?'M8.5 0V12M8 6.5H16':'M8.5 0V12');s.append(d);return s}
+const hasRunningChild=p=>p.children.some(w=>w.panes.some(c=>c.status==='running'||hasRunningChild(c)));
+function row(p,v,opts){const r=el('div','row');if(p.title===FOCUSED)r.classList.add('focused');if(p.tail)r.classList.add('two-line');
+  const icon=el('span','pane-icon');icon.append(indicator(p.status));
+  const copy=el('div','copy'),title=el('div','title');const quiet=p.kind==='shell'&&p.status!=='running';title.classList.toggle('quiet-shell',quiet);title.classList.toggle('agent',p.kind==='agent');if(v==='H'&&hasRunningChild(p))title.classList.add('dim');title.textContent=quiet?'Terminal':p.kind==='agent'?'@'+p.title:p.title;copy.append(title);
+  if(p.tail){const a=el('div','activity');a.textContent=p.tail;copy.append(a)}
+  const meta=el('div','meta');if(p.clock){const c=el('span','elapsed');c.textContent=p.clock;meta.append(c)}
+  r.append(icon,copy,meta);
+  if(v==='D'&&p.children.length){r.classList.add('has-children');const collapsed=opts.collapse===p.title;r.classList.toggle('collapsed',collapsed);r.append(svg('chevron','0 0 6 6',collapsed?'M2 1 4 3 2 5':'M1 2 3 4 5 2'))}
+  return r}
+function windowBlock(w,depth,v,opts){const block=el('div','window-block'+(w.panes.length>1?' multi':''));block.dataset.depth=depth;
+  if(w.panes.some(p=>p.title===FOCUSED))block.classList.add('focused-window');
+  if(v==='D')block.append(el('span','rail'));
+  if(v==='C'&&w.panes.length>1){const h=el('div','window-head');const n=el('span');n.textContent=w.name;const c=el('span','count');c.textContent=w.panes.length+' panes';h.append(n,c);block.append(h)}
+  const panes=el('div','panes');
+  const multi=w.panes.length>1;
+  if(v==='F'&&multi){const r=row({title:w.name,kind:'window',status:worst(w.panes),tail:'',clock:'',children:[]},v,opts);r.classList.add('window-row');panes.append(r);const chips=el('div','chips');w.panes.forEach(p=>{const c=el('span','chip'+(p.title===FOCUSED?' focused':''));c.append(indicator(p.status));const n=el('span',p.kind==='agent'?'agent':p.kind==='shell'?'quiet-shell':'');n.textContent=label(p);c.append(n);if(p.clock){const e=el('span','elapsed');e.textContent=p.clock;c.append(e)}chips.append(c)});panes.append(chips);
+    for(const p of w.panes)if(p.children.length){const ch=el('div','children');for(const cw of p.children)ch.append(windowBlock(cw,depth+1,v,opts));panes.append(ch)}block.append(panes);return block}
+  if(v==='G'&&multi){const r=row({title:w.name,kind:'window',status:'idle',tail:'',clock:'',children:[]},v,opts);r.classList.add('window-row');r.querySelector('.pane-icon').after(glyph(w,w.panes.find(p=>p.title===FOCUSED)));panes.append(r)}
+  for(const p of w.panes){const r=row(p,v,opts);if(v==='G'&&multi)r.querySelector('.pane-icon').after(glyph(w,p));panes.append(r);if(p.children.length&&opts.collapse!==p.title){const ch=el('div','children');for(const cw of p.children)ch.append(windowBlock(cw,depth+1,v,opts));panes.append(ch)}}
+  block.append(panes);return block}
+function sidebar(variant,opts,width){const side=el('div','sidebar v'+variant.id);side.style.setProperty('--w',width+'px');side.style.setProperty('--h',opts.height+'px');const list=el('div','list');
+  const head=el('div','session-head'),label=el('div','session-label');label.textContent=session.name;const add=el('button','add');add.append(svg('','0 0 16 16','M8 2v12M2 8h12'));head.append(label,add);
+  const body=el('div','session-body');for(const w of session.windows)body.append(windowBlock(w,0,variant.id,variant));
+  list.append(head,body);side.append(list);return side}
+const box=(e,ref)=>{const r=e.getBoundingClientRect(),b=ref.getBoundingClientRect();return {left:r.left-b.left,right:r.right-b.left,top:r.top-b.top,bottom:r.bottom-b.top}};
+const dotOf=r=>r.querySelector(':scope>.pane-icon>.dot');
+function overlays(side,v){if(!'BDEH'.includes(v))return;for(const block of side.querySelectorAll('.session-body>.window-block')){const s=document.createElementNS(svgNS,'svg');s.setAttribute('class','overlay');let d='';const line=(x,y1,y2)=>{d+=`M${x} ${y1}V${y2}`},h=(x1,x2,y)=>{d+=`M${x1} ${y}H${x2}`};
+  const firstRow=b=>b.querySelector('.row'),lastRow=b=>[...b.querySelectorAll('.row')].at(-1);
+  if(v==='B'){const bracket=(b,x,ticks)=>{const y1=box(firstRow(b),block).top+10,y2=box(b,block).bottom-10;line(x,y1,y2);if(ticks){h(x,x+4,y1);h(x,x+4,y2)}};
+    if(block.classList.contains('multi'))bracket(block,5,true);
+    for(const ch of block.querySelectorAll('.children')){const parent=ch.previousElementSibling,dot=box(dotOf(parent),block),x=dot.left+3;let lastY=0;
+      for(const cb of ch.children){const first=firstRow(cb),cd=box(dotOf(first),block),y=cd.top+3;lastY=y;
+        if(cb.classList.contains('multi')){const bx=box(cb,block).left+9;h(x,bx,y);bracket(cb,bx,false)}else h(x,cd.left-3,y)}
+      line(x,dot.bottom+3,lastY)}}
+  if(v==='E'){for(const ch of block.querySelectorAll('.children')){const parent=ch.previousElementSibling,dot=box(dotOf(parent),block),x=dot.left+3;let lastY=0;
+      for(const cb of ch.children)for(const r of cb.querySelectorAll(':scope>.panes>.row')){const cd=box(dotOf(r),block),y=cd.top+3;lastY=y;h(x,cd.left-3,y)}
+      line(x,dot.bottom+3,lastY)}}
+  if(v==='H'){for(const ch of block.querySelectorAll('.children')){const parent=ch.previousElementSibling,dot=box(dotOf(parent),block),x=dot.left+3,cd=box(dotOf(firstRow(ch)),block),y=cd.top+3;line(x,dot.bottom+3,y);h(x,cd.left-3,y)}}
+  if(v==='D'){for(const r of block.querySelectorAll('.row.has-children:not(.collapsed)')){const ch=r.nextElementSibling,rb=box(r,block);line(rb.left+7,rb.top+22,box(ch,block).bottom-10)}}
+  const p=document.createElementNS(svgNS,'path');p.setAttribute('d',d);s.append(p);block.append(s)}}
+const want=new URLSearchParams(location.search).get('theme');
+const host=document.getElementById('themes');
+for(const theme of ['Light','Dark']){if(want&&want!==theme)continue;const t=el('section','theme '+theme.toLowerCase());const h2=el('h2');h2.textContent=theme+' — '+(theme==='Light'?'kido-light #FFF9EC':'kido-dark #171717')+', sidebar 10% toward black';t.append(h2);
+  for(const width of [292,200]){const grid=el('div','grid'+(width===200?' narrow':''));for(const variant of variants){const col=el('div','col');col.style.setProperty('--w',width+'px');const h3=el('h3');h3.textContent=variant.name+(width===200?' · 200pt':'');const p=el('p','blurb');p.textContent=width===200?'':variant.blurb;col.append(h3,p);col.append(sidebar(variant,{height:470},width));grid.append(col)}t.append(grid)}
+  host.append(t)}
+for(const side of document.querySelectorAll('.sidebar'))overlays(side,side.className.match(/v(\w)/)[1]);
+</script></body></html>
