@@ -491,6 +491,33 @@ size leaves it. In copy mode no mouse event reaches the pane. A copy
 goes to the outer terminal as OSC 52 and into the client's one paste
 buffer, which lives in the client process, not in the server.
 
+Copy-mode search (`/`, `?`, `n`, `N`) runs on the frozen mirror with
+`ko_vt::Terminal::search`, not on the server's `/panes/{id}/search`:
+the mirror holds the whole history and its rows do not move, while the
+server's rows move with output (protocol.md section 11). The prompt and
+the running search are state of `copy::Mode`, the one record of them;
+the mirror starts or drops its ghostty `Search` to agree with it. A
+paste into an open prompt adds its text without control characters; a
+paste into copy mode without a prompt is dropped. A full search of 100k
+lines with a match on each takes about 55 ms (52 ms resident, 57 ms
+with compressed pages), too long for one turn of the loop, so the
+client steps it for at most 2 ms in each turn and polls without a wait
+while a search runs; keys between the steps act at once. `Escape`
+drops a running search and stays in copy mode; `q` leaves; `/` or `?`
+replace the search. One ghostty search tick can take about 6 ms, and
+the turn that completes a search also converts every match to a history
+row (about 15 ms for 100k matches), in one call, because ghostty's
+matches are valid only until the next change of the terminal. `n` and
+`N` use the last completed search, never a running one. The compressor
+thread does not step while a search is live, because a compression step
+changes the terminal under the search; it is the loop that steps the
+search, so the compressor still never wakes the loop. Ghostty's search
+folds ASCII case only. It reports the end of a match on a wide
+character at the character's first cell, and the highlight covers both
+cells. In the alternate screen, copy mode and its search see only that
+screen. The matches are sorted, and the renderer finds the match of
+each visible cell by binary search.
+
 The status line has tmux's default shape and colours: the session and
 its windows by position on the left, `*` on the shown window and `-`
 on the last one, and on the right the pending prefix, a prompt (a

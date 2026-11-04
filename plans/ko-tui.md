@@ -19,9 +19,11 @@ select, the resize keys, `{` `}` `E`) and `geometry::neighbour`
 freeze and resync in `ko_tui/src/mirror.rs`, and the viewport,
 wrap and selection-text calls of ko_vt
 (docs/design-ko.md 4.11). The client refuses copy mode while a mirror
-restores a snapshot or holds synchronized output. Unit 7 is built: `C-a *` toggles a float
-and `C-a !` breaks the pane with the new shared `Edit::BreakPane`
-(docs/design-ko.md 4.11).
+restores a snapshot or holds synchronized output. Unit 6 is built:
+copy-mode search, stepped from the loop in 2 ms slices, not on the
+compressor thread (docs/design-ko.md 4.11). Unit 7 is built: `C-a *`
+toggles a float and `C-a !` breaks the pane with the new shared
+`Edit::BreakPane` (docs/design-ko.md 4.11).
 
 The terminal client `ko` (`ko_tui/`) shows one pane at a time, lists
 the panes in a sidebar and takes Ctrl+Shift chords under the kitty
@@ -368,11 +370,10 @@ Reasons: the mirror holds the whole history (`History::All`,
 mirror.rs:20-23) and is frozen, so its rows are stable; protocol.md
 section 11 itself says "a client jumps to a match by taking a full
 snapshot and searching its mirror, since server rows move with
-output"; and Kido.app searches its mirror. `Search::step` runs in
-bounded ticks on the mirror's compressor thread, which already owns
-the terminal's CPU work under the `Mutex`, and publishes the match
-list into the shared `State`; the loop reads it with the frame. The
-matches are highlighted in yellow; the selected match is the cursor.
+output"; and Kido.app searches its mirror. The loop steps the
+`Search` in bounded slices while the compressor thread pauses
+(docs/design-ko.md 4.11). The matches are highlighted in yellow; the
+selected match is the cursor.
 
 ## 6. Rendering
 

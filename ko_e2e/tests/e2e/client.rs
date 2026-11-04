@@ -39,6 +39,10 @@ b=b''
 while True:
  c=os.read(0,1)
  if c==b'!': os.write(1,b'\r\nOUTPUT-during-copy'); continue
+ if c==b'#':
+  os.write(1,b'\x1b[3J\x1b[H\x1b[2J')
+  for i in range(80): os.write(1, ('%s-%02d\r\n'%('SEARCH-hit' if i in (10,50) else 'history',i)).encode())
+  os.write(1,b'READY-search'); continue
  b+=c
  if b.endswith(b'\x1b[201~'):
   os.write(1,b'\r\nPASTED:'+b.hex().encode()); b=b''
@@ -83,6 +87,26 @@ while True:
     inverse_cursor();
     o.raw("q");
     o.contains("OUTPUT-during-copy");
+    o.gone("[copy]");
+    s.text(&pane, "#");
+    o.contains("READY-search");
+    o.prefix("[");
+    o.raw("?SEARCH-hit\r");
+    o.contains("[50/");
+    o.raw("v$y");
+    o.wait("backward search places the cursor at match 50", || {
+        o.clipboard() == b"SEARCH-hit-50"
+    });
+    o.gone("[copy]");
+    o.prefix("[");
+    o.raw("?SEARCH-hit\r");
+    o.contains("[50/");
+    o.raw("n");
+    o.contains("[10/");
+    o.raw("v$y");
+    o.wait("repeat search places the cursor at match 10", || {
+        o.clipboard() == b"SEARCH-hit-10"
+    });
     o.gone("[copy]");
     o.prefix("[");
     o.contains("[copy]");

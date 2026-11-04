@@ -298,10 +298,22 @@ fn draw_ui(l: &Layout) -> Vec<Cell> {
         }
     }
     if let Some(y) = l.rows.checked_sub(1) {
-        let status = if l.copy.is_some() {
+        let status = if let Some((_, mode)) = &l.copy {
             Status {
                 left: l.status.left.clone(),
-                right: "[copy]".to_owned(),
+                right: match mode.search_state() {
+                    copy::SearchState::Normal => "[copy]".to_owned(),
+                    copy::SearchState::Prompt(direction, text) => format!(
+                        "{}{text}",
+                        if *direction == copy::Direction::Forward {
+                            '/'
+                        } else {
+                            '?'
+                        }
+                    ),
+                    copy::SearchState::Searching(..) => "searching".to_owned(),
+                    copy::SearchState::NoMatch => "no match".to_owned(),
+                },
             }
         } else {
             l.status.clone()
@@ -438,15 +450,22 @@ impl Renderer {
                         let empty = blank();
                         let cell = source.unwrap_or(&empty);
                         let mut style = cell.style;
-                        if copy.is_some_and(|mode| {
-                            mode.highlights(
-                                span,
-                                u16::try_from(x).unwrap_or(u16::MAX),
-                                u32::try_from(y).unwrap_or(u32::MAX),
-                                cell.width,
-                            )
+                        let col = u16::try_from(x).unwrap_or(u16::MAX);
+                        let row = u32::try_from(y).unwrap_or(u32::MAX);
+                        match copy.map_or(copy::Highlight::None, |mode| {
+                            mode.highlight(span, col, row, cell.width)
                         }) {
-                            style.attrs = style.attrs.with(Attribute::Inverse);
+                            copy::Highlight::None => {}
+                            copy::Highlight::Selected => {
+                                style.attrs = style.attrs.with(Attribute::Inverse)
+                            }
+                            highlight @ (copy::Highlight::Match | copy::Highlight::Current) => {
+                                style.bg = Colour::Indexed(3);
+                                style.fg = Colour::Indexed(0);
+                                if highlight == copy::Highlight::Current {
+                                    style.attrs = style.attrs.with(Attribute::Bold);
+                                }
+                            }
                         }
                         let clipped = (cell.width == 2
                             && (x + 1 >= r.cols || !area.contains(r.x + x + 1, r.y + y)))
@@ -662,6 +681,47 @@ mod tests {
         assert_eq!(frame.cells[19].style.fg, Colour::Indexed(3));
         assert!(frame.cells[42].style.attrs.has(Attribute::Inverse));
         assert_eq!(frame.cursor, None);
+        let mut layout = layout;
+        let mode = &mut layout.copy.as_mut().unwrap().1;
+        let mut events = Vec::new();
+        crate::input::Input::default().feed(b"h/needle\r", std::time::Instant::now(), &mut events);
+        for event in events {
+            if let crate::input::Event::Key(key) = event {
+                mode.feed(
+                    &key,
+                    |_| {
+                        Ok(copy::Row {
+                            text: String::new(),
+                            wraps: false,
+                        })
+                    },
+                    |_| Ok(false),
+                )
+                .unwrap();
+            }
+        }
+        let at = |row, col| ko_pane_wire::frame::Cell { row, col };
+        mode.search_done(
+            vec![
+                ko_pane_wire::frame::Match {
+                    start: at(4, 18),
+                    end: at(5, 2),
+                },
+                ko_pane_wire::frame::Match {
+                    start: at(6, 2),
+                    end: at(6, 3),
+                },
+            ],
+            |_| Ok(false),
+        )
+        .unwrap();
+        let frame = composed(&layout, &[]);
+        assert_eq!(frame.cells[20].style.bg, Colour::Indexed(3));
+        assert!(!frame.cells[20].style.attrs.has(Attribute::Bold));
+        assert_eq!(frame.cells[43].style.bg, Colour::Indexed(3));
+        assert!(frame.cells[43].style.attrs.has(Attribute::Bold));
+        assert!(frame.cells[42].style.attrs.has(Attribute::Inverse));
+        assert_eq!(frame.cells[42].style.bg, Colour::Default);
     }
 
     #[test]

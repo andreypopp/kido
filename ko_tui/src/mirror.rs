@@ -14,6 +14,7 @@ use ko_sys::clock::Mono;
 use ko_sys::event::{Poll, Ready, Token};
 use ko_vt::compress::{Compress, Tick};
 use ko_vt::render::Frame;
+use ko_vt::search::{Progress, Search};
 use ko_vt::{Extent, ReadyScan, Shape as SelectionShape, Span, Terminal};
 use tungstenite::Bytes;
 
@@ -27,6 +28,7 @@ const OPTIONS: ViewOptions = ViewOptions {
 };
 const BURST: Duration = Duration::from_millis(1);
 const YIELD: Duration = Duration::from_micros(500);
+const SEARCH_SLICE: Duration = Duration::from_millis(2);
 
 #[derive(Debug)]
 struct Screen {
@@ -87,6 +89,7 @@ struct State {
     drawn: Drawn,
     closed: bool,
     settled: bool,
+    searching: bool,
 }
 
 impl State {
@@ -117,15 +120,20 @@ impl Shared {
 fn compress_loop(shared: &Shared) {
     let mut state = shared.lock();
     while !state.closed {
-        let tick = state.surface.screen_mut().map(|screen| {
-            let began = Instant::now();
-            loop {
-                let tick = screen.compress.tick(&mut screen.vt, Mono::now());
-                if tick != Tick::Now || began.elapsed() >= BURST {
-                    break tick;
+        let searching = state.searching;
+        let tick = state
+            .surface
+            .screen_mut()
+            .filter(|_| !searching)
+            .map(|screen| {
+                let began = Instant::now();
+                loop {
+                    let tick = screen.compress.tick(&mut screen.vt, Mono::now());
+                    if tick != Tick::Now || began.elapsed() >= BURST {
+                        break tick;
+                    }
                 }
-            }
-        });
+            });
         let wait = match tick {
             None | Some(Tick::Settled) => None,
             Some(Tick::Now) => Some(YIELD),
@@ -180,6 +188,7 @@ fn apply(vt: &mut Terminal, marker: &Marker) -> Result<(), ko_vt::Error> {
 struct Frozen {
     copy: copy::Mode,
     dirty: bool,
+    search: Option<Search>,
 }
 
 fn copy_row(vt: &Terminal, cols: u16, row: u32) -> Result<Row, String> {
@@ -249,6 +258,7 @@ impl Mirror {
                 drawn: Drawn::Fresh,
                 closed: false,
                 settled: true,
+                searching: false,
             }),
             wake: Condvar::new(),
         });
@@ -539,7 +549,11 @@ impl Mirror {
             state.generation += 1;
             state.drawn = Drawn::Fresh;
         }
-        self.frozen = Some(Frozen { copy, dirty: false });
+        self.frozen = Some(Frozen {
+            copy,
+            dirty: false,
+            search: None,
+        });
         Ok(true)
     }
 
@@ -551,6 +565,45 @@ impl Mirror {
                 |row| vt.row_wraps(row).map_err(text),
             )
         })
+    }
+
+    pub(crate) fn copy_paste(&mut self, text: &str) {
+        if let Some(frozen) = &mut self.frozen {
+            frozen.copy.paste(text);
+        }
+    }
+
+    pub(crate) fn searching(&self) -> bool {
+        self.frozen
+            .as_ref()
+            .is_some_and(|frozen| frozen.search.is_some())
+    }
+
+    pub(crate) fn search_step(&mut self) -> Result<bool, String> {
+        let Some(frozen) = &mut self.frozen else {
+            return Ok(false);
+        };
+        let Some(mut search) = frozen.search.take() else {
+            return Ok(false);
+        };
+        let state = self.shared.lock();
+        let screen = state.surface.screen().ok_or("copy screen is not ready")?;
+        let began = Instant::now();
+        let matches = loop {
+            if search.step(64).map_err(text)? == Progress::Complete {
+                break search.matches(&screen.vt).map_err(text)?;
+            }
+            if began.elapsed() >= SEARCH_SLICE {
+                frozen.search = Some(search);
+                return Ok(false);
+            }
+        };
+        drop(search);
+        drop(state);
+        self.copy_change(|copy, vt, _| {
+            copy.search_done(matches, |row| vt.row_wraps(row).map_err(text))
+        })?;
+        Ok(true)
     }
 
     pub(crate) fn copy_mouse(
@@ -584,13 +637,33 @@ impl Mirror {
             .surface
             .screen_mut()
             .ok_or("copy screen is not ready")?;
-        let before = frozen.copy;
-        let result = change(&mut frozen.copy, &screen.vt, before.size().0)?;
-        if frozen.copy.offset() != before.offset() {
+        let offset = frozen.copy.offset();
+        let cols = frozen.copy.size().0;
+        let result = change(&mut frozen.copy, &screen.vt, cols)?;
+        match (frozen.copy.search_state(), frozen.search.is_some()) {
+            (copy::SearchState::Searching(_, needle), false) => {
+                match screen.vt.search(needle.as_bytes()) {
+                    Ok(search) => frozen.search = Some(search),
+                    Err(error) => {
+                        frozen.copy.search_failed();
+                        return Err(text(error));
+                    }
+                }
+            }
+            (copy::SearchState::Searching(..), true) => {}
+            (_, true) => frozen.search = None,
+            (_, false) => {}
+        }
+        if frozen.copy.offset() != offset {
             screen.vt.scroll_to(frozen.copy.offset()).map_err(text)?;
             state.generation += 1;
             state.drawn = Drawn::Fresh;
         }
+        let searching = frozen.search.is_some();
+        if state.searching && !searching {
+            self.shared.wake.notify_one();
+        }
+        state.searching = searching;
         Ok(result)
     }
 
@@ -604,7 +677,15 @@ impl Mirror {
     }
 
     pub(crate) fn thaw(&mut self, poll: &mut Poll) -> Result<(), String> {
-        if let Some(frozen) = self.frozen.take() {
+        let mut frozen = self.frozen.take();
+        let mut state = self.shared.lock();
+        if let Some(frozen) = &mut frozen {
+            frozen.search = None;
+        }
+        state.searching = false;
+        drop(state);
+        self.shared.wake.notify_one();
+        if let Some(frozen) = frozen {
             self.bottom()?;
             if frozen.dirty {
                 self.resync(poll)?;
@@ -832,8 +913,8 @@ mod tests {
                 .unwrap();
             }
         }
-        assert!(mode.highlights(None, 6, 0, 1));
-        assert!(!mode.highlights(None, 7, 0, 1));
+        assert_eq!(mode.highlight(None, 6, 0, 1), copy::Highlight::Selected);
+        assert_eq!(mode.highlight(None, 7, 0, 1), copy::Highlight::None);
     }
 
     #[test]
@@ -854,7 +935,7 @@ mod tests {
         );
         feed(&mut mirror, &snapshot[0]).unwrap();
         assert!(mirror.freeze(Entry::Here).unwrap());
-        let frozen = *mirror.copy().unwrap();
+        let frozen = mirror.copy().unwrap().clone();
         feed(&mut mirror, &output(b"\r\nnew\r\nlatest")).unwrap();
         let in_transit = slices(
             &self::server(8, 2, "stale").snapshot_bytes(false).unwrap(),
@@ -883,6 +964,55 @@ mod tests {
         );
         feed(&mut mirror, &fresh[0]).unwrap();
         assert_eq!(row(&mirror, 1), "latest");
+        assert!(mirror.copy().is_none());
+    }
+
+    #[test]
+    fn copy_search_completes_and_cancels_without_compression() {
+        let (mut mirror, _theirs, mut poll) = mirror();
+        let records = slices(
+            &server(20, 3, "needle\r\nother\r\nneedle\r\nlast")
+                .snapshot_bytes(false)
+                .unwrap(),
+            4096,
+        );
+        for record in records {
+            feed(&mut mirror, &record).unwrap();
+        }
+        assert!(mirror.freeze(Entry::Here).unwrap());
+        let keys = |mirror: &mut Mirror, bytes: &[u8]| {
+            let mut events = Vec::new();
+            crate::input::Input::default().feed(bytes, Instant::now(), &mut events);
+            for event in events {
+                if let crate::input::Event::Key(key) = event {
+                    mirror.copy_key(&key).unwrap();
+                }
+            }
+        };
+        keys(&mut mirror, b"?needle\r");
+        assert!(mirror.searching());
+        assert!(mirror.shared.lock().searching);
+        for _ in 0..100 {
+            if mirror.search_step().unwrap() {
+                break;
+            }
+        }
+        assert!(!mirror.searching());
+        assert!(!mirror.shared.lock().searching);
+        assert_eq!(
+            mirror.copy().unwrap().search_state(),
+            &copy::SearchState::Normal
+        );
+        keys(&mut mirror, b"?needle\r");
+        assert!(mirror.searching());
+        keys(&mut mirror, b"\x1b[27u");
+        assert!(!mirror.searching());
+        assert!(!mirror.shared.lock().searching);
+        assert!(mirror.copy().is_some());
+        keys(&mut mirror, b"?needle\r");
+        assert!(mirror.searching());
+        mirror.thaw(&mut poll).unwrap();
+        assert!(!mirror.shared.lock().searching);
         assert!(mirror.copy().is_none());
     }
 

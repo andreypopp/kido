@@ -177,6 +177,62 @@ mod tests {
     }
 
     #[test]
+    fn copy_search_wrap_wide_case_and_compressed_history() {
+        let mut vt = make(8, 3);
+        vt.write("123456abc界 AbC Éé\r\n".as_bytes());
+        let at = |row, col| Cell { row, col };
+        let mut search = vt.search("abc界".as_bytes()).unwrap();
+        finish(&mut search);
+        assert_eq!(
+            search.matches(&vt).unwrap(),
+            [Match {
+                start: at(0, 6),
+                end: at(1, 1)
+            }]
+        );
+        drop(search);
+        let mut search = vt.search(b"ABC").unwrap();
+        finish(&mut search);
+        assert_eq!(search.matches(&vt).unwrap().len(), 2);
+        drop(search);
+        let mut search = vt.search("é".as_bytes()).unwrap();
+        finish(&mut search);
+        assert_eq!(search.matches(&vt).unwrap().len(), 1);
+        drop(search);
+        for _ in 0..5324 {
+            vt.write(b"padding\r\n");
+        }
+        while vt.compress_step().unwrap() {}
+        assert!(vt.memory().unwrap().compressed_pages > 0);
+        let mut search = vt.search("abc界".as_bytes()).unwrap();
+        finish(&mut search);
+        assert_eq!(
+            search.matches(&vt).unwrap(),
+            [Match {
+                start: at(0, 6),
+                end: at(1, 1)
+            }]
+        );
+        drop(search);
+        vt.write(b"\x1b[?1049h\x1b[Halternate");
+        assert_eq!(vt.total_rows().unwrap(), 3);
+        assert_eq!(vt.viewport_offset().unwrap(), 0);
+        let mut search = vt.search("abc界".as_bytes()).unwrap();
+        finish(&mut search);
+        assert_eq!(search.matches(&vt).unwrap(), []);
+        drop(search);
+        let mut search = vt.search(b"alternate").unwrap();
+        finish(&mut search);
+        assert_eq!(
+            search.matches(&vt).unwrap(),
+            [Match {
+                start: at(0, 0),
+                end: at(1, 0)
+            }]
+        );
+    }
+
+    #[test]
     fn a_needle_that_is_nowhere_finds_nothing() {
         let mut vt = make(20, 3);
         vt.write(b"abc");

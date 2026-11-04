@@ -524,7 +524,7 @@ impl Client {
             help: *self.keys.state() == State::Help,
             resizing: *self.keys.state() == State::Resize,
             copy: panes(&self.view)
-                .find_map(|pane| pane.mirror.copy().map(|copy| (pane.pane, *copy))),
+                .find_map(|pane| pane.mirror.copy().map(|copy| (pane.pane, copy.clone()))),
             geometry: self
                 .view
                 .as_ref()
@@ -1389,6 +1389,10 @@ impl Client {
             Event::Mouse(mouse) => self.mouse(mouse),
             Event::Paste(body) => {
                 if self.key_context() == Context::Copying {
+                    if let Some(pane) = self.active() {
+                        pane.mirror.copy_paste(&body);
+                    }
+                    self.immediate = true;
                     return Ok(());
                 }
                 self.immediate = true;
@@ -1532,7 +1536,12 @@ impl Client {
             let at = self.received() + WATCHDOG;
             self.watchdog.set(&mut self.poll, Some(at))?;
         }
-        self.poll.turn(Mode::Wait, events).map_err(text)?;
+        let mode = if panes(&self.view).any(|pane| pane.mirror.searching()) {
+            Mode::Peek
+        } else {
+            Mode::Wait
+        };
+        self.poll.turn(mode, events).map_err(text)?;
         let now = Instant::now();
         self.link.begin_turn();
         for pane in panes_mut(&mut self.view) {
@@ -1596,6 +1605,9 @@ impl Client {
                 break;
             }
             self.event(event)?;
+        }
+        for pane in panes_mut(&mut self.view) {
+            self.immediate |= pane.mirror.search_step()?;
         }
         if resized {
             self.winch()?;

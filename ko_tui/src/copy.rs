@@ -1,4 +1,6 @@
-use ko_pane_wire::frame::Cell;
+use std::sync::Arc;
+
+use ko_pane_wire::frame::{Cell, Match};
 use ko_vt::unicode::{clusters, width};
 use ko_vt::{Shape, Span};
 
@@ -97,6 +99,35 @@ impl Row {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Direction {
+    Forward,
+    Backward,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SearchState {
+    Normal,
+    Prompt(Direction, String),
+    Searching(Direction, String),
+    NoMatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Found {
+    direction: Direction,
+    text: String,
+    matches: Arc<[Match]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Highlight {
+    None,
+    Selected,
+    Match,
+    Current,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Mode {
     cols: u16,
     rows: u32,
@@ -106,6 +137,8 @@ pub(crate) struct Mode {
     selection: Option<Selection>,
     pending: Option<Jump>,
     jump: Option<(Jump, char)>,
+    search: SearchState,
+    last: Option<Found>,
 }
 
 fn ordered(a: Cell, b: Cell) -> (Cell, Cell) {
@@ -146,6 +179,8 @@ impl Mode {
             selection: None,
             pending: None,
             jump: None,
+            search: SearchState::Normal,
+            last: None,
         };
         if entry == Entry::PageUp {
             mode.page(-i64::from(rows));
@@ -164,11 +199,16 @@ impl Mode {
         (self.cols, self.rows as u16)
     }
 
-    pub(crate) fn highlights(&self, span: Option<Span>, col: u16, y: u32, width: u8) -> bool {
+    pub(crate) fn highlight(&self, span: Option<Span>, col: u16, y: u32, width: u8) -> Highlight {
         let point = Cell {
-            col,
+            col: if width == 0 {
+                col.saturating_sub(1)
+            } else {
+                col
+            },
             row: self.offset.saturating_add(y),
         };
+        let width = if width == 0 { 2 } else { width };
         let selected = |point: Cell| {
             span.is_some_and(|span| match span.shape {
                 Shape::Linear => {
@@ -182,13 +222,39 @@ impl Mode {
                 }
             })
         };
-        point == self.cursor
+        if point == self.cursor
             || selected(point)
             || (width == 2
                 && selected(Cell {
-                    col: col.saturating_add(1),
+                    col: point.col.saturating_add(1),
                     ..point
                 }))
+        {
+            return Highlight::Selected;
+        }
+        let Some(found) = &self.last else {
+            return Highlight::None;
+        };
+        let start = (point.row, point.col);
+        let end = (
+            point.row,
+            point
+                .col
+                .saturating_add(u16::from(width.max(1)).saturating_sub(1)),
+        );
+        let at = found
+            .matches
+            .partition_point(|m| (m.end.row, m.end.col) < start);
+        match found.matches.get(at) {
+            Some(m) if (m.start.row, m.start.col) <= end => {
+                if m.start == self.cursor {
+                    Highlight::Current
+                } else {
+                    Highlight::Match
+                }
+            }
+            _ => Highlight::None,
+        }
     }
 
     pub(crate) fn range(&self) -> Option<Span> {
@@ -393,6 +459,42 @@ impl Mode {
         mut read_row: impl FnMut(u32) -> Result<Row, String>,
         mut wraps: impl FnMut(u32) -> Result<bool, String>,
     ) -> Result<Outcome, String> {
+        if self.search == SearchState::NoMatch {
+            self.search = SearchState::Normal;
+        }
+        if let SearchState::Prompt(direction, text) = &mut self.search {
+            match event.name {
+                Name::Escape => self.search = SearchState::Normal,
+                Name::Backspace if text.is_empty() => self.search = SearchState::Normal,
+                Name::Backspace => {
+                    text.pop();
+                }
+                Name::Enter => {
+                    let direction = *direction;
+                    let text = std::mem::take(text);
+                    self.search = SearchState::Normal;
+                    let text = if text.is_empty() {
+                        self.last.as_ref().map(|found| found.text.clone())
+                    } else {
+                        Some(text)
+                    };
+                    if let Some(text) = text {
+                        self.search = SearchState::Searching(direction, text);
+                    }
+                }
+                _ => {
+                    if let Some(c) = event.character().filter(|c| !c.is_control()) {
+                        text.push(c);
+                    }
+                }
+            }
+            return Ok(Outcome::Stay);
+        }
+        if event.name == Name::Escape && matches!(self.search, SearchState::Searching(..)) {
+            self.search = SearchState::Normal;
+            self.pending = None;
+            return Ok(Outcome::Stay);
+        }
         let mut cache: Option<(u32, Row)> = None;
         let mut row = |at| {
             if cache.as_ref().is_none_or(|(cached, _)| *cached != at) {
@@ -403,7 +505,7 @@ impl Mode {
                 .map(|(_, row)| row.clone())
                 .ok_or_else(|| "copy row is missing".to_owned())
         };
-        let before = *self;
+        let before = (self.cursor, self.selection, self.offset);
         if let Some(jump) = self.pending.take() {
             if let Some(needle) = event.character() {
                 self.find(jump, needle, &row(self.cursor.row)?);
@@ -426,6 +528,23 @@ impl Mode {
                     }
                     None => Selection::Rectangle(self.cursor),
                 })
+            }
+            (_, _, Some('/' | '?')) => {
+                self.pending = None;
+                self.search = SearchState::Prompt(
+                    if key == Some('/') {
+                        Direction::Forward
+                    } else {
+                        Direction::Backward
+                    },
+                    String::new(),
+                );
+            }
+            (_, _, Some('n' | 'N')) => {
+                if let Some(found) = &self.last {
+                    let forward = (found.direction == Direction::Forward) != (key == Some('N'));
+                    self.search_jump(forward);
+                }
             }
             (_, _, Some(' ' | 'v')) => self.selection = Some(Selection::Character(self.cursor)),
             (_, _, Some('V')) => {
@@ -529,14 +648,73 @@ impl Mode {
             }
             _ => {}
         }
-        if self.cursor != before.cursor {
+        if self.cursor != before.0 {
             self.normalize(&row(self.cursor.row)?);
         }
         self.visible();
-        if *self != before {
+        if (self.cursor, self.selection, self.offset) != before {
             self.update_lines(&mut wraps)?;
         }
         Ok(Outcome::Stay)
+    }
+
+    pub(crate) fn search_state(&self) -> &SearchState {
+        &self.search
+    }
+
+    pub(crate) fn paste(&mut self, text: &str) {
+        if self.search == SearchState::NoMatch {
+            self.search = SearchState::Normal;
+        }
+        if let SearchState::Prompt(_, prompt) = &mut self.search {
+            prompt.extend(text.chars().filter(|c| !c.is_control()));
+        }
+    }
+
+    pub(crate) fn search_failed(&mut self) {
+        self.search = SearchState::Normal;
+    }
+
+    pub(crate) fn search_done(
+        &mut self,
+        matches: Vec<Match>,
+        mut wraps: impl FnMut(u32) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        let SearchState::Searching(direction, text) =
+            std::mem::replace(&mut self.search, SearchState::Normal)
+        else {
+            return Ok(());
+        };
+        self.last = Some(Found {
+            direction,
+            text,
+            matches: matches.into(),
+        });
+        self.search_jump(direction == Direction::Forward);
+        self.update_lines(&mut wraps)
+    }
+
+    fn search_jump(&mut self, forward: bool) {
+        let Some(found) = &self.last else { return };
+        let matches = &found.matches;
+        if matches.is_empty() {
+            if !matches!(self.search, SearchState::Searching(..)) {
+                self.search = SearchState::NoMatch;
+            }
+            return;
+        }
+        let point = (self.cursor.row, self.cursor.col);
+        let at = if forward {
+            let at = matches.partition_point(|m| (m.start.row, m.start.col) <= point);
+            if at == matches.len() { 0 } else { at }
+        } else {
+            let at = matches.partition_point(|m| (m.start.row, m.start.col) < point);
+            if at == 0 { matches.len() - 1 } else { at - 1 }
+        };
+        if let Some(found) = matches.get(at) {
+            self.cursor = found.start;
+            self.visible();
+        }
     }
 
     fn update_lines(
@@ -570,13 +748,13 @@ impl Mode {
         mut wraps: impl FnMut(u32) -> Result<bool, String>,
     ) -> Result<(), String> {
         let Cell { col, row: y } = position;
-        let before = *self;
+        let before = (self.cursor, self.selection, self.offset);
         if matches!(kind, MouseKind::Up(_) | MouseKind::Move) {
             return Ok(());
         }
         if let MouseKind::Scroll { up } = kind {
             self.scroll(if up { -3 } else { 3 });
-            if self.cursor != before.cursor {
+            if self.cursor != before.0 {
                 self.normalize(&row(self.cursor.row)?);
             }
         } else {
@@ -627,7 +805,7 @@ impl Mode {
                 _ => {}
             }
         }
-        if *self != before {
+        if (self.cursor, self.selection, self.offset) != before {
             self.update_lines(&mut wraps)?;
         }
         Ok(())
@@ -650,6 +828,8 @@ mod tests {
             selection: None,
             pending: None,
             jump: None,
+            search: SearchState::Normal,
+            last: None,
         }
     }
 
@@ -666,6 +846,93 @@ mod tests {
                 .unwrap();
             }
         }
+    }
+
+    #[test]
+    fn search_prompt_jumps_wrap_and_no_match() {
+        let mut c = mode(20, 2, 10, 8, Cell { row: 9, col: 0 });
+        let rows = vec![
+            Row {
+                text: "needle text".to_owned(),
+                wraps: false
+            };
+            10
+        ];
+        feed(&mut c, "/éx\x7f", &rows);
+        assert_eq!(
+            c.search_state(),
+            &SearchState::Prompt(Direction::Forward, "é".to_owned())
+        );
+        c.paste("a\nb\t\u{7f}");
+        assert_eq!(
+            c.search_state(),
+            &SearchState::Prompt(Direction::Forward, "éab".to_owned())
+        );
+        feed(&mut c, "\x1b[27u", &rows);
+        assert_eq!(c.search_state(), &SearchState::Normal);
+        feed(&mut c, "/\x7f", &rows);
+        assert_eq!(c.search_state(), &SearchState::Normal);
+        feed(&mut c, "/\r", &rows);
+        assert_eq!(c.search_state(), &SearchState::Normal);
+        feed(&mut c, "/needle\r", &rows);
+        assert_eq!(
+            c.search_state(),
+            &SearchState::Searching(Direction::Forward, "needle".to_owned())
+        );
+        let matches = vec![
+            Match {
+                start: Cell { row: 1, col: 2 },
+                end: Cell { row: 1, col: 7 },
+            },
+            Match {
+                start: Cell { row: 5, col: 0 },
+                end: Cell { row: 5, col: 5 },
+            },
+        ];
+        c.search_done(matches.clone(), |_| Ok(false)).unwrap();
+        assert_eq!(c.cursor, matches[0].start);
+        assert_eq!(c.offset(), 1);
+        feed(&mut c, "vn", &rows);
+        assert_eq!(c.cursor, matches[1].start);
+        assert_eq!(c.range().unwrap().start, matches[0].start);
+        assert_eq!(c.range().unwrap().end, matches[1].start);
+        feed(&mut c, "n", &rows);
+        assert_eq!(c.cursor, matches[0].start);
+        feed(&mut c, "N", &rows);
+        assert_eq!(c.cursor, matches[1].start);
+        feed(&mut c, "?needle\r", &rows);
+        c.search_done(matches.clone(), |_| Ok(false)).unwrap();
+        assert_eq!(c.cursor, matches[0].start);
+        feed(&mut c, "n", &rows);
+        assert_eq!(c.cursor, matches[1].start);
+        feed(&mut c, "N", &rows);
+        assert_eq!(c.cursor, matches[0].start);
+        feed(&mut c, "/\r", &rows);
+        assert_eq!(
+            c.search_state(),
+            &SearchState::Searching(Direction::Forward, "needle".to_owned())
+        );
+        let before = c.cursor;
+        c.search_done(Vec::new(), |_| Ok(false)).unwrap();
+        assert_eq!(c.cursor, before);
+        assert_eq!(c.search_state(), &SearchState::NoMatch);
+        feed(&mut c, "v", &rows);
+        assert_eq!(c.search_state(), &SearchState::Normal);
+        assert_eq!(c.range().unwrap().start, before);
+        let mut old = matches;
+        old.push(Match {
+            start: Cell { row: 8, col: 0 },
+            end: Cell { row: 8, col: 2 },
+        });
+        feed(&mut c, "/old\r", &rows);
+        c.search_done(old.clone(), |_| Ok(false)).unwrap();
+        assert_eq!(c.cursor, old[1].start);
+        feed(&mut c, "?new\r", &rows);
+        feed(&mut c, "\x1b[27u", &rows);
+        assert_eq!(c.search_state(), &SearchState::Normal);
+        feed(&mut c, "n", &rows);
+        assert_eq!(c.cursor, old[2].start);
+        assert_eq!(c.last.as_ref().unwrap().text, "old");
     }
 
     #[test]
@@ -693,7 +960,7 @@ mod tests {
                 shape: Shape::Linear
             })
         );
-        let before = c;
+        let before = c.clone();
         c.mouse(
             MouseKind::Up(MouseButton::Left),
             Cell { col: 0, row: 0 },
@@ -709,13 +976,21 @@ mod tests {
     fn copy_find_repeat_screen_page_and_scroll() {
         let rows = vec![
             Row {
-                text: "a x x x".to_owned(),
+                text: "a x x x /".to_owned(),
                 wraps: false
             };
             12
         ];
         let mut c = mode(20, 4, 12, 6, Cell { col: 0, row: 6 });
-        for (keys, col) in [("fx", 2), (";", 4), (",", 2), ("tx", 3), (";", 5), (",", 3)] {
+        for (keys, col) in [
+            ("fx", 2),
+            (";", 4),
+            (",", 2),
+            ("tx", 3),
+            (";", 5),
+            (",", 3),
+            ("f/", 8),
+        ] {
             feed(&mut c, keys, &rows);
             assert_eq!(c.cursor.col, col, "{keys}");
         }

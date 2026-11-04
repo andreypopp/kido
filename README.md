@@ -105,10 +105,18 @@ shows `[offset/history]`.
 | `V` | select whole lines |
 | `C-v` | toggle a rectangle selection |
 | `o` | go to the other end of the selection |
-| `Escape` | clear the selection, or leave with none |
+| `/` / `?` and a text, `Enter` | search forward / backward in the history |
+| `n` / `N` | the next match in the search's direction / the reverse one |
+| `Escape` | stop a running search, else clear the selection, or leave with none |
 | `Enter` or `y` | copy the selection to the clipboard and the copy buffer, and leave |
 | `q` | leave |
 | `C-a` | leave, then take a prefix key |
+
+A search moves the cursor to the start of the next match and wraps at
+the ends of the history. `Enter` on an empty prompt repeats the last
+search. ASCII letters match in either case; other letters match only
+in their own case. Every match on the screen has a yellow background,
+and the match under the cursor is bold.
 
 In copy mode a click places the cursor, a drag selects, a double
 click selects a word, a triple click a line, and the wheel scrolls;
