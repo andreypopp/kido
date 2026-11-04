@@ -36,9 +36,9 @@ Goals, in priority order:
 5. **Upgrade without losing panes** (not built; plans/ko-upgrade.md).
 6. **Remote** over SSH with the same protocol, with reconnect.
 7. **A terminal client in tmux's shape** for a plain terminal: a
-   `C-a` prefix, a status line and a list grouped by session. It
-   shows one pane at a time; the window's splits, zoom and floats, a
-   copy mode and a resize mode are planned (plans/ko-tui.md).
+   `C-a` prefix, a status line, a list grouped by session and the
+   shown window with its splits, zoom and floats, as Kido.app shows
+   it. A copy mode and a resize mode are planned (plans/ko-tui.md).
 
 Non-goals:
 
@@ -281,6 +281,12 @@ window, because a second app window on a smaller monitor would
 otherwise steal the size on every resize of its own. When the sizing
 client disconnects, the window keeps its size until another client
 claims it.
+Kido.app and the terminal client follow the same rule for every window,
+with splits and floats too. A client sends the size of the area where
+it shows the window, never a leaf size, and the server scales the tree
+into it. A client that does not size the window draws it at the
+server's geometry, anchored top left, clipped where the window is
+larger and blank where it is smaller.
 
 The server starts with an empty document and keeps running with an
 empty one when the last session goes; a client that finds it empty
@@ -409,12 +415,36 @@ rule needs a recorded decision before it is built.
 
 ### 4.11 The terminal client
 
-`ko` with no arguments is the terminal client (`ko_tui`). It shows one
-pane at a time and lists every pane in a sidebar grouped by session,
-with a subagent's pane one column deeper than its parent's. A pane in
-a split is shown clipped or padded at its size (plans/ko-tui.md
-draws the window's splits). It is a client like any other: it opens
-a view for the pane it shows and mirrors it in libghostty-vt.
+`ko` with no arguments is the terminal client (`ko_tui`). It shows the
+client's current window as the layout document draws it, and lists
+every pane in a sidebar grouped by session, with a subagent's pane one
+column deeper than its parent's. It is a client like any other: it
+opens one view for each visible pane, mirrors each in libghostty-vt
+and closes the view when the pane leaves the screen.
+
+`ko_tui/src/geometry.rs` walks the window into one rectangle for each
+leaf, with one divider cell between the children of a split, as the
+document reserves it, and a junction glyph where dividers meet. The
+active pane's dividers are green. A zoomed window has one rectangle,
+the zoomed pane, and only that pane has a view: closing the hidden
+panes' views keeps the server's write work proportional to the screen,
+and a snapshot reload on unzoom costs milliseconds. Floats are drawn
+after the tree in `z` order, with their border outside the content
+and clipped to the pane area. A dead pane's line is the last row of
+its rectangle. Keys go to the active pane, the client's current pane;
+the outer terminal's cursor and modes follow it. A press in another
+pane selects that pane; a pane that tracks the mouse gets the press,
+drags and release in its own coordinates, and the wheel scrolls the
+mirror under the pointer or goes to that pane when it tracks the
+mouse. A zoomed window's zoomed pane is the active one, as in
+Kido.app: when another client zooms a pane that is not current, the
+client selects it, and a jump to a pane that a zoom hides first ends
+the zoom with a layout edit.
+
+Each mirror keeps its own compressor thread, so N visible panes are N
+views and N threads, each idle without output. A frame is fetched only
+when its mirror's generation changed, so a quiet pane costs nothing in
+a paint, and the differ writes only the changed cells.
 
 One writer draws the screen: a direct cell differ (`ko_tui/src/differ.rs`)
 writes the composed cells of the pane region, the sidebar and the
@@ -879,6 +909,10 @@ Each decision names its date. The code states the rest.
   2026-10-30 that the terminal client never shows splits, tabs or
   windows and that a terminal without extended keys gets no chords
   and no prefix fallback.
+- The terminal client shows the window's splits, zoom and floats and
+  sizes windows by the same rule as Kido.app. The server's gate that
+  let a terminal client size only a window with one leaf, and the
+  hello's client kind that it read, go.
 - Runtimes get a configuration file, the `runtimes:` key of
   `config.yaml`, because a runtime cannot be derived. The file has one
   top-level key for each owner; Kido.app's settings join it

@@ -1,11 +1,7 @@
 use serde_json::{Value, json};
 
-use crate::harness::{Server, start};
-use crate::layout::{consistent, new, shell, split, windows};
-
-fn put_edit(s: &Server, edit: &Value) -> Value {
-    s.ko(&["layout", "edit", &edit.to_string()], "").json()["snapshot"].take()
-}
+use crate::harness::start;
+use crate::layout::{consistent, new, put_edit, shell, split, windows};
 
 fn panes(document: &Value) -> usize {
     fn leaves(node: &Value) -> usize {

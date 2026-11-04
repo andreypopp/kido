@@ -883,9 +883,9 @@ mod tests {
             "POST /panes/pane_1/input",
             &format!("Content-Length: {}\r\n\r\n{text_input}", text_input.len()),
         );
-        let hello = r#"["hello",["terminal","t","pane_1",true,{"cols":7,"rows":7},false]]"#;
+        let hello = r#"["hello",["t","pane_1",true,{"cols":7,"rows":7},false]]"#;
         let _array_hello = server.connect(&[upgrade("/client"), text(hello)].concat());
-        let size_hello = r#"{"type":"hello","kind":"terminal","name":"t","pane":"pane_1","focused":false,"ignore_size":true,"size":[80,24]}"#;
+        let size_hello = r#"{"type":"hello","name":"t","pane":"pane_1","focused":false,"ignore_size":true,"size":[80,24]}"#;
         let _array_size = server.connect(&[upgrade("/client"), text(size_hello)].concat());
         let key = r#"{"type":"input","input":["key",["press",20,0,97,"a",false]]}"#;
         let _array_key = server.connect(&[upgrade("/panes/pane_1/view"), text(key)].concat());
@@ -916,7 +916,7 @@ mod tests {
             pane: crate::ids::PaneId::new(1),
             title: "x".repeat(400_000),
         });
-        let hello = r#"{"type":"hello","kind":"app","name":"t","focused":false,"size":{"cols":80,"rows":24}}"#;
+        let hello = r#"{"type":"hello","name":"t","focused":false,"size":{"cols":80,"rows":24}}"#;
         let client = server.connect(&[upgrade("/client"), text(hello)].concat());
         let registered = server.state.registered(ClientId::new(1));
         let closed_at = (1..400).find(|_| {
@@ -952,8 +952,8 @@ mod tests {
     fn message() -> impl Strategy<Value = Vec<u8>> {
         prop_oneof![
             4 => prop::sample::select(vec![
-                r#"{"type":"hello","kind":"terminal","name":"t","focused":true,"size":{"cols":80,"rows":24}}"#,
-                r#"{"type":"hello","kind":"app","name":"t","pane":"pane_1","focused":false,"size":{"cols":4097,"rows":24}}"#,
+                r#"{"type":"hello","name":"t","focused":true,"size":{"cols":80,"rows":24}}"#,
+                r#"{"type":"hello","name":"t","pane":"pane_1","focused":false,"size":{"cols":4097,"rows":24}}"#,
                 r#"{"type":"select","pane":"pane_1"}"#,
                 r#"{"type":"select","pane":"pane_99"}"#,
                 r#"{"type":"size","cols":50,"rows":10,"cell_px":{"width":8,"height":16}}"#,
@@ -1153,12 +1153,8 @@ mod tests {
     }
 
     fn hello(extra: &str, focused: bool, cols: u16, rows: u16) -> String {
-        hello_of("app", extra, focused, cols, rows)
-    }
-
-    fn hello_of(kind: &str, extra: &str, focused: bool, cols: u16, rows: u16) -> String {
         format!(
-            r#"{{"type":"hello","kind":"{kind}","name":"t",{extra}"focused":{focused},"size":{{"cols":{cols},"rows":{rows}}}}}"#
+            r#"{{"type":"hello","name":"t",{extra}"focused":{focused},"size":{{"cols":{cols},"rows":{rows}}}}}"#
         )
     }
 
@@ -1445,40 +1441,6 @@ mod tests {
             server.step(Mode::Peek);
         }
         assert_eq!(window(&server, "window_1"), (61, 21));
-    }
-
-    #[test]
-    fn a_terminal_client_sizes_only_a_window_with_one_pane_and_no_floats() {
-        let mut server = harness("terminal-sizing");
-        three_windows(&mut server);
-        server.put(|layout| {
-            layout["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
-                {"pane": "pane_1"}, {"pane": {"new": cat()}}]});
-        });
-        let mut peer = server.peer(&hello_of("terminal", r#""pane":"pane_1","#, true, 70, 20));
-        peer.events(&mut server);
-        let layout = server.state.layout_panes().snapshot.layout;
-        assert_eq!(
-            layout
-                .window(crate::ids::WindowId::new(1))
-                .unwrap()
-                .1
-                .cols
-                .get(),
-            80
-        );
-        peer.send(&mut server, r#"{"type":"select","pane":"pane_2"}"#);
-        peer.send(&mut server, r#"{"type":"size","cols":71,"rows":21}"#);
-        let layout = server.state.layout_panes().snapshot.layout;
-        assert_eq!(
-            layout
-                .window(crate::ids::WindowId::new(2))
-                .unwrap()
-                .1
-                .cols
-                .get(),
-            71
-        );
     }
 
     #[test]

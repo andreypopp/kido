@@ -28,9 +28,9 @@ use crate::pane::{Birth, Pane};
 use crate::pane_proc::{self, Event, Io, Refusal, discard};
 use crate::panes::{AddError, Panes};
 use crate::protocol::{
-    self, CellPixels, ClientEvent, ClientKind, ClientRequest, CreatePane, DeleteVars, End, Input,
-    Layout, LayoutPanes, Limits, Listing, PaneDead, PasteResult, PutLayout, Pwd, Row, Selection,
-    Snapshot, StatusChange, Title, VarCondition, ViewEvent, ViewRequest, Welcome,
+    self, CellPixels, ClientEvent, ClientRequest, CreatePane, DeleteVars, End, Input, Layout,
+    LayoutPanes, Limits, Listing, PaneDead, PasteResult, PutLayout, Pwd, Row, Selection, Snapshot,
+    StatusChange, Title, VarCondition, ViewEvent, ViewRequest, Welcome,
 };
 use crate::router;
 use crate::runs;
@@ -1548,7 +1548,6 @@ impl State {
                 };
                 if let Some(current) = active.current
                     && self.sizers.get(&current.window) == Some(&id)
-                    && self.sizable(active.kind, current.window)
                     && self.size_window(poll, current.window, active.size)
                 {
                     self.publish();
@@ -1561,17 +1560,6 @@ impl State {
             }
         };
         self.enter(poll, index, current, notify);
-    }
-
-    fn sizable(&self, kind: ClientKind, window: WindowId) -> bool {
-        match kind {
-            ClientKind::App => true,
-            ClientKind::Terminal => self
-                .document
-                .layout()
-                .window(window)
-                .is_some_and(|(_, window)| window.single()),
-        }
     }
 
     fn claim(&mut self, poll: &mut Poll, index: usize) -> bool {
@@ -1590,7 +1578,7 @@ impl State {
             .iter()
             .filter_map(client_of)
             .filter_map(|client| client.active.as_ref().map(|peer| (client.id, peer)));
-        if self.sizable(active.kind, current.window) && client::claims(id, &active, others) {
+        if client::claims(id, &active, others) {
             self.sizers.insert(current.window, id);
             return self.size_window(poll, current.window, active.size);
         }

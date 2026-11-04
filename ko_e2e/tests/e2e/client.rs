@@ -5,9 +5,162 @@ use ko_sys::pid::{Pid, signal_descendant};
 use ko_sys::signal::Signal;
 
 use crate::harness::{DEADLINE, Dir, HEAVY, Server, quote, run_ko, start, text_of};
+use crate::layout::{put_edit, window_size, windows};
 use crate::outer::{DOWN_PRESS_RELEASE, FOCUS_IN, FOCUS_OUT, Keys, Outer, UP};
 
 const PANE_X: usize = 25;
+
+const SPLIT_ECHO: &str = r#"import os,sys,tty
+tty.setraw(0)
+label=sys.argv[1]
+for i in range(80): os.write(1, ('HISTORY-'+label+'-%03d\r\n'%i).encode())
+os.write(1, ('READY-'+label).encode())
+while True:
+ b=os.read(0,1)
+ os.write(1, ('\r\n'+label+'-KEY-'+b.hex()).encode())
+"#;
+
+fn split_echo_window(s: &Server) {
+    use serde_json::json;
+    s.pane(&format!("exec python3 -u -c {} one", quote(SPLIT_ECHO)));
+    for (pane, axis, label) in [("pane_1", "h", "two"), ("pane_2", "v", "three")] {
+        let edit = json!({"type": "split", "pane": pane, "axis": axis, "new": {"command": {"type": "shell", "command": format!("exec python3 -u -c {} {label}", quote(SPLIT_ECHO))}}});
+        put_edit(s, &edit);
+    }
+}
+
+#[test]
+fn client_two_clients_one_window_and_the_sizer() {
+    let s = start(&[]);
+    split_echo_window(&s);
+    let large = Outer::new(&s.dir, Keys::Extended);
+    large.resize(120, 31);
+    large.attach("cat");
+    large.contains("READY-one");
+    large.raw(FOCUS_OUT);
+    let small = Outer::new(&s.dir, Keys::Extended);
+    small.resize(105, 21);
+    small.attach("cat");
+    small.contains("READY-one");
+    small.wait("the smaller focused client sizes the split window", || {
+        let d = s.doc();
+        window_size(&d, 0) == (80, 20)
+    });
+    let d = s.doc();
+    let first = windows(&d)[0]["tree"]["children"][0]["cols"]
+        .as_u64()
+        .unwrap() as usize;
+    large.wait("the larger client uses the server's divider column", || {
+        large.cell(PANE_X + first, 0).text == "│"
+    });
+    large.wait("the smaller window is padded", || {
+        large.cell(PANE_X + 80, 0).text.trim().is_empty()
+    });
+    assert_eq!(small.cell(PANE_X + first, 0).text, "│");
+    small.detach();
+    large.click(3, 2);
+    large.wait("the remaining client's select claims the window", || {
+        let d = s.doc();
+        window_size(&d, 0) == (95, 30)
+    });
+    large.detach();
+}
+
+#[test]
+fn client_split_dividers_input_mouse_wheel_and_zoom() {
+    use serde_json::json;
+    let s = start(&[]);
+    split_echo_window(&s);
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.resize(105, 25);
+    o.attach("cat");
+    o.contains("READY-one");
+    o.contains("READY-two");
+    o.contains("READY-three");
+    let d = s.doc();
+    let w = windows(&d)[0];
+    let x = PANE_X + w["tree"]["children"][0]["cols"].as_u64().unwrap() as usize;
+    let y = w["tree"]["children"][1]["children"][0]["rows"]
+        .as_u64()
+        .unwrap() as usize;
+    o.wait("split dividers and their junction", || {
+        o.cell(x, 0).text == "│" && o.cell(x, y).text == "├" && o.cell(x + 1, y).text == "─"
+    });
+    o.raw("a");
+    o.contains("one-KEY-61");
+    o.click(x + 3, 2);
+    o.raw("b");
+    o.contains("two-KEY-62");
+    let before = o.lines()[0].clone();
+    o.wheel_up(PANE_X + 2, 2);
+    o.wait("the wheel scrolls the pane under the pointer", || {
+        o.lines()[0] != before
+    });
+    o.contains("two-KEY-62");
+    let zoom = json!({"type": "toggle_zoom", "pane": "pane_3"});
+    put_edit(&s, &zoom);
+    o.wait("zoom removes both dividers", || {
+        o.cell(x, 0).text != "│" && o.cell(x, y).text != "├"
+    });
+    o.gone("READY-two");
+    o.raw("c");
+    o.contains("three-KEY-63");
+    put_edit(&s, &zoom);
+    o.wait("unzoom restores the dividers", || {
+        o.cell(x, 0).text == "│" && o.cell(x, y).text == "├" && o.cell(x + 1, y).text == "─"
+    });
+    o.contains("READY-two");
+    put_edit(&s, &zoom);
+    o.wait("zoom before a sidebar jump", || o.cell(x, y).text != "├");
+    put_edit(
+        &s,
+        &json!({"type": "split", "pane": "pane_2", "axis": "v", "new": {"command": {"type": "shell", "command": "printf '\\033]0;new-during-unzoom\\007'; exec cat"}}}),
+    );
+    o.click(3, 2);
+    o.raw("d");
+    o.contains("one-KEY-64");
+    o.contains("new-during-unzoom");
+    o.wait("a sidebar jump unzooms the hidden pane", || {
+        windows(&s.doc())[0]["zoom"].is_null() && o.cell(x, y).text == "├"
+    });
+    o.detach();
+}
+
+#[test]
+fn client_mouse_release_stays_with_the_pressed_pane() {
+    use serde_json::json;
+    let s = start(&[]);
+    let fixture = r#"import os,sys,tty
+tty.setraw(0)
+label=sys.argv[1]
+os.write(1, ('\x1b[?1000h\x1b[?1006hREADY-'+label).encode())
+b=b''
+while True:
+ b+=os.read(0,1)
+ if b[-1:] in (b'M',b'm'):
+  os.write(1, ('\r\n'+label+'-MOUSE:'+b.hex()).encode())
+  b=b''
+"#;
+    s.pane(&format!("exec python3 -u -c {} A", quote(fixture)));
+    put_edit(
+        &s,
+        &json!({"type": "split", "pane": "pane_1", "axis": "h", "new": {"command": {"type": "shell", "command": format!("exec python3 -u -c {} B", quote(fixture))}}}),
+    );
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.resize(105, 25);
+    o.attach("cat");
+    o.contains("READY-A");
+    o.contains("READY-B");
+    let d = s.doc();
+    let width = windows(&d)[0]["tree"]["children"][0]["cols"]
+        .as_u64()
+        .unwrap() as usize;
+    o.press(PANE_X + 3, 3);
+    o.raw(&format!("\x1b[<0;{};3m", PANE_X + width + 4));
+    o.contains(&format!("A-MOUSE:{}", hex(&format!("\x1b[<0;{width};3m"))));
+    o.gone("B-MOUSE:");
+    o.detach();
+}
 
 fn pane_text(line: &str) -> String {
     line.chars().skip(PANE_X).collect()

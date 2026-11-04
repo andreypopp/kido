@@ -10,7 +10,7 @@ use ko_pane_wire::frame::{CellPx, Dim, History, Size};
 use ko_server::api::Route;
 use ko_server::config::scratch;
 use ko_server::protocol::{
-    self, ClientKind, ClientRequest, Hello, Images, Row, ViewOptions, ViewRequest, json,
+    self, ClientRequest, Hello, Images, Row, ViewOptions, ViewRequest, json,
 };
 use ko_server::server::{Server, Status, Timing};
 use ko_sys::clock::{Mono, children_cpu_time, process_cpu, thread_cpu_time};
@@ -335,7 +335,6 @@ pub(crate) fn snapshot(lines: &str) -> Result<(), String> {
             cell_px: Some(CellPx::DEFAULT),
         };
         let hello = ClientRequest::Hello(Hello {
-            kind: ClientKind::Terminal,
             name: "bench".to_owned(),
             selection: protocol::Selection {
                 pane: Some(pane),

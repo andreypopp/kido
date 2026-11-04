@@ -57,12 +57,6 @@ pub(crate) struct Document {
     ids: Ids,
 }
 
-impl Window {
-    pub(crate) fn single(&self) -> bool {
-        matches!(self.tree, Node::Leaf(_)) && self.floats.is_empty()
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct Removal {
     pub(crate) panes: Vec<PaneId>,

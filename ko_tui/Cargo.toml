@@ -15,6 +15,7 @@ tungstenite.workspace = true
 vte.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 miniz_oxide.workspace = true
 
 [lints]

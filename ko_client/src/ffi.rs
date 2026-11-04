@@ -740,7 +740,6 @@ pub unsafe extern "C" fn ko_client_connect(
         wake,
         commands: Mutex::new(VecDeque::new()),
         hello: Mutex::new(Hello {
-            kind: protocol::ClientKind::App,
             name,
             selection: Selection::default(),
             focused: hello.focused,
@@ -2152,7 +2151,7 @@ mod tests {
         assert_eq!(
             hello,
             json!({
-                "type": "hello", "kind": "app", "name": "app", "focused": false,
+                "type": "hello", "name": "app", "focused": false,
                 "size": {"cols": 80, "rows": 24}, "ignore_size": true
             }),
             "a client without a hello struct neither sizes windows nor has focus"
@@ -2760,7 +2759,6 @@ mod tests {
         assert_eq!(
             (
                 &hello["type"],
-                &hello["kind"],
                 &hello["name"],
                 &hello["focused"],
                 &hello["ignore_size"],
@@ -2768,7 +2766,6 @@ mod tests {
             ),
             (
                 &json!("hello"),
-                &json!("app"),
                 &json!("window_7"),
                 &json!(false),
                 &json!(false),

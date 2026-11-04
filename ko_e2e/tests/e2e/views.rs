@@ -165,7 +165,6 @@ fn unfocused_first_client_sizes_pane() {
     let s = start(&[]);
     let p = s.pane("printf READY; cat");
     let mut unfocused = s.hello(Hello {
-        kind: "terminal",
         selection: json!({"pane": p}),
         focused: false,
         size: size(51, 13),

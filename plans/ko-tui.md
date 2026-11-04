@@ -4,7 +4,12 @@ Status: plan (2026-11-04). Unit 1 is built: `ko_tui/src/keys.rs` with
 the prefix, the help overlay, the prompts and the chooser, the status
 line and the unit-1 bindings; the chords and the warning row are gone
 (docs/design-ko.md 4.11). The `Repeat` state moved to unit 3, with
-the first repeatable binding.
+the first repeatable binding. Unit 2 is built: `ko_tui/src/geometry.rs`, one
+mirror for each visible pane, the server's sizing gate and the hello's
+client kind removed (docs/design-ko.md 4.5 and 4.11). A zoomed window's
+zoomed pane is the active one, as in Kido.app. The neighbour function
+and the divider hit test of section 6.2 move to units 3 and 4, with
+their first callers.
 
 The terminal client `ko` (`ko_tui/`) shows one pane at a time, lists
 the panes in a sidebar and takes Ctrl+Shift chords under the kitty
@@ -494,8 +499,8 @@ window.
 that claims it: the one whose terminal has focus, else the one that
 last switched to it (ko_server/src/client.rs:65-77 `claims`). ko_tui
 becomes a full sizing client: `sizable` (state.rs:1527-1535) and
-`Window::single` go, and `ClientKind::Terminal` keeps only its uses
-in the prompt scope. When ko_tui is the sizer, the window is exactly
+`Window::single` go, and with them `ClientKind`, which nothing else
+read. When ko_tui is the sizer, the window is exactly
 its pane area and the server rescales the tree (layout.rs normalize).
 When it is not, ko_tui draws the window at the server's geometry,
 anchored top left, clipped where the window is larger and blank where

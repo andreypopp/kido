@@ -567,7 +567,7 @@ Conventions:
   events. A read of zero bytes is the end; `WouldBlock` is "not
   ready". Signal handlers have `SA_RESTART`, but no call relies on it.
 - **The loop.** Every ko process is one thread on `ko_sys::event`,
-  except for the terminal client's mirror compressor and the threads
+  except for the terminal client's mirror compressors and the threads
   of `ko_client::ffi` (both below):
   non-blocking descriptors, the nearest deadline as the `poll`
   timeout and none without one, at most 16 reads of a source per
@@ -584,18 +584,18 @@ Conventions:
   `State` and, for its deadline, a timer of the loop, never a thread
   (docs/design-ko.md, "The loop rule").
 - **The terminal client.** `ko_tui`'s loop watches stdin, the
-  `/client` link, the shown view and the signal pipe. Its plain
+  `/client` link, the view of each visible pane and the signal pipe. Its plain
   requests (create, delete, list, layout edits, the pager's
   `/screen`) block with
   the deadlines of `ko api`. While the pager runs, the loop keeps
-  both links and stops reading stdin and painting until `SIGCHLD`
+  every link and stops reading stdin and painting until `SIGCHLD`
   reports the pager's exit, so pings get their answers. A turn
   handles `SIGWINCH` after it dispatches the stdin events that it
   read, so input that the terminal sent before a resize maps to the
   old layout. It handles the other signals at once. The
-  compressor thread shares the mirror
+  compressor thread of each mirror shares it
   under a `Mutex` and a `Condvar`. It does CPU work only and never
-  wakes the loop. `ko_vt::Terminal` is `Send` only for this thread,
+  wakes the loop. `ko_vt::Terminal` is `Send` only for these threads,
   and the `Mutex` serializes every call. vte tokenizes the outer
   terminal's input, and `ko_tui::input` translates its events.
 - **The C ABI.** `ko_client::ffi` builds only for

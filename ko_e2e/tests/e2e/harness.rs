@@ -342,7 +342,6 @@ pub(crate) fn size(cols: u16, rows: u16) -> Value {
 
 #[derive(Debug)]
 pub(crate) struct Hello {
-    pub(crate) kind: &'static str,
     pub(crate) selection: Value,
     pub(crate) focused: bool,
     pub(crate) size: Value,
@@ -1074,7 +1073,6 @@ impl Server {
         let mut ws = self.ws("/client");
         let mut body = json!({
             "type": "hello",
-            "kind": hello.kind,
             "name": "test",
             "focused": hello.focused,
             "size": hello.size,
@@ -1091,7 +1089,6 @@ impl Server {
     pub(crate) fn client(&self, pane: Option<&str>) -> (Ws, Value) {
         let selection = pane.map_or(json!({}), |pane| json!({"pane": pane}));
         self.joined(Hello {
-            kind: "terminal",
             selection,
             focused: true,
             size: size(80, 24),
@@ -1105,7 +1102,6 @@ impl Server {
         (cols, rows): (u16, u16),
     ) -> (Ws, Value) {
         self.joined(Hello {
-            kind: "app",
             selection,
             focused,
             size: size(cols, rows),

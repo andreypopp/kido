@@ -329,7 +329,7 @@ fn a_welcome_with_variables_over_a_mebibyte_arrives_whole_and_a_variable_write_m
     );
     let mut ws = s.ws("/client");
     ws.send(&json!({
-        "type": "hello", "kind": "app", "name": "test", "focused": false,
+        "type": "hello", "name": "test", "focused": false,
         "size": {"cols": 80, "rows": 24}
     }));
     let layout = ws.event("layout");

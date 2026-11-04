@@ -190,7 +190,7 @@ does not pass unseen.
 
 `GET /client` upgrades to the client connection, one per native window
 or terminal client process. The client's first message is its hello:
-kind, name, what it currently shows, focus, size and
+name, what it currently shows, focus, size and
 whether it takes part in sizing. The server answers with the
 `Welcome` event, which carries the client's id, the terminal
 limits and the runtimes with their link states (section 15), then the
@@ -259,9 +259,8 @@ pane (CSI I, CSI O under mode 1004), so a pane that two focused
 clients show sees no transition when one of them leaves.
 
 The window that a client shows is sized by the client that claims it
-(design-ko.md, "The layout document, panes and clients"). A terminal client claims only a window with one leaf
-and no floats; a pane in a split keeps its leaf size and the terminal
-client clips or pads it. A reconnecting client sends a new hello with the
+(design-ko.md, "The layout document, panes and clients"), by the same
+rule for every client and every window. A reconnecting client sends a new hello with the
 state it shows and gets a new id; the client owns that state, not the
 server. Messages on one client connection are applied in order.
 

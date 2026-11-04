@@ -290,7 +290,7 @@ pub(crate) fn key(event: &KeyEvent) -> Option<frame::Key> {
     })
 }
 
-pub(crate) fn mouse(pane_x: usize, event: &MouseEvent) -> frame::Mouse {
+pub(crate) fn mouse((pane_x, pane_y): (usize, usize), event: &MouseEvent) -> frame::Mouse {
     let (action, button) = match event.kind {
         MouseKind::Down(button) => (MouseAction::Press, button),
         MouseKind::Up(button) => (MouseAction::Release, button),
@@ -303,7 +303,7 @@ pub(crate) fn mouse(pane_x: usize, event: &MouseEvent) -> frame::Mouse {
         action,
         button,
         col: u16::try_from(event.x.saturating_sub(pane_x)).unwrap_or(u16::MAX),
-        row: u16::try_from(event.y).unwrap_or(u16::MAX),
+        row: u16::try_from(event.y.saturating_sub(pane_y)).unwrap_or(u16::MAX),
         mods: event.mods.wire(false),
     }
 }
@@ -1045,6 +1045,21 @@ mod tests {
     use ko_server::protocol::{Input as Wire, Key, ViewRequest, json};
 
     use super::*;
+
+    #[test]
+    fn mouse_coordinates_are_local_to_both_axes_of_the_pane() {
+        let event = MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            x: 48,
+            y: 17,
+            mods: Mods::of(0),
+        };
+        let local = mouse((41, 13), &event);
+        assert_eq!(
+            (local.col, local.row, local.action, local.button),
+            (7, 4, MouseAction::Motion, MouseButton::Left)
+        );
+    }
 
     fn parse(reads: &[&[u8]]) -> Vec<Event> {
         let mut input = Input::default();

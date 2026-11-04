@@ -706,8 +706,6 @@ export interface components {
             type: "runtime_deleted";
         };
         ClientId: string;
-        /** @enum {string} */
-        ClientKind: "terminal" | "app";
         ClientRequest: ({
             /** @constant */
             type: "hello";
@@ -972,7 +970,6 @@ export interface components {
             focused: boolean;
             /** @default false */
             ignore_size?: boolean;
-            kind: components["schemas"]["ClientKind"];
             name: string;
             pane?: components["schemas"]["PaneId"];
             session?: components["schemas"]["SessionId"];

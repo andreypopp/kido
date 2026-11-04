@@ -4,6 +4,18 @@ use std::time::Duration;
 
 use crate::harness::{Message, Server, Ws, poll, sh, start, tagged, wait_gone};
 
+pub(crate) fn put_edit(s: &Server, edit: &Value) -> Value {
+    s.ko(&["layout", "edit", &edit.to_string()], "").json()["snapshot"].take()
+}
+
+pub(crate) fn window_size(document: &Value, window: usize) -> (u64, u64) {
+    let window = windows(document)[window];
+    (
+        window["cols"].as_u64().unwrap(),
+        window["rows"].as_u64().unwrap(),
+    )
+}
+
 pub(crate) fn shell() -> Value {
     sh("exec /bin/sh")
 }

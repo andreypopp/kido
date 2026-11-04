@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use crate::clipboard;
 use ko_client::edit::Edit;
 use ko_client::launch::{self, BACKOFF_FIRST, PATIENCE, backoff_after};
+use ko_client::layout::Edited;
 use ko_client::model::{Applied, Item, Model, Notice, Rejoin};
 use ko_client::remote::{Progress, Remote};
 use ko_client::wire::{self, Link, Next, WATCHDOG, silent, text};
@@ -17,19 +18,19 @@ use ko_pane_wire::frame::{Dim, ScreenFormat, ScreenRows, Size};
 use ko_server::api::Route;
 use ko_server::ids::{Name, PaneId, SessionId, WindowId};
 use ko_server::protocol::{
-    self, ClientKind, ClientRequest, ClipboardContent, ClipboardServed, CreatePane, Cwd, Direction,
-    Hello, Input as Wire, Key as WireKey, Mouse as WireMouse, Paste, Selection, Switch,
-    ViewRequest, json,
+    self, ClientRequest, ClipboardContent, ClipboardServed, CreatePane, Cwd, Direction, Hello,
+    Input as Wire, Key as WireKey, Mouse as WireMouse, Paste, Selection, Switch, ViewRequest, json,
 };
 use ko_sys::event::{Due, Events, Interest, Mode, Poll, Ready, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
 use ko_vt::render::{Frame, MouseTracking};
 
+use crate::geometry;
 use crate::input::{self, Event, Input, KeyEvent, MouseKind, Reply};
 use crate::keys::{Action, Keys, Kill, Rename, State, Step};
 use crate::mirror::Mirror;
 use crate::modes::{self, Modes};
-use crate::renderer::{Layout, Renderer, status};
+use crate::renderer::{Layout, PaneFrame, Renderer, status};
 use crate::sidebar;
 use crate::tty::{Geometry, Tty};
 
@@ -80,25 +81,49 @@ struct Last {
 }
 
 #[derive(Debug)]
-enum View {
-    None,
-    Showing {
-        pane: PaneId,
-        mirror: Box<Mirror>,
-        frame: Frame,
-        serial: Option<u64>,
-    },
+struct ShownPane {
+    pane: PaneId,
+    mirror: Mirror,
+    frame: Frame,
+    serial: Option<u64>,
+    death: Option<(protocol::Dead, String)>,
 }
 
-impl View {
-    fn open(pane: PaneId, mirror: Mirror) -> View {
-        View::Showing {
-            pane,
-            mirror: Box::new(mirror),
-            frame: Frame::default(),
-            serial: None,
-        }
+#[derive(Debug)]
+struct Shown {
+    window: WindowId,
+    panes: Vec<ShownPane>,
+    geometry: std::rc::Rc<geometry::Geometry>,
+}
+
+impl Shown {
+    fn pane_mut(&mut self, pane: PaneId) -> Option<&mut ShownPane> {
+        self.panes.iter_mut().find(|shown| shown.pane == pane)
     }
+
+    fn retain(&mut self, geometry: &geometry::Geometry, poll: &mut Poll) -> bool {
+        let before = self.panes.len();
+        self.panes.retain_mut(|pane| {
+            if geometry
+                .panes
+                .iter()
+                .any(|visible| visible.pane == pane.pane)
+            {
+                true
+            } else {
+                pane.mirror.unwatch(poll);
+                false
+            }
+        });
+        before != self.panes.len()
+    }
+}
+
+fn panes(view: &Option<Shown>) -> impl Iterator<Item = &ShownPane> {
+    view.iter().flat_map(|shown| &shown.panes)
+}
+fn panes_mut(view: &mut Option<Shown>) -> impl Iterator<Item = &mut ShownPane> {
+    view.iter_mut().flat_map(|shown| &mut shown.panes)
 }
 
 #[derive(Debug)]
@@ -274,7 +299,7 @@ struct Reconnecting {
 
 #[derive(Debug)]
 struct Client {
-    view: View,
+    view: Option<Shown>,
     session: Session,
     poll: Poll,
     signals: Signals,
@@ -292,6 +317,8 @@ struct Client {
     panel: Panel,
     keys: Keys,
     last: Last,
+    pending_selection: Option<PaneId>,
+    mouse_down: Option<PaneId>,
     geometry: Geometry,
     focused: bool,
     immediate: bool,
@@ -343,7 +370,7 @@ impl Client {
             Deadline::new(&mut poll),
         );
         let mut client = Client {
-            view: View::None,
+            view: None,
             session,
             poll,
             signals,
@@ -361,6 +388,8 @@ impl Client {
             panel,
             keys: Keys::new(),
             last: Last::default(),
+            pending_selection: None,
+            mouse_down: None,
             geometry,
             focused: true,
             immediate: true,
@@ -382,10 +411,12 @@ impl Client {
     }
 
     fn pane(&self) -> Option<PaneId> {
-        match &self.view {
-            View::None => None,
-            View::Showing { pane, .. } => Some(*pane),
-        }
+        self.pending_selection.or(self.model.selection.pane)
+    }
+
+    fn active(&mut self) -> Option<&mut ShownPane> {
+        let pane = self.pane()?;
+        self.view.as_mut()?.pane_mut(pane)
     }
 
     fn dead(&self) -> Option<protocol::Dead> {
@@ -398,14 +429,17 @@ impl Client {
     }
 
     fn received(&self) -> Instant {
-        match &self.view {
-            View::Showing { mirror, .. } => mirror.received().max(self.link.received()),
-            View::None => self.link.received(),
-        }
+        panes(&self.view).fold(self.link.received(), |received, pane| {
+            received.max(pane.mirror.received())
+        })
     }
 
     fn shown(&self) -> Option<(&protocol::Session, &protocol::Window)> {
-        self.model.layout.layout.locate(self.pane()?)
+        let (session, window) = self.model.locate(self.pane()?)?;
+        Some((
+            self.model.layout.layout.session(session)?,
+            self.model.layout.layout.window(window)?.1,
+        ))
     }
 
     fn layout(&self) -> Layout {
@@ -429,14 +463,12 @@ impl Client {
                     .map(Remote::host),
             ),
             help: *self.keys.state() == State::Help,
-            dead: match &self.view {
-                View::Showing {
-                    mirror,
-                    serial: Some(_),
-                    ..
-                } => mirror.dead().map(sidebar::dead_line),
-                _ => None,
-            },
+            geometry: self
+                .view
+                .as_ref()
+                .map(|shown| shown.geometry.clone())
+                .unwrap_or_default(),
+            active: self.pane(),
             choosing: match self.keys.state() {
                 State::Chooser(chosen) => outline
                     .iter()
@@ -461,15 +493,24 @@ impl Client {
         self.link.settle(&mut self.poll).map_err(text)
     }
 
-    fn view_send(&mut self, request: &ViewRequest) -> Result<(), String> {
-        match &mut self.view {
-            View::None => Ok(()),
-            View::Showing { mirror, .. } => mirror.send(&mut self.poll, request),
-        }
-    }
-
     fn input_send(&mut self, input: Wire) -> Result<(), String> {
-        self.view_send(&ViewRequest::Input { input })
+        let Some(pane) = self.pane() else {
+            return Ok(());
+        };
+        if let Some(shown) = self.view.as_mut().and_then(|shown| shown.pane_mut(pane)) {
+            return shown
+                .mirror
+                .send(&mut self.poll, &ViewRequest::Input { input });
+        }
+        wire::request(
+            &self.socket,
+            (Some(self.model.client), None),
+            &Route::Input { id: pane },
+            json(&input).as_bytes(),
+            None,
+        )
+        .map(drop)
+        .map_err(String::from)
     }
 
     fn resize(&mut self) -> Result<(), String> {
@@ -495,23 +536,99 @@ impl Client {
         Ok(())
     }
 
+    fn edit(&mut self, edit: Edit) -> Result<Edited, String> {
+        ko_client::layout::edit(&self.socket, (Some(self.model.client), None), &edit)
+            .map_err(|error| error.to_string())
+    }
+
     fn switch(&mut self, pane: PaneId) -> Result<(), String> {
-        self.close_view();
         self.keys.end();
-        self.redraw()?;
+        if self
+            .model
+            .locate(pane)
+            .and_then(|(_, window)| self.model.layout.layout.window(window))
+            .is_some_and(|(_, window)| window.zoom.is_some_and(|zoom| zoom != pane))
+        {
+            self.edit(Edit::ToggleZoom { pane })?;
+        }
+        self.select(pane)?;
+        self.sync_views()
+    }
+
+    fn select(&mut self, pane: PaneId) -> Result<(), String> {
         self.client_send(&ClientRequest::Select(Selection {
             pane: Some(pane),
             ..Selection::default()
         }))?;
-        let mirror = Mirror::open(
-            &self.socket,
-            self.model.client,
-            pane,
-            self.model.limits,
-            &mut self.poll,
-        )?;
-        self.view = View::open(pane, mirror);
-        self.model.observe(&[pane], true);
+        self.pending_selection = Some(pane);
+        Ok(())
+    }
+
+    fn sync_views(&mut self) -> Result<(), String> {
+        let Some((_, window)) = self.shown() else {
+            self.close_view();
+            return Ok(());
+        };
+        let window_id = window.id;
+        let zoom = window.zoom;
+        let geometry = geometry::window(window);
+        if let Some(zoom) = zoom
+            && self.reconnecting.is_none()
+            && self.pending_selection.is_none()
+            && self.pane() != Some(zoom)
+        {
+            self.select(zoom)?;
+        }
+        let mut changed = false;
+        if self
+            .view
+            .as_ref()
+            .is_some_and(|shown| shown.window != window_id)
+        {
+            self.close_view();
+            changed = true;
+        }
+        let shown = self.view.get_or_insert_with(|| {
+            changed = true;
+            Shown {
+                window: window_id,
+                panes: Vec::new(),
+                geometry: Default::default(),
+            }
+        });
+        changed |= shown.retain(&geometry, &mut self.poll);
+        for placement in &geometry.panes {
+            if shown.pane_mut(placement.pane).is_none() {
+                let mirror = Mirror::open(
+                    &self.socket,
+                    self.model.client,
+                    placement.pane,
+                    self.model.limits,
+                    &mut self.poll,
+                )?;
+                shown.panes.push(ShownPane {
+                    pane: placement.pane,
+                    mirror,
+                    frame: Frame::default(),
+                    serial: None,
+                    death: None,
+                });
+                changed = true;
+            }
+        }
+        if *shown.geometry != geometry {
+            shown.geometry = std::rc::Rc::new(geometry);
+        }
+        self.model.observe(
+            &shown
+                .geometry
+                .panes
+                .iter()
+                .map(|pane| pane.pane)
+                .collect::<Vec<_>>(),
+            true,
+        );
+        self.immediate |= changed;
         Ok(())
     }
 
@@ -544,6 +661,9 @@ impl Client {
     }
 
     fn show_first(&mut self) -> Result<(), String> {
+        if self.pane().is_some() {
+            return self.sync_views();
+        }
         match self.model.order().first().copied() {
             None => self.create_pane(),
             Some(pane) => self.switch(pane),
@@ -573,8 +693,10 @@ impl Client {
     }
 
     fn close_view(&mut self) {
-        if let View::Showing { mirror, .. } = std::mem::replace(&mut self.view, View::None) {
-            mirror.close(&mut self.poll);
+        if let Some(shown) = self.view.take() {
+            for pane in shown.panes {
+                pane.mirror.close(&mut self.poll);
+            }
         }
     }
 
@@ -605,9 +727,7 @@ impl Client {
                 name,
             },
         };
-        ko_client::layout::edit(&self.socket, (Some(self.model.client), None), &edit)
-            .map(drop)
-            .map_err(|error| error.to_string())
+        self.edit(edit).map(drop)
     }
 
     fn pager(&mut self) -> Result<(), String> {
@@ -687,8 +807,8 @@ impl Client {
         self.poll.interest(self.stdin, Interest::Read);
         self.renderer.invalidate();
         self.immediate = true;
-        if let View::Showing { mirror, .. } = &mut self.view {
-            mirror.bottom()?;
+        if let Some(pane) = self.active() {
+            pane.mirror.bottom()?;
         }
         Ok(())
     }
@@ -711,8 +831,8 @@ impl Client {
 
     fn key(&mut self, key: KeyEvent) -> Result<(), String> {
         self.immediate = true;
-        if let View::Showing { mirror, .. } = &mut self.view {
-            mirror.bottom()?;
+        if let Some(pane) = self.active() {
+            pane.mirror.bottom()?;
         }
         match self.keys.feed(&key, self.dead().is_some()) {
             Step::Pane(key) => match input::key(&key) {
@@ -806,37 +926,75 @@ impl Client {
         Ok(())
     }
 
-    fn mouse(&mut self, event: input::MouseEvent) -> Result<(), String> {
+    fn mouse(&mut self, mut event: input::MouseEvent) -> Result<(), String> {
         let layout = self.layout();
-        if event.x >= layout.cols || event.y >= layout.pane_rows {
-            return Ok(());
-        }
-        if event.x < layout.pane_x {
-            if matches!(event.kind, MouseKind::Down(_))
-                && event.x + 1 < layout.pane_x
-                && let Some(pane) = layout.sidebar.get(event.y).and_then(|line| line.pane)
-            {
-                self.switch(pane)?;
+        let captured = match event.kind {
+            MouseKind::Scroll { .. } | MouseKind::Down(_) => None,
+            _ => self.mouse_down,
+        };
+        let placement = if let Some(pane) = captured {
+            layout
+                .geometry
+                .panes
+                .iter()
+                .find(|placement| placement.pane == pane)
+        } else {
+            if event.x >= layout.cols || event.y >= layout.pane_rows {
+                return Ok(());
+            }
+            if event.x < layout.pane_x {
+                if matches!(event.kind, MouseKind::Down(_))
+                    && event.x + 1 < layout.pane_x
+                    && let Some(pane) = layout.sidebar.get(event.y).and_then(|line| line.pane)
+                {
+                    self.switch(pane)?;
+                }
+                return Ok(());
+            }
+            layout
+                .geometry
+                .top(event.x - layout.pane_x, event.y)
+                .filter(|placement| placement.rect.contains(event.x - layout.pane_x, event.y))
+        };
+        let Some(placement) = placement else {
+            if captured.is_some() {
+                self.mouse_down = None;
             }
             return Ok(());
-        }
-        let tracking = match &self.view {
-            View::Showing {
-                frame,
-                serial: Some(_),
-                ..
-            } => frame.mouse,
-            _ => return Ok(()),
         };
-        if tracking != MouseTracking::Off {
-            let mouse = WireMouse(input::mouse(layout.pane_x, &event));
-            return self.input_send(Wire::Mouse(mouse));
+        let pane = placement.pane;
+        let rect = placement.rect;
+        let origin = (layout.pane_x + rect.x, rect.y);
+        if matches!(event.kind, MouseKind::Down(_)) {
+            self.mouse_down = Some(pane);
+            if Some(pane) != self.pane() {
+                self.switch(pane)?;
+            }
+        } else if matches!(event.kind, MouseKind::Up(_)) {
+            self.mouse_down = None;
+        }
+        event.x = event
+            .x
+            .clamp(origin.0, origin.0 + rect.cols.saturating_sub(1));
+        event.y = event
+            .y
+            .clamp(origin.1, origin.1 + rect.rows.saturating_sub(1));
+        let Some(shown) = self.view.as_mut().and_then(|shown| shown.pane_mut(pane)) else {
+            return Ok(());
+        };
+        if shown.serial.is_some() && shown.frame.mouse != MouseTracking::Off {
+            return shown.mirror.send(
+                &mut self.poll,
+                &ViewRequest::Input {
+                    input: Wire::Mouse(WireMouse(input::mouse(origin, &event))),
+                },
+            );
         }
         if let MouseKind::Scroll { up } = event.kind {
             self.immediate = true;
-            if let View::Showing { mirror, .. } = &mut self.view {
-                mirror.scroll(&mut self.poll, if up { -3 } else { 3 })?;
-            }
+            shown
+                .mirror
+                .scroll(&mut self.poll, if up { -3 } else { 3 })?;
         }
         Ok(())
     }
@@ -925,10 +1083,9 @@ impl Client {
     fn tick(&mut self) -> Result<(), String> {
         self.track();
         let now = Instant::now();
-        let hold = match &self.view {
-            View::None => None,
-            View::Showing { mirror, .. } => mirror.hold_expiry(),
-        };
+        let hold = panes(&self.view)
+            .filter_map(|pane| pane.mirror.hold_expiry())
+            .min();
         let repaint = self
             .last_paint
             .map(|at| at + PACE)
@@ -945,31 +1102,32 @@ impl Client {
             return Ok(());
         }
         let mut fresh = false;
-        if let View::Showing {
-            mirror,
-            frame,
-            serial,
-            ..
-        } = &mut self.view
-            && mirror.frame(frame)?
-        {
-            self.serial += 1;
-            *serial = Some(self.serial);
-            fresh = true;
+        for pane in panes_mut(&mut self.view) {
+            let death = pane.mirror.dead();
+            if pane.death.as_ref().map(|(dead, _)| dead) != death {
+                pane.death = death.map(|dead| (dead.clone(), sidebar::dead_line(dead)));
+            }
+            if pane.mirror.frame(&mut pane.frame)? {
+                self.serial += 1;
+                pane.serial = Some(self.serial);
+                fresh = true;
+            }
         }
         let layout = self.layout();
-        let shown = match &self.view {
-            View::Showing {
-                frame,
-                serial: Some(serial),
-                ..
-            } => Some((*serial, frame)),
-            _ => None,
-        };
+        let shown: Vec<_> = panes(&self.view)
+            .filter_map(|pane| {
+                Some(PaneFrame {
+                    pane: pane.pane,
+                    serial: pane.serial?,
+                    frame: &pane.frame,
+                    dead: pane.death.as_ref().map(|(_, line)| line.as_str()),
+                })
+            })
+            .collect();
         self.output.clear();
         if self
             .renderer
-            .paint(&mut self.session.modes, &layout, shown, &mut self.output)
+            .paint(&mut self.session.modes, &layout, &shown, &mut self.output)
         {
             self.last_paint = Some(now);
         }
@@ -999,8 +1157,8 @@ impl Client {
         self.poll.turn(Mode::Wait, events).map_err(text)?;
         let now = Instant::now();
         self.link.begin_turn();
-        if let View::Showing { mirror, .. } = &mut self.view {
-            mirror.begin_turn();
+        for pane in panes_mut(&mut self.view) {
+            pane.mirror.begin_turn();
         }
         let ready: Vec<Ready> = events
             .ready()
@@ -1021,12 +1179,17 @@ impl Client {
                 {
                     cause = Some(self.recoverable(error)?);
                 }
-            } else if let View::Showing { mirror, .. } = &mut self.view
-                && ready.token == mirror.token()
-                && self.reconnecting.is_none()
-                && let Err(error) = mirror.handle(&mut self.poll, ready, now)
-            {
-                cause = Some(self.recoverable(error)?);
+            } else if self.reconnecting.is_none() {
+                for pane in panes_mut(&mut self.view) {
+                    if ready.token == pane.mirror.token()
+                        && let Err(error) = pane.mirror.handle(&mut self.poll, ready, now)
+                    {
+                        cause = Some(error);
+                    }
+                }
+                if let Some(error) = cause.take() {
+                    cause = Some(self.recoverable(error)?);
+                }
             }
         }
         let due = events.due();
@@ -1114,9 +1277,10 @@ impl Client {
             return Ok(());
         }
         self.keys.end();
+        self.pending_selection = None;
         self.link.unwatch(&mut self.poll);
-        if let View::Showing { mirror, .. } = &mut self.view {
-            mirror.unwatch(&mut self.poll);
+        for pane in panes_mut(&mut self.view) {
+            pane.mirror.unwatch(&mut self.poll);
         }
         self.watchdog.set(&mut self.poll, None)?;
         self.reconnecting = Some(Reconnecting {
@@ -1168,7 +1332,8 @@ impl Client {
     fn reconnect(&mut self, left: Duration, mut restore: Restore) -> Result<(), String> {
         let mut link = Link::connect_within(&self.socket, None, &Route::Client {}, None, left)
             .map_err(text)?;
-        let hello = hello(self.geometry, self.panel, self.focused);
+        let mut hello = hello(self.geometry, self.panel, self.focused);
+        hello.selection.window = self.view.as_ref().map(|shown| shown.window);
         let rejoin = self.model.rejoin(&mut link, hello)?;
         let token = link.watch(&mut self.poll).map_err(text)?;
         self.link.unwatch(&mut self.poll);
@@ -1196,24 +1361,24 @@ impl Client {
     }
 
     fn restore(&mut self, restore: Restore) -> Result<(), String> {
-        let Some(pane) = self.pane().filter(|_| restore == Restore::Reopen) else {
-            return self.show_first();
-        };
-        if !self.model.order().contains(&pane) {
+        if restore == Restore::Show {
+            self.close_view();
             return self.show_first();
         }
-        self.client_send(&ClientRequest::Select(Selection {
-            pane: Some(pane),
-            ..Selection::default()
-        }))?;
-        match &mut self.view {
-            View::Showing { mirror, .. } if mirror.resume().is_some() => {
-                mirror.relink(&self.socket, self.model.client, pane, &mut self.poll)?;
-                self.model.observe(&[pane], true);
-                Ok(())
+        let geometry = self
+            .shown()
+            .map(|(_, window)| (window.id, geometry::window(window)));
+        match (&mut self.view, geometry) {
+            (Some(shown), Some((window, geometry))) if shown.window == window => {
+                shown.retain(&geometry, &mut self.poll);
             }
-            _ => self.switch(pane),
+            _ => self.close_view(),
         }
+        for pane in panes_mut(&mut self.view) {
+            pane.mirror
+                .relink(&self.socket, self.model.client, pane.pane, &mut self.poll)?;
+        }
+        self.sync_views()
     }
 
     fn read(&mut self, incoming: &mut Vec<Event>, now: Instant) -> Result<(), String> {
@@ -1242,20 +1407,21 @@ impl Client {
                     Next::Text(event) => {
                         let event = protocol::decode(event.as_bytes()).map_err(text)?;
                         let applied = self.model.apply(event);
-                        self.model.observe(self.pane().as_slice(), true);
                         match applied {
-                            Applied::Nothing | Applied::State | Applied::Layout => {}
+                            Applied::Nothing | Applied::State => {}
+                            Applied::Layout if self.reconnecting.is_none() => self.sync_views()?,
+                            Applied::Layout => {}
                             Applied::Notice(notice) => self.notice(notice)?,
-                            Applied::Selected => match self.model.selection.pane {
-                                Some(pane) if Some(pane) != self.pane() => self.switch(pane)?,
-                                Some(_) => {}
-                                None => {
-                                    self.close_view();
-                                    if self.model.order().is_empty() {
-                                        self.create_pane()?;
-                                    }
+                            Applied::Selected => {
+                                self.pending_selection = None;
+                                self.keys.end();
+                                if self.reconnecting.is_none() {
+                                    self.sync_views()?;
                                 }
-                            },
+                                if self.pane().is_none() && self.model.order().is_empty() {
+                                    self.create_pane()?;
+                                }
+                            }
                         }
                     }
                 }
@@ -1293,7 +1459,6 @@ impl Client {
 
 fn hello(geometry: Geometry, panel: Panel, focused: bool) -> Hello {
     Hello {
-        kind: ClientKind::Terminal,
         name: "ko".to_owned(),
         selection: Selection::default(),
         focused,

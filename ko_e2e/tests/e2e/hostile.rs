@@ -102,7 +102,6 @@ fn hostile_clients_do_not_affect_others() {
     let grid = |cols: u32, rows: u32| json!({"cols": cols, "rows": rows, "cell_px": {"width": 65535, "height": 65535}});
     let hello = |cols: u32, rows: u32| {
         s.hello(Hello {
-            kind: "terminal",
             selection: serde_json::json!({}),
             focused: true,
             size: grid(cols, rows),

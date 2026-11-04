@@ -515,10 +515,6 @@ impl Mirror {
         self.link.unwatch(poll);
     }
 
-    pub(crate) fn resume(&self) -> Option<u64> {
-        self.resume.offset()
-    }
-
     pub(crate) fn relink(
         &mut self,
         socket: &Path,
@@ -695,23 +691,23 @@ mod tests {
         };
         let snapshot = slices(&server(8, 2, "x").snapshot_bytes(false).unwrap(), 4096);
         feed(&mut mirror, &at(40, snapshot[0].clone())).unwrap();
-        let loaded = mirror.resume();
+        let loaded = mirror.resume.offset();
         feed(&mut mirror, &at(40, output(b"abc"))).unwrap();
         feed(&mut mirror, &at(43, output(b"de"))).unwrap();
-        let after = mirror.resume();
+        let after = mirror.resume.offset();
         let long = slices(&server(8, 2, "x").snapshot_bytes(false).unwrap(), 40);
         feed(&mut mirror, &at(90, long[0].clone())).unwrap();
         feed(&mut mirror, &at(90, output(b"f"))).unwrap();
-        let during = mirror.resume();
+        let during = mirror.resume.offset();
         for record in &long[1..] {
             feed(&mut mirror, &at(90, record.clone())).unwrap();
         }
-        let finished = mirror.resume();
+        let finished = mirror.resume.offset();
         let mut screen = snapshot[0].clone();
         screen[10] = 1;
         feed(&mut mirror, &at(120, screen)).unwrap();
         assert_eq!(
-            (loaded, after, during, finished, mirror.resume()),
+            (loaded, after, during, finished, mirror.resume.offset()),
             (Some(40), Some(45), None, Some(91), None)
         );
     }

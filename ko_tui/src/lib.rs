@@ -1,6 +1,7 @@
 pub mod client;
 mod clipboard;
 mod differ;
+mod geometry;
 mod input;
 mod keys;
 mod mirror;

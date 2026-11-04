@@ -3,7 +3,9 @@ use ko_sys::signal::Signal;
 use serde_json::{Value, json};
 
 use crate::harness::{Server, decode, poll, quote, sh, size, size_request, start};
-use crate::layout::{consistent, leaves, new, old, ptys_follow, shape, split, tree, windows};
+use crate::layout::{
+    consistent, leaves, new, old, ptys_follow, shape, split, tree, window_size, windows,
+};
 
 fn layout_until(client: &mut crate::harness::Ws, wanted: impl Fn(&Value) -> bool) -> Value {
     loop {
@@ -21,14 +23,6 @@ fn one_window(s: &Server, tree: Value) -> Value {
 
 fn wait_doc(what: &str, s: &Server, mut check: impl FnMut(&Value) -> bool) {
     poll(what, || check(&s.doc()));
-}
-
-fn window_size(document: &Value, window: usize) -> (u64, u64) {
-    let window = &windows(document)[window];
-    (
-        window["cols"].as_u64().unwrap(),
-        window["rows"].as_u64().unwrap(),
-    )
 }
 
 #[test]
@@ -172,13 +166,16 @@ fn two_clients_on_one_window_follow_the_focused_one_and_the_window_keeps_its_siz
         layout["sessions"][0]["windows"][0]["tree"] = split("h", vec![old("pane_1"), new()]);
     });
     let mut terminal = s.hello(crate::harness::Hello {
-        kind: "terminal",
         selection: json!({"pane": "pane_1"}),
         focused: true,
         size: size(50, 10),
     });
     terminal.welcome();
     terminal.send(&size_request(size(51, 11)));
+    wait_doc("the terminal client sizes the split window", &s, |d| {
+        window_size(d, 0) == (51, 11)
+    });
+    assert_eq!(consistent(&windows(&s.doc())[0]["tree"]), (51, 11));
     let (mut late, _) = s.app_client(json!({"pane": "pane_1"}), true, (90, 40));
     late.send(&size_request(size(91, 41)));
     wait_doc("the app client's size", &s, |d| {
@@ -419,7 +416,6 @@ fn a_pane_knows_its_pixel_size_from_the_cell_size_of_the_sizing_client() {
     let command = format!("exec python3 -u -c {}", quote(SIZE_PROBE));
     let first = s.pane(&command);
     let mut client = s.hello(crate::harness::Hello {
-        kind: "app",
         selection: json!({"pane": first}),
         focused: true,
         size: json!({"cols": 100, "rows": 30, "cell_px": {"width": 16, "height": 35}}),
@@ -459,7 +455,6 @@ fn a_new_pane_reports_its_size_to_a_program_that_asks_at_startup() {
     let command = format!("exec python3 -u -c {}", quote(SIZE_PROBE));
     let first = s.pane("cat");
     let mut client = s.hello(crate::harness::Hello {
-        kind: "app",
         selection: json!({"pane": first}),
         focused: true,
         size: json!({"cols": 69, "rows": 28, "cell_px": {"width": 16, "height": 35}}),

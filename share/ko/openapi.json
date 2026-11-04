@@ -638,13 +638,6 @@
         "pattern": "^client_(0|[1-9][0-9]*)$",
         "type": "string"
       },
-      "ClientKind": {
-        "enum": [
-          "terminal",
-          "app"
-        ],
-        "type": "string"
-      },
       "ClientRequest": {
         "oneOf": [
           {
@@ -1590,9 +1583,6 @@
             "default": false,
             "type": "boolean"
           },
-          "kind": {
-            "$ref": "#/components/schemas/ClientKind"
-          },
           "name": {
             "type": "string"
           },
@@ -1610,7 +1600,6 @@
           }
         },
         "required": [
-          "kind",
           "name",
           "focused",
           "size"

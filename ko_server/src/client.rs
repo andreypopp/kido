@@ -4,9 +4,7 @@ use ko_pane_wire::frame::Size;
 
 use crate::ids::{ClientId, PaneId, SessionId, WindowId};
 use crate::layout::nearest;
-use crate::protocol::{
-    ClientKind, ClientRequest, ClipboardServed, Direction, Layout, Over, Selection, Switch,
-};
+use crate::protocol::{ClientRequest, ClipboardServed, Direction, Layout, Over, Selection, Switch};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Current {
@@ -27,7 +25,6 @@ impl From<Current> for Selection {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Active {
-    pub(crate) kind: ClientKind,
     pub(crate) current: Option<Current>,
     pub(crate) size: Size,
     pub(crate) focused: bool,
@@ -99,7 +96,6 @@ impl Client {
         match (&mut self.active, request) {
             (None, ClientRequest::Hello(hello)) => {
                 self.active = Some(Active {
-                    kind: hello.kind,
                     current: None,
                     size: hello.size.0,
                     focused: hello.focused,
@@ -303,7 +299,6 @@ mod tests {
     fn at(current: Current) -> Client {
         let mut client = Client::new(ClientId::new(1));
         client.active = Some(Active {
-            kind: ClientKind::App,
             current: None,
             size: Size::DEFAULT,
             focused: false,
@@ -502,7 +497,7 @@ mod tests {
             Err("hello must be first")
         );
         let hello: ClientRequest = serde_json::from_str(
-            r#"{"type":"hello","kind":"app","name":"t","window":"window_2","focused":false,"size":{"cols":8,"rows":8}}"#,
+            r#"{"type":"hello","name":"t","window":"window_2","focused":false,"size":{"cols":8,"rows":8}}"#,
         )
         .unwrap();
         assert_eq!(

@@ -1371,16 +1371,8 @@ impl From<ring::Marker> for Marker {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum ClientKind {
-    Terminal,
-    App,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Hello {
-    pub kind: ClientKind,
     pub name: String,
     #[serde(flatten)]
     pub selection: Selection,
@@ -2249,9 +2241,9 @@ mod tests {
             same::<PasteResult>(json);
         }
         for json in [
-            r#"{"type":"hello","kind":"terminal","name":"test","focused":true,"size":{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}},"ignore_size":false}"#,
-            r#"{"type":"hello","kind":"app","name":"app","pane":"pane_3","focused":false,"size":{"cols":4096,"rows":1},"ignore_size":true}"#,
-            r#"{"type":"hello","kind":"app","name":"app","session":"session_1","window":"window_2","pane":"pane_3","focused":false,"size":{"cols":80,"rows":24},"ignore_size":false}"#,
+            r#"{"type":"hello","name":"test","focused":true,"size":{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}},"ignore_size":false}"#,
+            r#"{"type":"hello","name":"app","pane":"pane_3","focused":false,"size":{"cols":4096,"rows":1},"ignore_size":true}"#,
+            r#"{"type":"hello","name":"app","session":"session_1","window":"window_2","pane":"pane_3","focused":false,"size":{"cols":80,"rows":24},"ignore_size":false}"#,
             r#"{"type":"select","pane":"pane_3"}"#,
             r#"{"type":"select","session":"session_1"}"#,
             r#"{"type":"switch","over":"window","direction":"previous"}"#,
@@ -2463,16 +2455,16 @@ mod tests {
 
     #[test]
     fn decoders_take_defaults_and_nulls_and_refuse_bad_shapes() {
-        let hello = r#"{"type":"hello","kind":"terminal","name":"x","focused":true,"size":{"cols":1,"rows":1},"ignore_size":false}"#;
+        let hello = r#"{"type":"hello","name":"x","focused":true,"size":{"cols":1,"rows":1},"ignore_size":false}"#;
         assert_eq!(
             decoded::<ClientRequest>(
-                r#"{"type":"hello","kind":"terminal","name":"x","focused":true,"size":{"cols":1,"rows":1},"extra":1}"#
+                r#"{"type":"hello","name":"x","focused":true,"size":{"cols":1,"rows":1},"extra":1}"#
             ),
             Ok(hello.to_owned())
         );
         assert_eq!(
             decoded::<ClientRequest>(
-                r#"{"type":"hello","kind":"terminal","name":"x","focused":true,"size":{"cols":1,"rows":1,"cell_px":null},"pane":null}"#
+                r#"{"type":"hello","name":"x","focused":true,"size":{"cols":1,"rows":1,"cell_px":null},"pane":null}"#
             ),
             Ok(hello.to_owned())
         );
@@ -2710,7 +2702,7 @@ mod tests {
             decoded::<ClientRequest>(r#"["focused",true]"#),
             decoded::<ClientRequest>(r#"{"type":"size","cols":80,"rows":24,"cell_px":[8,16]}"#),
             decoded::<ClientRequest>(
-                r#"{"type":"hello","kind":"terminal","name":"t","focused":true,"size":[80,24]}"#,
+                r#"{"type":"hello","name":"t","focused":true,"size":[80,24]}"#,
             ),
             decoded::<ViewRequest>(r#"{"type":"resync","history":"all","images":["x"]}"#),
             decoded::<ViewRequest>(r#"{"type":"input","input":["paste",["x",true]]}"#),

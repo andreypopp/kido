@@ -522,6 +522,7 @@ dependencies = [
  "ko_sys",
  "ko_vt",
  "miniz_oxide",
+ "proptest",
  "tungstenite",
  "vte",
 ]
