@@ -2,12 +2,11 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use ko_pane_wire::frame::Limits;
-use ko_server::ids::{ClientId, Instance, PaneId, RunId, SessionId, VarName, WindowId};
+use ko_server::ids::{ClientId, Instance, PaneId, SessionId, VarName, WindowId};
 use ko_server::protocol::{
     self, ClientEvent, ClientRequest, ClipboardContent, ClipboardLocation, Hello, LayoutPanes,
-    Listing, Row, RunRow, Selection, Snapshot,
+    Listing, Row, Selection, Snapshot,
 };
-use ko_server::runs::Parent;
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
@@ -204,12 +203,6 @@ impl Model {
         self.seen.observe(shown, *attending, &self.panes);
     }
 
-    fn runs(&self) -> impl Iterator<Item = (PaneId, &RunRow)> {
-        self.panes
-            .iter()
-            .filter_map(|pane| Some((pane.row.id, pane.row.run.as_ref()?)))
-    }
-
     pub fn mark(&self, pane: &Pane) -> Mark {
         self.seen.mark(pane)
     }
@@ -380,14 +373,11 @@ impl Model {
     }
 
     pub fn outline(&self) -> Vec<Item> {
-        let pane_of_run: BTreeMap<&RunId, PaneId> = self
-            .runs()
-            .map(|(pane, run)| (&run.meta.id, pane))
+        let parents: BTreeMap<PaneId, PaneId> = self
+            .panes
+            .iter()
+            .filter_map(|pane| Some((pane.row.id, pane.row.parent?)))
             .collect();
-        let parent_of_run = |run: &RunRow| match run.meta.parent.as_ref()? {
-            Parent::Pane(parent) => Some(*parent),
-            Parent::Run(id) => pane_of_run.get(id).copied(),
-        };
         let mut items = Vec::new();
         for session in &self.layout.layout.sessions {
             items.push(Item::Session {
@@ -399,23 +389,20 @@ impl Model {
                 .iter()
                 .flat_map(|window| window.panes().into_iter().map(|pane| (pane, window.id)))
                 .collect();
-            let window_of: BTreeMap<PaneId, WindowId> = panes.iter().copied().collect();
-            let mut by_pane = BTreeMap::new();
-            let mut by_window = BTreeMap::new();
-            for (pane, run) in self.runs() {
-                by_pane.entry(pane).or_insert(run);
-                if let Some(window) = window_of.get(&pane) {
-                    by_window.entry(*window).or_insert(run);
+            let mut window_parent = BTreeMap::new();
+            for window in &session.windows {
+                let own = window.panes();
+                if let Some(parent) = own.iter().find_map(|pane| parents.get(pane))
+                    && !own.contains(parent)
+                {
+                    window_parent.insert(window.id, *parent);
                 }
             }
             items.extend(
                 tree::order(
                     panes,
                     |(pane, _)| *pane,
-                    |(pane, window)| {
-                        let run = by_pane.get(pane).or_else(|| by_window.get(window))?;
-                        parent_of_run(run)
-                    },
+                    |(_, window)| window_parent.get(window).copied(),
                 )
                 .into_iter()
                 .map(|((id, window), depth)| Item::Pane { id, window, depth }),
@@ -463,7 +450,7 @@ mod tests {
 
     use ko_server::ids::{Name, RunId};
     use ko_server::protocol::{
-        Axis, Cause, Cells, Dead, Float, Layout, Leaf, Listing, Node, Revision, Session,
+        Axis, Cause, Cells, Dead, Float, Layout, Leaf, Listing, Node, Revision, RunRow, Session,
     };
     use ko_server::vars::Vars;
     use proptest::prelude::*;
@@ -726,12 +713,12 @@ mod tests {
         assert_eq!(model.locate(pane(9)), None);
     }
 
-    fn run(number: u8, on: u64, parent: Option<Parent>) -> RunRow {
+    fn run(number: u8, on: u64) -> RunRow {
         RunRow {
             meta: ko_server::runs::Meta {
                 id: format!("{number:032x}").parse().unwrap(),
                 name: ko_server::runs::RunName::new("r").unwrap(),
-                parent,
+                parent: None,
                 pane: Some(pane(on)),
                 runtime: None,
                 argv: vec!["cmd".to_owned()],
@@ -740,6 +727,10 @@ mod tests {
             },
             outcome: None,
         }
+    }
+
+    fn set_parent(model: &mut Model, child: u64, parent: Option<u64>) {
+        model.pane_mut(pane(child)).unwrap().row.parent = parent.map(pane);
     }
 
     fn run_id(number: u8) -> RunId {
@@ -758,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_pane_follows_its_parent_pane_one_level_deeper_and_the_step_order_follows_the_rows() {
+    fn a_pane_with_a_parent_follows_it_one_level_deeper_and_the_step_order_follows_the_rows() {
         let windows = vec![
             (Shape::Leaf, 0),
             (Shape::Leaf, 0),
@@ -771,12 +762,10 @@ mod tests {
             outline_of(&model),
             ["0pane_1", "0pane_2", "0pane_3", "0pane_4", "0pane_5"]
         );
-        let events = [
-            run(1, 3, Some(Parent::Pane(pane(1)))),
-            run(2, 4, Some(Parent::Run(run_id(1)))),
-            run(3, 2, Some(Parent::Pane(pane(5)))),
-        ];
-        for event in events {
+        set_parent(&mut model, 3, Some(1));
+        set_parent(&mut model, 4, Some(3));
+        set_parent(&mut model, 2, Some(5));
+        for event in [run(1, 3), run(2, 4)] {
             assert_eq!(model.apply(ClientEvent::Run(event)), Applied::State);
         }
         assert_eq!(
@@ -792,23 +781,27 @@ mod tests {
             model.apply(announced(without_run, Vec::new())),
             Applied::Layout
         );
-        let mut kept: Vec<RunId> = model.runs().map(|(_, run)| run.meta.id.clone()).collect();
-        kept.sort();
+        let runs = |model: &Model| -> Vec<RunId> {
+            let mut ids: Vec<RunId> = model
+                .panes
+                .iter()
+                .filter_map(|p| Some(p.row.run.as_ref()?.meta.id.clone()))
+                .collect();
+            ids.sort();
+            ids
+        };
         assert_eq!(
-            kept,
-            [run_id(2), run_id(3)],
+            runs(&model),
+            [run_id(2)],
             "the run of a pane that the layout dropped goes with it"
         );
+        assert_eq!(model.apply(ClientEvent::Run(run(9, 3))), Applied::Nothing);
         assert_eq!(
-            model.apply(ClientEvent::Run(run(9, 3, None))),
-            Applied::Nothing
-        );
-        assert_eq!(
-            model.runs().count(),
-            2,
+            runs(&model),
+            [run_id(2)],
             "a run event for a pane the layout lacks changes nothing"
         );
-        let mut ended = run(2, 4, Some(Parent::Run(run_id(1))));
+        let mut ended = run(2, 4);
         ended.outcome = Some(ko_server::runs::RunOutcome {
             result: ko_server::runs::RunResult::Completed,
             text: String::new(),
@@ -829,22 +822,41 @@ mod tests {
     }
 
     #[test]
-    fn every_pane_of_a_run_window_follows_the_runs_parent() {
+    fn the_first_pane_with_a_parent_decides_for_every_pane_of_its_window() {
         let windows = vec![
             (Shape::Leaf, 0),
             (Shape::Split(true, vec![Shape::Leaf, Shape::Leaf]), 0),
         ];
         let mut model = model(layout_of(&[windows]));
         model.panes = rows_of(&model.layout.layout);
-        assert_eq!(
-            model.apply(ClientEvent::Run(run(1, 3, Some(Parent::Pane(pane(1)))))),
-            Applied::State
-        );
+        set_parent(&mut model, 3, Some(1));
         assert_eq!(
             outline_of(&model),
             ["0pane_1", "1pane_2", "1pane_3"],
-            "the split beside the run pane nests under the same parent"
+            "the split beside the pane with a parent nests under the same parent"
         );
+        set_parent(&mut model, 2, Some(3));
+        assert_eq!(
+            outline_of(&model),
+            ["0pane_1", "0pane_2", "0pane_3"],
+            "the first pane's parent is in its own window, so the window is a root"
+        );
+    }
+
+    #[test]
+    fn a_layout_event_that_adds_a_pane_with_a_parent_nests_it() {
+        let first = layout_of(&[vec![(Shape::Leaf, 0)]]);
+        let mut model = model(first);
+        model.panes = rows_of(&model.layout.layout);
+        let grown = layout_of(&[vec![(Shape::Leaf, 0), (Shape::Leaf, 0)]]);
+        let mut listings = listings_of(&grown);
+        listings[1].row.parent = Some(pane(1));
+        let snapshot = Snapshot {
+            revision: revision(2),
+            layout: grown,
+        };
+        assert_eq!(model.apply(announced(snapshot, listings)), Applied::Layout);
+        assert_eq!(outline_of(&model), ["0pane_1", "1pane_2"]);
     }
 
     #[test]

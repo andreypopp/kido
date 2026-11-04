@@ -838,19 +838,19 @@ in full: the parent window's bracket continues beside the child as a
 first rows, and an only child also receives `└`, not its own dot. This
 makes ownership immediately visible.
 
-The anchor is the parent edge in the run's meta: a run parent, or the
-pane of a top-level pi. The edge stays for a live and a finished child
+The anchor is the `parent` of the child's pane row, which the server
+sets to the parent's pane when the run starts. The edge stays for a live and a finished child
 alike. Thus, a finished child remains nested while its window lingers.
 A child whose parent is absent or in another session is a root.
 
-In Kido.app, a lingering window shows its run's outcome in the field
-column. A completed run has a dimmed `✓`. Every other outcome has a
-dimmed `×`, including `failed`, `died` and `stopped`. A stop after the
-child has reported is `completed`: the work finished. A stop before it
-is not a failure, but it did not finish the work. The arriving outcome
-changes the row from a name to a result. Showing success early would
-be the only false claim this column could make. The dim `✓` is
-distinct from the bold green `✓` for a live agent's finished turn.
+In Kido.app, a lingering run window shows its run's result in the
+status slot, by the Ended rule of design-app.md ("Sidebar"): a green
+`✓` for `completed`, a red dot for `failed` and `died`, a gray dot for
+`stopped`. A stop after the child has reported is `completed`: the work
+finished. A stop before it is not a failure, but it did not finish the
+work. A child pane without a run, with `close: on_exit`, shows a
+dimmed `✓` for exit 0 and a dimmed `×` otherwise until the sweep
+removes it.
 
 These nested windows do not follow the document's window order.
 

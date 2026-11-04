@@ -40,15 +40,16 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     #expect(shape(snapshot.sessions[1].nodes) == ["6"])
 }
 
+private func nest(_ model: inout KoModel, _ moved: [UInt32], under parentNumber: UInt32, window: UInt32) throws {
+    let gone = Set(moved.map { PaneID(number: $0) })
+    model.outline.removeAll { if case .pane(let pane) = $0 { gone.contains(pane.id) } else { false } }
+    let parent = try #require(model.outline.firstIndex { if case .pane(let pane) = $0 { pane.id == .init(number: parentNumber) } else { false } })
+    model.outline.insert(contentsOf: moved.map { .pane(.init(depth: 1, id: .init(number: $0), window: .init(number: window))) }, at: parent + 1)
+}
+
 @Test func theTwoPanesOfARunWindowAreOneGroupUnderTheParentPane() throws {
     var model = try recorded()
-    let moved: Set<PaneID> = [.init(number: 3), .init(number: 4)]
-    model.outline = model.outline.filter { entry in
-        if case .pane(let pane) = entry { return !moved.contains(pane.id) }
-        return true
-    }
-    let parent = try #require(model.outline.firstIndex { if case .pane(let pane) = $0 { pane.id == .init(number: 5) } else { false } })
-    model.outline.insert(contentsOf: [3, 4].map { .pane(.init(depth: 1, id: .init(number: $0), window: .init(number: 2))) }, at: parent + 1)
+    try nest(&model, [3, 4], under: 5, window: 2)
     let snapshot = try #require(Snapshot(model: model))
     #expect(shape(snapshot.sessions[0].nodes) == ["build[1,2]", "5>running[3,4],7>8", "9"])
 }
@@ -80,6 +81,43 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     #expect(ended.run != nil && ended.started == nil)
     #expect(try [1, 2, 4].map { try item($0).mark } == [.running, .waiting, .none_], "the core's mark; an exit before the connection is no news")
     #expect(try !item(5).inbox && !item(5).isMessageable, "a pi agent without an inbox takes no prompt")
+}
+
+private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void) throws -> Item {
+    var model = try recorded()
+    let at = try #require(model.panes.firstIndex { $0.id == .init(number: number) })
+    edit(&model.panes[at])
+    let snapshot = try #require(Snapshot(model: model))
+    return try #require(items(snapshot)[.init(number: number)])
+}
+
+@Test func aPaneWithAParentNestsUnderItWhetherOrNotItIsARun() throws {
+    var model = try recorded()
+    let at = try #require(model.panes.firstIndex { $0.id == .init(number: 4) })
+    model.panes[at].parent = .init(number: 5)
+    try nest(&model, [4], under: 5, window: 3)
+    let snapshot = try #require(Snapshot(model: model))
+    #expect(shape(snapshot.sessions[0].nodes) == ["build[1,2]", "3", "5>4,7>8", "9"])
+}
+
+@Test func theInboxDotReadsTheRowOrThePiInboxVariable() throws {
+    #expect(try !edited(5) { _ in }.inbox)
+    #expect(try edited(5) { $0.inbox = true }.inbox)
+    #expect(try edited(5) { $0.vars["pi.inbox"] = .string("x") }.inbox)
+}
+
+@Test func aDeadPaneThatClosesOnExitLingersByItsCauseAndAKeptOrRunPaneDoesNot() throws {
+    func lingering(_ cause: KoSchema.Cause, close: KoSchema.Close = .onExit) throws -> (SidebarRow.Status, String) {
+        try edited(4) { $0.dead = .init(at: 1, cause: cause); $0.close = close }.indicator
+    }
+    #expect(try lingering(.exited(.init(code: 0))) == (.endedClean, "gone, exited"))
+    #expect(try lingering(.exited(.init(code: 3))) == (.endedFailed, "gone, exited with code 3"))
+    #expect(try lingering(.signaled(.init(signal: 9))) == (.endedFailed, "gone, killed by signal 9"))
+    #expect(try lingering(.failed(.init(message: "no such file"))) == (.endedFailed, "gone, failed to start"))
+    #expect(try edited(4) { $0.dead = .init(at: 1, cause: .exited(.init(code: 0))) }.indicator == (.done, "gone, completed"), "no close is a kept pane")
+    #expect(try lingering(.exited(.init(code: 0)), close: .keep) == (.done, "gone, completed"))
+    #expect(try lingering(.exited(.init(code: 3)), close: .keep) == (.error, "gone, failed"))
+    #expect(try edited(9) { $0.close = .onExit }.indicator == (.error, "gone, failed"), "a run pane keeps the outcome of its run")
 }
 
 @Test func theProjectedTreeDrawsOneRowForEachPane() throws {

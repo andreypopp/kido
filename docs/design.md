@@ -761,17 +761,18 @@ checks and restarts need ended children.
 
 ## The sidebar tree
 
-Both clients build the tree from the layout document, the pane rows
-and their runs (`ko_client/src/model.rs`, with the walk of
+Both clients build the tree from the layout document and the pane
+rows (`ko_client/src/model.rs`, with the walk of
 `ko_client/src/tree.rs`). A subagent's panes follow the pane that
 spawned it, one level deeper, not after the whole parent window: the
 subagents belong to the coordinating agent, not a shell sharing its
-window. A run's parent comes from its meta: a run parent nests the
-run's window under the pane of that run, and a pane parent (`pane_N`,
-from `ko run-child`) under that pane, with or without a run record.
-Every pane of a run window follows the run's parent, so a user's split
-beside the run pane nests under the same parent. A parent that is
-absent or in another session leaves the child a root of its own.
+window. The edge is the row's immutable `parent`, which the server
+sets at create: a run's pane gets its parent's pane. A window nests
+under the pane that the `parent` of its first pane with one names, in
+document order, and every pane of the window follows it, so a user's
+split beside a child pane nests under the same parent. A parent that
+is absent, in another session or in the window itself leaves the
+window a root. The run meta's parent is not read for the tree.
 
 The terminal client draws the list as session headers and pane rows,
 indented by depth (`ko_tui/src/sidebar.rs`); `Ctrl+Shift+Up` and
@@ -779,7 +780,7 @@ indented by depth (`ko_tui/src/sidebar.rs`); `Ctrl+Shift+Up` and
 brackets and group glyphs (design-app.md, "Sidebar").
 
 The walk uses parent-first ordering and emits every item exactly once,
-with or without a tree. A reporting bug or edited run meta can create a
+with or without a tree. Parent edges across windows can create a
 cycle; the walk emits missed items afterward as roots, so an invalid
 edge loses only the item's tree position. A self-edge means "no
 parent". Siblings retain arrival order.

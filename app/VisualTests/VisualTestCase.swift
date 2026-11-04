@@ -2,6 +2,7 @@ import AppKit
 import GhosttyKit
 import KoModel
 import SidebarFeed
+import SnapshotTesting
 import PaneGeometry
 import XCTest
 @testable import Kido
@@ -25,6 +26,27 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
             guard layer.contents != nil else { return }
             MainActor.assumeIsolated { frame() }
         }
+    }
+
+    func sidebarSnapshot(_ list: SidebarView, _ name: String, file: StaticString = #filePath, testName: String = #function) {
+        let window = list.window!
+        window.layoutIfNeeded()
+        list.layoutSubtreeIfNeeded()
+        list.visualTable.tile()
+        list.visualTable.layoutSubtreeIfNeeded()
+        list.displayIfNeeded()
+        CATransaction.flush()
+        list.layoutSubtreeIfNeeded()
+        list.visualTable.tile()
+        list.visualTable.layoutSubtreeIfNeeded()
+        if list.visualTable.numberOfRows > 0 { list.visualTable.scrollRowToVisible(0) }
+        list.visualScroll.reflectScrolledClipView(list.visualScroll.contentView)
+        list.displayIfNeeded()
+        CATransaction.flush()
+        XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
+        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+        if let failure = verifySnapshot(of: list, as: .image, named: name, record: record, file: file, testName: testName),
+           !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
     }
 
     func mainQueueFence() async {

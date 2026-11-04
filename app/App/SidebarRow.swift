@@ -4,11 +4,21 @@ import SidebarFeed
 func drawStatusMark(_ status: SidebarRow.Status, at center: NSPoint, flipped: Bool) {
     let color: NSColor = switch status {
     case .quiet: Chrome.statusQuiet
+    case .endedClean, .endedFailed: Chrome.inkSecondary
     case .running, .done: Chrome.statusRunning
     case .waiting: Chrome.statusWaiting
     case .error: Chrome.statusError
     }
-    if status == .done {
+    if status == .endedFailed {
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: center.x - 2.2, y: center.y - 2.2))
+        path.line(to: NSPoint(x: center.x + 2.2, y: center.y + 2.2))
+        path.move(to: NSPoint(x: center.x - 2.2, y: center.y + 2.2))
+        path.line(to: NSPoint(x: center.x + 2.2, y: center.y - 2.2))
+        path.lineWidth = 2
+        path.lineCapStyle = .round
+        color.setStroke(); path.stroke()
+    } else if status == .done || status == .endedClean {
         let direction: CGFloat = flipped ? 1 : -1
         let path = NSBezierPath()
         path.move(to: NSPoint(x: center.x - 2.8, y: center.y + direction * 0.1))

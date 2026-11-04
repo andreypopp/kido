@@ -405,7 +405,7 @@ extension SidebarRow.Status {
         case .waiting: " — waiting"
         case .running: " — running"
         case .done: " — done"
-        case .quiet: ""
+        case .quiet, .endedClean, .endedFailed: ""
         }
     }
 }

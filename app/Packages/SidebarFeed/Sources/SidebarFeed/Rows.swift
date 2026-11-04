@@ -9,7 +9,7 @@ public struct SidebarRow: Equatable, Sendable {
         }
     }
     public enum Status: Comparable, Sendable {
-        case error, waiting, running, done, quiet
+        case error, waiting, running, done, quiet, endedFailed, endedClean
         func mergingTabStatus(_ other: Self) -> Self { min(self, other) }
     }
     public enum Kind: Equatable, Sendable {
@@ -104,6 +104,14 @@ extension Item {
 
     // The core's mark of a live pane; a run's shell is busy while its run lasts.
     var indicator: (status: SidebarRow.Status, description: String) {
+        if case .lingering(let cause) = lifecycle {
+            return switch cause {
+            case .exited(let exited) where exited.code == 0: (.endedClean, "gone, exited")
+            case .exited(let exited): (.endedFailed, "gone, exited with code \(exited.code)")
+            case .signaled(let signaled): (.endedFailed, "gone, killed by signal \(signaled.signal)")
+            case .failed: (.endedFailed, "gone, failed to start")
+            }
+        }
         if case .ended(let result) = lifecycle {
             let status: SidebarRow.Status = switch result {
             case .completed: .done

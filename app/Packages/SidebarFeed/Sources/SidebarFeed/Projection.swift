@@ -22,7 +22,7 @@ private struct Projection {
         windows = Dictionary(model.layout.layout.windows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
-    // The outline lists each session and then its panes, a run's pane under the pane that started it.
+    // The outline lists each session and then its panes, a pane with a parent under that parent.
     func sessions(current: SessionID) -> [SessionNodes] {
         var result: [SessionNodes] = []
         var outline: [KoSchema.ItemPane] = []
@@ -68,14 +68,18 @@ private struct Projection {
     private func item(_ entry: KoSchema.ItemPane, children: [Node]) -> Item? {
         guard let pane = panes[entry.id] else { return nil }
         let run = pane.run
-        let live = pane.dead == nil
         return Item(
             id: entry.id, window: entry.window, title: pane.label,
-            lifecycle: live ? .live(kind(pane)) : .ended(ended(pane)),
+            lifecycle: lifecycle(pane),
             program_status: programStatus(pane.status?.programStatus),
             run: run?.id,
-            started: live && run?.outcome == nil ? run.flatMap { Self.wallClock($0.startedAt) } : nil,
-            children: children, mark: pane.mark, recordsSeen: pane.recordsSeen, inbox: pane.vars["pi.inbox"] != nil)
+            started: pane.dead == nil && run?.outcome == nil ? run.flatMap { Self.wallClock($0.startedAt) } : nil,
+            children: children, mark: pane.mark, recordsSeen: pane.recordsSeen, inbox: pane.inbox == true || pane.vars["pi.inbox"] != nil)
+    }
+
+    private func lifecycle(_ pane: KoSchema.PaneJson) -> Lifecycle {
+        guard let dead = pane.dead else { return .live(kind(pane)) }
+        return pane.close == .onExit && pane.run == nil ? .lingering(dead.cause) : .ended(ended(pane))
     }
 
     private func ended(_ pane: KoSchema.PaneJson) -> KoSchema.RunResult {

@@ -385,8 +385,8 @@ dirty, at most once per 16 ms, and never otherwise: a dirty mark arms
 one timer, and an idle server with idle panes arms none. It writes
 the pane's `status` and sends a `status` event for that pane only.
 Times are the server's monotonic clock in nanoseconds. The server
-builds no tree: a client builds its own from the layout document, the
-pane rows and their runs (`ko_client/src/model.rs`).
+builds no tree: a client builds its own from the layout document and
+the pane rows' `parent` (`ko_client/src/model.rs`).
 
 Runs are in the server (protocol.md, section 10): the run records on
 disk, the sweep over the pane rows on each event that can end a pane,

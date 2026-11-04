@@ -1091,14 +1091,16 @@ are not removed by this change.
 The sidebar tree is a projection of the core's model:
 `Snapshot(model:)` in `SidebarFeed/Projection.swift`. Sessions are
 source-list sections. A window with one pane is a pane item, a window with
-more panes is a group, and a run window is nested under the pane of its
-run's parent, at any depth. The order and the parent edges are the core's
-`outline` (each item carries its window); the app only groups it by
-window. The core nests every pane of a run window under the run's
-parent, so a user's split inside a run window stays in the run's group. A pane item's title is the core's label, its
-lifecycle comes from the pane's status, `run` is its run id, `started` is
+more panes is a group, and a child window is nested under the pane that
+its panes' `parent` names, at any depth. The order and the parent edges
+are the core's `outline` (each item carries its window; design.md, "The
+sidebar tree"); the app only groups it by window. A pane item's title is
+the core's label, its lifecycle comes from the pane's status and, for a
+dead pane, its `close` and run (below), `run` is its run id, `started` is
 the run's start while it is live, `mark` is the core's seen mark and
-`inbox` tells whether the pane has a `pi.inbox` variable. The snapshot's
+`inbox` tells whether the row's `inbox` is true (its message stream is
+open) or the pane has a `pi.inbox` variable. The second source goes when
+ko-pi moves to the message stream. The snapshot's
 `ServerInstance` is the model's instance string. The Swift types of the
 model are generated from the schemas (see [Testing](#testing)), so the app
 has no hand-written decoder and no unknown values. Ko ids (`pane_N`,
@@ -1273,14 +1275,22 @@ except completed or unknown, which show none: the green check alone marks
 completion, while accessibility still reads "gone, completed". A run's
 start metadata drives the clock even when a caption is shown. A live pane's indicator is its core `mark`
 (running, waiting, done, failed, or none, which is quiet); the app adds
-only the Ended and run cases. Ended completed is done, failed and died are
-errors, stopped and unknown are quiet. The indicator sits in the leading slot, centered at
+only the Ended, lingering and run cases. A dead pane with a run, or with
+`close: keep`, is Ended with its run's result, else with its exit: Ended
+completed is done, failed and died are errors, stopped and unknown are
+quiet. A dead pane with `close: on_exit` and no run lingers until the sweep
+removes it: its lifecycle carries the cause, it has no caption, and its
+indicator is a dimmed checkmark for exit 0 and a dimmed × for any other
+cause, so a finished child that ko is about to close reads as gone, not as
+a fresh result; accessibility names the cause (`SidebarFeed/Rows.swift`).
+The lingering statuses never reach a window tab. The indicator sits in the leading slot, centered at
 x=20pt plus 15pt per nesting level and vertically on the title line; the
 header plus center is 15pt from the right edge. Indicators are 6pt dots:
 idle and quiet gray (secondaryLabelColor at 45%), running/compacting green,
 waiting rows of any kind orange, failures red. Done/completed is
 a plain green checkmark, about 6×4pt at a 2pt stroke, visually centered on
-the dot position. Tabs aggregate the same mapping, with running and done
+the dot position. The lingering checkmark and × have the same footprint and
+stroke, in the secondary ink. Tabs aggregate the same mapping, with running and done
 marks visible only when the sidebar is collapsed or floating.
 
 There are no window or child gaps and no divider rows. Each session retains

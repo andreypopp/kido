@@ -511,7 +511,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await ko(["run-child", "--session", "session_1", "--name", "Child run", "pane_2", "--", "/bin/sh", "-c",
                       "printf '\\033]7501;state=blocked:app=agent\\007'; exec tail -f " + SSH.quote(feed)], dir: directory.path)
         try await wait("the child run nests under the editor") { owner.testModel.map(\.layout.layout.windows)?.count == 4 && owner.sidebar.tabs.entries.count == 3 }
-        let child = try XCTUnwrap(owner.testModel.map(\.layout.layout.windows)?.last?.id)
+        let child = try XCTUnwrap(owner.testModel.map(\.layout.layout.windows)?.map(\.id).first { ![shell, middle, last].contains($0) })
         let sidebar = owner.sidebar
         let root = try XCTUnwrap(owner.window.contentView?.superview)
         owner.window.display()
@@ -1335,26 +1335,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             guard let toolbar = chrome.subviews.compactMap({ $0 as? PaneToolbar }).first else { return true }
             return toolbar.visualAnimationsEnded > ended && (inside ? toolbar.alphaValue == 1 : toolbar.alphaValue == 0)
         }
-    }
-
-    private func sidebarSnapshot(_ list: SidebarView, _ name: String, testName: String = #function) {
-        window.layoutIfNeeded()
-        list.layoutSubtreeIfNeeded()
-        list.visualTable.tile()
-        list.visualTable.layoutSubtreeIfNeeded()
-        list.displayIfNeeded()
-        CATransaction.flush()
-        list.layoutSubtreeIfNeeded()
-        list.visualTable.tile()
-        list.visualTable.layoutSubtreeIfNeeded()
-        if list.visualTable.numberOfRows > 0 { list.visualTable.scrollRowToVisible(0) }
-        list.visualScroll.reflectScrolledClipView(list.visualScroll.contentView)
-        list.displayIfNeeded()
-        CATransaction.flush()
-        XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
-        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-        if let failure = verifySnapshot(of: list, as: .image, named: name, record: record, testName: testName),
-           !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
     }
 
     func testCaptionDisplayDelay() async throws {

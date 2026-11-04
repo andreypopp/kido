@@ -123,6 +123,7 @@ public struct Item: Equatable, Sendable {
 public enum Lifecycle: Equatable, Sendable {
     case live(PaneKind)
     case ended(KoSchema.RunResult)
+    case lingering(KoSchema.Cause)
 }
 public enum PaneKind: Equatable, Sendable {
     public struct Destination: Equatable, Sendable, CustomStringConvertible {
