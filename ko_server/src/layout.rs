@@ -400,20 +400,6 @@ fn first_leaf<L>(node: &Node<L>) -> Option<&L> {
     }
 }
 
-fn raw(node: &Node<Leaf>) -> Node<Raw> {
-    match node {
-        Node::Leaf(leaf) => Node::Leaf(Raw {
-            pane: leaf.pane,
-            cols: Some(usize::from(leaf.cols.get())),
-            rows: Some(usize::from(leaf.rows.get())),
-        }),
-        Node::Split { split, children } => Node::Split {
-            split: *split,
-            children: children.iter().map(raw).collect(),
-        },
-    }
-}
-
 fn place(floats: Vec<FloatIn>, cols: usize, rows: usize) -> Vec<Float> {
     let mut floats = floats;
     floats.sort_by_key(|float| float.z.unwrap_or(u32::MAX));
@@ -462,7 +448,9 @@ fn extent<L>(tree: &Node<L>, floats: bool, (cols, rows): (usize, usize)) -> (usi
 fn resize(window: &mut Window, wanted: (usize, usize), cell_px: Option<CellPixels>) -> bool {
     let bordered = window.floats.iter().any(|float| float.border);
     let (cols, rows) = extent(&window.tree, bordered, wanted);
-    let tree = fit(raw(&window.tree), cols, rows);
+    let mut tree = window.tree.clone();
+    resize_axis(&mut tree, Axis::Horizontal, cols);
+    resize_axis(&mut tree, Axis::Vertical, rows);
     let cell_px = cell_px.or(window.cell_px);
     let floats = window
         .floats
@@ -490,29 +478,55 @@ fn resize(window: &mut Window, wanted: (usize, usize), cell_px: Option<CellPixel
     changed
 }
 
-fn grow(node: &mut Node<Leaf>, axis: Axis, delta: usize) {
+fn tiled_size(node: &Node<Leaf>, axis: Axis) -> usize {
     match node {
-        Node::Leaf(leaf) => {
-            let (cols, rows) = (usize::from(leaf.cols.get()), usize::from(leaf.rows.get()));
-            match axis {
-                Axis::Horizontal => leaf.cols = Cells::clamped(cols + delta),
-                Axis::Vertical => leaf.rows = Cells::clamped(rows + delta),
+        Node::Leaf(leaf) => usize::from(pick(axis, leaf.cols, leaf.rows).get()),
+        Node::Split { split, children } => {
+            let sizes = children.iter().map(|child| tiled_size(child, axis));
+            if *split == axis {
+                sizes.sum::<usize>() + children.len().saturating_sub(1)
+            } else {
+                sizes.fold(1, usize::max)
             }
         }
+    }
+}
+
+fn resize_axis(node: &mut Node<Leaf>, axis: Axis, wanted: usize) {
+    let wanted = wanted.max(node.minimum(axis));
+    match node {
+        Node::Leaf(leaf) => match axis {
+            Axis::Horizontal => leaf.cols = Cells::clamped(wanted),
+            Axis::Vertical => leaf.rows = Cells::clamped(wanted),
+        },
         Node::Split { split, children } if *split == axis => {
-            let count = children.len();
-            for (index, child) in children.iter_mut().enumerate() {
-                grow(
-                    child,
-                    axis,
-                    delta / count + usize::from(index < delta % count),
-                );
+            let mut sizes: Vec<_> = children
+                .iter()
+                .map(|child| (tiled_size(child, axis), child.minimum(axis)))
+                .collect();
+            let current = sizes.iter().map(|(size, _)| size).sum::<usize>() + children.len() - 1;
+            let mut left = current.abs_diff(wanted);
+            while left > 0 {
+                for (child, (size, minimum)) in children.iter_mut().zip(&mut sizes) {
+                    if left == 0 {
+                        break;
+                    }
+                    if wanted > current {
+                        *size += 1;
+                    } else if *size > *minimum {
+                        *size -= 1;
+                    } else {
+                        continue;
+                    }
+                    resize_axis(child, axis, *size);
+                    left -= 1;
+                }
             }
         }
         Node::Split { children, .. } => {
-            children
-                .iter_mut()
-                .for_each(|child| grow(child, axis, delta));
+            for child in children {
+                resize_axis(child, axis, wanted);
+            }
         }
     }
 }
@@ -537,7 +551,9 @@ fn remove_leaf(node: Node<Leaf>, pane: PaneId) -> Option<Node<Leaf>> {
                         usize::from(leaf.rows.get()),
                     ) + 1;
                     let neighbour = index.min(children.len() - 1);
-                    grow(&mut children[neighbour], split, freed);
+                    let child = &mut children[neighbour];
+                    let wanted = tiled_size(child, split) + freed;
+                    resize_axis(child, split, wanted);
                 }
                 Node::Split { .. } => {
                     if let Some(node) = remove_leaf(child, pane) {
@@ -1435,7 +1451,128 @@ mod tests {
     }
 
     #[test]
-    fn resizing_scales_the_tree_and_the_floats_and_keeps_the_pixels() {
+    fn window_resize_matches_tmux_cell_order() {
+        let pair = split(
+            "h",
+            vec![leaf(new_pane(), 40, 24), leaf(new_pane(), 39, 24)],
+        );
+        let triple = split(
+            "h",
+            vec![
+                leaf(new_pane(), 10, 24),
+                leaf(new_pane(), 20, 24),
+                leaf(new_pane(), 30, 24),
+            ],
+        );
+        let small = split(
+            "h",
+            vec![
+                leaf(new_pane(), 1, 24),
+                leaf(new_pane(), 5, 24),
+                leaf(new_pane(), 9, 24),
+            ],
+        );
+        let nested = split(
+            "h",
+            vec![
+                split(
+                    "h",
+                    vec![leaf(new_pane(), 10, 24), leaf(new_pane(), 10, 24)],
+                ),
+                leaf(new_pane(), 20, 24),
+            ],
+        );
+        let crossed = split(
+            "h",
+            vec![
+                split(
+                    "v",
+                    vec![leaf(new_pane(), 10, 10), leaf(new_pane(), 10, 13)],
+                ),
+                leaf(new_pane(), 20, 24),
+            ],
+        );
+        let clamped = split(
+            "h",
+            vec![
+                split("v", vec![leaf(new_pane(), 10, 1), leaf(new_pane(), 10, 22)]),
+                leaf(new_pane(), 20, 24),
+            ],
+        );
+        let cases = [
+            (&pair, 80, 81, 24, "h[1:41x24 2:39x24]"),
+            (&pair, 80, 79, 24, "h[1:39x24 2:39x24]"),
+            (&pair, 80, 85, 24, "h[1:43x24 2:41x24]"),
+            (&triple, 62, 67, 24, "h[1:12x24 2:22x24 3:31x24]"),
+            (&triple, 62, 57, 24, "h[1:8x24 2:18x24 3:29x24]"),
+            (&small, 17, 10, 24, "h[1:1x24 2:1x24 3:6x24]"),
+            (&small, 17, 1, 1, "h[1:1x1 2:1x1 3:1x1]"),
+            (&nested, 42, 46, 24, "h[h[1:12x24 2:10x24] 3:22x24]"),
+            (&nested, 42, 38, 24, "h[h[1:8x24 2:10x24] 3:18x24]"),
+            (&crossed, 31, 36, 27, "h[v[1:13x12 2:13x14] 3:22x27]"),
+            (&clamped, 31, 26, 20, "h[v[1:7x1 2:7x18] 3:18x20]"),
+        ];
+        for (tree, initial_cols, cols, rows, expected) in cases {
+            let mut initial = window(tree.clone());
+            initial["cols"] = json!(initial_cols);
+            initial["rows"] = json!(24);
+            let mut document = document_of(initial);
+            document.resize_window(
+                WindowId::new(1),
+                Cells::new(cols).unwrap(),
+                Cells::new(rows).unwrap(),
+                None,
+            );
+            assert_eq!(tree_shape(&document), expected);
+        }
+        for (tree, cols) in [(pair, 80), (nested, 42)] {
+            let mut initial = window(tree);
+            initial["cols"] = json!(cols);
+            initial["rows"] = json!(24);
+            let mut document = document_of(initial);
+            let before = tree_shape(&document);
+            document.resize_window(
+                WindowId::new(1),
+                Cells::new(cols + 5).unwrap(),
+                Cells::new(24).unwrap(),
+                None,
+            );
+            document.resize_window(
+                WindowId::new(1),
+                Cells::new(cols).unwrap(),
+                Cells::new(24).unwrap(),
+                None,
+            );
+            assert_eq!(tree_shape(&document), before);
+        }
+    }
+
+    #[test]
+    fn removing_a_pane_distributes_freed_cells_through_nested_splits_in_order() {
+        let mut initial = window(split(
+            "h",
+            vec![
+                leaf(new_pane(), 3, 24),
+                split(
+                    "h",
+                    vec![
+                        split(
+                            "h",
+                            vec![leaf(new_pane(), 10, 24), leaf(new_pane(), 10, 24)],
+                        ),
+                        leaf(new_pane(), 20, 24),
+                    ],
+                ),
+            ],
+        ));
+        initial["cols"] = json!(46);
+        let mut document = document_of(initial);
+        document.remove_pane(PaneId::new(1));
+        assert_eq!(tree_shape(&document), "h[h[2:12x24 3:10x24] 4:22x24]");
+    }
+
+    #[test]
+    fn resizing_distributes_cells_and_clamps_floats_and_keeps_the_pixels() {
         let mut tree_window = window(split(
             "h",
             vec![leaf(new_pane(), 40, 24), leaf(new_pane(), 39, 24)],
@@ -1458,7 +1595,7 @@ mod tests {
             Resized::Changed
         );
         let resized = first_window(&document);
-        assert_eq!(shape(&resized.tree), "h[1:14x8 2:15x8]");
+        assert_eq!(shape(&resized.tree), "h[1:15x8 2:14x8]");
         assert_eq!(
             (
                 resized.floats[0].x,
@@ -1476,34 +1613,6 @@ mod tests {
             document.resize_window(WindowId::new(1), size(30), size(8), None),
             Resized::Same
         );
-    }
-
-    #[test]
-    fn a_row_scaled_to_one_column_for_each_pane_scales_back() {
-        let mut tree_window = window(split(
-            "h",
-            vec![
-                unsized_leaf(new_pane()),
-                split(
-                    "v",
-                    vec![unsized_leaf(new_pane()), unsized_leaf(new_pane())],
-                ),
-                unsized_leaf(new_pane()),
-            ],
-        ));
-        tree_window["cols"] = json!(90);
-        let mut document = document_of(tree_window);
-        let size = |count| Cells::new(count).unwrap();
-        document.resize_window(WindowId::new(1), size(1), size(1), None);
-        let narrow = first_window(&document);
-        assert_eq!(shape(&narrow.tree), "h[1:1x3 v[2:1x1 3:1x1] 4:1x3]");
-        assert_eq!((narrow.cols.get(), narrow.rows.get()), (5, 3));
-        document.resize_window(WindowId::new(1), size(90), size(24), None);
-        assert_eq!(
-            tree_shape(&document),
-            "h[1:29x24 v[2:29x11 3:29x12] 4:30x24]"
-        );
-        check(&document.snapshot().layout);
     }
 
     fn two_sessions() -> Document {

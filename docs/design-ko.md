@@ -268,8 +268,9 @@ A client changes it by a whole-document `PUT` with the revision it
 read; a stale revision gets `409` with the current document, and the
 client reapplies its edit (`ko_client/src/edit.rs` and `layout.rs`).
 Normalization, not an exact rule, lets one engine do every split,
-resize, equalize and scale computation, and a `409` retry never
-recomputes every size.
+resize, equalize and scale computation of an edit, and a `409` retry
+never recomputes every size. A client's window size is the exception:
+the server applies it to the stored tree with tmux's rule (below).
 
 A **client** is one open `/client` WebSocket: it exists from the hello
 to the close, with no linger and no orphans. The client owns what it
@@ -283,8 +284,14 @@ client disconnects, the window keeps its size until another client
 claims it.
 Kido.app and the terminal client follow the same rule for every window,
 with splits and floats too. A client sends the size of the area where
-it shows the window, never a leaf size, and the server scales the tree
-into it. A client that does not size the window draws it at the
+it shows the window, never a leaf size, and the server fits the tree
+into it with tmux's rule (`layout_resize_adjust`), so a size change
+gives the panes the sizes that users of tmux expect: along a split, the change goes one cell at a time to
+each child in order, from the first, until it is spent; a shrink
+skips a child at its minimum; a split across the axis gives each child
+the whole change. So a side-by-side pair shares a sidebar's change,
+and a grow followed by the same shrink restores the sizes when no
+minimum stopped a child. A client that does not size the window draws it at the
 server's geometry, anchored top left, clipped where the window is
 larger and blank where it is smaller.
 

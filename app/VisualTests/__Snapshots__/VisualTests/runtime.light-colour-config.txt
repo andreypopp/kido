@@ -1,9 +1,9 @@
 bounds=0.00,0.00,700.00,560.00 separator=0.00,0.00,700.00,0.50 banner=false
-pane_1 cells=Geometry(x: 0, y: 0, width: 42, height: 17) layer=tiled grid=9.50,5.50,336.00,263.50 content=9.50,0.50,336.00,276.00 chrome=0.00,0.50,349.50,276.00 insets=5.0,7.5 find=false alternate=false scroll=nil
-pane_2 cells=Geometry(x: 0, y: 18, width: 42, height: 17) layer=tiled grid=9.50,284.50,336.00,263.50 content=9.50,277.00,336.00,283.00 chrome=0.00,277.00,349.50,283.00 insets=7.5,12.0 find=false alternate=false scroll=nil
-pane_3 cells=Geometry(x: 43, y: 0, width: 42, height: 17) layer=tiled grid=353.50,5.50,336.00,263.50 content=353.50,0.50,336.00,276.00 chrome=350.00,0.50,350.00,276.00 insets=5.0,7.5 find=false alternate=false scroll=nil
-pane_4 cells=Geometry(x: 43, y: 18, width: 42, height: 17) layer=tiled grid=353.50,284.50,336.00,263.50 content=353.50,277.00,336.00,283.00 chrome=350.00,277.00,350.00,283.00 insets=7.5,12.0 find=false alternate=false scroll=nil
+pane_1 cells=Geometry(x: 0, y: 0, width: 43, height: 18) layer=tiled grid=9.50,5.50,344.00,279.00 content=9.50,0.50,344.00,291.50 chrome=0.00,0.50,357.50,291.50 insets=5.0,7.5 find=false alternate=false scroll=nil
+pane_2 cells=Geometry(x: 0, y: 19, width: 43, height: 16) layer=tiled grid=9.50,300.00,344.00,248.00 content=9.50,292.50,344.00,267.50 chrome=0.00,292.50,357.50,267.50 insets=7.5,12.0 find=false alternate=false scroll=nil
+pane_3 cells=Geometry(x: 44, y: 0, width: 41, height: 18) layer=tiled grid=361.50,5.50,328.00,279.00 content=361.50,0.50,328.00,291.50 chrome=358.00,0.50,342.00,291.50 insets=5.0,7.5 find=false alternate=false scroll=nil
+pane_4 cells=Geometry(x: 44, y: 19, width: 41, height: 16) layer=tiled grid=361.50,300.00,328.00,248.00 content=361.50,292.50,328.00,267.50 chrome=358.00,292.50,342.00,267.50 insets=7.5,12.0 find=false alternate=false scroll=nil
 divider=0.00,0.00,700.00,0.50
-divider=0.00,276.50,349.50,0.50
-divider=349.50,0.50,0.50,559.50
-divider=350.00,276.50,350.00,0.50
+divider=0.00,292.00,357.50,0.50
+divider=357.50,0.50,0.50,559.50
+divider=358.00,292.00,342.00,0.50

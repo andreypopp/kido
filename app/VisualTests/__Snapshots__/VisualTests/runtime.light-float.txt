@@ -1,7 +1,7 @@
 bounds=0.00,0.00,700.00,560.00 separator=0.00,0.00,700.00,0.50 banner=false
-pane_1 cells=Geometry(x: 0, y: 0, width: 42, height: 35) layer=tiled grid=9.50,5.50,336.00,542.50 content=9.50,0.50,336.00,559.50 chrome=0.00,0.50,349.50,559.50 insets=5.0,12.0 find=false alternate=false scroll=nil
-pane_2 cells=Geometry(x: 43, y: 0, width: 42, height: 35) layer=tiled grid=353.50,5.50,336.00,542.50 content=353.50,0.50,336.00,559.50 chrome=350.00,0.50,350.00,559.50 insets=5.0,12.0 find=false alternate=false scroll=nil
+pane_1 cells=Geometry(x: 0, y: 0, width: 43, height: 35) layer=tiled grid=9.50,5.50,344.00,542.50 content=9.50,0.50,344.00,559.50 chrome=0.00,0.50,357.50,559.50 insets=5.0,12.0 find=false alternate=false scroll=nil
+pane_2 cells=Geometry(x: 44, y: 0, width: 41, height: 35) layer=tiled grid=361.50,5.50,328.00,542.50 content=361.50,0.50,328.00,559.50 chrome=358.00,0.50,342.00,559.50 insets=5.0,12.0 find=false alternate=false scroll=nil
 pane_3 cells=Geometry(x: 10, y: 4, width: 34, height: 8) layer=floating(z: 0) grid=89.50,67.50,272.00,124.00 content=89.50,67.50,272.00,124.00 chrome=86.00,60.00,279.50,139.00 insets=0.0,0.0 find=false alternate=false scroll=nil
 divider=0.00,0.00,700.00,0.50
-divider=349.50,0.50,0.50,559.50
+divider=357.50,0.50,0.50,559.50
 float pane_3=86.00,60.00,279.50,139.00
