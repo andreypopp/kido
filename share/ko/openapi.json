@@ -3244,7 +3244,7 @@
         "type": "object"
       },
       "RuntimeColor": {
-        "description": "a colour as #rrggbb",
+        "description": "an #rrggbb colour",
         "pattern": "^#[0-9A-Fa-f]{6}$",
         "type": "string"
       },

@@ -4,6 +4,48 @@
   "description": "The ko configuration file, `config.yaml`.",
   "type": "object",
   "properties": {
+    "app": {
+      "description": "The settings of Kido.app.",
+      "$ref": "#/$defs/App",
+      "default": {
+        "clipboard": {
+          "copy_on_select": "on",
+          "paste_protection": true,
+          "read": "ask",
+          "trim_trailing_spaces": true,
+          "write": "allow"
+        },
+        "cursor": {
+          "blink": false,
+          "style": "block"
+        },
+        "font": {
+          "features": [],
+          "line_height": 0.0,
+          "size": 13.0,
+          "thicken": false
+        },
+        "keyboard": {
+          "option_as_alt": "off"
+        },
+        "keys": {},
+        "mouse": {
+          "hide_while_typing": false,
+          "scroll_multiplier": {
+            "discrete": 3.0,
+            "precision": 1.0
+          }
+        },
+        "theme": {
+          "dark": "kido-dark",
+          "light": "kido-light"
+        },
+        "window": {
+          "sidebar_shade": 5.0,
+          "unfocused_shift": 3.0
+        }
+      }
+    },
     "runtimes": {
       "description": "The runtimes that panes can run in, by name.",
       "type": "object",
@@ -12,6 +54,19 @@
       "patternProperties": {
         "^[a-z0-9-]{1,32}$": {
           "$ref": "#/$defs/Runtime"
+        }
+      }
+    },
+    "server": {
+      "description": "The settings of ko server.",
+      "$ref": "#/$defs/Server",
+      "default": {
+        "kitty_images_max_bytes": 10000000,
+        "linger_seconds": 30.0,
+        "runtime_idle_seconds": 600.0,
+        "scrollback": {
+          "bytes": 50000000,
+          "lines": "unlimited"
         }
       }
     }
@@ -29,12 +84,153 @@
         "ro"
       ]
     },
+    "Action": {
+      "description": "unbind, paste_from_clipboard, copy_to_clipboard, reset_font_size, increase_font_size:POINTS, decrease_font_size:POINTS (0.1 to 72), or text:, csi: or esc: and the text to send, with Ghostty's escapes such as \\x1b. The text has no control character and no space at either end.",
+      "type": "string",
+      "pattern": "^(unbind|paste_from_clipboard|copy_to_clipboard|reset_font_size|(text|csi|esc):[^\\u0000-\\u001f\\u007f ]([^\\u0000-\\u001f\\u007f]*[^\\u0000-\\u001f\\u007f ])?|(increase|decrease)_font_size:[0-9.]+)$"
+    },
+    "App": {
+      "description": "Kido.app's settings.",
+      "type": "object",
+      "properties": {
+        "clipboard": {
+          "$ref": "#/$defs/Clipboard",
+          "default": {
+            "copy_on_select": "on",
+            "paste_protection": true,
+            "read": "ask",
+            "trim_trailing_spaces": true,
+            "write": "allow"
+          }
+        },
+        "cursor": {
+          "$ref": "#/$defs/Cursor",
+          "default": {
+            "blink": false,
+            "style": "block"
+          }
+        },
+        "font": {
+          "$ref": "#/$defs/Font",
+          "default": {
+            "features": [],
+            "line_height": 0.0,
+            "size": 13.0,
+            "thicken": false
+          }
+        },
+        "keyboard": {
+          "$ref": "#/$defs/Keyboard",
+          "default": {
+            "option_as_alt": "off"
+          }
+        },
+        "keys": {
+          "description": "Extra key bindings, by trigger.",
+          "type": "object",
+          "additionalProperties": false,
+          "default": {},
+          "patternProperties": {
+            "^((super|cmd|command|ctrl|control|alt|opt|option|shift)\\+)*(\\+|[^+]+)$": {
+              "$ref": "#/$defs/Action"
+            }
+          }
+        },
+        "mouse": {
+          "$ref": "#/$defs/Mouse",
+          "default": {
+            "hide_while_typing": false,
+            "scroll_multiplier": {
+              "discrete": 3.0,
+              "precision": 1.0
+            }
+          }
+        },
+        "theme": {
+          "description": "The colour theme for the light and the dark appearance.",
+          "$ref": "#/$defs/Theme",
+          "default": {
+            "dark": "kido-dark",
+            "light": "kido-light"
+          }
+        },
+        "window": {
+          "$ref": "#/$defs/WindowSettings",
+          "default": {
+            "sidebar_shade": 5.0,
+            "unfocused_shift": 3.0
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "Argv": {
       "description": "an argv that starts with an absolute program path",
       "type": "array",
       "items": {
         "type": "string"
       }
+    },
+    "Bounds": {
+      "description": "How much terminal history a pane keeps.",
+      "type": "object",
+      "properties": {
+        "bytes": {
+          "description": "The most bytes of history.",
+          "$ref": "#/$defs/Limit",
+          "default": 50000000
+        },
+        "lines": {
+          "description": "The most lines of history.",
+          "$ref": "#/$defs/Limit",
+          "default": "unlimited"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Clipboard": {
+      "type": "object",
+      "properties": {
+        "copy_on_select": {
+          "$ref": "#/$defs/CopyOnSelect",
+          "default": "on"
+        },
+        "paste_protection": {
+          "description": "Ask before a paste that looks unsafe.",
+          "type": "boolean",
+          "default": true
+        },
+        "read": {
+          "description": "Whether a program may read the clipboard (OSC 52).",
+          "$ref": "#/$defs/ClipboardRead",
+          "default": "ask"
+        },
+        "trim_trailing_spaces": {
+          "type": "boolean",
+          "default": true
+        },
+        "write": {
+          "description": "Whether a program may write the clipboard (OSC 52).",
+          "$ref": "#/$defs/ClipboardWrite",
+          "default": "allow"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ClipboardRead": {
+      "type": "string",
+      "enum": [
+        "ask",
+        "allow",
+        "deny"
+      ]
+    },
+    "ClipboardWrite": {
+      "type": "string",
+      "enum": [
+        "allow",
+        "deny"
+      ]
     },
     "Command": {
       "type": "object",
@@ -149,10 +345,48 @@
         "from"
       ]
     },
+    "CopyOnSelect": {
+      "description": "Whether a selection is copied at once: never, to the selection clipboard, or to both clipboards.",
+      "type": "string",
+      "enum": [
+        "off",
+        "on",
+        "clipboard"
+      ]
+    },
+    "Cursor": {
+      "type": "object",
+      "properties": {
+        "blink": {
+          "type": "boolean",
+          "default": false
+        },
+        "style": {
+          "$ref": "#/$defs/CursorStyle",
+          "default": "block"
+        }
+      },
+      "additionalProperties": false
+    },
+    "CursorStyle": {
+      "type": "string",
+      "enum": [
+        "block",
+        "bar",
+        "underline",
+        "block_hollow"
+      ]
+    },
     "Destination": {
       "description": "an ssh destination",
       "type": "string",
       "pattern": "^[^-\\u0000][^\\u0000]*$"
+    },
+    "DiscreteScroll": {
+      "description": "A number of at least 0.01 and at most 100.",
+      "type": "number",
+      "maximum": 100.0,
+      "minimum": 0.01
     },
     "Env": {
       "description": "Environment variables: names without = or NUL, values without NUL.",
@@ -161,12 +395,89 @@
         "type": "string"
       }
     },
+    "Font": {
+      "type": "object",
+      "properties": {
+        "family": {
+          "description": "The font family. Absent means the system's monospaced font.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FontFamily"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "features": {
+          "description": "OpenType features, such as ss01 or -liga.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/FontFeature"
+          }
+        },
+        "line_height": {
+          "description": "The change of the cell height in percent.",
+          "$ref": "#/$defs/LineHeight",
+          "default": 0.0
+        },
+        "size": {
+          "description": "The size in points.",
+          "$ref": "#/$defs/FontSize",
+          "default": 13.0
+        },
+        "thicken": {
+          "description": "Draw thicker glyphs.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "FontFamily": {
+      "description": "a font family name without a newline",
+      "type": "string",
+      "pattern": "^[^\\r\\n]+$"
+    },
+    "FontFeature": {
+      "description": "an OpenType feature tag with an optional + or -",
+      "type": "string",
+      "pattern": "^[+-]?[a-zA-Z0-9]{4}$"
+    },
+    "FontSize": {
+      "description": "A number of at least 4 and at most 72.",
+      "type": "number",
+      "maximum": 72.0,
+      "minimum": 4.0
+    },
+    "Idle": {
+      "description": "Seconds, or the word none.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Seconds"
+        },
+        {
+          "const": "none"
+        }
+      ]
+    },
     "Init": {
       "description": "a command",
       "type": "array",
       "items": {
         "type": "string"
       }
+    },
+    "Keyboard": {
+      "type": "object",
+      "properties": {
+        "option_as_alt": {
+          "$ref": "#/$defs/OptionAsAlt",
+          "default": "off"
+        }
+      },
+      "additionalProperties": false
     },
     "Ko": {
       "oneOf": [
@@ -195,15 +506,60 @@
         }
       ]
     },
+    "Limit": {
+      "description": "A positive integer, or the word unlimited.",
+      "oneOf": [
+        {
+          "type": "integer",
+          "minimum": 1
+        },
+        {
+          "const": "unlimited"
+        }
+      ]
+    },
+    "LineHeight": {
+      "description": "A number of at least -50 and at most 100.",
+      "type": "number",
+      "maximum": 100.0,
+      "minimum": -50.0
+    },
     "MountDir": {
       "description": "an absolute path without a comma",
       "type": "string",
       "pattern": "^/[^,\\u0000]*$"
     },
+    "Mouse": {
+      "type": "object",
+      "properties": {
+        "hide_while_typing": {
+          "type": "boolean",
+          "default": false
+        },
+        "scroll_multiplier": {
+          "$ref": "#/$defs/ScrollMultiplier",
+          "default": {
+            "discrete": 3.0,
+            "precision": 1.0
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "Operand": {
       "description": "an image reference or a container name",
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/@+-]*$"
+    },
+    "OptionAsAlt": {
+      "description": "Whether the option key acts as alt: off, on, or the left or right one only.",
+      "type": "string",
+      "enum": [
+        "off",
+        "on",
+        "left",
+        "right"
+      ]
     },
     "PathMap": {
       "description": "A directory of the host and the directory of the runtime that holds the same files.",
@@ -221,6 +577,12 @@
         "host",
         "runtime"
       ]
+    },
+    "PrecisionScroll": {
+      "description": "A number of at least 0.01 and at most 100.",
+      "type": "number",
+      "maximum": 100.0,
+      "minimum": 0.01
     },
     "Prefix": {
       "description": "an argv",
@@ -358,7 +720,7 @@
       ]
     },
     "RuntimeColor": {
-      "description": "a colour as #rrggbb",
+      "description": "an #rrggbb colour",
       "type": "string",
       "pattern": "^#[0-9A-Fa-f]{6}$"
     },
@@ -376,6 +738,87 @@
           "const": "runtime"
         }
       ]
+    },
+    "ScrollMultiplier": {
+      "description": "The lines that one scroll step moves, with a trackpad (`precision`) and with a wheel\n(`discrete`).",
+      "type": "object",
+      "properties": {
+        "discrete": {
+          "$ref": "#/$defs/DiscreteScroll",
+          "default": 3.0
+        },
+        "precision": {
+          "$ref": "#/$defs/PrecisionScroll",
+          "default": 1.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "Scrollback": {
+      "description": "The word none keeps no history. A map of bytes and lines bounds it.",
+      "oneOf": [
+        {
+          "const": "none"
+        },
+        {
+          "$ref": "#/$defs/Bounds"
+        }
+      ]
+    },
+    "Seconds": {
+      "description": "A number above 0 and at most 31536000.",
+      "type": "number",
+      "exclusiveMinimum": 0.0,
+      "maximum": 31536000.0
+    },
+    "Server": {
+      "description": "The server's settings. ko server reads them each time it needs one, so a change applies\nto the next pane or link.",
+      "type": "object",
+      "properties": {
+        "kitty_images_max_bytes": {
+          "description": "The most bytes of kitty graphics images that a pane keeps.",
+          "type": "integer",
+          "format": "uint",
+          "default": 10000000,
+          "minimum": 1
+        },
+        "linger_seconds": {
+          "description": "How long a finished pane that closes on exit stays in sight, in seconds.",
+          "$ref": "#/$defs/Seconds",
+          "default": 30.0
+        },
+        "runtime_idle_seconds": {
+          "description": "How long a runtime link stays up without a pane, in seconds.",
+          "$ref": "#/$defs/Idle",
+          "default": 600.0
+        },
+        "scrollback": {
+          "description": "The history that a new pane keeps.",
+          "$ref": "#/$defs/Scrollback",
+          "default": {
+            "bytes": 50000000,
+            "lines": "unlimited"
+          }
+        },
+        "shell": {
+          "description": "The shell of new panes. Absent means the SHELL of the server's start, else /bin/sh.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AbsPath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SidebarShade": {
+      "description": "A number of at least -100 and at most 100.",
+      "type": "number",
+      "maximum": 100.0,
+      "minimum": -100.0
     },
     "Source": {
       "oneOf": [
@@ -450,6 +893,44 @@
         }
       ]
     },
+    "Theme": {
+      "description": "One theme name for both appearances, or a name for each.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ThemeName"
+        },
+        {
+          "$ref": "#/$defs/ThemePair"
+        }
+      ]
+    },
+    "ThemeName": {
+      "description": "a theme name without /, a leading dot, a comma, a colon, an equals sign or a control character",
+      "type": "string",
+      "pattern": "^[^/.,:=\\u0000-\\u001f\\u007f][^/,:=\\u0000-\\u001f\\u007f]*$"
+    },
+    "ThemePair": {
+      "type": "object",
+      "properties": {
+        "dark": {
+          "$ref": "#/$defs/ThemeName"
+        },
+        "light": {
+          "$ref": "#/$defs/ThemeName"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "light",
+        "dark"
+      ]
+    },
+    "UnfocusedShift": {
+      "description": "A number of at least -100 and at most 100.",
+      "type": "number",
+      "maximum": 100.0,
+      "minimum": -100.0
+    },
     "User": {
       "description": "a user name or id",
       "type": "string",
@@ -486,6 +967,22 @@
       "description": "an absolute path without a colon",
       "type": "string",
       "pattern": "^/[^:\\u0000]*$"
+    },
+    "WindowSettings": {
+      "type": "object",
+      "properties": {
+        "sidebar_shade": {
+          "description": "The shade of the sidebar in percent. The sign follows the theme.",
+          "$ref": "#/$defs/SidebarShade",
+          "default": 5.0
+        },
+        "unfocused_shift": {
+          "description": "The shift of the background of an unfocused pane in percent.",
+          "$ref": "#/$defs/UnfocusedShift",
+          "default": 3.0
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

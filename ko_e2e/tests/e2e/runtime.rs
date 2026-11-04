@@ -951,12 +951,14 @@ fn a_runtime_that_leaves_the_configuration_while_up_is_deleted_for_clients_when_
 fn an_idle_runtime_goes_down_unless_a_pane_or_an_exec_session_holds_it() {
     let s = serve(
         "
+server:
+  runtime_idle_seconds: 0.3
 runtimes:
   kept: {command: {}}
   idle: {command: {}}
   busy: {command: {}}
 ",
-        &[("KO_RUNTIME_IDLE_SECONDS", "0.3")],
+        &[],
     );
     let files = Dir::new("ko-rtf-");
     let gate = fifo(&files, "gate");

@@ -83,7 +83,7 @@ ko-test: project
 		$(if $(KO_RECORD_FIXTURES),KO_RECORD_FIXTURES=$(KO_RECORD_FIXTURES)) $(if $(ONLY),-only-testing:KoTests/$(ONLY)) test 2>&1 | $(XCODE_PROGRESS)
 
 ko-model:
-	python3 scripts/gen-ko-model.py $(KO_ABS)/share/ko/openapi.json $(KO_ABS)/share/ko/client-model.json Packages/KoModel/Sources/KoModel/KoSchema.swift
+	python3 scripts/gen-ko-model.py $(KO_ABS)/share/ko/openapi.json $(KO_ABS)/share/ko/client-model.json $(KO_ABS)/share/ko/config-schema.json Packages/KoModel/Sources/KoModel/KoSchema.swift
 
 ko-fixtures:
 	$(MAKE) ko-test ONLY=KoFixtureRecorder KO_RECORD_FIXTURES=$(abspath Packages)

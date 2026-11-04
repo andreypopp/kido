@@ -142,7 +142,12 @@ impl State {
         }
     }
 
-    pub(super) fn start_dir(&mut self, request: &CreatePane, caller: Option<PaneId>) -> Dir {
+    pub(super) fn start_dir(
+        &mut self,
+        request: &CreatePane,
+        caller: Option<PaneId>,
+        read: &Read,
+    ) -> Dir {
         match &request.cwd {
             None => Dir::Default,
             Some(Cwd::Path(path)) => {
@@ -175,7 +180,7 @@ impl State {
                     Some(own) if Some(&own) == request.runtime.as_ref() => Dir::Runtime(path),
                     Some(own) => self
                         .runtimes
-                        .settings(&own)
+                        .settings_in(&own, read.get())
                         .ok()
                         .and_then(|runtime| host_cwd(&runtime.paths(), &path))
                         .map_or(Dir::Default, Dir::Host),
@@ -188,10 +193,11 @@ impl State {
         &mut self,
         request: &CreatePane,
         dir: &Dir,
+        read: &Read,
     ) -> Result<String, Error> {
         let start = match &request.runtime {
             None => dir.host().map(Path::to_path_buf),
-            Some(name) => dir.in_runtime(&self.runtimes.settings(name)?),
+            Some(name) => dir.in_runtime(&self.runtimes.settings_in(name, read.get())?),
         };
         Ok(start.map_or_else(String::new, |path| path.to_string_lossy().into_owned()))
     }
@@ -208,7 +214,8 @@ impl State {
             name,
             pane,
         } = request;
-        self.place_pane(poll, (caller, origin), session, name, pane, None)
+        let read = Read::new(&self.config.file);
+        self.place_pane(poll, (caller, origin), session, name, pane, (None, &read))
     }
 
     pub(super) fn place_pane(
@@ -218,7 +225,7 @@ impl State {
         session: Option<SessionRef>,
         name: Option<Name>,
         mut pane: CreatePane,
-        run: Option<RunId>,
+        (run, read): (Option<RunId>, &Read),
     ) -> Result<Placement, Error> {
         pane.runtime = resolve_runtime(origin, pane.runtime)?;
         self.admit_cwd(caller, origin, pane.cwd.as_ref())?;
@@ -285,7 +292,7 @@ impl State {
         let before = layout.panes();
         let revision = self.document.revision();
         let snapshot = self
-            .put_layout(
+            .put_layout_in(
                 poll,
                 PutLayout {
                     revision,
@@ -293,6 +300,7 @@ impl State {
                 },
                 run,
                 caller,
+                read,
             )
             .map_err(Error::from)?;
         snapshot

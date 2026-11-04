@@ -10,7 +10,7 @@ use ko_pane_wire::frame::Size;
 use ko_sys::clock::Mono;
 use ko_sys::event::Token;
 
-use crate::config::{Config, path_with, terminal};
+use crate::config::{Config, Settings, path_with, terminal};
 use crate::delivery::{Stamps, mint_stamps};
 use crate::ids::{PaneId, PaneToken, RunId, SessionId};
 use crate::pane::{Birth, Pane, Program};
@@ -51,6 +51,7 @@ impl Default for Panes {
 
 fn environment(
     config: &Config,
+    shell: &Path,
     id: PaneId,
     token: &PaneToken,
     requested: &[Variable],
@@ -63,10 +64,7 @@ fn environment(
         ),
         ("KO_PANE", id.to_string().into_bytes()),
         ("KO_PANE_TOKEN", token.to_string().into_bytes()),
-        (
-            "KO_SHELL",
-            config.shell.as_os_str().as_encoded_bytes().to_vec(),
-        ),
+        ("KO_SHELL", shell.as_os_str().as_encoded_bytes().to_vec()),
     ]);
     if let Some(dir) = &config.bin_dir {
         let path = path_with(dir, crate::config::env_path(&config.env));
@@ -107,6 +105,7 @@ pub(crate) enum Start<'a> {
 
 pub(crate) fn program(
     config: &Config,
+    shell: &Path,
     request: &CreatePane,
     start: Start<'_>,
 ) -> Result<Program, AddError> {
@@ -120,7 +119,7 @@ pub(crate) fn program(
     let bytes = |path: &std::path::Path| path.as_os_str().as_encoded_bytes().to_vec();
     let shell = match start {
         Start::Runtime(_) => b"/bin/sh".to_vec(),
-        Start::Host(_) => bytes(&config.shell),
+        Start::Host(_) => bytes(shell),
     };
     let inner: Option<Vec<Vec<u8>>> = match &request.command {
         None => None,
@@ -187,6 +186,7 @@ impl Panes {
     pub(crate) fn add(
         &mut self,
         config: &Config,
+        settings: &Settings,
         id: PaneId,
         size: Size,
         birth: Birth,
@@ -225,7 +225,7 @@ impl Panes {
             Err(error) => return Err(AddError::Io(error)),
         }
         let token = PaneToken::mint().map_err(AddError::Io)?;
-        let env = environment(config, id, &token, &program.env);
+        let env = environment(config, &settings.shell, id, &token, &program.env);
         let (cwd, argv) = (program.cwd.clone(), program.argv.clone());
         let launch = Launch {
             id,
@@ -233,6 +233,7 @@ impl Panes {
             argv: &argv,
             env: &env,
             size,
+            limits: settings.limits,
         };
         let pane = Pane::spawn(config, &launch, birth, token, &mut self.stamps, io)
             .map_err(AddError::Io)?;
@@ -338,8 +339,9 @@ pub(crate) struct Swept {
     pub(crate) next: Option<Duration>,
 }
 
-pub(crate) fn sweep(panes: &[Seen<'_>], now: Mono, grace: Duration) -> Swept {
+pub(crate) fn sweep(panes: &[Seen<'_>], now: Mono, linger: impl Fn() -> Duration) -> Swept {
     let mut swept = Swept::default();
+    let grace = std::cell::OnceCell::new();
     for pane in panes {
         let orphan = pane
             .parent
@@ -347,6 +349,7 @@ pub(crate) fn sweep(panes: &[Seen<'_>], now: Mono, grace: Duration) -> Swept {
         let lingered = match pane.condition {
             Condition::Dead { at, .. } if pane.close == Close::OnExit => {
                 let age = Duration::from_nanos(now.nanos().saturating_sub(at.nanos()));
+                let grace = *grace.get_or_init(&linger);
                 if age < grace {
                     let left = grace.saturating_sub(age);
                     swept.next = Some(swept.next.map_or(left, |next| next.min(left)));
@@ -562,16 +565,19 @@ mod tests {
         assert_eq!(scope_of(9), Vec::<String>::new());
     }
 
+    fn settings() -> Settings {
+        config().settings(&ko_config::server::Server::default())
+    }
+
     fn config() -> Config {
         Config {
             dir: PathBuf::from("/tmp"),
             socket: PathBuf::from("/tmp/ko/socket"),
             pane_exe: PathBuf::from("/nonexistent/ko-pane"),
             terminfo: PathBuf::from("/share/terminfo"),
-            shell: PathBuf::from("/bin/sh"),
+            default_shell: PathBuf::from("/bin/sh"),
             exe: PathBuf::from("/bin/ko"),
             bin_dir: None,
-            limits: crate::config::DEFAULT_LIMITS,
             media: Vec::new(),
             env: vec![
                 b"TERM=dumb".to_vec(),
@@ -580,14 +586,12 @@ mod tests {
             ],
             cwd: PathBuf::from("/"),
             hostname: String::new(),
-            linger: crate::config::LINGER,
             stop_escalation: crate::config::STOP_ESCALATION,
             run_screen_bytes: crate::config::RUN_SCREEN_BYTES,
             clipboard_wait: crate::config::CLIPBOARD_WAIT,
             message_ack: crate::config::MESSAGE_ACK,
             view_queue: crate::config::ViewQueue::default(),
             runtimes: crate::config::RuntimesConfig {
-                idle: crate::config::RuntimeIdle::Never,
                 exec_wait: crate::config::RUNTIME_EXEC_WAIT,
                 command_kind: false,
             },
@@ -617,7 +621,7 @@ mod tests {
     }
 
     fn removed(panes: &[Seen<'_>]) -> Vec<u64> {
-        sweep(panes, Mono::from_nanos(NOW), GRACE)
+        sweep(panes, Mono::from_nanos(NOW), || GRACE)
             .removed
             .iter()
             .map(|pane| {
@@ -644,7 +648,7 @@ mod tests {
         ];
         assert_eq!(removed(&panes), [1, 6, 7]);
         assert_eq!(
-            sweep(&panes, Mono::from_nanos(NOW), GRACE).next,
+            sweep(&panes, Mono::from_nanos(NOW), || GRACE).next,
             Some(GRACE),
             "the young on_exit pane is due when its grace ends"
         );
@@ -658,6 +662,28 @@ mod tests {
         assert_eq!(standing(&panes, PaneId::new(8)), Standing::Gone);
     }
 
+    #[test]
+    fn the_sweep_reads_the_linger_once_and_only_for_a_dead_on_exit_pane() {
+        let cause = Cause::Exit(ko_sys::pid::Exit::Exited(0));
+        let reads = std::cell::Cell::new(0);
+        let read = || {
+            reads.set(reads.get() + 1);
+            GRACE
+        };
+        let idle = [
+            seen(1, None, Close::OnExit, Condition::Live),
+            seen(2, None, Close::Keep, dead(5, &cause)),
+        ];
+        sweep(&idle, Mono::from_nanos(NOW), read);
+        assert_eq!(reads.get(), 0);
+        let two = [
+            seen(1, None, Close::OnExit, dead(5, &cause)),
+            seen(2, None, Close::OnExit, dead(0, &cause)),
+        ];
+        sweep(&two, Mono::from_nanos(NOW), read);
+        assert_eq!(reads.get(), 1);
+    }
+
     fn token() -> PaneToken {
         PaneToken::try_from("0123456789abcdef0123456789abcdef".to_owned()).unwrap()
     }
@@ -668,10 +694,16 @@ mod tests {
             name: name.to_owned(),
             value: value.to_owned(),
         });
-        let env: Vec<String> = environment(&config(), PaneId::new(3), &token(), &requested)
-            .into_iter()
-            .map(|entry| String::from_utf8(entry).unwrap())
-            .collect();
+        let env: Vec<String> = environment(
+            &config(),
+            Path::new("/bin/sh"),
+            PaneId::new(3),
+            &token(),
+            &requested,
+        )
+        .into_iter()
+        .map(|entry| String::from_utf8(entry).unwrap())
+        .collect();
         assert_eq!(
             env,
             [
@@ -696,11 +728,17 @@ mod tests {
             name: "SSH_AUTH_SOCK".to_owned(),
             value: "/mine".to_owned(),
         }];
-        let env: Vec<String> = environment(&config(), PaneId::new(3), &token(), &requested)
-            .into_iter()
-            .map(|entry| String::from_utf8(entry).unwrap())
-            .filter(|entry| entry.starts_with("SSH_AUTH_SOCK"))
-            .collect();
+        let env: Vec<String> = environment(
+            &config(),
+            Path::new("/bin/sh"),
+            PaneId::new(3),
+            &token(),
+            &requested,
+        )
+        .into_iter()
+        .map(|entry| String::from_utf8(entry).unwrap())
+        .filter(|entry| entry.starts_with("SSH_AUTH_SOCK"))
+        .collect();
         assert_eq!(env, ["SSH_AUTH_SOCK=/mine".to_owned()]);
     }
 
@@ -755,7 +793,12 @@ mod tests {
             ("/", request(None, &[("", "c")]), "invalid environment"),
         ];
         let add = |panes: &mut Panes, io: &mut Io<'_>, (cwd, request): (&str, &CreatePane)| {
-            let program = program(&config(), request, Start::Host(Some(Path::new(cwd))))?;
+            let program = program(
+                &config(),
+                Path::new("/bin/sh"),
+                request,
+                Start::Host(Some(Path::new(cwd))),
+            )?;
             let birth = Birth {
                 vars: Default::default(),
                 run: None,
@@ -764,7 +807,14 @@ mod tests {
                 runtime: None,
                 program,
             };
-            panes.add(&config(), PaneId::new(1), Size::DEFAULT, birth, io)
+            panes.add(
+                &config(),
+                &settings(),
+                PaneId::new(1),
+                Size::DEFAULT,
+                birth,
+                io,
+            )
         };
         for (cwd, request, message) in cases {
             let refused = add(&mut panes, &mut io, (cwd, &request)).unwrap_err();
@@ -793,7 +843,13 @@ mod tests {
             argv.extend(inner.unwrap_or_default().iter().cloned());
             argv
         };
-        let program = program(&config(), &request, Start::Runtime(&wrap)).unwrap();
+        let program = program(
+            &config(),
+            Path::new("/bin/sh"),
+            &request,
+            Start::Runtime(&wrap),
+        )
+        .unwrap();
         let text = |argv: &[Vec<u8>]| {
             argv.iter()
                 .map(|arg| String::from_utf8_lossy(arg).into_owned())

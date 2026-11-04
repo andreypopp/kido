@@ -1,10 +1,13 @@
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+
 use serde_json::json;
 
-use crate::harness::{history_lines, run_ko, start, test_env};
+use crate::harness::{Dir, history_lines, run_ko, start, start_serving, test_env, write_config};
 
 #[test]
 fn defaults_and_pane_environment() {
-    let s = start(&["--scrollback-bytes", "80M", "--scrollback-lines", "100"]);
+    let s = start_serving("  scrollback: {bytes: 83886080, lines: 100}\n");
     let (mut c, welcome) = s.client(None);
     let terminal = &welcome["limits"]["terminal"];
     let scrollback = &terminal["scrollback"];
@@ -62,6 +65,42 @@ fn defaults_and_pane_environment() {
         screen.len()
     );
 
+    let alternative = s.scratch.join("altsh");
+    fs::write(&alternative, "#!/bin/sh\nexec /bin/sh \"$@\"\n").unwrap();
+    fs::set_permissions(&alternative, fs::Permissions::from_mode(0o755)).unwrap();
+    let report = || {
+        let command = format!(
+            "{}; echo \"shell=$KO_SHELL\"; exec cat",
+            history_lines(3000)
+        );
+        let pane =
+            s.new_pane(json!({"cwd": "/tmp", "command": {"type": "shell", "command": command}}));
+        let history = |pane: &str| {
+            s.ko(&["api", &format!("/panes/{pane}/screen?history=all")], "")
+                .ok()
+        };
+        (pane, history)
+    };
+    write_config(
+        &s.dir,
+        &format!("server:\n  shell: {}\n", alternative.display()),
+    );
+    let (edited, history) = report();
+    s.screen_has(&edited, &format!("shell={}", alternative.display()));
+    assert!(
+        history(&edited).contains("history-0"),
+        "the edit dropped the limits"
+    );
+    let (_second, welcome) = s.client(None);
+    assert_eq!(
+        welcome["limits"]["terminal"]["scrollback"]["max_lines"],
+        json!(null)
+    );
+    write_config(&s.dir, "server: [");
+    let (broken, history) = report();
+    s.screen_has(&broken, "shell=/bin/sh");
+    assert!(history(&broken).contains("history-0"), "defaults apply");
+
     let refused = |new: serde_json::Value| {
         let mut document = s.doc();
         document["layout"]["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
@@ -92,4 +131,19 @@ fn a_server_has_one_instance_for_all_its_clients() {
     );
     assert_eq!(welcome_b["instance"], welcome_a["instance"]);
     assert_ne!(welcome_c["instance"], welcome_a["instance"]);
+}
+
+#[test]
+fn the_server_options_that_the_file_replaced_are_refused() {
+    let dir = Dir::new("ko-run-");
+    for option in [
+        &["--shell", "/bin/sh"][..],
+        &["--scrollback-bytes", "1M"],
+        &["--scrollback-lines", "1"],
+        &["--no-scrollback"],
+    ] {
+        let args = [&["server"][..], option].concat();
+        let error = run_ko(&dir, &test_env(&dir), &args, "").error(124);
+        assert!(error.contains("unexpected argument"), "{option:?}: {error}");
+    }
 }

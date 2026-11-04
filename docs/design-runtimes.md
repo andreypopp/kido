@@ -41,20 +41,18 @@ of its own.
 
 ## The configuration file
 
-ko has one configuration file, for what cannot be derived (design-ko.md,
-"Decisions", 2026-10-30 and 2026-11-04): `$XDG_CONFIG_HOME/ko/config.yaml`,
-else `~/.config/ko/config.yaml`, else the file of `ko server --config
-FILE`. Its `runtimes:` key holds the runtimes; Kido.app's settings
-become other top-level keys (plans/app-config.md). The server reads the
-file when a runtime is used or listed, and again at each link start,
+The runtimes are the `runtimes:` key of the configuration file
+(design-ko.md, "The configuration file", which gives the path, the
+owner crate and the decode). The server reads the file
+when a runtime is used or listed, and again at each link start,
 a retry after `Failed` included, so an edit needs no reload. A link
 that is up keeps the configuration that it started with. A missing
 file, an empty file and a file without `runtimes` have no runtimes. A
 file that does not decode fails every runtime request with the error,
-and the server runs regardless.
+and the server runs regardless. A runtime is a thing of the host that
+runs it, so a remote host's runtimes are in that host's file.
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/andreypopp/kido/main/share/ko/config-schema.json
 runtimes:
   gpu:
     ssh:
@@ -74,15 +72,10 @@ runtimes:
     pi: runtime
 ```
 
-The crate `ko_config` owns the file: the types (`ko_config/src/config.rs`
-and `ko_config/src/runtime.rs`), their newtypes
-(`ko_config/src/values.rs`), the path rule, the decode and the JSON
-schema `share/ko/config-schema.json`, which `ko api-schema --config`
-prints and `make schemas` regenerates. It depends on no ko crate. The
-server reads the file through it; ko_client, ko_shell and ko take its
-values that the wire and the command line share (`RuntimeName`,
-`AbsPath`) and the ssh option classifier (`ssh_args.rs`). Kido.app
-will read the file through ko_client (plans/app-config.md). The fields that every runtime has
+The types are `ko_config/src/runtime.rs`, with the newtypes of
+`ko_config/src/values.rs`. ko_client, ko_shell and ko take the values
+that the wire and the command line share (`RuntimeName`, `AbsPath`)
+and the ssh option classifier (`ssh_args.rs`). The fields that every runtime has
 are its `env`, its default `cwd`, the `paths` prefix list of the cwd
 mapping, `pi`, where an agent's pi runs ("Agents in a runtime"), and
 `color`, an sRGB `#rrggbb` that clients draw the runtime in
@@ -90,38 +83,6 @@ mapping, `pi`, where an agent's pi runs ("Agents in a runtime"), and
 `command`, whose value holds the kind's fields; an entry gives exactly
 one. `GET /runtimes/NAME` reports the effective `paths`, the `cwd`,
 `pi` and the `color`; a spawner and a routed pi read the first three.
-
-**The decode.** Every type is decoded by serde's derive, with
-`deny_unknown_fields` on every record, and its schema comes from
-schemars' derive. A rule that serde cannot state, such as an absolute
-path, a name, a connection-only `ssh_args` or an option of `container
-run` that ko owns, is the `TryFrom` of a newtype. Only the format is
-written by hand (`ko_config/src/yaml.rs`): saphyr-parser's events
-become a tree with positions, and one serde `Deserializer` reads it.
-It resolves scalars by the type that asks:
-
-- A string field takes any scalar as its text, so `yes`, `no`, `on`,
-  `NO`, `0755`, `1:20` and the `2222` of `ssh_args` stay as written.
-- A bool, an integer or a float field takes only the YAML 1.2 core
-  schema's plain forms: `true`/`false` in three cases, decimal, `0o`
-  and `0x` integers, and the core floats. No YAML 1.1 forms: `yes` is
-  not a bool, `0755` not octal, `1:20` not sexagesimal. A quoted scalar
-  is never a bool or a number.
-- A plain `~`, `null` or an empty value is null. A key with a null
-  value is the same as a missing key, also in a map such as `env`;
-  the schema is stricter and does not allow the null.
-- `deserialize_any` gives a scalar as text, so a value that serde
-  buffers (an untagged enum) keeps the text as written.
-
-The decode refuses a duplicate key, more than one document, a tag and
-a key that is not a scalar. It expands anchors and aliases, and it
-refuses a file, a depth or a node count, aliases expanded, over the
-caps of `yaml.rs` and `config.rs` while it builds the tree, so a
-hostile file costs the server no more than the caps. YAML 1.2 has no merge key, so `<<` is an unknown
-field. An error names the path of keys and items to the value and its
-line and column, after the file's path: `runtimes: dev: ssh: ssh_args:
--N is not a connection option; ko owns the rest of the ssh command at
-line 5 column 17`.
 
 **The `command` kind** exists for the e2e suite only. The server
 accepts it only with `KO_RUNTIME_COMMAND_KIND=1` in its environment;
@@ -215,8 +176,9 @@ reports fails the start. The leader then waits like the others. The
 report is the only event: the server watches no file.
 
 **Down.** A runtime with no pane in the document, live or dead, and
-no live exec session goes down after `KO_RUNTIME_IDLE_SECONDS` (600;
-a fraction is permitted; `none` disables the rule), on a loop timer.
+no live exec session goes down after the `server: runtime_idle_seconds`
+of the configuration file (600; a fraction is permitted; `none` disables
+the rule; read when the timer starts), on a loop timer.
 `POST /runtimes/NAME/down` refuses while the runtime has live panes or
 exec sessions, unless `force`, which removes them first as a stop
 does. `DELETE /runtimes/NAME` refuses in the same way, takes the link
@@ -842,7 +804,8 @@ The configuration file, 2026-11-04:
   writes it, with comments, and an editor checks it with the JSON
   schema through the `yaml-language-server` line.
 - One file for every setting that ko and Kido.app cannot derive, with
-  one top-level key for each owner; `runtimes:` is the server's.
+  one top-level key for each owner: `server:` and `runtimes:` are the
+  server's, `app:` is Kido.app's.
 - The parser is saphyr-parser, the event parser of the yaml-rust2 line:
   pure Rust without `unsafe`, YAML 1.2, two packages. serde-saphyr and
   serde_norway were rejected: a serde YAML crate must pick a type for a

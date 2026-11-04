@@ -8,11 +8,12 @@ use std::time::Duration;
 
 use ko_config::config::{self as settings, LoadError};
 use ko_config::runtime::{Kind, Runtime};
+use ko_config::server::Idle;
 use ko_config::values::{RuntimeColor, RuntimeName};
 use ko_sys::event::{Poll, Ready, Timer, Token};
 use ko_sys::pid::{Exit, Pid, Waited};
 
-use crate::config::{Config, RuntimeIdle, SUN_PATH_MAX};
+use crate::config::{Config, SUN_PATH_MAX, server_settings};
 use crate::exec_wire::Start as ExecStart;
 use crate::ids::{PaneId, PaneToken};
 use crate::protocol::{
@@ -400,7 +401,6 @@ type Configured = BTreeMap<RuntimeName, (RuntimeKind, Option<RuntimeColor>)>;
 pub(crate) struct Registry {
     file: PathBuf,
     command_kind: bool,
-    idle: RuntimeIdle,
     root: PathBuf,
     env: Vec<Vec<u8>>,
     links: BTreeMap<RuntimeName, Link>,
@@ -490,7 +490,6 @@ impl Registry {
         Registry {
             file: config.file.clone(),
             command_kind: config.runtimes.command_kind,
-            idle: config.runtimes.idle,
             root: config.dir.join("runtimes"),
             env: config.env.clone(),
             links: BTreeMap::new(),
@@ -540,10 +539,16 @@ impl Registry {
         std::mem::take(&mut self.cleaning)
     }
 
-    fn load(&mut self) -> Result<settings::Config, Error> {
-        let config = settings::load(&self.file).map_err(|error| match error {
-            LoadError::Invalid(message) => Error::new(ErrorKind::Invalid, message),
-            LoadError::Io(message) => Error::new(ErrorKind::Io, message),
+    fn adopt<'a>(
+        &mut self,
+        loaded: &'a Result<settings::Config, LoadError>,
+    ) -> Result<&'a settings::Config, Error> {
+        let config = loaded.as_ref().map_err(|error| match error {
+            LoadError::Invalid(problem) => Error::new(
+                ErrorKind::Invalid,
+                format!("{}: {problem}", self.file.display()),
+            ),
+            LoadError::Io(message) => Error::new(ErrorKind::Io, message.clone()),
         })?;
         if let Some(name) = config
             .runtimes
@@ -578,19 +583,30 @@ impl Registry {
     }
 
     pub(crate) fn settings(&mut self, name: &RuntimeName) -> Result<Runtime, Error> {
+        let loaded = settings::load(&self.file);
+        self.settings_in(name, &loaded)
+    }
+
+    pub(crate) fn settings_in(
+        &mut self,
+        name: &RuntimeName,
+        loaded: &Result<settings::Config, LoadError>,
+    ) -> Result<Runtime, Error> {
         if let Some(link) = self.links.get(name)
             && matches!(link.phase, Phase::Starting(_) | Phase::Up)
         {
             return Ok(link.settings.clone());
         }
-        self.load()?
+        self.adopt(loaded)?
             .runtimes
-            .remove(name)
+            .get(name)
+            .cloned()
             .ok_or_else(|| self.missing(name))
     }
 
     pub(crate) fn known(&mut self) -> Result<Vec<(RuntimeName, Runtime)>, Error> {
-        let mut known = self.load()?.runtimes;
+        let loaded = settings::load(&self.file);
+        let mut known = self.adopt(&loaded)?.runtimes.clone();
         for (name, link) in &self.links {
             if matches!(link.phase, Phase::Starting(_) | Phase::Up) {
                 known.insert(name.clone(), link.settings.clone());
@@ -653,8 +669,11 @@ impl Registry {
         }
     }
 
-    pub(crate) fn listed(&mut self) -> Vec<ClientRuntime> {
-        let _ = self.load();
+    pub(crate) fn listed(
+        &mut self,
+        loaded: &Result<settings::Config, LoadError>,
+    ) -> Vec<ClientRuntime> {
+        let _ = self.adopt(loaded);
         self.sync();
         self.dirty = false;
         self.announced.values().cloned().collect()
@@ -1239,9 +1258,6 @@ impl Registry {
     }
 
     pub(crate) fn occupy(&mut self, poll: &mut Poll, name: &RuntimeName, occupied: bool) {
-        let RuntimeIdle::After(after) = self.idle else {
-            return;
-        };
         let Some(link) = self
             .links
             .get_mut(name)
@@ -1252,8 +1268,8 @@ impl Registry {
         link.occupied = occupied;
         if occupied {
             poll.stop(link.idle);
-        } else {
-            let _ = poll.start(link.idle, after, None);
+        } else if let Idle::After(after) = server_settings(&self.file).runtime_idle_seconds {
+            let _ = poll.start(link.idle, after.duration(), None);
         }
     }
 

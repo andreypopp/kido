@@ -1,12 +1,12 @@
 use std::fs;
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use ko_sys::pid::{Exit, Pid};
 use serde_json::{Value, json};
 
 use crate::harness::{
-    PRINT_TOKEN, Run, Server, poll, run_ko, start, start_with, test_env, text_of, wait_gone, which,
+    PRINT_TOKEN, Run, Server, poll, run_ko, start, start_serving, test_env, text_of, wait_gone,
+    which,
 };
 
 pub(crate) fn ko_as(s: &Server, pane: Option<&str>, args: &[&str], stdin: &str) -> Run {
@@ -139,7 +139,7 @@ pub(crate) fn windows(s: &Server) -> usize {
 }
 
 pub(crate) fn lingering() -> Server {
-    start_with(Path::new("/bin/sh"), &[("KO_LINGER_SECONDS", "0.2")], &[])
+    start_serving("  linger_seconds: 0.2\n")
 }
 
 pub(crate) fn ids(rows: &Value) -> Vec<&str> {

@@ -1,6 +1,5 @@
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
-use std::num::NonZeroUsize;
 use std::os::fd::AsFd;
 use std::os::unix::fs::FileTypeExt;
 use std::os::unix::process::CommandExt;
@@ -14,10 +13,9 @@ use ko_client::launch::{self, PATIENCE};
 use ko_client::layout::Document;
 use ko_client::remote::Remote;
 use ko_client::wire::{Caller, Link};
-use ko_pane_wire::frame::Scrollback;
 use ko_server::agent;
 use ko_server::api::Route;
-use ko_server::config::{self, Config, DEFAULT_LIMITS};
+use ko_server::config::{self, Config};
 use ko_server::ids::PaneId;
 use ko_server::protocol::{self, Cause, Row};
 use ko_server::schema;
@@ -182,78 +180,11 @@ enum LayoutCommand {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Limit {
-    Unlimited,
-    At(NonZeroUsize),
-}
-
-fn limit(value: &str, count: impl Fn(&str) -> Option<NonZeroUsize>) -> Option<Limit> {
-    if value == "unlimited" {
-        Some(Limit::Unlimited)
-    } else {
-        count(value).map(Limit::At)
-    }
-}
-
-fn bytes(value: &str) -> Result<Limit, String> {
-    limit(value, |value| {
-        let (digits, scale) = match value.as_bytes().last() {
-            Some(b'K') => (&value[..value.len() - 1], 1 << 10),
-            Some(b'M') => (&value[..value.len() - 1], 1 << 20),
-            Some(b'G') => (&value[..value.len() - 1], 1 << 30),
-            _ => (value, 1),
-        };
-        let count: usize = digits.parse().ok()?;
-        NonZeroUsize::new(count.checked_mul(scale)?)
-            .filter(|_| count <= isize::MAX as usize / scale)
-    })
-    .ok_or_else(|| "invalid byte count".to_owned())
-}
-
-fn lines(value: &str) -> Result<Limit, String> {
-    limit(value, |value| value.parse().ok()).ok_or_else(|| "invalid line count".to_owned())
-}
-
-fn default_limits() -> (Option<NonZeroUsize>, Option<NonZeroUsize>) {
-    match DEFAULT_LIMITS.scrollback {
-        Scrollback::Bounded {
-            max_bytes,
-            max_lines,
-        } => (max_bytes, max_lines),
-        Scrollback::Disabled => (None, None),
-    }
-}
-
-fn shown(limit: Option<NonZeroUsize>) -> String {
-    limit.map_or("unlimited".to_owned(), |limit| limit.to_string())
-}
-
 #[derive(Debug, Args)]
 struct ServerArgs {
     /// The server's state directory.
     #[arg(long, value_name = "DIR")]
     server: Option<PathBuf>,
-    #[arg(
-        long,
-        value_name = "BYTES|unlimited",
-        value_parser = bytes,
-        help = format!("Scrollback limit in bytes. The default is {}", shown(default_limits().0))
-    )]
-    scrollback_bytes: Option<Limit>,
-    #[arg(
-        long,
-        value_name = "N|unlimited",
-        value_parser = lines,
-        help = format!("Scrollback limit in lines. The default is {}", shown(default_limits().1))
-    )]
-    scrollback_lines: Option<Limit>,
-    /// Keep no scrollback. This conflicts with the two scrollback limits.
-    #[arg(long, conflicts_with_all = ["scrollback_bytes", "scrollback_lines"])]
-    no_scrollback: bool,
-    /// The login shell of the panes.
-    #[arg(long, value_name = "PATH")]
-    shell: Option<PathBuf>,
     /// The directory of the ko shims, put first on the PATH of every pane. The default is
     /// share/ko/bin beside the installed ko, if it exists.
     #[arg(long, value_name = "DIR")]
@@ -358,26 +289,10 @@ fn server(args: ServerArgs) -> ExitCode {
             Err(message) => fail("server", message),
         };
     }
-    let (default_bytes, default_lines) = default_limits();
-    let chosen = |limit: Option<Limit>, default| match limit {
-        None => default,
-        Some(Limit::Unlimited) => None,
-        Some(Limit::At(count)) => Some(count),
-    };
-    let scrollback = if args.no_scrollback {
-        Scrollback::Disabled
-    } else {
-        Scrollback::Bounded {
-            max_bytes: chosen(args.scrollback_bytes, default_bytes),
-            max_lines: chosen(args.scrollback_lines, default_lines),
-        }
-    };
     let config = match Config::create(
         &invoked(),
         args.server,
-        args.shell,
         args.bin_dir.or_else(|| bin_dir::of_exe(&invoked())),
-        scrollback,
         args.config,
     ) {
         Ok(config) => config,

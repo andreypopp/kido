@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::AsFd;
 use std::path::Path;
@@ -14,13 +15,13 @@ use tungstenite::Utf8Bytes;
 use crate::api::routes;
 use crate::client::{self, Change, Client, Current};
 use crate::clipboard;
-use crate::config::Config;
+use crate::config::{Config, Read, Settings};
 use crate::conn::{Conn, Phase};
 use crate::deflate::Deflate;
 use crate::delivery::{Delivery, Handle};
 use crate::http::lossy;
 use crate::ids::{ClientId, Instance, Name, PaneId, RunId, SessionId, VarName, WindowId};
-use crate::layout::{Document, PutError, Removal, Resized};
+use crate::layout::{self, Document, PutError, Removal, Resized};
 use crate::link::{Role, Wire};
 use crate::model::{self, Model};
 use crate::pane::{Birth, Pane};
@@ -221,7 +222,7 @@ impl State {
         let execs = exec_ops::Execs::new();
         let leaving = Leaving::new(poll);
         let stops = pane_ops::Stops::new(poll);
-        let document = Document::new(&config.shell);
+        let document = Document::new();
         let leaks = Leaks::new(&config.dir);
         leaks.release_all();
         State {
@@ -332,6 +333,7 @@ impl State {
     fn add_pane(
         &mut self,
         poll: &mut Poll,
+        settings: &Settings,
         id: PaneId,
         size: Size,
         birth: Birth,
@@ -340,6 +342,7 @@ impl State {
         let mut events = self.spare.pop().unwrap_or_default();
         let added = self.panes.add(
             &self.config,
+            settings,
             id,
             size,
             birth,
@@ -406,6 +409,18 @@ impl State {
         run: Option<RunId>,
         caller: Option<PaneId>,
     ) -> Result<Snapshot, PutFailure> {
+        let read = Read::new(&self.config.file);
+        self.put_layout_in(poll, request, run, caller, &read)
+    }
+
+    fn put_layout_in(
+        &mut self,
+        poll: &mut Poll,
+        request: PutLayout,
+        run: Option<RunId>,
+        caller: Option<PaneId>,
+        read: &Read,
+    ) -> Result<Snapshot, PutFailure> {
         let before = self.document.clone();
         let new_window = client::new_window_sizer(
             self.conns
@@ -413,9 +428,10 @@ impl State {
                 .filter_map(client_of)
                 .filter_map(|client| client.active.as_ref()),
         );
+        let shell = || layout::shell_name(&self.config.settings(&read.server()).shell);
         let created = self
             .document
-            .put(request, new_window)
+            .put_with_shell(request, new_window, &shell)
             .map_err(|error| match error {
                 PutError::Stale => PutFailure::Stale(self.document.snapshot()),
                 PutError::Invalid(message) => PutFailure::Invalid(message),
@@ -429,7 +445,8 @@ impl State {
                     self.admit_cwd(caller, &Origin::Host, request.cwd.as_ref())
                 })
             });
-        let chosen = admitted.and_then(|()| self.choose_runtimes(created.iter().map(|c| &c.1)));
+        let chosen =
+            admitted.and_then(|()| self.choose_runtimes(created.iter().map(|c| &c.1), read));
         let chosen = match chosen {
             Ok(chosen) => chosen,
             Err(error) => {
@@ -439,7 +456,7 @@ impl State {
         };
         let dirs: Vec<Dir> = created
             .iter()
-            .map(|(_, request, _)| self.start_dir(request, caller))
+            .map(|(_, request, _)| self.start_dir(request, caller, read))
             .collect();
         let added: usize = created.iter().map(|(_, _, vars)| vars.bytes()).sum();
         if self.vars_used().saturating_add(added) > SERVER_MAX_TOTAL {
@@ -450,13 +467,21 @@ impl State {
         }
         let sizes: BTreeMap<PaneId, Size> =
             self.document.layout().pane_sizes().into_iter().collect();
+        let settings = OnceCell::new();
         let mut started = Vec::new();
         self.withheld.extend(created.iter().map(|(id, _, _)| *id));
         for ((id, request, vars), dir) in created.into_iter().zip(dirs) {
             let size = sizes.get(&id).copied().unwrap_or(Size::DEFAULT);
+            let settings = settings.get_or_init(|| self.config.settings(&read.server()));
             let added = self
-                .birth(id, &request, (vars, run.clone()), (&chosen, &dir))
-                .and_then(|birth| self.add_pane(poll, id, size, birth));
+                .birth(
+                    id,
+                    &settings.shell,
+                    &request,
+                    (vars, run.clone()),
+                    (&chosen, &dir),
+                )
+                .and_then(|birth| self.add_pane(poll, settings, id, size, birth));
             match added {
                 Ok(()) => started.push(id),
                 Err(error) => {
@@ -1452,8 +1477,9 @@ impl State {
 
     fn client_text(&mut self, poll: &mut Poll, index: usize, text: &[u8]) {
         let request = protocol::decode::<ClientRequest>(text);
+        let read = Read::new(&self.config.file);
         let runtimes = if matches!(request, Ok(ClientRequest::Hello(_))) {
-            self.client_runtimes()
+            self.client_runtimes(&read)
         } else {
             Vec::new()
         };
@@ -1489,7 +1515,10 @@ impl State {
                 });
                 let welcome = ClientEvent::Welcome(Welcome {
                     client: id,
-                    limits: Limits::of(self.config.limits, &self.config.media),
+                    limits: Limits::of(
+                        self.config.settings(&read.server()).limits,
+                        &self.config.media,
+                    ),
                     instance: self.instance.clone(),
                     now: ko_sys::clock::Mono::now().nanos(),
                     runtimes,
@@ -1693,7 +1722,6 @@ impl State {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::DEFAULT_LIMITS;
     use crate::fuzz::Rig;
     use crate::ids::{MessageId, PaneId};
     use crate::protocol::{Command, CreatePane, NewWindow};
@@ -1708,7 +1736,7 @@ mod tests {
             std::env::var_os("KO_PANE_EXE")
                 .expect("KO_PANE_EXE names the Rust ko-pane; make test-ko builds it and sets it"),
         );
-        let mut rig = Rig::new(scratch("state-pid"), exe, DEFAULT_LIMITS, "exec cat");
+        let mut rig = Rig::new(scratch("state-pid"), exe, "exec cat");
         let request = CreatePane {
             cwd: None,
             command: Some(Command::Argv {
@@ -1736,7 +1764,7 @@ mod tests {
             std::env::var_os("KO_PANE_EXE")
                 .expect("KO_PANE_EXE names the Rust ko-pane; make test-ko builds it and sets it"),
         );
-        let mut rig = Rig::new(scratch("state-gone"), exe, DEFAULT_LIMITS, "exec cat");
+        let mut rig = Rig::new(scratch("state-gone"), exe, "exec cat");
         let request = |command: &str, parent: Option<PaneId>| CreatePane {
             cwd: None,
             command: Some(Command::Argv {

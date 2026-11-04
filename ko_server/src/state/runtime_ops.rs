@@ -31,11 +31,12 @@ impl State {
     pub(super) fn choose_runtimes<'a>(
         &mut self,
         requests: impl Iterator<Item = &'a CreatePane>,
+        read: &Read,
     ) -> Result<BTreeMap<RuntimeName, Runtime>, Error> {
         let mut chosen = BTreeMap::new();
         for name in requests.filter_map(|request| request.runtime.as_ref()) {
             if !chosen.contains_key(name) {
-                chosen.insert(name.clone(), self.runtimes.settings(name)?);
+                chosen.insert(name.clone(), self.runtimes.settings_in(name, read.get())?);
             }
         }
         Ok(chosen)
@@ -44,12 +45,13 @@ impl State {
     pub(super) fn birth(
         &self,
         id: PaneId,
+        shell: &Path,
         request: &CreatePane,
         (vars, run): (Vars, Option<RunId>),
         (chosen, dir): (&BTreeMap<RuntimeName, Runtime>, &Dir),
     ) -> Result<Birth, AddError> {
         let program = match &request.runtime {
-            None => program(&self.config, request, Start::Host(dir.host()))?,
+            None => program(&self.config, shell, request, Start::Host(dir.host()))?,
             Some(name) => {
                 let runtime = chosen
                     .get(name)
@@ -66,6 +68,7 @@ impl State {
                 };
                 program(
                     &self.config,
+                    shell,
                     request,
                     Start::Runtime(&|inner| pane::wrapper(&entering, inner)),
                 )?
@@ -103,8 +106,8 @@ impl State {
         self.runtimes.occupy(poll, name, occupied);
     }
 
-    pub(super) fn client_runtimes(&mut self) -> Vec<ClientRuntime> {
-        let listed = self.runtimes.listed();
+    pub(super) fn client_runtimes(&mut self, read: &Read) -> Vec<ClientRuntime> {
+        let listed = self.runtimes.listed(read.get());
         self.announce_runtimes();
         listed
     }

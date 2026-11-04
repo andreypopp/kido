@@ -520,7 +520,8 @@ server, so both must agree.
 Two rules apply:
 
 1. A pane with `close: on_exit` has been dead for the linger grace
-   (`KO_LINGER_SECONDS`, 30 s by default). Every run pane has it. For
+   (`server: linger_seconds` of the configuration file, 30 s by
+   default; design-ko.md, "The configuration file"). Every run pane has it. For
    a run, the sweep records the ending that the dead pane gives
    (`completed`, `exit N`, `signal NAME` or `died`).
 2. A pane's `parent` is gone or dead. The sweep removes the pane at
@@ -793,7 +794,8 @@ attach, is a different thing (design-ko.md, "Remote").
 
 `ko shell` is the default pane command. It resolves the user's shell
 in this order, checking each candidate for executability: `$KO_SHELL`
-(the server's `--shell`), `$SHELL`, `/bin/sh`. It runs a login shell
+(the server's shell: `server: shell` of the configuration file, else
+its own `$SHELL`), `$SHELL`, `/bin/sh`. It runs a login shell
 with the same priming as `ko ssh`:
 
 - zsh with any of `.zshrc`, `.zshenv`, `.zprofile` or `.zlogin` in
@@ -865,13 +867,11 @@ order.
 Every duration that a test must shorten is an environment variable
 that the process under test reads when it uses it:
 
-- `KO_LINGER_SECONDS` (the sweep's grace, with an optional fraction),
-  `KO_STOP_ESCALATION_MS`, `KO_RUN_SCREEN_BYTES` (a size, not a
+- `KO_STOP_ESCALATION_MS`, `KO_RUN_SCREEN_BYTES` (a size, not a
   duration, so that a test reaches the capture's cap),
   `KO_CLIPBOARD_TIMEOUT_MS`, `KO_MESSAGE_ACK_MS` (a message's wait
   for its ack),
-  `KO_VIEW_QUEUE_BYTES`, `KO_VIEW_SPILL_BYTES`,
-  `KO_RUNTIME_IDLE_SECONDS` (with an optional fraction, or `none`) and
+  `KO_VIEW_QUEUE_BYTES`, `KO_VIEW_SPILL_BYTES` and
   `KO_RUNTIME_EXEC_WAIT_MS`, read by `ko server`
   (`ko_server/src/config.rs`), beside `KO_RUNTIME_COMMAND_KIND=1`,
   which admits the test-only runtime kind (design-runtimes.md);
@@ -884,7 +884,11 @@ that the process under test reads when it uses it:
   the extension.
 
 The extension's tests set them in the environment of the process under
-test. The e2e suite sets the server's through its environment.
+test. The e2e suite sets the server's through its environment. The
+linger grace and the runtime idle are not knobs but `server:` keys of
+the configuration file (design-ko.md, "The configuration file"), which
+the server reads at each use, so a test writes them into its server's
+file.
 
 ## Known limits
 

@@ -548,20 +548,20 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     use ko_pane_wire::frame::Dim;
-    use ko_server::config::DEFAULT_LIMITS;
+    use ko_server::config::default_limits;
 
     use super::*;
 
     fn mirror() -> (Mirror, UnixStream, Poll) {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let mut poll = Poll::new();
-        let mirror = Mirror::with(Link::of(ours, Vec::new()), DEFAULT_LIMITS, &mut poll).unwrap();
+        let mirror = Mirror::with(Link::of(ours, Vec::new()), default_limits(), &mut poll).unwrap();
         (mirror, theirs, poll)
     }
 
     fn server(cols: u16, rows: u16, text: &str) -> Terminal {
         let (cols, rows) = (Dim::new(cols).unwrap(), Dim::new(rows).unwrap());
-        let mut vt = Terminal::new(cols, rows, DEFAULT_LIMITS).unwrap();
+        let mut vt = Terminal::new(cols, rows, default_limits()).unwrap();
         vt.write(text.as_bytes());
         vt
     }
@@ -727,7 +727,7 @@ mod tests {
         let length = u16::try_from(record.len()).unwrap().to_be_bytes();
         let rest = [&[0x82, 126][..], &length, &record].concat();
         let mut poll = Poll::new();
-        let mirror = Mirror::with(Link::of(ours, rest), DEFAULT_LIMITS, &mut poll).unwrap();
+        let mirror = Mirror::with(Link::of(ours, rest), default_limits(), &mut poll).unwrap();
         assert_eq!(
             (kind(&mirror), row(&mirror, 0)),
             ("full", "buffered".to_owned())

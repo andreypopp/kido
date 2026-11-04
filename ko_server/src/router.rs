@@ -713,7 +713,6 @@ pub(crate) fn failed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::DEFAULT_LIMITS;
     use crate::fuzz::Rig;
     use crate::protocol::{ClientEvent, Title, version_headers};
     use crate::server::Verified;
@@ -734,12 +733,19 @@ mod tests {
                     "KO_PANE_EXE names the Rust ko-pane; make test-ko builds it and sets it",
                 ),
             ),
-            DEFAULT_LIMITS,
             "stty raw -echo; exec cat",
         )
     }
 
     impl Harness {
+        fn linger(&self, seconds: &str) {
+            std::fs::write(
+                &self.state.config.file,
+                format!("server:\n  linger_seconds: {seconds}\n"),
+            )
+            .unwrap();
+        }
+
         fn reply(&mut self, request: &str, rest: &str) -> String {
             let request = format!("{request} HTTP/1.1\r\n{}{rest}", ko_headers());
             String::from_utf8_lossy(self.exchange(request.as_bytes())).into_owned()
@@ -1819,7 +1825,7 @@ mod tests {
     #[test]
     fn a_run_pane_that_dies_without_an_outcome_tells_clients_the_outcome_a_fresh_welcome_shows() {
         let mut server = harness("run-death");
-        server.state.config.linger = std::time::Duration::from_secs(3600);
+        server.linger("3600");
         let mut peer = server.peer(&hello("", false, 80, 24));
         peer.events(&mut server);
         let (id, pane) = dying_run(&mut server, "dies");
@@ -2009,7 +2015,7 @@ mod tests {
     #[test]
     fn the_sweep_closes_a_dead_run_after_the_grace_unless_a_client_shows_it() {
         let mut server = harness("sweep-grace");
-        server.state.config.linger = std::time::Duration::from_millis(150);
+        server.linger("0.15");
         let (_, started) = server.call(
             "POST /runs",
             &json!({"name": "dies", "session": "s", "argv": ["/bin/sh", "-c", "echo last words; exit 3"]}),
@@ -2075,11 +2081,11 @@ mod tests {
     #[test]
     fn a_pane_that_is_no_longer_sweepable_when_its_screen_arrives_stays() {
         let mut server = harness("sweep-recheck");
-        server.state.config.linger = std::time::Duration::from_secs(3600);
+        server.linger("3600");
         let (id, pane) = dying_run(&mut server, "recheck");
-        server.state.config.linger = std::time::Duration::from_millis(1);
+        server.linger("0.001");
         server.state.sweep_now(&mut server.poll);
-        server.state.config.linger = std::time::Duration::from_secs(3600);
+        server.linger("3600");
         let until = std::time::Instant::now() + std::time::Duration::from_millis(400);
         while std::time::Instant::now() < until {
             server.step(Mode::Wait);
@@ -2096,14 +2102,14 @@ mod tests {
     #[test]
     fn a_finished_capture_that_lost_its_write_still_lets_the_sweep_collect_the_pane() {
         let mut server = harness("sweep-after-capture");
-        server.state.config.linger = std::time::Duration::from_secs(3600);
+        server.linger("3600");
         let (id, pane) = dying_run(&mut server, "after");
         let done = json!({"result": "completed"});
         assert_eq!(
             server.call(&format!("POST /runs/{id}/outcome"), &done).0,
             "200"
         );
-        server.state.config.linger = std::time::Duration::from_millis(1);
+        server.linger("0.001");
         let failed = json!({"result": "failed", "text": "late"});
         assert_eq!(
             server.call(&format!("POST /runs/{id}/outcome"), &failed).0,

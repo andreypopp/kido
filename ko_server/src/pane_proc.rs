@@ -10,8 +10,8 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 use ko_pane_wire::frame::{
-    self, FromPane, History, ImageKey, Init, Key, MAX_FRAME_BYTES, Malformed, Mouse, Oversize, Req,
-    ScreenFormat, ScreenRows, ServedBuf, Size, ToPane,
+    self, FromPane, History, ImageKey, Init, Key, Limits, MAX_FRAME_BYTES, Malformed, Mouse,
+    Oversize, Req, ScreenFormat, ScreenRows, ServedBuf, Size, ToPane,
 };
 use ko_pane_wire::ring::{Pos, SLICE_MAX};
 use ko_sys::clock::Mono;
@@ -364,6 +364,7 @@ pub(crate) struct Launch<'a> {
     pub(crate) argv: &'a [Vec<u8>],
     pub(crate) env: &'a [Vec<u8>],
     pub(crate) size: Size,
+    pub(crate) limits: Limits,
 }
 
 impl PaneProc {
@@ -379,12 +380,13 @@ impl PaneProc {
             argv,
             env,
             size,
+            limits,
         } = *launch;
         let mut out = Vec::new();
         let id = id.to_string();
         let init = Init {
             size,
-            limits: config.limits,
+            limits,
             media: (&config.media[..]).into(),
             cwd: cwd.into(),
             argv: argv.into(),

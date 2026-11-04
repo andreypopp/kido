@@ -597,8 +597,8 @@ test("the exec client drives a real ko server with a command-kind runtime the wa
       - host: ${t.host}
         runtime: ${t.rt}
 `);
-  const server = spawn(join(bin, "ko"), ["server", "--server", state, "--shell", "/bin/sh", "--config", join(state, "config.yaml")], {
-    env: { PATH: "/usr/bin:/bin", HOME: state, KO_RUNTIME_COMMAND_KIND: "1" },
+  const server = spawn(join(bin, "ko"), ["server", "--server", state, "--config", join(state, "config.yaml")], {
+    env: { PATH: "/usr/bin:/bin", HOME: state, SHELL: "/bin/sh", KO_RUNTIME_COMMAND_KIND: "1" },
     stdio: "ignore",
   });
   try {

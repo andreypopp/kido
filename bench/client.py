@@ -322,7 +322,11 @@ class Ko:
         self.exe = exe or os.environ.get("KO_BIN") or os.path.join(ROOT, "build/ko/bin/ko")
         self.env = scrubbed(HOME=self.dir, XDG_CONFIG_HOME=self.dir, XDG_STATE_HOME=self.dir, SHELL="/bin/sh", TERM="xterm-ghostty", **(env or {}))
         self.log = open(self.dir + "/server.log", "wb")
-        self.server = subprocess.Popen([self.exe, "server", "--server", self.dir, "--shell", "/bin/sh", "--scrollback-bytes", scrollback], env=self.env, stdout=self.log, stderr=self.log)
+        bytes_ = int(scrollback[:-1]) << {"M": 20, "G": 30}[scrollback[-1]]
+        os.makedirs(self.dir + "/ko")
+        with open(self.dir + "/ko/config.yaml", "w") as f:
+            f.write(f"server:\n  scrollback: {{bytes: {bytes_}}}\n")
+        self.server = subprocess.Popen([self.exe, "server", "--server", self.dir], env=self.env, stdout=self.log, stderr=self.log)
         self.vt = json.loads(subprocess.check_output([self.exe, "version"], env=self.env))["vt"]
         self.clients = []
         end = time.monotonic() + 5

@@ -15,7 +15,7 @@ use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 
 use crate::api::{Offset, Route};
-use crate::config::DEFAULT_LIMITS;
+use crate::config::default_limits;
 use crate::conn::Phase;
 use crate::fuzz::Rig;
 use crate::http::{Response, read_response, request};
@@ -692,15 +692,13 @@ impl Harness {
             made,
             ko_sys::pid::Waited::Ended(ko_sys::pid::Exit::Exited(0))
         );
-        let limits = ko_pane_wire::frame::Limits {
-            scrollback: ko_pane_wire::frame::Scrollback::Bounded {
-                max_bytes: std::num::NonZeroUsize::new(1 << 30),
-                max_lines: None,
-            },
-            ..DEFAULT_LIMITS
-        };
+        std::fs::write(
+            dir.join("config.yaml"),
+            "server:\n  scrollback: {bytes: 1073741824}\n",
+        )
+        .unwrap();
         let command = format!("stty raw -echo; exec cat {}/in", dir.display());
-        let rig = Rig::new(dir, ko_pane(), limits, &command);
+        let rig = Rig::new(dir, ko_pane(), &command);
         Harness {
             rig,
             chunk: vec![0; 65536],
@@ -1637,7 +1635,7 @@ mod tests {
                 max_bytes: std::num::NonZeroUsize::new(1 << 30),
                 max_lines: None,
             },
-            ..DEFAULT_LIMITS
+            ..default_limits()
         }
     }
 

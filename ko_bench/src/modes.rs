@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::{CellPx, Dim, History, Size};
 use ko_server::api::Route;
-use ko_server::config::{DEFAULT_LIMITS, scratch};
+use ko_server::config::scratch;
 use ko_server::protocol::{
     self, ClientKind, ClientRequest, Hello, Images, Row, ViewOptions, ViewRequest, json,
 };
@@ -111,8 +111,7 @@ fn drive<T: Send + 'static>(
     std::fs::create_dir_all(&dir).map_err(failed)?;
     let socket = dir.join("socket");
     let listener = UnixListener::bind(&socket).map_err(failed)?;
-    let mut server = Server::new(scratch(&dir, pane_exe()?, DEFAULT_LIMITS), listener, timing)
-        .map_err(failed)?;
+    let mut server = Server::new(scratch(&dir, pane_exe()?), listener, timing).map_err(failed)?;
     let (sender, messages) = mpsc::channel();
     let client_socket = socket.clone();
     std::thread::spawn(move || {

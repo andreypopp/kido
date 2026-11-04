@@ -10,7 +10,7 @@ use ko_vt::{Extent, Terminal};
 use serde_json::Value;
 
 use crate::harness::{
-    DEADLINE, Framing, Head, Server, Steady, base64, poll, start, start_with, within,
+    DEADLINE, Framing, Head, Server, Steady, base64, poll, start, start_serving, within,
 };
 
 static OBJECTS: AtomicU32 = AtomicU32::new(0);
@@ -234,11 +234,7 @@ fn a_frame_edit_moves_the_generation_so_the_old_object_is_gone_and_the_new_fetch
 
 #[test]
 fn an_evicted_image_is_not_found_and_its_object_is_gone() {
-    let s = start_with(
-        std::path::Path::new("/bin/sh"),
-        &[("KO_KITTY_IMAGES_MAX_BYTES", "300")],
-        &[],
-    );
+    let s = start_serving("  kitty_images_max_bytes: 300\n");
     let pane = s.echo_pane();
     let square = vec![9u8; 256];
     s.text(&pane, &graphics("a=t,f=32,s=8,v=8,i=1", &square));
@@ -345,11 +341,7 @@ fn a_frame_body_of_100_mib_streams_without_closing_the_connection() {
     const SIDE: usize = 5120;
     const SIZE: usize = SIDE * SIDE * 4;
     let pattern = |at: usize| (at % 251) as u8;
-    let s = start_with(
-        std::path::Path::new("/bin/sh"),
-        &[("KO_KITTY_IMAGES_MAX_BYTES", "300000000")],
-        &[],
-    );
+    let s = start_serving("  kitty_images_max_bytes: 300000000\n");
     let pane = s.echo_pane();
     let mut frame = vec![0u8; SIZE];
     for (at, byte) in frame.iter_mut().enumerate() {

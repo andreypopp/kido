@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -54,7 +55,6 @@ pub(crate) struct Document {
     unpublished: bool,
     layout: Layout,
     ids: Ids,
-    shell: Option<Name>,
 }
 
 impl Window {
@@ -77,9 +77,8 @@ pub(crate) enum Resized {
 }
 
 impl Document {
-    pub(crate) fn new(shell: &Path) -> Document {
+    pub(crate) fn new() -> Document {
         Document {
-            shell: shell.to_str().and_then(base_name),
             revision: Revision::FIRST,
             unpublished: false,
             layout: Layout { sessions: vec![] },
@@ -93,7 +92,16 @@ impl Document {
 
     #[cfg(test)]
     pub(crate) fn empty() -> Document {
-        Document::new(Path::new("/bin/sh"))
+        Document::new()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn put(
+        &mut self,
+        request: PutLayout,
+        new_window: Option<Size>,
+    ) -> Result<Vec<(PaneId, CreatePane, Vars)>, PutError> {
+        self.put_with_shell(request, new_window, &|| base_name("sh"))
     }
 
     pub(crate) fn layout(&self) -> &Layout {
@@ -111,10 +119,11 @@ impl Document {
         }
     }
 
-    pub(crate) fn put(
+    pub(crate) fn put_with_shell(
         &mut self,
         request: PutLayout,
         new_window: Option<Size>,
+        shell: &dyn Fn() -> Option<Name>,
     ) -> Result<Vec<(PaneId, CreatePane, Vars)>, PutError> {
         if request.revision != self.revision {
             return Err(PutError::Stale);
@@ -123,7 +132,7 @@ impl Document {
             request.layout,
             &self.layout,
             self.ids,
-            self.shell.as_ref(),
+            shell,
             new_window.unwrap_or(UNSIZED_WINDOW),
         )
         .map_err(PutError::Invalid)?;
@@ -239,6 +248,10 @@ pub(crate) fn nearest<T: Copy>(order: &[T], at: usize, keep: impl Fn(&T) -> bool
         .chain(order[..at].iter().rev())
         .find(|item| keep(item))
         .copied()
+}
+
+pub(crate) fn shell_name(shell: &Path) -> Option<Name> {
+    shell.to_str().and_then(base_name)
 }
 
 fn base_name(word: &str) -> Option<Name> {
@@ -593,7 +606,8 @@ fn remove_pane(layout: &mut Layout, pane: PaneId) {
 
 struct Claims<'a> {
     current: &'a Layout,
-    shell: Option<&'a Name>,
+    shell: &'a dyn Fn() -> Option<Name>,
+    shell_name: OnceCell<Option<Name>>,
     live: &'a BTreeSet<PaneId>,
     seen: BTreeSet<PaneId>,
     ids: Ids,
@@ -602,7 +616,7 @@ struct Claims<'a> {
 
 impl Claims<'_> {
     fn default_name(&self, first: &PaneRef) -> Option<Name> {
-        let shell = || self.shell.cloned();
+        let shell = || self.shell_name.get_or_init(self.shell).clone();
         let word = match first {
             PaneRef::Existing(pane) => {
                 return self
@@ -738,13 +752,14 @@ fn normalize(
     draft: DraftLayout,
     current: &Layout,
     ids: Ids,
-    shell: Option<&Name>,
+    shell: &dyn Fn() -> Option<Name>,
     new_window: Size,
 ) -> Result<Normalized, String> {
     let live = current.panes();
     let mut claims = Claims {
         current,
         shell,
+        shell_name: OnceCell::new(),
         live: &live,
         seen: BTreeSet::new(),
         ids,

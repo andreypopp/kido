@@ -15,14 +15,12 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use ko_pane_wire::frame::Limits;
 use ko_sys::event::{Events, Interest, Mode, Poll, Timer};
 use ko_sys::pid::Pid;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::api::Route;
-use crate::config::DEFAULT_LIMITS;
 use crate::conn::Conn;
 use crate::delivery::{Delivery, mint_stamps};
 use crate::http::{MAX_HEAD, Parsed, Upgrade, parse_head, read_response, read_upgrade, request};
@@ -388,11 +386,11 @@ impl Drop for Rig {
 }
 
 impl Rig {
-    pub(crate) fn new(dir: PathBuf, pane_exe: PathBuf, limits: Limits, command: &str) -> Rig {
+    pub(crate) fn new(dir: PathBuf, pane_exe: PathBuf, command: &str) -> Rig {
         std::fs::create_dir_all(&dir).expect("the scratch directory");
         let mut poll = Poll::new();
         let mut state = State::new(
-            crate::config::scratch(&dir, pane_exe, limits),
+            crate::config::scratch(&dir, pane_exe),
             Instance::mint().expect("an instance"),
             &mut poll,
             Duration::from_millis(2),
@@ -576,12 +574,7 @@ fn with_rig<T>(f: impl FnOnce(&mut Rig) -> T) -> T {
             let exe = std::env::var_os("KO_PANE_EXE")
                 .expect("KO_PANE_EXE names the Rust ko-pane; fuzz.sh and make test-ko set it");
             let dir = PathBuf::from(format!("/tmp/ko-fuzz-http-{}", std::process::id()));
-            let mut rig = Rig::new(
-                dir,
-                PathBuf::from(exe),
-                DEFAULT_LIMITS,
-                "stty raw -echo; exec cat",
-            );
+            let mut rig = Rig::new(dir, PathBuf::from(exe), "stty raw -echo; exec cat");
             // A later pane is never a real program: a fuzzed request must not run a command.
             rig.state.config.pane_exe = PathBuf::from("/usr/bin/true");
             rig

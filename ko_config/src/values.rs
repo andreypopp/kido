@@ -4,7 +4,9 @@ use std::fmt;
 use std::str::FromStr;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
-use serde::{Deserialize, Serialize};
+use serde::de::value::MapAccessDeserializer;
+use serde::de::{self, MapAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::ssh_args;
 
@@ -69,6 +71,90 @@ impl From<RuntimeName> for String {
     fn from(RuntimeName(text): RuntimeName) -> String {
         text
     }
+}
+
+struct WordOrMap<T, M> {
+    expecting: &'static str,
+    word: fn(&str) -> Option<T>,
+    map: fn(M) -> T,
+}
+
+impl<'de, T, M: Deserialize<'de>> Visitor<'de> for WordOrMap<T, M> {
+    type Value = T;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.expecting)
+    }
+
+    fn visit_str<E: de::Error>(self, text: &str) -> Result<T, E> {
+        (self.word)(text).ok_or_else(|| E::invalid_value(de::Unexpected::Str(text), &self))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<T, A::Error> {
+        M::deserialize(MapAccessDeserializer::new(map)).map(self.map)
+    }
+}
+
+pub(crate) fn word_or_map<'de, D: Deserializer<'de>, T, M: Deserialize<'de>>(
+    deserializer: D,
+    expecting: &'static str,
+    word: fn(&str) -> Option<T>,
+    map: fn(M) -> T,
+) -> Result<T, D::Error> {
+    deserializer.deserialize_any(WordOrMap {
+        expecting,
+        word,
+        map,
+    })
+}
+
+pub(crate) enum Number {
+    Int(i64),
+    Unsigned(u64),
+    Float(f64),
+}
+
+struct WordOrNumber<T> {
+    expecting: &'static str,
+    word: fn(&str) -> Option<T>,
+    number: fn(Number) -> Result<T, String>,
+}
+
+impl<T> Visitor<'_> for WordOrNumber<T> {
+    type Value = T;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.expecting)
+    }
+
+    fn visit_str<E: de::Error>(self, text: &str) -> Result<T, E> {
+        (self.word)(text).ok_or_else(|| E::invalid_value(de::Unexpected::Str(text), &self))
+    }
+
+    fn visit_i64<E: de::Error>(self, number: i64) -> Result<T, E> {
+        (self.number)(Number::Int(number)).map_err(E::custom)
+    }
+
+    fn visit_u64<E: de::Error>(self, number: u64) -> Result<T, E> {
+        (self.number)(Number::Unsigned(number)).map_err(E::custom)
+    }
+
+    fn visit_f64<E: de::Error>(self, number: f64) -> Result<T, E> {
+        (self.number)(Number::Float(number)).map_err(E::custom)
+    }
+}
+
+pub(crate) fn word_or_number<'de, D: Deserializer<'de>, T>(
+    deserializer: D,
+    expecting: &'static str,
+    word: fn(&str) -> Option<T>,
+    number: fn(Number) -> Result<T, String>,
+) -> Result<T, D::Error> {
+    deserializer.deserialize_any(WordOrNumber {
+        expecting,
+        word,
+        number,
+    })
 }
 
 macro_rules! word {
@@ -174,11 +260,44 @@ word!(AbsPath, "an absolute path", "^/", |text: &str| text
     && !text.contains('\0'));
 word!(
     RuntimeColor,
-    "a colour as #rrggbb",
+    "an #rrggbb colour",
     "^#[0-9A-Fa-f]{6}$",
     |text: &str| text.len() == 7
         && text.starts_with('#')
         && text[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
+);
+word!(
+    ThemeName,
+    "a theme name without /, a leading dot, a comma, a colon, an equals sign or a control character",
+    "^[^/.,:=\\u0000-\\u001f\\u007f][^/,:=\\u0000-\\u001f\\u007f]*$",
+    |text: &str| !text.is_empty()
+        && !text.starts_with('.')
+        && !text.contains(['/', ',', ':', '='])
+        && !text.chars().any(char::is_control)
+);
+word!(
+    FontFamily,
+    "a font family name without a newline",
+    "^[^\\r\\n]+$",
+    |text: &str| !text.is_empty() && !text.contains(['\r', '\n'])
+);
+word!(
+    FontFeature,
+    "an OpenType feature tag with an optional + or -",
+    "^[+-]?[a-zA-Z0-9]{4}$",
+    |text: &str| {
+        let tag = text.strip_prefix(['+', '-']).unwrap_or(text);
+        tag.len() == 4 && tag.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    }
+);
+word!(
+    Payload,
+    "text without control characters or a leading or trailing space",
+    "^[^\\u0000-\\u001f\\u007f ]([^\\u0000-\\u001f\\u007f]*[^\\u0000-\\u001f\\u007f ])?$",
+    |text: &str| !text.is_empty()
+        && !text.chars().any(char::is_control)
+        && !text.starts_with(' ')
+        && !text.ends_with(' ')
 );
 word!(
     Operand,
@@ -222,6 +341,91 @@ word!(
     "^/[^:%\\n\\u0000]*$",
     ssh_args::remote_dir_valid
 );
+
+impl ThemeName {
+    pub(crate) fn light() -> ThemeName {
+        ThemeName("kido-light".to_owned())
+    }
+
+    pub(crate) fn dark() -> ThemeName {
+        ThemeName("kido-dark".to_owned())
+    }
+}
+
+macro_rules! ranged {
+    ($name:ident, $min:literal..=$max:literal, $default:literal) => {
+        ranged!($name, true, $min, $max, $default);
+    };
+    ($name:ident, >$min:literal..=$max:literal, $default:literal) => {
+        ranged!($name, false, $min, $max, $default);
+    };
+    ($name:ident, $inclusive:literal, $min:literal, $max:literal, $default:literal) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+        #[serde(try_from = "f64", into = "f64")]
+        pub struct $name(f64);
+
+        impl $name {
+            pub fn get(self) -> f64 {
+                self.0
+            }
+        }
+
+        impl Default for $name {
+            fn default() -> $name {
+                $name($default)
+            }
+        }
+
+        impl JsonSchema for $name {
+            fn schema_name() -> Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(_: &mut SchemaGenerator) -> Schema {
+                let mut schema = json_schema!({
+                    "type": "number",
+                    "maximum": $max,
+                    "description": format!(
+                        "A number {} {} and at most {}.",
+                        if $inclusive { "of at least" } else { "above" },
+                        $min,
+                        $max
+                    )
+                });
+                schema.insert(
+                    if $inclusive { "minimum" } else { "exclusiveMinimum" }.to_owned(),
+                    $min.into(),
+                );
+                schema
+            }
+        }
+
+        impl TryFrom<f64> for $name {
+            type Error = String;
+
+            fn try_from(value: f64) -> Result<$name, String> {
+                if (if $inclusive { value >= $min } else { value > $min }) && value <= $max {
+                    Ok($name(value))
+                } else {
+                    Err(format!(
+                        "{value} is not {} {} and at most {}",
+                        if $inclusive { "at least" } else { "above" },
+                        $min,
+                        $max
+                    ))
+                }
+            }
+        }
+
+        impl From<$name> for f64 {
+            fn from($name(value): $name) -> f64 {
+                value
+            }
+        }
+    };
+}
+
+pub(crate) use ranged;
 
 impl From<&VolumePath> for AbsPath {
     fn from(path: &VolumePath) -> AbsPath {

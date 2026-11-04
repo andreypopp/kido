@@ -43,7 +43,8 @@ Goals, in priority order:
 Non-goals:
 
 - Compatibility with any multiplexer's clients, commands, configuration
-  files, plugins, hooks or key tables. ko has no configuration file.
+  files, plugins, hooks or key tables. ko's one configuration file
+  (4.14) holds only what cannot be derived.
 - Linked and grouped sessions. Per-client current window is what they
   were for.
 - Scripting the server from the shell beyond the `ko` CLI and `ko api`.
@@ -179,8 +180,9 @@ callbacks:
 - Title, pwd, bell, notification, progress, clipboard write and read.
 - The continuation limit, so a snapshot can carry an unfinished
   sequence.
-- The scrollback limits from the server's command line, and the kitty
-  image storage limit from `KO_KITTY_IMAGES_MAX_BYTES`. Scrollback
+- The scrollback limits and the kitty image storage limit of the
+  `server:` key of the configuration file (4.14), read when the pane
+  is created. Scrollback
   compression is always on (`ko_vt/src/compress.rs`): after 250 ms
   with an unchanged activity token, `ko-pane` runs one incremental
   step for each loop turn until the library reports completion; after
@@ -514,17 +516,144 @@ readers and writers of the document from the shell. The signal rules
 of AGENTS.md ("Signals") apply to every kill.
 
 `ko server --help` lists the server's options; `ko_server/src/config.rs`
-reads its environment knobs, and `ko_server/src/panes.rs` sets the
+reads its environment knobs (design.md, "Knobs"), and `ko_server/src/panes.rs` sets the
 variables of every pane, `SSH_AUTH_SOCK=<dir>/agent.sock` among them,
 which a pane's `env` can replace. `--bin-dir` is the shim directory put
-first on every pane's PATH (design.md, "The bin directory"); `--shell`
-reaches every pane as `KO_SHELL`. `--config FILE` names the
-configuration file (design-runtimes.md, "The configuration file"). A runtime's listener is
+first on every pane's PATH (design.md, "The bin directory"); the
+`server: shell` of the configuration file reaches every new pane as
+`KO_SHELL`. `--config FILE` names the configuration file (4.14). A runtime's listener is
 in `DIR/runtimes/<name>/`; a socket path there that is too long fails
 that runtime's start, not the server.
 At start the server links `agent.sock` to its own inherited agent only
 when the path is absent or a link to no socket file
 (`ko_server/src/agent.rs`), so Kido.app's publication wins.
+
+### 4.14 The configuration file
+
+ko has one configuration file, for what cannot be derived:
+`$XDG_CONFIG_HOME/ko/config.yaml`, else `~/.config/ko/config.yaml`,
+else the file of `ko server --config FILE`. It has one top-level key
+for each owner: `server:` and `runtimes:` are the server's, `app:` is
+Kido.app's. Each host reads its own copy: a server reads the file of
+the host that it runs on, and Kido.app reads `app:` from the Mac's
+file, also for a remote window, and never sends it to a server. An
+editor checks the file with `share/ko/config-schema.json` through an
+optional first line:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/andreypopp/kido/main/share/ko/config-schema.json
+server:
+  scrollback: {bytes: 100000000, lines: unlimited}
+  shell: /bin/zsh
+app:
+  font: {size: 15, features: [ss13, -ss17]}
+  theme: {light: kido-light, dark: kido-dark}
+```
+
+The crate `ko_config` owns the file: the types (`config.rs`,
+`server.rs`, `app.rs`, `keys.rs`, `runtime.rs`), their newtypes
+(`values.rs`), the path rule, the decode, the theme writer
+(`theme.rs`) and the JSON schema, which `ko api-schema --config`
+prints and `make schemas` regenerates. It depends on no ko crate. The
+types and their `///` docs (the schema's descriptions) are the
+reference for every key, its default and its range. This section gives
+only the rules around them.
+
+**The decode.** serde's derive decodes every type, with
+`deny_unknown_fields` on every record, and schemars' derive gives its
+schema. A rule that serde cannot state, such as an absolute path, a
+name, a range, a connection-only `ssh_args` or an option of
+`container run` that ko owns, is the `TryFrom` of a newtype. Only the
+format is written by hand (`ko_config/src/yaml.rs`): saphyr-parser's
+events become a tree with positions, and one serde `Deserializer`
+reads it. It resolves scalars by the type that asks:
+
+- A string field takes any scalar as its text, so `yes`, `no`, `on`,
+  `NO`, `0755`, `1:20` and the `2222` of `ssh_args` stay as written.
+  Thus `option_as_alt: on` is the word of an enum, not a bool.
+- A bool, an integer or a float field takes only the YAML 1.2 core
+  schema's plain forms: `true`/`false` in three cases, decimal, `0o`
+  and `0x` integers, and the core floats. No YAML 1.1 forms: `yes` is
+  not a bool, `0755` not octal, `1:20` not sexagesimal. A quoted scalar
+  is never a bool or a number.
+- A plain `~`, `null` or an empty value is null. A key with a null
+  value is the same as a missing key, also in a map such as `env`;
+  the schema is stricter and does not allow the null.
+- `deserialize_any`, which a word-or-value key such as `scrollback`,
+  `runtime_idle_seconds` or `theme` asks for, gives a plain core-schema
+  integer or float as a number and every other scalar as text. Thus
+  `bytes: 0x100` is a count, and a quoted `'600'` is text, not seconds.
+  No config type is an untagged or internally tagged serde enum, so no
+  string field is buffered through it.
+
+The decode refuses a duplicate key, more than one document, a tag and
+a key that is not a scalar. It expands anchors and aliases. While it
+builds the tree, it refuses a file, a depth or a node count (aliases
+expanded) over the caps of `yaml.rs` and `config.rs`, so a hostile
+file costs the server no more than the caps. YAML 1.2 has no merge
+key, so `<<` is an unknown field. An error is a `Problem`: the path of
+keys and items to the value with its fault, and the value's line and
+column. The CLI prints it after the file's path: `runtimes: dev: ssh:
+ssh_args: -N is not a connection option; ko owns the rest of the ssh
+command at line 5 column 17`. The file is valid or invalid as a
+whole: a wrong `app:` key also fails the server's runtime requests,
+and a wrong runtime fails the app's load.
+
+**`server:`.** The server reads the file again at each use of a
+`server:` key, as it does for `runtimes:` (design-runtimes.md, "The
+configuration file"). Thus an edit applies without a restart or a
+reload command, and nothing watches the file:
+
+- `shell`, `scrollback` and `kitty_images_max_bytes` when a pane is
+  created. A pane keeps the values that it started with. `shell` is
+  the pane's `KO_SHELL`, the shell of a `shell` command, and the name
+  that a new window gets. Without it, the shell is the `$SHELL` that
+  the server had at start, else `/bin/sh`. `scrollback: none` keeps no
+  history; each of its `bytes` and `lines` is a positive count or
+  `unlimited`.
+- The scrollback and image limits of the `Welcome` (protocol.md,
+  section 2), when a client says hello.
+- `linger_seconds` when the sweep finds a dead `close: on_exit` pane,
+  and `runtime_idle_seconds` (or `none`) when a runtime's idle timer
+  starts. Both are decimal seconds, so a test can set 0.2.
+
+A file that does not decode gives the `server:` defaults, so a typo
+never stops the user from opening a shell to fix it. The runtime
+requests fail with the error. The `server:` keys replace the options
+`--shell`, `--scrollback-bytes`, `--scrollback-lines` and
+`--no-scrollback` and the variables of the image limit, the linger and
+the runtime idle: each setting has one source. The knobs that only
+tests and tuning need stay environment variables (design.md, "Knobs").
+
+**`app:`.** Kido.app's terminal settings: the theme pair, the font,
+the cursor, the keyboard, the mouse, the clipboard, the window shades
+and `keys`. This is a closed whitelist that the app maps to the
+Ghostty configuration that it generates (plans/app-config.md). A key
+binding maps a `Trigger` (Ghostty's `modifier+key`, kept in one
+canonical spelling) to an `Action` of the few that Kido names. A
+trigger of the app's own menus (`ko_config::keys::MENU_OWNED`) is
+refused, in any spelling. An absent `font.family` is the system's
+monospaced font, which the app resolves. The server decodes `app:` and
+does not use it.
+
+**The C ABI.** Kido.app reads the file through `ko_client`, because
+the app must work without a server. `ko_config_load` returns the whole
+decoded `Config` as JSON, with every default filled in, or the
+`Problem` with its line and column. The app decodes the JSON with the
+Swift types that `app/scripts/gen-ko-model.py` generates from the
+schema. `ko_config_set_theme` is the theme picker's writer. It edits
+the lines of `app.theme`: it replaces the block, else adds the block
+at the end of `app:`, else appends an `app:` block. It keeps every
+other byte, and writes each name as a double-quoted scalar. It decodes
+the result before it writes and refuses a result that does not decode
+or whose `app.theme` is not the requested pair. Thus a line-based edit
+never leaves a broken file: a `theme:` in a flow mapping or a block
+scalar is refused, not corrupted. It writes a temporary file beside
+the target of a symbolic link. Just before it renames that file over
+the target, it reads the target again: a target that changed since the
+edit started is a conflict, and nothing is written. An edit between
+that read and the rename is lost; the window is one read long. The header `ko_client/include/ko_client.h` gives the
+codes and the JSON.
 
 ## 5. Remote
 

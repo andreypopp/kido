@@ -1401,7 +1401,7 @@ export interface components {
             runtime?: components["schemas"]["RuntimeName"];
             startedAt: components["schemas"]["Timestamp"];
         };
-        /** @description a colour as #rrggbb */
+        /** @description an #rrggbb colour */
         RuntimeColor: string;
         /** @description What a client needs of a runtime to mark its panes and offer it for a new pane. */
         RuntimeInfo: {

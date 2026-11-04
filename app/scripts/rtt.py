@@ -113,7 +113,9 @@ class Private:
         sshd = subprocess.Popen([SSHD, "-D", "-e", "-f", f"{d}/sshd_config"], stdin=subprocess.DEVNULL, stdout=self.sshd_log, stderr=self.sshd_log)
         self.procs.append(sshd)
         wait_listening(port, 5, sshd)
-        server = subprocess.Popen([args.ko, "server", "--server", self.server_dir, "--scrollback-bytes", "2G"], env=scrubbed(HOME=f"{d}/state"),
+        with open(f"{d}/server.yaml", "w") as f:
+            f.write("server:\n  scrollback: {bytes: 2147483648}\n")
+        server = subprocess.Popen([args.ko, "server", "--server", self.server_dir, "--config", f"{d}/server.yaml"], env=scrubbed(HOME=f"{d}/state"),
                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.procs.append(server)
         end = time.monotonic() + 10

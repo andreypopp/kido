@@ -394,7 +394,8 @@ impl State {
             close: Close::OnExit,
             runtime: resolve_runtime(origin, request.runtime)?,
         };
-        let dir = self.start_dir(&create, caller);
+        let read = Read::new(&self.config.file);
+        let dir = self.start_dir(&create, caller, &read);
         let mut meta = runs::Meta {
             id: id.clone(),
             name: request.name.clone(),
@@ -402,7 +403,7 @@ impl State {
             pane: None,
             runtime: None,
             argv: request.argv,
-            cwd: self.recorded_dir(&create, &dir)?,
+            cwd: self.recorded_dir(&create, &dir, &read)?,
             started_at: Timestamp::now(),
         };
         runs::write_meta(&self.runs.root, &meta).map_err(io)?;
@@ -414,7 +415,7 @@ impl State {
             Some(SessionRef::Id(session_id)),
             Some(name),
             create,
-            Some(id.clone()),
+            (Some(id.clone()), &read),
         );
         let placement = match placed {
             Ok(placement) => placement,
@@ -452,7 +453,7 @@ impl State {
     pub(super) fn sweep(&mut self, poll: &mut Poll) {
         let (closing, next) = {
             let seen = self.seen();
-            let swept = panes::sweep(&seen, ko_sys::clock::Mono::now(), self.config.linger);
+            let swept = panes::sweep(&seen, ko_sys::clock::Mono::now(), || self.config.linger());
             (
                 runs::closing(&self.runs.root, &seen, &swept.removed),
                 swept.next,
@@ -555,7 +556,7 @@ impl State {
         if !seen.iter().any(|candidate| candidate.id == pane) {
             return true;
         }
-        panes::sweep(&seen, ko_sys::clock::Mono::now(), self.config.linger)
+        panes::sweep(&seen, ko_sys::clock::Mono::now(), || self.config.linger())
             .removed
             .contains(&pane)
     }

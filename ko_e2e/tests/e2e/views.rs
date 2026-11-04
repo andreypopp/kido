@@ -11,8 +11,8 @@ use tungstenite::protocol::frame::coding::{Data, OpCode};
 use tungstenite::protocol::frame::{Frame, FrameHeader};
 
 use crate::harness::{
-    DEADLINE, HEAVY, Hello, Message, Record, Server, Ws, contains, decode, history_lines, poll,
-    size, size_request, start, start_with, stays, tagged, wait_gone,
+    DEADLINE, Dir, HEAVY, Hello, Message, Record, Server, Ws, contains, decode, history_lines,
+    poll, size, size_request, start, start_in, stays, tagged, wait_gone, write_config,
 };
 
 const SOCKET_BUFFER: usize = 1 << 20;
@@ -495,10 +495,13 @@ fn slow_snapshot_view(s: &Server, c: &mut Ws) -> Ws {
 #[test]
 fn a_snapshot_over_the_queue_cap_spills_and_reaches_a_slow_reader_whole() {
     let _heavy = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
-    let s = start_with(
+    let dir = Dir::new("ko-");
+    write_config(&dir, "server:\n  scrollback: {bytes: 524288000}\n");
+    let s = start_in(
+        dir,
         Path::new("/bin/sh"),
         &[("KO_VIEW_QUEUE_BYTES", "65536")],
-        &["--scrollback-bytes", "500M"],
+        &[],
     );
     let (mut c, _) = s.client(None);
     let mut v = slow_snapshot_view(&s, &mut c);
@@ -525,13 +528,16 @@ fn a_snapshot_over_the_queue_cap_spills_and_reaches_a_slow_reader_whole() {
 #[test]
 fn a_snapshot_over_the_spill_limit_closes_the_view_with_1013() {
     let _heavy = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
-    let s = start_with(
+    let dir = Dir::new("ko-");
+    write_config(&dir, "server:\n  scrollback: {bytes: 524288000}\n");
+    let s = start_in(
+        dir,
         Path::new("/bin/sh"),
         &[
             ("KO_VIEW_QUEUE_BYTES", "16384"),
             ("KO_VIEW_SPILL_BYTES", "65536"),
         ],
-        &["--scrollback-bytes", "500M"],
+        &[],
     );
     let (mut c, _) = s.client(None);
     let mut v = slow_snapshot_view(&s, &mut c);

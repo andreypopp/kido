@@ -21,6 +21,8 @@ _ko_client_stop_server
 _ko_client_switch
 _ko_client_version
 _ko_code_message
+_ko_config_load
+_ko_config_set_theme
 _ko_remote_socket
 _ko_remote_unreachable
 _ko_view_close

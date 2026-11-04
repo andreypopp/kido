@@ -1,12 +1,14 @@
 #![allow(unsafe_code)]
 
 mod calls;
+mod config;
 mod engine;
 mod images;
 mod remote;
 mod view;
 
 pub use calls::*;
+pub use config::*;
 pub use images::*;
 pub use remote::*;
 
@@ -3421,6 +3423,179 @@ mod tests {
                     .to_owned()
             )
         );
+    }
+
+    fn config_dir(name: &str) -> PathBuf {
+        let dir = PathBuf::from(format!("/tmp/ko-ffi-config-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn c_string(path: &Path) -> CString {
+        CString::new(path.as_os_str().as_bytes()).unwrap()
+    }
+
+    fn load(path: &Path) -> (Code, Value) {
+        let mut out = empty_buffer();
+        // SAFETY: the string is valid and out is writable.
+        let code = unsafe { ko_config_load(c_string(path).as_ptr(), &mut out) };
+        let value = serde_json::from_str(&contents(&out)).unwrap();
+        freed_once(&mut out);
+        (code, value)
+    }
+
+    fn set_theme(path: &Path, light: &CStr, dark: &CStr) -> (Code, Value) {
+        let mut out = empty_buffer();
+        // SAFETY: the strings are valid and out is writable.
+        let code = unsafe {
+            ko_config_set_theme(
+                c_string(path).as_ptr(),
+                light.as_ptr(),
+                dark.as_ptr(),
+                &mut out,
+            )
+        };
+        let value = serde_json::from_str(&contents(&out)).unwrap();
+        freed_once(&mut out);
+        (code, value)
+    }
+
+    #[test]
+    fn a_config_load_gives_the_decoded_file_with_defaults_or_the_error_with_its_place() {
+        let dir = config_dir("load");
+        let file = dir.join("config.yaml");
+
+        let (code, value) = load(&file);
+        assert_eq!(code, Code::Ok);
+        assert_eq!(value["config"]["app"]["font"]["size"], json!(13.0));
+        assert_eq!(
+            value["config"]["app"]["theme"],
+            json!({"light": "kido-light", "dark": "kido-dark"})
+        );
+        assert_eq!(value["config"]["server"]["linger_seconds"], json!(30.0));
+        assert_eq!(value["config"]["runtimes"], json!({}));
+
+        std::fs::write(
+            &file,
+            "app:\n  font: {size: 16, family: Menlo}\nserver: {runtime_idle_seconds: none}\n",
+        )
+        .unwrap();
+        let (code, value) = load(&file);
+        assert_eq!(code, Code::Ok);
+        assert_eq!(
+            value["config"]["app"]["font"],
+            json!({"family": "Menlo", "size": 16.0, "features": [], "thicken": false, "line_height": 0.0})
+        );
+        assert_eq!(
+            value["config"]["server"]["runtime_idle_seconds"],
+            json!("none")
+        );
+
+        std::fs::write(&file, "app:\n  font: {size: 3}\n").unwrap();
+        let (code, value) = load(&file);
+        assert_eq!(code, Code::Invalid);
+        assert_eq!(
+            value,
+            json!({"error": {"line": 2, "column": 16, "message": "app: font: size: 3 is not at least 4 and at most 72"}})
+        );
+
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        let (code, value) = load(&file);
+        assert_eq!(code, Code::Io);
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .is_some_and(|text| text.starts_with(file.to_str().unwrap()))
+                && value["error"]
+                    .as_object()
+                    .is_some_and(|error| error.len() == 1),
+            "{value}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_config_set_theme_writes_the_pair_or_says_why_not() {
+        let dir = config_dir("theme");
+        let file = dir.join("ko/config.yaml");
+        let (code, value) = set_theme(&file, c"A", c"B");
+        assert_eq!((code, value), (Code::Ok, json!({"written": true})));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "app:\n  theme:\n    light: \"A\"\n    dark: \"B\"\n"
+        );
+        assert_eq!(
+            set_theme(&file, c"A", c"B"),
+            (Code::Ok, json!({"written": false}))
+        );
+        assert_eq!(
+            load(&file).1["config"]["app"]["theme"],
+            json!({"light": "A", "dark": "B"})
+        );
+
+        let (code, value) = set_theme(&file, c"a/b", c"B");
+        assert_eq!(code, Code::Argument);
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("\"a/b\" is not a theme name")),
+            "{value}"
+        );
+
+        std::fs::write(&file, "app: {theme: x}\n").unwrap();
+        let (code, value) = set_theme(&file, c"A", c"B");
+        assert_eq!(code, Code::Invalid);
+        assert_eq!(value["error"]["message"], json!("duplicate key \"app\""));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "app: {theme: x}\n");
+
+        std::fs::write(&file, "app: [\n").unwrap();
+        assert_eq!(set_theme(&file, c"A", c"B").0, Code::Invalid);
+
+        std::fs::write(&file, "# mine\n").unwrap();
+        std::fs::set_permissions(&file, std::os::unix::fs::PermissionsExt::from_mode(0o444))
+            .unwrap();
+        let (code, value) = set_theme(&file, c"A", c"B");
+        assert_eq!(code, Code::Io);
+        assert!(
+            value["error"]["message"].is_string() && value["error"].get("line").is_none(),
+            "{value}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn config_calls_refuse_a_bad_argument_and_empty_the_out_buffer() {
+        let bad = CString::new(vec![0xff]).unwrap();
+        let sentinel = || Buffer {
+            data: std::ptr::dangling_mut(),
+            len: 3,
+            cap: 3,
+        };
+        let emptied = |out: &Buffer| out.data.is_null() && (out.len, out.cap) == (0, 0);
+        let mut out = sentinel();
+        // SAFETY: each argument is null, not UTF-8 or valid; the calls reject the first two.
+        unsafe {
+            assert_eq!(ko_config_load(bad.as_ptr(), &mut out), Code::Argument);
+            assert!(emptied(&out));
+            out = sentinel();
+            assert_eq!(ko_config_load(std::ptr::null(), &mut out), Code::Argument);
+            assert!(emptied(&out));
+            out = sentinel();
+            assert_eq!(
+                ko_config_load(c"/x".as_ptr(), std::ptr::null_mut()),
+                Code::Argument
+            );
+            let set = |light: *const c_char, out: &mut Buffer| {
+                ko_config_set_theme(c"/x".as_ptr(), light, c"B".as_ptr(), out)
+            };
+            assert_eq!(set(bad.as_ptr(), &mut out), Code::Argument);
+            assert!(emptied(&out));
+            out = sentinel();
+            assert_eq!(set(std::ptr::null(), &mut out), Code::Argument);
+            assert!(emptied(&out));
+        }
     }
 
     #[test]

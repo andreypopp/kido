@@ -7,22 +7,30 @@ use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use serde::{Deserialize, Serialize};
 
+use crate::app::App;
 use crate::runtime::Runtime;
+use crate::server::Server;
 use crate::values::RuntimeName;
-use crate::yaml;
+use crate::yaml::{self, Problem};
 
 /// The ko configuration file, `config.yaml`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// The runtimes that panes can run in, by name.
     #[serde(default)]
     pub runtimes: BTreeMap<RuntimeName, Runtime>,
+    /// The settings of Kido.app.
+    #[serde(default)]
+    pub app: App,
+    /// The settings of ko server.
+    #[serde(default)]
+    pub server: Server,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadError {
-    Invalid(String),
+    Invalid(Problem),
     Io(String),
 }
 
@@ -33,13 +41,13 @@ pub fn default_path(xdg_config_home: Option<&Path>, home: &Path) -> PathBuf {
     }
 }
 
-fn parse(text: &str) -> Result<Config, String> {
-    yaml::from_str(text).map_err(|error| error.to_string())
+pub(crate) fn parse(text: &str) -> Result<Config, Problem> {
+    yaml::from_str(text)
 }
 
 const MAX_BYTES: u64 = 1 << 20;
 
-fn read_text(source: impl Read) -> io::Result<String> {
+pub(crate) fn read_text(source: impl Read) -> io::Result<String> {
     let mut text = String::new();
     source.take(MAX_BYTES + 1).read_to_string(&mut text)?;
     if text.len() as u64 > MAX_BYTES {
@@ -57,7 +65,22 @@ pub fn load(file: &Path) -> Result<Config, LoadError> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Config::default()),
         Err(error) => return Err(LoadError::Io(format!("{}: {error}", file.display()))),
     };
-    parse(&text).map_err(|message| LoadError::Invalid(format!("{}: {message}", file.display())))
+    parse(&text).map_err(LoadError::Invalid)
+}
+
+#[cfg(test)]
+pub(crate) fn refusals(cases: &[(&str, &str)]) {
+    let failures: Vec<String> = cases
+        .iter()
+        .filter_map(|(text, message)| {
+            let error = parse(text)
+                .map(|_| "no error".to_owned())
+                .unwrap_or_else(|p| p.to_string());
+            (!error.starts_with(message))
+                .then(|| format!("{text:?}\n  want {message}\n  have {error}"))
+        })
+        .collect();
+    assert_eq!(failures, Vec::<String>::new());
 }
 
 pub fn schema() -> String {
@@ -216,7 +239,7 @@ runtimes:
             ),
             (
                 "runtimes:\n  dev:\n    color: orange\n    command: {}\n",
-                "runtimes: dev: color: \"orange\" is not a colour as #rrggbb at line 3 column 12",
+                "runtimes: dev: color: \"orange\" is not an #rrggbb colour at line 3 column 12",
             ),
             (
                 "runtimes: [a]\n",
@@ -227,25 +250,20 @@ runtimes:
                 "duplicate key \"dev\" at line 4 column 3",
             ),
         ];
-        let mut failures = Vec::new();
-        for (text, message) in cases {
-            let error = parse(text).unwrap_err();
-            if !error.starts_with(message) {
-                failures.push(format!("{message}\n{error}"));
-            }
-        }
-        assert_eq!(failures, Vec::<String>::new());
+        refusals(&cases);
     }
 
     #[test]
     fn an_unknown_top_level_key_names_the_key_and_the_known_ones() {
         assert_eq!(
-            parse("runtimez: {}\n").unwrap_err(),
-            "unknown field `runtimez`, expected `runtimes` at line 1 column 1"
+            parse("runtimez: {}\n").unwrap_err().to_string(),
+            "unknown field `runtimez`, expected one of `runtimes`, `app`, `server` at line 1 column 1"
         );
         assert_eq!(
-            parse("runtimes: {}\nfont_size: 12\n").unwrap_err(),
-            "unknown field `font_size`, expected `runtimes` at line 2 column 1"
+            parse("runtimes: {}\nfont_size: 12\n")
+                .unwrap_err()
+                .to_string(),
+            "unknown field `font_size`, expected one of `runtimes`, `app`, `server` at line 2 column 1"
         );
     }
 
@@ -310,7 +328,8 @@ runtimes:
             let error = parse(&format!(
                 "runtimes:\n  c:\n    container: {{from: {{image: x}}, run_args: ['{arg}']}}\n"
             ))
-            .unwrap_err();
+            .unwrap_err()
+            .to_string();
             assert!(
                 error.starts_with("runtimes: c: container: run_args: ")
                     && error.contains("is set by ko"),
@@ -345,7 +364,9 @@ runtimes:
     #[test]
     fn a_runtime_has_exactly_one_kind_and_a_null_kind_is_absent() {
         let verdict = |kinds: &str| {
-            parse(&format!("runtimes:\n  dev:\n{kinds}")).map(|found| found.runtimes.len())
+            parse(&format!("runtimes:\n  dev:\n{kinds}"))
+                .map(|found| found.runtimes.len())
+                .map_err(|problem| problem.to_string())
         };
         assert_eq!(
             verdict("    env: {A: b}\n"),

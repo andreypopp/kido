@@ -169,8 +169,8 @@ These requirements are fixed:
   that `ko_shell/src/bin_dir.rs` finds as installed.
   `ko_config/` is the crate `ko_config`: the configuration file
   `config.yaml` (its types, the path rule, the YAML decode in
-  `yaml.rs` and its JSON schema; docs/design-runtimes.md, "The
-  configuration file"), the values that the file and the wire share
+  `yaml.rs`, the theme writer and its JSON schema; docs/design-ko.md,
+  "The configuration file"), the values that the file and the wire share
   (`RuntimeName`, `AbsPath`, ...) and the ssh option classifier
   (`ssh_args.rs`). It depends on no ko crate.
   `share/pi/testdata/fake_ko/` is the crate `fake_ko`, the fake `ko`
@@ -966,7 +966,8 @@ PASS/FAIL line. A change that makes a stage slower needs a reason.
 - An absence check waits for the harness's quiet window. Do not add
   one where a positive assertion shows the same fact.
 - Shorten a product timer through the server's environment
-  ("Knobs" in docs/design.md). The e2e suite runs with
+  ("Knobs" in docs/design.md) or, for the linger and the runtime
+  idle, through the `server:` key of the server's configuration file. The e2e suite runs with
   `--test-threads=64`, so each server start costs the whole suite:
   put cases that need the same setup in one test, on one server.
 - Test pure logic in a unit test, not through a server.

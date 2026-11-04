@@ -3,7 +3,7 @@ use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::{Dim, Limits, Scrollback, Size};
-use ko_server::config::DEFAULT_LIMITS;
+use ko_server::config::default_limits;
 use ko_sys::clock::Mono;
 use ko_vt::compress::{Compress, Tick};
 use ko_vt::{Extent, Format, Terminal};
@@ -28,9 +28,9 @@ fn create(cols: usize, rows: usize, scrollback_bytes: Option<usize>) -> Result<T
                 max_bytes: NonZeroUsize::new(bytes),
                 max_lines: None,
             },
-            ..DEFAULT_LIMITS
+            ..default_limits()
         },
-        None => DEFAULT_LIMITS,
+        None => default_limits(),
     };
     Terminal::new(dim(cols)?, dim(rows)?, limits).map_err(failed)
 }

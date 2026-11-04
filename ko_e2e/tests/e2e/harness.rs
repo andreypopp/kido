@@ -707,16 +707,11 @@ fn spawn_server(
     args: &[&str],
 ) -> Child {
     let (null, output) = (File::open("/dev/null").unwrap(), File::create(log).unwrap());
-    let mut argv = vec![
-        "server",
-        "--server",
-        text_of(dir),
-        "--shell",
-        text_of(shell),
-    ];
+    let mut argv = vec!["server", "--server", text_of(dir)];
     argv.extend_from_slice(args);
     let mut server_env = test_env(dir);
-    for (name, value) in env {
+    let shell = text_of(shell);
+    for (name, value) in [("SHELL", shell)].iter().chain(env) {
         server_env.retain(|entry| !entry.starts_with(format!("{name}=").as_bytes()));
         server_env.push(format!("{name}={value}").into_bytes());
     }
@@ -730,6 +725,22 @@ fn spawn_server(
 
 pub(crate) fn start_with(shell: &Path, env: &[(&str, &str)], args: &[&str]) -> Server {
     start_in(Dir::new("ko-"), shell, env, args)
+}
+
+pub(crate) fn config_path(dir: &Path) -> PathBuf {
+    dir.join("ko/config.yaml")
+}
+
+pub(crate) fn write_config(dir: &Path, text: &str) {
+    let file = config_path(dir);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(file, text).unwrap();
+}
+
+pub(crate) fn start_serving(settings: &str) -> Server {
+    let dir = Dir::new("ko-");
+    write_config(&dir, &format!("server:\n{settings}"));
+    start_in(dir, Path::new("/bin/sh"), &[], &[])
 }
 
 pub(crate) fn start_in(dir: Dir, shell: &Path, env: &[(&str, &str)], args: &[&str]) -> Server {

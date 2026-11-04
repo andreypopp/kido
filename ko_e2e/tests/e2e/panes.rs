@@ -7,7 +7,7 @@ use ko_sys::signal::Signal;
 use serde_json::{Value, json};
 
 use crate::harness::{
-    PRINT_TOKEN, Run, Server, poll, run_ko, start_with, stays, test_env, wait_gone,
+    Dir, PRINT_TOKEN, Run, Server, poll, run_ko, start_in, stays, test_env, wait_gone, write_config,
 };
 use crate::layout::windows;
 use crate::runs::{caller, code, has_pane, id_of, ko_as, pane_of, run_of, wait_pane_gone};
@@ -15,10 +15,12 @@ use crate::runs::{caller, code, has_pane, id_of, ko_as, pane_of, run_of, wait_pa
 pub(crate) type Headers = Vec<(String, String)>;
 
 fn tuned() -> Server {
-    start_with(
+    let dir = Dir::new("ko-");
+    write_config(&dir, "server:\n  linger_seconds: 0.2\n");
+    start_in(
+        dir,
         Path::new("/bin/sh"),
         &[
-            ("KO_LINGER_SECONDS", "0.2"),
             ("KO_STOP_ESCALATION_MS", "600"),
             ("KO_RUN_SCREEN_BYTES", "6000"),
         ],

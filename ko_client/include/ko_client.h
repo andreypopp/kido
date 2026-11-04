@@ -423,6 +423,37 @@ ko_code ko_remote_socket(const char *host, const ko_ssh_run *run, ko_buffer *out
 ko_code ko_remote_unreachable(const char *host, bool remote_answers, ko_buffer *out);
 
 /*
+ * Reads and decodes the configuration file `path` (config.yaml, docs/design-ko.md "The
+ * configuration file"). A file that does not exist is the default configuration. It reads one
+ * file and blocks briefly; it starts nothing. `out` is filled in every case and the caller frees it:
+ *   KO_OK: {"config": Config}, the whole decoded configuration with every default filled in, as
+ *     share/ko/config-schema.json describes it.
+ *   KO_ERR_INVALID: {"error": {"line": N, "column": N, "message": "..."}}: the file does not decode.
+ *     `line` and `column` count from 1. `message` names the key path and the fault, without the file
+ *     and without the position.
+ *   KO_ERR_IO: {"error": {"message": "..."}}: the file cannot be read (no line or column).
+ *   KO_ERR_ARGUMENT: `path` is NULL or not UTF-8, or `out` is NULL; `out` is left empty.
+ */
+ko_code ko_config_load(const char *path, ko_buffer *out);
+
+/*
+ * Sets app.theme of the configuration file `path` to the pair `light` and `dark`, by editing the
+ * file's lines: every other byte stays, comments and line endings included. A symbolic link is
+ * followed, a missing file or directory is created (0600, 0700), and the target keeps its mode. The
+ * result is decoded before it is written; a file that would not decode stays unchanged. `out` is
+ * filled in every case and the caller frees it:
+ *   KO_OK: {"written": true} or {"written": false} when the file already has this pair.
+ *   KO_ERR_INVALID: {"error": {"line": N, "column": N, "message": "..."}} as for ko_config_load;
+ *     the file, or the file with the edit, does not decode.
+ *   KO_ERR_IO: {"error": {"message": "..."}}: the file or its directory cannot be read or written.
+ *   KO_ERR_CONFLICT: {"error": {"message": "..."}}: the file changed between the read and the
+ *     replacement; nothing was written. Call again.
+ *   KO_ERR_ARGUMENT: a NULL or non-UTF-8 argument (`out` is left empty), or a `light` or `dark` that
+ *     is not a theme name (`out` is {"error": {"message": "..."}}).
+ */
+ko_code ko_config_set_theme(const char *path, const char *light, const char *dark, ko_buffer *out);
+
+/*
  * The model as one JSON document in a buffer: the client and instance ids, the
  * selection, the layout document and its revision (GET /layout without its panes), every pane with
  * its label (the title to show), its seen mark ("none", "running", "waiting", "done" or "failed"),

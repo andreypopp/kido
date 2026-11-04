@@ -11,7 +11,7 @@ final class KoSchemaTests: XCTestCase {
         let process = Process()
         let errors = Pipe()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        process.arguments = ["-I", app.appendingPathComponent("scripts/gen-ko-model.py").path, checkout + "/share/ko/openapi.json", checkout + "/share/ko/client-model.json", regenerated.path]
+        process.arguments = ["-I", app.appendingPathComponent("scripts/gen-ko-model.py").path, checkout + "/share/ko/openapi.json", checkout + "/share/ko/client-model.json", checkout + "/share/ko/config-schema.json", regenerated.path]
         process.standardError = errors
         try process.run()
         process.waitUntilExit()

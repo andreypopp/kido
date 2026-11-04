@@ -1,12 +1,14 @@
+use std::cell::OnceCell;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::num::NonZeroUsize;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use ko_config::config::LoadError;
+use ko_config::server::{Scrollback as Kept, Server};
 use ko_pane_wire::frame::{Limits, Medium, Scrollback};
 
 pub(crate) const BUILD: &str = env!("KO_BUILD");
@@ -19,15 +21,13 @@ pub struct Config {
     pub socket: PathBuf,
     pub pane_exe: PathBuf,
     pub terminfo: PathBuf,
-    pub shell: PathBuf,
+    pub default_shell: PathBuf,
     pub exe: PathBuf,
     pub bin_dir: Option<PathBuf>,
-    pub limits: Limits,
     pub media: Vec<Medium>,
     pub env: Vec<Vec<u8>>,
     pub cwd: PathBuf,
     pub hostname: String,
-    pub linger: Duration,
     pub stop_escalation: Duration,
     pub run_screen_bytes: usize,
     pub clipboard_wait: Duration,
@@ -37,20 +37,12 @@ pub struct Config {
     pub file: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeIdle {
-    After(Duration),
-    Never,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimesConfig {
-    pub idle: RuntimeIdle,
     pub exec_wait: Duration,
     pub command_kind: bool,
 }
 
-pub const RUNTIME_IDLE: Duration = Duration::from_secs(600);
 pub const RUNTIME_EXEC_WAIT: Duration = Duration::from_secs(30);
 
 pub(crate) const QUEUE_BYTES: usize = 64 << 20;
@@ -71,44 +63,86 @@ impl Default for ViewQueue {
     }
 }
 
-pub const LINGER: Duration = Duration::from_secs(30);
 pub const STOP_ESCALATION: Duration = Duration::from_secs(5);
 pub const RUN_SCREEN_BYTES: usize = 64 << 20;
 pub const CLIPBOARD_WAIT: Duration = Duration::from_secs(8);
 pub const MESSAGE_ACK: Duration = Duration::from_secs(2);
 
-pub const DEFAULT_LIMITS: Limits = Limits {
-    scrollback: Scrollback::Bounded {
-        max_bytes: NonZeroUsize::new(50_000_000),
-        max_lines: None,
-    },
-    apc_max_bytes: 65 << 20,
-    kitty_images_max_bytes: 10_000_000,
-    continuation_max_bytes: 65 << 20,
-};
+fn limits(server: &Server) -> Limits {
+    Limits {
+        scrollback: match server.scrollback {
+            Kept::Off => Scrollback::Disabled,
+            Kept::Bounded(bounds) => Scrollback::Bounded {
+                max_bytes: bounds.bytes.get(),
+                max_lines: bounds.lines.get(),
+            },
+        },
+        apc_max_bytes: 65 << 20,
+        kitty_images_max_bytes: server.kitty_images_max_bytes.get() as u64,
+        continuation_max_bytes: 65 << 20,
+    }
+}
 
-pub fn scratch(dir: &Path, pane_exe: PathBuf, limits: Limits) -> Config {
+pub fn default_limits() -> Limits {
+    limits(&Server::default())
+}
+
+pub(crate) fn server_settings(file: &Path) -> Server {
+    Read::new(file).server()
+}
+
+#[derive(Debug)]
+pub(crate) struct Read {
+    file: PathBuf,
+    loaded: OnceCell<Result<ko_config::config::Config, LoadError>>,
+}
+
+impl Read {
+    pub(crate) fn new(file: &Path) -> Read {
+        Read {
+            file: file.to_path_buf(),
+            loaded: OnceCell::new(),
+        }
+    }
+
+    pub(crate) fn get(&self) -> &Result<ko_config::config::Config, LoadError> {
+        self.loaded
+            .get_or_init(|| ko_config::config::load(&self.file))
+    }
+
+    pub(crate) fn server(&self) -> Server {
+        self.get()
+            .as_ref()
+            .map(|config| config.server.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct Settings {
+    pub(crate) shell: PathBuf,
+    pub(crate) limits: Limits,
+}
+
+pub fn scratch(dir: &Path, pane_exe: PathBuf) -> Config {
     Config {
         dir: dir.to_path_buf(),
         socket: dir.join("socket"),
         pane_exe,
         terminfo: dir.to_path_buf(),
-        shell: PathBuf::from("/bin/sh"),
+        default_shell: PathBuf::from("/bin/sh"),
         exe: PathBuf::from("/nonexistent/ko"),
         bin_dir: None,
-        limits,
         media: Vec::new(),
         env: Vec::new(),
         cwd: PathBuf::from("/"),
         hostname: String::new(),
-        linger: LINGER,
         stop_escalation: STOP_ESCALATION,
         run_screen_bytes: RUN_SCREEN_BYTES,
         clipboard_wait: CLIPBOARD_WAIT,
         message_ack: MESSAGE_ACK,
         view_queue: ViewQueue::default(),
         runtimes: RuntimesConfig {
-            idle: RuntimeIdle::After(RUNTIME_IDLE),
             exec_wait: RUNTIME_EXEC_WAIT,
             command_kind: false,
         },
@@ -145,13 +179,6 @@ fn positive(name: &str) -> Option<u64> {
     count(set(name))
 }
 
-fn seconds(value: Option<OsString>) -> Option<Duration> {
-    let seconds: f64 = value?.to_str()?.parse().ok()?;
-    Duration::try_from_secs_f64(seconds)
-        .ok()
-        .filter(|linger| !linger.is_zero())
-}
-
 pub fn dir(chosen: Option<PathBuf>) -> PathBuf {
     if let Some(dir) = chosen.or_else(|| set("KO_STATE_DIR").map(PathBuf::from)) {
         return dir;
@@ -176,13 +203,6 @@ fn config_file(chosen: Option<PathBuf>) -> PathBuf {
             &home(),
         )
     })
-}
-
-fn runtime_idle(value: Option<OsString>) -> RuntimeIdle {
-    match value {
-        Some(value) if value == "none" => RuntimeIdle::Never,
-        value => RuntimeIdle::After(seconds(value).unwrap_or(RUNTIME_IDLE)),
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -316,19 +336,31 @@ fn shipped(exe: &Path) -> Result<(PathBuf, PathBuf), String> {
 }
 
 impl Config {
+    pub(crate) fn settings(&self, server: &Server) -> Settings {
+        Settings {
+            shell: server.shell.as_ref().map_or_else(
+                || self.default_shell.clone(),
+                |shell| PathBuf::from(shell.as_str()),
+            ),
+            limits: limits(server),
+        }
+    }
+
+    pub(crate) fn linger(&self) -> Duration {
+        server_settings(&self.file).linger_seconds.duration()
+    }
+
     pub fn create(
         exe: &Path,
         chosen: Option<PathBuf>,
-        shell: Option<PathBuf>,
         bin_dir: Option<PathBuf>,
-        scrollback: Scrollback,
         file: Option<PathBuf>,
     ) -> Result<Config, String> {
-        let shell = shell
-            .or_else(|| set("SHELL").map(PathBuf::from))
+        let default_shell = set("SHELL")
+            .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/bin/sh"));
         let (pane_exe, terminfo) = shipped(exe)?;
-        if shell.is_relative() {
+        if default_shell.is_relative() {
             return Err("shell must be an absolute path".to_owned());
         }
         let exe = std::path::absolute(exe).map_err(|error| error.to_string())?;
@@ -344,22 +376,15 @@ impl Config {
             socket,
             pane_exe,
             terminfo,
-            shell,
+            default_shell,
             exe,
             bin_dir,
-            limits: Limits {
-                scrollback,
-                kitty_images_max_bytes: positive("KO_KITTY_IMAGES_MAX_BYTES")
-                    .unwrap_or(DEFAULT_LIMITS.kitty_images_max_bytes),
-                ..DEFAULT_LIMITS
-            },
             media: vec![Medium::SharedMem],
             env: env::vars_os()
                 .map(|(name, value)| variable(name.as_encoded_bytes(), value.as_encoded_bytes()))
                 .collect(),
             cwd,
             hostname: ko_sys::host::name().unwrap_or_default(),
-            linger: seconds(set("KO_LINGER_SECONDS")).unwrap_or(LINGER),
             stop_escalation: positive("KO_STOP_ESCALATION_MS")
                 .map_or(STOP_ESCALATION, Duration::from_millis),
             run_screen_bytes: positive("KO_RUN_SCREEN_BYTES")
@@ -375,7 +400,6 @@ impl Config {
                 spill_bytes: positive("KO_VIEW_SPILL_BYTES").unwrap_or(SPILL_BYTES),
             },
             runtimes: RuntimesConfig {
-                idle: runtime_idle(env::var_os("KO_RUNTIME_IDLE_SECONDS")),
                 exec_wait: positive("KO_RUNTIME_EXEC_WAIT_MS")
                     .map_or(RUNTIME_EXEC_WAIT, Duration::from_millis),
                 command_kind: set("KO_RUNTIME_COMMAND_KIND").is_some_and(|value| value == "1"),
@@ -426,30 +450,6 @@ mod tests {
             (Some(30), Some(1), None, None, None, None, None)
         );
         assert_eq!(count(None), None);
-    }
-
-    #[test]
-    fn the_linger_takes_decimal_seconds_and_refuses_what_is_no_duration() {
-        let read = |text: &str| seconds(Some(OsString::from(text)));
-        assert_eq!(read("30"), Some(Duration::from_secs(30)));
-        assert_eq!(read("0.2"), Some(Duration::from_millis(200)));
-        for text in ["0", "-1", "nan", "inf", "1e300", "", "x"] {
-            assert_eq!(read(text), None, "{text}");
-        }
-    }
-
-    #[test]
-    fn the_runtime_idle_takes_seconds_or_none_else_ten_minutes() {
-        let read = |text: Option<&str>| runtime_idle(text.map(OsString::from));
-        assert_eq!(read(None), RuntimeIdle::After(RUNTIME_IDLE));
-        assert_eq!(read(Some("none")), RuntimeIdle::Never);
-        assert_eq!(
-            read(Some("0.5")),
-            RuntimeIdle::After(Duration::from_millis(500))
-        );
-        for text in ["0", "-1", "x", ""] {
-            assert_eq!(read(Some(text)), RuntimeIdle::After(RUNTIME_IDLE), "{text}");
-        }
     }
 
     fn tempdir() -> PathBuf {

@@ -33,7 +33,7 @@ impl std::ops::Deref for Box {
     }
 }
 
-fn serve(options: Options, env: &[(&str, &str)]) -> Box {
+fn serve(options: Options, server: &str, env: &[(&str, &str)]) -> Box {
     let state = Dir::new("ko-");
     let remote = Remote::with_ko_options(&state, options);
     let dir = remote.dir.join("rt");
@@ -47,7 +47,7 @@ fn serve(options: Options, env: &[(&str, &str)]) -> Box {
     let mut env = env.to_vec();
     env.push(("PATH", &path));
     let config = format!(
-        "runtimes:\n  box:\n    ssh:\n      destination: {HOST}\n      dir: {}\n",
+        "{server}runtimes:\n  box:\n    ssh:\n      destination: {HOST}\n      dir: {}\n",
         text_of(&dir)
     );
     let rt = serve_in(state, &config, &env);
@@ -140,7 +140,7 @@ fn an_ssh_pane_rides_the_master_and_a_dead_master_ends_its_panes_and_never_recon
     if !enabled("KO_E2E_HOST_SSH") {
         return;
     }
-    let boxed = serve(Options::default(), &[]);
+    let boxed = serve(Options::default(), "", &[]);
     let s: &Server = &boxed;
     let rt = &boxed.dir;
     fs::create_dir_all(rt).unwrap();
@@ -291,6 +291,7 @@ fn the_leader_pane_shows_the_passphrase_prompt_and_a_closed_leader_fails_the_sta
             passphrase: Some(PASSPHRASE),
             ..Options::default()
         },
+        "",
         &[],
     );
     let s: &Server = &boxed;
@@ -337,6 +338,7 @@ fn a_host_that_refuses_forwarding_fails_the_start_with_the_clients_text() {
             forwarding: Forwarding::Refused,
             ..Options::default()
         },
+        "",
         &[],
     );
     let s: &Server = &boxed;
@@ -374,8 +376,8 @@ fn an_exec_session_runs_through_a_live_master_that_the_server_adopts_and_retries
             send_env: true,
             ..Options::default()
         },
+        "server:\n  runtime_idle_seconds: 0.5\n",
         &[
-            ("KO_RUNTIME_IDLE_SECONDS", "0.5"),
             ("KO_RUNTIME_EXEC_WAIT_MS", "20000"),
             ("KO_STOP_ESCALATION_MS", "300"),
             ("KO_E2E_MARK", "leaked"),
@@ -592,7 +594,7 @@ fn a_master_that_still_holds_the_forward_is_adopted_with_the_forward_made_again(
     if !enabled("KO_E2E_HOST_SSH") {
         return;
     }
-    let boxed = serve(Options::default(), &[]);
+    let boxed = serve(Options::default(), "", &[]);
     let s: &Server = &boxed;
     fs::create_dir_all(&boxed.dir).unwrap();
     fs::set_permissions(&boxed.dir, fs::Permissions::from_mode(0o700)).unwrap();
@@ -643,7 +645,7 @@ fn a_farewell_that_is_still_held_when_the_server_exits_still_ends_the_master() {
     if !enabled("KO_E2E_HOST_SSH") {
         return;
     }
-    let mut boxed = serve(Options::default(), &[]);
+    let mut boxed = serve(Options::default(), "", &[]);
     let pane = up_pane(&boxed, "printf 'UP<%s>' \"$KO_RUNTIME\"");
     boxed.screen_has(&pane, "UP<box>");
     let hold = boxed.remote.dir.join("hold");

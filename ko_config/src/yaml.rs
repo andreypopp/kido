@@ -3,6 +3,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use saphyr_parser::{Event, Marker, Parser, ScalarStyle};
+use serde::Serialize;
 use serde::de::value::StrDeserializer;
 use serde::de::{
     self, DeserializeOwned, DeserializeSeed, EnumAccess, IntoDeserializer, MapAccess, SeqAccess,
@@ -27,6 +28,23 @@ impl Pos {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Problem {
+    pub line: usize,
+    pub column: usize,
+    pub message: String,
+}
+
+impl fmt::Display for Problem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} at line {} column {}",
+            self.message, self.line, self.column
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Error {
     at: Option<Pos>,
@@ -35,6 +53,25 @@ pub(crate) struct Error {
 }
 
 impl Error {
+    fn text(&self) -> String {
+        let mut text = String::new();
+        for key in &self.path {
+            text.push_str(key);
+            text.push_str(": ");
+        }
+        text.push_str(&self.message);
+        text
+    }
+
+    fn into_problem(self, fallback: Pos) -> Problem {
+        let Pos { line, column } = self.at.unwrap_or(fallback);
+        Problem {
+            line,
+            column,
+            message: self.text(),
+        }
+    }
+
     fn at(self, at: Pos) -> Error {
         Error {
             at: self.at.or(Some(at)),
@@ -58,13 +95,16 @@ impl Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for key in &self.path {
-            write!(f, "{key}: ")?;
-        }
-        f.write_str(&self.message)?;
         match self.at {
-            Some(Pos { line, column }) => write!(f, " at line {line} column {column}"),
-            None => Ok(()),
+            Some(Pos { line, column }) => fmt::Display::fmt(
+                &Problem {
+                    line,
+                    column,
+                    message: self.text(),
+                },
+                f,
+            ),
+            None => f.write_str(&self.text()),
         }
     }
 }
@@ -371,6 +411,16 @@ impl Node {
             (Want::Unit, _) if self.is_null() => visitor.visit_unit(),
             (Want::Unit, _) => wrong(&"null"),
             (Want::Any, _) if self.is_null() => visitor.visit_unit(),
+            (Want::Any, Value::Scalar { text, plain: true }) if int(text).is_some() => {
+                match int(text).map(|number| (i64::try_from(number), u64::try_from(number))) {
+                    Some((Ok(number), _)) => visitor.visit_i64(number),
+                    Some((_, Ok(number))) => visitor.visit_u64(number),
+                    _ => wrong(&visitor),
+                }
+            }
+            (Want::Any, Value::Scalar { text, plain: true }) if float(text).is_some() => {
+                visitor.visit_f64(float(text).unwrap_or_default())
+            }
             (Want::Any | Want::Str, Value::Scalar { text, .. }) if !self.is_null() => {
                 visitor.visit_str(text)
             }
@@ -614,9 +664,10 @@ impl<'de> VariantAccess<'de> for Tagged<'_> {
     }
 }
 
-pub(crate) fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, Error> {
-    let root = tree(text)?;
-    T::deserialize(&*root)
+pub(crate) fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, Problem> {
+    let start = Pos { line: 1, column: 1 };
+    let root = tree(text).map_err(|error| error.into_problem(start))?;
+    T::deserialize(&*root).map_err(|error| error.into_problem(root.at))
 }
 
 #[cfg(test)]
