@@ -527,9 +527,22 @@ ko_code ko_client_clipboard_answer(const ko_client *client,
                                    const char *const *available,
                                    size_t available_count);
 
+typedef enum ko_scrollback_kind {
+    KO_SCROLLBACK_DISABLED,
+    KO_SCROLLBACK_BOUNDED,
+} ko_scrollback_kind;
+
+typedef struct ko_scrollback_limit {
+    ko_scrollback_kind kind;
+    /* Zero removes the bound. */
+    uint64_t max_bytes;
+    uint64_t max_lines;
+} ko_scrollback_limit;
+
 /* The server's limits that a mirror must share. KO_ERR_CLOSED before the first welcome. */
 typedef struct ko_limits {
     uint64_t kitty_images_max_bytes;
+    ko_scrollback_limit scrollback;
 } ko_limits;
 
 ko_code ko_client_limits(const ko_client *client, ko_limits *out);

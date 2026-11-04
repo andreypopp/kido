@@ -16,6 +16,7 @@ use super::{Command, FeedFn, FeedItem, Posted, RestoreFn, Shared, User, ViewEven
 
 const HIGH_WATER: usize = 4 << 20;
 const LOW_WATER: usize = 1 << 20;
+const FEED_BATCH: usize = 64 << 10;
 const QUEUED_LIMIT: usize = 4 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,6 +257,8 @@ impl View {
     }
 
     fn decode(self: &Arc<View>) {
+        let mut batch = Vec::new();
+        let mut records = Vec::new();
         loop {
             let work = {
                 let mut state = locked(&self.state);
@@ -277,7 +280,7 @@ impl View {
             };
             match work {
                 Work::Snapshot(job) => self.restore(&job),
-                Work::Feed(feed) => self.apply(&feed),
+                Work::Feed(feed) => self.apply(&feed, &mut batch, &mut records),
             }
         }
     }
@@ -326,14 +329,50 @@ impl View {
         }
     }
 
-    fn apply(&self, feed: &Feed) {
-        let (offset, bytes) = match feed {
-            Feed::Bytes { offset, data } => (*offset, data.len()),
-            Feed::Marker { offset, .. } => (*offset, 0),
+    fn apply(&self, feed: &Feed, batch: &mut Vec<u8>, records: &mut Vec<Bytes>) {
+        batch.clear();
+        records.clear();
+        let (offset, data) = match feed {
+            Feed::Bytes { offset, data } => {
+                let mut end = offset.saturating_add(data.len() as u64);
+                let mut len = data.len();
+                {
+                    let mut state = locked(&self.state);
+                    while let Some(Work::Feed(Feed::Bytes {
+                        offset: next,
+                        data: more,
+                    })) = state.work.front()
+                    {
+                        if *next != end || len.saturating_add(more.len()) > FEED_BATCH {
+                            break;
+                        }
+                        let Some(Work::Feed(Feed::Bytes { data: more, .. })) =
+                            state.work.pop_front()
+                        else {
+                            break;
+                        };
+                        len = len.saturating_add(more.len());
+                        end = end.saturating_add(more.len() as u64);
+                        records.push(more);
+                    }
+                }
+                let data = if records.is_empty() {
+                    data.as_ref()
+                } else {
+                    batch.extend_from_slice(data);
+                    for record in records.iter() {
+                        batch.extend_from_slice(record);
+                    }
+                    batch.as_slice()
+                };
+                (*offset, data)
+            }
+            Feed::Marker { offset, .. } => (*offset, &[][..]),
         };
+        let bytes = data.len();
         if !locked(&self.state).skipping && !self.closed.load(Ordering::SeqCst) {
             let item = match feed {
-                Feed::Bytes { offset, data } => FeedItem {
+                Feed::Bytes { offset, .. } => FeedItem {
                     kind: 1,
                     offset: *offset,
                     data: data.as_ptr(),

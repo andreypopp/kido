@@ -522,6 +522,16 @@ and marks the pane dirty. Leaving copy mode asks for a new snapshot only
 when the pane is dirty. Copy entry fails after `PaneView.copyEntryTimeout`
 (2 s).
 
+The surface's scrollback limits are the server's, from `welcome`
+(`ko_client_limits`): the mirror contract (design-ko.md, "The pane's
+terminal"). The app sets no scrollback of its own. Ghostty reads its
+scrollback config only when it creates a surface, and one app config cannot
+serve windows of several servers, so the decoder thread sets the limits on
+the surface (`ghostty_surface_set_scrollback_limits`) after each restore: a
+restore carries the snapshot's limits as adjusted to its size, not the
+server's policy. A pane's history memory is thus bounded by the
+server's limit under any output volume.
+
 Each pane draws one thin overlay scroller, shown during scrolling or
 hovering and fading afterwards. The scroller track spans the expanded content while its thumb and targets count whole grid rows. Ghostty's own scrollbar is disabled. The
 thumb uses the mirror's history rows plus the screen, with a native-style
@@ -534,6 +544,9 @@ A reveal moves one fade deadline 1 s ahead. A burst arms one main-queue timer,
 which re-arms only if the deadline moved, and then fades over 0.3 s.
 Ghostty's SCROLLBAR action refreshes the scroller only while the app owns no
 scroll target; while it owns one, the worker's applies publish the geometry.
+The refresh is not a query on main: it queues one capture on the scroll
+worker, at most one at a time, which publishes as output does
+([Threads](#threads)).
 Every precise wheel event adds its delta 1:1 to the
 fractional target, including nonzero ended packets. At most one apply is
 pending on the pane's serial scroll worker; it starts immediately and reads
@@ -1101,7 +1114,17 @@ client ends a waiting call with `KO_ERR_CLOSED`. Each view has a
 decoder thread in the core, which runs the restore and the feed in the
 server's order. The feed hands bytes to the pane's serial scroll queue
 (user-interactive), which serializes live output with asynchronous
-viewport applies. Main must never wait for that queue: parsing can fill
+viewport applies. The core joins queued byte records whose offsets follow each other
+into one feed while the sum stays within `FEED_BATCH`
+(`ko_client/src/ffi/view.rs`), never across a marker, a snapshot or a
+gap. It never splits a record, so a larger record is one feed. After each parse the queue reads the scroll
+position, the alternate screen and the mouse capture, and stores them in
+the pane's one latest-state slot with a count of completed feeds. At most
+one main hop is pending for each pane; it applies the latest state and the
+count. Thus, the output volume of a pane sets neither the number of main
+blocks nor the number of renderer-lock queries on main: main reads terminal
+state only for an alternate-screen change, which snaps the viewport at most
+once for each hop, and for copy-mode entry. Main must never wait for that queue: parsing can fill
 Ghostty's app mailbox, whose surface messages are drained by
 `ghostty_app_tick` on main. Ghostty's stream handler releases the renderer
 mutex before waiting for mailbox capacity, so main can still take that

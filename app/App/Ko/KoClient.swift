@@ -405,7 +405,11 @@ private final class ClientHandle: @unchecked Sendable {
     }
 
     func openView(pane: PaneID, history: Bool = true, surface: ghostty_surface_t, hooks: KoViewHooks = KoViewHooks(), sink: @escaping @MainActor (KoViewEvent) -> Void) throws -> KoView {
-        let view = KoView(surface: surface, hooks: hooks, sink: sink)
+        var limits = ko_limits()
+        try check(handle.call { ko_client_limits($0, &limits) })
+        let scrollback: KoScrollback = limits.scrollback.kind == KO_SCROLLBACK_DISABLED ? .disabled
+            : .bounded(bytes: limits.scrollback.max_bytes == 0 ? nil : UInt(limits.scrollback.max_bytes), lines: limits.scrollback.max_lines == 0 ? nil : UInt(limits.scrollback.max_lines))
+        let view = KoView(surface: surface, scrollback: scrollback, hooks: hooks, sink: sink)
         view.label = pane.description
         let user = Unmanaged.passRetained(view)
         let code = (try? handle.call { ko_view_open($0, pane.description, history, KoView.restoreCallback, KoView.feedCallback, user.toOpaque(), &view.handle) }) ?? KO_ERR_CLOSED
@@ -415,6 +419,20 @@ private final class ClientHandle: @unchecked Sendable {
         }
         view.user = user
         return view
+    }
+}
+
+private enum KoScrollback: Sendable {
+    case disabled
+    case bounded(bytes: UInt?, lines: UInt?)
+
+    func apply(to surface: ghostty_surface_t) {
+        switch self {
+        case .disabled:
+            ghostty_surface_set_scrollback_limits(surface, false, 0, 0)
+        case .bounded(let bytes, let lines):
+            ghostty_surface_set_scrollback_limits(surface, true, bytes ?? 0, lines ?? 0)
+        }
     }
 }
 
@@ -440,14 +458,16 @@ final class KoView: @unchecked Sendable {
     let surface: ghostty_surface_t
     @MainActor let sink: @MainActor (KoViewEvent) -> Void
     private let hooks: KoViewHooks
+    private let scrollback: KoScrollback
     fileprivate var label = ""
     fileprivate let opened = ContinuousClock.now
     private let inputStamp = NSLock()
     private var inputAt: ContinuousClock.Instant?
 
-    @MainActor fileprivate init(surface: ghostty_surface_t, hooks: KoViewHooks, sink: @escaping @MainActor (KoViewEvent) -> Void) {
+    @MainActor fileprivate init(surface: ghostty_surface_t, scrollback: KoScrollback, hooks: KoViewHooks, sink: @escaping @MainActor (KoViewEvent) -> Void) {
         self.surface = surface
         self.hooks = hooks
+        self.scrollback = scrollback
         self.sink = sink
     }
 
@@ -471,6 +491,8 @@ final class KoView: @unchecked Sendable {
         limit = hooks.continuationOverride ?? limit
         #endif
         let result = Timing.enabled ? timedRestore(snapshot, limit) : koResult(ghostty_surface_restore_snapshot(surface, snapshot.read, snapshot.reader, snapshot.history, limit))
+        // Snapshot restore carries dimension-adjusted limits, not the server policy.
+        scrollback.apply(to: surface)
         hooks.afterRestore?(result)
         return result
     }

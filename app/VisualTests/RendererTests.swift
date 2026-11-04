@@ -420,8 +420,7 @@ import KoModel
         try await drain(runtime)
         let released = pane.visualScrollerRefreshes
         try await scrollbar(pane)
-        XCTAssertGreaterThan(pane.visualScrollerRefreshes, released,
-                             "the app tick still refreshes the scroller when the app owns no target")
+        try await wait("the captured scrollbar reaches main") { pane.visualScrollerRefreshes > released }
     }
 
     private func scrollbar(_ pane: PaneView) async throws {

@@ -8,7 +8,8 @@ UI deadlock. Ghostty pushes to the renderer mailbox with `.forever` in
 Search-input capacity does not block main, but that guarantee does not cover
 all Ghostty sends; see [Threads](design-app.md#threads).
 It affects responsiveness under renderer pressure and heals when the
-consumer drains. Audit main-callable sends and use ordered nonblocking
+consumer drains. Output volume alone does not cause it: main makes at most one
+output hop for each pane at a time ([Threads](design-app.md#threads)). Audit main-callable sends and use ordered nonblocking
 queues/coalescing where appropriate (large cross-cutting change).
 Status: parked; a blanket no-mailbox-waits guarantee is unverified.
 
@@ -24,15 +25,6 @@ successful initialization are not examined. These are inherited error-path
 leaks. Status: parked by decision; not fixed or covered.
 
 # Unverified
-
-## A stress jump can miss its selection deadline
-
-A `make stress` run can fail the `jump-selects` check: the sidebar jump's
-selection does not reach the model within the 5 s of `afterSelection`
-(`app/App/Stress.swift`), before any mid-run server restart. The same
-seed passes on a rerun, and a rerun overwrites the failed run's logs.
-Probable cause: the `selected` event waits on a main queue that the output
-flood keeps busy. Status: seen once.
 
 ## Late GPU completion after resize
 

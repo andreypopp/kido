@@ -31,7 +31,6 @@ import XCTest
         let paths = ThemePaths(light: ThemePaths.path("solarized-light", configFile: file), dark: ThemePaths.path("solarized-dark", configFile: file))
         XCTAssertEqual(loaded.text, """
         alpha-blending = linear
-        scrollback-limit-bytes = 536870912
         cursor-style-blink = false
         keybind = super+k=unbind
         keybind = super+j=unbind

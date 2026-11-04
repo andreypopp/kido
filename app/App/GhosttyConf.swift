@@ -18,7 +18,7 @@ enum GhosttyConf {
         case .left: "left"
         case .right: "right"
         }
-        var lines = ["alpha-blending = linear", "scrollback-limit-bytes = 536870912", "cursor-style-blink = false",
+        var lines = ["alpha-blending = linear", "cursor-style-blink = false",
                      "keybind = super+k=unbind", "keybind = super+j=unbind", "keybind = super+s=unbind", "keybind = super+shift+s=unbind",
                      "font-family = \(app.font.family ?? systemFont)", "font-size = \(app.font.size)"]
         lines += app.font.features.map { "font-feature = \($0)" }

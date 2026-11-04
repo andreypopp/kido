@@ -187,6 +187,26 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         var captured = false
     }
     private var scrollGeometry = ScrollGeometry()
+    private struct OutputUpdate: Sendable {
+        let position: ScrollPosition
+        let alternate: Bool
+        let captured: Bool
+    }
+    private struct OutputState {
+        var latest: OutputUpdate?
+        var completed = 0
+        var capturing = false
+        var requested = false
+    }
+    nonisolated private let outputUpdate = OSAllocatedUnfairLock(initialState: OutputState())
+    #if KIDO_VISUAL
+    nonisolated private let decodedBytes = OSAllocatedUnfairLock(initialState: 0)
+    nonisolated var visualDecodedBytes: Int { decodedBytes.withLock { $0 } }
+    nonisolated(unsafe) var visualAfterScrollerCapture: (@Sendable () -> Void)?
+    var visualHoldScrollbarAction = false
+    var visualScrollerOffset: Int { scrollGeometry.position.offset }
+    var visualScrollerIdle: Bool { outputUpdate.withLock { $0.latest == nil && !$0.capturing && !$0.requested } }
+    #endif
     private var scrollPresentation = (position: ScrollPosition(retainedHistoryRows: 0, offset: 0, rows: 1), distance: Optional<Double>.none, revision: 0)
     nonisolated private let target = OSAllocatedUnfairLock<Double?>(initialState: nil)
     nonisolated private let scrolling = DispatchQueue(label: "kido.scroll", qos: .userInteractive)
@@ -275,10 +295,13 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     func refreshScroller() {
+        updateScroller(position: scrollPosition(), alternate: ghostty_surface_is_alternate_screen(surface))
+    }
+
+    private func updateScroller(position: ScrollPosition, alternate: Bool) {
         #if KIDO_VISUAL
         visualScrollerRefreshes += 1
         #endif
-        let position = scrollPosition(), alternate = ghostty_surface_is_alternate_screen(surface)
         let changed = self.alternate != alternate || scrollGeometry.position.retainedHistoryRows != position.retainedHistoryRows
             || scrollGeometry.position.rows != position.rows || (scrollTarget == nil && scrollGeometry.position.offset != position.offset)
         guard changed else { return }
@@ -354,10 +377,14 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     nonisolated func clearScrollTarget() { target.withLock { $0 = nil } }
 
-    func snapScroll() {
+    private func prepareScrollSnap() -> Int {
         suppressMomentum = true
         wheelRemainder = 0
-        let revision = invalidateScroll()
+        return invalidateScroll()
+    }
+
+    func snapScroll() {
+        let revision = prepareScrollSnap()
         let applied = viewport.withLock { adjustment -> (ScrollPosition, Double)? in
             guard let distance = scrollDistance else { return nil }
             let aligned = distance.rounded()
@@ -816,20 +843,67 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
                     }
                 }
             }
-            let captured = ghostty_surface_mouse_captured(surface)
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                defer {
-                    content.withLock { $0.parsing -= 1 }
-                    completeEntry()
-                }
-                refreshScroller()
-                if scrollDistance != scrollPresentation.distance { queueScroll() }
-                if captured != scrollGeometry.captured { snapScroll() }
-                scrollGeometry.captured = captured
-            }
+            #if KIDO_VISUAL
+            let count = bytes.count
+            decodedBytes.withLock { $0 += count }
+            #endif
+            publishOutputUpdate(completed: 1)
             return true
         }
+    }
+
+    func refreshScrollerAfterRender() {
+        guard scrollTarget == nil else { return }
+        outputUpdate.withLock { $0.requested = true }
+        captureScrollerIfNeeded()
+    }
+
+    private func captureScrollerIfNeeded() {
+        guard !disposed, scrollTarget == nil, outputUpdate.withLock({ state in
+            guard state.latest == nil, !state.capturing, state.requested else { return false }
+            state.capturing = true
+            return true
+        }) else { return }
+        scrolling.async { [weak self] in
+            guard let self else { return }
+            defer { DispatchQueue.main.async { _ = self } }
+            publishOutputUpdate(completed: 0)
+        }
+    }
+
+    nonisolated private func publishOutputUpdate(completed: Int) {
+        outputUpdate.withLock { $0.requested = false }
+        let update = OutputUpdate(position: scrollPosition(), alternate: ghostty_surface_is_alternate_screen(surface), captured: ghostty_surface_mouse_captured(surface))
+        #if KIDO_VISUAL
+        visualAfterScrollerCapture?()
+        #endif
+        let post = outputUpdate.withLock { state in
+            let post = state.latest == nil
+            state.latest = update
+            state.completed += completed
+            if completed == 0 { state.capturing = false }
+            return post
+        }
+        if post { DispatchQueue.main.async { [weak self] in self?.applyOutputUpdate() } }
+    }
+
+    private func applyOutputUpdate() {
+        let (update, completed) = outputUpdate.withLock { state in
+            defer { state.latest = nil; state.completed = 0 }
+            return (state.latest, state.completed)
+        }
+        content.withLock { $0.parsing -= completed }
+        guard let update else { return }
+        updateScroller(position: update.position, alternate: update.alternate)
+        if scrollDistance != scrollPresentation.distance { queueScroll() }
+        if update.captured != scrollGeometry.captured {
+            _ = prepareScrollSnap()
+            target.withLock { $0 = $0?.rounded() }
+            queueScroll()
+        }
+        scrollGeometry.captured = update.captured
+        completeEntry()
+        captureScrollerIfNeeded()
     }
 
     @discardableResult nonisolated func feed(_ data: Data) -> Bool {

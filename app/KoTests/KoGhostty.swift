@@ -13,7 +13,7 @@ nonisolated(unsafe) private var tickedApp: ghostty_app_t?
     private init() {
         precondition(ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS)
         let config = ghostty_config_new()!
-        let text = "window-padding-x = 0\nwindow-padding-y = 0\nscrollbar = never\ncursor-style-blink = false\ncustom-shader-animation = false\nscrollback-limit = 536870912\n"
+        let text = "window-padding-x = 0\nwindow-padding-y = 0\nscrollbar = never\ncursor-style-blink = false\ncustom-shader-animation = false\n"
         ghostty_config_load_string(config, text, UInt(text.utf8.count), "/kido-ko-tests")
         ghostty_config_finalize(config)
         var runtime = ghostty_runtime_config_s(

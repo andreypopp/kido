@@ -1094,6 +1094,22 @@ pub unsafe extern "C" fn ko_client_clipboard_answer(
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
     pub kitty_images_max_bytes: u64,
+    pub scrollback: ScrollbackLimit,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ScrollbackLimit {
+    pub kind: ScrollbackKind,
+    pub max_bytes: u64,
+    pub max_lines: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollbackKind {
+    Disabled,
+    Bounded,
 }
 
 /// # Safety
@@ -1104,16 +1120,40 @@ pub unsafe extern "C" fn ko_client_limits(client_: *const Client, out: *mut Limi
     let Some(client) = client(client_).filter(|_| !out.is_null()) else {
         return Code::Argument;
     };
-    let Some(kitty_images_max_bytes) = locked(&client.shared.model)
+    let Some(limits) = locked(&client.shared.model)
         .as_ref()
-        .map(|model| model.limits.kitty_images_max_bytes)
+        .map(|model| model.limits)
     else {
         return Code::Closed;
+    };
+    let scrollback = match limits.scrollback {
+        ko_pane_wire::frame::Scrollback::Disabled => ScrollbackLimit {
+            kind: ScrollbackKind::Disabled,
+            max_bytes: 0,
+            max_lines: 0,
+        },
+        ko_pane_wire::frame::Scrollback::Bounded {
+            max_bytes,
+            max_lines,
+        } => {
+            let (Ok(max_bytes), Ok(max_lines)) = (
+                u64::try_from(max_bytes.map_or(0, std::num::NonZeroUsize::get)),
+                u64::try_from(max_lines.map_or(0, std::num::NonZeroUsize::get)),
+            ) else {
+                return Code::Argument;
+            };
+            ScrollbackLimit {
+                kind: ScrollbackKind::Bounded,
+                max_bytes,
+                max_lines,
+            }
+        }
     };
     // SAFETY: out is non-null and writable by contract.
     unsafe {
         *out = Limits {
-            kitty_images_max_bytes,
+            kitty_images_max_bytes: limits.kitty_images_max_bytes,
+            scrollback,
         }
     };
     Code::Ok
@@ -1995,6 +2035,18 @@ mod tests {
         fn next_feed(&self) -> Fed {
             locked(&self.feeds).recv_timeout(WAIT).unwrap()
         }
+
+        fn expect_bytes(&self, offset: u64, expected: &[u8]) {
+            let mut received = Vec::new();
+            while received.len() < expected.len() {
+                let Fed::Bytes(at, data) = self.next_feed() else {
+                    panic!("expected bytes");
+                };
+                assert_eq!(at, offset + received.len() as u64);
+                received.extend_from_slice(&data);
+            }
+            assert_eq!(received, expected);
+        }
     }
 
     unsafe extern "C" fn restore(user: *mut c_void, snapshot: *const view::Snapshot) -> c_int {
@@ -2526,8 +2578,7 @@ mod tests {
         });
         let view = open_view(client, decoder, true);
         assert_eq!(fixture.next(), Seen::Restored(1, Restored::Ok));
-        assert_eq!(decoder.next_feed(), Fed::Bytes(100, b"abc".to_vec()));
-        assert_eq!(decoder.next_feed(), Fed::Bytes(103, b"de".to_vec()));
+        decoder.expect_bytes(100, b"abcde");
         drop_first.send(()).unwrap();
         assert!(matches!(fixture.next(), Seen::Failed(Code::Closed, _)));
         assert!(matches!(fixture.next(), Seen::Welcome(_, _, _, false)));
@@ -2559,8 +2610,7 @@ mod tests {
         });
         let view = open_view(client, decoder, true);
         assert_eq!(fixture.next(), Seen::Restored(1, Restored::Ok));
-        assert_eq!(decoder.next_feed(), Fed::Bytes(100, b"abc".to_vec()));
-        assert_eq!(decoder.next_feed(), Fed::Bytes(103, b"de".to_vec()));
+        decoder.expect_bytes(100, b"abcde");
         drop_first.send(()).unwrap();
         assert!(matches!(fixture.next(), Seen::Failed(Code::Closed, _)));
         let welcomed = fixture.next();
@@ -3949,6 +3999,63 @@ mod tests {
             "bytes and markers go to the surface on the decoder thread"
         );
         close_view(view);
+        close(client);
+    }
+
+    #[test]
+    fn available_output_is_batched_without_crossing_a_marker_or_the_byte_bound() {
+        let routes = client_script(|socket, _| {
+            welcomed(socket);
+            wait_for_hangup(socket);
+        })
+        .view(|socket, _| wait_for_hangup(socket));
+        let server = serve("feed-batch", routes);
+        let fixture = Fixture::new();
+        let client = fixture.connect(&server);
+        assert!(matches!(fixture.next(), Seen::Welcome(..)));
+        assert!(matches!(fixture.next(), Seen::Layout(0, ..)));
+        let decoder = Decoder::new(|_| Restored::Ok);
+        let (release, gate) = channel();
+        decoder.hold_first_feed(gate);
+        let handle = open_view(client, decoder, true);
+        let view = &handle_of(handle).view;
+        view.feed(view::Feed::Bytes {
+            offset: 0,
+            data: b"a".as_slice().into(),
+        });
+        until("the first feed is held", || {
+            locked(&decoder.hold_first_feed).is_none()
+        });
+        view.feed(view::Feed::Bytes {
+            offset: 1,
+            data: b"bc".as_slice().into(),
+        });
+        view.feed(view::Feed::Bytes {
+            offset: 3,
+            data: b"de".as_slice().into(),
+        });
+        view.feed(view::Feed::Marker {
+            offset: 5,
+            marker: ko_server::protocol::Marker::Resize(ko_server::protocol::Size(
+                ko_pane_wire::frame::Size::DEFAULT,
+            )),
+        });
+        view.feed(view::Feed::Bytes {
+            offset: 5,
+            data: vec![b'x'; 40000].into(),
+        });
+        view.feed(view::Feed::Bytes {
+            offset: 40005,
+            data: vec![b'y'; 40000].into(),
+        });
+        release.send(()).unwrap();
+        assert_eq!(decoder.next_feed(), Fed::Bytes(0, b"a".to_vec()));
+        assert_eq!(decoder.next_feed(), Fed::Bytes(1, b"bcde".to_vec()));
+        assert_eq!(decoder.next_feed(), Fed::Resize(5, 80, 24));
+        assert_eq!(decoder.next_feed(), Fed::Bytes(5, vec![b'x'; 40000]));
+        assert_eq!(decoder.next_feed(), Fed::Bytes(40005, vec![b'y'; 40000]));
+        until("the batch leaves the queue", || view.queued() == 0);
+        close_view(handle);
         close(client);
     }
 

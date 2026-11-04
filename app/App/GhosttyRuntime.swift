@@ -513,7 +513,12 @@ extension NSColor {
         default: break
         }
         if action.tag == GHOSTTY_ACTION_SCROLLBAR {
-            PaneView.onMain(userdata) { if $0.scrollTarget == nil { $0.refreshScroller() } }
+            PaneView.onMain(userdata) {
+                #if KIDO_VISUAL
+                guard !$0.visualHoldScrollbarAction else { return }
+                #endif
+                $0.refreshScrollerAfterRender()
+            }
             return true
         }
         if action.tag == GHOSTTY_ACTION_CELL_SIZE {

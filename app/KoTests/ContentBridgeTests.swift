@@ -3,6 +3,7 @@ import GhosttyKit
 import KoClient
 import KoModel
 import PaneGeometry
+import os
 import XCTest
 @testable import Kido
 
@@ -41,6 +42,92 @@ import XCTest
             pane.koView != nil && pane.visualReady && owner.testSession?.windows.values.contains { !$0.isHidden && $0.visualGeometryReady } == true
         }
         return (owner, pane)
+    }
+
+    nonisolated private static func residentBytes() -> UInt64 {
+        var info = proc_taskinfo()
+        let count = proc_pidinfo(getpid(), PROC_PIDTASKINFO, 0, &info, Int32(MemoryLayout<proc_taskinfo>.size))
+        return count == MemoryLayout<proc_taskinfo>.size ? info.pti_resident_size : 0
+    }
+
+    func testOutputFloodKeepsMainResponsive() throws {
+        let (_, pane) = try shown("read start; exec yes")
+        let view = try XCTUnwrap(pane.koView)
+        let initialBytes = pane.visualDecodedBytes
+        let finalBytes = OSAllocatedUnfairLock(initialState: initialBytes)
+        let initialRSS = Self.residentBytes()
+        XCTAssertGreaterThan(initialRSS, 0)
+        let peakRSS = OSAllocatedUnfairLock(initialState: initialRSS)
+        let latencies = OSAllocatedUnfairLock(initialState: [Double]())
+        let finished = expectation(description: "the flood ends")
+        let queue = DispatchQueue(label: "ko-flood-pings", qos: .userInteractive)
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(10))
+        timer.setEventHandler { @Sendable in
+            let rss = ContentBridgeTests.residentBytes()
+            peakRSS.withLock { $0 = max($0, rss) }
+            let sent = ContinuousClock.now
+            DispatchQueue.main.async {
+                let elapsed = sent.duration(to: .now).components
+                latencies.withLock { $0.append(Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18) }
+            }
+        }
+        try view.text(Data("start\n".utf8))
+        timer.resume()
+        queue.asyncAfter(deadline: .now() + 3) {
+            timer.cancel()
+            finalBytes.withLock { $0 = pane.visualDecodedBytes }
+            try? view.text(Data([3]))
+            DispatchQueue.main.async { finished.fulfill() }
+        }
+        wait(for: [finished], timeout: 10)
+        let samples = latencies.withLock { $0.sorted() }
+        XCTAssertGreaterThan(finalBytes.withLock { $0 } - initialBytes, 1_000_000)
+        XCTAssertGreaterThan(samples.count, 100)
+        let maximum = samples.last ?? 0
+        let p99 = samples.isEmpty ? 0 : samples[min(samples.count - 1, samples.count * 99 / 100)]
+        FileHandle.standardError.write(Data("flood: main ping max=\(maximum)s p99=\(p99)s count=\(samples.count) RSS growth=\(peakRSS.withLock { $0 } - initialRSS) bytes\n".utf8))
+        XCTAssertLessThan(maximum, 0.05, "main ping max=\(maximum)s p99=\(p99)s count=\(samples.count)")
+        XCTAssertLessThan(peakRSS.withLock { $0 } - initialRSS, 50_000_000 + (64 << 20), "50_000_000 + (64 << 20)")
+    }
+
+    func testScrollerRequestDuringCaptureIsNotLost() throws {
+        let (_, pane) = try shown("seq 1 1000; read end")
+        wait("the output") { self.text(pane).contains("1000") }
+        pane.visualHoldScrollbarAction = true
+        wait("the previous captures end") { pane.visualScrollerIdle }
+        XCTAssertGreaterThan(pane.visualScrollerOffset, 0)
+        let captured = Latch(), release = DispatchSemaphore(value: 0)
+        let held = OSAllocatedUnfairLock(initialState: false)
+        pane.visualAfterScrollerCapture = {
+            guard held.withLock({ held in defer { held = true }; return !held }) else { return }
+            captured.set()
+            _ = release.wait(timeout: .now() + 5)
+        }
+        defer { release.signal(); pane.visualAfterScrollerCapture = nil; pane.visualHoldScrollbarAction = false }
+        pane.refreshScrollerAfterRender()
+        wait("the first capture holds its snapshot") { captured.isSet }
+        pane.scroll(to: 0)
+        XCTAssertEqual(pane.scrollPosition().offset, 0)
+        pane.refreshScrollerAfterRender()
+        release.signal()
+        wait("the newer request reaches main") { pane.visualScrollerOffset == 0 && pane.visualScrollerIdle }
+    }
+
+    func testMirrorsApplyDisabledAndLineBoundedServerHistory() throws {
+        for (limit, expected) in [("none", 0...0), ("{bytes: unlimited, lines: 1000}", 500...1500)] {
+            let dir = try stateDir()
+            let config = URL(fileURLWithPath: dir).appendingPathComponent(".config/ko")
+            try FileManager.default.createDirectory(at: config, withIntermediateDirectories: true)
+            try "server:\n  scrollback: \(limit)\n".write(to: config.appendingPathComponent("config.yaml"), atomically: true, encoding: .utf8)
+            let owner = try owner(dir: serverWithPane("read start; seq 1 2000; read end", at: dir))
+            wait("the mirror") { owner.testSession?.pane(PaneID(number: 1))?.visualReady == true }
+            let pane = try XCTUnwrap(owner.testSession?.pane(PaneID(number: 1)))
+            try XCTUnwrap(pane.koView).text(Data("start\n".utf8))
+            wait("the live output reaches the mirror") { self.text(pane).contains("2000") }
+            wait("the captured scroller reaches main") { pane.visualScrollerRows == pane.scrollPosition().retainedHistoryRows }
+            XCTAssertTrue(expected.contains(pane.visualScrollerRows), "\(limit): retained \(pane.visualScrollerRows) rows")
+        }
     }
 
     func testAPaneShowsTheServersOutputAndSendsItsInput() throws {
