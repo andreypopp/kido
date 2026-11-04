@@ -27,6 +27,10 @@ impl Leaving {
 
     pub(crate) fn hand_over(&mut self, poll: &mut Poll, pid: Pid, after: Duration) {
         let _ = pid.signal(Signal::Term);
+        self.track(poll, pid, after);
+    }
+
+    pub(crate) fn track(&mut self, poll: &mut Poll, pid: Pid, after: Duration) {
         self.doomed.push(Doomed {
             pid,
             due: Instant::now() + after,

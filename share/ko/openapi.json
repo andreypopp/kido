@@ -3204,7 +3204,8 @@
       },
       "RuntimeKind": {
         "enum": [
-          "command"
+          "command",
+          "container"
         ],
         "type": "string"
       },

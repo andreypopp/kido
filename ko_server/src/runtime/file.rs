@@ -1,9 +1,10 @@
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::Path;
 
-use schemars::JsonSchema;
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::RuntimeName;
@@ -37,6 +38,162 @@ pub(crate) enum Kind {
     /// A runtime on the host, for the tests of the link machinery. The server accepts it only
     /// with KO_RUNTIME_COMMAND_KIND=1 in its environment.
     Command(Command),
+    /// A container of Apple's `container`, which ko creates from an image or finds by name.
+    Container(Container),
+}
+
+macro_rules! word {
+    ($(#[$doc:meta])* $name:ident, $what:literal, $pattern:literal, $valid:expr) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(try_from = "String", into = "String")]
+        pub(crate) struct $name(String);
+
+        impl $name {
+            pub(crate) fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl JsonSchema for $name {
+            fn schema_name() -> Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(_: &mut SchemaGenerator) -> Schema {
+                json_schema!({"type": "string", "pattern": $pattern, "description": $what})
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = String;
+
+            fn try_from(text: String) -> Result<$name, String> {
+                if $valid(text.as_str()) {
+                    Ok($name(text))
+                } else {
+                    Err(format!("{text:?} is not {}", $what))
+                }
+            }
+        }
+
+        impl From<$name> for String {
+            fn from($name(text): $name) -> String {
+                text
+            }
+        }
+    };
+}
+
+fn operand_valid(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || "_.:/@+-".contains(c))
+}
+
+fn user_valid(text: &str) -> bool {
+    !text.starts_with('-') && !text.is_empty() && !text.contains('\0')
+}
+
+fn program_valid(text: &str) -> bool {
+    !text.is_empty() && !text.contains('\0')
+}
+
+word!(
+    /// An image reference or a container name.
+    Operand,
+    "an image reference or a container name",
+    "^[A-Za-z0-9][A-Za-z0-9_.:/@+-]*$",
+    operand_valid
+);
+word!(
+    /// A user as `container exec -u` takes it.
+    User,
+    "a user name or id",
+    "^[^-\\u0000][^\\u0000]*$",
+    user_valid
+);
+word!(
+    /// A program name or path.
+    Program,
+    "a program name or path",
+    "^[^\\u0000]+$",
+    program_valid
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Source {
+    /// A container that ko creates from the image and owns: down stops it and DELETE removes it.
+    Image(Operand),
+    /// A container that the user created with `-v <runtime socket>:/run/ko/socket` and manages.
+    Container(Operand),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Access {
+    Ro,
+}
+
+/// A directory of the host that the container mounts, files only: never a socket.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub(crate) struct Volume {
+    pub(crate) host: AbsPath,
+    pub(crate) runtime: AbsPath,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) options: Option<Access>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SshAgent {
+    /// The host's agent at /var/host-services/ssh-auth.sock (`--ssh`).
+    Forward,
+    #[default]
+    #[serde(rename = "none")]
+    Off,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Ko {
+    /// The static Linux ko beside the server's installation, mounted read-only at /opt/ko.
+    #[default]
+    Shipped,
+    /// The `ko` on the PATH of the image.
+    Path,
+    /// Another installed layout, mounted read-only at /opt/ko.
+    Mount(AbsPath),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub(crate) struct Container {
+    pub(crate) from: Source,
+    /// The `container` program. Default: `container` on the PATH of the server.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) container: Option<Program>,
+    #[serde(default)]
+    pub(crate) volumes: Vec<Volume>,
+    /// The user of every exec, as `container exec -u` takes it. Default: the image's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) user: Option<User>,
+    /// More arguments of `container run`. ko refuses the options it owns.
+    #[serde(default)]
+    pub(crate) run_args: Vec<String>,
+    /// The command that keeps the container alive.
+    #[serde(default = "default_init")]
+    pub(crate) init: Vec<String>,
+    #[serde(default)]
+    pub(crate) ssh_agent: SshAgent,
+    #[serde(default)]
+    pub(crate) ko: Ko,
+}
+
+fn default_init() -> Vec<String> {
+    vec!["sleep".to_owned(), "infinity".to_owned()]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -66,6 +223,7 @@ impl Runtime {
     pub(crate) fn kind(&self) -> RuntimeKind {
         match self.kind {
             Kind::Command(_) => RuntimeKind::Command,
+            Kind::Container(_) => RuntimeKind::Container,
         }
     }
 }
@@ -80,6 +238,29 @@ fn argv_error(argv: &[String]) -> Option<&'static str> {
     }
 }
 
+const OWNED_OPTIONS: [&str; 10] = [
+    "-v",
+    "--volume",
+    "--mount",
+    "--name",
+    "-d",
+    "--detach",
+    "--rm",
+    "--remove",
+    "--publish-socket",
+    "--ssh",
+];
+
+fn owned_option(arg: &str) -> Option<&'static str> {
+    OWNED_OPTIONS.iter().copied().find(|owned| {
+        let short = !owned.starts_with("--");
+        arg == *owned
+            || arg
+                .strip_prefix(owned)
+                .is_some_and(|rest| rest.starts_with('=') || (short && !arg.starts_with("--")))
+    })
+}
+
 fn check(name: &RuntimeName, runtime: &Runtime, command_kind: bool) -> Result<(), String> {
     let bad = |field: &str, why: &str| Err(format!("runtime {name}: {field}: {why}"));
     for (variable, value) in &runtime.env {
@@ -87,19 +268,51 @@ fn check(name: &RuntimeName, runtime: &Runtime, command_kind: bool) -> Result<()
             return bad(&format!("env {variable:?}"), "invalid variable");
         }
     }
-    let Kind::Command(command) = &runtime.kind;
-    if !command_kind {
-        return bad(
-            "kind",
-            "command is a test kind; set KO_RUNTIME_COMMAND_KIND=1",
-        );
-    }
-    if command.prefix.iter().any(|arg| arg.contains('\0')) {
-        return bad("prefix", "contains a NUL");
-    }
-    for (field, argv) in [("lead", &command.lead), ("up", &command.up)] {
-        if let Some(why) = argv.as_deref().and_then(argv_error) {
-            return bad(field, why);
+    match &runtime.kind {
+        Kind::Command(command) => {
+            if !command_kind {
+                return bad(
+                    "kind",
+                    "command is a test kind; set KO_RUNTIME_COMMAND_KIND=1",
+                );
+            }
+            if command.prefix.iter().any(|arg| arg.contains('\0')) {
+                return bad("prefix", "contains a NUL");
+            }
+            for (field, argv) in [("lead", &command.lead), ("up", &command.up)] {
+                if let Some(why) = argv.as_deref().and_then(argv_error) {
+                    return bad(field, why);
+                }
+            }
+        }
+        Kind::Container(container) => {
+            for volume in &container.volumes {
+                let paths = [volume.host.as_path(), volume.runtime.as_path()];
+                if paths
+                    .iter()
+                    .any(|path| path.to_string_lossy().contains(':'))
+                {
+                    return bad("volumes", "a path contains a colon");
+                }
+            }
+            if let Ko::Mount(dir) = &container.ko
+                && dir.as_path().to_string_lossy().contains(',')
+            {
+                return bad("ko", "the mount directory contains a comma");
+            }
+            for arg in &container.run_args {
+                if let Some(owned) = owned_option(arg) {
+                    return bad("run_args", &format!("{owned} is set by ko"));
+                }
+                if arg.contains('\0') {
+                    return bad("run_args", "contains a NUL");
+                }
+            }
+            if container.init.iter().any(|arg| arg.contains('\0'))
+                || container.init.first().is_none_or(String::is_empty)
+            {
+                return bad("init", "must be a command");
+            }
         }
     }
     Ok(())
@@ -147,7 +360,9 @@ mod tests {
         );
         assert_eq!(runtime.paths.len(), 1);
         assert_eq!(runtime.kind(), RuntimeKind::Command);
-        let Kind::Command(command) = &runtime.kind;
+        let Kind::Command(command) = &runtime.kind else {
+            panic!("not a command");
+        };
         assert_eq!(command.prefix, ["/usr/bin/env"]);
         assert_eq!(command.lead.as_deref(), Some(&["/bin/true".to_owned()][..]));
     }
@@ -201,6 +416,51 @@ mod tests {
             )
         );
         assert!(parse(text, true).is_ok());
+    }
+
+    #[test]
+    fn a_container_runtime_has_defaults_and_refuses_the_options_that_ko_owns() {
+        let found =
+            parsed(r#"{"runtimes":{"c":{"kind":"container","from":{"image":"debian:trixie"}}}}"#)
+                .unwrap();
+        let Kind::Container(container) = &found.runtimes[&"c".parse().unwrap()].kind else {
+            panic!("not a container");
+        };
+        assert_eq!(container.init, ["sleep", "infinity"]);
+        assert_eq!(container.ssh_agent, SshAgent::Off);
+        assert_eq!(container.ko, Ko::Shipped);
+        let mounted = parsed(
+            r#"{"runtimes":{"c":{"kind":"container","from":{"container":"mine"},"ko":{"mount":"/k"},"ssh_agent":"forward"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(mounted.runtimes.len(), 1);
+        let bad = |extra: &str| {
+            parsed(&format!(
+                r#"{{"runtimes":{{"c":{{"kind":"container","from":{{"image":"x"}},{extra}}}}}}}"#
+            ))
+            .unwrap_err()
+        };
+        for arg in [
+            "-v",
+            "--volume=/a:/b",
+            "--mount",
+            "--name",
+            "-d",
+            "--detach",
+            "--rm",
+            "--remove",
+            "--publish-socket",
+            "--ssh",
+            "-v/a:/b",
+        ] {
+            let error = bad(&format!(r#""run_args":["{arg}"]"#));
+            assert!(error.contains("runtime c: run_args:"), "{arg}: {error}");
+        }
+        assert!(
+            bad(r#""volumes":[{"host":"/a:b","runtime":"/c"}]"#).contains("runtime c: volumes:")
+        );
+        assert!(bad(r#""user":"-x""#).contains("\"-x\" is not a user name or id"));
+        assert!(bad(r#""init":[]"#).contains("runtime c: init:"));
     }
 
     #[test]

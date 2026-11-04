@@ -2773,6 +2773,7 @@ pub struct PathMap {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeKind {
     Command,
+    Container,
 }
 
 /// The state of a runtime's link. The first pane of a runtime starts it, and the idle rule or a

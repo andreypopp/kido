@@ -8,7 +8,7 @@ use crate::protocol::{
     Empty, Error, ErrorKind, Info, LeadReport, LinkState, RuntimeInfo, RuntimeWait,
 };
 use crate::runtime::pane::{self, Wrap as Entering, socket_path};
-use crate::runtime::{Due, Wait, Who};
+use crate::runtime::{CLEANUP_LIMIT, Due, Wait, Who};
 use crate::server::Origin;
 use crate::vars::Vars;
 
@@ -62,6 +62,7 @@ impl State {
                     pane: id,
                     cwd: request.cwd.as_deref(),
                     env: &request.env,
+                    server_env: &self.config.env,
                     from_runtime: caller.is_some_and(|caller| self.panes.is_in(caller, name)),
                 };
                 program(
@@ -94,6 +95,9 @@ impl State {
         for pid in self.runtimes.take_dying() {
             self.leaving
                 .hand_over(poll, pid, self.config.stop_escalation);
+        }
+        for pid in self.runtimes.take_cleaning() {
+            self.leaving.track(poll, pid, CLEANUP_LIMIT);
         }
         for (name, wait, state) in self.runtimes.take_settled() {
             self.answer_wait(poll, &name, wait, state);
@@ -173,7 +177,7 @@ impl State {
             socket: socket_path(self.runtimes.root(), name)
                 .to_string_lossy()
                 .into_owned(),
-            paths: runtime.paths.clone(),
+            paths: runtime.paths(),
         }
     }
 
@@ -279,7 +283,7 @@ impl State {
         }
         self.exec_down(poll, name);
         let waiters = self.runtimes.waiters_of(name);
-        self.runtimes.down(poll, name);
+        self.runtimes.down(poll, name, false);
         for wait in waiters {
             self.answer_wait(poll, name, wait, LinkState::Down);
         }
@@ -296,8 +300,9 @@ impl State {
         poll: &mut Poll,
         name: &RuntimeName,
     ) -> Result<Empty, Error> {
-        self.runtimes.settings(name)?;
+        let settings = self.runtimes.settings(name)?;
         self.down_runtime(poll, name, false)?;
+        self.runtimes.delete(name, &settings);
         self.runtimes.remove_directory(name);
         Ok(Empty {})
     }

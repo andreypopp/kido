@@ -977,17 +977,17 @@ fn ko_enter_needs_a_private_token_and_a_directory_and_a_runtime_refuses_the_term
 }
 
 #[derive(Debug, Default)]
-struct Exec {
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    end: Value,
+pub(crate) struct Exec {
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+    pub(crate) end: Value,
 }
 
 fn decode(value: &Value) -> Vec<u8> {
     ko_pane_wire::base64::decode(value["data"].as_str().unwrap()).unwrap()
 }
 
-fn read_exec(ws: &mut crate::harness::Ws) -> Exec {
+pub(crate) fn read_exec(ws: &mut crate::harness::Ws) -> Exec {
     let mut exec = Exec::default();
     loop {
         let crate::harness::Message::Text(text) = ws.read() else {
@@ -1005,7 +1005,7 @@ fn read_exec(ws: &mut crate::harness::Ws) -> Exec {
     }
 }
 
-fn start_exec(s: &Server, runtime: &str, request: Value) -> crate::harness::Ws {
+pub(crate) fn start_exec(s: &Server, runtime: &str, request: Value) -> crate::harness::Ws {
     let mut ws = s.ws(&format!("/runtimes/{runtime}/exec"));
     let mut message = request;
     message["type"] = json!("exec");

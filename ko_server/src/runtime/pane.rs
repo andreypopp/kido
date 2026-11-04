@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ids::{PaneId, RuntimeName};
 use crate::protocol::{PathMap, Variable};
-use crate::runtime::Runtime;
+use crate::runtime::file::Runtime;
 
 pub(crate) fn directory(root: &Path, name: &RuntimeName) -> PathBuf {
     root.join(name.as_str())
@@ -16,8 +16,13 @@ pub(crate) fn token_directory(root: &Path, name: &RuntimeName) -> PathBuf {
     directory(root, name).join("panes")
 }
 
-pub(crate) fn token_path(root: &Path, name: &RuntimeName, pane: PaneId) -> PathBuf {
-    token_directory(root, name).join(format!("{pane}.token"))
+pub(crate) fn token_path(
+    root: &Path,
+    name: &RuntimeName,
+    runtime: &Runtime,
+    pane: PaneId,
+) -> PathBuf {
+    token_directory(root, name).join(runtime.token_file(pane))
 }
 
 fn map_cwd(paths: &[PathMap], default: Option<&Path>, host_cwd: &Path) -> Option<PathBuf> {
@@ -40,6 +45,7 @@ pub(crate) struct Wrap<'a> {
     pub(crate) pane: PaneId,
     pub(crate) cwd: Option<&'a str>,
     pub(crate) env: &'a [Variable],
+    pub(crate) server_env: &'a [Vec<u8>],
     pub(crate) from_runtime: bool,
 }
 
@@ -60,41 +66,36 @@ pub(crate) fn wrapper(wrap: &Wrap<'_>, inner: Option<&[Vec<u8>]>) -> Vec<Vec<u8>
         pane,
         cwd,
         env,
+        server_env,
         from_runtime,
     } = wrap;
-    let entry = runtime.entry();
     let cwd = match (cwd, from_runtime) {
         (Some(cwd), true) => Some(PathBuf::from(cwd)),
         (Some(cwd), false) => map_cwd(
-            &runtime.paths,
+            &runtime.paths(),
             runtime.cwd.as_ref().map(|cwd| cwd.as_path()),
             Path::new(cwd),
         ),
         (None, _) => runtime.cwd.as_ref().map(|cwd| cwd.as_path().to_path_buf()),
     };
-    let socket = entry.socket.map_or_else(
-        || socket_path(root, name),
-        |socket| socket.as_path().to_path_buf(),
-    );
+    let entry = runtime.entry(name, *pane, (exe, root, server_env));
     let mut argv = vec![
         bytes(exe),
         text("runtime-exec"),
         text(name.as_str()),
         text("--"),
     ];
-    argv.extend(entry.prefix.iter().map(|arg| text(arg)));
+    argv.extend(entry.prefix);
     argv.extend([
-        bytes(exe),
+        entry.ko,
         text("enter"),
         text("--socket"),
-        bytes(&socket),
+        entry.socket,
         text("--pane"),
         text(&pane.to_string()),
-        text("--token-file"),
-        bytes(&token_path(root, name, *pane)),
-        text("--runtime"),
-        text(name.as_str()),
     ]);
+    argv.extend(entry.token);
+    argv.extend([text("--runtime"), text(name.as_str())]);
     if let Some(cwd) = cwd {
         argv.extend([text("--cwd"), bytes(&cwd)]);
     }

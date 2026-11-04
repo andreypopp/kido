@@ -1173,7 +1173,10 @@ shell. Nothing of the caller's environment crosses: the runtime's
 `env`, then the request's, apply. The server reads the WebSocket only
 while the command takes input and sends output only while the
 connection's queue is below its cap, so a slow reader stops the
-command and nothing is lost. A close before `exit` ends the command:
-`SIGTERM`, then `SIGKILL` after `KO_STOP_ESCALATION_MS`. One runtime
+command and nothing is lost. A close before `exit` ends the helper
+process: `SIGTERM`, then `SIGKILL` after `KO_STOP_ESCALATION_MS`.
+Whether that ends the command inside is the kind's: in a container,
+the command keeps running and only its stdin closes
+(design-runtimes.md, "The container kind"). One runtime
 runs at most 32 sessions; later ones wait in order. The user and host
 pane identities may open a session; a runtime connection may not.

@@ -176,6 +176,8 @@ fn runtime_idle(value: Option<OsString>) -> RuntimeIdle {
 pub enum Dir {
     Create,
     Existing,
+    /// The server of the caller's own pane, which KO_SOCKET named.
+    Own,
 }
 
 pub fn socket_path(dir: &Path) -> Result<PathBuf, String> {
@@ -201,6 +203,9 @@ pub fn socket(mode: Dir, dir: &Path) -> Result<PathBuf, String> {
     let meta = fs::symlink_metadata(dir).map_err(|error| error.to_string())?;
     if !meta.is_dir() {
         Err("server path is not a directory".to_owned())
+    } else if mode == Dir::Own {
+        // A container runtime makes the parent of the mounted socket, root-owned and 0755.
+        Ok(socket)
     } else if meta.uid() != ko_sys::sock::uid() {
         Err("server directory is not owned by this user".to_owned())
     } else if meta.permissions().mode() & 0o077 != 0 {
@@ -244,14 +249,34 @@ pub fn look_path(path: &str, name: &str) -> Option<PathBuf> {
         .find(|candidate| is_executable(candidate))
 }
 
-pub fn terminfo_of(exe: &Path) -> Option<PathBuf> {
+pub fn env_path(env: &[Vec<u8>]) -> &[u8] {
+    env.iter()
+        .find_map(|entry| entry.strip_prefix(b"PATH="))
+        .unwrap_or_default()
+}
+
+pub fn program_path(path: &str, program: &str) -> Option<PathBuf> {
+    if program.contains('/') {
+        Some(PathBuf::from(program))
+    } else {
+        look_path(path, program)
+    }
+}
+
+pub fn installed(exe: &Path, relative: &str) -> Vec<PathBuf> {
     candidates(exe)
         .iter()
-        .filter_map(|exe| Some(exe.parent()?.join("../share/ko/terminfo")))
+        .filter_map(|exe| Some(exe.parent()?.parent()?.join(relative)))
+        .collect()
+}
+
+pub fn terminfo_of(exe: &Path) -> Option<PathBuf> {
+    installed(exe, "share/ko/terminfo")
+        .into_iter()
         .find(|path| path.exists())
 }
 
-pub fn candidates(exe: &Path) -> Vec<PathBuf> {
+fn candidates(exe: &Path) -> Vec<PathBuf> {
     let resolved = fs::canonicalize(exe)
         .ok()
         .filter(|resolved| resolved != exe);

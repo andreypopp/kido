@@ -310,7 +310,7 @@ impl State {
             .runtimes
             .settings(&name)
             .map_err(|error| error.message)
-            .and_then(|runtime| runtime.exec_launch(&name, &request))
+            .and_then(|runtime| runtime.exec_launch(&name, &request, &self.config.env))
             .and_then(|launch| {
                 spawn(
                     poll,

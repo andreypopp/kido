@@ -1,12 +1,12 @@
 # Runtimes, as built
 
 A **runtime** is a named place where a pane's program runs and where
-an exec session runs a command: an ssh host or a container later, and
-today only the test-only `command` kind. The host is the implicit
-runtime of every other pane. This document describes the runtime core:
-the configuration, the link, the listener and the identity on it, how
-a pane starts in a runtime, and the exec session. The kinds `ssh` and
-`container` do not exist yet. [protocol.md](protocol.md), section 15,
+an exec session runs a command: an Apple container (the `container`
+kind), an ssh host later, and the test-only `command` kind. The host
+is the implicit runtime of every other pane. This document describes
+the runtime core: the configuration, the link, the listener and the
+identity on it, how a pane starts in a runtime, the exec session, and
+the container kind. The `ssh` kind does not exist yet. [protocol.md](protocol.md), section 15,
 gives the routes. [design-ko.md](design-ko.md) describes the server,
 and [design.md](design.md) the agent features. This document does not
 repeat them.
@@ -26,12 +26,14 @@ The coordinator's modules are `ko_server/src/runtime/`: `file.rs`
 (the configuration), `mod.rs` (the registry, the link states and the
 one dispatch over the kinds), `pane.rs` (the runtime directory's
 layout, the cwd mapping and a pane's host-side argv), `command.rs`
-(what only the `command` kind does), `exec.rs` (the helper process,
+(what only the `command` kind does), `container.rs` (the container
+kind: its start stages, its argvs and its cleanup), `exec.rs` (the helper process,
 the session's stages and the session limiter) and `leaving.rs` (the
 children that the server ended, until they are reaped).
 `state/runtime_ops.rs` holds the routes, the identity gate and the
 idle rule, and `state/exec_ops.rs` drives the exec sessions through
-their stages; `exec.rs` holds only the types. A new kind adds one arm
+their stages; `exec.rs` holds the helper's types and its spawn, and
+no session logic. A new kind adds one arm
 to each method of the dispatch in `mod.rs` and its bodies in a module
 of its own.
 
@@ -65,7 +67,8 @@ exec's argv, on the host. Two optional steps model what the ssh and
 container kinds will do, so that the link machinery is tested before
 they exist: `lead`, an interactive step that one waiting pane runs on
 its own pty (the ssh master's login), and `up`, a step that the
-server runs as its own child (the ssh forward, the container start).
+server runs as its own child (the ssh forward). The `container` kind's
+fields are in "The container kind" below.
 
 ## The link
 
@@ -83,9 +86,14 @@ up. A request that creates a pane in a runtime that is `Down` or
 starts the link and returns at once with the pane, as for a host
 pane; an exec session starts it too. A `Failed` runtime starts again
 at the next request. The start binds the listener, then runs the
-`lead` step, then the `up` step, then sets `Up`. A failure sets
-`Failed`, unbinds the listener, removes the socket and the token
-files, and answers every waiter with the message.
+`lead` step, then the kind's stages, then sets `Up`. A stage is one
+helper child of the server, reaped on `SIGCHLD`, whose exit, stdout
+and stderr decide the next stage, `Up` or a failure; the `command`
+kind's `up` step is one stage, and the container kind has several
+("The container kind"). One deadline of 120 s covers every stage of a
+start. A failure sets `Failed`, unbinds the listener, removes the
+socket and the token files, runs the kind's cleanup, and answers every
+waiter with the message.
 
 The pane's host-side program is `ko runtime-exec NAME -- ARGV`
 (`ko/src/runtime.rs`). It long-polls `GET /runtimes/NAME/wait` over
@@ -200,9 +208,13 @@ host prefix matches whole components; no match gives the runtime's
 transport's directory.
 
 **The token** never appears in an argv, because `ps` shows every
-user's arguments. The server writes `<state>/runtimes/<name>/panes/pane_N.token`
-(directory `0700`, file `0600`) before it answers `Up` to that pane's
-wait, and removes it when the pane leaves the document and at down.
+user's arguments. The server writes the pane's token file in
+`<state>/runtimes/<name>/panes/` (directory `0700`, file `0600`)
+before it answers `Up` to that pane's wait, and removes it when the
+pane leaves the document and at down. The kind chooses the file's
+name and text: `pane_N.token` with the bare token, which `ko enter`
+reads, or the container kind's `pane_N.env`, an env file with
+`KO_PANE_TOKEN=...`, which `container exec --env-file` reads.
 `ko enter --token-file F` reads and unlinks it; a file that is missing
 or not private is `ko enter: no token`, exit 1. Without
 `--token-file`, `ko enter` takes `KO_PANE_TOKEN` from its environment,
@@ -221,7 +233,14 @@ the token file without following a link, checks the open descriptor
 unlinks it; the server creates the file new, never through an
 existing link. Inside a runtime,
 `ko` with no command refuses to start a client or a server: `ko:
-inside runtime NAME; attach from the host`. `ko enter` and `ko
+inside runtime NAME; attach from the host`. A `ko` command that acts as
+a pane (`KO_SOCKET` names the pane's own server, so the identity
+headers go with it) does not require that the socket's directory is
+private and its own (`Dir::Own` in `ko_server/src/config.rs`): a
+container's `/run/ko`, the parent of the relayed socket, is made by
+the engine, owned by root and `0755`, and the token, not the
+directory, is the identity on a runtime socket. A command without a
+pane identity (`--server`, `KO_STATE_DIR`) keeps the check. `ko enter` and `ko
 runtime-exec` are plumbing, hidden from `ko --help`.
 
 **Status.** A runtime pane's foreground is the transport's process,
@@ -253,7 +272,8 @@ for.
 (`Runtime::exec_launch` in `ko_server/src/runtime/mod.rs`), which the server runs as its child with
 three non-blocking pipes on the loop and reaps on `SIGCHLD`. The
 helper's exit is the command's. For `command`, the helper is the
-`prefix` and the argv, with no shell. The kinds still to come plug
+`prefix` and the argv, with no shell. For `container`, it is
+`container exec` ("The container kind"). The kinds still to come plug
 in at the launch and at the classification of an exit
 (`Runtime::refused`, "the transport refused a channel before any
 output"); a bridge kind can serve the session by frames with no
@@ -286,8 +306,113 @@ whose master carries panes and sessions as channels of one
 connection, which sshd's `MaxSessions` bounds; the other kinds keep
 it for one behaviour. A helper exit that the kind classifies as a
 refused channel is retried once, after the next session of that
-runtime ends, then reported as `error`. The `command` kind never
-classifies one.
+runtime ends, then reported as `error`. Neither the `command` nor the
+`container` kind classifies one.
+
+## The container kind
+
+The `container` kind runs a runtime's panes and exec sessions in one
+Apple container, through the `container` CLI (measured with 1.5.0).
+Each container is one lightweight Linux VM on arm64. The fields are
+`Container` in `ko_server/src/runtime/file.rs`. `from` names either an
+image, from which ko creates and owns the container `ko-<name>`, or a
+container that the user created and manages. The server finds the
+`container` binary on its own `PATH` at each link start, unless the
+field names a path.
+
+**The socket relay.** A `--volume` whose source is a socket file is a
+relay over vsock, not a mount: a process in the VM that connects to
+the target connects to the host socket. A directory with a socket in
+it does not cross. The relay goes by path and follows a new bind at
+the same path, so the listener binds before `container run`, and a
+container created once keeps working across server restarts. The
+target is always `/run/ko/socket`. A user's container must have been
+created with `-v <socket>:/run/ko/socket`, where `<socket>` is the
+`socket` that `GET /runtimes/{name}` reports; else the start fails
+and names that `-v`.
+
+**The ko inside.** `ko: "shipped"`, the default, mounts the static
+Linux ko of `share/ko/linux/aarch64` beside the server's installation
+(AGENTS.md, "Layout") read-only at `/opt/ko`, so an image needs no ko
+of its own. A missing layout fails only a start that must create the
+container, with the path and `make build-ko-linux`. `{ "mount": DIR }`
+mounts another layout there, and `"path"` uses the image's `ko`. The
+layout is always aarch64, because the VM's kernel is arm64 whatever
+the image; an amd64 image under Rosetta was not measured.
+
+**The start stages**, each a helper child (`Plan::next` in
+`container.rs`, a pure function of the stage and its outcome):
+
+1. `container system status`. A failure is `container system is not
+   running: run container system start`.
+2. `container inspect <target>`. A missing container (exit 1, `not
+   found`) of an image runtime goes to `container run -d --name
+   ko-<name> --init` with the socket relay, each configured volume as
+   `-v`, the `/opt/ko` mount, `--ssh` for `ssh_agent: forward`,
+   `run_args`, the image and `init` (default: `sleep` with the
+   argument `infinity`; `--init` reaps the orphans of the panes). A
+   stopped container goes to `container start`, a running one to the
+   next stage. For a user's container, this stage also checks the
+   socket relay's mount.
+3. `container exec <target> <ko> version`: the version check. Another
+   protocol major or another `Ko-Vt` fails the start with both builds.
+   Exit 127 or `failed to find target executable` is `ko is not
+   installed in runtime NAME`.
+
+A container that exists keeps the volumes, mounts and `run_args` that
+it was created with: an edit of these fields takes effect after a
+`DELETE` of the runtime.
+
+**The watch.** The link holds one more helper while it is up:
+`container exec -i <target> cat` with a stdin that the server never
+writes. It ends when the container stops, from outside too, and its
+end takes the link `Down` as a forced down does, which removes the
+runtime's panes, whose `container exec` ended with the VM anyway. The
+next pane or exec starts the link again. `container logs --follow`
+ended at once, and `container start --attach` refuses a running
+container, so neither can be the watch. The watch needs `cat` in the
+image.
+
+**A pane** runs `ko runtime-exec NAME -- container exec -t -i [-u
+USER] --env-file <panes>/pane_N.env <target> <ko> enter --socket
+/run/ko/socket --pane pane_N --runtime NAME [--cwd DIR] [--env
+K=V]...`. The env file brings `KO_PANE_TOKEN` into the pane's
+environment, where `ko enter` reads it, so the token is in no argv.
+The cwd mapping has the configured volumes as `paths` entries, host
+to runtime, before the configured `paths`; `GET /runtimes` reports
+the combined list.
+
+**An exec session** runs `container exec [-i] [-u USER] [--cwd DIR]
+-e K=V... <target> ARGV...`, with `-i` only when the request has
+stdin. Each variable has a value, because `-e K` alone copies the
+host's value. The `container` CLI runs with the server's environment,
+and none of it reaches the command; `PATH` is the image's unless an
+`env` names it. The exit status is the command's; a command that a
+signal ended exits with 128 plus the signal, as a shell reports it,
+never as `exit { signal }`. A missing program exits 1 with `failed to
+find target executable` on stderr. The `container exec` client
+ignores `SIGTERM` and `SIGINT` (it prints `missing signal in xpc
+message`) and passes no signal into the container, so a `signal`
+message or a close before `exit` ends the client at the escalation's
+`SIGKILL` and leaves the command running with its stdin closed; a
+command that reads its stdin then ends on the EOF.
+
+**Down and cleanup.** Down, the idle rule, a failed start and the
+server's exit stop a container that ko created (`container stop`); a
+user's container is never stopped. `DELETE /runtimes/{name}` also
+removes a container that ko created (`container delete --force`) and
+never a user's. The cleanup of a runtime is one queue of the
+registry, in order: first the start stage and the watch that the down
+ended, until they are reaped, then the stop, then the delete. A
+stage that was killed can still finish its engine operation, which is
+why the stop waits for its reap. Each cleanup command is a child of
+the server with its stdio on `/dev/null`; the server reaps it and
+kills it after 30 s, but never sends it `SIGTERM`. A start of the
+same runtime that arrives meanwhile is `Starting` and runs its first
+stage only when the queue is empty, so an old stop never stops a new
+start's container. The reply to `DELETE` does not wait for the
+removal. At the server's exit the stops start without the queue's
+order and finish after the server is gone.
 
 ## Decisions
 
@@ -303,3 +428,17 @@ classifies one.
 - A live exec session keeps a runtime from going idle, as a pane does.
 - The `runtime` event on `/client` and the runtimes of the `Welcome`
   come with the clients' unit, not with the core.
+
+Container kind, 2026-11-04:
+
+- The relay of a socket-file volume carries the runtime socket;
+  `--publish-socket` and `--ssh` are not used for it.
+- The container's name is `ko-<name>`, not tied to a server instance,
+  so a restarted server reuses it and the files that agents installed
+  in it persist.
+- The token reaches the pane through an env file written when the
+  link is up, at the same point as the `command` kind's token file,
+  not before the pane's `ko-pane` starts: the pane's `container exec`
+  runs only after its wait returned `Up`.
+- The link learns that its container stopped from a watch child, not
+  from a poll and not only from the next pane.

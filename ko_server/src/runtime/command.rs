@@ -1,14 +1,54 @@
-use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use ko_sys::pid::Exit;
 
-use crate::config::look_path;
+use crate::config::program_path;
 use crate::ids::RuntimeName;
 use crate::protocol::ExecRequest;
 use crate::runtime::exec::Launch;
 use crate::runtime::file::{Command, Runtime};
+use crate::runtime::{Entry, Next, Outcome};
 
 const DEFAULT_PATH: &str = "/usr/bin:/bin";
+
+fn bytes(path: &Path) -> Vec<u8> {
+    path.as_os_str().as_encoded_bytes().to_vec()
+}
+
+pub(crate) fn entry(
+    command: &Command,
+    (exe, socket): (&Path, PathBuf),
+    token_file: &Path,
+) -> Entry {
+    Entry {
+        prefix: command
+            .prefix
+            .iter()
+            .map(|arg| arg.as_bytes().to_vec())
+            .collect(),
+        ko: bytes(exe),
+        socket: bytes(
+            &command
+                .socket
+                .as_ref()
+                .map_or(socket, |socket| socket.as_path().to_path_buf()),
+        ),
+        token: vec![b"--token-file".to_vec(), bytes(token_file)],
+    }
+}
+
+pub(crate) fn first(command: &Command, env: &[Vec<u8>]) -> Option<Launch> {
+    let (program, args) = command.up.as_deref()?.split_first()?;
+    Some(Launch::new(PathBuf::from(program), args.to_vec(), env))
+}
+
+pub(crate) fn next(out: &Outcome<'_>) -> Next {
+    if out.ok() {
+        Next::Up
+    } else {
+        Next::Fail(out.failure("up"))
+    }
+}
 
 pub(crate) fn exec_launch(
     name: &RuntimeName,
@@ -16,24 +56,14 @@ pub(crate) fn exec_launch(
     command: &Command,
     request: &ExecRequest,
 ) -> Result<Launch, String> {
-    let mut env: BTreeMap<&str, &str> = runtime
-        .env
-        .iter()
-        .chain(&request.env)
-        .map(|(variable, value)| (variable.as_str(), value.as_str()))
-        .collect();
-    env.insert("KO_RUNTIME", name.as_str());
+    let mut env = runtime.exec_env(name, request);
     let path = *env.entry("PATH").or_insert(DEFAULT_PATH);
     let mut words = command.prefix.iter().chain(&request.argv);
     let program = words
         .next()
         .ok_or_else(|| "argv needs a program".to_owned())?;
-    let found = if program.contains('/') {
-        Some(program.into())
-    } else {
-        look_path(path, program)
-    }
-    .ok_or_else(|| format!("{program}: command not found"))?;
+    let found =
+        program_path(path, program).ok_or_else(|| format!("{program}: command not found"))?;
     let dir = request
         .cwd
         .as_ref()
@@ -56,8 +86,6 @@ pub(crate) fn refused(_command: &Command, _exit: Exit) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
     use crate::protocol::AbsPath;
     use crate::runtime::file::Kind;
@@ -68,7 +96,9 @@ mod tests {
             r#"{"kind":"command","env":{"A":"runtime","B":"runtime"},"cwd":"/work","prefix":["/usr/bin/env"]}"#,
         )
         .unwrap();
-        let Kind::Command(command) = &runtime.kind;
+        let Kind::Command(command) = &runtime.kind else {
+            panic!("not a command");
+        };
         let request = |cwd: Option<&str>, path: Option<&str>| ExecRequest {
             argv: vec!["/bin/echo".to_owned(), "x".to_owned()],
             cwd: cwd.map(|cwd| AbsPath::try_from(cwd.to_owned()).unwrap()),

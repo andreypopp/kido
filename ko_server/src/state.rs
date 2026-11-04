@@ -763,7 +763,9 @@ impl State {
     }
 
     pub(crate) fn reap(&mut self, poll: &mut Poll) -> std::io::Result<()> {
-        self.runtimes.reap(poll);
+        for name in self.runtimes.reap(poll) {
+            let _ = self.down_runtime(poll, &name, true);
+        }
         self.runtimes_changed(poll);
         self.exec_reap(poll);
         self.leaving.reap();

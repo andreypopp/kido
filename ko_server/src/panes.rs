@@ -70,12 +70,7 @@ fn environment(
         ),
     ]);
     if let Some(dir) = &config.bin_dir {
-        let inherited = config
-            .env
-            .iter()
-            .find_map(|entry| entry.strip_prefix(b"PATH="))
-            .unwrap_or_default();
-        let path = path_with(dir, inherited);
+        let path = path_with(dir, crate::config::env_path(&config.env));
         forced.push(("PATH", path));
     }
     let agent = (

@@ -2,7 +2,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use ko_server::config::{candidates, is_executable};
+use ko_server::config::{installed, is_executable};
 
 fn is_file(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|meta| meta.is_file())
@@ -16,9 +16,8 @@ fn same_file(a: &Path, b: &Path) -> bool {
 }
 
 pub fn of_exe(exe: &Path) -> Option<PathBuf> {
-    candidates(exe)
-        .iter()
-        .filter_map(|exe| Some(exe.parent()?.parent()?.join("share/ko/bin")))
+    installed(exe, "share/ko/bin")
+        .into_iter()
         .find(|dir| is_file(&dir.join("ko")))
         .filter(|dir| !dir.as_os_str().as_encoded_bytes().contains(&b':'))
 }

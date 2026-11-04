@@ -95,12 +95,20 @@ pub(crate) fn within(stream: &UnixStream, deadline: Instant) {
     stream.set_write_timeout(Some(time_left(deadline))).unwrap();
 }
 
-pub(crate) fn poll(what: &str, mut check: impl FnMut() -> bool) {
-    let deadline = Instant::now() + DEADLINE;
+pub(crate) fn poll(what: &str, check: impl FnMut() -> bool) {
+    poll_for(what, (DEADLINE, Duration::from_millis(10)), check);
+}
+
+pub(crate) fn poll_for(
+    what: &str,
+    (limit, tick): (Duration, Duration),
+    mut check: impl FnMut() -> bool,
+) {
+    let deadline = Instant::now() + limit;
     while !check() {
         assert!(Instant::now() < deadline, "wait for {what}");
         // A poll tick for a condition that has no descriptor to wait on: an event-less condition.
-        thread::park_timeout(Duration::from_millis(10));
+        thread::park_timeout(tick);
     }
 }
 

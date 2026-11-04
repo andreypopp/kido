@@ -324,9 +324,13 @@ Conventions:
   `container system status` succeeds and the image `debian:trixie`
   is present: it runs the aarch64 static ko of
   `build/ko/share/ko/linux/aarch64` in a container and compares its
-  `ko version` with the host's. It needs `make build-ko-linux` first;
-  with the variable set, a missing layout is a failure. CI does not
-  set it. The suite drives `build/ko/bin/ko`,
+  `ko version` with the host's, and it drives a `container` runtime
+  through one server (docs/design-runtimes.md, "The container kind").
+  Its runtime name carries the test's pid, so the container `ko-<name>`
+  is its own, and a drop guard deletes that container on every exit;
+  it never touches another container and pulls no image. It needs
+  `make build-ko-linux` first; with the variable set, a missing layout
+  or `container` CLI is a failure. CI does not set it. The suite drives `build/ko/bin/ko`,
   which `make e2e-ko` builds first; a test never runs make or cargo.
   A test reads like command-line use: a step that a `ko` command can
   do (`ko api`, `ko kill-server`, `ko version`) runs that command
@@ -808,6 +812,10 @@ most easily:
   only the runtime's `env`, the request's `env` and `KO_RUNTIME`.
 - The server signals only an exec helper or a step that it spawned.
 - The `command` kind is test-only, behind `KO_RUNTIME_COMMAND_KIND=1`.
+- The container kind stops and deletes only the container `ko-<name>`
+  that it created from an image, never a `from.container`. Its cleanup
+  children never get `SIGTERM`, so a stop completes after the link
+  is gone.
 
 **Native agent status.** Only OSC 7501 root apps `pi` and
 `claude-code` identify agent panes. Four pane variables supply local pi

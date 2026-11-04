@@ -15,6 +15,7 @@ use crate::protocol::{ExecClient, ExecRequest, STDERR_TAIL};
 pub(crate) const MAX_SESSIONS: usize = 32;
 const MAX_BACKLOG: usize = 16;
 const READS_PER_TURN: usize = 16;
+const CAPTURE_LIMIT: usize = 1 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Admit {
@@ -111,10 +112,21 @@ pub(crate) struct Launch {
     pub(crate) env: Vec<Vec<u8>>,
 }
 
+impl Launch {
+    pub(crate) fn new(program: PathBuf, args: Vec<String>, env: &[Vec<u8>]) -> Launch {
+        Launch {
+            program,
+            args,
+            dir: None,
+            env: env.to_vec(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mode {
     Exec { stdin: bool },
-    Step,
+    Capture,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +172,7 @@ pub(crate) struct Helper {
     stderr: Reader,
     exit: Option<Exit>,
     tail: Vec<u8>,
+    out: Vec<u8>,
 }
 
 fn reader(poll: &mut Poll, pipe: io::PipeReader) -> io::Result<Reader> {
@@ -180,7 +193,7 @@ pub(crate) fn spawn(poll: &mut Poll, launch: &Launch, mode: Mode) -> io::Result<
     let args: Vec<&str> = launch.args.iter().map(String::as_str).collect();
     let (stdin, stdout) = match mode {
         Mode::Exec { stdin } => (stdin, true),
-        Mode::Step => (false, false),
+        Mode::Capture => (false, true),
     };
     let pid = spawn::program(
         &launch.program,
@@ -225,7 +238,20 @@ pub(crate) fn spawn(poll: &mut Poll, launch: &Launch, mode: Mode) -> io::Result<
         stderr: reader(poll, err_read)?,
         exit: None,
         tail: Vec::new(),
+        out: Vec::new(),
     })
+}
+
+pub(crate) fn detached(launch: &Launch) -> io::Result<Pid> {
+    let null = File::options().read(true).write(true).open("/dev/null")?;
+    let args: Vec<&str> = launch.args.iter().map(String::as_str).collect();
+    spawn::program(
+        &launch.program,
+        &args,
+        &[(null.as_fd(), 0), (null.as_fd(), 1), (null.as_fd(), 2)],
+        spawn::Env::Only(&launch.env),
+        launch.dir.as_deref(),
+    )
 }
 
 impl Helper {
@@ -349,18 +375,31 @@ impl Helper {
     }
 
     pub(crate) fn collect(&mut self, poll: &mut Poll) {
-        let mut buffer = [0u8; 1024];
-        for _ in 0..READS_PER_TURN {
-            match self.read(poll, Stream::Stderr, &mut buffer, 1024) {
-                Chunk::Data(count) => {
-                    self.tail
-                        .extend_from_slice(buffer.get(..count).unwrap_or_default());
-                    let excess = self.tail.len().saturating_sub(STDERR_TAIL);
-                    self.tail.drain(..excess);
+        let mut buffer = [0u8; 4096];
+        for stream in [Stream::Stdout, Stream::Stderr] {
+            for _ in 0..READS_PER_TURN {
+                let Chunk::Data(count) = self.read(poll, stream, &mut buffer, 4096) else {
+                    break;
+                };
+                let data = buffer.get(..count).unwrap_or_default();
+                match stream {
+                    Stream::Stdout => {
+                        let room = CAPTURE_LIMIT.saturating_sub(self.out.len());
+                        self.out
+                            .extend_from_slice(data.get(..room.min(count)).unwrap_or_default());
+                    }
+                    Stream::Stderr => {
+                        self.tail.extend_from_slice(data);
+                        let excess = self.tail.len().saturating_sub(STDERR_TAIL);
+                        self.tail.drain(..excess);
+                    }
                 }
-                Chunk::Wait | Chunk::End => break,
             }
         }
+    }
+
+    pub(crate) fn stdout(&self) -> &[u8] {
+        &self.out
     }
 
     pub(crate) fn tail(&self) -> &[u8] {

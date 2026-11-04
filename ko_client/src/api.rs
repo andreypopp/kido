@@ -24,13 +24,18 @@ pub enum Error {
     Server(Failure),
 }
 
-fn socket(dir: &Path) -> Result<PathBuf, Failure> {
+fn socket(dir: &Path, caller: Option<&Caller>) -> Result<PathBuf, Failure> {
     if let Err(error) = dir.symlink_metadata()
         && launch::absent(&error)
     {
         return Err(Failure::NoServer);
     }
-    config::socket(Dir::Existing, dir).map_err(Failure::Failed)
+    let mode = if caller.is_some() {
+        Dir::Own
+    } else {
+        Dir::Existing
+    };
+    config::socket(mode, dir).map_err(Failure::Failed)
 }
 
 pub(crate) fn exchange(
@@ -41,7 +46,7 @@ pub(crate) fn exchange(
     within: Duration,
 ) -> Result<Response, Failure> {
     wire::exchange(
-        &socket(dir)?,
+        &socket(dir, caller.as_ref())?,
         (None, caller),
         (method, path),
         &[],
@@ -94,7 +99,7 @@ pub fn stream(
         .ok()
         .filter(Route::websocket)
         .ok_or(Error::NotWebsocket)?;
-    let stream = socket(dir)
+    let stream = socket(dir, caller.as_ref())
         .and_then(|socket| launch::connect(&socket, launch::PATIENCE, None).map_err(failure))
         .map_err(Error::Server)?;
     Link::handshake(stream, (None, caller), &route, None, wire::READ_TIMEOUT)
@@ -111,10 +116,16 @@ pub fn replace_layout(
     caller: Option<Caller>,
     document: &Document,
 ) -> Result<Snapshot, Failure> {
-    layout::replace(&socket(dir)?, (None, caller), document, None).map_err(Failure::Failed)
+    layout::replace(
+        &socket(dir, caller.as_ref())?,
+        (None, caller),
+        document,
+        None,
+    )
+    .map_err(Failure::Failed)
 }
 
 pub fn edit_layout(dir: &Path, caller: Option<Caller>, edit: &Edit) -> Result<Edited, Failure> {
-    layout::edit(&socket(dir)?, (None, caller), edit)
+    layout::edit(&socket(dir, caller.as_ref())?, (None, caller), edit)
         .map_err(|error| Failure::Failed(error.to_string()))
 }

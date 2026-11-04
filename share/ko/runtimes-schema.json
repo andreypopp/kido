@@ -23,6 +23,12 @@
       "type": "string",
       "pattern": "^/"
     },
+    "Access": {
+      "type": "string",
+      "enum": [
+        "ro"
+      ]
+    },
     "Command": {
       "type": "object",
       "properties": {
@@ -67,6 +73,105 @@
         }
       }
     },
+    "Container": {
+      "type": "object",
+      "properties": {
+        "container": {
+          "description": "The `container` program. Default: `container` on the PATH of the server.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Program"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "from": {
+          "$ref": "#/$defs/Source"
+        },
+        "init": {
+          "description": "The command that keeps the container alive.",
+          "type": "array",
+          "default": [
+            "sleep",
+            "infinity"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "ko": {
+          "$ref": "#/$defs/Ko",
+          "default": "shipped"
+        },
+        "run_args": {
+          "description": "More arguments of `container run`. ko refuses the options it owns.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "ssh_agent": {
+          "$ref": "#/$defs/SshAgent",
+          "default": "none"
+        },
+        "user": {
+          "description": "The user of every exec, as `container exec -u` takes it. Default: the image's.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/User"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "volumes": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Volume"
+          }
+        }
+      },
+      "required": [
+        "from"
+      ]
+    },
+    "Ko": {
+      "oneOf": [
+        {
+          "description": "The static Linux ko beside the server's installation, mounted read-only at /opt/ko.",
+          "type": "string",
+          "const": "shipped"
+        },
+        {
+          "description": "The `ko` on the PATH of the image.",
+          "type": "string",
+          "const": "path"
+        },
+        {
+          "description": "Another installed layout, mounted read-only at /opt/ko.",
+          "type": "object",
+          "properties": {
+            "mount": {
+              "$ref": "#/$defs/AbsPath"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mount"
+          ]
+        }
+      ]
+    },
+    "Operand": {
+      "description": "an image reference or a container name",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/@+-]*$"
+    },
     "PathMap": {
       "description": "A directory of the host and the directory of the runtime that holds the same files.",
       "type": "object",
@@ -82,6 +187,11 @@
         "host",
         "runtime"
       ]
+    },
+    "Program": {
+      "description": "a program name or path",
+      "type": "string",
+      "pattern": "^[^\\u0000]+$"
     },
     "Runtime": {
       "type": "object",
@@ -128,7 +238,97 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "A container of Apple's `container`, which ko creates from an image or finds by name.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "container"
+            }
+          },
+          "$ref": "#/$defs/Container",
+          "required": [
+            "kind"
+          ]
         }
+      ]
+    },
+    "Source": {
+      "oneOf": [
+        {
+          "description": "A container that ko creates from the image and owns: down stops it and DELETE removes it.",
+          "type": "object",
+          "properties": {
+            "image": {
+              "$ref": "#/$defs/Operand"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "image"
+          ]
+        },
+        {
+          "description": "A container that the user created with `-v <runtime socket>:/run/ko/socket` and manages.",
+          "type": "object",
+          "properties": {
+            "container": {
+              "$ref": "#/$defs/Operand"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "container"
+          ]
+        }
+      ]
+    },
+    "SshAgent": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "none"
+          ]
+        },
+        {
+          "description": "The host's agent at /var/host-services/ssh-auth.sock (`--ssh`).",
+          "type": "string",
+          "const": "forward"
+        }
+      ]
+    },
+    "User": {
+      "description": "a user name or id",
+      "type": "string",
+      "pattern": "^[^-\\u0000][^\\u0000]*$"
+    },
+    "Volume": {
+      "description": "A directory of the host that the container mounts, files only: never a socket.",
+      "type": "object",
+      "properties": {
+        "host": {
+          "$ref": "#/$defs/AbsPath"
+        },
+        "options": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Access"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runtime": {
+          "$ref": "#/$defs/AbsPath"
+        }
+      },
+      "required": [
+        "host",
+        "runtime"
       ]
     }
   }
