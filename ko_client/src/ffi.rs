@@ -2437,7 +2437,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_server_a_garbled_welcome_and_a_hangup_each_report_one_failure_per_outage() {
+    fn an_outage_reports_its_first_failure_and_a_later_missing_server_once() {
         let fixture = Fixture::new();
         let nowhere = Server {
             dir: PathBuf::from("/tmp/ko-ffi-nowhere"),
@@ -2478,6 +2478,8 @@ mod tests {
             matches!(failed, Seen::Failed(Code::Closed, _)),
             "{failed:?}"
         );
+        drop(hangs_up);
+        assert!(matches!(fixture.next(), Seen::Failed(Code::NoServer, _)));
         close(client);
         assert_eq!(fixture.quiet(), []);
     }

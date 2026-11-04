@@ -122,27 +122,30 @@ server_problems = []
 
 
 def stop_server():
-    """kill-server while this script reaps the server: it is our child, and a zombie looks alive to kill-server."""
+    """Stop the server and reap it if this script started it."""
     log.write(json.dumps(dict(event='ko', command=['kill-server'], uptime=time.monotonic())) + '\n')
-    reaper = threading.Thread(target=server_process.wait, daemon=True)
-    reaper.start()
     stopper = subprocess.Popen([args.ko, 'kill-server', '--server', server], env=helper_env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    if server_process is not None:
+        reaper = threading.Thread(target=server_process.wait, daemon=True)
+        reaper.start()
+        reaper.join(timeout=10)
+        if reaper.is_alive():
+            server_problems.append('the server did not exit')
     try:
         _, stderr = stopper.communicate(timeout=15)
     except subprocess.TimeoutExpired:
         stopper.kill()
         _, stderr = stopper.communicate()
-    reaper.join(timeout=10)
-    if stopper.returncode != 0 or reaper.is_alive():
+    if stopper.returncode != 0:
         server_problems.append('kill-server did not stop the server: ' + stderr.strip())
 
 
 def setup(full):
     global server_process
-    server_process = started = subprocess.Popen([args.ko, 'server', '--server', server], env=helper_env, stdout=subprocess.DEVNULL, stderr=open(out + '/server.log', 'a'))
+    server_process = subprocess.Popen([args.ko, 'server', '--server', server], env=helper_env, stdout=subprocess.DEVNULL, stderr=open(out + '/server.log', 'a')) if full else None
     deadline = time.monotonic() + 20
     while api('GET', '/version') is None:
-        if time.monotonic() > deadline or started.poll() is not None:
+        if time.monotonic() > deadline or (server_process is not None and server_process.poll() is not None):
             raise RuntimeError('private server did not start')
         time.sleep(0.05)
     sessions = []

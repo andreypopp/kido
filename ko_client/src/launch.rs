@@ -200,7 +200,7 @@ pub fn stop(dir: &Path, patience: Patience) -> Result<(), String> {
         None => pid.alive(),
     };
     let deadline = Instant::now() + patience.deadline;
-    while socket.exists() || alive() {
+    while alive() {
         if Instant::now() >= deadline {
             return Err(format!(
                 "server did not stop within {} s",

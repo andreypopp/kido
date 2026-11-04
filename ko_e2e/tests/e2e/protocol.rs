@@ -21,6 +21,34 @@ fn kill_server() {
 }
 
 #[test]
+fn a_stopping_server_does_not_remove_its_replacements_socket() {
+    let mut s = start(&[]);
+    let p = s.pane("trap '' HUP; printf READY; while read x; do :; done");
+    let mut v = s.ws(&format!("/panes/{p}/view"));
+    v.ready("READY");
+    let env = test_env(&s.dir);
+    let mut stop = Child::spawn(
+        &ko(),
+        &["kill-server", "--server", text_of(&s.dir)],
+        &env,
+        &[],
+    );
+    poll("the old listener closes", || {
+        UnixStream::connect(s.dir.join("socket")).is_err()
+    });
+    let mut replacement = Child::spawn(&ko(), &["server", "--server", text_of(&s.dir)], &env, &[]);
+    poll("the replacement listener", || {
+        UnixStream::connect(s.dir.join("socket")).is_ok()
+    });
+    assert!(!s.child.pid().has_ended(), "the servers must overlap");
+    assert_eq!(s.child.wait(DEADLINE), Some(Exit::Exited(0)));
+    assert_eq!(s.ko(&["api", "/version"], "").json()["protocol"], PROTOCOL);
+    assert_eq!(stop.wait(DEADLINE), Some(Exit::Exited(0)));
+    replacement.signal(ko_sys::signal::Signal::Term).unwrap();
+    assert_eq!(replacement.wait(DEADLINE), Some(Exit::Exited(0)));
+}
+
+#[test]
 fn kill_server_signals_by_peer_pid() {
     let dir = Dir::new("ko-");
     let scratch = Dir::new("ko-run-");

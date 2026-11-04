@@ -74,13 +74,29 @@ import KoModel
         XCTAssertTrue(owner.testEditing)
 
         try run(["kill-server"], dir: dir)
-        wait("the socket is gone") { !FileManager.default.fileExists(atPath: dir + "/socket") }
-        _ = try ko(["server"], dir: dir)
-        wait("the new server") { FileManager.default.fileExists(atPath: dir + "/socket") }
+        wait("the owner starts an empty replacement server") {
+            FileManager.default.fileExists(atPath: dir + "/socket") && owner.testBanner.testText.title == "No sessions" && !owner.testEditing
+        }
         try put(#"{"revision":0,"layout":{"sessions":[{"name":"after","windows":[{"name":"w","tree":{"pane":{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}}}]}]}}"#, dir: dir)
         wait("the layout of the new server") { self.names(owner) == ["after"] }
         XCTAssertEqual(owner.window.title, "after — w")
         XCTAssertFalse(owner.testEditing, "the fresh welcome ended the hold")
+    }
+
+    func testAFailedRestartShowsStartForAManualRetry() throws {
+        let dir = try launchedDir()
+        let owner = try owner(dir)
+        wait("the empty server") { owner.testBanner.testText.title == "No sessions" }
+        let file = dir + "/file"
+        FileManager.default.createFile(atPath: file, contents: Data())
+        owner.testServerDir = file + "/server"
+        try run(["kill-server"], dir: dir)
+        wait("the failed restart") { owner.testBanner.testText.title == "Could not start the ko server" }
+        XCTAssertEqual(owner.testBanner.testText.button, "Start")
+        XCTAssertFalse(owner.testBanner.testText.detail.isEmpty)
+        owner.testServerDir = dir
+        owner.start()
+        wait("the manual restart") { owner.testBanner.testText.title == "No sessions" }
     }
 
     func testNavigationSelectsAndSwitchesThroughTheCore() throws {

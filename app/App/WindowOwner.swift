@@ -326,17 +326,25 @@ private class AlertEscape: NSView {
 
     @objc func start() {
         guard case .connected = link else { return begin(.reconnect) }
-        if koModel?.layout.layout.sessions.isEmpty == true { return newSession() }
+        if welcomed, koModel?.layout.layout.sessions.isEmpty == true { return newSession() }
         guard host == .local else {
             invalidate()
             link = .down
             return connect(cause: .reconnect)
         }
+        startServer()
+    }
+
+    private func startServer() {
         let generation = generation
         down("Starting the ko server…", "", button: nil)
         task = Task {
-            do throws(Failure) { _ = try await KoServer.launch(dir: serverDir) } catch {
-                guard accepts(generation) else { return }
+            do throws(Failure) {
+                _ = try await KoServer.launch(dir: serverDir)
+                guard accepts(generation), !welcomed else { return }
+                down("Disconnected from \(host.label)", "Reconnecting…", button: "Start")
+            } catch {
+                guard accepts(generation), !welcomed else { return }
                 down("Could not start the ko server", error.message, button: "Start")
             }
         }
@@ -882,8 +890,8 @@ private class AlertEscape: NSView {
         case .failed(let code, let message):
             welcomed = false
             guard recovering == nil else { return }
-            let absent = host == .local ? "No ko server is running." : "The connection to \(host.label) is down."
-            down("Disconnected from \(host.label)", (code == KO_ERR_NO_SERVER ? absent : message) + "\nReconnecting…", button: host == .local ? "Start" : "Reconnect")
+            if host == .local, code == KO_ERR_NO_SERVER { return startServer() }
+            down("Disconnected from \(host.label)", (code == KO_ERR_NO_SERVER ? "The connection to \(host.label) is down." : message) + "\nReconnecting…", button: host == .local ? "Start" : "Reconnect")
         case .mismatch(let code, let server, let own):
             protocolMismatch(code: code, server: server, own: own)
         case .clipboardWrite(_, let contents):

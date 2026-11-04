@@ -738,8 +738,10 @@ then connects (`ko_client/src/launch.rs`). Two `ko` started at once
 start one server. The server runs until `ko kill-server`, which sends
 no HTTP request: it reads the server's pid and uid from the socket's
 peer credentials, refuses another user's server, sends `SIGTERM` and
-waits 5 s. `SIGTERM`, `SIGINT` and `SIGHUP` stop the server: it hangs
-up every pane, waits 500 ms, kills the survivors and exits.
+waits up to 5 s for that pid to end. `SIGTERM`, `SIGINT` and `SIGHUP` stop the server: it removes
+its socket, closes its listener, hangs up every pane, waits 500 ms,
+kills the survivors and exits. Because the socket goes first, a server
+that starts during the 500 ms keeps its own socket.
 
 `ko api` sends one HTTP request, as `gh api` does, and never starts a
 server. With `--stream`, it upgrades a WebSocket route, prints each

@@ -52,7 +52,7 @@ struct Engine<'a> {
     retry: Timer,
     watch: Timer,
     backoff: Duration,
-    reported: bool,
+    reported: Option<Code>,
     session: Option<Session>,
     views: Vec<Open>,
 }
@@ -132,7 +132,7 @@ pub(super) fn run(shared: &Arc<Shared>) {
         retry,
         watch,
         backoff: BACKOFF_FIRST,
-        reported: false,
+        reported: None,
         session: None,
         views: Vec::new(),
     };
@@ -235,7 +235,7 @@ impl Engine<'_> {
         self.session = Some(session);
         shared.up.store(true, Ordering::SeqCst);
         self.backoff = BACKOFF_FIRST;
-        self.reported = false;
+        self.reported = None;
         let _ = self.poll.start(self.watch, WATCH, Some(WATCH));
         if fresh {
             for open in std::mem::take(&mut self.views) {
@@ -251,8 +251,10 @@ impl Engine<'_> {
     }
 
     fn lose(&mut self, code: Code, message: &str) {
-        if !self.reported {
-            self.reported = true;
+        if self.reported.is_none()
+            || (code == Code::NoServer && self.reported != Some(Code::NoServer))
+        {
+            self.reported = Some(code);
             post(self.shared, Posted::Failed(code, string(message)));
         }
         if let Some(mut session) = self.session.take() {

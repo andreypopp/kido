@@ -67,10 +67,13 @@ Finder or the Dock opens gets launchd's environment, not the shell's: a
 `KO_STATE_DIR` or `XDG_STATE_HOME` that only the shell sets selects another
 server for `ko`. `KIDO_APP_SERVER` overrides the directory, in VISUAL and STRESS
 builds only. The app never stops the server on quit; only the local
-mismatch sheet's Restart stops it. A server starts only on an explicit connection or the banner's Start
-button: `KoServer.launch` runs `ko_client_launch(dir, bundled ko)` on a
-detached task. It starts a server unless one runs there and returns the
-socket; then the owner dials. `ko_client_launch` starts the server with
+mismatch sheet's Restart stops it. When no local server runs, the app
+starts one: every local connection (at launch, for each new local window
+and on Reconnect) runs `KoServer.launch`, which calls
+`ko_client_launch(dir, bundled ko)` on a detached task. It starts a server
+unless one runs there and returns the socket; then the owner dials. Two
+windows that connect at once end with one server (docs/design-ko.md,
+"Lifecycle and the command line"). `ko_client_launch` starts the server with
 the app's own environment, so `app/App/Server.swift` removes the pane
 identity variables from it and sets a UTF-8 `LANG` when none
 is set. The core reaps the server process that it
@@ -79,7 +82,18 @@ started. Every dial is one stderr line, `dialing SOCKET (cause) [owner]`.
 The first welcome must arrive within 20 s (`WindowOwner.welcomeTimeout`),
 else the banner reads "Kido could not reach …" with Start. After that the
 core reconnects by itself; a `failed` event shows "Disconnected from HOST …
-Reconnecting…". A welcome with `fresh` (another server instance) resets the
+Reconnecting…". A local server that ends while the app runs (killed,
+crashed, `ko kill-server`) is started again: a local owner answers the
+core's `KO_ERR_NO_SERVER` with one `KoServer.launch` ("Starting the ko
+server…"), and the core's next attempt attaches with a fresh welcome.
+The core reports that code at most once for each outage
+(`ko_client/include/ko_client.h`, "Reconnect"), so a server that cannot
+start never loops: a failed start shows "Could not start the ko server",
+and a start that brings no welcome shows "Disconnected", both with Start.
+A launch result that arrives after the welcome changes nothing. A remote
+window's redial only attaches ([Remote hosts](#remote-hosts)). Start also
+remains after a failed dial and the welcome deadline; on "No sessions" it
+creates a session. A welcome with `fresh` (another server instance) resets the
 session view and the model, because ids mean something only to the server
 that issued them, the owner makes a new `LayoutEditor` (a held edit's
 revision belongs to the old server) and selects the first session again. A welcome

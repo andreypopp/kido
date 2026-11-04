@@ -263,8 +263,9 @@ import XCTest
         XCTAssertTrue(owner.window.firstResponder === pane)
         XCTAssertTrue(owner.testBanner.isHidden)
         XCTAssertEqual(owner.sidebar.content.bounds.height, height, accuracy: 0.1)
+        owner.testServerDir = file + "/server"
         try run(["kill-server"], dir: dir)
-        wait("link failure wins") { !owner.testBanner.isHidden && strip.isHidden }
+        wait("link failure wins") { owner.testBanner.testText.title == "Could not start the ko server" && strip.isHidden }
         owner.updateAppearance()
         XCTAssertTrue(strip.isHidden)
     }

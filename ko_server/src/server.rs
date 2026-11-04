@@ -225,12 +225,6 @@ impl Server {
                         state.panes.kill()?;
                         state.kill_helpers();
                         state.reap(poll)?;
-                        match std::fs::remove_file(&state.config.socket) {
-                            Err(error) if error.kind() != io::ErrorKind::NotFound => {
-                                return Err(error);
-                            }
-                            _ => {}
-                        }
                         stopped = true;
                     } else {
                         return Ok(false);
@@ -270,6 +264,10 @@ fn halt(
         return Ok(());
     }
     if let Some(listener) = listener.take() {
+        match std::fs::remove_file(&state.config.socket) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
         listener.close(poll);
     }
     state.shutdown(poll);
