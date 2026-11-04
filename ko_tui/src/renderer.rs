@@ -60,7 +60,9 @@ pub(crate) fn status(
         (None, State::Normal | State::Repeat { .. }, Mode::Sidebar(_)) => {
             right.write_str("[sidebar]")
         }
-        (None, State::Normal | State::Repeat { .. }, Mode::Resize) => right.write_str("[resize]"),
+        (None, State::Normal | State::Repeat { .. }, Mode::Resize | Mode::SidebarResize(_)) => {
+            right.write_str("[resize]")
+        }
         (None, _, _) => Ok(()),
     };
     Status { left, right }
@@ -74,7 +76,7 @@ pub(crate) struct Layout {
     pub(crate) pane_rows: usize,
     pub(crate) status: Status,
     pub(crate) help: bool,
-    pub(crate) resizing: bool,
+    pub(crate) resizing: Option<Resizing>,
     pub(crate) copy: Option<(PaneId, copy::Mode)>,
     pub(crate) geometry: std::rc::Rc<Geometry>,
     pub(crate) active: Option<PaneId>,
@@ -241,6 +243,12 @@ fn glyph(mark: Mark) -> (&'static str, Style) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Resizing {
+    Panes,
+    Sidebar,
+}
+
 fn draw_ui(l: &Layout) -> Vec<Cell> {
     let mut grid = vec![blank(); l.cols * l.rows];
     if l.pane_x > 0 {
@@ -256,7 +264,14 @@ fn draw_ui(l: &Layout) -> Vec<Cell> {
             let bar = Cell {
                 text: "\u{2502}".to_owned(),
                 width: 1,
-                style: Style::default(),
+                style: if l.resizing == Some(Resizing::Sidebar) {
+                    Style {
+                        fg: Colour::Indexed(3),
+                        ..Style::default()
+                    }
+                } else {
+                    Style::default()
+                },
             };
             put(&mut grid, l.cols, l.pane_x - 1, y, &bar);
         }
@@ -365,7 +380,11 @@ impl Renderer {
             for divider in &l.geometry.dividers {
                 let style = Style {
                     fg: if l.active.is_some_and(|pane| divider.panes.contains(&pane)) {
-                        Colour::Indexed(if l.resizing { 3 } else { 2 })
+                        Colour::Indexed(if l.resizing == Some(Resizing::Panes) {
+                            3
+                        } else {
+                            2
+                        })
                     } else {
                         Colour::Default
                     },
@@ -666,7 +685,7 @@ mod tests {
             pane_rows: 3,
             status: status(None, None, &State::Normal, Mode::Pane, None),
             help: false,
-            resizing: false,
+            resizing: None,
             copy: Some((pane_id(), copy)),
             geometry: std::rc::Rc::new(geometry(20, 3)),
             active: Some(pane_id()),
@@ -737,7 +756,7 @@ mod tests {
             pane_rows: 2,
             status: quiet(),
             help: false,
-            resizing: false,
+            resizing: None,
             copy: None,
             geometry: Default::default(),
             active: Some(pane_id()),
@@ -777,7 +796,7 @@ mod tests {
             pane_rows: 3,
             status: quiet(),
             help: false,
-            resizing: false,
+            resizing: None,
             copy: None,
             geometry: Default::default(),
             active: Some(pane_id()),
@@ -824,7 +843,7 @@ mod tests {
                 ..quiet()
             },
             help: false,
-            resizing: false,
+            resizing: None,
             copy: None,
             geometry: Default::default(),
             active: Some(pane_id()),
@@ -843,7 +862,7 @@ mod tests {
             pane_rows: 2,
             status: quiet(),
             help: false,
-            resizing: false,
+            resizing: None,
             copy: None,
             geometry: std::rc::Rc::new(geometry(4, 2)),
             active: Some(pane_id()),
@@ -895,7 +914,7 @@ mod tests {
             pane_rows: 3,
             status: quiet(),
             help: false,
-            resizing: false,
+            resizing: None,
             copy: None,
             geometry: std::rc::Rc::new(geometry(6, 3)),
             active: Some(pane_id()),
@@ -943,7 +962,7 @@ mod tests {
                 right: "C-a".to_owned(),
             },
             help: false,
-            resizing: false,
+            resizing: None,
             copy: None,
             geometry: Default::default(),
             active: Some(pane_id()),
@@ -975,7 +994,7 @@ mod tests {
             pane_rows: 19,
             status: quiet(),
             help: true,
-            resizing: false,
+            resizing: None,
             copy: None,
             geometry: std::rc::Rc::new(geometry(40, 19)),
             active: Some(pane_id()),
@@ -1030,7 +1049,7 @@ mod tests {
             pane_rows: 5,
             status: quiet(),
             help: false,
-            resizing: false,
+            resizing: None,
             copy: None,
             geometry: std::rc::Rc::new(crate::geometry::window(&window)),
             active: Some(pane_id()),
@@ -1066,12 +1085,12 @@ mod tests {
         assert_eq!(at(1, 0).text.trim(), "");
         assert_eq!(at(0, 1).text.trim(), "");
 
-        layout.resizing = true;
+        layout.resizing = Some(Resizing::Panes);
         let frame = composed(&layout, &input);
         assert_eq!(frame.cells[4].style.fg, Colour::Indexed(3));
         assert_eq!(frame.cells[2 * 9 + 4].style.fg, Colour::Indexed(3));
         assert_eq!(frame.cells[2 * 9 + 5].style.fg, Colour::Default);
-        layout.resizing = false;
+        layout.resizing = None;
         layout.active = Some("pane_2".parse().unwrap());
         let frame = composed(&layout, &input);
         assert_eq!(frame.cells[2 * 9 + 4].style.fg, Colour::Indexed(2));
@@ -1157,7 +1176,7 @@ mod tests {
             pane_rows: 3,
             status: quiet(),
             help: false,
-            resizing: false,
+            resizing: None,
             copy: None,
             geometry: std::rc::Rc::new(geometry),
             active: Some(floating),
@@ -1330,7 +1349,7 @@ mod tests {
                 right: "C-a".to_owned(),
             },
             help: false,
-            resizing: false,
+            resizing: None,
             copy: None,
             geometry: Default::default(),
             active: Some(pane_id()),

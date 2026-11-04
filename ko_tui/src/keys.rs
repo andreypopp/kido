@@ -36,6 +36,7 @@ pub(crate) enum Action {
     Redraw,
     ToggleSidebar,
     LeaveSidebar,
+    ResizeSidebar(Edge, Amount),
     Pager,
     EnterCopy(Entry),
     CopyKey(KeyEvent),
@@ -74,7 +75,7 @@ pub(crate) const HELP: [&str; 34] = [
     "z        toggle zoom",
     "*        toggle float",
     "!        break pane into a new window",
-    "R        resize mode",
+    "R        resize mode; in sidebar: its width",
     "o ;      next / last pane",
     "arrows   select neighbour (repeatable)",
     "hjkl C-hjkl select neighbour (repeatable)",
@@ -109,6 +110,15 @@ pub(crate) enum PaneSelect {
 pub(crate) enum Amount {
     One,
     Five,
+}
+
+impl Amount {
+    pub(crate) fn cells(self) -> usize {
+        match self {
+            Self::One => 1,
+            Self::Five => 5,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +195,7 @@ pub(crate) enum Mode {
     Pane,
     Resize,
     Sidebar(PaneId),
+    SidebarResize(PaneId),
 }
 
 #[derive(Debug)]
@@ -217,13 +228,16 @@ impl Keys {
     }
 
     pub(crate) fn focus_sidebar(&mut self, pane: PaneId) {
-        self.mode = Mode::Sidebar(pane);
+        self.mode = match self.mode {
+            Mode::SidebarResize(_) => Mode::SidebarResize(pane),
+            _ => Mode::Sidebar(pane),
+        };
     }
 
     pub(crate) fn cursor(&self) -> Option<PaneId> {
         match (self.state(), self.mode) {
             (State::Chooser(pane), _) => Some(*pane),
-            (_, Mode::Sidebar(pane)) => Some(pane),
+            (_, Mode::Sidebar(pane) | Mode::SidebarResize(pane)) => Some(pane),
             _ => None,
         }
     }
@@ -297,7 +311,9 @@ impl Keys {
                     Step::Act(Action::CopyKey(event.clone()))
                 }
             }
-            State::Normal if self.mode == Mode::Resize => self.resize(event),
+            State::Normal if matches!(self.mode, Mode::Resize | Mode::SidebarResize(_)) => {
+                self.resize(event)
+            }
             State::Normal => self.normal(event, dead),
             State::Prefix => self.prefixed(event, now),
             State::Repeat { .. } => match repeatable(event) {
@@ -411,7 +427,10 @@ impl Keys {
             'L' => act(Action::LastSession),
             's' | 'w' => act(Action::Chooser),
             'R' => {
-                self.mode = Mode::Resize;
+                self.mode = match self.mode {
+                    Mode::Sidebar(pane) => Mode::SidebarResize(pane),
+                    _ => Mode::Resize,
+                };
                 Step::Swallow
             }
             '?' => self.enter(State::Help),
@@ -435,18 +454,21 @@ impl Keys {
     }
 
     fn resize(&mut self, event: &KeyEvent) -> Step {
+        let leaving = match self.mode {
+            Mode::SidebarResize(pane) => Mode::Sidebar(pane),
+            _ => Mode::Pane,
+        };
         if event.ctrl() == Some('a') {
-            self.mode = Mode::Pane;
+            self.mode = leaving;
             return self.enter(State::Prefix);
         }
         if matches!(event.name, Name::Enter | Name::Escape) || event.character() == Some('q') {
-            self.mode = Mode::Pane;
+            self.mode = leaving;
             return Step::Swallow;
         }
         let character = event.character();
-        let command = match character {
-            Some('=') => PaneEdit::Equalize,
-            Some('z') => PaneEdit::Zoom,
+        let resize = match character {
+            Some('=' | 'z') => None,
             _ => {
                 let edge = match (event.name, character) {
                     (Name::Left, _) | (_, Some('h' | 'H')) => Edge::Left,
@@ -463,10 +485,26 @@ impl Keys {
                 } else {
                     Amount::One
                 };
-                PaneEdit::Resize(edge, amount)
+                Some((edge, amount))
             }
         };
-        Step::Act(Action::Pane(PaneCommand::Edit(command)))
+        match self.mode {
+            Mode::Resize => {
+                let command = match resize {
+                    Some((edge, amount)) => PaneEdit::Resize(edge, amount),
+                    None if character == Some('=') => PaneEdit::Equalize,
+                    None => PaneEdit::Zoom,
+                };
+                Step::Act(Action::Pane(PaneCommand::Edit(command)))
+            }
+            Mode::SidebarResize(_) => match resize {
+                Some((edge @ (Edge::Left | Edge::Right), amount)) => {
+                    Step::Act(Action::ResizeSidebar(edge, amount))
+                }
+                _ => Step::Swallow,
+            },
+            _ => Step::Swallow,
+        }
     }
 
     fn renaming(&mut self, of: Rename, mut text: String, event: &KeyEvent) -> Step {
@@ -572,7 +610,46 @@ mod tests {
         assert_eq!(steps(&mut keys, "\x01\x01"), [Step::Swallow, Step::Swallow]);
         assert_eq!(keys.paste("ignored".to_owned()), None);
         steps(&mut keys, "\x01R");
-        assert_eq!(keys.mode(), Mode::Resize);
+        assert_eq!(keys.mode(), Mode::SidebarResize(pane(1)));
+    }
+
+    #[test]
+    fn sidebar_resize_keys_and_leave_paths() {
+        for exit in ["\r", "\x1b[27u", "q"] {
+            let mut keys = Keys::new();
+            keys.focus_sidebar(pane(1));
+            steps(&mut keys, "\x01R");
+            for (bytes, edge, amount) in [
+                ("h", Edge::Left, Amount::One),
+                ("\x1b[D", Edge::Left, Amount::One),
+                ("\x1b[1;65C", Edge::Right, Amount::One),
+                ("H", Edge::Left, Amount::Five),
+                ("\x1b[1;2C", Edge::Right, Amount::Five),
+                ("\x1b[108;65u", Edge::Right, Amount::One),
+            ] {
+                assert_eq!(
+                    steps(&mut keys, bytes),
+                    [act(Action::ResizeSidebar(edge, amount))]
+                );
+            }
+            assert_eq!(steps(&mut keys, "jk=zX"), swallowed(5));
+            assert_eq!(keys.paste("ignored".to_owned()), None);
+            steps(&mut keys, exit);
+            assert_eq!(keys.mode(), Mode::Sidebar(pane(1)));
+            steps(&mut keys, "\x01R\x01d");
+            assert_eq!(keys.mode(), Mode::Sidebar(pane(1)));
+            assert_eq!(
+                steps(&mut keys, "\x01R\x01\x13"),
+                [
+                    Step::Swallow,
+                    Step::Swallow,
+                    Step::Swallow,
+                    act(Action::ToggleSidebar)
+                ]
+            );
+            keys.leave();
+            assert_eq!(keys.mode(), Mode::Pane);
+        }
     }
 
     #[test]

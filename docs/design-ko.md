@@ -637,6 +637,19 @@ returns focus to the pane. The cursor's row is drawn in reverse
 video, and the status line shows `[sidebar]`. A press in a pane
 returns focus to that pane; a click on a sidebar row acts as before.
 
+`C-a R` with focus in the sidebar enters resize mode for the
+sidebar's width, the keyboard twin of the separator drag, so the
+width needs no mouse. `h` and `Left` narrow it by 1, `l` and `Right`
+widen it by 1, `H` `L` and the Shift arrows by 5, under the drag's
+clamp, and the width stays the client's as the drag's does. Other
+keys and a paste do nothing. `Enter`, `Escape` and `q` leave, and
+`C-a` leaves for the prefix, as in pane resize mode, but focus
+returns to the sidebar with its cursor, not to the pane. The
+separator turns yellow, as a pane's dividers do, the pane's dividers
+stay green, and the status line shows `[resize]`. A press in a pane
+and hiding the sidebar end the mode and return focus to the pane, and
+a reconnect resets it, as they do for sidebar focus.
+
 The client restores the outer terminal's modes exactly on every exit
 path, and never sends RIS or clears the screen. It queries the outer
 terminal at start, so replies arrive on stdin among keystrokes; the

@@ -30,8 +30,8 @@ use crate::copy::Outcome;
 use crate::geometry;
 use crate::input::{self, Event, Input, KeyEvent, MouseKind, Reply};
 use crate::keys::{
-    Action, Amount, Context, Keys, Kill, Mode as KeyMode, PaneCommand, PaneEdit, PaneSelect,
-    Rename, State, Step,
+    Action, Context, Keys, Kill, Mode as KeyMode, PaneCommand, PaneEdit, PaneSelect, Rename, State,
+    Step,
 };
 use crate::mirror::Mirror;
 use crate::modes::{self, Modes};
@@ -535,7 +535,11 @@ impl Client {
                     .map(Remote::host),
             ),
             help: *self.keys.state() == State::Help,
-            resizing: self.keys.mode() == KeyMode::Resize,
+            resizing: match self.keys.mode() {
+                KeyMode::Resize => Some(crate::renderer::Resizing::Panes),
+                KeyMode::SidebarResize(_) => Some(crate::renderer::Resizing::Sidebar),
+                _ => None,
+            },
             copy: panes(&self.view)
                 .find_map(|pane| pane.mirror.copy().map(|copy| (pane.pane, copy.clone()))),
             geometry: self
@@ -585,6 +589,16 @@ impl Client {
         )
         .map(drop)
         .map_err(String::from)
+    }
+
+    fn set_sidebar_width(&mut self, requested: usize) -> Result<(), String> {
+        let width = sidebar::width(requested, self.geometry.cols);
+        if width != self.sidebar_width {
+            self.sidebar_width = width;
+            self.resize()?;
+            self.immediate = true;
+        }
+        Ok(())
     }
 
     fn resize(&mut self) -> Result<(), String> {
@@ -1071,10 +1085,24 @@ impl Client {
                     Panel::Hidden => Panel::Visible,
                     Panel::Visible => Panel::Hidden,
                 };
-                if self.panel == Panel::Hidden && matches!(self.keys.mode(), KeyMode::Sidebar(_)) {
+                if self.panel == Panel::Hidden
+                    && matches!(
+                        self.keys.mode(),
+                        KeyMode::Sidebar(_) | KeyMode::SidebarResize(_)
+                    )
+                {
                     self.keys.leave();
                 }
                 self.resize()?;
+            }
+            Action::ResizeSidebar(edge, amount) => {
+                let amount = amount.cells();
+                let width = if edge == Edge::Left {
+                    self.sidebar_width.saturating_sub(amount)
+                } else {
+                    self.sidebar_width.saturating_add(amount)
+                };
+                self.set_sidebar_width(width)?;
             }
             Action::LeaveSidebar => self.keys.leave(),
             Action::Chooser => {
@@ -1214,11 +1242,7 @@ impl Client {
             PaneEdit::Resize(edge, amount) => Edit::ResizeBy {
                 pane,
                 edge,
-                delta: dim(match amount {
-                    Amount::One => 1,
-                    Amount::Five => 5,
-                })
-                .into(),
+                delta: dim(amount.cells()).into(),
             },
             PaneEdit::Swap(direction) => {
                 let Some(other) = cycle(&window.panes(), Some(pane), direction_steps(direction))
@@ -1298,12 +1322,7 @@ impl Client {
             MouseKind::Up(_) | MouseKind::Move => self.drag = None,
             MouseKind::Drag(held) if held == button => match drag.target {
                 Target::Sidebar => {
-                    let width = sidebar::width(event.x, self.geometry.cols);
-                    if width != self.sidebar_width {
-                        self.sidebar_width = width;
-                        self.resize()?;
-                        self.immediate = true;
-                    }
+                    self.set_sidebar_width(event.x)?;
                 }
                 Target::Divider(grip, last) => {
                     let x = event
@@ -1386,7 +1405,10 @@ impl Client {
         let rect = placement.rect;
         let origin = (layout.pane_x + rect.x, rect.y);
         if matches!(event.kind, MouseKind::Down(_)) {
-            if matches!(self.keys.mode(), KeyMode::Sidebar(_)) {
+            if matches!(
+                self.keys.mode(),
+                KeyMode::Sidebar(_) | KeyMode::SidebarResize(_)
+            ) {
                 self.keys.leave();
             }
             self.mouse_down = Some(pane);
@@ -1858,7 +1880,7 @@ impl Client {
 
     fn apply(&mut self, event: protocol::ClientEvent) -> Applied {
         let cursor = match self.keys.mode() {
-            KeyMode::Sidebar(pane) => Some((
+            KeyMode::Sidebar(pane) | KeyMode::SidebarResize(pane) => Some((
                 pane,
                 self.model
                     .order()

@@ -1139,6 +1139,49 @@ fn client_sidebar_keyboard_focus_and_selection() {
     o.wait("initial pane area excludes the sidebar", || {
         window_size(&s.doc(), 1) == (76, 24)
     });
+    o.prefix("h");
+    o.prefix("R");
+    o.contains("[resize]");
+    o.wait("sidebar separator is yellow", || {
+        o.cell(24, 0).style.fg == ko_vt::render::Colour::Indexed(3)
+    });
+    o.raw("h");
+    o.wait("keyboard narrows the sidebar by one", || {
+        window_size(&s.doc(), 1) == (77, 24)
+    });
+    o.raw("L");
+    o.wait("keyboard widens the sidebar by five", || {
+        window_size(&s.doc(), 1) == (72, 24)
+    });
+    o.raw("HHHHHHHHHH");
+    o.wait("keyboard width reaches minimum", || {
+        window_size(&s.doc(), 1) == (90, 24)
+    });
+    o.raw("LLLLLLLLLLLL");
+    o.wait("keyboard width reaches maximum", || {
+        window_size(&s.doc(), 1) == (50, 24)
+    });
+    o.raw("q");
+    o.contains("[sidebar]");
+    o.prefix("R");
+    o.contains("[resize]");
+    o.click(60, 3);
+    o.gone("[resize]");
+    o.raw("V");
+    o.contains("two-KEY-56");
+    o.prefix("h");
+    o.prefix("R");
+    o.contains("[resize]");
+    o.prefix("\x13");
+    o.gone("[resize]");
+    o.raw("U");
+    o.contains("two-KEY-55");
+    o.prefix("\x13");
+    o.press(51, 3);
+    o.raw("\x1b[<32;25;3M\x1b[<0;25;3m");
+    o.wait("restore sidebar width for drag", || {
+        window_size(&s.doc(), 1) == (76, 24)
+    });
     o.press(25, 3);
     o.raw("\x1b[<32;35;3M\x1b[<32;41;3M\x1b[<0;41;3m");
     o.wait("separator drag resizes the pane area", || {
