@@ -71,7 +71,7 @@ import XCTest
         XCTAssertTrue(cell.renameError.isHidden)
         cell.finishRename(false)
         try startEditing(cell)
-        cell.nameField.stringValue = "a.b"
+        cell.nameField.stringValue = "work"
         cell.finishRename(true)
         XCTAssertFalse(cell.nameField.isHidden)
         XCTAssertFalse(cell.renameError.isHidden)

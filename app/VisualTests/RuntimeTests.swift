@@ -399,6 +399,8 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
         try await made(5, runtime: "box") { owner.paneCommand(.split(.right), host, .named("box")) }
         try await made(6, runtime: nil) { owner.paneCommand(.split(.down), routed) }
         try await made(7, runtime: "box") { owner.paneCommand(.split(.down), box) }
-        XCTAssertEqual(owner.testModel?.pane(PaneID(number: 6))?.cwd, model.pane(routed)?.cwd, "a split of a host pane keeps its directory")
+        let createdDirectory = try XCTUnwrap(owner.testModel?.pane(PaneID(number: 6))?.cwd)
+        let sourceDirectory = try XCTUnwrap(model.pane(routed)?.cwd)
+        XCTAssertEqual(URL(fileURLWithPath: createdDirectory).resolvingSymlinksInPath().path, URL(fileURLWithPath: sourceDirectory).resolvingSymlinksInPath().path, "a split of a host pane keeps its directory")
     }
 }

@@ -534,7 +534,7 @@ import PaneGeometry
             palette.enter(.sessionName(owner, try XCTUnwrap(owner.snapshot).serverInstance, .rename(session.id, original: session.name))); image(palette, "\(theme)-rename")
             owner.testReceive(sidebarFixture())
             query("visa"); palette.sessionName("visa"); image(palette, "\(theme)-rename-error")
-            query("main.2"); palette.sessionName("main.2"); image(palette, "\(theme)-rename-error2")
+            query("umbrella"); palette.sessionName("umbrella"); image(palette, "\(theme)-rename-error2")
             app.routes.connect(.remote("devbox-old"))
             app.routes.connect(.remote("dev@buildbox"))
             app.routes.connect(.remote("devbox"))
