@@ -1200,6 +1200,13 @@ delegates as its brief says and does not write code.
   check such as `scripts/lint.sh`, and no tests, reviewers or full
   verification. A small product change may use fewer reviewers when
   the manager says which ones.
+- **Approval for new unsafe code and new routes.** Before an
+  implementer writes a new `unsafe` block, `unsafe fn`, `unsafe impl`
+  or `unsafe extern`, or adds a route to the `routes!` block, the
+  manager sends its shape and its reason to the top-level session and
+  waits for approval. The top-level session reviews it and asks the
+  user when it is not sure. Moving or narrowing existing unsafe code
+  needs no approval.
 - **One manager for each unit of work.** The manager does not write
   code. It does these steps:
   1. It spawns one implementer.
