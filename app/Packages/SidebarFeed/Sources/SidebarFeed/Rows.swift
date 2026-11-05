@@ -182,6 +182,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                         }
                         return left.count < right.count
                     }
+                    let recordIDs = Set(records.map { Array($0.id.utf8) })
                     let recordStart = rows.count
                     for record in records {
                         let status: SidebarRow.Status = switch record.state {
@@ -193,9 +194,12 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                         }
                         let caption = record.msg ?? ""
                         let height = caption.isEmpty ? 32.0 : 48.0
+                        let ancestors = record.id.utf8.indices.count {
+                            record.id.utf8[$0] == UInt8(ascii: "/") && recordIDs.contains(Array(record.id.utf8[..<$0]))
+                        }
                         rows.append(SidebarRow(id: .program(session.id, item.pane, Data(record.id.utf8)),
                                                kind: .pane(nil),
-                                               indent: depth + record.id.split(separator: "/", omittingEmptySubsequences: false).count, height: height,
+                                               indent: depth + 1 + ancestors, height: height,
                                                title: record.title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
                                                tail: caption, status: [.done, .error].contains(status) && item.recordsSeen ? .quiet : status,
                                                indicatorDescription: record.state.rawValue,
@@ -204,7 +208,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                     if !records.isEmpty {
                         for (index, record) in records.enumerated() {
                             let prefix = record.id + "/"
-                            let count = records[(index + 1)...].prefix { $0.id.hasPrefix(prefix) }.count
+                            let count = records[(index + 1)...].prefix { $0.id.utf8.starts(with: prefix.utf8) }.count
                             if count > 0 {
                                 guide(recordStart + index, end: recordStart + index + count + 1,
                                       x: rows[recordStart + index].indicatorX, topInset: 22)

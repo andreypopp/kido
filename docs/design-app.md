@@ -1352,7 +1352,11 @@ new-window plus; hovering brightens only its icon. Sessions do not fold.
 Each pane's child-window trees immediately follow that pane, before its
 next sibling; drawn order and navigation share the row-model traversal.
 OSC 7501 non-root records follow their pane before its child windows, ordered
-by slash components in UTF-8 byte order. Each record is mapped to an agent
+by slash components in UTF-8 byte order. A record row is indented one level
+under its pane, plus one level for each ancestor id (a slash prefix) that is
+present among the pane's non-root records. Thus
+ko-pi's `job/<id>` rows, which have no `job` record, align with child-window
+rows. Each record is mapped to an agent
 row (title or full id, message as the activity line, state mapped
 working→running, blocked→waiting, error→failed, done→done, idle after the
 parent's seen suppression for done/error) and drawn through the same row

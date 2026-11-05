@@ -62,7 +62,8 @@ The records supply:
 - `title`: a terminal's title.
 
 A client draws non-root records as child rows under the pane row,
-nested by id, in id order. Each child row shows the record's title, or
+nested by id, in id order: a record nests under each ancestor id that
+is present among the non-root records. Each child row shows the record's title, or
 its id, its raw state and its message. A visit does not acknowledge
 them. Claude Code reports each subagent this way, and ko-pi each job
 (design-subagents.md, "A job's row").

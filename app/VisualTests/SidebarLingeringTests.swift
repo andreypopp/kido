@@ -5,6 +5,28 @@ import XCTest
 @testable import Kido
 
 @MainActor final class SidebarLingeringTests: VisualTestCase {
+    func testJobRecordsAlignWithSubagent() throws {
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let list = SidebarView()
+        window.contentView = list
+        list.update(fixtureSnapshot(window: 1, pane: 1, [("main", [
+            .item(fixtureItem(1, "parent", piLifecycle(.running(progress: nil)), records: [
+                programRecord("job/42", .working, title: "Build app"),
+                programRecord("job/43", .done, title: "Run tests"),
+                programRecord("review", .working, title: "Review"),
+                programRecord("review/missing/check", .working, title: "Check guides"),
+            ], serial: 1, mark: .running, children: [
+                fixtureNode(2, "subagent", piLifecycle(.running(progress: nil)), mark: .running),
+            ])),
+        ])]))
+        for dark in [false, true] {
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            sidebarSnapshot(list, dark ? "dark" : "light")
+        }
+    }
+
     func testNestedWindowAndLingeringRows() throws {
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

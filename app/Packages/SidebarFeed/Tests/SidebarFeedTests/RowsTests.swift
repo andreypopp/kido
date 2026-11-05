@@ -185,8 +185,8 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
     let rows = sidebarRows(snapshot)
     let programs = rows.filter { if case .program = $0.id { true } else { false } }
     #expect(programs.map(\.title) == ["Record-only title", "a/child", "a/missing/leaf", "a-", "é", "z", "é"])
-    #expect(programs.map(\.leading) == [51, 66, 81, 51, 51, 51, 51])
-    #expect(programs.map(\.indicatorX) == [35, 50, 65, 35, 35, 35, 35])
+    #expect(programs.map(\.leading) == [51, 66, 66, 51, 51, 51, 51])
+    #expect(programs.map(\.indicatorX) == [35, 50, 50, 35, 35, 35, 35])
     #expect(programs.allSatisfy { $0.kind == .pane(nil) && $0.agent })
     #expect(programs.map(\.height) == [32, 32, 48, 32, 32, 32, 32])
     #expect(programs.allSatisfy { $0.padding == 7 && $0.tailY == 26 && !$0.focused && $0.target == nil })
@@ -212,6 +212,15 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
     #expect(rows[1].guides == [.init(x: 20, top: 22, bottom: 32)])
     #expect(rows[2].guides == [.init(x: 35, top: 22, bottom: 48), .init(x: 20, top: 0, bottom: 48)])
     #expect(rows[3].guides == [.init(x: 35, top: 0, bottom: 22), .init(x: 20, top: 0, bottom: 22)])
+}
+
+@Test func recordIndentsCountOnlyPresentAncestors() throws {
+    let records = ["a/b/c", "a/b", "a", "a/d/e", "a/", "a//b", "/", "/b", "", "e\u{301}", "z", "\u{e9}/child"]
+        .map { record($0, .working) }
+    let snapshot = makeSnapshot([pane(0, children: [pane(1, records: records)])])
+    let rows = sidebarRows(snapshot).filter { if case .program = $0.id { true } else { false } }
+    #expect(rows.map(\.title) == ["/", "/b", "a", "a/", "a//b", "a/b", "a/b/c", "a/d/e", "e\u{301}", "z", "\u{e9}/child"])
+    #expect(rows.map(\.indent) == [2, 2, 2, 3, 4, 3, 4, 3, 2, 2, 2])
 }
 
 @Test func programIDsOrderBySlashComponents() throws {
