@@ -250,11 +250,18 @@ scope uses them. The current pane is per client and is not in the
 layout document. Each window's `focus` in the document is the pane
 that a client focused most recently in that window; a client that
 enters a window where it has no current pane gets that pane
-(section 7). When a `switch` or a removal
-moves a client, the client gets a `selected` event. A client gets `selected` for each of its own
-`select` requests, also for one that names its current pane, and
-for a hello that names only a session or a window, because the
-server chose the pane; a hello that names the pane gets none.
+(section 7). When a removal takes a client's current pane, the
+client stays in its window while the window has panes; when the
+window goes too, the client moves to the removed pane's `parent`
+pane, in any session, while that pane exists, else to the nearest
+window that survives, in document order. The death of a pane moves
+no client: a dead pane that lingers stays current, so its last
+screen stays readable until the removal. When a `switch` or a removal
+moves a client, the client gets a `selected` event. A client gets
+`selected` for each of its own `select` requests, also for one that
+names its current pane, and for a hello that names only a session or
+a window, because the server chose the pane; a hello that names the
+pane gets none.
 
 A client's selection names a session, a window or a pane; a pane
 implies its window and session, a window implies its session, and a

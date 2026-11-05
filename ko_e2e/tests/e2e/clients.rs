@@ -236,6 +236,79 @@ fn removing_the_last_pane_of_a_window_and_of_a_session_moves_the_client() {
     assert_eq!(s.ko(&["panes", "--json"], "").json(), json!([]));
 }
 
+#[test]
+fn a_swept_child_selects_its_parent_or_the_existing_window_fallback() {
+    let s = crate::harness::start_serving("  linger_seconds: 0.2\n");
+    s.put(&json!({"layout": {"sessions": [
+        {"name": "children", "windows": [{"name": "fallback", "tree": new()}]},
+        {"name": "parent", "windows": [{"name": "parent", "tree": new()}]}
+    ]}}));
+    let child = |parent| {
+        json!({"pane": {"new": {
+            "command": {"type": "argv", "argv": ["/bin/sh", "-c", "printf READY; read line; exit 0"]},
+            "parent": parent, "close": "on_exit"
+        }}})
+    };
+    s.edit(|layout| {
+        layout["sessions"][0]["windows"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": "child", "tree": child("pane_2")}));
+    });
+    let (mut c, _) = s.app_client(json!({"pane": "pane_3"}), true, (80, 24));
+    poll("the child is ready", || {
+        s.request("GET", "/panes/pane_3/screen", None, 200)
+            .contains("READY")
+    });
+    s.text("pane_3", "\n");
+    assert_eq!(c.event("dead")["pane"], "pane_3");
+    c.send(&json!({"type": "focused", "focused": false}));
+    assert_eq!(
+        c.event("selected"),
+        json!({"type": "selected", "session": "session_2", "window": "window_2", "pane": "pane_2"})
+    );
+    assert!(!s.has_pane("pane_3"));
+
+    s.edit(|layout| {
+        layout["sessions"][0]["windows"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": "split child", "tree": split("h", vec![child("pane_2"), new()])}));
+    });
+    c.send(&json!({"type": "select", "pane": "pane_4"}));
+    assert_eq!(c.event("selected")["pane"], "pane_4");
+    poll("the split child is ready", || {
+        s.request("GET", "/panes/pane_4/screen", None, 200)
+            .contains("READY")
+    });
+    s.text("pane_4", "\n");
+    assert_eq!(
+        c.event("selected"),
+        json!({"type": "selected", "session": "session_1", "window": "window_4", "pane": "pane_5"})
+    );
+    assert!(!s.has_pane("pane_4"));
+    s.delete("/panes/pane_5").ok();
+    assert_eq!(c.event("selected")["pane"], "pane_2");
+
+    s.edit(|layout| {
+        layout["sessions"][0]["windows"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": "orphan", "tree": child("pane_2")}));
+    });
+    c.send(&json!({"type": "focused", "focused": true}));
+    c.send(&json!({"type": "select", "pane": "pane_6"}));
+    assert_eq!(c.event("selected")["pane"], "pane_6");
+    s.delete("/panes/pane_2").ok();
+    assert!(s.has_pane("pane_6"));
+    c.send(&json!({"type": "focused", "focused": false}));
+    assert_eq!(
+        c.event("selected"),
+        json!({"type": "selected", "session": "session_1", "window": "window_1", "pane": "pane_1"})
+    );
+    assert!(!s.has_pane("pane_6"));
+}
+
 const FOCUS_PROGRAM: &str = r#"import os,tty
 tty.setraw(0)
 os.write(1,b'\x1b[?1004hREADY\r\n')

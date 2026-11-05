@@ -206,7 +206,12 @@ impl Client {
         self.select(layout, selection)
     }
 
-    pub(crate) fn reconcile(&self, before: &Layout, layout: &Layout) -> Option<Current> {
+    pub(crate) fn reconcile(
+        &self,
+        before: &Layout,
+        layout: &Layout,
+        parents: &[(PaneId, PaneId)],
+    ) -> Option<Current> {
         let current = self.current()?;
         let named = |selection| self.select(layout, selection);
         named(Selection {
@@ -216,6 +221,12 @@ impl Client {
         .or_else(|| {
             named(Selection {
                 window: Some(current.window),
+                ..Selection::default()
+            })
+        })
+        .or_else(|| {
+            named(Selection {
+                pane: Some(parents.iter().find(|(pane, _)| *pane == current.pane)?.1),
                 ..Selection::default()
             })
         })
@@ -404,7 +415,7 @@ mod tests {
     fn when_the_current_pane_or_window_goes_the_client_gets_the_next_one_in_document_order() {
         let source = three_documents();
         let before = source.layout().clone();
-        let reconcile = |after: &Layout, from| at(from).reconcile(&before, after);
+        let reconcile = |after: &Layout, from| at(from).reconcile(&before, after, &[]);
         let after_1 = without(&source, &[1]);
         assert_eq!(
             reconcile(&after_1, current(1, 1, 1)),
@@ -426,6 +437,27 @@ mod tests {
     }
 
     #[test]
+    fn a_removed_pane_prefers_its_parent_in_another_session() {
+        let source = three_documents();
+        let before = source.layout();
+        let client = at(current(1, 1, 1));
+        let parent = &[(current(1, 1, 1).pane, current(2, 3, 4).pane)];
+        assert_eq!(
+            client.reconcile(before, &without(&source, &[1, 2]), parent),
+            Some(current(2, 3, 4))
+        );
+        assert_eq!(
+            client.reconcile(before, &without(&source, &[1, 4]), parent),
+            Some(current(1, 1, 2))
+        );
+        assert_eq!(
+            client.reconcile(before, &without(&source, &[1]), parent),
+            Some(current(1, 1, 2))
+        );
+        assert_eq!(client.reconcile(before, before, parent), client.current());
+    }
+
+    #[test]
     fn a_pane_that_moves_to_another_window_takes_the_client_with_it() {
         let mut source = three_documents();
         let before = source.layout().clone();
@@ -440,7 +472,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            at(current(1, 1, 1)).reconcile(&before, source.layout()),
+            at(current(1, 1, 1)).reconcile(&before, source.layout(), &[]),
             Some(current(2, 3, 1))
         );
     }

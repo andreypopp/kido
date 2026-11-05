@@ -461,6 +461,12 @@ and an empty session with it (protocol.md, section 7). After the
 removal, the sidebar draws an ordinary window with the user's
 remaining panes. The pane stop and its escalation do the same.
 
+**The selection after a removal.** When the child's window goes with
+the child, its client moves to the child's `parent` pane while that
+pane exists, because the user came from there (protocol.md, section
+3). The death alone moves no client, so the last screen stays
+readable for the linger grace.
+
 No other guard applies: no debounce. Without grace under rule 2, a
 child already shutting down can lose its pane during exit.
 

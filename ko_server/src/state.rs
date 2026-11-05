@@ -471,7 +471,7 @@ impl State {
             }
         }
         if self.document.unpublished() {
-            self.changed(poll, before.layout());
+            self.changed(poll, before.layout(), &[]);
         }
         self.release(poll);
         for (name, settings) in chosen {
@@ -535,6 +535,10 @@ impl State {
         let Some(Removal { panes, before }) = removal else {
             return false;
         };
+        let parents: Vec<_> = panes
+            .iter()
+            .filter_map(|id| Some((*id, self.panes.find(*id)?.parent()?)))
+            .collect();
         for pane in panes {
             self.close_views(pane);
             self.tell_parent_gone(pane);
@@ -542,7 +546,7 @@ impl State {
         }
         self.sweep_soon(poll);
         self.settle_stops(poll);
-        self.changed(poll, &before);
+        self.changed(poll, &before, &parents);
         true
     }
 
@@ -550,7 +554,7 @@ impl State {
         self.run(poll, id, |pane, io| pane.proc_mut().clear_history(io));
     }
 
-    fn changed(&mut self, poll: &mut Poll, before: &Layout) {
+    fn changed(&mut self, poll: &mut Poll, before: &Layout, parents: &[(PaneId, PaneId)]) {
         let State {
             document,
             sizers,
@@ -564,7 +568,7 @@ impl State {
             if let Some((Role::Client(client), _)) = conn.role_mut()
                 && client.active.is_some()
             {
-                let after = client.reconcile(before, layout);
+                let after = client.reconcile(before, layout, parents);
                 if after != client.current() {
                     client.set_current(after);
                     moved.push((index, after));
