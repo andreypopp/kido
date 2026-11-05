@@ -82,10 +82,10 @@ test("running jobs and children reserve names, endings release them, and stop pr
   } finally { await fx.restore(); }
 });
 
-test("stream batches strip escapes, spend a budget and flush the partial line before the notice", async () => {
+test("stream batches strip escapes and flush the partial line before the notice", async () => {
   const fx = makeFixture();
   try {
-    process.env.KO_STREAM_BUDGET_BYTES = "1";
+    process.env.KO_STREAM_INTERVAL_MS = "1";
     fx.setPanes([selfPane()]);
     const s = await startSession(fx);
     await s.emit("agent_start");
@@ -97,9 +97,93 @@ test("stream batches strip escapes, spend a budget and flush the partial line be
     writeFileSync(gate, "");
     await pollUntil(() => notices(s).length === 1);
     const messages = s.messages.map((m) => m.message.content);
-    assert.match(messages.at(-2), /output budget spent; the log has the rest/);
+    assert.match(messages.at(-2), /\npartial$/);
     assert.match(messages.at(-1), /partial/);
     assert.ok(readFileSync(result.details.log, "utf8").includes("\x1b[32m"));
+  } finally { await fx.restore(); }
+});
+
+test("busy boundaries hold a second batch until the throttle permits it", async () => {
+  const fx = makeFixture();
+  try {
+    process.env.KO_STREAM_INTERVAL_MS = "10000";
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    await s.emit("agent_start");
+    const gate = join(fx.dir, "next");
+    const end = join(fx.dir, "end");
+    const wait = gatedCommand(gate, "first\n").replace(/^exec /, "");
+    const result = await s.tools.get("async_bash").execute("c", { command: `${wait}; ${gatedCommand(end, "second\n")}`, name: "throttle", stream: true });
+    const stream = registry().jobs.get(result.details.job).mode.stream;
+    await pollUntil(() => stream.lines.includes("first"));
+    stream.lastBatch -= 10000;
+    await s.emit("turn_end", { toolResults: [{}] });
+    assert.equal(customMessages(s, "ko-stream").length, 1);
+    writeFileSync(gate, "");
+    await pollUntil(() => stream.lines.includes("second"));
+    await s.emit("turn_end", { toolResults: [{}] });
+    assert.equal(customMessages(s, "ko-stream").length, 1);
+    assert.deepEqual(stream.lines, ["second"]);
+    stream.lastBatch -= 10000;
+    await s.emit("turn_end", { toolResults: [{}] });
+    assert.equal(customMessages(s, "ko-stream").length, 2);
+    assert.match(customMessages(s, "ko-stream")[1]!.message.content, /\nsecond$/);
+    assert.equal(registry().jobs.get(result.details.job).state.type, "running");
+    writeFileSync(end, "");
+    await pollUntil(() => notices(s).length === 1);
+  } finally { await fx.restore(); }
+});
+
+test("an idle send failure schedules its retry one interval after the attempt", async (t) => {
+  const fx = makeFixture();
+  try {
+    process.env.KO_STREAM_INTERVAL_MS = "10000";
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    const result = await s.tools.get("async_bash").execute("c", { command: gatedCommand(join(fx.dir, "gate"), "held\n"), name: "retry", stream: true });
+    const stream = registry().jobs.get(result.details.job).mode.stream;
+    await pollUntil(() => stream.timer !== null);
+    const send = t.mock.method(s.pi, "sendMessage", () => { throw new Error("send failed"); });
+    try {
+      stream.lastBatch -= 10000;
+      const timer = stream.timer;
+      const fire = timer._onTimeout;
+      clearTimeout(timer);
+      const before = performance.now();
+      fire();
+      assert.equal(send.mock.callCount(), 1);
+      assert.ok(stream.lastBatch >= before);
+      assert.ok(stream.timer._idleTimeout >= 9900);
+      assert.deepEqual(stream.lines, ["held"]);
+    } finally { send.mock.restore(); }
+  } finally { await fx.restore(); }
+});
+
+test("a timer that fires while busy waits for agent_end to send held lines", async () => {
+  const fx = makeFixture();
+  try {
+    process.env.KO_STREAM_INTERVAL_MS = "10000";
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    const gate = join(fx.dir, "gate");
+    const result = await s.tools.get("async_bash").execute("c", { command: gatedCommand(gate, "held\n"), name: "busy-timer", stream: true });
+    const job = registry().jobs.get(result.details.job);
+    const stream = job.mode.stream;
+    await pollUntil(() => stream.timer !== null);
+    await s.emit("agent_start");
+    stream.lastBatch -= 10000;
+    const timer = stream.timer;
+    const fire = timer._onTimeout;
+    clearTimeout(timer);
+    fire();
+    assert.deepEqual(customMessages(s, "ko-stream"), []);
+    assert.equal(stream.timer, null);
+    await s.emit("agent_end");
+    await pollUntil(() => customMessages(s, "ko-stream").length === 1);
+    assert.match(customMessages(s, "ko-stream")[0]!.message.content, /\nheld$/);
+    assert.equal(job.state.type, "running");
+    writeFileSync(gate, "");
+    await pollUntil(() => notices(s).length === 1);
   } finally { await fx.restore(); }
 });
 
@@ -108,7 +192,7 @@ test("idle stream batches arrive and a final partial line precedes the ending no
   try {
     fx.setPanes([selfPane()]);
     const s = await startSession(fx);
-    process.env.KO_STREAM_FLUSH_MS = "5";
+    process.env.KO_STREAM_INTERVAL_MS = "5";
     const gate = join(fx.dir, "gate");
     await s.tools.get("async_bash").execute("c", { command: gatedCommand(gate, "first\n", "final"), name: "partial", stream: true });
     await pollUntil(() => customMessages(s, "ko-stream").length === 1);
@@ -226,9 +310,9 @@ test("splitLines drops escape sequences and keeps the last state of a progress l
 });
 
 test("streamBatch bounds batches and names the output log", () => {
-  const batch = streamBatch(Array.from({ length: 300 }, (_, i) => `line ${i}`), 5).split("\n");
-  assert.equal(batch[0], "... 105 lines omitted (the log has them)");
-  assert.equal(batch.at(-1), "line 299");
+  const batch = streamBatch(Array.from({ length: 2100 }, (_, i) => `line ${i}`), "/tmp/output.log", 5).split("\n");
+  assert.equal(batch[0], "... 105 lines omitted (log: /tmp/output.log)");
+  assert.equal(batch.at(-1), "line 2099");
 });
 
 test("held streams bound long complete and partial lines while the log stays complete", async () => {
@@ -252,7 +336,9 @@ test("held streams bound long complete and partial lines while the log stays com
     assert.ok(held.tail.length <= 65536);
     writeFileSync(gate, "");
     await pollUntil(() => notices(s).length === 1);
-    assert.match(customMessages(s, "ko-stream")[0]!.message.content, /truncated.*log has/);
+    const batch = customMessages(s, "ko-stream")[0]!.message.content;
+    assert.equal(batch.split("long lines were truncated").length - 1, 1);
+    assert.ok(batch.includes(`... long lines were truncated (log: ${log})`));
     assert.equal(readFileSync(log, "utf8"), "x".repeat(size) + "\n" + "x".repeat(size));
   } finally { await fx.restore(); }
 });

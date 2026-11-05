@@ -744,8 +744,8 @@ that the process under test reads when it uses it:
 - `KO_PARENT_POLL_MS`, `KO_SPAWN_TIMEOUT_MS`, `KO_RESEND_MS` (the
   delay between the resends of one message), `KO_RECEIVER_BACKOFF_MS`
   (the first restart delay of the message stream),
-  `KO_AGENT_LIST_TTL_MS`, `KO_STREAM_FLUSH_MS`,
-  `KO_STREAM_MAX_WAIT_MS`, `KO_STREAM_BUDGET_BYTES`, `KO_JOB_MOVE_MS`
+  `KO_AGENT_LIST_TTL_MS`, `KO_STREAM_INTERVAL_MS` (the least time
+  between two batches of a streamed job), `KO_JOB_MOVE_MS`
   (when a `bash` call becomes a job), `KO_JOB_HINT_MS` (when the
   ctrl+b hint shows) and `KO_JOB_KILL_MS` (a job's `SIGTERM` to
   `SIGKILL`), read by the extension.

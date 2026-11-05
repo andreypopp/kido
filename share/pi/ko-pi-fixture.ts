@@ -205,6 +205,7 @@ export function makeFixture(): Fixture {
   process.env.KO_RESEND_MS = "5";
   process.env.KO_RECEIVER_BACKOFF_MS = "5";
   process.env.KO_JOB_KILL_MS = "50";
+  process.env.KO_STREAM_INTERVAL_MS = "5";
   globalThis.__koPiExtensionReceiver = undefined;
   globalThis.__koPiExtensionReceived = undefined;
 

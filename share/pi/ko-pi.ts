@@ -2,6 +2,7 @@ import {
   AgentSession,
   type BashOperations,
   DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
   type ExtensionAPI,
   type ExtensionContext,
   type ExtensionToolContext,
@@ -31,6 +32,7 @@ import {
   getShellConfig,
   rawKeyHint,
   truncateHead,
+  truncateTail,
   truncateLine,
 } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
@@ -316,12 +318,6 @@ const RESEND_TRIES = 3;
 
 const STREAM_CUSTOM_TYPE = "ko-stream";
 
-const STREAM_BATCH_LINES = 200;
-
-const STREAM_BATCH_BYTES = 16 * 1024;
-
-const STREAM_BUFFER_LINES = 5000;
-
 export const PARENT_GUIDANCE =
   "\n\nThe child stays alive after it reports. End it with stop_agent when you need nothing more from it. To continue it, use message_agent.";
 
@@ -440,7 +436,7 @@ type JobOutput = {
   log: string;
   output: WriteStream;
   logClosed: Promise<void>;
-  stream: { held: number; lines: string[]; dropped: number; cut: boolean; split: SplitState; carry: Buffer; budget: number; budgetTold: boolean; timer: NodeJS.Timeout | null; idleDelay: number };
+  stream: { held: number; lines: string[]; dropped: number; cut: boolean; split: SplitState; carry: Buffer; timer: NodeJS.Timeout | null; lastBatch: number };
 };
 type Job = {
   id: string;
@@ -615,7 +611,7 @@ function writeJobOutput(job: BackgroundJob, bytes: Buffer): void {
 function trimStream(job: BackgroundJob): void {
   const stream = job.mode.stream;
   let removed = 0;
-  while (stream.lines.length - removed > STREAM_BUFFER_LINES || (stream.held > HELD_BYTES && stream.lines.length > removed)) {
+  while (stream.lines.length - removed > DEFAULT_MAX_LINES || (stream.held > HELD_BYTES && stream.lines.length > removed)) {
     if (stream.lines.length - removed === 1 && !stream.split.line) {
       const old = stream.lines[removed] ?? "";
       stream.lines[removed] = utf8Suffix(old, HELD_BYTES - stream.carry.length - 1);
@@ -648,7 +644,6 @@ function jobData(registry: JobRegistry, job: Job, bytes: Buffer): void {
   writeJobOutput(job, bytes);
   if (!streams(job) || job.stopping?.end.type === "stopped") return;
   const stream = job.mode.stream;
-  if (stream.budget <= 0 && stream.budgetTold) return;
   const before = Buffer.byteLength(stream.split.line) + stream.carry.length;
   const decoded = utf8Complete(stream.carry, bytes);
   const lines = splitLines(stream.split, decoded.text);
@@ -674,7 +669,7 @@ function detachCall(job: Job): JobCall | null {
 async function finishJob(registry: JobRegistry, job: Job, result: ExecResult): Promise<void> {
   if (job.deadline) clearTimeout(job.deadline);
   if (isBackgroundJob(job)) {
-    if (streams(job) && !(job.mode.stream.budget <= 0 && job.mode.stream.budgetTold)) {
+    if (streams(job)) {
       if (job.mode.stream.split.line) {
         job.mode.stream.lines.push(job.mode.stream.split.line);
         job.mode.stream.held++;
@@ -738,7 +733,7 @@ function promoteJob(registry: JobRegistry, job: Job, origin: JobOutput["origin"]
   const call = detachCall(job);
   const mode: JobOutput = {
     type: "job", name, origin, log, output, logClosed,
-    stream: { held: 0, lines: [], dropped: 0, cut: false, split: newSplit(), carry: Buffer.alloc(0), budget: envMs("KO_STREAM_BUDGET_BYTES", 256 * 1024), budgetTold: false, timer: null, idleDelay: envMs("KO_STREAM_FLUSH_MS", 1000) },
+    stream: { held: 0, lines: [], dropped: 0, cut: false, split: newSplit(), carry: Buffer.alloc(0), timer: null, lastBatch: performance.now() },
   };
   const moved = Object.assign(job, { mode });
   if (job.producedBytes > job.tail.length) writeJobOutput(moved, Buffer.from(`--- earlier output is cut; this log starts with the last ${HELD_BYTES / 1024} KiB before the move ---\n`));
@@ -1043,22 +1038,13 @@ export function splitLines(state: SplitState, text: string): string[] {
   return lines;
 }
 
-export function streamBatch(lines: string[], alreadyDropped = 0): string {
-  let start = Math.max(0, lines.length - STREAM_BATCH_LINES);
-  let bytes = 0;
-  for (let i = lines.length - 1; i >= start; i--) {
-    bytes += Buffer.byteLength(lines[i], "utf8") + 1;
-    if (bytes > STREAM_BATCH_BYTES) {
-      start = i + 1;
-      break;
-    }
-  }
-  if (start >= lines.length && lines.length > 0) start = lines.length - 1;
-  const kept = lines.slice(start).map((line) => utf8Prefix(line, STREAM_BATCH_BYTES));
-  const omitted = lines.length - kept.length + alreadyDropped;
+export function streamBatch(lines: string[], log: string, alreadyDropped = 0, cut = false): string {
+  const tail = truncateTail(lines.join("\n"));
+  const omitted = tail.totalLines - tail.outputLines + alreadyDropped;
   const notes: string[] = [];
-  if (omitted > 0) notes.push(`... ${omitted} lines omitted (the log has them)`);
-  return [...notes, ...kept].join("\n");
+  if (omitted > 0) notes.push(`... ${omitted} lines omitted (log: ${log})`);
+  if (cut || tail.lastLinePartial) notes.push(`... long lines were truncated (log: ${log})`);
+  return [...notes, tail.content].join("\n");
 }
 
 function checkName(name: string): string | null {
@@ -2098,8 +2084,8 @@ export default function (pi: ExtensionAPI) {
     }
     return registry;
   };
-  const streamFlushMs = (): number => envMs("KO_STREAM_FLUSH_MS", 1000);
-  const streamCap = (): number => envMs("KO_STREAM_MAX_WAIT_MS", 30000);
+  const streamInterval = (): number => envMs("KO_STREAM_INTERVAL_MS", 5000);
+  const untilDue = (stream: BackgroundJob["mode"]["stream"]): number => stream.lastBatch + streamInterval() - performance.now();
   let agentWorking = false;
   const sendStream = (job: BackgroundJob, body: string): void => {
     pi.sendMessage({
@@ -2109,39 +2095,25 @@ export default function (pi: ExtensionAPI) {
       details: { from: job.mode.name, job: job.id },
     }, { deliverAs: "steer", triggerTurn: true });
   };
-  const flushJob = (job: BackgroundJob): boolean => {
+  const flushJob = (job: BackgroundJob): void => {
     const stream = job.mode.stream;
-    if (!stream.lines.length) return false;
-    if (stream.budget <= 0) {
-      if (!stream.budgetTold) sendStream(job, `... output budget spent; the log has the rest: ${job.mode.log}`);
-      stream.budgetTold = true;
-      stream.lines = [];
-      stream.dropped = 0;
-      stream.cut = false;
-      stream.split.line = "";
-      stream.carry = Buffer.alloc(0);
-      stream.held = 0;
-      return true;
-    }
-    const batch = (stream.cut ? "... long lines were truncated (the log has them)\n" : "") + streamBatch(stream.lines, stream.dropped);
+    if (!stream.lines.length) return;
+    const batch = streamBatch(stream.lines, job.mode.log, stream.dropped, stream.cut);
+    stream.lastBatch = performance.now();
     sendStream(job, batch);
     stream.lines = [];
     stream.dropped = 0;
     stream.cut = false;
     stream.held = Buffer.byteLength(stream.split.line) + stream.carry.length;
-    stream.budget -= Buffer.byteLength(batch);
-    return true;
   };
   const scheduleFlush = (job: BackgroundJob): void => {
     const stream = job.mode.stream;
     if (agentWorking || !stream.lines.length || stream.timer || !registry?.owner) return;
-    stream.idleDelay = Math.min(stream.idleDelay, streamCap());
     stream.timer = setTimeout(() => {
       stream.timer = null;
-      try {
-        if (flushJob(job)) stream.idleDelay = Math.min(stream.idleDelay * 2, streamCap());
-      } catch { scheduleFlush(job); }
-    }, stream.idleDelay);
+      if (agentWorking) return;
+      try { flushJob(job); } catch { scheduleFlush(job); }
+    }, Math.max(0, untilDue(stream)));
     stream.timer.unref();
   };
   const backgroundJobs = (): BackgroundJob[] => [...registry?.jobs.values() ?? []].filter(isBackgroundJob);
@@ -2157,8 +2129,7 @@ export default function (pi: ExtensionAPI) {
     for (const job of backgroundJobs()) {
       if (!streams(job)) continue;
       detachJob(job);
-      job.mode.stream.idleDelay = streamFlushMs();
-      flushJob(job);
+      if (untilDue(job.mode.stream) <= 0) flushJob(job);
     }
   };
   const localExec: JobOperations = {

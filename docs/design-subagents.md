@@ -614,26 +614,33 @@ the carriage-return rule: a `\r` that a `\n` does not follow starts
 the line over, so a progress bar leaves its last state.
 
 The held lines go as one collapsed custom message (`deliverAs:
-"steer"`, `triggerTurn: true`) at one of two times:
+"steer"`, `triggerTurn: true`). A job sends at most one batch in each
+`KO_STREAM_INTERVAL_MS` (5000), counted from the last send attempt,
+or from the move for the first one, so a failed send also waits an
+interval. When the interval has passed, the held
+lines go:
 
 - While the caller works, at a tool boundary: a `turn_end` that ran
-  tools.
-- While the caller is idle, on the idle schedule: the first batch
-  after `KO_STREAM_FLUSH_MS` (1000), each later one at double the
-  delay, up to `KO_STREAM_MAX_WAIT_MS` (30000). A tool boundary
-  resets the delay.
+  tools. A boundary inside the interval sends nothing; the lines wait
+  for a later boundary.
+- While the caller is idle, on a timer at the end of the interval.
+  When the caller becomes idle, the timer starts again.
 
-Each job has a budget of `KO_STREAM_BUDGET_BYTES` (256 KiB) of sent
-batches. After it, one last message names the log and no more
-batches go. A batch keeps a tail of up to 200 lines within 16 KB;
-one line above it reads `... N lines omitted (the log has them)`,
-for lines cut by the cap and lines dropped from the held 5000-line
-buffer. The held text has a bound of 64 KiB, the partial line
-included; a batch that lost the start of a long line says `... long
-lines were truncated (the log has them)`. The log keeps every byte. A batch leaves the buffer only when its message
-went, so a failed send keeps it for the next adopt. A pipe loses nothing, so no batch reports lost bytes. At the
-end, the partial last line and the held lines go before the notice:
-the model never reads "this is how it ended" before the output.
+A job has no total budget: the throttle limits how often the model
+reads a batch, and each batch has the limit of pi's `bash` output. A
+batch is the tail of the held lines through pi's `truncateTail`, with
+its default limits. One line above it reads `... N lines omitted
+(log: <path>)`, for the lines that the truncation cut and the lines
+dropped from the held buffer, which keeps pi's default line limit.
+The held text has a bound of 64 KiB, the partial line included. A
+batch that lost the start of a long line, in the buffer or in the
+truncation, has one line `... long lines were truncated (log:
+<path>)`. The log keeps every byte. A batch
+leaves the buffer only when its message went, so a failed send keeps
+it for the next adopt. A pipe loses nothing, so no batch reports lost
+bytes. At the end, the partial last line and the held lines go before
+the notice, without the throttle: the model never reads "this is how
+it ended" before the output.
 
 ## The bash tool's move
 

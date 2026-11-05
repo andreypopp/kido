@@ -161,7 +161,7 @@ test("a shutdown wait timeout keeps exit coverage until the retained pipes close
 test("held stream lines and a UTF-8 carry cross the reload and flush once from the new instance", async () => {
   const fx = makeFixture();
   try {
-    process.env.KO_STREAM_FLUSH_MS = "10000";
+    process.env.KO_STREAM_INTERVAL_MS = "10000";
     fx.setPanes([selfPane()]);
     const first = await startSession(fx);
     await first.emit("agent_start");
@@ -173,7 +173,7 @@ test("held stream lines and a UTF-8 carry cross the reload and flush once from t
     assert.deepEqual(customMessages(first, "ko-stream"), []);
     await first.emit("session_shutdown", { reason: "reload" });
     assert.equal(job.mode.stream.timer, null);
-    process.env.KO_STREAM_MAX_WAIT_MS = "5";
+    process.env.KO_STREAM_INTERVAL_MS = "5";
     const second = await startSession(fx, { factory: await freshExtension() });
     await pollUntil(() => customMessages(second, "ko-stream").length === 1);
     assert.ok(customMessages(second, "ko-stream")[0]!.message.content.endsWith("\nheld-before"));
@@ -230,7 +230,6 @@ test("all unannounced endings survive a reload gap before announced history is c
 test("stream and ending-notice failures retry independently at adoption", async () => {
   const fx = makeFixture();
   try {
-    process.env.KO_STREAM_BUDGET_BYTES = "1";
     fx.setPanes([selfPane()]);
     const first = await startSession(fx);
     const gate = join(fx.dir, "gate");
