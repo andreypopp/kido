@@ -568,6 +568,7 @@ impl State {
             if let Some((Role::Client(client), _)) = conn.role_mut()
                 && client.active.is_some()
             {
+                client.forget(layout);
                 let after = client.reconcile(before, layout, parents);
                 if after != client.current() {
                     client.set_current(after);

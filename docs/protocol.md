@@ -253,8 +253,14 @@ enters a window where it has no current pane gets that pane
 (section 7). When a removal takes a client's current pane, the
 client stays in its window while the window has panes; when the
 window goes too, the client moves to the removed pane's `parent`
-pane, in any session, while that pane exists, else to the nearest
-window that survives, in document order. The death of a pane moves
+pane, in any session, while that pane exists, else to the window of
+that session that the client visited most recently and that
+survives, else to the nearest surviving window before it in
+document order, else to the nearest after it. Each client keeps its
+own visit order for each session, as tmux does, so closing several
+windows in a row returns through the earlier visits; selecting a
+session without a window also takes that client's most recent window
+of the session. The death of a pane moves
 no client: a dead pane that lingers stays current, so its last
 screen stays readable until the removal. When a `switch` or a removal
 moves a client, the client gets a `selected` event. A client gets

@@ -200,6 +200,25 @@ fn two_clients_on_one_window_follow_the_focused_one_and_the_window_keeps_its_siz
 }
 
 #[test]
+fn removing_a_window_returns_the_client_to_its_previous_visit() {
+    let s = start(&[]);
+    s.put(&json!({"layout": {"sessions": [
+        {"name": "one", "windows": [
+            {"name": "a", "tree": new()},
+            {"name": "c", "tree": new()},
+            {"name": "b", "tree": new()}]}
+    ]}}));
+    let (mut client, _) = s.app_client(json!({"pane": "pane_1"}), false, (80, 24));
+    client.send(&json!({"type": "select", "window": "window_3"}));
+    assert_eq!(client.event("selected")["window"], "window_3");
+    s.delete("/panes/pane_3").ok();
+    assert_eq!(
+        client.event("selected"),
+        json!({"type": "selected", "session": "session_1", "window": "window_1", "pane": "pane_1"})
+    );
+}
+
+#[test]
 fn removing_the_last_pane_of_a_window_and_of_a_session_moves_the_client() {
     let s = start(&[]);
     s.put(&json!({"layout": {"sessions": [
@@ -288,7 +307,7 @@ fn a_swept_child_selects_its_parent_or_the_existing_window_fallback() {
     );
     assert!(!s.has_pane("pane_4"));
     s.delete("/panes/pane_5").ok();
-    assert_eq!(c.event("selected")["pane"], "pane_2");
+    assert_eq!(c.event("selected")["pane"], "pane_1");
 
     s.edit(|layout| {
         layout["sessions"][0]["windows"]

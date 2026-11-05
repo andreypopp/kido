@@ -35,7 +35,7 @@ pub(crate) struct Active {
 pub(crate) struct Client {
     pub(crate) id: ClientId,
     pub(crate) active: Option<Active>,
-    last_windows: BTreeMap<SessionId, WindowId>,
+    window_history: BTreeMap<SessionId, Vec<WindowId>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,7 +88,7 @@ impl Client {
         Client {
             id,
             active: None,
-            last_windows: BTreeMap::new(),
+            window_history: BTreeMap::new(),
         }
     }
 
@@ -137,7 +137,9 @@ impl Client {
             active.current = current;
         }
         if let Some(current) = current {
-            self.last_windows.insert(current.session, current.window);
+            let history = self.window_history.entry(current.session).or_default();
+            history.retain(|window| *window != current.window);
+            history.push(current.window);
         }
     }
 
@@ -155,8 +157,9 @@ impl Client {
             (None, Some(session)) => {
                 let session = layout.session(session)?;
                 let window = self
-                    .last_windows
+                    .window_history
                     .get(&session.id)
+                    .and_then(|history| history.last())
                     .and_then(|last| session.windows.iter().find(|window| window.id == *last))
                     .or_else(|| session.windows.first())?;
                 (session, window)
@@ -206,6 +209,17 @@ impl Client {
         self.select(layout, selection)
     }
 
+    pub(crate) fn forget(&mut self, layout: &Layout) {
+        self.window_history.retain(|session, history| {
+            history.retain(|window| {
+                layout
+                    .window(*window)
+                    .is_some_and(|(owner, _)| owner.id == *session)
+            });
+            !history.is_empty()
+        });
+    }
+
     pub(crate) fn reconcile(
         &self,
         before: &Layout,
@@ -231,9 +245,18 @@ impl Client {
             })
         })
         .or_else(|| {
-            let order: Vec<WindowId> = before.windows().map(|(_, window)| window.id).collect();
+            named(Selection {
+                window: self.window_history.get(&current.session)?.last().copied(),
+                ..Selection::default()
+            })
+        })
+        .or_else(|| {
+            let mut order: Vec<WindowId> = before.windows().map(|(_, window)| window.id).collect();
             let at = order.iter().position(|window| *window == current.window)?;
-            let survivor = nearest(&order, at, |window| layout.window(*window).is_some())?;
+            order.reverse();
+            let survivor = nearest(&order, order.len() - 1 - at, |window| {
+                layout.window(*window).is_some()
+            })?;
             named(Selection {
                 window: Some(survivor),
                 ..Selection::default()
@@ -412,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn when_the_current_pane_or_window_goes_the_client_gets_the_next_one_in_document_order() {
+    fn when_the_current_pane_or_window_goes_the_client_prefers_the_left_window() {
         let source = three_documents();
         let before = source.layout().clone();
         let reconcile = |after: &Layout, from| at(from).reconcile(&before, after, &[]);
@@ -424,7 +447,7 @@ mod tests {
         let after_3 = without(&source, &[3]);
         assert_eq!(
             reconcile(&after_3, current(1, 2, 3)),
-            Some(current(2, 3, 4))
+            Some(current(1, 1, 1))
         );
         let after_4 = without(&source, &[4]);
         assert_eq!(
@@ -434,6 +457,51 @@ mod tests {
         let empty = without(&source, &[1, 2, 3, 4]);
         assert_eq!(reconcile(&empty, current(1, 1, 1)), None);
         assert_eq!(reconcile(&before, current(1, 1, 2)), Some(current(1, 1, 2)));
+    }
+
+    fn four_windows() -> Document {
+        document(json!([{"name": "one", "windows": [
+            {"name": "a", "tree": leaf()},
+            {"name": "c", "tree": leaf()},
+            {"name": "b", "tree": leaf()},
+            {"name": "d", "tree": leaf()}
+        ]}]))
+    }
+
+    #[test]
+    fn a_removed_previous_visit_falls_back_left_then_right() {
+        let source = four_windows();
+        let mut client = at(current(1, 1, 1));
+        client.set_current(Some(current(1, 3, 3)));
+        let after = without(&source, &[1, 3]);
+        client.forget(&after);
+        assert_eq!(
+            client.reconcile(source.layout(), &after, &[]),
+            Some(current(1, 2, 2))
+        );
+        assert_eq!(
+            at(current(1, 1, 1)).reconcile(source.layout(), &without(&source, &[1]), &[]),
+            Some(current(1, 2, 2))
+        );
+    }
+
+    #[test]
+    fn two_window_closes_return_through_the_visit_stack() {
+        let source = four_windows();
+        let mut client = at(current(1, 1, 1));
+        client.set_current(Some(current(1, 4, 4)));
+        client.set_current(Some(current(1, 2, 2)));
+        let after = without(&source, &[2]);
+        client.forget(&after);
+        let next = client.reconcile(source.layout(), &after, &[]);
+        assert_eq!(next, Some(current(1, 4, 4)));
+        client.set_current(next);
+        let after_second = without(&source, &[2, 4]);
+        client.forget(&after_second);
+        assert_eq!(
+            client.reconcile(&after, &after_second, &[]),
+            Some(current(1, 1, 1))
+        );
     }
 
     #[test]

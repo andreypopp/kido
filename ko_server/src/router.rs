@@ -1261,7 +1261,7 @@ mod tests {
         server.reply("DELETE /panes/pane_4", "\r\n");
         assert_eq!(
             kinds(&peer.events(&mut server)),
-            ["layout", "selected pane_3"]
+            ["layout", "selected pane_1"]
         );
         assert_eq!(
             windows(&server)
