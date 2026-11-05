@@ -186,6 +186,24 @@ on that directory dials again, which starts a fresh server through
 `KoServer.launch`. A remote owner shows the text with Reconnect, which
 dials again as after a remote mismatch: the app never stops a remote
 server.
+
+### Window frame
+
+The app keeps one window frame for each server, in its UserDefaults: it is
+local UI state, not the server's or the configuration file's. The key is
+the local server's directory or the remote host as the app names it. A
+move or resize saves the frame after a short pause without another
+change; a miniaturize and a close save it at once. A fullscreen or
+miniaturized window, or one in a fullscreen transition, never overwrites
+it. A new window for a server with a frame gets it back, clamped onto the
+visible frame of the screen that it overlaps most, else of the main
+screen, and shrunk only when it does not fit; when an open window of the
+same server already has that frame, the new one cascades from it
+(`WindowFrames.place`). Without a frame, the window is centered.
+Fullscreen, tabs and panes are not restored. NSWindow's frame autosave is
+not used: an autosave name belongs to one window at a time, so two windows
+of one server cannot share it, and it does not cascade.
+
 ## Remote hosts
 
 A remote window reaches the ko server on the host through an SSH forward

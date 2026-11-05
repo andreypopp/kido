@@ -18,6 +18,33 @@ import KoModel
         return owner
     }
 
+    func testClosingSavesAPendingMoveAndAFailedFullscreenEntry() throws {
+        let name = "WindowOwnerFrameTests-" + UUID().uuidString
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { preferences.removePersistentDomain(forName: name) }
+        let board = NSPasteboard(name: .init("ko-owner-frame-" + UUID().uuidString))
+        defer { board.releaseGlobally() }
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+        let dir = try stateDir()
+        let frames = WindowFrames(preferences: preferences, serverDir: dir)
+        for failedFullscreen in [false, true] {
+            let owner = WindowOwner(host: .local, runtime: runtime, start: false, preferences: preferences)
+            owner.testServerDir = dir
+            let moved = CGRect(x: 100, y: 150, width: 950, height: 650)
+            owner.window.setFrame(moved, display: false)
+            let notification = Notification(name: NSWindow.didMoveNotification, object: owner.window)
+            if failedFullscreen {
+                owner.windowWillEnterFullScreen(notification)
+                owner.windowDidFailToEnterFullScreen(owner.window)
+                owner.window.setFrame(CGRect(x: 140, y: 170, width: 950, height: 650), display: false)
+            }
+            owner.windowDidMove(notification)
+            let expected = owner.window.frame
+            owner.close()
+            XCTAssertEqual(frames.frame(for: .local), expected)
+        }
+    }
+
     private func names(_ owner: WindowOwner) -> [String] { owner.snapshot?.sessions.map(\.name) ?? [] }
 
     func testTheOwnerStartsTheServerCreatesTheFirstSessionAndThenShowsTheLayoutOfTheServer() throws {

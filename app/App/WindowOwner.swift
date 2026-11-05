@@ -62,6 +62,10 @@ private class AlertEscape: NSView {
     #endif
     let runtime: GhosttyRuntime
     let host: Host
+    private let preferences: UserDefaults?
+    private var frames: WindowFrames { WindowFrames(preferences: preferences, serverDir: serverDir) }
+    private var frameSave: DispatchWorkItem?
+    private var changingFullScreen = false
     let ownerID = String(UUID().uuidString.prefix(8))
     let notificationID = UUID().uuidString
     var feedFresh = true
@@ -205,7 +209,8 @@ private class AlertEscape: NSView {
         openBrowser(url)
     }
 
-    init(host: Host, runtime: GhosttyRuntime, start: Bool = true, cause: DialCause = .launch, openBrowser: @escaping (URL) -> Void = { if !background { NSWorkspace.shared.open($0) } }) {
+    init(host: Host, runtime: GhosttyRuntime, start: Bool = true, cause: DialCause = .launch, preferences: UserDefaults? = background ? nil : .standard, openBrowser: @escaping (URL) -> Void = { if !background { NSWorkspace.shared.open($0) } }) {
+        self.preferences = preferences
         self.openBrowser = openBrowser
         self.host = host
         if case .newSession = cause { pendingNewSession = true }
@@ -285,6 +290,16 @@ private class AlertEscape: NSView {
             NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: error.path)])
         }
         window.center()
+        if let main = NSScreen.main?.visibleFrame {
+            let open = NSApp.windows.compactMap { other -> CGRect? in
+                guard let owner = other.delegate as? WindowOwner, owner !== self,
+                      owner.alive, owner.host == host,
+                      !other.styleMask.contains(.fullScreen), !other.isMiniaturized else { return nil }
+                return other.frame
+            }
+            window.setFrame(WindowFrames.place(saved: frames.frame(for: host), centered: window.frame,
+                                               screens: NSScreen.screens.map(\.visibleFrame), main: main, open: open), display: false)
+        }
         if !background {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -314,8 +329,33 @@ private class AlertEscape: NSView {
         proposedOptions.subtracting(.autoHideToolbar)
     }
 
-    func windowDidEnterFullScreen(_ notification: Notification) { updateAppearance() }
-    func windowDidExitFullScreen(_ notification: Notification) { updateAppearance() }
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        saveFrame()
+        changingFullScreen = true
+    }
+    func windowWillExitFullScreen(_ notification: Notification) { changingFullScreen = true }
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) { changingFullScreen = false }
+    func windowDidFailToExitFullScreen(_ window: NSWindow) { changingFullScreen = false }
+    func windowWillMiniaturize(_ notification: Notification) { saveFrame() }
+    func windowDidEnterFullScreen(_ notification: Notification) { changingFullScreen = false; updateAppearance() }
+    func windowDidExitFullScreen(_ notification: Notification) { changingFullScreen = false; updateAppearance() }
+
+    private func saveFrame() {
+        frameSave?.cancel()
+        frameSave = nil
+        guard alive, !changingFullScreen, !window.styleMask.contains(.fullScreen), !window.isMiniaturized else { return }
+        frames.save(window.frame, for: host)
+    }
+
+    func windowDidMove(_ notification: Notification) { scheduleFrameSave() }
+    func windowDidResize(_ notification: Notification) { scheduleFrameSave() }
+
+    private func scheduleFrameSave() {
+        frameSave?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.saveFrame() }
+        frameSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+    }
 
     func down(_ title: String, _ detail: String, button: String?, action: Selector = #selector(WindowOwner.start)) {
         guard alive else { return }
@@ -1419,6 +1459,7 @@ private class AlertEscape: NSView {
 
     func windowWillClose(_ notification: Notification) {
         guard alive else { return }
+        saveFrame()
         alive = false
         Notifier.shared.forget(self)
         invalidate()
