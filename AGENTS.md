@@ -1253,7 +1253,15 @@ delegates as its brief says and does not write code.
   demo or the user's servers.
 - **Worktrees.** Each unit works in its own worktree
   `~/Workspace/kido-<unit>`, which the top-level session creates with
-  `git worktree add --detach ~/Workspace/kido-<unit> <base>`. Agents
+  `git worktree add --detach ~/Workspace/kido-<unit> <base>`. For a
+  unit that does not change Ghostty, it clones the main checkout's
+  built GhosttyKit for the worktree's pin
+  (`cp -Rc app/build/ghosttykit/<pin>-*` into the worktree's
+  `app/build/ghosttykit/`): the directory's name is the pin, the
+  submodule's diff and the flags, so a match is the same build. A unit
+  that runs app targets first runs `make build` under
+  `scripts/quiet-limit 600`, because the app's ko phase hides the
+  build's output and a cold build there trips a 60 s limit. Agents
   start in that worktree and stay there. The top-level session merges
   the result, pushes, and removes the worktree only after every agent
   that ran in it has stopped. `.pi/extensions/no-git-writes/policy.ts`
