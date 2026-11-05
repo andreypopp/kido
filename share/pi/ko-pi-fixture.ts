@@ -5,6 +5,7 @@
 // for the message stream. Delays are gates that a test releases, never timers.
 
 import childProcess from "node:child_process";
+import type { TestContext } from "node:test";
 
 import assert from "node:assert/strict";
 
@@ -19,6 +20,24 @@ import { SessionManager, initTheme } from "@earendil-works/pi-coding-agent";
 import koPi from "./ko-pi.ts";
 
 initTheme("dark");
+
+const statusRecords: string[] = [];
+const stdoutWrite = process.stdout.write.bind(process.stdout);
+process.stdout.write = (chunk: string | Uint8Array, encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void), callback?: (error?: Error | null) => void): boolean => {
+  const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
+  if (text.startsWith("\x1b]7501;")) { statusRecords.push(text); return true; }
+  return typeof encodingOrCallback === "string" ? stdoutWrite(chunk, encodingOrCallback, callback) : stdoutWrite(chunk, encodingOrCallback);
+};
+
+export function captureStatusRecords(t: TestContext): string[] {
+  t.after(() => { statusRecords.length = 0; });
+  return statusRecords;
+}
+
+export function jobRecords(output: string[], id?: string, state?: string): string[] {
+  const pattern = new RegExp(`^\x1b\\]7501;state=${state ?? "[a-z]+"}:id=job/${id ?? "[^:]+?"}(?=:|\x1b\\\\)`);
+  return output.filter((record) => pattern.test(record));
+}
 
 interface PaneRow {
   id: string;
@@ -153,6 +172,7 @@ syncBuiltinESMExports();
 let cachedFakeKo: string | null = null;
 
 export function makeFixture(): Fixture {
+  statusRecords.length = 0;
   cachedFakeKo ??= process.env.KO_FAKE_KO ?? null;
   if (!cachedFakeKo || !existsSync(cachedFakeKo)) {
     throw new Error("KO_FAKE_KO is not set or not built; run scripts/test-ts.sh");

@@ -64,7 +64,8 @@ The records supply:
 A client draws non-root records as child rows under the pane row,
 nested by id, in id order. Each child row shows the record's title, or
 its id, its raw state and its message. A visit does not acknowledge
-them. Claude Code reports each subagent this way.
+them. Claude Code reports each subagent this way, and ko-pi each job
+(design-subagents.md, "A job's row").
 
 ### Reduction
 

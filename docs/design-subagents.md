@@ -515,8 +515,9 @@ after `--`. The rules:
 ## A job
 
 A job is a command that runs in the background as a child process
-of pi, and that tells the caller once it ends. It is not a pane: it has no window and no sidebar row. Two tools make
-one:
+of pi, and that tells the caller once it ends. It is not a pane: it
+has no window, and its row in the sidebar is a status record of pi's
+own pane ("A job's row"). Two tools make one:
 
 - `async_bash(command, name, stream?)` starts a job.
 - A `bash` call that still runs after `KO_JOB_MOVE_MS` (60 000), or
@@ -575,6 +576,66 @@ its own notice; ko-pi groups none.
 
 A job is not an agent. `message_agent` and `stop_agent` do not
 resolve it.
+
+## A job's row
+
+Each job is an OSC 7501 child record of pi's pane, so both clients
+draw it as a child row under the pane row (design-program-status.md,
+"The record set"). A foreground `bash` call has no record. It gets
+one when it moves. A routed job has one as a local job does.
+
+- The id is `job/<job id>`. A job id is unique in the registry. Only
+  ko-pi writes the namespace `job`, so a clear of `job` removes every
+  job record and nothing else.
+- While the job runs, the state is working, the title is the command
+  and the message is the job's name. When it ends, the state is done
+  for exit 0. Every other end is error: an exit code, a signal, a
+  failure to start, a timeout or a stop. The message is the end text
+  of its notice (`exit 3`, `signal SIGTERM`).
+- The title and the message are sanitized by ko-pi's own rule:
+  pi-tui's control character replacement, then whitespace collapses
+  to one space. The text is cut at a UTF-8 boundary and sent as
+  base64.
+- A finished record lingers for `KO_JOB_RECORD_LINGER_MS` (5000).
+  Then ko-pi clears its id. The pane's own mark follows the existing
+  rules. The outcome that a done or error record produces stays after
+  the clear.
+
+**The writer.** ko-pi writes each record as one `process.stdout.write`
+of the whole sequence. pi's TUI writes from the same Node process, so
+a record never splits a frame of pi. ko-pi writes only with a UI and
+inside a ko pane (`KO_PANE`), because pi's own query result
+(`programStatusSupported`) is private to pi-tui.
+
+**At most 32 records.** The server's set has a limit, and a new record
+over the limit removes the oldest record. That can be pi's root
+record. Thus ko-pi admits at most 32 job records at once. When a new
+job needs a slot, ko-pi clears the oldest finished record first. When
+all 32 jobs run, the new job gets no row, also not at its end. The cap
+is ko-pi's own, not a server rule.
+
+**pi's clears.** pi-tui's `Terminal.stop()` writes a root clear. This
+removes every record of the pane, the job records too. It runs at
+pi's exit, at a suspend (ctrl+z) and around the external editor.
+`start()` sends only pi's root record again. Thus ko-pi writes its
+running job records again at `input` and `agent_start`, and it writes
+a job's record at each change of that job. It never writes on a timer
+or on each key. While the editor is open or pi is suspended, and
+until the next submit or agent start, the rows are absent. A finished
+record that such a clear removed does not come back.
+
+A prompt start (OSC 133 `A`) removes every working record of the pane.
+pi 1.5.0's TUI strips its OSC 133 zone markers before it writes, so
+the job rows and pi's own working status stay.
+`share/pi/package.json` pins 1.5.0.
+
+**Across /reload and quit.** A `/reload` cancels the linger timers of
+the old instance. The new instance clears `job` at adopt. Then it
+writes the record of each running job that it adopted, within the
+cap, so a job that had no slot before can get one. A job that ended
+before or during the reload gets no record, only its notice. Every
+other shutdown, and the registry's exit handler, clears `job` before
+it stops the jobs, so a stopped job writes no record after the clear.
 
 ## Stopping a job
 
@@ -756,7 +817,7 @@ These nested windows do not follow the document's window order.
   job").
 - A moved `bash` call's log starts with the last 64 KiB before the
   move.
-- The jobs rest on pi 1.4.0 internals: `createBashToolDefinition`,
+- The jobs rest on pi 1.5.0 internals: `createBashToolDefinition`,
   `getShellConfig`, `rawKeyHint`, `onTerminalInput`, the `builtin:`
   prefix of `sourceInfo.path`, the override of a builtin by name, and
   the copy of pi's local shell operations. A pi upgrade checks them.

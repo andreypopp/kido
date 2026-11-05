@@ -35,7 +35,7 @@ import {
   truncateTail,
   truncateLine,
 } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Key, matchesKey, type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, type ProgramStatus, replaceControlCharacters, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { type WriteStream, accessSync, closeSync, constants, createWriteStream, mkdirSync, openSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
@@ -474,12 +474,12 @@ type JobRegistry = {
   session: string;
   stopAll(): string[];
   jobs: Map<string, Job>;
-  owner: { onLines(job: BackgroundJob): void; onEnd(job: BackgroundJob): void } | null;
+  owner: { onStart(job: BackgroundJob): void; onLines(job: BackgroundJob): void; onEnd(job: BackgroundJob): void; clearRecords(): void } | null;
   exit: () => void;
   keys: () => void;
 };
 const JOBS = Symbol.for("ko-pi.jobs");
-const JOB_SHAPE = 1;
+const JOB_SHAPE = 2;
 function isJobRegistry(value: unknown): value is JobRegistry {
   return isRecord(value) && typeof value.shape === "number" && typeof value.session === "string"
     && value.jobs instanceof Map && typeof value.stopAll === "function" && typeof value.exit === "function" && typeof value.keys === "function";
@@ -583,6 +583,7 @@ function createJobRegistry(session: string): JobRegistry {
       return live.filter(isBackgroundJob).map((job) => job.mode.name);
     },
     exit() {
+      registry.owner?.clearRecords();
       for (const job of jobs.values()) {
         if (job.where.type === "local") try { signalJob(job, "SIGKILL"); } catch {}
       }
@@ -739,6 +740,7 @@ function promoteJob(registry: JobRegistry, job: Job, origin: JobOutput["origin"]
   if (job.producedBytes > job.tail.length) writeJobOutput(moved, Buffer.from(`--- earlier output is cut; this log starts with the last ${HELD_BYTES / 1024} KiB before the move ---\n`));
   writeJobOutput(moved, job.tail);
   call?.resolve({ exitCode: null });
+  registry.owner?.onStart(moved);
   return moved;
 }
 
@@ -2075,6 +2077,57 @@ export default function (pi: ExtensionAPI) {
     else hold.child.kill();
   };
 
+  const jobRecords = new Map<string, { type: "running" } | { type: "finished"; timer: NodeJS.Timeout }>();
+  const writeJobRecord = (id: string | undefined, state: Extract<ProgramStatus["state"], "working" | "done" | "error" | "clear">, title?: string, message?: string): boolean => {
+    if (!session?.hasUI || !process.env.KO_PANE) return false;
+    const encode = (text: string, bytes: number): string => Buffer.from(utf8Prefix(replaceControlCharacters(text).replace(/\s+/g, " ").trim(), bytes)).toString("base64");
+    let record = `\x1b]7501;state=${state}:id=${id === undefined ? "job" : `job/${id}`}`;
+    if (title !== undefined) record += `:title=${encode(title, 192)}`;
+    if (message !== undefined) record += `:msg=${encode(message, 2048)}`;
+    process.stdout.write(`${record}\x1b\\`);
+    return true;
+  };
+  const clearJobRecord = (id: string): void => {
+    const record = jobRecords.get(id);
+    if (record?.type === "finished") clearTimeout(record.timer);
+    jobRecords.delete(id);
+    writeJobRecord(id, "clear");
+  };
+  const detachJobRecords = (): void => {
+    for (const record of jobRecords.values()) if (record.type === "finished") clearTimeout(record.timer);
+    jobRecords.clear();
+  };
+  const clearJobRecords = (): void => {
+    detachJobRecords();
+    writeJobRecord(undefined, "clear");
+  };
+  const reportJob = (job: BackgroundJob): void => {
+    const id = job.id;
+    if (!jobRecords.has(id)) {
+      if (jobRecords.size >= 32) {
+        const oldestFinished = [...jobRecords].find(([, record]) => record.type === "finished");
+        if (!oldestFinished) return;
+        clearJobRecord(oldestFinished[0]);
+      }
+    }
+    if (job.state.type === "running") {
+      if (writeJobRecord(id, "working", job.command, job.mode.name)) jobRecords.set(id, { type: "running" });
+    }
+    else {
+      if (!writeJobRecord(id, job.state.end.type === "exit" && job.state.end.code === 0 ? "done" : "error", job.command, jobEndText(job.state.end))) return;
+      const timer = setTimeout(() => clearJobRecord(id), envMs("KO_JOB_RECORD_LINGER_MS", 5000));
+      timer.unref();
+      jobRecords.delete(id);
+      jobRecords.set(id, { type: "finished", timer });
+    }
+  };
+  const refreshJobRecords = (): void => {
+    for (const [id, record] of jobRecords) {
+      if (record.type !== "running") continue;
+      const job = registry?.jobs.get(id);
+      if (job && isBackgroundJob(job)) writeJobRecord(id, "working", job.command, job.mode.name);
+    }
+  };
   const savedJobs: unknown = Reflect.get(globalThis, JOBS);
   let registry = isJobRegistry(savedJobs) ? savedJobs : undefined;
   const jobRegistry = (): JobRegistry => {
@@ -2149,9 +2202,13 @@ export default function (pi: ExtensionAPI) {
       Reflect.deleteProperty(globalThis, JOBS);
     }
     const owner = jobRegistry();
+    clearJobRecords();
     owner.owner = {
+      onStart: reportJob,
+      clearRecords: clearJobRecords,
       onLines(job) { if (streams(job)) scheduleFlush(job); },
       onEnd(job) {
+        if (jobRecords.has(job.id)) reportJob(job);
         detachJob(job);
         if (job.state.type !== "ended" || job.state.announced) return;
         if (job.state.end.type !== "stopped") {
@@ -2164,6 +2221,7 @@ export default function (pi: ExtensionAPI) {
       },
     };
     for (const job of backgroundJobs()) {
+      if (job.state.type === "running") reportJob(job);
       if (job.state.type === "ended" && !job.state.announced) {
         try { owner.owner?.onEnd(job); } catch {}
       } else if (job.state.type !== "ended" && streams(job)) scheduleFlush(job);
@@ -3190,7 +3248,9 @@ export default function (pi: ExtensionAPI) {
     agentWorking = true;
     beginWork();
   };
+  pi.on("input", () => { refreshJobRecords(); });
   pi.on("agent_start", () => {
+    refreshJobRecords();
     workStarted();
     running();
   });
@@ -3259,8 +3319,10 @@ export default function (pi: ExtensionAPI) {
     if (reason === "reload") {
       stopReceiver(true);
       if (registry) registry.owner = null;
+      detachJobRecords();
       for (const job of backgroundJobs()) detachJob(job);
     } else {
+      clearJobRecords();
       for (const call of calls) call.cancel(reason);
       if (reason === "quit" && edge && leaving === null && active) {
         const text = exitNoticeText();

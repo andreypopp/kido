@@ -747,8 +747,9 @@ that the process under test reads when it uses it:
   `KO_AGENT_LIST_TTL_MS`, `KO_STREAM_INTERVAL_MS` (the least time
   between two batches of a streamed job), `KO_JOB_MOVE_MS`
   (when a `bash` call becomes a job), `KO_JOB_HINT_MS` (when the
-  ctrl+b hint shows) and `KO_JOB_KILL_MS` (a job's `SIGTERM` to
-  `SIGKILL`), read by the extension.
+  ctrl+b hint shows), `KO_JOB_KILL_MS` (a job's `SIGTERM` to
+  `SIGKILL`) and `KO_JOB_RECORD_LINGER_MS` (how long a finished job's
+  status record stays), read by the extension.
 
 The extension's tests set them in the environment of the process under
 test. The e2e suite sets the server's through its environment. The

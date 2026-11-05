@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-import { makeFixture, agentPane, selfPane, startSession, text, entriesOf, customMessages, notices, gatedCommand, pollUntil, withEnv, freshExtension, movedId, logHas, type Fixture, type Started } from "./ko-pi-fixture.ts";
+import { makeFixture, agentPane, selfPane, startSession, text, entriesOf, customMessages, notices, gatedCommand, pollUntil, withEnv, freshExtension, movedId, logHas, captureStatusRecords, jobRecords, type Fixture, type Started } from "./ko-pi-fixture.ts";
 
 import { mapHostPath, senderHeader } from "./ko-pi.ts";
 
@@ -429,7 +429,8 @@ test("a failed runtime is no refusal: a tool reaches it and gets the start's err
   }
 });
 
-test("a routed async_bash is an exec session with a host log, a notice, and cancellation by closing its ko child", async () => {
+test("a routed async_bash is an exec session with a host log, a notice, and cancellation by closing its ko child", async (ctx) => {
+  const output = captureStatusRecords(ctx);
   const fx = makeFixture();
   try {
     const t = tree(fx);
@@ -443,6 +444,8 @@ test("a routed async_bash is an exec session with a host log, a notice, and canc
     const command = `env; printf 'before\\n'; ${gatedCommand(gate, "", "after\n", 3)}`;
     const result = await withEnv({ HOST_SECRET: "host-only" }, () => run(s, "async_bash", { command, name: "build", stream: true }));
     assert.equal(fx.running(), baseline + 1);
+    const records = () => jobRecords(output, result.details.job);
+    assert.ok(records()[0]?.includes("state=working:"));
     await pollUntil(() => fx.execLog().at(-1)?.request.argv?.[2] === command);
     const exec = fx.execLog().at(-1)!;
     assert.equal(exec.runtime, "dev");
@@ -460,6 +463,8 @@ test("a routed async_bash is an exec session with a host log, a notice, and canc
     writeFileSync(gate, "");
     await pollUntil(() => notices(s).length === 1);
     assert.match(notices(s)[0]!, /exit 3/);
+    assert.ok(records().at(-1)?.includes("state=error:"));
+    assert.ok(records().at(-1)?.endsWith(":msg=ZXhpdCAz\x1b\\"));
     assert.match(notices(s)[0]!, /before\nafter/);
     await pollUntil(() => fx.running() === baseline);
     const service = await run(s, "async_bash", { command: `printf 'ready\\n'; ${gatedCommand(join(t.rt, "service"))}`, name: "service" });
