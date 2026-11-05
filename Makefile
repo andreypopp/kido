@@ -9,6 +9,8 @@ export PATH := $(if $(RUSTUP_BIN),$(RUSTUP_BIN):)$(PATH)
 # make 3.81 (macOS) execs a recipe line without shell syntax through its
 # own PATH, not the exported one.
 CARGO := $(if $(RUSTUP_BIN),$(RUSTUP_BIN)/)cargo
+export KO_BUILD_ID := $(shell git describe --always --dirty)
+export KO_VT := $(word 2,$(shell git ls-files -s third_party/ghostty))
 
 .DEFAULT_GOAL := build
 # The Linux architectures that build-linux, check-static and install handle: the host's alone by
@@ -82,11 +84,10 @@ website:
 # zig keeps its caches in the KO_ZIG_CACHE of .cargo/config.toml.
 KO := build/ko
 SHARE := bin pi shim.sh terminfo
-BUILD_ID = KO_BUILD_ID=$$(git describe --always --dirty)
 ZIG_CACHE := $(CURDIR)/target/zig-cache
 TERMINFO := $(KO)/share/ko/terminfo
 build: $(TERMINFO)/x/xterm-ghostty
-	$(BUILD_ID) $(CARGO) build --locked --release --bin ko --bin ko-pane
+	$(CARGO) build --locked --release --bin ko --bin ko-pane
 	rm -f $(KO)/bin/ko $(KO)/bin/ko-pane
 	cp target/release/ko target/release/ko-pane $(KO)/bin/
 	rm -rf $(KO)/share/ko/bin $(KO)/share/ko/pi
@@ -101,7 +102,7 @@ build: $(TERMINFO)/x/xterm-ghostty
 LINUX := $(KO)/share/ko/linux
 build-linux: build
 	set -e; for arch in $(LINUX_ARCHS); do \
-	  $(BUILD_ID) $(CARGO) build --locked --release --bin ko --target $$arch-unknown-linux-musl; \
+	  $(CARGO) build --locked --release --bin ko --target $$arch-unknown-linux-musl; \
 	  dir=$(LINUX)/$$arch; \
 	  rm -rf $$dir; mkdir -p $$dir/bin $$dir/share/ko; \
 	  cp target/$$arch-unknown-linux-musl/release/ko $$dir/bin/ko; \
@@ -152,7 +153,7 @@ target/%/release/libko_client.a: build/.ko_client_deps FORCE
 	@: $${MACOSX_DEPLOYMENT_TARGET:?set MACOSX_DEPLOYMENT_TARGET}
 	@test -d "$$(rustc --print target-libdir --target $*)" || \
 	{ echo "ko-client-xcframework: rust target $* is not installed for $$(rustc --version); run: rustup target add $*" >&2; exit 1; }
-	$(BUILD_ID) $(CARGO) rustc --locked --release -p ko_client --lib --crate-type staticlib --target $*
+	$(CARGO) rustc --locked --release -p ko_client --lib --crate-type staticlib --target $*
 
 build/.ko_client_deps: Cargo.lock ko_client/Cargo.toml
 	set -e; tree=$$($(CARGO) tree --locked -p ko_client -e normal --prefix none); \
@@ -200,7 +201,7 @@ BENCH := build/bench
 CXX_LIB := $(if $(filter Darwin,$(shell uname -s)),c++,stdc++)
 BENCH_CC := cc -std=c11 -O2 -Wall -Wextra -Werror
 build-bench: build
-	$(BUILD_ID) $(CARGO) build --locked --release -p ko_bench
+	$(CARGO) build --locked --release -p ko_bench
 	mkdir -p $(BENCH)
 	set -e; for tool in produce drain wait_master; do $(BENCH_CC) bench/$$tool.c -o $(BENCH)/$$tool; done
 	set -e; lib=$$(ls -t target/release/build/ko_vt_sys-*/out/zig-out/lib/libghostty-vt.a | head -1); \

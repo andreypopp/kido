@@ -771,7 +771,12 @@ the Cortex-A53 erratum 843419 workaround, because zig's linker
 refuses the flag: it is correct on Apple Silicon, not on an affected
 Cortex-A53.
 `ko version` prints the JSON of `protocol::version()`, with the build id
-from `git describe` at build time in `.build`.
+from `git describe` at build time in `.build`. The Makefile reads the
+build id and the ghostty pin of the index once and exports them to every
+cargo command as `KO_BUILD_ID` and `KO_VT`; `ko_server/build.rs` runs
+no git and tracks only these two variables. A build script must not
+track the git index: `git describe --dirty` rewrites it on each make,
+which would rebuild `ko_server` and every crate above it.
 
 `make ko-client-xcframework` builds `ko_client` as a static library
 for arm64 macOS into `build/ko_client.xcframework`
@@ -1029,7 +1034,7 @@ its busy siblings `ko-ci-like-busy-<pid>-N`) gets
 pass through, except `KO_AGENT_*`, `KO_PANE`, `KO_PANE_TOKEN` and
 `KO_SOCKET`. In a linked worktree, the script
 also mounts the main repository's git directory read-only, because
-`ko_server/build.rs` runs git. Linux's check is `make ci-like
+the Makefile runs git. Linux's check is `make ci-like
 ARGS="--cpus 2 --memory 6g -- make verify"`; the Rust and zig builds
 need more than the default 1g. The container's `/dev/shm` is 1g
 (`--shm-size`): the e2e test of a 100 MiB kitty `t=s` image needs

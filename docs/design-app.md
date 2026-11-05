@@ -2262,7 +2262,20 @@ range with `DecodingError.dataCorrupted`; the typealiases stay `Int`.
 The build phase "Build ko_client" runs `make -C $KO_CHECKOUT
 ko-client-xcframework` (`KO_CHECKOUT` defaults to the repository root) and
 links `-lko_client_private` from the `macos-arm64` slice. `bundle-ko.py`
-puts `ko` and `ko-pane` with their `BUILD-ID` into `Resources/ko`. No make
+puts `ko` and `ko-pane` with their `BUILD-ID` into `Resources/ko`.
+A Release build (`make install`, the demo, `scripts/release.sh`) also
+runs `make build-linux check-static LINUX_ARCHS=aarch64` and bundles
+`share/ko/linux/aarch64`, the static Linux ko of a `container`
+runtime's `ko: shipped` (docs/design-runtimes.md, "The ko inside").
+A Debug build and the test
+schemes never copy `share/ko/linux`, even when `build/ko` holds one,
+so the bundle depends only on the configuration. When the layout that it
+would copy is unchanged, the script leaves `Resources/ko` as it is, so
+the app's seal stays valid without a new signature. When it replaces
+the layout, its declared output `BUILD-ID` makes Xcode sign the app
+again, also when the app did not relink. The script signs only
+the Mach-O files; the Linux ELF needs no signature, and `codesign
+--verify --strict --deep` of the app passes with it inside. No make
 target starts two builds at once; `make -j` with several targets would
 race on `build/ko_client.xcframework`.
 

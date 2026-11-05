@@ -85,6 +85,8 @@ targets:
       - name: Bundle ko
         script: python3 "$SRCROOT/scripts/bundle-ko.py"
         basedOnDependencyAnalysis: false
+        outputFiles:
+          - "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ko/BUILD-ID"
     dependencies:
       - package: PaneGeometry
       - package: SidebarFeed
