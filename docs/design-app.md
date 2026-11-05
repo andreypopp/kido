@@ -722,6 +722,17 @@ copy mode and keeps its usual behaviour. Thus, Ghostty keeps Shift-Command-click
 on links under mouse reporting. Other clicks and drags outside copy mode go to
 Ghostty, which keeps its own mouse selection.
 
+A link click is Ghostty's open-URL action. In a local window, Ghostty opens a
+link that it detected in the text itself. An OSC 8 link, and every link in a
+remote window, goes from the pane through its session to `WindowOwner.openLink`.
+A program in the pane chooses an OSC 8 target, so the owner opens only a safe
+set of URLs. A local window opens `http`, `https` and a `file` URL with an
+absolute path, no user, password or port, and a host that is empty,
+`localhost` or the `gethostname` of the Mac, as Ghostty's `os/hostname.zig`
+decides. A remote window opens only `http` and `https`,
+because a file path there names a file of the remote host. The owner refuses
+every other link with an alert sheet.
+
 A right-click on a selection, in copy mode or not, opens a context menu with
 two items: Copy (⌘C) and Prompt with Selection… (⌘O). The menu is built for each
 click. Outside copy mode, Ghostty's `right-click-action` selects the word

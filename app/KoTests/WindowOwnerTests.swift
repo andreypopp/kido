@@ -1,4 +1,5 @@
 import AppKit
+import GhosttyKit
 import KoClient
 import PaneGeometry
 import XCTest
@@ -43,6 +44,45 @@ import KoModel
             owner.close()
             XCTAssertEqual(frames.frame(for: .local), expected)
         }
+    }
+
+    func testOSC8LinksOpenOnlyPermittedLocalURLs() throws {
+        let board = NSPasteboard(name: .init("ko-links-" + UUID().uuidString))
+        defer { board.releaseGlobally() }
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+        var opened: [URL] = []
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false, openBrowser: { opened.append($0) })
+        owner.testServerDir = try stateDir()
+        defer { owner.close() }
+        owner.start()
+        wait("the pane") { owner.testSession?.windows.values.first?.panes.first != nil }
+        let pane = try XCTUnwrap(owner.testSession?.windows.values.first?.panes.first)
+        var hostname = [CChar](repeating: 0, count: Int(MAXHOSTNAMELEN))
+        XCTAssertEqual(gethostname(&hostname, hostname.count), 0)
+        let urls = ["https://example.com/path", "http://example.com", "file:///tmp/link", "file://localhost/tmp/link", "file://\(String(cString: hostname))/tmp/link", "ftp://example.com/file", "file://not-this-host.invalid/tmp/link", "file:relative", "file://user@localhost/tmp/a", "file://localhost:12/tmp/a"]
+        for text in urls {
+            var target = ghostty_target_s()
+            target.tag = GHOSTTY_TARGET_SURFACE
+            target.target.surface = pane.surface
+            let handled = text.withCString { bytes in
+                var action = ghostty_action_s()
+                action.tag = GHOSTTY_ACTION_OPEN_URL
+                action.action.open_url.kind = GHOSTTY_ACTION_OPEN_URL_KIND_OSC8
+                action.action.open_url.url = bytes
+                action.action.open_url.len = UInt(text.utf8.count)
+                return GhosttyRuntime.action(runtime.app, target, action)
+            }
+            XCTAssertTrue(handled)
+        }
+        var delivered = false
+        DispatchQueue.main.async { delivered = true }
+        wait("the link actions") { delivered }
+        XCTAssertEqual(opened, urls.prefix(5).compactMap(URL.init(string:)))
+        opened = []
+        let remote = WindowOwner(host: .remote("example"), runtime: runtime, start: false, openBrowser: { opened.append($0) })
+        defer { remote.close() }
+        urls.forEach { remote.openLink($0) }
+        XCTAssertEqual(opened, urls.prefix(2).compactMap(URL.init(string:)))
     }
 
     private func names(_ owner: WindowOwner) -> [String] { owner.snapshot?.sessions.map(\.name) ?? [] }

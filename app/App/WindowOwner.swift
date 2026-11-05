@@ -195,12 +195,20 @@ private class AlertEscape: NSView {
     private let openBrowser: (URL) -> Void
 
     func openLink(_ text: String) {
-        guard let url = URL(string: text), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
-            let message = "Remote file paths and non-HTTP links cannot be opened locally: \(text)"
+        let url = URL(string: text)
+        let scheme = url?.scheme?.lowercased()
+        let fileHost = url?.host ?? ""
+        var hostname = [CChar](repeating: 0, count: Int(MAXHOSTNAMELEN))
+        let ownHost = gethostname(&hostname, hostname.count) == 0 ? String(cString: hostname) : nil
+        let localFile = host == .local && scheme == "file" && url?.path.hasPrefix("/") == true
+            && url?.user == nil && url?.password == nil && url?.port == nil
+            && (fileHost.isEmpty || fileHost == "localhost" || fileHost == ownHost)
+        guard let url, scheme == "http" || scheme == "https" || localFile else {
+            let message = "Only HTTP, HTTPS, and local file links in local windows can be opened: \(text)"
             note("\(host.label): \(message)")
             if !background {
                 let alert = NSAlert()
-                alert.messageText = "Unsupported remote link"
+                alert.messageText = "Unsupported link"
                 alert.informativeText = message
                 alert.beginSheetModal(for: window) { _ in }
             }
@@ -888,6 +896,7 @@ private class AlertEscape: NSView {
         let generation = generation
         let view = SessionView(runtime: runtime)
         view.host = host
+        view.onURL = { [weak self] in self?.openLink($0) }
         if case .connected(let client) = link { view.client = client }
         view.sidebarFocused = { [weak sidebar] in sidebar?.list.containsFocus == true }
         view.reorder = reorder

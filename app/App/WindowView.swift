@@ -444,6 +444,7 @@ final class WindowView: NSView {
 
     private func makePane(_ id: PaneID) -> PaneView? {
         guard let view = PaneView(runtime: runtime, pane: id, font: session?.font ?? 0, host: session?.host ?? .local) else { return nil }
+        view.onURL = { [weak self] in self?.session?.onURL($0) }
         view.canPrompt = { [weak self] in self?.session?.canPrompt() == true }
         view.onPrompt = { [weak self] pane, quote in self?.session?.onPrompt(pane, quote) }
         view.onSelect = { [weak self] in

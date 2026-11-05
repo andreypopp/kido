@@ -50,6 +50,7 @@ final class SessionView: NSView {
     private(set) var updating = false
     let runtime: GhosttyRuntime
     var canPrompt: () -> Bool = { false }
+    var onURL: (String) -> Void = { _ in }
     var onPrompt: (PaneView, String?) -> Void = { _, _ in }
     // Where the panes run, from the model.
     private(set) var marks: [PaneID: RuntimeMark] = [:]

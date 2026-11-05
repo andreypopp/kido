@@ -48,9 +48,9 @@ import KoModel
                 }
                 try await wait("Cmd-click handled") { handled.last == text }
                 XCTAssertEqual(handled.last, text, "\(host.label) Cmd-click must reach the app URL handler")
-                XCTAssertEqual(opened.map(\.absoluteString), handled.filter { $0.hasPrefix("https:") }, "non-HTTP links must not reach NSWorkspace")
+                XCTAssertEqual(opened.map(\.absoluteString), handled.filter { $0.hasPrefix("https:") || (host == .local && $0.hasPrefix("file:")) }, "only permitted links must reach NSWorkspace")
             }
-            XCTAssertEqual(opened.map(\.absoluteString), host == .local ? ["https://example.com/osc8?x=1"] : ["https://example.com/osc8?x=1", "https://example.com/regex"])
+            XCTAssertEqual(opened.map(\.absoluteString), host == .local ? ["https://example.com/osc8?x=1", "file:///tmp/kido-link-test"] : ["https://example.com/osc8?x=1", "https://example.com/regex"])
             XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || owner.window.isMainWindow || NSApp.isActive)
         }
     }
