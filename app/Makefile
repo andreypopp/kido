@@ -13,7 +13,10 @@ DERIVED := build/xcode.noindex/derived
 CONFIG ?= Debug
 APP = $(DERIVED)/Build/Products/$(CONFIG)/Kido.app
 
-.PHONY: ko-test ko-model ko-fixtures visual visual-fast visual-slow project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release rtt
+INSTALL_DIR ?= /Applications
+RELEASE_APP = build/xcode.noindex/derived-release/Build/Products/Release/Kido.app
+
+.PHONY: install release-build ko-test ko-model ko-fixtures visual visual-fast visual-slow project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release rtt
 
 project:
 	ln -sfn "$$(GHOSTTY_OPTIMIZE=$(GHOSTTY_OPTIMIZE) scripts/build-ghosttykit.sh)" build/GhosttyKit.xcframework
@@ -22,6 +25,16 @@ project:
 all: project
 	@set -o pipefail; xcodebuild -project Kido.xcodeproj -scheme Kido -configuration $(CONFIG) \
 		-destination platform=macOS -derivedDataPath $(DERIVED) KO_CHECKOUT=$(KO_ABS) $(SANITIZE) $(XCODE_SETTINGS) build 2>&1 | $(XCODE_PROGRESS)
+
+release-build:
+	$(MAKE) all CONFIG=Release DERIVED=build/xcode.noindex/derived-release GHOSTTY_OPTIMIZE=ReleaseFast \
+		XCODE_SETTINGS="$(if $(VERSION),MARKETING_VERSION=$(VERSION) CURRENT_PROJECT_VERSION=$(VERSION))"
+	codesign --verify --strict --deep "$(RELEASE_APP)"
+
+install:
+	python3 scripts/install.py check "$(INSTALL_DIR)"
+	$(MAKE) release-build
+	python3 scripts/install.py install "$(INSTALL_DIR)" "$(RELEASE_APP)"
 
 release:
 	scripts/release.sh $(if $(filter 1,$(DRY)),--dry-run) $(VERSION)

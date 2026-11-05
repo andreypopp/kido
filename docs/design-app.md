@@ -26,6 +26,11 @@ Xcode's resolved identity before Xcode signs `com.andreypopp.kido`. The release
 script verifies the final bundle with `codesign --verify --strict --deep`
 before packaging.
 
+`make -C app install` builds and verifies the same Release bundle, then installs
+it in `/Applications` without Homebrew; use `INSTALL_DIR=` for another directory
+and `VERSION=` to override the project's default version. It refuses to replace
+the app while it runs from that path and does not change the ko server.
+
 The certificate-based designated requirement keeps TCC grants such as Screen
 Recording stable across upgrades. An ad-hoc cdhash requirement changes with
 every build. Team signing also supplies the TeamIdentifier that Shortcuts and
