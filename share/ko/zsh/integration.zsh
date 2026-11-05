@@ -7,6 +7,19 @@ ko_osc133_precmd() {
     ko_osc133_ran=0
     printf '\033]133;D;%s\007' $ret
   fi
+  local uri=$PWD
+  if [[ $PWD == *[!a-zA-Z0-9/._~-]* ]]; then
+    uri=
+    local LC_ALL=C byte hex i
+    for (( i=0; i<${#PWD}; i++ )); do
+      byte=${PWD[i+1]}
+      case $byte in
+        [a-zA-Z0-9/._~-]) uri+=$byte ;;
+        *) printf -v hex '%%%02X' "'$byte"; uri+=$hex ;;
+      esac
+    done
+  fi
+  printf '\033]7;file://%s%s\007' "$HOST" "$uri"
   printf '\033]133;A\007'
 }
 ko_osc133_preexec() {

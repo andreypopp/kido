@@ -288,7 +288,7 @@ pub(crate) struct PaneProc {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Directory {
+enum Directory {
     Spawned(Vec<u8>),
     Reported(Vec<u8>),
 }
@@ -299,13 +299,13 @@ pub(crate) enum Place<'a> {
 }
 
 impl Directory {
-    pub(crate) fn bytes(&self) -> &[u8] {
+    fn bytes(&self) -> &[u8] {
         match self {
             Directory::Spawned(bytes) | Directory::Reported(bytes) => bytes,
         }
     }
 
-    pub(crate) fn path(&self, place: Place<'_>) -> Option<PathBuf> {
+    fn path(&self, place: Place<'_>) -> Option<PathBuf> {
         match (self, place) {
             (Directory::Spawned(bytes), Place::Host(_)) => {
                 Some(PathBuf::from(OsString::from_vec(bytes.clone())))
@@ -481,8 +481,16 @@ impl PaneProc {
         self.cwd.bytes()
     }
 
-    pub(crate) fn directory(&self) -> &Directory {
-        &self.cwd
+    pub(crate) fn directory(&self, place: Place<'_>, foreground: Option<Pid>) -> Option<PathBuf> {
+        if matches!((&self.cwd, &place), (Directory::Spawned(_), Place::Host(_)))
+            && self.dead.is_none()
+            && let Some(path) = foreground
+                .zip(self.child_pid())
+                .and_then(|(pid, session)| pid.cwd(session))
+        {
+            return Some(path);
+        }
+        self.cwd.path(place)
     }
 
     pub(crate) fn dead(&self) -> Option<&Death> {

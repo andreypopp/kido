@@ -683,7 +683,14 @@ shell, without priming ("The login environment").
 The bash integration uses `PS0` for command-start markers and
 `PROMPT_COMMAND` for prompt markers. Sourcing it a second time causes
 no action. The integrations blank control characters and limit the
-command line to 1024 characters.
+command line to 1024 characters. At each prompt, before the prompt
+marker, both report the directory as OSC 7, `file://HOST/PATH`, with
+the shell's own hostname (`$HOST`, `$HOSTNAME`) and every byte of the
+path outside `[A-Za-z0-9/._~-]` percent-encoded, so a split or a new
+tab starts there (protocol.md, section 15, "The cwd of a new pane").
+The real hostname matters: the same integrations run on the far side
+of `ko ssh`, and the server ignores a host pane's report for another
+host.
 
 ## The bin directory
 

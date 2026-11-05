@@ -1,4 +1,9 @@
+#[cfg(target_os = "macos")]
+use std::ffi::OsString;
 use std::io;
+#[cfg(target_os = "macos")]
+use std::os::unix::ffi::OsStringExt;
+use std::path::PathBuf;
 
 use crate::retry::{check, retry};
 use crate::signal::Signal;
@@ -45,6 +50,29 @@ impl Pid {
 
     pub fn get(self) -> i32 {
         self.0
+    }
+
+    pub fn cwd(self, session: Pid) -> Option<PathBuf> {
+        let before = identity(self)?;
+        if before.pgid != self.0 || before.sid != session.0 {
+            return None;
+        }
+        #[cfg(target_os = "linux")]
+        let path = proc::cwd(self)?;
+        #[cfg(target_os = "macos")]
+        let path = {
+            let info: libc::proc_vnodepathinfo = pidinfo(self, libc::PROC_PIDVNODEPATHINFO)?;
+            let bytes = info
+                .pvi_cdir
+                .vip_path
+                .into_iter()
+                .flatten()
+                .map(|byte| byte.cast_unsigned())
+                .take_while(|byte| *byte != 0)
+                .collect();
+            PathBuf::from(OsString::from_vec(bytes))
+        };
+        (identity(self)? == before).then_some(path)
     }
 
     pub fn signal(self, signal: Signal) -> io::Result<()> {
@@ -165,7 +193,8 @@ impl Pid {
     #[cfg(target_os = "macos")]
     pub fn has_ended(self) -> bool {
         // SZOMB, <sys/proc.h>
-        bsdinfo(self).is_none_or(|info| info.pbi_status == 5)
+        pidinfo::<libc::proc_bsdinfo>(self, libc::PROC_PIDTBSDINFO)
+            .is_none_or(|info| info.pbi_status == 5)
     }
 
     #[cfg(target_os = "linux")]
@@ -211,21 +240,23 @@ struct Identity {
 mod proc;
 
 #[cfg(target_os = "macos")]
-fn bsdinfo(pid: Pid) -> Option<libc::proc_bsdinfo> {
-    // SAFETY: an all-zero proc_bsdinfo is valid.
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = libc::c_int::try_from(size_of::<libc::proc_bsdinfo>()).ok()?;
-    // SAFETY: info is writable for size bytes.
-    let filled = unsafe {
-        libc::proc_pidinfo(
-            pid.0,
-            libc::PROC_PIDTBSDINFO,
-            0,
-            (&raw mut info).cast(),
-            size,
-        )
-    };
-    (filled == size).then_some(info)
+fn pidinfo<T>(pid: Pid, flavor: libc::c_int) -> Option<T> {
+    let size = libc::c_int::try_from(size_of::<T>()).ok()?;
+    // SAFETY: callers use zero-valid proc info structs that match flavor, writable for size bytes.
+    let mut info: T = unsafe { std::mem::zeroed() };
+    retry(|| {
+        // SAFETY: info matches flavor and is writable for size bytes.
+        let filled = unsafe { libc::proc_pidinfo(pid.0, flavor, 0, (&raw mut info).cast(), size) };
+        if filled == size {
+            Ok(())
+        } else if filled == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Err(io::Error::from(io::ErrorKind::UnexpectedEof))
+        }
+    })
+    .ok()?;
+    Some(info)
 }
 
 #[cfg(target_os = "linux")]
@@ -235,7 +266,7 @@ fn identity(pid: Pid) -> Option<Identity> {
 
 #[cfg(target_os = "macos")]
 fn identity(pid: Pid) -> Option<Identity> {
-    let info = bsdinfo(pid)?;
+    let info: libc::proc_bsdinfo = pidinfo(pid, libc::PROC_PIDTBSDINFO)?;
     // SAFETY: getsid has no preconditions.
     let sid = unsafe { libc::getsid(pid.0) };
     if sid < 0 {
@@ -365,6 +396,41 @@ mod tests {
     use std::io::Read;
     use std::os::fd::AsFd;
     use std::path::Path;
+
+    #[test]
+    fn a_directory_is_read_only_for_a_group_leader_in_the_expected_session() {
+        let (mut reader, output) = std::io::pipe().unwrap();
+        let (input, release) = std::io::pipe().unwrap();
+        let child = spawn::program(
+            Path::new("/usr/bin/perl"),
+            &["-e", "use POSIX; $|=1; POSIX::setsid(); print q(x); <>;"],
+            &[(input.as_fd(), 0), (output.as_fd(), 1)],
+            spawn::Env::Inherit,
+            None,
+        )
+        .unwrap();
+        drop(input);
+        drop(output);
+        assert_eq!(
+            crate::fd::wait(
+                reader.as_fd(),
+                crate::fd::Want::Read,
+                None,
+                Some(std::time::Duration::from_secs(5))
+            )
+            .unwrap(),
+            crate::fd::Waited::Ready
+        );
+        let mut ready = [0];
+        reader.read_exact(&mut ready).unwrap();
+        let expected = std::fs::canonicalize(".").unwrap();
+        let matching = child.cwd(child);
+        let foreign = child.cwd(Pid(i32::try_from(std::process::id()).unwrap()));
+        drop(release);
+        assert_eq!(child.wait().unwrap(), Waited::Ended(Exit::Exited(0)));
+        assert_eq!(matching, Some(expected));
+        assert_eq!(foreign, None);
+    }
 
     fn killed_by_sigkill(pid: Pid) -> bool {
         pid.wait().unwrap() == Waited::Ended(Exit::Signaled(libc::SIGKILL))

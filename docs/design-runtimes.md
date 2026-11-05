@@ -283,7 +283,9 @@ A runtime pane's pwd maps back to the host through the same entries,
 by the longest runtime prefix, so a pane on the host made from a
 runtime pane starts in the host directory that the runtime mounts.
 The server keeps no host path for a runtime pane that never reported
-a pwd: its start directory is the wrapper's, on the host.
+a pwd: its start directory is the wrapper's, on the host, and the
+server never reads the OS directory of a runtime pane's process,
+which is the transport's.
 
 **The token** never appears in an argv, because `ps` shows every
 user's arguments. For the `command`, `container` and `podman` kinds, the server

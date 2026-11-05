@@ -1060,9 +1060,15 @@ pane starts in; the server resolves it when it creates the pane. The
 caller must be able to read the source as `GET /panes/{id}`: an
 unknown pane is `not_found`, and on a runtime connection a pane outside
 the caller's scope is `refused`. A dead source whose row exists gives
-its last directory. The source's directory is its last OSC 7 pwd,
-else, for a host pane only, its start directory; a runtime pane that
-never reported one has none. After a report, the row's `cwd` is the
+its last directory. The source's directory is its last OSC 7 pwd.
+A host pane that never reported one gives, while it lives, the
+current directory of its foreground process, which the server reads
+from the OS only at this resolution and only while that pid still
+leads its group in the pane's session (a reused pid gives none), else
+its start directory; a
+runtime pane that never reported one has none, because its host
+process is the transport. The row's `cwd` never shows the OS read: it
+is the start directory until a report. After a report, the row's `cwd` is the
 raw `file://` URI; the server decodes its percent escapes. A host
 pane's report counts only when the URI's host is empty, `localhost`
 or the server's hostname, so a shell on the far side of `ssh` gives

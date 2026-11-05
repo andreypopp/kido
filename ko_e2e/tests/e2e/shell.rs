@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use crate::harness::{
-    DEADLINE, Dir, Server, enabled, ko, run_ko, run_program, start_with, test_env, which,
+    DEADLINE, Dir, Server, enabled, ko, quote, run_ko, run_program, sh, start_with, test_env,
+    text_of, which,
 };
 use crate::status::{Flavour, dotfiles, shell_of};
 
@@ -29,6 +30,55 @@ fn path_with(dir: &Path) -> String {
         dir.display(),
         std::env::var("PATH").unwrap_or_default()
     )
+}
+
+#[test]
+fn panes_inherit_current_directories() {
+    let s = start_with(Path::new("/bin/sh"), &[], &[]);
+    let work = fs::canonicalize(&*s.dir).unwrap().join("sp ace-é%#\t");
+    fs::create_dir(&work).unwrap();
+    let work = text_of(&work);
+    let inherit = |source: &str| {
+        let mut request = sh("pwd -P; echo DONE; exec cat");
+        request["cwd"] = json!({"pane": source});
+        let pane = s.new_pane(request);
+        s.screen_has(&pane, "DONE");
+        let row = s.ko(&["api", &format!("/panes/{pane}")], "").json();
+        assert_eq!(row["cwd"], work);
+    };
+    for flavour in [Flavour::Zsh, Flavour::Bash] {
+        let Some(shell) = shell_of(&flavour) else {
+            eprintln!("skipped: shell not available");
+            continue;
+        };
+        dotfiles(&flavour, &s.dir, "");
+        let pane = s.pane(&format!(
+            "KO_SHELL={} exec {} shell",
+            quote(text_of(&shell)),
+            quote(text_of(&ko()))
+        ));
+        s.wait_row(&pane, "the first directory report", |row| {
+            row["cwd"]
+                .as_str()
+                .is_some_and(|cwd| cwd.starts_with("file://") && cwd.ends_with("/tmp"))
+        });
+        s.text(
+            &pane,
+            &format!("cd {}$'\\t'\r", quote(work.trim_end_matches('\t'))),
+        );
+        s.wait_row(&pane, "the changed directory report", |row| {
+            row["cwd"]
+                .as_str()
+                .is_some_and(|cwd| cwd.ends_with("/sp%20ace-%C3%A9%25%23%09"))
+        });
+        inherit(&pane);
+    }
+    let pane = s.pane(&format!("cd {}; printf READY; exec cat", quote(work)));
+    s.screen_has(&pane, "READY");
+    s.wait_row(&pane, "the foreground process", |row| {
+        row["foreground"]["name"] == "cat"
+    });
+    inherit(&pane);
 }
 
 #[test]

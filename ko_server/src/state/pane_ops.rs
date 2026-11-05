@@ -1,5 +1,7 @@
 use std::time::Instant;
 
+use ko_sys::pid::Pid;
+
 use super::runtime_ops::resolve_runtime;
 use super::*;
 use crate::api::{WaitMs, routes};
@@ -150,7 +152,13 @@ impl State {
                     None => Place::Host(&self.config.hostname),
                     Some(_) => Place::Runtime,
                 };
-                let Some(path) = source.proc().directory().path(place) else {
+                let foreground = source
+                    .telemetry()
+                    .foreground
+                    .as_ref()
+                    .and_then(|foreground| Pid::new(i64::from(foreground.pid)));
+                let path = source.proc().directory(place, foreground);
+                let Some(path) = path else {
                     return Dir::Default;
                 };
                 match own {

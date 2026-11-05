@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use super::{Identity, Pid};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +30,10 @@ fn parse(text: &[u8]) -> Option<Stat> {
             start: fields.nth(15)?.parse().ok()?,
         },
     })
+}
+
+pub(super) fn cwd(pid: Pid) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
 pub(super) fn read(pid: Pid) -> Option<Stat> {

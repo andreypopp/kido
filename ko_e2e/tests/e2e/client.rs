@@ -1700,7 +1700,11 @@ fn client_a_new_window_starts_in_the_directory_of_the_focused_pane() {
         .into_iter()
         .find(|row| row["id"] != first.as_str())
         .unwrap();
-    assert_eq!(created["cwd"], "/tmp", "{created}");
+    assert_eq!(
+        created["cwd"],
+        text_of(&std::fs::canonicalize("/tmp").unwrap()),
+        "{created}"
+    );
     assert_eq!(created["runtime"], serde_json::Value::Null, "{created}");
     o.detach();
 }

@@ -1672,7 +1672,8 @@ runtimes:
 
 #[test]
 fn a_pane_starts_in_the_directory_of_another_pane_mapped_through_the_paths_of_the_runtimes() {
-    let maps = Dir::new("ko-rtd-");
+    let scratch = Dir::new("ko-rtd-");
+    let maps = fs::canonicalize(&*scratch).unwrap();
     let canon = |path: PathBuf| {
         fs::canonicalize(path)
             .unwrap()

@@ -897,8 +897,11 @@ most easily:
   reads a message's kind or text.
 
 **Shell integrations** (`share/ko/bash`, `share/ko/zsh`) blank
-control characters, limit the command line to 1024 characters, and
-encode only `%` as `%25` and `;` as `%3B`. `share/ko/zsh/integration.zsh`
+control characters in the command line, limit it to 1024 characters,
+and encode only `%` as `%25` and `;` as `%3B` in it. Their OSC 7
+directory report has its own encoding and carries the shell's real
+hostname (docs/design.md, "Priming a local shell").
+`share/ko/zsh/integration.zsh`
 must not name a local `status`: it is a zsh special parameter, and
 shadowing it silently stops the precmd hook. The local is called
 `ret`.
