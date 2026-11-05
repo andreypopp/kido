@@ -109,7 +109,7 @@ public struct NotifierState: Equatable, Sendable {
             else if case .live(.ssh(let destination, .agent)) = item.lifecycle { subtitle += " · \(destination)" }
             effects.post.append(Notice(kind: status == .waiting ? .waiting : .failed, key: key, target: NoticeTarget(host: host, instance: snapshot.serverInstance,
                 position: Snapshot.Position(session: session.id, window: item.window, pane: item.pane)),
-                title: item.rowTitle(status: status).title, subtitle: subtitle, body: body))
+                title: item.rowTitle, subtitle: subtitle, body: body))
             state.entries[item.pane] = .posted(reason)
         }
         for session in sessions { session.nodes.forEach { visit($0, session: session) } }

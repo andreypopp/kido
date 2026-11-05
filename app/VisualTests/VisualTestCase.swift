@@ -160,9 +160,13 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
     // The snapshot with the lifecycle and the core's mark of one pane replaced, as a status change of the pane would change them.
     func withLifecycle(_ snapshot: Snapshot, pane: PaneID, _ lifecycle: Lifecycle, mark: KoSchema.Mark) -> Snapshot {
         func item(_ item: Item) -> Item {
-            Item(id: item.id, window: item.window, title: item.title, started: item.started, parent: item.parent, lifecycle: item.id == pane ? lifecycle : item.lifecycle,
-                 program_status: item.program_status, children: item.children.map(node),
-                 mark: item.id == pane ? mark : item.mark, inbox: item.inbox)
+            var updated = item
+            if item.id == pane {
+                updated.lifecycle = lifecycle
+                updated.mark = mark
+            }
+            updated.children = item.children.map(node)
+            return updated
         }
         func node(_ node: SidebarFeed.Node) -> SidebarFeed.Node {
             switch node {

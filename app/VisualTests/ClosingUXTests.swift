@@ -123,11 +123,18 @@ import KoModel
         let created = try XCTUnwrap(owner.stressState.0.window)
         let pane = try XCTUnwrap(owner.testSession?.windows[created]?.panes.first)
         try await wait("new window receives terminal focus") { owner.window.firstResponder === pane }
-        // The pane runs a command, or shows no status, until the server's next model.
         func status(_ running: Bool, pane: PaneView, created: WindowID) async throws {
             try await wait("the snapshot has the pane") { sidebarRows(owner.snapshot).contains { $0.target?.pane == pane.pane } }
-            let phase: ShellStatus.Phase = running ? .running(.init(command: "sleep 60", startedAt: Date()), fullscreen: false) : .unknown
-            owner.testReceive(withLifecycle(try XCTUnwrap(owner.snapshot), pane: pane.pane, .live(.terminal(ShellStatus(phase: phase, report: nil))), mark: running ? .running : .none_))
+            let phase: ShellStatus.Phase = running ? .running(.init(command: "sleep 60", startedAt: Date()), fullscreen: false) : .idle(last: nil)
+            var snapshot = withLifecycle(try XCTUnwrap(owner.snapshot), pane: pane.pane,
+                .live(.terminal(ShellStatus(phase: phase, report: nil))), mark: running ? .running : .none_)
+            snapshot.mapItems {
+                if $0.pane == pane.pane {
+                    $0.pid = 100
+                    $0.foreground = .init(name: running ? "sleep" : "zsh", pid: running ? 101 : 100)
+                }
+            }
+            owner.testReceive(snapshot)
         }
         try await status(true, pane: pane, created: created)
         let tabs = owner.sidebar.tabs
@@ -136,7 +143,7 @@ import KoModel
         tabs.mouseEntered(with: mouse(.mouseEntered, at: tabPoint, in: owner.window))
         tabs.layoutSubtreeIfNeeded()
         try click(tabs.closeButton)
-        XCTAssertEqual(owner.preparedAlert?.alert.informativeText, "Processes are still running in this window. Closing the window will end them.")
+        XCTAssertEqual(owner.preparedAlert?.alert.informativeText, "Programs are still running in this window. Closing the window will end them.")
         owner.respondToAlert(.alertSecondButtonReturn)
         try await wait("window confirmation dismissed") { owner.window.attachedSheet == nil }
         try await status(true, pane: pane, created: created)
@@ -147,7 +154,7 @@ import KoModel
         cell.mouseEntered(with: mouse(.mouseEntered, at: cell.convert(NSPoint(x: cell.close.frame.midX, y: cell.close.frame.midY), to: nil), in: owner.window))
         cell.layoutSubtreeIfNeeded()
         try click(cell.close)
-        XCTAssertEqual(owner.preparedAlert?.alert.informativeText, "A process is still running in this pane. Closing the pane will end it.")
+        XCTAssertEqual(owner.preparedAlert?.alert.informativeText, "A program is still running in this pane. Closing the pane will end it.")
         owner.respondToAlert(.alertSecondButtonReturn)
         try await wait("pane confirmation dismissed") { owner.window.attachedSheet == nil }
         try await status(true, pane: pane, created: created)

@@ -40,7 +40,7 @@ func pane(_ id: Int, window: Int? = nil, title: String = "", lifecycle: Lifecycl
     let pi = if case .live(.piAgent) = lifecycle { true } else { false }
     return .item(Item(id: PaneID(number: UInt32(id)), window: WindowID(number: UInt32(window ?? id)), title: title, started: 0, parent: nil, lifecycle: lifecycle,
                       program_status: ProgramStatus(serial: serial, records: records),
-                      children: children, mark: mark, recordsSeen: recordsSeen, inbox: pi))
+                      children: children, mark: mark, recordsSeen: recordsSeen, inbox: pi, pid: 100, foreground: .init(name: "zsh", pid: 100)))
 }
 
 func group(_ id: Int, name: String = "group", _ children: [Node]) -> Node {

@@ -217,6 +217,9 @@ import KoModel
         let owner = try owner(dir)
         wait("two windows") { owner.navigation.windows.count == 2 }
         owner.confirmClose(.window(WindowID(number: 2)), name: "b")
+        XCTAssertEqual(owner.preparedAlert?.alert.informativeText, "Programs are still running in this window. Closing the window will end them.")
+        XCTAssertEqual(owner.navigation.windows.count, 2)
+        owner.respondToAlert(.alertFirstButtonReturn)
         wait("one window") { owner.navigation.windows.map(\.name) == ["a"] }
     }
 

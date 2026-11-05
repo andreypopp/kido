@@ -858,6 +858,8 @@ import PaneGeometry
                 .live(.terminal(ShellStatus(phase: .unknown, report: nil))), mark: .none_))
             try focusSidebar(index.isMultiple(of: 2))
             try sendKey(owner.window, "w", code: 13, modifiers: .command)
+            XCTAssertEqual(owner.preparedAlert?.alert.informativeText, "A program is still running in this pane. Closing the pane will end it.")
+            owner.respondToAlert(.alertFirstButtonReturn)
             try await wait("sidebar Cmd-W closes the active pane") { owner.testSession?.pane(pane) == nil }
             XCTAssertNil(owner.preparedAlert)
             XCTAssertFalse(owner.sidebar.isFloating)
@@ -1551,7 +1553,7 @@ import PaneGeometry
         addTeardownBlock { @MainActor in app.closePalette(); owner.close(); board.releaseGlobally() }
         owner.start()
         let first = SessionID(number: 1), survivor = SessionID(number: 2)
-        try await wait("two sessions and a working agent") { owner.snapshot?.sessions.count == 2 && closeScope(owner.snapshot, target: .session(first)).running }
+        try await wait("two sessions and a working agent") { owner.snapshot?.sessions.count == 2 && closeScope(owner.snapshot, target: .session(first)).ask }
         owner.perform(.selectSession(first))
         try await wait("selected session") { owner.navigation.session == first && PaneView.owner(owner.window.firstResponder) != nil }
         let pane = try XCTUnwrap(PaneView.owner(owner.window.firstResponder))
@@ -1604,7 +1606,7 @@ import PaneGeometry
         try await wait("palette renames the key window's session") { app.palettePanel == nil && owner.snapshot?.sessions.first { $0.id == first }?.name == "renamed" }
         app.closeSession()
         let alert = try XCTUnwrap(owner.preparedAlert?.alert)
-        XCTAssertEqual(alert.informativeText, "Processes are still running in this session. Closing the session will end them.")
+        XCTAssertEqual(alert.informativeText, "Programs are still running in this session. Closing the session will end them.")
         owner.respondToAlert(.alertSecondButtonReturn)
         XCTAssertEqual(owner.snapshot?.sessions.count, 2)
         app.closeSession()
@@ -1613,7 +1615,18 @@ import PaneGeometry
         owner.createSession("quiet") { _ in }
         let quiet = SessionID(number: 3)
         try await wait("quiet session appears") { owner.snapshot?.sessions.contains { $0.id == quiet } == true }
-        XCTAssertFalse(closeScope(owner.snapshot, target: .session(quiet)).running)
+        var quietSnapshot = try XCTUnwrap(owner.snapshot)
+        let quietPanes = Set(sidebarRows(quietSnapshot).compactMap { $0.target?.session == quiet ? $0.target?.pane : nil })
+        XCTAssertFalse(quietPanes.isEmpty)
+        quietSnapshot.mapItems {
+            if quietPanes.contains($0.pane) {
+                $0.lifecycle = shellLifecycle(.idle(last: nil))
+                $0.mark = .none_
+                $0.pid = 100
+                $0.foreground = .init(name: "zsh", pid: 100)
+            }
+        }
+        owner.testReceive(quietSnapshot)
         owner.confirmClose(.session(quiet), name: "quiet")
         XCTAssertNil(owner.preparedAlert)
         try await wait("quiet session closes without a sheet") { owner.snapshot?.sessions.contains { $0.id == quiet } == false }

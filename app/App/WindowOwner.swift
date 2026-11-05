@@ -1241,11 +1241,11 @@ private class AlertEscape: NSView {
 
     func confirmClose(_ target: CloseTarget, name: String) {
         let warning = switch target {
-        case .pane: "A process is still running in this pane. Closing the pane will end it."
-        case .window: "Processes are still running in this window. Closing the window will end them."
-        case .session: "Processes are still running in this session. Closing the session will end them."
+        case .pane: "A program is still running in this pane. Closing the pane will end it."
+        case .window: "Programs are still running in this window. Closing the window will end them."
+        case .session: "Programs are still running in this session. Closing the session will end them."
         }
-        confirmCommand("Close", title: "Close “\(name)”?", warning: closeScope(snapshot, target: target).running ? warning : nil, failure: "Pane command failed") { client in
+        confirmCommand("Close", title: "Close “\(name)”?", warning: closeScope(snapshot, target: target).ask ? warning : nil, failure: "Pane command failed") { client in
             switch target {
             case .pane(let id): try client.delete(KO_DELETE_PANE, id)
             case .window(let id): try client.delete(KO_DELETE_WINDOW, id)

@@ -74,7 +74,7 @@ private struct Projection {
             lifecycle: lifecycle(pane),
             program_status: programStatus(pane.status?.programStatus),
             children: children, mark: pane.mark, recordsSeen: pane.recordsSeen, inbox: pane.inbox == true,
-            runtime: marks[entry.id])
+            runtime: marks[entry.id], pid: pane.pid, foreground: pane.foreground)
     }
 
     private func lifecycle(_ pane: KoSchema.PaneJson) -> Lifecycle {

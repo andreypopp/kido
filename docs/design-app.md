@@ -1410,18 +1410,33 @@ Hovering a pane row's status-indicator slot, the 16pt square centered on the
 indicator, replaces the indicator with a 16pt × close button; the rest of the
 row has no hover treatment and records have no close button. Every app-issued
 close goes through one confirmation: the row and tab ×, Close Pane (Command-W)
-and the menu commands. If the pane, or any pane in the window and its
-descendant windows, is running or waiting, a stock `.warning` NSAlert sheet
-asks `Close “name”?` with "A process is still running in this pane. Closing the
-pane will end it." or "Processes are still running in this window. Closing the
-window will end them."; its Close (Return) and Cancel (Escape) buttons sit
-side by side. A quiet target closes at once. Only one alert is prepared at a time.
+and the menu commands. A close proceeds at once only when every live pane in
+the target (the pane, or the window with its descendant windows, or the
+session) is a quiet shell that holds the foreground: the pane whose sidebar row
+is titled "Terminal" and whose reported foreground pid is the pane's own pid.
+The title and the decision of `closeScope` come from the same predicate in
+SidebarFeed's `Rows.swift`; the close adds only the foreground check. The title
+keeps the server's 200 ms command debounce, so a quick command does not flicker
+the row, but the foreground changes at once, so a close during the debounce
+asks. A runtime pane execs its entry in the pane's pid, so an idle runtime
+"Terminal" closes at once too. Every other live pane makes the close ask: an
+agent, also an idle one, a running command, a full-screen program such as nvim
+or less, a shell with no integration or over ssh, whose phase is unknown, a
+foreground process other than the shell, and a pane with no reported
+foreground. A dead or lingering pane has no process and does not ask. The known
+limit is that of the foreground report (docs/design-program-status.md, "The
+foreground and the active screen"): a command that prints nothing in its first
+200 ms still shows the shell as the foreground, and its close does not ask. The question is a stock `.warning`
+NSAlert sheet `Close “name”?` with "A program is still running in this pane.
+Closing the pane will end it." or "Programs are still running in this window.
+Closing the window will end them."; its Close (Return) and Cancel (Escape)
+buttons sit side by side. Only one alert is prepared at a time.
 
 File → Close Window and Session → Close Session have no shortcut. They
 use the same confirmation. Close Window deletes the key window's current
 window. On a session's last window this also ends the session, with no
 extra warning. Close Session checks every pane of every window of the
-session, and asks with "Processes are still running in this session.
+session, and asks with "Programs are still running in this session.
 Closing the session will end them." Every close is one `ko_client_delete`
 of the pane, window or session, on a detached task; the server deletes
 the target with its descendants. A failed delete reports "Pane command

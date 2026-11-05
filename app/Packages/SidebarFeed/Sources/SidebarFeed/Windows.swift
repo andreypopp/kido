@@ -4,7 +4,7 @@ public enum CloseTarget: Equatable, Sendable {
     case pane(PaneID), window(WindowID), session(SessionID)
 }
 
-public func closeScope(_ snapshot: Snapshot?, target: CloseTarget) -> (running: Bool, descendants: [WindowID]) {
+public func closeScope(_ snapshot: Snapshot?, target: CloseTarget) -> (ask: Bool, descendants: [WindowID]) {
     var roots: [Node] = []
     func find(_ node: Node) {
         let matches: Bool = switch (target, node) {
@@ -19,19 +19,17 @@ public func closeScope(_ snapshot: Snapshot?, target: CloseTarget) -> (running: 
         if case .session(let id) = target, $0.id == id { roots += $0.nodes }
         else { $0.nodes.forEach(find) }
     }
-    var running = false, descendants: [WindowID] = []
+    var ask = false, descendants: [WindowID] = []
     func collect(_ node: Node, rootWindow: WindowID) {
-        if case .item(let item) = node {
-            let status = item.indicator.status
-            running = running || status == .running || status == .waiting
-                || item.program_status.records.contains { $0.state == .working || $0.state == .blocked }
+        if case .item(let item) = node, case .live = item.lifecycle, !item.closesQuietly {
+            ask = true
         }
         node.children.forEach { collect($0, rootWindow: rootWindow) }
         if node.window != rootWindow, !descendants.contains(node.window) { descendants.append(node.window) }
     }
     for root in roots { collect(root, rootWindow: root.window) }
     if case .session = target { descendants = [] }
-    return (running, descendants)
+    return (ask, descendants)
 }
 
 public struct WindowProjection: Equatable, Sendable {

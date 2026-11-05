@@ -111,11 +111,17 @@ extension Item {
         return exit
     }
 
-    func rowTitle(status: SidebarRow.Status) -> (title: String, quietShell: Bool) {
-        let quiet = if case .live(.terminal(let shell)) = lifecycle, case .idle = shell.phase {
-            [.quiet, .done, .error].contains(status)
-        } else { false }
-        return (quiet ? "Terminal" : sidebarTitle(label, messageable: isMessageable), quiet)
+    var quietShell: Bool {
+        guard case .live(.terminal(let shell)) = lifecycle, case .idle = shell.phase else { return false }
+        return [.quiet, .done, .error].contains(indicator.status)
+    }
+
+    var closesQuietly: Bool {
+        quietShell && pid != nil && foreground?.pid == pid
+    }
+
+    var rowTitle: String {
+        quietShell ? "Terminal" : sidebarTitle(label, messageable: isMessageable)
     }
 
     var indicator: (status: SidebarRow.Status, description: String) {
@@ -164,7 +170,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                     let target = Snapshot.Position(session: session.id, window: item.window, pane: item.pane)
                     let tail = item.caption
                     let agent = item.isAgent
-                    let (title, quietShell) = item.rowTitle(status: status)
+                    let title = item.rowTitle
                     let height = tail.isEmpty ? 32.0 : 48.0
                     let parent = rows.count
                     rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
@@ -173,7 +179,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                                            tail: tail, runtime: item.runtime.flatMap { $0.name == above ? nil : $0 },
                                            status: status, indicatorDescription: description,
                                            focused: target == snapshot.client,
-                                           quietShell: quietShell,
+                                           quietShell: item.quietShell,
                                            agent: agent, root: root, started: { if case .live = item.lifecycle, item.parent != nil { item.started } else { nil } }()))
                     let records = item.program_status.records.filter { !$0.id.isEmpty }.sorted { a, b in
                         let left = a.id.split(separator: "/", omittingEmptySubsequences: false)

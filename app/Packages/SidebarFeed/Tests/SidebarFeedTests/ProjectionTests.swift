@@ -76,6 +76,19 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     }
 }
 
+@Test func projectedQuietTerminalCloseChecksTheForeground() throws {
+    var model = try recorded()
+    let index = try #require(model.panes.firstIndex { $0.id == PaneID(number: 4) })
+    model.panes[index].pid = 100
+    for foreground in [KoSchema.Foreground(name: "zsh", pid: 100), .init(name: "nvim", pid: 101), nil] {
+        model.panes[index].foreground = foreground
+        let snapshot = try #require(Snapshot(model: model))
+        let item = try #require(items(snapshot)[PaneID(number: 4)])
+        #expect(item.rowTitle == "Terminal")
+        #expect(closeScope(snapshot, target: .pane(item.pane)).ask == (foreground?.pid != 100))
+    }
+}
+
 private func nest(_ model: inout KoModel, _ moved: [UInt32], under parentNumber: UInt32, window: UInt32) throws {
     let gone = Set(moved.map { PaneID(number: $0) })
     model.outline.removeAll { if case .pane(let pane) = $0 { gone.contains(pane.id) } else { false } }
