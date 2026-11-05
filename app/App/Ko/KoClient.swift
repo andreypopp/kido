@@ -338,6 +338,11 @@ private final class ClientHandle: @unchecked Sendable {
         _ = try handle.call { try take(ko_client_delete($0, Int32(kind), id.description, &buffer), &buffer) }
     }
 
+    nonisolated func runtimeDown(_ name: String) throws {
+        var buffer = ko_buffer()
+        _ = try handle.call { try take(ko_client_runtime_down($0, name, &buffer), &buffer) }
+    }
+
     func focus(_ focused: Bool) throws {
         try handle.call { try check(ko_client_focus($0, focused)) }
     }

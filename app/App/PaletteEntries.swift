@@ -6,7 +6,7 @@ import PaneGeometry
 struct PaletteEntry {
     enum ID: Equatable {
         case pane(Snapshot.Position), host(String), command(Int), connectTyped, clearRecent, theme(String), themeUse(Int)
-        case runtime(String?), runtimeOpen(Int)
+        case runtime(String?), runtimeOpen(Int), runtimeDown
     }
     let id: ID
     var order = 0
@@ -21,7 +21,7 @@ struct PaletteEntry {
     // at 300pt. A row of the runtime step has its detail after the title and the return key when selected.
     var swatch: RuntimeMark?
     var detailAtRight: Bool { if case .runtime = id { true } else { false } }
-    var inline: Bool { if case .runtimeOpen = id { true } else { false } }
+    var inline: Bool { switch id { case .runtimeOpen, .runtimeDown: true; default: false } }
     var cutDetail: String? { swatch?.failure }
     var failed: Bool { cutDetail != nil }
     var agent = false
@@ -79,6 +79,11 @@ struct PaletteEntry {
                     owner.paneCommand(.split(side), pane.pane, target)
                 }))
             }
+        }
+        if let name = mark?.name, owner.canShutDownRuntime(name) {
+            rows.append(PaletteEntry(id: .runtimeDown, title: "Shut Down Runtime", detail: name,
+                                     check: { [weak owner] in owner?.canShutDownRuntime(name) == true ? nil : "Not available now" },
+                                     operation: .run { [weak owner] in owner?.shutDownRuntime(name) }))
         }
         return rows
     }

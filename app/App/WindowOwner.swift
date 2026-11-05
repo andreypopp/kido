@@ -1215,40 +1215,65 @@ private class AlertEscape: NSView {
         awaitingSelect = false
     }
 
-    func confirmClose(_ target: CloseTarget, name: String) {
-        guard preparedAlert == nil, window.attachedSheet == nil else { return }
-        supersedeIntent()
-        let generation = generation
-        let scope = closeScope(snapshot, target: target)
-        let close = { [weak self] in
-            guard let self, accepts(generation), case .connected(let client) = link else { return }
-            let delete: @Sendable () throws -> Void = switch target {
-            case .pane(let id): { try client.delete(KO_DELETE_PANE, id) }
-            case .window(let id): { try client.delete(KO_DELETE_WINDOW, id) }
-            case .session(let id): { try client.delete(KO_DELETE_SESSION, id) }
-            }
-            Task { [weak self] in
-                do { try await Task.detached { try delete() }.value } catch {
-                    guard let self else { return }
-                    let alert = NSAlert()
-                    alert.messageText = "Pane command failed"
-                    alert.informativeText = "\(error)"
-                    prepareAlert(alert) { _ in }
-                }
-            }
+    func canShutDownRuntime(_ name: String) -> Bool {
+        guard canNavigate, let runtime = runtimes.first(where: { $0.name == name }) else { return false }
+        switch runtime.state { case .starting, .up: return true; case .down, .failed: return false }
+    }
+
+    func runtimePaneCount(_ name: String) -> Int {
+        koModel?.panes.filter { $0.runtime == name && $0.dead == nil }.count ?? 0
+    }
+
+    @objc func shutDownRuntimeItem(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        shutDownRuntime(name)
+    }
+
+    func shutDownRuntime(_ name: String) {
+        guard canShutDownRuntime(name) else { return }
+        let count = runtimePaneCount(name)
+        let warning = count == 1 ? "1 pane runs in this runtime. Shutting it down ends the pane."
+            : "\(count) panes run in this runtime. Shutting it down ends them."
+        confirmCommand("Shut Down", title: "Shut down “\(name)”?", warning: count > 0 ? warning : nil, failure: "Runtime command failed") {
+            try $0.runtimeDown(name)
         }
-        guard scope.running else { close(); return }
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Close “\(name)”?"
-        alert.informativeText = switch target {
+    }
+
+    func confirmClose(_ target: CloseTarget, name: String) {
+        let warning = switch target {
         case .pane: "A process is still running in this pane. Closing the pane will end it."
         case .window: "Processes are still running in this window. Closing the window will end them."
         case .session: "Processes are still running in this session. Closing the session will end them."
         }
-        alert.addButton(withTitle: "Close").keyEquivalent = "\r"
+        confirmCommand("Close", title: "Close “\(name)”?", warning: closeScope(snapshot, target: target).running ? warning : nil, failure: "Pane command failed") { client in
+            switch target {
+            case .pane(let id): try client.delete(KO_DELETE_PANE, id)
+            case .window(let id): try client.delete(KO_DELETE_WINDOW, id)
+            case .session(let id): try client.delete(KO_DELETE_SESSION, id)
+            }
+        }
+    }
+
+    private func confirmCommand(_ verb: String, title: String, warning: String?, failure: String, send: @escaping @Sendable (KoClient) throws -> Void) {
+        guard preparedAlert == nil, window.attachedSheet == nil, let instance = snapshot?.serverInstance else { return }
+        supersedeIntent()
+        let generation = generation
+        let perform = { [weak self] in
+            guard let self, accepts(generation), welcomed, snapshot?.serverInstance == instance, case .connected(let client) = link else { return }
+            Task { [weak self] in
+                do { try await Task.detached { try send(client) }.value } catch {
+                    self?.notice(failure, failureText(error))
+                }
+            }
+        }
+        guard let warning else { perform(); return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = warning
+        alert.addButton(withTitle: verb).keyEquivalent = "\r"
         alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
-        prepareAlert(alert) { response in if response == .alertFirstButtonReturn { close() } }
+        prepareAlert(alert) { response in if response == .alertFirstButtonReturn { perform() } }
     }
 
     func reveal() {

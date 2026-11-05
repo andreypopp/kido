@@ -617,13 +617,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         CATransaction.flush()
         terminal.panes.forEach { $0.scroller.isHidden = true }
         CATransaction.flush()
-        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-        for failure in [
-            verifySnapshot(of: view ?? terminal, as: .image, named: name, record: record, testName: testName),
-            verifySnapshot(of: terminal.visualLayout, as: .lines, named: name, record: record, testName: testName),
-        ].compactMap({ $0 }) {
-            if !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
-        }
+        checkSnapshot { verifySnapshot(of: view ?? terminal, as: .image, named: name, record: $0, testName: testName) }
+        checkSnapshot { verifySnapshot(of: terminal.visualLayout, as: .lines, named: name, record: $0, testName: testName) }
     }
 
     func testWindowTabs() async throws {

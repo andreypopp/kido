@@ -115,6 +115,101 @@ import KoModel
         wait("the first session") { owner.navigation.session == SessionID(number: 1) }
     }
 
+    func testRuntimeShutdownMenuAndPalette() throws {
+        let dir = try stateDir()
+        try FileManager.default.createDirectory(atPath: dir + "/.config/ko", withIntermediateDirectories: true)
+        try "runtimes:\n  deb: {command: {}}\n".write(toFile: dir + "/.config/ko/config.yaml", atomically: true, encoding: .utf8)
+        _ = try server(at: dir, environment: ["KO_RUNTIME_COMMAND_KIND": "1"])
+        let owner = try owner(dir)
+        wait("the runtime model") { owner.canNavigate && owner.runtimes.count == 1 }
+        XCTAssertFalse(owner.canShutDownRuntime("deb"))
+        let delegate = AppDelegate()
+        let runtimeMenu = NSMenu()
+        owner.testRuntimes = ([
+            KoSchema.ClientRuntime(kind: .command, name: "down", state: .down),
+            KoSchema.ClientRuntime(kind: .command, name: "starting", state: .starting),
+            KoSchema.ClientRuntime(kind: .command, name: "up", state: .up),
+            KoSchema.ClientRuntime(kind: .command, name: "failed", state: .failed(.init(message: "failed"))),
+        ], nil)
+        delegate.updateRuntimesMenu(runtimeMenu, owner: owner)
+        XCTAssertEqual(runtimeMenu.items.map(\.isEnabled), [false, true, true, false])
+        owner.testRuntimes = nil
+        let dead = try createPane(#"{"runtime":"deb","command":{"type":"argv","argv":["/usr/bin/true"]}}"#, dir: dir)
+        let deadID = try XCTUnwrap(PaneID(ko: dead))
+        wait("the dead runtime pane") { owner.testModel?.pane(deadID)?.dead != nil }
+        let pane = try createPane(#"{"runtime":"deb","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
+        wait("the starting runtime") { owner.canShutDownRuntime("deb") && owner.runtimePaneCount("deb") == 1 }
+        let menu = NSMenuItem(title: "Shut Down", action: nil, keyEquivalent: "")
+        menu.representedObject = "deb"
+        owner.shutDownRuntimeItem(menu)
+        let pending = try XCTUnwrap(owner.preparedAlert)
+        XCTAssertEqual(pending.alert.messageText, "Shut down “deb”?")
+        XCTAssertEqual(pending.alert.informativeText, "1 pane runs in this runtime. Shutting it down ends the pane.")
+        XCTAssertTrue(try output(["api", "/panes"], dir: dir).contains(pane))
+        owner.respondToAlert(.alertFirstButtonReturn)
+        wait("the runtime stopped") { owner.runtimes.first?.state == .down && owner.runtimePaneCount("deb") == 0 }
+        XCTAssertFalse(owner.canShutDownRuntime("deb"))
+        _ = try createPane(#"{"runtime":"deb","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
+        wait("the runtime starts again") { owner.canShutDownRuntime("deb") && owner.runtimePaneCount("deb") == 1 }
+        let row = try XCTUnwrap(PaletteEntry.runtimeStep(owner.runtimes.first.map { RuntimeMark($0) }, owner: owner, responder: nil).first { $0.id == .runtimeDown })
+        if case .run(let run) = row.operation { run() } else { XCTFail("Not an action") }
+        let sheet = try XCTUnwrap(owner.preparedAlert)
+        XCTAssertEqual(sheet.alert.buttons.first?.title, "Shut Down")
+        owner.respondToAlert(.alertFirstButtonReturn)
+        wait("the palette stops the runtime") { owner.runtimes.first?.state == .down && owner.runtimePaneCount("deb") == 0 }
+        let empty = try createPane(#"{"runtime":"deb","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
+        wait("the runtime is up") { owner.runtimes.first?.state == .up }
+        try run(["api", "-X", "DELETE", "/panes/" + empty], dir: dir)
+        wait("no runtime panes") { owner.runtimePaneCount("deb") == 0 }
+        owner.shutDownRuntime("deb")
+        XCTAssertNil(owner.preparedAlert)
+        wait("the empty runtime stopped") { owner.runtimes.first?.state == .down }
+    }
+
+    func testRuntimeConfirmationDoesNotStopAReplacementServer() throws {
+        enum Command { case runtime, pane }
+        for command in [Command.runtime, .pane] {
+            let dir = try stateDir()
+            try FileManager.default.createDirectory(atPath: dir + "/.config/ko", withIntermediateDirectories: true)
+            try "runtimes:\n  deb: {command: {}}\n".write(toFile: dir + "/.config/ko/config.yaml", atomically: true, encoding: .utf8)
+            _ = try server(at: dir, environment: ["KO_RUNTIME_COMMAND_KIND": "1"])
+            let owner = try owner(dir)
+            wait("connected with the first session") { self.names(owner) == ["session"] }
+            let pane = try createPane(#"{"runtime":"deb","command":{"type":"shell","command":"printf '\\033]133;C\\007'; exec /bin/sleep 60"}}"#, dir: dir)
+            let paneID = try XCTUnwrap(PaneID(ko: pane))
+            wait("the running runtime pane") { owner.runtimes.first?.state == .up && owner.testModel?.pane(paneID)?.mark == .running }
+            let instance = try XCTUnwrap(owner.snapshot?.serverInstance)
+            switch command {
+            case .runtime: owner.shutDownRuntime("deb")
+            case .pane: owner.confirmClose(.pane(paneID), name: "old pane")
+            }
+            XCTAssertNotNil(owner.preparedAlert)
+            let environment = ["HOME": dir, "PATH": "/usr/bin:/bin"]
+            XCTAssertEqual(try runTool(tools.ko, ["kill-server", "--server", dir], env: environment).status, 0)
+            let replacementServer = try ko(["server"], dir: dir, environment: ["KO_RUNTIME_COMMAND_KIND": "1"])
+            addTeardownBlock {
+                if replacementServer.isRunning { replacementServer.terminate() }
+                replacementServer.waitUntilExit()
+            }
+            let deadline = Date(timeIntervalSinceNow: 5)
+            while try runTool(tools.ko, ["api", "--server", dir, "/version"], env: environment).status != 0 {
+                guard Date() < deadline else { return XCTFail("The replacement server did not start") }
+            }
+            wait("the replacement welcome") { owner.canNavigate && owner.snapshot?.serverInstance != instance && self.names(owner) == ["session"] }
+            let replacement = try createPane(#"{"runtime":"deb","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
+            let replacementID = try XCTUnwrap(PaneID(ko: replacement))
+            XCTAssertEqual(replacementID, paneID)
+            wait("the replacement runtime") { owner.runtimes.first?.state == .up && owner.testModel?.pane(replacementID)?.dead == nil }
+            owner.respondToAlert(.alertFirstButtonReturn)
+            let quiet = expectation(description: "the replacement stays up")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { quiet.fulfill() }
+            wait(for: [quiet], timeout: 2)
+            XCTAssertEqual(owner.runtimes.first?.state, .up)
+            XCTAssertNotNil(owner.testModel?.pane(replacementID))
+            XCTAssertNil(owner.testModel?.pane(replacementID)?.dead)
+        }
+    }
+
     func testClosingAWindowDeletesItOnTheServer() throws {
         let dir = try server()
         let sleep = #"{"pane":{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}}"#

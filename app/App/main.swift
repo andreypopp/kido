@@ -11,6 +11,7 @@ import SidebarFeed
     #endif
     private let menus = SessionMenus()
     private var editMenu: NSMenu?
+    private var runtimesMenu: NSMenu?
     private var signals: [DispatchSourceSignal] = []
     private var trigger: String?
     let routes: WindowRoutes
@@ -253,6 +254,11 @@ import SidebarFeed
                       item(Self.localConnectTitle, #selector(connectLocalHost), "", []),
                       item(Self.remoteConnectTitle, #selector(connectRemoteHost), "K", [.command, .shift])]
         for entry in file.items where entry.action != #selector(PaneView.runCommand(_:)) { entry.target = self }
+        let runtimes = NSMenu(title: "Runtimes")
+        runtimes.autoenablesItems = false
+        runtimes.delegate = self
+        runtimesMenu = runtimes
+        file.addItem(withTitle: "Runtimes", action: nil, keyEquivalent: "").submenu = runtimes
         let find = NSMenu(title: "Find")
         find.items = [
             item("Find…", #selector(PaneView.showFind(_:)), "f", .command),
@@ -297,7 +303,28 @@ import SidebarFeed
         item.isEnabled = pane?.validateMenuItem(item) == true
     }
 
+    func updateRuntimesMenu(_ menu: NSMenu, owner: WindowOwner?) {
+        menu.removeAllItems()
+        if let owner {
+            for runtime in owner.runtimes {
+                let count = owner.runtimePaneCount(runtime.name)
+                let title = "Shut Down “\(runtime.name)” — \(RuntimeMark(runtime).stateWord), \(count) \(count == 1 ? "pane" : "panes")"
+                let entry = NSMenuItem(title: title, action: #selector(WindowOwner.shutDownRuntimeItem(_:)), keyEquivalent: "")
+                entry.target = owner
+                entry.representedObject = runtime.name
+                entry.isEnabled = owner.canShutDownRuntime(runtime.name)
+                menu.addItem(entry)
+            }
+        }
+        if menu.items.isEmpty {
+            let entry = NSMenuItem(title: "No Runtimes", action: nil, keyEquivalent: "")
+            entry.isEnabled = false
+            menu.addItem(entry)
+        }
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu === runtimesMenu { updateRuntimesMenu(menu, owner: current) }
         updatePromptMenu(menu, responder: (current?.window ?? NSApp.keyWindow)?.firstResponder)
     }
 

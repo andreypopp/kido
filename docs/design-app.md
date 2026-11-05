@@ -911,6 +911,27 @@ name and the hashed colour and shows no state.
   are less than 3pt together, and the stripe covers up to 0.5pt of
   the first row.
 
+### Shutting down a runtime
+
+File → **Runtimes**, after the connect items, is built when it opens
+from the key window's runtimes, one item for each runtime of its
+`Welcome`. The palette's runtime step has the same action as its last
+row ([Command palette](#command-palette)). Both call
+`WindowOwner.shutDownRuntime`, which `canShutDownRuntime` gates: the
+action exists only while the runtime is starting or up. It sends
+`ko_client_runtime_down`, `POST /runtimes/NAME/down` with `force`, so
+the server ends the runtime's live panes and exec sessions first
+(design-runtimes.md, "Down"). A remote window can do it too: its
+forward reaches the remote server's host socket, not a runtime
+listener, so the request acts as the user.
+
+When live panes of the model name the runtime, the close
+confirmation's window-modal warning asks first; dead panes and exec
+sessions do not count, and with no live pane the request goes at once.
+The confirmation and the close confirmation share one flow: a sheet
+answered after a reconnect to another server instance sends nothing.
+A failure shows the owner's notice sheet with the server's text.
+
 ### Clipboard
 
 A program's clipboard access (OSC 52 and the kitty protocol, OSC 5522)
@@ -1698,7 +1719,9 @@ the field and the list; an edit clears it.
   foot and the red line follow its state while the step is open, and
   the query and the selection stay. There is
   no New Session row: a session holds host and runtime windows
-  together.
+  together. While the runtime is starting or up, a last row "Shut
+  Down Runtime" shuts it down
+  ([Shutting down a runtime](#shutting-down-a-runtime)).
 - **Connect** (`globe`, "user@hostname or SSH alias"). The root row Connect
   to Remote Host…, File → Connect to Remote Host… and Shift-Command-K enter it.
   With text, the first row is "Connect to <text>", selected. The recent hosts

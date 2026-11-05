@@ -259,6 +259,35 @@ pub unsafe extern "C" fn ko_client_delete(
 
 /// # Safety
 ///
+/// `client_` is live, `name` is NUL-terminated, and `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ko_client_runtime_down(
+    client_: *const Client,
+    name: *const c_char,
+    out: *mut Buffer,
+) -> Code {
+    let (Some(client), Some(name)) = (client(client_).filter(|_| !out.is_null()), text_of(name))
+    else {
+        return Code::Argument;
+    };
+    let Ok(name) = name.parse() else {
+        empty(out);
+        return Code::Argument;
+    };
+    call(client, out, |socket, id, cancel| {
+        wire::request(
+            socket,
+            (id, None),
+            &Route::DownRuntime { name },
+            protocol::json(&protocol::DownRuntime { force: true }).as_bytes(),
+            Some(cancel),
+        )
+        .map_err(rejected)
+    })
+}
+
+/// # Safety
+///
 /// `socket` is a NUL-terminated string. `out` is writable for one `ko_buffer`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_probe(

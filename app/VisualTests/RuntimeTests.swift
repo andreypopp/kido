@@ -295,9 +295,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
             var palette = try XCTUnwrap(app.palettePanel).palette
             func image(_ name: String) {
                 palette.layoutSubtreeIfNeeded()
-                let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-                if let failure = verifySnapshot(of: palette, as: .image, named: "\(theme)-\(name)", record: record, testName: "runtime"),
-                   !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+                checkSnapshot { verifySnapshot(of: palette, as: .image, named: "\(theme)-\(name)", record: $0, testName: "runtime") }
             }
             XCTAssertEqual(palette.shown.prefix(3).map(\.entry.title), ["make verify", "@kido-app", "Host"], "the panes come first, then the runtimes")
             XCTAssertEqual(palette.selectedEntry?.id, .runtime(nil), "the host comes first and is selected while the pane in focus runs in a runtime")
@@ -310,8 +308,8 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
                 name.map { RuntimeMark(KoSchema.ClientRuntime(kind: .ssh, name: $0, state: state)) }
             }
             palette.enter(.runtime(step("buildbox")))
-            XCTAssertEqual(palette.shown.map(\.entry.title), ["New Window", "Split Right", "Split Down"])
-            XCTAssertEqual(palette.shown.map(\.entry.detail), ["in session main", "beside the focused pane", "below the focused pane"])
+            XCTAssertEqual(palette.shown.map(\.entry.title), ["New Window", "Split Right", "Split Down", "Shut Down Runtime"])
+            XCTAssertEqual(palette.shown.map(\.entry.detail), ["in session main", "beside the focused pane", "below the focused pane", "buildbox"])
             image("palette-step")
             palette.enter(.root)
             palette.enter(.runtime(step("gpu-1", .failed(.init(message: runtimeGapWithMessage)))))
@@ -326,7 +324,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
             app.togglePalette()
             palette = try XCTUnwrap(app.palettePanel).palette
             palette.enter(.runtime(step("buildbox")))
-            XCTAssertEqual(palette.shown.map(\.entry.title), ["New Window"], "the splits need a live pane in focus")
+            XCTAssertEqual(palette.shown.map(\.entry.title), ["New Window", "Shut Down Runtime"], "the splits need a live pane in focus")
             image("palette-step-nofocus")
             // The step follows the model: a state change adds and removes the status line, and keeps the query and the row.
             app.closePalette()
@@ -360,6 +358,34 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
 
 // The commands that make a pane from another: the pane's runtime and directory, in the request and in the row.
 @MainActor final class RuntimeActionTests: VisualTestCase {
+    func testRuntimeShutdownConfirmation() async throws {
+        try koRuntimes(["deb": ["command": [String: Any]()]])
+        let dir = try koServerDir()
+        _ = try await KoServer.launch(dir: dir)
+        try await koPut(dir, #"[{"name":"main","windows":[{"name":"w","tree":\#(runtimePane("deb", "runtime"))}]}]"#)
+        let board = NSPasteboard(name: .init("runtime-down-" + UUID().uuidString))
+        let owner = WindowOwner(host: .local, runtime: try XCTUnwrap(GhosttyRuntime(pasteboard: board)), start: false)
+        owner.testServerDir = dir
+        defer { owner.close(); board.releaseGlobally() }
+        owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        owner.window.orderFront(nil)
+        owner.start()
+        try await wait("runtime up") { owner.runtimes.first?.state == .up && owner.runtimePaneCount("deb") == 1 }
+        for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+            owner.window.appearance = NSAppearance(named: appearance)
+            owner.shutDownRuntime("deb")
+            let alert = try XCTUnwrap(owner.preparedAlert?.alert)
+            alert.window.appearance = NSAppearance(named: appearance)
+            try await wait("the confirmation sheet") { owner.window.attachedSheet === alert.window }
+            await mainQueueFence()
+            alert.layout()
+            let view = try XCTUnwrap(alert.window.contentView?.superview)
+            checkSnapshot { verifySnapshot(of: view, as: .image, named: name, record: $0, testName: "runtimeShutdownConfirmation") }
+            owner.respondToAlert(.alertSecondButtonReturn)
+            try await wait("the confirmation closes") { owner.window.attachedSheet == nil }
+        }
+    }
+
     func testANewPaneTakesItsRuntimeFromThePaneItIsMadeFromAndAsksTheServerForItsDirectory() async throws {
         try koRuntimes(["box": ["command": [String: Any]()]])
         let dir = try koServerDir()

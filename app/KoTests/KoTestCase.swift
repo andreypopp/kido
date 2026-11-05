@@ -14,13 +14,13 @@ final class Recorder {
 
 @MainActor class KoTestCase: XCTestCase {
     private var serverProcesses: [String: [Process]] = [:]
-    func ko(_ arguments: [String], dir: String, output: Bool = false) throws -> Process {
+    func ko(_ arguments: [String], dir: String, output: Bool = false, environment: [String: String] = [:]) throws -> Process {
         let process = Process()
         if output { process.standardOutput = Pipe() }
         process.executableURL = URL(fileURLWithPath: tools.ko)
         let split = arguments.firstIndex(of: "--") ?? arguments.endIndex
         process.arguments = Array(arguments[..<split]) + ["--server", dir] + arguments[split...]
-        process.environment = ["PATH": "/usr/bin:/bin", "HOME": dir]
+        process.environment = ["PATH": "/usr/bin:/bin", "HOME": dir].merging(environment) { $1 }
         try process.run()
         return process
     }
@@ -94,9 +94,9 @@ final class Recorder {
         return dir
     }
 
-    func server(at path: String? = nil) throws -> String {
+    func server(at path: String? = nil, environment: [String: String] = [:]) throws -> String {
         let dir = try path ?? stateDir()
-        let process = try ko(["server"], dir: dir)
+        let process = try ko(["server"], dir: dir, environment: environment)
         serverProcesses[dir, default: []].append(process)
         wait("the server socket") { FileManager.default.fileExists(atPath: dir + "/socket") }
         return dir

@@ -12,6 +12,13 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
 
 @MainActor class VisualTestCase: XCTestCase {
     var serverEnvironment: [String: String] = [:]
+
+    func checkSnapshot(file: StaticString = #filePath, line: UInt = #line, _ verify: (Bool) -> String?) {
+        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+        if let failure = verify(record), !record || !failure.hasPrefix("Record mode is on.") {
+            XCTFail(failure, file: file, line: line)
+        }
+    }
     func surfaceText(_ pane: PaneView, in tag: ghostty_point_tag_e = GHOSTTY_POINT_SCREEN) -> String {
         var text = ghostty_text_s()
         let selection = ghostty_selection_s(top_left: ghostty_point_s(tag: tag, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0),
@@ -44,9 +51,7 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
         list.displayIfNeeded()
         CATransaction.flush()
         XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
-        let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-        if let failure = verifySnapshot(of: list, as: .image, named: name, record: record, file: file, testName: testName),
-           !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+        checkSnapshot { verifySnapshot(of: list, as: .image, named: name, record: $0, file: file, testName: testName) }
     }
 
     func mainQueueFence() async {

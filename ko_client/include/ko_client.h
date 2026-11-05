@@ -46,7 +46,8 @@ extern "C" {
  * bytes of an older snapshot never follow a newer restore. The surface may
  * be fed from that thread only; the caller's queue plays no part in it. The
  * calls that return a ko_buffer (ko_client_put_layout, ko_client_prompt,
- * ko_client_prompt_resolve, ko_client_delete, ko_client_edit, ko_client_image),
+ * ko_client_prompt_resolve, ko_client_delete, ko_client_runtime_down,
+ * ko_client_edit, ko_client_image),
  * ko_client_launch, ko_client_stop_server and ko_client_probe block until the
  * server answered: call them off the main queue.
  *
@@ -667,6 +668,13 @@ enum {
  * queue. On a code other than KO_OK, `out` holds the text of the error.
  */
 ko_code ko_client_delete(const ko_client *client, int kind, const char *id, ko_buffer *out);
+
+/*
+ * Ends the runtime's panes and exec sessions and stops its link. It blocks until
+ * the server answered: call it off the main queue. On a code other than KO_OK,
+ * `out` holds the text of the error.
+ */
+ko_code ko_client_runtime_down(const ko_client *client, const char *name, ko_buffer *out);
 
 /*
  * Opens a view of the pane named by `pane` ("pane_3") and returns at once. The

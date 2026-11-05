@@ -15,6 +15,7 @@ _ko_client_probe
 _ko_client_prompt
 _ko_client_prompt_resolve
 _ko_client_put_layout
+_ko_client_runtime_down
 _ko_client_select
 _ko_client_size
 _ko_client_stop_server
