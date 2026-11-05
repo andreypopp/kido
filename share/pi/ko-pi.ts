@@ -2537,7 +2537,7 @@ export default function (pi: ExtensionAPI) {
   const deliverTask = async (): Promise<void> => {
     if (!pane) return;
     const { ok, panes } = await listPanesResult();
-    if (!ok) return;
+    if (startupCancelled || !ok) return;
     const me = panes.find((p) => p.pane === pane);
     if (me?.parent) parentPane = me.parent;
     const task = me?.task;
@@ -2553,14 +2553,15 @@ export default function (pi: ExtensionAPI) {
         deliverAgentMessage(str(from.name) || str(from.session) || "another agent", "sibling", text, false);
       }
     }
-    await apiCall("DELETE", varPath(VAR_TASK));
+    if (!startupCancelled) await apiCall("DELETE", varPath(VAR_TASK));
   };
 
   const reconcileChildren = async (): Promise<void> => {
     const { ok, panes } = await listPanesResult();
-    if (!ok) return;
+    if (startupCancelled || !ok) return;
     await readInstance();
     for (const child of children()) {
+      if (startupCancelled) return;
       if (endedAfter(child)) continue;
       const row = child.pane.instance === instance ? panes.find((p) => p.pane === child.pane.pane) : undefined;
       if (row && !row.dead) continue;
@@ -3155,6 +3156,10 @@ export default function (pi: ExtensionAPI) {
 
   // ---- the session ----
 
+  let startup: NodeJS.Immediate | undefined;
+  let starting: Promise<void> | undefined;
+  let startupCancelled = false;
+
   pi.on("session_start", async (_event, ctx) => {
     ko = insideKo() ? findKo() : null;
     session = ctx;
@@ -3235,9 +3240,16 @@ export default function (pi: ExtensionAPI) {
       });
     }
     if (!active) return;
-    await deliverTask();
-    await reconcileChildren();
-    startTick();
+    // Pi 1.5.0 subscribes interactive status after session_start returns.
+    startup = setImmediate(() => {
+      startup = undefined;
+      starting = (async () => {
+        await deliverTask();
+        if (startupCancelled) return;
+        await reconcileChildren();
+        if (!startupCancelled) startTick();
+      })().catch((error: unknown) => ctx.ui.notify(errorText(error), "error"));
+    });
   });
 
   pi.on("session_info_changed", async () => {
@@ -3308,6 +3320,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {
+    startupCancelled = true;
+    clearImmediate(startup);
+    await starting;
     const reason = event?.reason;
     if (registry) detachKeys(registry);
     if (reason === "reload") for (const call of [...calls]) {

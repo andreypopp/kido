@@ -693,6 +693,7 @@ fn api(argv: &[String]) -> ExitCode {
         ("GET", ["", "runtimes"]) => return get_runtimes(None),
         ("GET", ["", "runtimes", name]) => return get_runtimes(Some(name)),
         ("GET", ["", "layout"]) => {
+            wait_gate("KO_FAKE_LAYOUT_GATE");
             if env("KO_FAKE_LAYOUT_FAIL") == "1" {
                 return ExitCode::FAILURE;
             }

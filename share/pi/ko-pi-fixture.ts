@@ -444,7 +444,7 @@ export type Started = ReturnType<typeof createFakePi> & { aborts(): number; shut
 
 export async function startSession(
   fx: Fixture,
-  opts: { factory?: (pi: never) => void; sessionId?: string; name?: string; idle?: () => boolean; entries?: Entry[]; ctx?: Record<string, unknown>; record?: boolean; flags?: Record<string, string>; bashSource?: string } = {},
+  opts: { factory?: (pi: never) => void; sessionId?: string; name?: string; idle?: () => boolean; entries?: Entry[]; ctx?: Record<string, unknown>; record?: boolean; startup?: boolean; flags?: Record<string, string>; bashSource?: string } = {},
 ): Promise<Started> {
   const { factory = koPi, sessionId = "self-session", name, idle, entries = [], ctx, record = true, flags = {} } = opts;
   const created = createFakePi(join(fx.dir, "sessions", "caller"), entries);
@@ -466,6 +466,10 @@ export async function startSession(
   };
   if (record) fx.sessions.push(() => created.emit("session_shutdown", { reason: "new" }));
   await created.emit("session_start", {}, context);
+  if (opts.startup !== false) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await pollUntil(() => [...(commandWork.get(join(fx.binDir, "ko")) ?? [])].every((child) => child.spawnargs.includes("--stream")), 2000, "startup API calls to close");
+  }
   return { ...created, aborts: () => aborts, shutdowns: () => shutdowns };
 }
 

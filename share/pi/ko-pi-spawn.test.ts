@@ -3,8 +3,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { join } from "node:path";
+import { writeFileSync } from "node:fs";
 
-import { makeFixture, agentPane, selfPane, startSession, text, entriesOf, withEnv, asSubagent, savedSession } from "./ko-pi-fixture.ts";
+import { makeFixture, agentPane, selfPane, startSession, text, entriesOf, withEnv, asSubagent, savedSession, pollUntil } from "./ko-pi-fixture.ts";
 
 const INSTANCE = "a".repeat(32);
 
@@ -174,13 +175,19 @@ test("a message to an ended subagent restarts it by --session-id in its recorded
   }
 });
 
-test("a child delivers its task once: from the parent as its first user message, and the variable goes", async () => {
+test("a child delivers its task after session_start returns, exactly once across reload", async () => {
   const fx = makeFixture();
   try {
     const task = { text: "the work", from: { session: "boss-session", name: "boss", pane: "pane_2" } };
     fx.setPanes([selfPane({ parent: "pane_2", vars: { "ko-pi.task": task } }), agentPane({ pane: "pane_2", session: "boss-session", name: "boss" })]);
     await asSubagent("self-session", async () => {
-      const s = await startSession(fx);
+      const cancelled = await startSession(fx, { startup: false });
+      await cancelled.emit("session_shutdown", { reason: "reload" });
+      assert.deepEqual(fx.row("pane_1")?.vars?.["ko-pi.task"], task);
+      const s = await startSession(fx, { startup: false });
+      assert.deepEqual(s.delivered, [], "the host can subscribe after session_start returns");
+      await pollUntil(() => fx.row("pane_1")?.vars?.["ko-pi.task"] === undefined);
+      assert.deepEqual(cancelled.delivered, [], "the cancelled instance never starts the task");
       assert.deepEqual(s.delivered, [{ text: "the work", opts: { deliverAs: "followUp" } }]);
       assert.deepEqual(entriesOf(s, "ko-pi.work").map((work) => work.owner), ["self-session"]);
       assert.equal(fx.apiCalls().filter((call) => call.method === "DELETE" && call.path === "/panes/pane_1/vars/ko-pi.task").length, 1);
@@ -188,6 +195,31 @@ test("a child delivers its task once: from the parent as its first user message,
       await s.emit("session_shutdown", { reason: "reload" });
       const again = await startSession(fx, { entries: s.entries });
       assert.deepEqual(again.delivered, [], "the variable is gone, so a reload delivers nothing");
+    });
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("shutdown during the startup layout read leaves the task for the next session", async () => {
+  const fx = makeFixture();
+  try {
+    const task = { text: "the work", from: { session: "boss-session", name: "boss", pane: "pane_2" } };
+    fx.setPanes([selfPane({ parent: "pane_2", vars: { "ko-pi.task": task } }), agentPane({ pane: "pane_2", session: "boss-session", name: "boss" })]);
+    await asSubagent("self-session", async () => {
+      const gate = join(fx.dir, "layout-ready");
+      await withEnv({ KO_FAKE_LAYOUT_GATE: gate }, async () => {
+        const s = await startSession(fx, { startup: false });
+        await pollUntil(() => fx.apiCalls().some((call) => call.path === "/layout"));
+        const shutdown = s.emit("session_shutdown", { reason: "reload" });
+        writeFileSync(gate, "");
+        await shutdown;
+        assert.deepEqual(s.delivered, []);
+        assert.deepEqual(fx.row("pane_1")?.vars?.["ko-pi.task"], task);
+      });
+      const again = await startSession(fx);
+      assert.deepEqual(again.delivered, [{ text: "the work", opts: { deliverAs: "followUp" } }]);
+      assert.equal(fx.apiCalls().filter((call) => call.method === "DELETE" && call.path === "/panes/pane_1/vars/ko-pi.task").length, 1);
     });
   } finally {
     await fx.restore();
