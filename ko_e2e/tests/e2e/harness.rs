@@ -557,7 +557,10 @@ impl Ws {
         self.within(DEADLINE);
         loop {
             match self.next() {
-                Err(End::Timeout) => panic!("{what}"),
+                Err(End::Timeout) => panic!(
+                    "{what}; {} messages, the last: {}",
+                    self.received, self.last
+                ),
                 Err(End::Closed) => return,
                 Ok(_) => {}
             }

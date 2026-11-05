@@ -12,7 +12,8 @@ use tungstenite::protocol::frame::{Frame, FrameHeader};
 
 use crate::harness::{
     DEADLINE, Dir, HEAVY, Hello, Message, Record, Server, Ws, contains, decode, history_lines,
-    poll, quote, size, size_request, start, start_in, tagged, text_of, wait_gone, write_config,
+    poll, quote, size, size_request, start, start_in, stays, tagged, text_of, wait_gone,
+    write_config,
 };
 
 const SOCKET_BUFFER: usize = 1 << 20;
@@ -481,6 +482,12 @@ fn slow_snapshot_view(s: &Server, c: &mut Ws) -> Ws {
     let mut v = s.ws(&format!("/panes/{p}/view?offset=1000000000000&history=all"));
     ko_sys::sock::set_receive_buffer(v.raw().as_fd(), 4096).unwrap();
     s.ko(&["api", &format!("/panes/{p}/screen")], "").ok();
+    // Nothing reports that the server queued the snapshot (the spill file has no name and no
+    // route shows a queue), so the reader waits a fixed time before it reads.
+    stays("the pane stays served", Duration::from_millis(500), || {
+        s.request("GET", "/version", None, 200);
+        true
+    });
     v
 }
 
