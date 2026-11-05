@@ -571,6 +571,15 @@ routes! {
         caller: optional,
         reply: Placement,
     }
+    /// Reports that this pane could not start its program. Only the pane itself may report it.
+    /// Its next program death is a start failure and keeps its error screen.
+    StartFailed {
+        method: POST,
+        path: /panes/{id: PaneId}/start_failed,
+        body: crate::protocol::StartFailed,
+        caller: optional,
+        reply: Empty,
+    }
     /// Waits up to wait_ms for the pane to end by itself, then removes it and hangs up its
     /// program. ko kills a removed program that still lives after the escalation time. A dead
     /// pane is removed at once.

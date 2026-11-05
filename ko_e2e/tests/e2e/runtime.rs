@@ -462,10 +462,7 @@ runtimes:
         if let Some(cwd) = cwd {
             request["cwd"] = json!(cwd);
         }
-        let pane = post(&s, None, "/panes", &request)["pane"]
-            .as_str()
-            .unwrap()
-            .to_owned();
+        let pane = crate::panes::new_pane(&s, &request);
         s.screen_has(&pane, "S=");
         s.screen(&pane)
     };
@@ -658,13 +655,59 @@ runtimes:
     };
 
     let first = rt_pane(&s, "gate", "echo ran; exec cat");
+    let other = s.token_pane("exec cat");
+    let retained = s.token_pane_with(json!({"close": "keep"}), "read line");
+    s.text(&retained, "\n");
+    dead(&s, &retained);
+    crate::panes::refused(
+        crate::panes::api(
+            &s,
+            Some(&retained),
+            "POST",
+            &format!("/panes/{retained}/start_failed"),
+            &json!({"message": "too late"}),
+        ),
+        409,
+        "refused",
+        "does not match",
+    );
+    let report = format!("/panes/{first}/start_failed");
+    for caller in [None, Some(other.as_str())] {
+        crate::panes::refused(
+            crate::panes::api(&s, caller, "POST", &report, &json!({"message": "not mine"})),
+            409,
+            "refused",
+            "only the pane itself",
+        );
+    }
     s.screen_has(&first, "starting runtime gate");
     assert_eq!(state(&s, "gate"), "starting");
     assert_eq!(announced("gate"), json!({"type": "starting"}));
+    let mut live = s.ws(&format!("/panes/{first}/view"));
+    live.ready("starting runtime gate");
     release(&s.scratch, &up, "3");
     s.screen_has(&first, "runtime gate: boom");
     let row = dead(&s, &first);
-    assert_eq!(row["dead"]["cause"]["code"], 1, "{row}");
+    assert_eq!(
+        row["dead"]["cause"],
+        json!({"type": "failed", "message": "runtime gate: boom"}),
+        "{row}"
+    );
+    loop {
+        let marked = live.event("marked");
+        if marked["marker"]["type"] == "dead" {
+            assert_eq!(marked["marker"].get("cause"), None);
+            assert_eq!(marked["marker"]["at"], row["dead"]["at"]);
+            break;
+        }
+    }
+    let mut view = s.ws(&format!("/panes/{first}/view"));
+    let (snapshot, _) = view.snapshot();
+    assert!(
+        crate::harness::decode(&snapshot, false)
+            .screen
+            .contains("runtime gate: boom")
+    );
     assert!(!s.screen(&first).contains("ran"), "{}", s.screen(&first));
     let failed = wait_state(&s, "gate", "failed");
     assert_eq!(failed["state"]["message"], "boom");
@@ -898,7 +941,9 @@ runtimes:
         "argv": ["/bin/sh", "-c", format!("read x < {}", quote(text_of(&gate)))],
     }));
     wait_state(&s, "busy", "up");
-    let dying = rt_pane(&s, "kept", "exit 0");
+    let mut request = sh_in("kept", "exit 0");
+    request["close"] = json!("keep");
+    let dying = s.new_pane(request);
     dead(&s, &dying);
     let pane = rt_pane(&s, "idle", "exec cat");
     wait_state(&s, "idle", "up");
@@ -1731,10 +1776,7 @@ runtimes:
             .as_object_mut()
             .unwrap()
             .extend(new.as_object().unwrap().clone());
-        let pane = post(&s, None, "/panes", &request)["pane"]
-            .as_str()
-            .unwrap()
-            .to_owned();
+        let pane = crate::panes::new_pane(&s, &request);
         s.screen_has(&pane, "DONE");
         s.screen(&pane).lines().next().unwrap().trim().to_owned()
     };
@@ -1750,7 +1792,9 @@ runtimes:
     let rt_reports = |dir: &str| reported(rt_pane(&s, "dev", &reports(&maps.join(dir))));
     let rt = rt_reports("rt/sp ace");
     let rt_outside = rt_reports("outside");
-    let foreign = reported(s.pane(&reports_from("elsewhere.example", &maps.join("host/sub"))));
+    let mut foreign = sh(&reports_from("elsewhere.example", &maps.join("host/sub")));
+    foreign.as_object_mut().unwrap().remove("cwd");
+    let foreign = reported(s.new_pane(foreign));
     let rt_unknown = rt_pane(&s, "dev", "exec cat");
     let plain = at(json!({}));
 

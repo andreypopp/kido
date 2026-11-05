@@ -128,7 +128,7 @@ impl State {
             Ok(StreamRequest::Refuse { id }) => (id, Outcome::Refused),
             Err(_) => {
                 if let Some((_, wire)) = self.conns.get_mut(index).and_then(Conn::role_mut) {
-                    wire.ws.reject(wire.out, "invalid");
+                    wire.ws.reject(wire.out, crate::ws::Rejection::Invalid);
                 }
                 return;
             }

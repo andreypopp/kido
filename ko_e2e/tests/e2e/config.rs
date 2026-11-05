@@ -31,7 +31,7 @@ fn defaults_and_pane_environment() {
     let build = version["build"].as_str().unwrap_or_default().to_owned();
     assert!(!build.is_empty(), "ko version has no build field");
 
-    let pane = s.new_pane(json!({"cwd": "/tmp", "env": [
+    let pane = s.new_pane(json!({"close": "keep", "cwd": "/tmp", "env": [
         {"name": "X", "value": "custom"},
         {"name": "TERM", "value": "wrong"},
         {"name": "KO_PANE", "value": "wrong"}

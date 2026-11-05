@@ -306,6 +306,7 @@ impl Panes {
 pub(crate) enum Condition {
     Live,
     Dead { at: Mono },
+    Failed { at: Mono },
 }
 
 #[derive(Debug, Clone)]
@@ -327,7 +328,14 @@ pub(crate) enum Standing {
 pub(crate) fn standing(panes: &[Seen], id: PaneId) -> Standing {
     match panes.iter().find(|pane| pane.id == id) {
         None => Standing::Gone,
-        Some(pane) if matches!(pane.condition, Condition::Dead { .. }) => Standing::Dead,
+        Some(pane)
+            if matches!(
+                pane.condition,
+                Condition::Dead { .. } | Condition::Failed { .. }
+            ) =>
+        {
+            Standing::Dead
+        }
         Some(_) => Standing::Live,
     }
 }
@@ -346,7 +354,7 @@ pub(crate) fn sweep(panes: &[Seen], now: Mono, linger: impl Fn() -> Duration) ->
             .parent
             .is_some_and(|parent| standing(panes, parent) != Standing::Live);
         let lingered = match pane.condition {
-            Condition::Dead { at } if pane.close == Close::OnExit => {
+            Condition::Dead { at } | Condition::Failed { at } if pane.close == Close::OnExit => {
                 let age = Duration::from_nanos(now.nanos().saturating_sub(at.nanos()));
                 let grace = *grace.get_or_init(&linger);
                 if age < grace {
@@ -357,7 +365,8 @@ pub(crate) fn sweep(panes: &[Seen], now: Mono, linger: impl Fn() -> Duration) ->
             }
             _ => false,
         };
-        if !pane.shown && (orphan || lingered) {
+        let exited = pane.close == Close::Exit && matches!(pane.condition, Condition::Dead { .. });
+        if exited || (!pane.shown && (orphan || lingered)) {
             swept.removed.push(pane.id);
         }
     }
@@ -647,6 +656,29 @@ mod tests {
         assert_eq!(standing(&panes, PaneId::new(2)), Standing::Dead);
         assert_eq!(standing(&panes, PaneId::new(4)), Standing::Live);
         assert_eq!(standing(&panes, PaneId::new(8)), Standing::Gone);
+    }
+
+    #[test]
+    fn exit_removes_focused_dead_panes_but_keeps_failed_starts() {
+        let panes = [
+            Seen {
+                shown: true,
+                ..seen(1, None, Close::Exit, dead(0))
+            },
+            seen(
+                2,
+                None,
+                Close::Exit,
+                Condition::Failed {
+                    at: Mono::from_nanos(NOW),
+                },
+            ),
+            seen(3, None, Close::Exit, Condition::Live),
+            seen(4, None, Close::Keep, dead(0)),
+            seen(5, None, Close::OnExit, dead(0)),
+        ];
+        assert_eq!(removed(&panes), [1]);
+        assert_eq!(standing(&panes, PaneId::new(2)), Standing::Dead);
     }
 
     #[test]

@@ -27,6 +27,13 @@ pub(crate) const OVERFLOW_REASON: &str = "view queue overflow";
 pub(crate) const FIRST_PING: Duration = IDLE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Rejection {
+    Invalid,
+    Io,
+    Gone,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Record {
     Output,
     Snapshot,
@@ -316,15 +323,18 @@ impl Ws {
         out.flush();
     }
 
-    pub(crate) fn reject(&mut self, out: &mut Output, kind: &'static str) {
-        let send = out.available();
-        self.close_with(out, CloseCode::Policy, kind, send);
+    pub(crate) fn reject(&mut self, out: &mut Output, kind: Rejection) {
+        let reason = match kind {
+            Rejection::Invalid => "invalid",
+            Rejection::Io => "io",
+            Rejection::Gone => "gone",
+        };
+        self.close_with(out, CloseCode::Policy, reason);
         out.close();
     }
 
     pub(crate) fn abort(&mut self, out: &mut Output, reason: &'static str) {
-        let send = out.is_open();
-        self.close_with(out, CloseCode::Error, reason, send);
+        self.close_with(out, CloseCode::Error, reason);
     }
 
     pub(crate) fn keep_alive(&mut self, now: Instant) {
@@ -333,18 +343,18 @@ impl Ws {
     }
 
     pub(crate) fn finish(&mut self, out: &mut Output) {
-        let send = out.is_open();
-        self.close_with(out, CloseCode::Normal, "done", send);
+        self.close_with(out, CloseCode::Normal, "done");
     }
 
-    fn close_with(&mut self, out: &mut Output, code: CloseCode, reason: &'static str, send: bool) {
-        if send {
+    fn close_with(&mut self, out: &mut Output, code: CloseCode, reason: &'static str) {
+        if out.is_open() {
             let frame = CloseFrame {
                 code,
                 reason: reason.into(),
             };
-            let _ = self.ctx.close(&mut writer(out), Some(frame));
-            out.flush();
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            let _ = self.ctx.close(&mut bytes, Some(frame));
+            out.finish(bytes.into_inner());
         }
     }
 
@@ -390,8 +400,7 @@ impl Ws {
             return Ping::After(stall.map_or(left, |stall| left.min(stall)));
         }
         if self.ping.is_some() {
-            let send = out.available();
-            self.close_with(out, CloseCode::Policy, "gone", send);
+            self.close_with(out, CloseCode::Policy, "io");
             out.shut();
             return Ping::Expired;
         }
@@ -525,14 +534,15 @@ mod tests {
         let mut ws = Ws::new(Vec::new());
         ws.send(&mut out, "last-message".to_owned());
         ws.finish(&mut out);
-        assert!(out.is_open() && out.waiting());
+        assert_eq!(out.life(), Life::Draining);
+        assert!(out.waiting());
         let seen = crate::conn::tests::drain(&mut out, &mut reader);
         let mut tail = vec![0x81, 12];
         tail.extend_from_slice(b"last-message");
         tail.extend_from_slice(&[0x88, 6, 0x03, 0xe8]);
         tail.extend_from_slice(b"done");
         assert!(seen.ends_with(&tail), "the tail of {} bytes", seen.len());
-        assert!(out.is_open());
+        assert_eq!(out.life(), Life::Shut);
     }
 
     fn texts(ws: &mut Ws, conn: &mut Conn, poll: &mut Poll) -> Vec<Next> {
@@ -629,6 +639,9 @@ mod tests {
         let count = std::io::Read::read(&mut client, &mut sent).unwrap();
         let waiting = ws.ping(&mut conn.out, at(35));
         let expired = ws.ping(&mut conn.out, at(40));
+        let mut closed = [0; 6];
+        std::io::Read::read_exact(&mut client, &mut closed).unwrap();
+        assert_eq!(closed, [0x88, 4, 3, 0xf0, b'i', b'o']);
         assert_eq!(
             (
                 early,

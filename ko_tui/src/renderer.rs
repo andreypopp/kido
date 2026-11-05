@@ -461,11 +461,20 @@ impl Renderer {
                         );
                     }
                 }
+                let drop_first = shown.is_some_and(|pane| {
+                    pane.dead.is_some()
+                        && pane
+                            .frame
+                            .cells
+                            .chunks(usize::from(pane.frame.cols).max(1))
+                            .nth(r.rows.saturating_sub(1))
+                            .is_some_and(|row| row.iter().any(|cell| !cell.text.is_empty()))
+                });
                 for y in 0..r.rows.min(area.rows.saturating_sub(r.y)) {
                     for x in 0..r.cols.min(area.cols.saturating_sub(r.x)) {
                         let source = shown.and_then(|pane| {
                             let f = pane.frame;
-                            let source_y = y + usize::from(pane.dead.is_some());
+                            let source_y = y + usize::from(drop_first);
                             (x < usize::from(f.cols) && source_y < usize::from(f.rows))
                                 .then(|| f.cells.get(source_y * usize::from(f.cols) + x))
                                 .flatten()
@@ -1037,6 +1046,47 @@ mod tests {
         let mut frame = Frame::default();
         vt.render_into(&mut frame).unwrap();
         frame
+    }
+
+    #[test]
+    fn a_death_footer_uses_a_blank_bottom_row_without_discarding_the_first_row() {
+        let layout = Layout {
+            cols: 8,
+            rows: 3,
+            pane_x: 0,
+            pane_rows: 2,
+            status: quiet(),
+            help: false,
+            resizing: None,
+            copy: None,
+            geometry: std::rc::Rc::new(geometry(8, 2)),
+            active: Some(pane_id()),
+            sidebar: Vec::new(),
+            choosing: None,
+        };
+        let mut frame = Frame {
+            cols: 8,
+            rows: 2,
+            cells: vec![blank(); 16],
+            ..Frame::default()
+        };
+        for (cell, text) in frame.cells.iter_mut().zip("error".chars()) {
+            cell.text = text.to_string();
+        }
+        let mut input = frames(1, &frame);
+        input[0].dead = Some("dead");
+        let got = composed(&layout, &input);
+        assert_eq!(
+            got.cells[..5]
+                .iter()
+                .map(|cell| cell.text.as_str())
+                .collect::<String>(),
+            "error"
+        );
+        frame.cells[8].text = "T".to_owned();
+        let mut input = frames(2, &frame);
+        input[0].dead = Some("dead");
+        assert_eq!(composed(&layout, &input).cells[0].text, "T");
     }
 
     #[test]

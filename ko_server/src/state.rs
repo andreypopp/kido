@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use ko_config::runtime::Runtime;
 use ko_config::values::RuntimeName;
-use ko_pane_wire::frame::{Dead, History, ImageKey, Req, ScreenFormat, ScreenRows, Size};
+use ko_pane_wire::frame::{History, ImageKey, Req, ScreenFormat, ScreenRows, Size};
 use ko_pane_wire::ring::Invalid;
 use ko_sys::event::{Events, Mode, Poll, Reads, Ready, Timer, Token};
 use tungstenite::Utf8Bytes;
@@ -1016,16 +1016,8 @@ impl State {
                     let dead = self
                         .panes
                         .find(id)
-                        .and_then(|pane| match pane.proc().dead() {
-                            Some(pane_proc::Death {
-                                at,
-                                cause: pane_proc::Cause::Exit(exit),
-                            }) => Some(Dead {
-                                at: *at,
-                                exit: *exit,
-                            }),
-                            _ => None,
-                        });
+                        .and_then(|pane| pane.proc().dead())
+                        .map(Into::into);
                     if let Some((Role::View(view), mut wire)) = self.conns[index].role_mut() {
                         view.on_done(&mut wire, &done, dead);
                     }
@@ -1153,7 +1145,10 @@ impl State {
     pub(crate) fn close_views(&mut self, pane: PaneId) {
         for conn in &mut self.conns {
             match conn.role_mut() {
-                Some((Role::View(view), wire)) if view.pane == pane => view.close(wire.out),
+                Some((Role::View(view), wire)) if view.pane == pane => {
+                    wire.ws.reject(wire.out, crate::ws::Rejection::Gone);
+                    view.close(wire.out);
+                }
                 _ => {}
             }
         }
@@ -1413,7 +1408,7 @@ impl State {
             match link.role {
                 Role::Client(_) => self.client_text(poll, index, text.as_bytes()),
                 Role::View(_) => self.view_text(poll, index, text.as_bytes()),
-                Role::Search(_) => link.ws.reject(out, "invalid"),
+                Role::Search(_) => link.ws.reject(out, crate::ws::Rejection::Invalid),
                 Role::Messages(pane) => self.stream_text(poll, index, pane, text.as_bytes()),
                 Role::Exec(_) => self.exec_text(poll, index, text.as_bytes()),
             }
@@ -1448,7 +1443,7 @@ impl State {
             Err(message) => {
                 wire.ws
                     .send(wire.out, protocol::json(&ClientEvent::Refused { message }));
-                return wire.ws.reject(wire.out, "invalid");
+                return wire.ws.reject(wire.out, crate::ws::Rejection::Invalid);
             }
         };
         let (current, notify) = match change {
@@ -1480,7 +1475,7 @@ impl State {
             }
             Change::Select(selection) => match client.select(layout, selection) {
                 Some(current) => (Some(current), true),
-                None => return wire.ws.reject(wire.out, "invalid"),
+                None => return wire.ws.reject(wire.out, crate::ws::Rejection::Invalid),
             },
             Change::Switch(switch) => match client.switch(layout, switch) {
                 Some(current) => (Some(current), true),
@@ -1544,7 +1539,7 @@ impl State {
         let pane = view.pane;
         match request {
             Err(_) => {
-                wire.ws.reject(wire.out, "invalid");
+                wire.ws.reject(wire.out, crate::ws::Rejection::Invalid);
                 view.close(wire.out);
             }
             Ok(ViewRequest::Resync(options)) => {
@@ -1560,7 +1555,7 @@ impl State {
                         Ok(_) => {}
                         Err(Refusal::Ended) => view.reject(&mut wire),
                         Err(Refusal::TooLarge(_)) => {
-                            wire.ws.reject(wire.out, "invalid");
+                            wire.ws.reject(wire.out, crate::ws::Rejection::Invalid);
                             view.close(wire.out);
                         }
                     }

@@ -60,6 +60,7 @@ impl Overflow {
 enum Policy {
     Plain,
     View(Overflow),
+    Draining { spill: Spill, tail: Vec<u8> },
     Sealed,
 }
 
@@ -87,7 +88,10 @@ impl Queue {
     }
 
     fn spilling(&self) -> bool {
-        matches!(&self.policy, Policy::View(Overflow { spill: Some(_), .. }))
+        matches!(
+            &self.policy,
+            Policy::View(Overflow { spill: Some(_), .. }) | Policy::Draining { .. }
+        )
     }
 
     fn fits(&self, len: usize) -> bool {
@@ -95,7 +99,7 @@ impl Queue {
     }
 
     fn sealed(&self) -> bool {
-        matches!(self.policy, Policy::Sealed)
+        matches!(self.policy, Policy::Sealed | Policy::Draining { .. })
     }
 
     fn is_empty(&self) -> bool {
@@ -149,7 +153,7 @@ impl Queue {
     fn overflow(&mut self) {
         let farewell = match std::mem::replace(&mut self.policy, Policy::Sealed) {
             Policy::View(overflow) => Some(overflow.farewell),
-            Policy::Plain | Policy::Sealed => None,
+            Policy::Plain | Policy::Sealed | Policy::Draining { .. } => None,
         };
         let keep = farewell.is_some()
             && self
@@ -164,6 +168,19 @@ impl Queue {
         if let Some(bytes) = farewell {
             self.bytes = self.bytes.saturating_add(bytes.len());
             self.chunks.push_back(Chunk { bytes, tail: false });
+        }
+    }
+
+    fn finish(&mut self, tail: Vec<u8>) {
+        if self.sealed() {
+            return;
+        }
+        match std::mem::replace(&mut self.policy, Policy::Sealed) {
+            Policy::View(Overflow {
+                spill: Some(spill), ..
+            }) => self.policy = Policy::Draining { spill, tail },
+            _ if !tail.is_empty() => self.push_tail(&[&tail]),
+            _ => {}
         }
     }
 
@@ -183,6 +200,20 @@ impl Queue {
 
     fn fill(&mut self) -> io::Result<()> {
         let piece = self.cap.min(PIECE);
+        if let Policy::Draining { spill, .. } = &mut self.policy {
+            for bytes in spill.take(piece)? {
+                self.bytes = self.bytes.saturating_add(bytes.len());
+                self.chunks.push_back(Chunk { bytes, tail: false });
+            }
+            if spill.is_empty()
+                && let Policy::Draining { tail, .. } =
+                    std::mem::replace(&mut self.policy, Policy::Sealed)
+                && !tail.is_empty()
+            {
+                self.push_tail(&[&tail]);
+            }
+            return Ok(());
+        }
         let Policy::View(overflow) = &mut self.policy else {
             return Ok(());
         };
@@ -340,6 +371,13 @@ impl Output {
 
     pub(crate) fn parts(&mut self) -> (&UnixStream, &mut Queue) {
         (&self.stream, &mut self.queue)
+    }
+
+    pub(crate) fn finish(&mut self, tail: Vec<u8>) {
+        if self.is_open() {
+            self.queue.finish(tail);
+            self.flush();
+        }
     }
 
     // An open output shuts at once. A draining one finishes sending its close frame first.

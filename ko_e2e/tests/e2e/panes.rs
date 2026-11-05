@@ -38,6 +38,13 @@ pub(crate) fn post(s: &Server, who: Option<&str>, path: &str, body: &Value) -> V
     api(s, who, "POST", path, body).json()
 }
 
+pub(crate) fn new_pane(s: &Server, body: &Value) -> String {
+    post(s, None, "/panes", body)["pane"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
 pub(crate) fn refused(run: Run, status: u16, kind: &str, why: &str) {
     let body: Value = serde_json::from_str(&run.http_error(status)).unwrap();
     assert_eq!(body["kind"], kind, "{body}");
@@ -182,7 +189,7 @@ fn placement(s: &Server) {
         (&row["parent"], &row["close"]),
         (&json!(p1), &json!("on_exit"))
     );
-    assert_eq!(s.row(&p1).get("close"), None, "keep is the absent default");
+    assert_eq!(s.row(&p1).get("close"), None, "exit is the absent default");
     let layout = loop {
         let layout = watcher.event("layout");
         if layout["panes"][0]["id"] == p2 {
@@ -245,7 +252,7 @@ fn placement(s: &Server) {
 
 fn refusals_leave_the_document(s: &Server) {
     let live = s.pane("exec cat");
-    let dead = s.pane("exit 0");
+    let dead = new_pane(s, &json!({"close": "keep", "command": dies()}));
     poll("the pane to die", || s.row(&dead)["dead"].is_object());
     let before = s.doc();
     let huge = "x".repeat(1 << 20);
@@ -342,7 +349,7 @@ fn stops(s: &Server) {
     stop(&hasty, 0).ok();
     assert!(!s.has_pane(&hasty), "no wait removes at once");
 
-    let ended = s.pane("exit 0");
+    let ended = new_pane(s, &json!({"close": "keep", "command": dies()}));
     poll("the pane to die", || s.row(&ended)["dead"].is_object());
     stop(&ended, 4000).ok();
     assert!(!s.has_pane(&ended), "a dead pane is removed at once");
@@ -396,16 +403,10 @@ fn abandoned_stop(s: &Server) {
 }
 
 fn closing(s: &Server) {
-    let new = |body: Value| {
-        post(s, None, "/panes", &body)["pane"]
-            .as_str()
-            .unwrap()
-            .to_owned()
-    };
-    let gone = new(json!({"command": dies(), "close": "on_exit"}));
-    let kept = new(json!({"command": dies(), "close": "keep"}));
-    let shown = new(json!({"command": dies(), "close": "on_exit"}));
-    let unfocused = new(json!({"command": dies(), "close": "on_exit"}));
+    let gone = new_pane(s, &json!({"command": dies(), "close": "on_exit"}));
+    let kept = new_pane(s, &json!({"command": dies(), "close": "keep"}));
+    let shown = new_pane(s, &json!({"command": dies(), "close": "on_exit"}));
+    let unfocused = new_pane(s, &json!({"command": dies(), "close": "on_exit"}));
     let (mut client, _) = s.app_client(json!({"pane": shown}), true, (80, 24));
     let (_other, _) = s.app_client(json!({"pane": kept}), true, (80, 24));
     let (_unfocused, _) = s.app_client(json!({"pane": unfocused}), false, (80, 24));
@@ -421,8 +422,9 @@ fn closing(s: &Server) {
     assert!(s.has_pane(&kept), "keep stays dead");
 
     let finish = s.scratch.join("split-finish");
-    let root = new(
-        json!({"close": "on_exit", "command": {"type": "shell", "command": format!("while [ ! -f '{}' ]; do sleep 0.05; done", finish.display())}}),
+    let root = new_pane(
+        s,
+        &json!({"close": "on_exit", "command": {"type": "shell", "command": format!("while [ ! -f '{}' ]; do sleep 0.05; done", finish.display())}}),
     );
     let put = s.edit(|layout| {
         for session in layout["sessions"].as_array_mut().unwrap() {
@@ -465,17 +467,21 @@ fn closing(s: &Server) {
             .all(|session| session["id"] != solo["session"])
     );
 
-    let parent = new(
-        json!({"command": {"type": "shell", "command": "stty raw -echo; printf '\\033]7501;state=idle:app=pi\\007'; exec cat"}}),
+    let parent = new_pane(
+        s,
+        &json!({"command": {"type": "shell", "command": "stty raw -echo; printf '\\033]7501;state=idle:app=pi\\007'; exec cat"}}),
     );
     s.wait_row(&parent, "its pi root", |row| {
         row["status"]["program_status"]["records"]
             .as_array()
             .is_some_and(|records| !records.is_empty())
     });
-    let live_child = new(json!({"parent": parent, "command": cat()}));
-    let dead_child = new(json!({"parent": parent, "command": dies()}));
-    let grandchild = new(json!({"parent": live_child, "command": cat()}));
+    let live_child = new_pane(s, &json!({"parent": parent, "command": cat()}));
+    let dead_child = new_pane(
+        s,
+        &json!({"parent": parent, "command": dies(), "close": "keep"}),
+    );
+    let grandchild = new_pane(s, &json!({"parent": live_child, "command": cat()}));
     poll("the dead child to die", || {
         s.row(&dead_child)["dead"].is_object()
     });
@@ -504,8 +510,11 @@ fn closing(s: &Server) {
 
     let gate = s.scratch.join("gate");
     let wait = format!("while [ ! -f {} ]; do sleep 0.05; done", gate.display());
-    let mortal = new(json!({"command": {"type": "shell", "command": wait}}));
-    let dependent = new(json!({"parent": mortal, "command": cat()}));
+    let mortal = new_pane(
+        s,
+        &json!({"close": "keep", "command": {"type": "shell", "command": wait}}),
+    );
+    let dependent = new_pane(s, &json!({"parent": mortal, "command": cat()}));
     fs::write(&gate, "").unwrap();
     wait_pane_gone(s, &dependent);
     assert!(
@@ -568,7 +577,7 @@ fn identity(s: &Server) {
         ),
         "does not match",
     );
-    let ended = s.token_pane("exit 0");
+    let ended = s.token_pane_with(json!({"close": "keep"}), "exit 0");
     poll("the pane to die", || s.row(&ended)["dead"].is_object());
     refuses(put(&s.as_pane(&ended), &ended), "does not match");
 
@@ -631,6 +640,87 @@ fn identity(s: &Server) {
     );
     api(s, Some(&p), "PUT", &format!("/panes/{p}/vars/y"), &json!(1)).ok();
     api(s, None, "PUT", &format!("/panes/{other}/vars/y"), &json!(1)).ok();
+}
+
+#[test]
+fn default_panes_close_at_exit_even_with_a_focused_view() {
+    let s = tuned();
+
+    let gone = new_pane(&s, &json!({"command": dies()}));
+    wait_pane_gone(&s, &gone);
+    let kept = new_pane(&s, &json!({"close": "keep", "command": dies()}));
+    poll("the kept pane to die", || s.row(&kept)["dead"].is_object());
+    let failed = new_pane(
+        &s,
+        &json!({"command": {"type": "argv", "argv": ["/no/such/kido-command"]}}),
+    );
+    poll("the failed pane to die", || {
+        s.row(&failed)["dead"].is_object()
+    });
+    assert_eq!(s.row(&failed)["dead"]["cause"]["type"], "failed");
+    let mut failed_view = s.ws(&format!("/panes/{failed}/view"));
+    let (snapshot, _) = failed_view.snapshot();
+    assert!(
+        crate::harness::decode(&snapshot, false)
+            .screen
+            .contains("ko: exec: No such file or directory")
+    );
+    let pane = new_pane(
+        &s,
+        &json!({"command": {"type": "shell", "command": "stty -echo; printf READY; read line; printf LAST; exit 7"}}),
+    );
+    let (mut client, _) = s.app_client(json!({"pane": pane}), true, (80, 24));
+    let mut view = s.ws(&format!("/panes/{pane}/view"));
+    view.ready("READY");
+    s.text(&pane, "\n");
+    let mut saw_dead = false;
+    loop {
+        let crate::harness::Message::Text(text) = client.read() else {
+            panic!("binary client event");
+        };
+        let (kind, event) = crate::harness::tagged(&text).unwrap();
+        if kind == "dead" && event["pane"] == pane {
+            saw_dead = true;
+        }
+        if kind == "layout"
+            && !event["layout"]
+                .to_string()
+                .contains(&format!("\"pane\":\"{pane}\""))
+        {
+            assert!(saw_dead, "removal arrived before dead");
+            break;
+        }
+    }
+    let mut output = Vec::new();
+    loop {
+        match view.next() {
+            Ok(crate::harness::Message::Binary(bytes)) => {
+                if let Some(crate::harness::Record::Output { data, .. }) =
+                    crate::harness::Record::parse(&bytes)
+                {
+                    output.extend_from_slice(data);
+                }
+            }
+            Ok(_) => {}
+            Err(crate::harness::End::Closed) => break,
+            Err(crate::harness::End::Timeout) => panic!("view did not close"),
+        }
+    }
+    assert_eq!(view.close_frame(), Some(&(1008, "gone".to_owned())));
+    assert_eq!(output, b"LAST");
+    wait_pane_gone(&s, &pane);
+    assert!(s.has_pane(&kept));
+    assert!(s.has_pane(&failed));
+    let shell = new_pane(
+        &s,
+        &json!({"command": {"type": "argv", "argv": ["/bin/sh"]}}),
+    );
+    let mut view = s.ws(&format!("/panes/{shell}/view"));
+    view.snapshot();
+    s.text(&shell, "\x04");
+    wait_pane_gone(&s, &shell);
+    view.closed("the shell's view closes after Ctrl-D");
+    s.request("GET", "/version", None, 200);
 }
 
 #[test]

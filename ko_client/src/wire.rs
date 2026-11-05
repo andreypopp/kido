@@ -328,6 +328,7 @@ pub enum Next {
     Text(Utf8Bytes),
     Binary(Bytes),
     Wait,
+    Gone,
     Closed,
 }
 
@@ -516,7 +517,9 @@ impl Link {
             &mut self.closing,
             now,
         )?;
-        self.settle(poll)?;
+        if !matches!(next, Next::Closed | Next::Gone) {
+            self.settle(poll)?;
+        }
         Ok(next)
     }
 
@@ -533,7 +536,9 @@ impl Link {
             &mut self.closing,
             Instant::now(),
         )?;
-        self.flush_blocking()?;
+        if !matches!(next, Next::Closed | Next::Gone) {
+            self.flush_blocking()?;
+        }
         Ok(next)
     }
 
@@ -559,12 +564,18 @@ impl Link {
                 Message::Binary(body) => break Next::Binary(body),
                 Message::Close(frame) => {
                     *closing = frame.map(|frame| (u16::from(frame.code), frame.reason.to_string()));
-                    break Next::Closed;
+                    break if closing.as_ref().is_some_and(|(_, reason)| reason == "gone") {
+                        Next::Gone
+                    } else {
+                        Next::Closed
+                    };
                 }
                 Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
             }
         };
-        ctx.flush(io).map_err(failed)?;
+        if !matches!(next, Next::Closed | Next::Gone) {
+            ctx.flush(io).map_err(failed)?;
+        }
         Ok(next)
     }
 
@@ -622,7 +633,7 @@ mod tests {
         let mut seen = Vec::new();
         loop {
             let next = link.next(poll, now).unwrap();
-            let done = matches!(next, Next::Wait | Next::Closed);
+            let done = matches!(next, Next::Wait | Next::Closed | Next::Gone);
             seen.push(next);
             if done {
                 return seen;
@@ -687,6 +698,19 @@ mod tests {
         );
         server.write_all(&frame(8, b"")).unwrap();
         assert_eq!(settled(&mut link, &mut poll), [Next::Closed]);
+    }
+
+    #[test]
+    fn a_close_is_typed_and_does_not_flush_to_a_closed_peer() {
+        for (reason, expected) in [("gone", Next::Gone), ("io", Next::Closed)] {
+            let (mut link, mut server, mut poll) = pair();
+            link.send("pending".to_owned()).unwrap();
+            let mut body = 1008_u16.to_be_bytes().to_vec();
+            body.extend_from_slice(reason.as_bytes());
+            server.write_all(&frame(8, &body)).unwrap();
+            server.shutdown(std::net::Shutdown::Both).unwrap();
+            assert_eq!(settled(&mut link, &mut poll), [expected]);
+        }
     }
 
     #[test]

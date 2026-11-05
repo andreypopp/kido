@@ -3,7 +3,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use ko_client::wire::{self, Link, Next, Resume, text};
+use ko_client::wire::{Link, Next, Resume, text};
 use ko_pane_wire::frame::{History, Limits};
 use ko_pane_wire::ring::Slice;
 use ko_server::api::{Offset, Route};
@@ -11,7 +11,7 @@ use ko_server::ids::{ClientId, PaneId};
 use ko_server::protocol::{self, Images, Marker, ViewEvent, ViewOptions, ViewRequest, json};
 use ko_server::ws::{BadRecord, Parsed, parse_record};
 use ko_sys::clock::Mono;
-use ko_sys::event::{Poll, Ready, Token};
+use ko_sys::event::{Poll, Token};
 use ko_vt::compress::{Compress, Tick};
 use ko_vt::render::Frame;
 use ko_vt::search::{Progress, Search};
@@ -180,7 +180,7 @@ struct Assembly {
 fn apply(vt: &mut Terminal, marker: &Marker) -> Result<(), ko_vt::Error> {
     match marker {
         Marker::Resize(size) => vt.resize(size.0),
-        Marker::Dead(_) => Ok(()),
+        Marker::Dead { .. } => Ok(()),
     }
 }
 
@@ -217,7 +217,7 @@ pub(crate) struct Mirror {
     compressor: Option<JoinHandle<()>>,
     limits: Limits,
     assembly: Option<Assembly>,
-    dead: Option<protocol::Dead>,
+    dead: Option<u64>,
     resume: Resume,
     frozen: Option<Frozen>,
     awaiting_snapshot: bool,
@@ -275,12 +275,12 @@ impl Mirror {
             frozen: None,
             awaiting_snapshot: false,
         };
-        mirror.handle(poll, wire::buffered(token), Instant::now())?;
+        mirror.handle(poll, Instant::now())?;
         Ok(mirror)
     }
 
-    pub(crate) fn dead(&self) -> Option<&protocol::Dead> {
-        self.dead.as_ref()
+    pub(crate) fn dead(&self) -> Option<u64> {
+        self.dead
     }
 
     pub(crate) fn token(&self) -> Token {
@@ -317,23 +317,16 @@ impl Mirror {
         self.link.settle(poll).map_err(text)
     }
 
-    pub(crate) fn handle(
-        &mut self,
-        poll: &mut Poll,
-        ready: Ready,
-        now: Instant,
-    ) -> Result<(), String> {
-        if ready.write {
-            self.link.settle(poll).map_err(text)?;
-        }
-        if !ready.read {
-            return Ok(());
-        }
+    pub(crate) fn handle(&mut self, poll: &mut Poll, now: Instant) -> Result<(), String> {
         let shared = Arc::clone(&self.shared);
         let mut state = shared.lock();
         let mut changed = false;
         loop {
             match self.link.next(poll, now).map_err(text)? {
+                Next::Gone => {
+                    self.link.unwatch(poll);
+                    break;
+                }
                 Next::Wait => break,
                 Next::Closed => return Err("pane view closed".to_owned()),
                 Next::Text(event) => self.marker(&mut state, &event)?,
@@ -349,8 +342,8 @@ impl Mirror {
     }
 
     fn note(&mut self, marker: &Marker) {
-        if let Marker::Dead(dead) = marker {
-            self.dead = Some(dead.clone());
+        if let Marker::Dead { at } = marker {
+            self.dead = Some(*at);
         }
     }
 
@@ -780,7 +773,7 @@ impl Mirror {
         self.link = Mirror::connect(socket, client, pane, self.resume.offset())?;
         self.token = self.link.watch(poll).map_err(text)?;
         self.assembly = None;
-        self.handle(poll, wire::buffered(self.token), Instant::now())
+        self.handle(poll, Instant::now())
     }
 }
 
@@ -1122,14 +1115,14 @@ mod tests {
     fn the_dead_marker_counts_once_the_output_before_it_is_applied() {
         let (mut mirror, _theirs, _poll) = mirror();
         let records = slices(&server(8, 2, "x").snapshot_bytes(false).unwrap(), 10);
-        let dead = r#"{"type":"marked","offset":0,"marker":{"type":"dead","at":1,"cause":{"type":"exited","code":3}}}"#;
+        let dead = r#"{"type":"marked","offset":0,"marker":{"type":"dead","at":1}}"#;
         feed(&mut mirror, &records[0]).unwrap();
         marked(&mut mirror, dead);
-        let queued = mirror.dead().cloned();
+        let queued = mirror.dead();
         for record in &records[1..] {
             feed(&mut mirror, record).unwrap();
         }
-        assert_eq!((queued, mirror.dead().map(|dead| dead.at)), (None, Some(1)));
+        assert_eq!((queued, mirror.dead()), (None, Some(1)));
     }
 
     #[test]

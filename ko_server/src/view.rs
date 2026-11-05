@@ -1,4 +1,5 @@
-use ko_pane_wire::frame::{Dead, History};
+use crate::protocol::Dead;
+use ko_pane_wire::frame::History;
 use ko_pane_wire::ring::{self, Invalid, Mark, Pos, Reach, Reader, Record, RecordKind};
 #[cfg(verus_only)]
 use ko_pane_wire::ring::{
@@ -404,7 +405,7 @@ fn reject_ws(wire: &mut Wire<'_>)
     ensures
         old(wire).out.closed() ==> final(wire).out.closed(),
 {
-    wire.ws.reject(wire.out, "io");
+    wire.ws.reject(wire.out, crate::ws::Rejection::Io);
 }
 
 // Assumes: it sends the marker at `here` on the wire's output only, and never reopens a closed output.
@@ -415,7 +416,7 @@ fn emit_marked(wire: &mut Wire<'_>, ring: &Reader, here: Pos, offset: u64) -> (r
 {
     match ring.marker(here) {
         Ok(marker) => {
-            send_marked(wire, marker, offset);
+            wire.ws.send(wire.out, protocol::json(&ViewEvent::Marked(Marked { offset, marker: marker.into() })));
             Ok(())
         },
         Err(e) => Err(e),
@@ -428,7 +429,7 @@ fn emit_dead(wire: &mut Wire<'_>, dead: Dead, offset: u64)
     ensures
         old(wire).out.closed() ==> final(wire).out.closed(),
 {
-    send_marked(wire, ring::Marker::Dead(dead), offset);
+    wire.ws.send(wire.out, protocol::json(&ViewEvent::Marked(Marked { offset, marker: protocol::Marker::Dead { at: dead.at } })));
 }
 
 // Assumes: it sends the skip event on the wire's output only, and never reopens a closed output.
@@ -1039,15 +1040,6 @@ impl View {
 }
 
 } // verus!
-
-fn send_marked(wire: &mut Wire<'_>, marker: ring::Marker, offset: u64) {
-    let marked = Marked {
-        offset,
-        marker: marker.into(),
-    };
-    wire.ws
-        .send(wire.out, protocol::json(&ViewEvent::Marked(marked)));
-}
 
 impl std::fmt::Debug for View {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

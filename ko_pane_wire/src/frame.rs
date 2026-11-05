@@ -162,7 +162,13 @@ impl Size {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Dead {
     pub at: Mono,
-    pub exit: Exit,
+    pub cause: DeathCause,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeathCause {
+    Exit(Exit),
+    Failed(ko_sys::pty::Failed),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1167,15 +1173,15 @@ pub(crate) fn size_bytes(size: Size) -> [u8; 8] {
 }
 
 pub(crate) fn dead_bytes(dead: Dead) -> [u8; 16] {
-    let (status, signal) = match dead.exit {
-        Exit::Exited(status) => (status, 0),
-        Exit::Signaled(signal) => (0, signal),
+    let (tag, step, value) = match dead.cause {
+        DeathCause::Exit(Exit::Exited(code)) => (0, 0, code),
+        DeathCause::Exit(Exit::Signaled(signal)) => (1, 0, signal),
+        DeathCause::Failed(failed) => (2, failed.step().code(), failed.errno()),
     };
-    let [s0, s1, s2, s3] = status.to_le_bytes();
-    let [g0, g1, g2, g3] = signal.to_le_bytes();
+    let [v0, v1, v2, v3] = value.to_le_bytes();
     let [a0, a1, a2, a3, a4, a5, a6, a7] = dead.at.nanos().to_le_bytes();
     [
-        s0, s1, s2, s3, g0, g1, g2, g3, a0, a1, a2, a3, a4, a5, a6, a7,
+        tag, step, 0, 0, v0, v1, v2, v3, a0, a1, a2, a3, a4, a5, a6, a7,
     ]
 }
 
@@ -1368,15 +1374,19 @@ pub(crate) fn dead(body: &[u8]) -> Option<Dead> {
     if body.len() != 16 {
         return None;
     }
-    let status = i32_at(body, 0)?;
-    let signal = i32_at(body, 4)?;
+    let value = i32_at(body, 4)?;
+    let cause = match body.get(..4)? {
+        [0, 0, 0, 0] => DeathCause::Exit(Exit::Exited(value)),
+        [1, 0, 0, 0] => DeathCause::Exit(Exit::Signaled(value)),
+        [2, step, 0, 0] => DeathCause::Failed(ko_sys::pty::Failed::new(
+            ko_sys::pty::Step::of_code(*step)?,
+            value,
+        )?),
+        _ => return None,
+    };
     Some(Dead {
         at: Mono::from_nanos(u64::from_le_bytes(array(body, 8)?)),
-        exit: if signal == 0 {
-            Exit::Exited(status)
-        } else {
-            Exit::Signaled(signal)
-        },
+        cause,
     })
 }
 
@@ -2392,7 +2402,7 @@ mod tests {
     fn what_the_pane_sends_decodes_to_what_it_was_built_from() {
         let dead = Dead {
             at: Mono::from_nanos(77),
-            exit: Exit::Signaled(9),
+            cause: DeathCause::Exit(Exit::Signaled(9)),
         };
         let req = Req::of_serial(1);
         let cases = [
@@ -2472,11 +2482,36 @@ mod tests {
         }
         let mut exited = Vec::new();
         let ended = Dead {
-            exit: Exit::Exited(-3),
+            cause: DeathCause::Exit(Exit::Exited(-3)),
             ..dead
         };
         encode_from(&FromPane::Dead(ended), &mut exited).unwrap();
         assert_eq!(decode(&exited), Ok(Some(FromPane::Dead(ended))));
+        for step in [
+            ko_sys::pty::Step::Sigmask,
+            ko_sys::pty::Step::Setsid,
+            ko_sys::pty::Step::Tiocsctty,
+            ko_sys::pty::Step::Dup2,
+            ko_sys::pty::Step::Chdir,
+            ko_sys::pty::Step::Exec,
+        ] {
+            let failed = Dead {
+                cause: DeathCause::Failed(ko_sys::pty::Failed::new(step, 2).unwrap()),
+                ..dead
+            };
+            let mut bytes = Vec::new();
+            encode_from(&FromPane::Dead(failed), &mut bytes).unwrap();
+            assert_eq!(decode(&bytes), Ok(Some(FromPane::Dead(failed))));
+            assert!(check_sizes(&bytes));
+        }
+        let mut unknown = dead_bytes(dead);
+        unknown[0] = 3;
+        assert_eq!(decode(&frame(Kind::Dead, &unknown)), Err(Malformed::Dead));
+        unknown[..4].copy_from_slice(&[2, 7, 0, 0]);
+        assert_eq!(decode(&frame(Kind::Dead, &unknown)), Err(Malformed::Dead));
+        unknown[..4].copy_from_slice(&[2, ko_sys::pty::Step::Exec.code(), 0, 0]);
+        unknown[4..8].copy_from_slice(&0_i32.to_le_bytes());
+        assert_eq!(decode(&frame(Kind::Dead, &unknown)), Err(Malformed::Dead));
     }
 
     #[test]

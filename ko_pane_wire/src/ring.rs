@@ -1869,7 +1869,7 @@ mod tests {
         });
         let dead = Marker::Dead(Dead {
             at: Mono::from_nanos(5),
-            exit: Exit::Signaled(15),
+            cause: frame::DeathCause::Exit(Exit::Signaled(15)),
         });
         let slice = Slice {
             first: false,
@@ -1897,9 +1897,8 @@ mod tests {
     fn markers_and_slices_decode_from_their_payload() {
         let (reader, mut writer) = ring(256);
         let dead = [
-            &[2][..],
+            &[2, 0, 0, 0, 0][..],
             &3i32.to_le_bytes(),
-            &0i32.to_le_bytes(),
             &9u64.to_le_bytes(),
         ]
         .concat();
@@ -1925,7 +1924,7 @@ mod tests {
         assert_eq!(reader.marker(at[0]), Ok(Marker::Resize(size(50, 20))));
         let died = Dead {
             at: Mono::from_nanos(9),
-            exit: Exit::Exited(3),
+            cause: frame::DeathCause::Exit(Exit::Exited(3)),
         };
         assert_eq!(reader.marker(at[1]), Ok(Marker::Dead(died)));
         let slice = Slice {

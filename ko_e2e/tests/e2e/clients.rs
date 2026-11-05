@@ -74,7 +74,7 @@ fn a_tree_scaled_down_to_one_column_for_each_pane_and_back() {
 #[test]
 fn a_change_the_server_makes_reaches_every_client_as_a_layout_event() {
     let s = start(&[]);
-    let exiting = json!({"pane": {"new": sh("printf READY; read line; exit 0")}});
+    let exiting = json!({"pane": {"new": { "close": "keep", "command": {"type": "shell", "command": "printf READY; read line; exit 0"} }}});
     let first = one_window(&s, split("h", vec![new(), exiting, new(), new()]));
     let (mut a, _) = s.app_client(json!({}), false, (80, 24));
     let (mut b, _) = s.app_client(json!({}), false, (80, 24));
@@ -117,6 +117,8 @@ fn a_change_the_server_makes_reaches_every_client_as_a_layout_event() {
     for client in [&mut a, &mut b] {
         let dead = client.event("dead");
         assert_eq!(dead["dead"]["cause"]["type"], json!("failed"));
+    }
+    for client in [&mut a, &mut b] {
         let event = client.event("layout");
         assert_eq!(event["revision"].as_u64(), Some(revision + 3));
         assert_eq!(

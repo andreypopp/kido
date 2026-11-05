@@ -317,7 +317,7 @@ fn a_pane_that_dies_or_leaves_drops_its_queue_and_tells_its_parent() {
     let user = s.headers();
     let dies_on_input = "read x; exit 3";
 
-    let d = s.token_pane(dies_on_input);
+    let d = s.token_pane_with(json!({"close": "keep"}), dies_on_input);
     let mut stream = open(&s, &d);
     let waiting = send_later(&s, &user, &d, &body("dead-0001", "x"));
     assert_eq!(received(&mut stream)["id"], "dead-0001");
@@ -343,7 +343,7 @@ fn a_pane_that_dies_or_leaves_drops_its_queue_and_tells_its_parent() {
             &s,
             Some(&parent),
             "/panes",
-            &json!({"parent": parent, "command": {"type": "shell", "command": command}}),
+            &json!({"parent": parent, "close": "keep", "command": {"type": "shell", "command": command}}),
         );
         made["pane"].as_str().unwrap().to_owned()
     };

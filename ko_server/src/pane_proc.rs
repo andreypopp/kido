@@ -43,9 +43,34 @@ pub(crate) enum Life {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Failure(String);
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Self(message)
+    }
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Cause {
     Exit(Exit),
-    Failed(String),
+    StartFailed(Failure),
+    Failed(Failure),
+}
+
+impl From<frame::DeathCause> for Cause {
+    fn from(cause: frame::DeathCause) -> Self {
+        match cause {
+            frame::DeathCause::Exit(exit) => Self::Exit(exit),
+            frame::DeathCause::Failed(failed) => Self::StartFailed(failed.to_string().into()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,6 +306,7 @@ pub(crate) struct PaneProc {
     reported_dir: Option<Vec<u8>>,
     start_dir: PathBuf,
     dead: Option<Death>,
+    start_failure: Option<Failure>,
     input: Vec<u8>,
     filled: usize,
     pending: BTreeMap<Req, Reply>,
@@ -406,6 +432,7 @@ impl PaneProc {
             reported_dir: None,
             start_dir: cwd.to_owned(),
             dead: None,
+            start_failure: None,
             input: vec![0; INPUT],
             filled: 0,
             pending: BTreeMap::new(),
@@ -504,7 +531,16 @@ impl PaneProc {
         }
     }
 
-    fn die(&mut self, death: Death, io: &mut Io<'_>) {
+    pub(crate) fn start_failed(&mut self, message: Failure) {
+        self.start_failure = Some(message);
+    }
+
+    fn die(&mut self, mut death: Death, io: &mut Io<'_>) {
+        if matches!(death.cause, Cause::Exit(_))
+            && let Some(message) = self.start_failure.take()
+        {
+            death.cause = Cause::StartFailed(message);
+        }
         if let Cause::Failed(_) = death.cause {
             self.kill_group();
         }
@@ -549,7 +585,7 @@ impl PaneProc {
             self.fail_pending(&message, io);
             let death = Death {
                 at: Mono::now(),
-                cause: Cause::Failed(message),
+                cause: Cause::Failed(message.into()),
             };
             self.die(death, io);
         }
@@ -832,7 +868,7 @@ impl PaneProc {
             FromPane::Dead(dead) => {
                 let death = Death {
                     at: dead.at,
-                    cause: Cause::Exit(dead.exit),
+                    cause: dead.cause.into(),
                 };
                 self.die(death, io);
             }
@@ -1491,7 +1527,10 @@ mod tests {
             fake.proc.child = child;
             fake.feed(&frame(Kind::Ready, &pid.to_le_bytes()));
             let death = fake.proc.dead().map(|death| death.cause.clone());
-            assert_eq!(death, Some(Cause::Failed("invalid ready".to_owned())));
+            assert_eq!(
+                death,
+                Some(Cause::Failed("invalid ready".to_owned().into()))
+            );
             assert_eq!(fake.proc.child_pid(), None);
         }
     }
@@ -1507,7 +1546,7 @@ mod tests {
         let mut fake = fake(64);
         fake.feed(&frame(Kind::Error, &body));
         let death = fake.proc.dead().map(|death| death.cause.clone());
-        assert_eq!(death, Some(Cause::Failed(message.to_owned())));
+        assert_eq!(death, Some(Cause::Failed(message.to_owned().into())));
     }
 
     #[test]

@@ -25,7 +25,7 @@ pub enum TokenSource {
 pub struct Enter {
     pub socket: PathBuf,
     pub pane: PaneId,
-    pub token: TokenSource,
+    pub token: PaneToken,
     pub runtime: RuntimeName,
     pub cwd: Option<PathBuf>,
     pub env: Vec<(String, String)>,
@@ -48,7 +48,6 @@ impl fmt::Display for Cwd {
 
 #[derive(Debug)]
 pub enum Failure {
-    NoToken,
     Cwd(Cwd),
     Exec(io::Error),
 }
@@ -56,7 +55,6 @@ pub enum Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Failure::NoToken => f.write_str("no token"),
             Failure::Cwd(cwd) => cwd.fmt(f),
             Failure::Exec(error) => error.fmt(f),
         }
@@ -87,7 +85,7 @@ fn read_private(path: &Path) -> Option<String> {
     read.map(|_| text)
 }
 
-fn token(source: &TokenSource) -> Option<PaneToken> {
+pub fn token(source: &TokenSource) -> Option<PaneToken> {
     let text = match source {
         TokenSource::Environment(value) => value.clone()?,
         TokenSource::File(path) => read_private(path)?,
@@ -210,9 +208,7 @@ pub(crate) fn check_cwd(dir: &Path) -> Result<(), Cwd> {
 }
 
 pub fn exec(enter: &Enter, exe: &Path) -> Failure {
-    let Some(token) = token(&enter.token) else {
-        return Failure::NoToken;
-    };
+    let token = &enter.token;
     if let Some(dir) = &enter.cwd
         && let Err(cwd) = check_cwd(dir)
     {

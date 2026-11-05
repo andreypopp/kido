@@ -261,9 +261,9 @@ fn stalled_view_skips() {
     let _heavy = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
     let s = start(&[]);
     let (mut c, _) = s.client(None);
-    let p = s.pane(&format!(
+    let p = s.new_pane(json!({"close": "keep", "command": {"type": "shell", "command": format!(
         "printf READY; IFS= read -r start; head -c {FLOOD} /dev/zero | tr '\\000' x; printf LAST"
-    ));
+    )}}));
     let mut v = s.ws(&format!("/panes/{p}/view"));
     v.ready("READY");
     s.text(&p, "\n");
@@ -280,10 +280,10 @@ fn stalled_view_skips() {
 fn pane_dead_snapshot() {
     let s = start(&[]);
     let (mut c, _) = s.client(None);
-    let p = s.pane(&format!(
+    let p = s.new_pane(json!({"close": "keep", "command": {"type": "shell", "command": format!(
         "{}; printf READY; IFS= read -r go; printf '\x1b]2;dead title\x07\x1b]7;file://localhost/tmp\x07\x1b[?2026hretained'; exit 7",
         history_lines(100)
-    ));
+    )}}));
     let mut live = s.ws(&format!("/panes/{p}/view?history=all"));
     live.ready("READY");
     s.text(&p, "\n");
@@ -471,11 +471,11 @@ fn spill_lines() -> Vec<String> {
         .collect()
 }
 
-fn slow_snapshot_view(s: &Server, c: &mut Ws) -> Ws {
+fn slow_snapshot_view(s: &Server, c: &mut Ws) -> (String, Ws) {
     let history = s.dir.join("history");
     std::fs::write(&history, spill_lines().join("\r\n") + "\r\n").unwrap();
     let p = s.pane(&format!(
-        "stty raw -echo; cat {}; printf '\\033]2;history-ready\\007'; cat",
+        "stty -echo; cat {}; printf '\\033]2;history-ready\\007'; read line",
         quote(text_of(&history))
     ));
     c.event("title");
@@ -488,11 +488,11 @@ fn slow_snapshot_view(s: &Server, c: &mut Ws) -> Ws {
         s.request("GET", "/version", None, 200);
         true
     });
-    v
+    (p, v)
 }
 
 #[test]
-fn a_snapshot_over_the_queue_cap_spills_and_reaches_a_slow_reader_whole() {
+fn a_snapshot_over_the_queue_cap_drains_whole_when_the_pane_exits() {
     let _heavy = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
     let dir = Dir::new("ko-");
     write_config(&dir, "server:\n  scrollback: {bytes: 209715200}\n");
@@ -503,7 +503,9 @@ fn a_snapshot_over_the_queue_cap_spills_and_reaches_a_slow_reader_whole() {
         &[],
     );
     let (mut c, _) = s.client(None);
-    let mut v = slow_snapshot_view(&s, &mut c);
+    let (pane, mut v) = slow_snapshot_view(&s, &mut c);
+    s.text(&pane, "\n");
+    poll("the snapshot pane to leave", || !s.has_pane(&pane));
     let (data, _) = v.snapshot();
     assert!(
         v.bytes() - v.largest() > 2 * SOCKET_BUFFER + 65536,
@@ -528,6 +530,8 @@ fn a_snapshot_over_the_queue_cap_spills_and_reaches_a_slow_reader_whole() {
         first.map(|at| got[at]),
         first.map(|at| &expected[at])
     );
+    v.closed("the removed pane's snapshot view closes after its queued data");
+    assert_eq!(v.close_frame(), Some(&(1008, "gone".to_owned())));
 }
 
 #[test]
@@ -545,7 +549,7 @@ fn a_snapshot_over_the_spill_limit_closes_the_view_with_1013() {
         &[],
     );
     let (mut c, _) = s.client(None);
-    let mut v = slow_snapshot_view(&s, &mut c);
+    let (_, mut v) = slow_snapshot_view(&s, &mut c);
     v.closed("the view neither ended nor finished its snapshot");
     assert_eq!(
         v.close_frame(),

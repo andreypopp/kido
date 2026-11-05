@@ -295,6 +295,7 @@ public enum KoSchema {
     }
 
     public enum Close: String, Codable, Equatable, Sendable {
+        case exit
         case keep
         case onExit = "on_exit"
     }

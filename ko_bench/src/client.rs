@@ -194,7 +194,7 @@ pub(crate) fn dead(message: &Message<'_>) -> bool {
     message.opcode == 1
         && matches!(
             protocol::decode::<ViewEvent>(message.payload),
-            Ok(ViewEvent::Marked(marked)) if matches!(marked.marker, Marker::Dead(_))
+            Ok(ViewEvent::Marked(marked)) if matches!(marked.marker, Marker::Dead { .. })
         )
 }
 

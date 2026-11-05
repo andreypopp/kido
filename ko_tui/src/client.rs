@@ -1572,7 +1572,13 @@ impl Client {
         }
         let mut fresh = false;
         for pane in panes_mut(&mut self.view) {
-            let death = pane.mirror.dead();
+            let death = pane.mirror.dead().and_then(|_| {
+                self.model
+                    .panes
+                    .iter()
+                    .find(|row| row.row.id == pane.pane)
+                    .and_then(|pane| pane.row.dead.as_ref())
+            });
             if pane.death.as_ref().map(|(dead, _)| dead) != death {
                 pane.death = death.map(|dead| (dead.clone(), sidebar::dead_line(dead)));
             }
@@ -1663,7 +1669,7 @@ impl Client {
             } else if self.reconnecting.is_none() {
                 for pane in panes_mut(&mut self.view) {
                     if ready.token == pane.mirror.token()
-                        && let Err(error) = pane.mirror.handle(&mut self.poll, ready, now)
+                        && let Err(error) = pane.mirror.handle(&mut self.poll, now)
                     {
                         cause = Some(error);
                     }
@@ -1919,7 +1925,7 @@ impl Client {
             loop {
                 match self.link.next(&mut self.poll, now).map_err(text)? {
                     Next::Wait => break,
-                    Next::Closed | Next::Binary(_) => {
+                    Next::Closed | Next::Gone | Next::Binary(_) => {
                         return Err("server closed the client".to_owned());
                     }
                     Next::Text(event) => {

@@ -23,7 +23,9 @@ fn message(reply: &str) -> String {
 #[test]
 fn variables() {
     let s = start(&[]);
-    let pane = s.pane("printf READY; read x");
+    let pane = s.new_pane(
+        json!({"close": "keep", "command": {"type": "shell", "command": "printf READY; read x"}}),
+    );
     s.screen_has(&pane, "READY");
     let (mut watcher, _) = s.client(None);
     let route = |name: &str| format!("/panes/{pane}/vars/{name}");

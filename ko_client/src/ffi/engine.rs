@@ -311,7 +311,9 @@ impl Engine<'_> {
                 .map_err(|error| failure(&error))?
             {
                 Next::Wait => return Ok(()),
-                Next::Closed => return Err((Code::Closed, "server closed".to_owned())),
+                Next::Closed | Next::Gone => {
+                    return Err((Code::Closed, "server closed".to_owned()));
+                }
                 Next::Binary(_) => return Err(protocol_error("binary client message".to_owned())),
                 Next::Text(event) => {
                     let event = protocol::decode::<ClientEvent>(event.as_bytes())
@@ -520,7 +522,7 @@ impl Engine<'_> {
             while !pause.load(Ordering::SeqCst) {
                 match conn.link.next(&mut self.poll, now) {
                     Ok(Next::Wait) => break,
-                    Ok(Next::Closed) => {
+                    Ok(Next::Closed | Next::Gone) => {
                         outcome = Err((Code::Closed, "pane view closed".to_owned()));
                         break;
                     }

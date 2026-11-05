@@ -2,15 +2,14 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::{
-    self, ContentsBuf, Dead, FromPane, History, Init, Kind, Prompt, Record, Req, Request,
-    ScreenFormat, ScreenRows, Size,
+    self, ContentsBuf, Dead, DeathCause, FromPane, History, Init, Kind, Prompt, Record, Req,
+    Request, ScreenFormat, ScreenRows, Size,
 };
 use ko_pane_wire::ring::{DEAD_LEN, Marker, RESIZE_LEN, RecordKind, SLICE_HEADER, Slice, Writer};
 use ko_sys::clock::Mono;
 use ko_sys::event::Interest;
 use ko_sys::fd::Queue;
 use ko_sys::mapping::Name;
-use ko_sys::pid::Exit;
 use ko_sys::pid::Program;
 use ko_sys::pty::{self, Winsize};
 use ko_sys::signal::{Signal, Signals};
@@ -39,7 +38,7 @@ enum Launch {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Life {
     Running,
-    Exited(Exit),
+    Exited(DeathCause),
     Dead(Dead),
 }
 
@@ -427,7 +426,7 @@ impl Pane {
                 let (program, life) = match pty.program {
                     Ok(program) => {
                         let life = match program.peek_exit() {
-                            Ok(Some(exit)) => Life::Exited(exit),
+                            Ok(Some(exit)) => Life::Exited(DeathCause::Exit(exit)),
                             _ => {
                                 self.io
                                     .out
@@ -437,7 +436,12 @@ impl Pane {
                         };
                         (Some(program), life)
                     }
-                    Err(failed) => (None, Life::Exited(failed.exit)),
+                    Err(failed) => {
+                        let message = format!("\x1b[31mko: {failed}\x1b[0m\r\n");
+                        vt.write(message.as_bytes());
+                        self.io.out.put(RecordKind::Bytes, message.as_bytes());
+                        (None, Life::Exited(DeathCause::Failed(failed)))
+                    }
                 };
                 Some(Process {
                     master: pty.master,
@@ -661,7 +665,7 @@ impl Pane {
         }) = self.live.as_mut().and_then(|live| live.process.as_mut())
             && let Ok(Some(exit)) = program.peek_exit()
         {
-            *life = Life::Exited(exit);
+            *life = Life::Exited(DeathCause::Exit(exit));
         }
     }
 
@@ -798,12 +802,12 @@ impl Pane {
         else {
             return Ok(());
         };
-        let (Life::Exited(exit), true) = (process.life, process.eof) else {
+        let (Life::Exited(cause), true) = (process.life, process.eof) else {
             return Ok(());
         };
         let dead = Dead {
             at: Mono::now(),
-            exit,
+            cause,
         };
         put_dead(&mut self.io, dead)?;
         process.life = Life::Dead(dead);

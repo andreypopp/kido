@@ -50,6 +50,14 @@ import XCTest
         return count == MemoryLayout<proc_taskinfo>.size ? info.pti_resident_size : 0
     }
 
+    func testCtrlDRemovesThePaneAndItsView() throws {
+        let (owner, pane) = try shown("exec /bin/sh")
+        try XCTUnwrap(pane.koView).text(Data([4]))
+        wait("the exited pane leaves the model") { owner.testModel?.pane(PaneID(number: 1)) == nil }
+        wait("the exited pane's view is removed") { owner.testSession?.pane(PaneID(number: 1)) == nil }
+        XCTAssertNil(pane.koView)
+    }
+
     func testOutputFloodKeepsMainResponsive() throws {
         let (_, pane) = try shown("read start; exec yes")
         let view = try XCTUnwrap(pane.koView)

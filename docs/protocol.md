@@ -53,9 +53,13 @@ larger message closes the connection. Client to server
 frames are masked, as the RFC requires; it costs an XOR over input
 bytes and buys standard tooling (`websocat --unix`). The server pings
 every 30 s on idle streams and closes a connection without a pong
-after 10 s more. A close frame carries the error kind of section 2 as
+after 10 s more, with the reason `io`. A close frame carries the error kind of section 2 as
 its reason. The exception is a view's overflow close (section 4),
-with code 1013 and the reason `view queue overflow`.
+with code 1013 and the reason `view queue overflow`. The removal of a
+pane closes each of its views with code 1008 and the reason `gone`,
+behind the output that the view's queue and spill already hold; only
+this close means the end of the pane, and a client treats it as that,
+not as an outage.
 
 Backpressure is the connection's own: the server writes with
 non-blocking writes and never blocks on a client. A stream that cannot
@@ -262,7 +266,8 @@ own visit order for each session, as tmux does, so closing several
 windows in a row returns through the earlier visits; selecting a
 session without a window also takes that client's most recent window
 of the session. The death of a pane moves
-no client: a dead pane that lingers stays current, so its last
+no client, except through the removal of an `exit` pane (section 10):
+a dead pane that lingers stays current, so its last
 screen stays readable until the removal. When a `switch` or a removal
 moves a client, the client gets a `selected` event. A client gets
 `selected` for each of its own `select` requests, also for one that
@@ -304,7 +309,9 @@ skip or a paste result.
 - `bytes` are raw pty bytes. Consecutive records have consecutive
   offsets.
 - A marker (a resize, a reset, a terminal option change, the pane's
-  death) is applied to the mirror at its offset.
+  death) is applied to the mirror at its offset. The death marker
+  carries only its time; the cause is the row's `dead` (section 6),
+  the one record of the death.
 - A snapshot is a slice of a libghostty-vt snapshot stream; the
   first and last slices are flagged, and the snapshot is `full`
   (records to FINISH) or `screen` (records to READY only). The client
@@ -587,8 +594,8 @@ invariants.
   the row carries it (section 15); absent is the host. `cwd` is an
   absolute host path or `{pane}`, the directory of that pane
   (section 15, "The cwd of a new pane").
-  `close` is `keep` (the default) or `on_exit`; both, and the orphan
-  rule on `parent`, act through the sweep (section 10). Every pane gets
+  `close` is `exit` (the default), `keep` or `on_exit`; all three,
+  and the orphan rule on `parent`, act through the sweep (section 10). Every pane gets
   `SSH_AUTH_SOCK=<dir>/agent.sock` unless its `env` names that
   variable; a client publishes an agent by an atomic replacement of
   that path with a symlink, and the server links it to its own
@@ -596,8 +603,12 @@ invariants.
   no socket file (design-ko.md, "Remote"). If the `ko-pane` process of one cannot start,
   the server stops the others that started and keeps the old
   document, but not its id counters, so an id is never handed out
-  twice. A program that fails later, an exec failure included, is a
-  pane death as any other. A window grows to
+  twice. A program that fails later is a pane death as any other; a
+  program that cannot start (an exec or a `cwd` failure) is a death
+  with the cause `failed`, and `ko-pane` writes the error on the
+  pane's screen. A `ko-pane` that itself fails (its setup or its
+  frame link) has no screen to show, so the server removes its pane
+  at once. A window grows to
   give each pane at least one cell. The variable limits below apply
   to session and window `vars` too.
 - `DELETE /panes/pane_N` removes the pane from its window; an empty
@@ -660,6 +671,19 @@ invariants.
   hangup; a client that half-closes its socket while a request waits
   gets no answer, and one that sends more than the 16 KiB read buffer
   behind a waiting request is closed.
+- `POST /panes/pane_N/start_failed` (`StartFailed`) records that
+  the pane's program could not start, with a message. ko's own
+  wrappers (`ko shell`, `ko enter`, `ko runtime-exec`) send it when
+  they fail before the user's program runs, for example when a
+  runtime does not come up or the cwd is missing, and then exit with
+  the error on the pane's screen. Only the pane itself, by its
+  identity headers, may send it; the user, other panes and a dead
+  pane, whose identity ended with its death, are `refused`. It is in the runtime gate, because
+  `ko enter` runs inside the runtime. The next exit of the pane's
+  program is then a death with the cause `failed` and that message,
+  so the sweep keeps an `exit` pane (section 10). The report signals
+  and removes nothing. A shell that fails to run a command exits
+  normally, because the wrapper does not see that failure.
 - `POST /panes/pane_N/clear_history` clears the pane's scrollback.
   `ko-pane` puts the clear into the ring at its position in the
   stream, so every mirror, live or resumed,
@@ -853,13 +877,30 @@ reconnect clears the queue.
 The sweep (`ko_server/src/state/sweep.rs`) reads the pane rows and
 runs when one of its inputs changes: a pane's death or removal, the
 focused panes, and the end of a linger grace. It removes a pane in
-two cases: a pane with `close: on_exit` that has been dead for longer
-than the linger grace (`server: linger_seconds` of the configuration
-file, in seconds with an optional fraction), and a pane whose
-`parent` is gone or dead, live or dead itself, at once (the orphan
-rule). It keeps no record of a removed pane. The sweep never removes
-a pane that is focused: shown by a client whose terminal has focus
-(section 3); it tries again when the focus changes. The removal of a
+three cases: a pane with `close: exit` whose program ended (an exit
+with any code, or a signal), at once; a pane with `close: on_exit`
+that has been dead for longer than the linger grace (`server:
+linger_seconds` of the configuration file, in seconds with an
+optional fraction); and a pane whose `parent` is gone or dead, live
+or dead itself, at once (the orphan rule). An `exit` pane whose
+program failed to start (cause `failed`: an exec or `cwd` failure, or
+a `start_failed` report of section 7) stays dead, so its error stays
+readable on its screen; `keep` keeps every dead pane. It keeps no record of a
+removed pane. The sweep never removes an `on_exit` or orphaned pane
+that is focused: shown by a client whose terminal has focus (section
+3); it tries again when the focus changes. The `exit` rule ignores
+the focus, because the user ended the program in that pane.
+
+The removal of an `exit` pane follows its death in this order: the
+server forwards the output that the ring holds to the views, sends
+the parent's `ended`, sends the `dead` event to every client, and
+then, when the sweep runs, removes the pane in a `layout`
+event and closes its views. Thus, a client always sees `dead` before
+the removal. The view and client connections are separate, so a view
+can see its close before the client sees the `layout` event. A view
+gets the pane's last bytes, then its close with the reason `gone`
+(section 1); bytes that its queue could not take are lost with the
+pane. The removal of a
 window's last pane removes the window in the same change, as a window
 delete does (section 7). An empty session ends.
 

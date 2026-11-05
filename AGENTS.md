@@ -883,8 +883,11 @@ most easily:
 - ko keeps no record of a pane after it goes; the row is the whole
   record. ko has no runs.
 - The sweep reads the pane rows, never a process or pi evidence. It
-  removes a `close: on_exit` pane dead for the linger grace, and a
-  pane whose immutable `parent` pane is gone or dead. A child's pane
+  removes a pane with the default `close: exit` at once when its
+  program exits or dies by a signal, focused or not, but keeps a
+  start failure (cause `failed`); a `close: on_exit` pane dead for
+  the linger grace; and a pane whose immutable `parent` pane is gone
+  or dead. A child's pane
   gets `close: on_exit` and its spawner's pane as `parent`.
 - `ko prompt` uses the pane's message stream when it is open, else a
   paste. It mints the message id and resends once with the same id

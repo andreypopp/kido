@@ -264,8 +264,10 @@ after the caller's window and names it in the same change, so no
 unnamed window flashes. The task goes as `ko-pi.task` like a child's;
 the new agent delivers it as a message from the caller, because its
 edge does not name the caller. There is no registry entry, no notice
-and no orphan rule. When pi exits, the pane dies and stays until the
-user closes it. The depth ceiling does not apply; `fork`,
+and no orphan rule. The pane has the default `close: exit`: when pi
+exits, the sweep removes it at once, as for any other command, and
+the agent leaves `list_agents`. `resume_from` reads the pi session,
+not the pane, so a closed top-level agent stays resumable. The depth ceiling does not apply; `fork`,
 `resume_from`, `model`, `cwd` and the trusted cwd apply as for a
 child. One of the caller's own children cannot become top-level.
 

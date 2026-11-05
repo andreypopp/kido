@@ -358,7 +358,7 @@ fn dotfile_probe() {
             );
         }
         let s = start_with(&shell, &[], &[]);
-        let pane = s.pane("ko shell -- sh -c 'exit 0'");
+        let pane = s.new_pane(json!({"close": "keep", "command": {"type": "shell", "command": "ko shell -- sh -c 'exit 0'"}}));
         s.wait_row(&pane, "the login command to end", |row| {
             !row["dead"].is_null()
         });

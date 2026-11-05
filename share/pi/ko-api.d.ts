@@ -178,6 +178,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/panes/{id}/start_failed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Reports that this pane could not start its program. Only the pane itself may report it. Its next program death is a start failure and keeps its error screen. */
+        post: operations["StartFailed"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/panes/{id}/stop": {
         parameters: {
             query?: never;
@@ -624,10 +641,11 @@ export interface components {
         /** @enum {string} */
         ClipboardLocation: "standard" | "selection" | "primary";
         /**
-         * @description What the sweep does with a dead pane: keep stays, on_exit removes it after the linger grace.
+         * @description What the sweep does with a dead pane: exit removes it at once unless its program failed to start,
+         *     keep retains it, and on_exit removes it after the linger grace.
          * @enum {string}
          */
-        Close: "keep" | "on_exit";
+        Close: "exit" | "keep" | "on_exit";
         Command: {
             argv: string[];
             /** @constant */
@@ -1001,10 +1019,11 @@ export interface components {
         Marker: ({
             /** @constant */
             type: "resize";
-        } & components["schemas"]["Size"]) | ({
+        } & components["schemas"]["Size"]) | {
+            at: number;
             /** @constant */
             type: "dead";
-        } & components["schemas"]["Dead"]);
+        };
         /** @enum {string} */
         Medium: "file" | "temp_file" | "shared_mem";
         /**
@@ -1354,6 +1373,10 @@ export interface components {
             layout: components["schemas"]["Layout"];
             revision: number;
         };
+        StartFailed: {
+            message: components["schemas"]["StartFailure"];
+        };
+        StartFailure: string;
         StatusChange: {
             now: number;
             pane: components["schemas"]["PaneId"];
@@ -1951,6 +1974,47 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    StartFailed: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartFailed"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Empty"];
+                };
             };
             /** @description The common error body. */
             default: {

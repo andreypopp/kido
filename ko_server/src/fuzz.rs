@@ -403,7 +403,7 @@ impl Rig {
             env: Vec::new(),
             vars: Default::default(),
             parent: None,
-            close: Default::default(),
+            close: protocol::Close::Keep,
             runtime: None,
         };
         let pane = state

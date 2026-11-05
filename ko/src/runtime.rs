@@ -6,6 +6,7 @@ use std::process::{Command, ExitCode};
 
 use clap::Args;
 use ko_client::runtimes::{self, Shown, Up};
+use ko_client::wire::Caller;
 use ko_config::values::RuntimeName;
 use ko_server::config::variable;
 use ko_server::ids::{InvalidId, PaneId};
@@ -139,8 +140,15 @@ pub(crate) fn enter(args: EnterArgs) -> ExitCode {
             (remote.socket(), TokenSource::File(remote.token_file(pane)))
         }
     };
+    let Some(token) = enter::token(&token) else {
+        return crate::fail("enter", "no token");
+    };
+    let caller = Caller {
+        pane,
+        token: token.clone(),
+    };
     let enter = Enter {
-        socket,
+        socket: socket.clone(),
         pane,
         token,
         runtime,
@@ -150,18 +158,21 @@ pub(crate) fn enter(args: EnterArgs) -> ExitCode {
         path: std::env::var("PATH").unwrap_or_default(),
         agent: std::env::var_os("SSH_AUTH_SOCK").is_some(),
     };
-    crate::fail("enter", enter::exec(&enter, &invoked()))
+    let failure = enter::exec(&enter, &invoked());
+    crate::fail_start("enter", failure, &socket, Some(&caller))
 }
 
 pub(crate) fn runtime_exec(args: RuntimeExecArgs) -> ExitCode {
     let RuntimeExecArgs { name, argv } = args;
     let Target { dir, caller } = target(None);
     let stop = |message: String| {
+        let message = format!("runtime {name}: {message}");
         if io::stderr().is_terminal() {
-            complain(format_args!("\x1b[31mruntime {name}: {message}\x1b[0m"));
+            complain(format_args!("\x1b[31m{message}\x1b[0m"));
         } else {
-            complain(format_args!("runtime {name}: {message}"));
+            complain(&message);
         }
+        crate::report_start_failure(&message, &dir.join("socket"), caller.as_ref());
         ExitCode::FAILURE
     };
     let mut shown = |event: Shown<'_>| match event {
@@ -170,7 +181,7 @@ pub(crate) fn runtime_exec(args: RuntimeExecArgs) -> ExitCode {
             let _ = io::stderr().write_all(bytes);
         }
     };
-    match runtimes::bring_up(&dir, caller, &name, &mut shown) {
+    match runtimes::bring_up(&dir, caller.clone(), &name, &mut shown) {
         Up::Up => {}
         Up::Failed(message) => return stop(message),
         Up::StillStarting => return stop("still starting".to_owned()),

@@ -152,7 +152,7 @@ impl State {
     pub(super) fn search_failed(&mut self, conn: Token) {
         if let Some((Role::Search(_), wire)) = find(&mut self.conns, conn).and_then(Conn::role_mut)
         {
-            wire.ws.reject(wire.out, "gone");
+            wire.ws.reject(wire.out, crate::ws::Rejection::Gone);
         }
     }
 

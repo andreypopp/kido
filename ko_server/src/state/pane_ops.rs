@@ -53,6 +53,26 @@ impl Stops {
 }
 
 impl State {
+    pub(crate) fn start_failed(
+        &mut self,
+        caller: Option<PaneId>,
+        id: PaneId,
+        message: crate::pane_proc::Failure,
+    ) -> Result<(), Error> {
+        if caller != Some(id) {
+            return Err(Error::new(
+                ErrorKind::Refused,
+                "only the pane itself may report a start failure",
+            ));
+        }
+        let pane = self
+            .panes
+            .find_mut(id)
+            .ok_or_else(|| Error::new(ErrorKind::Missing, "pane not found"))?;
+        pane.proc_mut().start_failed(message);
+        Ok(())
+    }
+
     pub(super) fn edges(&self) -> Vec<Edge> {
         let layout = self.document.layout();
         self.panes

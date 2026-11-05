@@ -66,7 +66,7 @@ const NOT_EXECUTABLE: i32 = 127;
 const RECORD: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Step {
+pub enum Step {
     Sigmask = 1,
     Setsid,
     Tiocsctty,
@@ -84,7 +84,11 @@ impl Step {
         }
     }
 
-    fn of_code(code: u8) -> Option<Step> {
+    pub fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub fn of_code(code: u8) -> Option<Step> {
         Some(match code {
             1 => Step::Sigmask,
             2 => Step::Setsid,
@@ -108,16 +112,32 @@ impl Step {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Failed {
-    pub exit: Exit,
     step: Step,
-    error: io::Error,
+    errno: i32,
+}
+
+impl Failed {
+    pub fn new(step: Step, errno: i32) -> Option<Self> {
+        (errno > 0).then_some(Self { step, errno })
+    }
+    pub fn step(self) -> Step {
+        self.step
+    }
+    pub fn errno(self) -> i32 {
+        self.errno
+    }
 }
 
 impl fmt::Display for Failed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.step.name(), self.error)
+        write!(
+            f,
+            "{}: {}",
+            self.step.name(),
+            io::Error::from_raw_os_error(self.errno)
+        )
     }
 }
 
@@ -195,7 +215,7 @@ unsafe fn child(prepared: &Prepared) -> ! {
                 }
             };
         let [e0, e1, e2, e3] = (*crate::retry::errno()).to_le_bytes();
-        let record = [step as u8, e0, e1, e2, e3, 0, 0, 0];
+        let record = [step.code(), e0, e1, e2, e3, 0, 0, 0];
         let mut sent = 0;
         while sent < RECORD {
             let wrote = libc::write(
@@ -225,7 +245,7 @@ fn pipe() -> Result<(OwnedFd, OwnedFd), Setup> {
     Ok((read, write))
 }
 
-fn report(read: &OwnedFd) -> Result<Option<(Step, io::Error)>, Setup> {
+fn report(read: &OwnedFd) -> Result<Option<Failed>, Setup> {
     let mut record = [0u8; RECORD];
     let mut have = 0;
     while have < RECORD {
@@ -240,12 +260,8 @@ fn report(read: &OwnedFd) -> Result<Option<(Step, io::Error)>, Setup> {
     match (have, record) {
         (0, _) => Ok(None),
         (RECORD, [code, e0, e1, e2, e3, ..]) => Step::of_code(code)
-            .map(|step| {
-                Some((
-                    step,
-                    io::Error::from_raw_os_error(i32::from_le_bytes([e0, e1, e2, e3])),
-                ))
-            })
+            .and_then(|step| Failed::new(step, i32::from_le_bytes([e0, e1, e2, e3])))
+            .map(Some)
             .ok_or_else(|| setup("spawn")(io::Error::from(io::ErrorKind::InvalidData))),
         _ => Err(setup("spawn")(io::Error::from(io::ErrorKind::InvalidData))),
     }
@@ -337,10 +353,10 @@ pub fn spawn(size: Winsize, cwd: &Path, argv: &[Vec<u8>], env: &[Vec<u8>]) -> Re
             master,
             program: Ok(Program::held(leader)),
         }),
-        Ok(Some((step, error))) => match leader.wait() {
-            Ok(Waited::Ended(exit)) if exit == Exit::Exited(step.exit_code()) => Ok(Pty {
+        Ok(Some(failed)) => match leader.wait() {
+            Ok(Waited::Ended(exit)) if exit == Exit::Exited(failed.step.exit_code()) => Ok(Pty {
                 master,
-                program: Err(Failed { exit, step, error }),
+                program: Err(failed),
             }),
             Ok(_) => Err(setup("spawn")(io::Error::from(io::ErrorKind::InvalidData))),
             Err(error) => Err(setup("wait")(error)),
@@ -430,6 +446,25 @@ mod tests {
     }
 
     #[test]
+    fn a_start_failure_needs_a_positive_errno_and_a_known_step() {
+        assert_eq!(Failed::new(Step::Exec, 0), None);
+        assert_eq!(Failed::new(Step::Exec, -1), None);
+        assert_eq!(Step::of_code(0), None);
+        assert_eq!(Step::of_code(7), None);
+        for step in [
+            Step::Sigmask,
+            Step::Setsid,
+            Step::Tiocsctty,
+            Step::Dup2,
+            Step::Chdir,
+            Step::Exec,
+        ] {
+            assert_eq!(Step::of_code(step.code()), Some(step));
+            assert_eq!(Failed::new(step, 2).unwrap().errno(), 2);
+        }
+    }
+
+    #[test]
     fn the_pixel_size_of_a_grid_saturates_at_a_u16() {
         let size = Winsize::new(4096, 24, 65535, 16);
         assert_eq!((size.xpixel, size.ypixel), (65535, 384));
@@ -485,21 +520,15 @@ mod tests {
                 .unwrap()
                 .program
                 .unwrap_err();
-            (failed.exit, failed.to_string())
+            failed.to_string()
         };
         assert_eq!(
             status(&tmp, &["/no/such/program"]),
-            (
-                Exit::Exited(127),
-                "exec: No such file or directory (os error 2)".to_owned()
-            )
+            "exec: No such file or directory (os error 2)"
         );
         assert_eq!(
             status(Path::new("/no/such/dir"), &["/bin/sh"]),
-            (
-                Exit::Exited(126),
-                "chdir: No such file or directory (os error 2)".to_owned()
-            )
+            "chdir: No such file or directory (os error 2)"
         );
         let locked = tmp.join(format!("ko-pty-locked-{}", std::process::id()));
         std::fs::create_dir(&locked).unwrap();
@@ -509,13 +538,7 @@ mod tests {
         std::fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .unwrap();
         std::fs::remove_dir(&locked).unwrap();
-        assert_eq!(
-            unsearchable,
-            (
-                Exit::Exited(126),
-                "chdir: Permission denied (os error 13)".to_owned()
-            )
-        );
+        assert_eq!(unsearchable, "chdir: Permission denied (os error 13)");
 
         let started = spawn(
             size(),

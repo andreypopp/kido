@@ -238,9 +238,11 @@ impl From<&Death> for Dead {
             at: death.at.nanos(),
             cause: match &death.cause {
                 pane_proc::Cause::Exit(exit) => Cause::from(*exit),
-                pane_proc::Cause::Failed(message) => Cause::Failed {
-                    message: message.clone(),
-                },
+                pane_proc::Cause::StartFailed(message) | pane_proc::Cause::Failed(message) => {
+                    Cause::Failed {
+                        message: message.to_string(),
+                    }
+                }
             },
         }
     }
@@ -481,7 +483,7 @@ pub struct Row {
     pub progress: Option<Progress>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<PaneId>,
-    #[serde(default, skip_serializing_if = "Close::is_keep")]
+    #[serde(default, skip_serializing_if = "Close::is_exit")]
     pub close: Close,
     /// True while the pane has its message stream open.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -690,19 +692,56 @@ pub struct Variable {
     pub value: String,
 }
 
-/// What the sweep does with a dead pane: keep stays, on_exit removes it after the linger grace.
+/// What the sweep does with a dead pane: exit removes it at once unless its program failed to start,
+/// keep retains it, and on_exit removes it after the linger grace.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Close {
     #[default]
+    Exit,
     Keep,
     OnExit,
 }
 
 impl Close {
-    fn is_keep(&self) -> bool {
-        *self == Close::Keep
+    fn is_exit(&self) -> bool {
+        *self == Close::Exit
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct StartFailure(String);
+
+impl TryFrom<String> for StartFailure {
+    type Error = &'static str;
+
+    fn try_from(message: String) -> Result<Self, Self::Error> {
+        if message.is_empty() || message.chars().count() > 4096 {
+            return Err("start failure message must have 1 to 4096 characters");
+        }
+        Ok(Self(message))
+    }
+}
+
+impl From<StartFailure> for String {
+    fn from(message: StartFailure) -> Self {
+        message.0
+    }
+}
+
+impl JsonSchema for StartFailure {
+    fn schema_name() -> Cow<'static, str> {
+        "StartFailure".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "string", "minLength": 1, "maxLength": 4096})
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StartFailed {
+    pub message: StartFailure,
 }
 
 /// Where a new pane starts: an absolute path of the host, or the directory of another pane. The
@@ -730,7 +769,7 @@ pub struct CreatePane {
     /// dead. The sweep removes the pane when the parent is gone or dead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<PaneId>,
-    #[serde(default, skip_serializing_if = "Close::is_keep")]
+    #[serde(default, skip_serializing_if = "Close::is_exit")]
     pub close: Close,
     /// The runtime that runs the pane's program, for the pane's life. A caller on a runtime's
     /// socket creates panes in its own runtime only. Otherwise the host runs the pane.
@@ -1354,17 +1393,16 @@ pub struct ViewOptions {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Marker {
     Resize(Size),
-    Dead(Dead),
+    Dead { at: u64 },
 }
 
 impl From<ring::Marker> for Marker {
     fn from(marker: ring::Marker) -> Marker {
         match marker {
             ring::Marker::Resize(size) => Marker::Resize(Size(size)),
-            ring::Marker::Dead(dead) => Marker::Dead(Dead {
+            ring::Marker::Dead(dead) => Marker::Dead {
                 at: dead.at.nanos(),
-                cause: Cause::from(dead.exit),
-            }),
+            },
         }
     }
 }
@@ -2066,6 +2104,27 @@ mod tests {
     use serde::de::DeserializeOwned;
 
     #[test]
+    fn start_failure_messages_have_a_character_limit() {
+        assert_eq!(
+            StartFailure::try_from(String::new()).unwrap_err(),
+            "start failure message must have 1 to 4096 characters"
+        );
+        assert!(StartFailure::try_from("界".repeat(4096)).is_ok());
+        assert_eq!(
+            StartFailure::try_from("界".repeat(4097)).unwrap_err(),
+            "start failure message must have 1 to 4096 characters"
+        );
+        assert!(
+            decode::<StartFailed>(
+                serde_json::to_string(&serde_json::json!({"message": "x".repeat(4097)}))
+                    .unwrap()
+                    .as_bytes()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn every_wire_type_round_trips_its_json() {
         same::<Version>(
             r#"{"protocol":"1.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty"}"#,
@@ -2240,7 +2299,7 @@ mod tests {
         for json in [
             r#"{"type":"marked","offset":99,"marker":{"type":"resize","cols":80,"rows":24,"cell_px":{"width":8,"height":16}}}"#,
             r#"{"type":"marked","offset":5,"marker":{"type":"resize","cols":4096,"rows":1}}"#,
-            r#"{"type":"marked","offset":7,"marker":{"type":"dead","at":123456789012345,"cause":{"type":"exited","code":7}}}"#,
+            r#"{"type":"marked","offset":7,"marker":{"type":"dead","at":123456789012345}}"#,
             r#"{"type":"skipped","offset":100000,"from":10,"to":100000}"#,
             r#"{"type":"pasted","id":77,"pasted":true,"unsafe":false}"#,
         ] {
@@ -2515,7 +2574,7 @@ mod tests {
                 r#"{"type":"input","input":{"type":"paste","text":"x","check_safe":["true"]}}"#,
             ),
             decoded::<ViewEvent>(
-                r#"{"type":"marked","offset":1,"marker":{"type":"dead","at":1,"cause":["exited",7]}}"#,
+                r#"{"type":"marked","offset":1,"marker":{"type":"dead","at":[1]}}"#,
             ),
             decoded::<ViewEvent>(r#"{"type":"marked","offset":1,"marker":["resize",80,24]}"#),
             decoded::<ClientEvent>(r#"{"type":"layout","revision":1,"layout":[["s"]]}"#),

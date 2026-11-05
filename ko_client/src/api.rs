@@ -173,6 +173,23 @@ pub fn stream(
         .map_err(|error| Error::Server(failure(error)))
 }
 
+pub fn start_failed(
+    socket: &Path,
+    caller: Caller,
+    body: &protocol::StartFailed,
+) -> Result<(), Failure> {
+    let route = Route::StartFailed { id: caller.pane };
+    wire::request_within(
+        socket,
+        (None, Some(caller)),
+        &route,
+        protocol::json(body).as_bytes(),
+        (None, Duration::from_secs(1)),
+    )
+    .map(drop)
+    .map_err(|error| Failure::Failed(error.to_string()))
+}
+
 pub fn get(dir: &Path, caller: Option<Caller>, route: &Route) -> Result<Response, Failure> {
     let (method, path) = route.to_request();
     exchange(dir, caller, (method, &path), b"", wire::READ_TIMEOUT)
@@ -256,7 +273,7 @@ pub fn forward(
         loop {
             match link.next(&mut poll, Instant::now())? {
                 Next::Text(text) => print(text.as_str())?,
-                Next::Closed => return Ok(link.close_frame().cloned()),
+                Next::Closed | Next::Gone => return Ok(link.close_frame().cloned()),
                 Next::Binary(_) => return Err(StreamError::Binary),
                 Next::Wait => break,
             }

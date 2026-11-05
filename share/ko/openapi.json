@@ -801,8 +801,9 @@
         "type": "string"
       },
       "Close": {
-        "description": "What the sweep does with a dead pane: keep stays, on_exit removes it after the linger grace.",
+        "description": "What the sweep does with a dead pane: exit removes it at once unless its program failed to start,\nkeep retains it, and on_exit removes it after the linger grace.",
         "enum": [
+          "exit",
           "keep",
           "on_exit"
         ],
@@ -2173,19 +2174,19 @@
             "type": "object"
           },
           {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Dead"
-              }
-            ],
             "properties": {
+              "at": {
+                "minimum": 0,
+                "type": "integer"
+              },
               "type": {
                 "const": "dead",
                 "type": "string"
               }
             },
             "required": [
-              "type"
+              "type",
+              "at"
             ],
             "type": "object"
           }
@@ -3486,6 +3487,22 @@
         ],
         "type": "object"
       },
+      "StartFailed": {
+        "properties": {
+          "message": {
+            "$ref": "#/components/schemas/StartFailure"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "StartFailure": {
+        "maxLength": 4096,
+        "minLength": 1,
+        "type": "string"
+      },
       "StatusChange": {
         "properties": {
           "now": {
@@ -4609,6 +4626,73 @@
           },
           "send": {
             "$ref": "#/components/schemas/Empty"
+          }
+        }
+      }
+    },
+    "/panes/{id}/start_failed": {
+      "post": {
+        "description": "Reports that this pane could not start its program. Only the pane itself may report it. Its next program death is a start failure and keeps its error screen.",
+        "operationId": "StartFailed",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartFailed"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
           }
         }
       }

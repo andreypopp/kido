@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use ko_sys::pid::{Pid, signal_descendant};
 use ko_sys::signal::Signal;
+use serde_json::json;
 
 use crate::harness::{DEADLINE, Dir, HEAVY, Server, quote, run_ko, start, text_of};
 use crate::layout::{put_edit, window_size, windows};
@@ -658,9 +659,7 @@ fn client_lifecycle() {
     o.prefix("c");
     o.wait("new pane listed", || s.pane_pids().len() == 4);
     o.ctrl('d');
-    o.contains("†");
-    o.ctrl('d');
-    o.wait("dead pane removed", || s.pane_pids().len() == 3);
+    o.wait("exited pane removed", || s.pane_pids().len() == 3);
 
     o.detach();
     s.text(&p1, "printf 'AFTER-DETACH\\n'\n");
@@ -676,9 +675,47 @@ fn client_lifecycle() {
 }
 
 #[test]
+fn client_can_view_a_failed_start_and_switch_to_a_live_pane() {
+    let s = start(&[]);
+    let failed =
+        s.new_pane(json!({"command": {"type": "argv", "argv": ["/no/such/kido-command"]}}));
+    s.screen_has(&failed, "ko: exec: No such file or directory");
+    s.new_pane(json!({"command": {"type": "argv", "argv": ["/bin/sh"]}, "env": [{"name": "PS1", "value": "LIVE> "}]}));
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.attach("cat");
+    o.contains("[failed: exec: No such file or directory (os error 2)");
+    o.contains("ko: exec: No such file or directory");
+    o.prefix("n");
+    o.contains("LIVE>");
+    o.line("printf 'SEC%s\\n' OND");
+    o.contains("SECOND");
+    o.detach();
+}
+
+#[test]
+fn client_stays_attached_when_the_shown_shell_exits() {
+    let s = start(&[]);
+    let first = s.new_pane(
+        json!({"command": {"type": "argv", "argv": ["/bin/sh"]}, "env": [{"name": "PS1", "value": "FIRST> "}]}),
+    );
+    s.new_pane(
+        json!({"command": {"type": "argv", "argv": ["/bin/sh"]}, "env": [{"name": "PS1", "value": "SECOND> "}]}),
+    );
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.attach("cat");
+    o.contains("FIRST>");
+    o.ctrl('d');
+    o.wait("the first shell to leave", || !s.has_pane(&first));
+    o.contains("SECOND>");
+    o.line("printf 'STILL-%s\\n' ATTACHED");
+    o.contains("STILL-ATTACHED");
+    o.detach();
+}
+
+#[test]
 fn client_removing_the_only_pane_opens_a_replacement_that_takes_input() {
     let s = start(&[]);
-    s.pane("printf 'last words\\n'; exit 3");
+    s.new_pane(json!({"close": "keep", "command": {"type": "shell", "command": "printf 'last words\\n'; exit 3"}}));
     let o = Outer::new(&s.dir, Keys::Extended);
     o.attach("cat");
     o.contains("[exited 3 \u{2014} Ctrl+D to remove]");
@@ -1495,8 +1532,10 @@ fn client_mouse_bounds_exclude_the_status_line_and_the_prefix_works_without_exte
 fn client_dead_pane_line() {
     let s = start(&[]);
     let fill = "yes '' | head -40; printf last; ";
-    s.pane(&format!("{fill}exit 3"));
-    s.pane(&format!("{fill}kill -TERM $$"));
+    s.new_pane(
+        json!({"close": "keep", "command": {"type": "shell", "command": format!("{fill}exit 3")}}),
+    );
+    s.new_pane(json!({"close": "keep", "command": {"type": "shell", "command": format!("{fill}kill -TERM $$")}}));
     s.pane("printf 'live\\n'; exec cat");
     let o = Outer::new(&s.dir, Keys::Extended);
     o.attach("cat");

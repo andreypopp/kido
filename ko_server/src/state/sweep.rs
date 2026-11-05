@@ -46,7 +46,10 @@ impl State {
             .map(|pane| Seen {
                 id: pane.id(),
                 condition: match pane.proc().dead() {
-                    Some(death) => Condition::Dead { at: death.at },
+                    Some(death) => match death.cause {
+                        pane_proc::Cause::StartFailed(_) => Condition::Failed { at: death.at },
+                        _ => Condition::Dead { at: death.at },
+                    },
                     None => Condition::Live,
                 },
                 parent: pane.parent(),

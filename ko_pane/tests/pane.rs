@@ -244,7 +244,7 @@ fn a_recorded_stream_arrives_as_frames_records_and_a_snapshot_across_a_full_ring
             }
             FromPane::Dead(dead) => {
                 death = Some(dead);
-                assert_eq!(dead.exit, Exit::Exited(0));
+                assert_eq!(dead.cause, frame::DeathCause::Exit(Exit::Exited(0)));
                 assert!(dead.at.nanos() > 0);
                 assert!(ready.unwrap().alive(), "the held zombie keeps its pid");
                 pane.send(&encoded(&ToPane::Resize(size(40, 20))));
@@ -352,7 +352,7 @@ fn a_setup_failure_names_the_failing_call_and_its_error() {
 }
 
 #[test]
-fn a_program_that_cannot_start_is_a_dead_pane_with_the_exit_status_of_a_shell() {
+fn a_program_that_cannot_start_reports_its_setup_error() {
     let mut pane = Harness::start(4096);
     pane.send(&init(&["/no/such/program"], "/"));
     let dead = loop {
@@ -363,7 +363,13 @@ fn a_program_that_cannot_start_is_a_dead_pane_with_the_exit_status_of_a_shell() 
             other => panic!("unexpected frame {other:?}"),
         }
     };
-    assert_eq!(dead.exit, Exit::Exited(127));
+    let frame::DeathCause::Failed(failed) = dead.cause else {
+        panic!("not a start failure");
+    };
+    assert_eq!(
+        failed.to_string(),
+        "exec: No such file or directory (os error 2)"
+    );
     pane.drain();
     assert_eq!(pane.seen.deaths, [dead]);
     assert_eq!(pane.finish(), Waited::Ended(Exit::Exited(0)));

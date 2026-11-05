@@ -3968,7 +3968,7 @@ mod tests {
             }
             send_binary(socket, output_record(1000, b"tail"));
             send(socket, r#"{"type":"marked","offset":1004,"marker":{"type":"resize","cols":100,"rows":30}}"#);
-            send(socket, r#"{"type":"marked","offset":1004,"marker":{"type":"dead","at":5,"cause":{"type":"exited","code":0}}}"#);
+            send(socket, r#"{"type":"marked","offset":1004,"marker":{"type":"dead","at":5}}"#);
             let _ = asked.send(text_messages(socket, 1).concat());
             send_binary(socket, slice_record(2000, true, true, false, b"screen"));
             wait_for_hangup(socket);

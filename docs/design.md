@@ -432,25 +432,34 @@ the parent's ending notice.
 when one of its inputs changes: a pane's death or removal, the
 focused panes, and the end of a linger grace (protocol.md, section
 10). It reads only the pane rows, so it acts on any pane by its
-`close` and `parent`, and a plain shell pane, which has neither,
-stays. Two rules apply:
+`close` and `parent`. Three rules apply:
 
-1. A pane with `close: on_exit` has been dead for the linger grace
+1. A pane with `close: exit`, the default, has died by an exit or a
+   signal. The sweep removes it at once, also while a focused client
+   shows it: a shell that ends with Ctrl-D closes its pane, as in a
+   terminal. A program that failed to start keeps its dead pane, so
+   the user reads the error on its screen: an exec or `cwd` failure
+   of `ko-pane`, or a failure of ko's own wrapper before the user's
+   program runs (a runtime that does not come up), which the wrapper
+   reports through `start_failed` (protocol.md, section 7). Both give
+   the cause `failed`. A shell's Ctrl-D returns the status of its last command,
+   so the exit code does not select the rule.
+2. A pane with `close: on_exit` has been dead for the linger grace
    (`server: linger_seconds` of the configuration file, 30 s by
    default; design-ko.md, "The configuration file"). The sweep
    removes it.
-2. A pane's `parent` is gone or dead. The sweep removes the pane at
+3. A pane's `parent` is gone or dead. The sweep removes the pane at
    once, live or dead. The rule reads no process and no pi evidence,
    by design: a child of a pi that quits inside a living shell pane
    ends through its own parent watch, not the sweep.
 
-Rule 2 forces a stop instead of requesting graceful shutdown like the
+Rule 3 forces a stop instead of requesting graceful shutdown like the
 child's poll. It is the only available action outside the child, and
 it ends a `tail -f` that an exited parent started. A pane without a
 parent is a root that the sweep must not cancel.
 
-The sweep never closes a pane that a client with terminal focus shows
-(protocol.md, section 3); it tries again when the focus changes.
+The sweep never closes an `on_exit` or orphaned pane that a client
+with terminal focus shows (protocol.md, section 3); it tries again when the focus changes.
 Waiting loses nothing. It does not protect a session's last window: an
 empty session ends.
 
@@ -464,10 +473,11 @@ remaining panes. The pane stop and its escalation do the same.
 **The selection after a removal.** When the child's window goes with
 the child, its client moves to the child's `parent` pane while that
 pane exists, because the user came from there (protocol.md, section
-3). The death alone moves no client, so the last screen stays
-readable for the linger grace.
+3). The death of an `on_exit` or `keep` pane alone moves no client,
+so the last screen stays readable for the linger grace. The removal
+of an `exit` pane moves its clients by the same repair rules.
 
-No other guard applies: no debounce. Without grace under rule 2, a
+No other guard applies: no debounce. Without grace under rule 3, a
 child already shutting down can lose its pane during exit.
 
 **Parent death.** The child's pi belongs to the server, not the
@@ -475,7 +485,7 @@ parent's pi process. Thus, no OS parent-death signal reaches it. Its
 extension watches the parent's pane (design-subagents.md, "A child's
 life", "Watching the parent"). A failed read supplies no evidence and never causes shutdown.
 If the parent is gone, the child calls pi's `shutdown`. The sweep's
-rule 2 covers a child whose parent pane is gone or dead, pi or not.
+rule 3 covers a child whose parent pane is gone or dead, pi or not.
 
 ## Ending a child, and restarting it
 
@@ -857,5 +867,19 @@ Each decision names its date. The code states the rest.
   repository root: it holds for the one directory that the parent
   chose, and it compares paths of the child's own filesystem, so it
   holds in a runtime.
-- `close` is `keep` or `on_exit`. There is no `on_success`, which
-  would remove only a pane that exited 0.
+- `close` is `exit`, `keep` or `on_exit`. There is no `on_success`,
+  which would remove only a pane that exited 0.
+
+2026-11-05, panes close at exit:
+
+- `exit` is the default `close`, so every pane that a client creates
+  without `close` (a new tab, split or session, `POST /panes`, a new
+  pane of `PUT /layout`) goes when its program ends, with no linger
+  and no focus guard. Children keep `on_exit`, because their parent
+  reads the lingering screen for the ending notice.
+- A start failure keeps its pane, because the error is the one thing
+  that the user must read. ko's wrappers report their own start
+  failures, because their exit is an ordinary exit to `ko-pane`; a
+  shell's failure to run a command is the shell's exit and closes the
+  pane. The exit code does not decide: a shell's
+  Ctrl-D returns the last command's status.

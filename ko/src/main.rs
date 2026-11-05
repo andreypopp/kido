@@ -250,6 +250,28 @@ pub(crate) fn say(text: &str) {
     let _ = writeln!(io::stdout().lock(), "{text}");
 }
 
+pub(crate) fn fail_start(
+    name: &str,
+    message: impl std::fmt::Display,
+    socket: &std::path::Path,
+    caller: Option<&Caller>,
+) -> ExitCode {
+    report_start_failure(&message.to_string(), socket, caller);
+    fail(name, message)
+}
+
+pub(crate) fn report_start_failure(
+    message: &str,
+    socket: &std::path::Path,
+    caller: Option<&Caller>,
+) {
+    if let Some(caller) = caller
+        && let Ok(message) = protocol::StartFailure::try_from(message.to_owned())
+    {
+        let _ = api::start_failed(socket, caller.clone(), &protocol::StartFailed { message });
+    }
+}
+
 pub(crate) fn fail(name: &str, message: impl std::fmt::Display) -> ExitCode {
     complain(format_args!("ko {name}: {message}"));
     ExitCode::FAILURE
@@ -646,7 +668,16 @@ fn main() -> ExitCode {
             Err(message) => fail("api-schema", message),
         },
         Command::Api(args) => api(args),
-        Command::Shell { command } => fail("shell", shell::exec(&command, &invoked())),
+        Command::Shell { command } => {
+            let error = shell::exec(&command, &invoked());
+            let target = target(None);
+            fail_start(
+                "shell",
+                error,
+                &target.dir.join("socket"),
+                target.caller.as_ref(),
+            )
+        }
         Command::Ssh { args } => ssh(&args),
         Command::Enter(args) => runtime::enter(args),
         Command::RuntimeExec(args) => runtime::runtime_exec(args),

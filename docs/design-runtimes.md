@@ -240,8 +240,8 @@ stop and the messages (protocol.md, section 7; `ko_server/src/panes.rs`):
 - `GET /panes/{t}`: `t` visible.
 - `/screen`, `/clear_history`, `/input`: `t` in
   `R` or a descendant of `c`.
-- `POST /panes`, the stop, the variable writes and
-  the messages: the rules that every pane identity has (protocol.md,
+- `POST /panes`, the stop, `start_failed` (only for the caller
+  itself), the variable writes and the messages: the rules that every pane identity has (protocol.md,
   sections 7 and 10), unchanged, so a parent and a child in different
   runtimes exchange messages.
 - The prompt routes: `from` is the caller, and the candidates follow

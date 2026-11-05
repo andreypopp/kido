@@ -372,7 +372,7 @@ impl Mirror {
                 }
                 match (marked.marker, self.term.as_mut()) {
                     (Marker::Resize(size), Some(term)) => vt(term.resize(size.0)),
-                    (Marker::Dead(_), _) => {
+                    (Marker::Dead { .. }, _) => {
                         self.deaths += 1;
                         Ok(())
                     }
@@ -770,7 +770,9 @@ impl Harness {
             .and_then(|p| p.proc().dead())
         {
             Some(death) => match &death.cause {
-                Cause::Failed(message) => format!("failed: {message}"),
+                Cause::Failed(message) | Cause::StartFailed(message) => {
+                    format!("failed: {message}")
+                }
                 Cause::Exit(_) => "exited".to_owned(),
             },
             None => "running".to_owned(),

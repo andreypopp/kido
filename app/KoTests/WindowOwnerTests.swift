@@ -201,7 +201,7 @@ import KoModel
         delegate.updateRuntimesMenu(runtimeMenu, owner: owner)
         XCTAssertEqual(runtimeMenu.items.map(\.isEnabled), [false, true, true, false])
         owner.testRuntimes = nil
-        let dead = try createPane(#"{"runtime":"deb","command":{"type":"argv","argv":["/usr/bin/true"]}}"#, dir: dir)
+        let dead = try createPane(#"{"runtime":"deb","close":"keep","command":{"type":"argv","argv":["/usr/bin/true"]}}"#, dir: dir)
         let deadID = try XCTUnwrap(PaneID(ko: dead))
         wait("the dead runtime pane") { owner.testModel?.pane(deadID)?.dead != nil }
         let pane = try createPane(#"{"runtime":"deb","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)

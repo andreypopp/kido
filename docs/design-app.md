@@ -1542,7 +1542,9 @@ shows its cause (`exited with code 2`, the signal, the start failure),
 and a completed one shows none: the green check alone marks
 completion, while accessibility still reads "gone, completed". A live pane's indicator is its core `mark`
 (running, waiting, done, failed, or none, which is quiet); the app adds
-only the Ended and lingering cases. A dead pane with `close: keep` is
+only the Ended and lingering cases. A pane with the default `close:
+exit` goes when its program ends, so it shows Ended only after a start
+failure. A dead pane with `close: keep` is
 Ended with its exit: exit 0 is completed and done; another exit, a
 signal or a start failure is failed and an error. A dead pane with
 `close: on_exit` lingers until the sweep
