@@ -1,4 +1,5 @@
 {
+  "now" : 100000000000,
   "instance" : "9d94994928d6b11bca338055b97cdf68",
   "layout" : {
     "layout" : {
@@ -258,6 +259,7 @@
         "pid" : 64733
       },
       "id" : "pane_1",
+      "started" : 1000000000,
       "label" : "claude-code",
       "mark" : "running",
       "pid" : 64733,
@@ -303,6 +305,7 @@
         "pid" : 64734
       },
       "id" : "pane_2",
+      "started" : 1000000000,
       "label" : "claude-code",
       "mark" : "waiting",
       "pid" : 64734,
@@ -351,6 +354,7 @@
         "pid" : 64736
       },
       "id" : "pane_3",
+      "started" : 1000000000,
       "label" : "make",
       "mark" : "running",
       "pid" : 64736,
@@ -394,6 +398,7 @@
         "pid" : 64735
       },
       "id" : "pane_4",
+      "started" : 1000000000,
       "label" : "bash",
       "mark" : "none",
       "pid" : 64735,
@@ -437,6 +442,7 @@
         "pid" : 64738
       },
       "id" : "pane_5",
+      "started" : 1000000000,
       "label" : "Worker",
       "mark" : "running",
       "pid" : 64738,
@@ -483,6 +489,7 @@
         "pid" : 64737
       },
       "id" : "pane_6",
+      "started" : 1000000000,
       "label" : "sh",
       "mark" : "none",
       "pid" : 64737,
@@ -520,6 +527,7 @@
         "pid" : 64761
       },
       "id" : "pane_7",
+      "started" : 1000000000,
       "label" : "sleep",
       "mark" : "none",
       "parent" : "pane_5",
@@ -558,6 +566,7 @@
         "pid" : 64764
       },
       "id" : "pane_8",
+      "started" : 1000000000,
       "label" : "sleep",
       "mark" : "none",
       "parent" : "pane_7",
@@ -603,6 +612,7 @@
         "pid" : 64766
       },
       "id" : "pane_9",
+      "started" : 1000000000,
       "label" : "sh",
       "mark" : "none",
       "pid" : 64766,

@@ -39,6 +39,7 @@ struct SidebarFonts {
     let agent = NSFont.systemFont(ofSize: 13, weight: .semibold)
     let section = NSFont.systemFont(ofSize: 11, weight: .semibold)
     let tail = NSFont.systemFont(ofSize: 11)
+    let clock = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
 }
 
 final class SidebarSelectionRow: NSTableRowView {
@@ -77,6 +78,15 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     static let id = NSUserInterfaceItemIdentifier("cell")
     private let fonts: SidebarFonts
     private var row: SidebarRow?
+    private var clock = ""
+    private var clockWidth: CGFloat = 0
+    private var clockRect: NSRect {
+        guard let row else { return .zero }
+        return NSRect(x: bounds.width - 12 - clockWidth, y: row.padding + 2, width: clockWidth, height: fonts.clock.boundingRectForFont.height)
+    }
+    #if KIDO_VISUAL
+    private(set) var visualClockDirtyRect = NSRect.zero
+    #endif
     var terminalDark = false
     private var runtimeText: NSAttributedString?
     let close = IconButton("xmark", "Close pane", size: 10, hoverStyle: .close)
@@ -117,7 +127,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    func configure(_ row: SidebarRow) {
+    func configure(_ row: SidebarRow, now: Int) {
         self.row = row
         updateClose()
         close.setAccessibilityLabel("Close pane: " + row.title)
@@ -130,8 +140,26 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
         runtimeText = row.runtime.map(Self.suffixText)
         setAccessibilityLabel([row.title, row.runtime.map { "runtime " + $0.name }, row.tail, row.indicatorDescription].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", "))
         setAccessibilityValue(nil)
+        updateClock(now: now)
         needsLayout = true
         needsDisplay = true
+    }
+
+    func updateClock(now: Int) {
+        guard let row else { return }
+        let next = row.started.map { sidebarElapsed(started: $0, now: now) } ?? ""
+        guard next != clock else { return }
+        let oldWidth = clockWidth
+        clockWidth = (next as NSString).size(withAttributes: [.font: fonts.clock]).width
+        clock = next
+        let leading = CGFloat(row.leading)
+        let dirtyRect = oldWidth == clockWidth
+            ? clockRect
+            : NSRect(x: leading, y: row.padding, width: max(0, bounds.width - 12 - leading), height: 18)
+        #if KIDO_VISUAL
+        visualClockDirtyRect = dirtyRect
+        #endif
+        setNeedsDisplay(dirtyRect)
     }
 
     override func updateTrackingAreas() {
@@ -183,7 +211,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             let header = { if case .header = row.kind { return true }; return false }()
             let y: CGFloat = header ? 6.5 : row.padding
             let dotX = CGFloat(row.indicatorX)
-            let end = header ? bounds.width - 30 : bounds.width - 12
+            let end = header ? bounds.width - 30 : bounds.width - 12 - (clock.isEmpty ? 0 : clockWidth + 6)
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byTruncatingTail
             var titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: 18)
@@ -212,6 +240,8 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
                 (row.tail.split(whereSeparator: \.isNewline).joined(separator: " ") as NSString).draw(in: tailRect,
                                           withAttributes: [.font: fonts.tail, .foregroundColor: Chrome.inkSecondary, .paragraphStyle: paragraph])
             }
+            (clock as NSString).draw(at: clockRect.origin,
+                                     withAttributes: [.font: fonts.clock, .foregroundColor: Chrome.inkSecondary])
             if pane && close.isHidden {
                 drawStatusMark(row.status, at: NSPoint(x: dotX, y: y + 9), flipped: true)
             }

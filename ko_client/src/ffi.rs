@@ -87,7 +87,6 @@ impl Code {
 pub struct Welcome {
     pub client: *const c_char,
     pub instance: *const c_char,
-    pub now: u64,
     pub fresh: bool,
 }
 
@@ -267,7 +266,6 @@ enum Posted {
     Welcome {
         client: CString,
         instance: CString,
-        now: u64,
         fresh: bool,
     },
     Layout(Layout),
@@ -411,7 +409,6 @@ extern "C" fn deliver(context: *mut c_void) {
         Posted::Welcome {
             client,
             instance,
-            now,
             fresh,
         } => call(Event {
             kind: EVENT_WELCOME,
@@ -419,7 +416,6 @@ extern "C" fn deliver(context: *mut c_void) {
                 welcome: Welcome {
                     client: client.as_ptr(),
                     instance: instance.as_ptr(),
-                    now: *now,
                     fresh: *fresh,
                 },
             },
@@ -1401,7 +1397,6 @@ mod tests {
     const QUIET: Duration = Duration::from_millis(250);
     const INSTANCE: &str = "0123456789abcdef0123456789abcdef";
     const OTHER_INSTANCE: &str = "fedcba9876543210fedcba9876543210";
-    const NO_FUTURE: u64 = 10_000_000_000;
 
     fn welcome(instance: &str, continuation: usize) -> String {
         format!(
@@ -1422,7 +1417,7 @@ mod tests {
 
     #[derive(Debug, PartialEq, Eq)]
     enum Seen {
-        Welcome(String, String, u64, bool),
+        Welcome(String, String, bool),
         Layout(u64, u32, u32, u32),
         Model,
         Selected(Option<String>, Option<String>, Option<String>),
@@ -1469,7 +1464,6 @@ mod tests {
                     Seen::Welcome(
                         owned(welcome.client),
                         owned(welcome.instance),
-                        welcome.now,
                         welcome.fresh,
                     )
                 }
@@ -2233,17 +2227,12 @@ mod tests {
             "a client without a hello struct neither sizes windows nor has focus"
         );
         let seen = [fixture.next(), fixture.next(), fixture.next()];
-        let Seen::Welcome(id, instance, now, fresh) = &seen[0] else {
+        let Seen::Welcome(id, instance, fresh) = &seen[0] else {
             panic!("{seen:?}");
         };
         assert_eq!(
-            (
-                id.as_str(),
-                instance.as_str(),
-                (42..42 + NO_FUTURE).contains(now),
-                fresh
-            ),
-            ("client_7", INSTANCE, true, &true)
+            (id.as_str(), instance.as_str(), fresh),
+            ("client_7", INSTANCE, &true)
         );
         assert_eq!(
             seen[1..],
@@ -2590,7 +2579,7 @@ mod tests {
         let (server, drop_first) = reconnect_server("resume", INSTANCE);
         let fixture = Fixture::new();
         let client = fixture.connect(&server);
-        assert!(matches!(fixture.next(), Seen::Welcome(_, _, _, true)));
+        assert!(matches!(fixture.next(), Seen::Welcome(_, _, true)));
         assert!(matches!(fixture.next(), Seen::Layout(0, ..)));
         let decoder = Decoder::new(|snapshot| {
             assert_eq!(
@@ -2604,7 +2593,7 @@ mod tests {
         decoder.expect_bytes(100, b"abcde");
         drop_first.send(()).unwrap();
         assert!(matches!(fixture.next(), Seen::Failed(Code::Closed, _)));
-        assert!(matches!(fixture.next(), Seen::Welcome(_, _, _, false)));
+        assert!(matches!(fixture.next(), Seen::Welcome(_, _, false)));
         assert!(matches!(fixture.next(), Seen::Layout(2, ..)));
         assert_eq!(decoder.next_feed(), Fed::Bytes(105, b"f".to_vec()));
         let views: Vec<String> = server
@@ -2625,7 +2614,7 @@ mod tests {
         let (server, drop_first) = reconnect_server("fresh", OTHER_INSTANCE);
         let fixture = Fixture::new();
         let client = fixture.connect(&server);
-        assert!(matches!(fixture.next(), Seen::Welcome(_, _, _, true)));
+        assert!(matches!(fixture.next(), Seen::Welcome(_, _, true)));
         assert!(matches!(fixture.next(), Seen::Layout(0, ..)));
         let decoder = Decoder::new(|snapshot| {
             pull(snapshot, usize::MAX, 64).unwrap();
@@ -2638,7 +2627,7 @@ mod tests {
         assert!(matches!(fixture.next(), Seen::Failed(Code::Closed, _)));
         let welcomed = fixture.next();
         assert!(
-            matches!(&welcomed, Seen::Welcome(_, instance, _, true) if instance == OTHER_INSTANCE),
+            matches!(&welcomed, Seen::Welcome(_, instance, true) if instance == OTHER_INSTANCE),
             "{welcomed:?}"
         );
         assert!(matches!(fixture.next(), Seen::Layout(2, ..)));
@@ -2664,6 +2653,7 @@ mod tests {
     fn pane_row(number: u64, status: Option<PaneStatus>) -> Listing {
         let row = Row {
             id: format!("pane_{number}").parse().unwrap(),
+            started: 0,
             pid: Some(100),
             command: vec!["/bin/sh".to_owned()],
             cwd: "/".to_owned(),
@@ -4578,7 +4568,7 @@ mod tests {
         has_read.recv_timeout(WAIT).unwrap();
         drop_first.send(()).unwrap();
         assert!(matches!(fixture.next(), Seen::Failed(Code::Closed, _)));
-        assert!(matches!(fixture.next(), Seen::Welcome(_, _, _, true)));
+        assert!(matches!(fixture.next(), Seen::Welcome(_, _, true)));
         assert!(matches!(fixture.next(), Seen::Layout(2, ..)));
         assert_eq!(
             fixture.next(),
@@ -4779,7 +4769,7 @@ mod tests {
         drop_first.send(()).unwrap();
         let seen: Vec<_> = (0..4).map(|_| fixture.next()).collect();
         assert!(matches!(seen[0], Seen::Failed(Code::Closed, _)), "{seen:?}");
-        assert!(matches!(seen[1], Seen::Welcome(_, _, _, false)), "{seen:?}");
+        assert!(matches!(seen[1], Seen::Welcome(_, _, false)), "{seen:?}");
         assert!(matches!(seen[2], Seen::Layout(0, ..)), "{seen:?}");
         assert!(matches!(seen[3], Seen::Closed(Code::Io, _)), "{seen:?}");
         assert_eq!(second.next_feed(), Fed::Bytes(11, b"B2".to_vec()));

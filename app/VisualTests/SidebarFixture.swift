@@ -24,13 +24,13 @@ func shellExit(_ code: Int, command: String = "true") -> ShellStatus.Phase {
 }
 
 func programRecord(_ id: String, _ state: ProgramStatus.Record.State, app: String? = nil, kind: KoSchema.ProgramKind? = nil,
-                   title: String? = nil, msg: String? = nil) -> ProgramStatus.Record {
-    ProgramStatus.Record(id: id, state: state, app: app, kind: kind, progress: nil, title: title, msg: msg)
+                   title: String? = nil, msg: String? = nil, started: Int? = nil) -> ProgramStatus.Record {
+    ProgramStatus.Record(id: id, started: started, state: state, app: app, kind: kind, progress: nil, title: title, msg: msg)
 }
 
 func fixtureItem(_ pane: UInt32, window: UInt32? = nil, _ title: String, _ lifecycle: Lifecycle,
                  records: [ProgramStatus.Record] = [], serial: Int = 0, mark: KoSchema.Mark = .none_, children: [SidebarFeed.Node] = []) -> Item {
-    Item(id: PaneID(number: pane), window: WindowID(number: window ?? pane), title: title, lifecycle: lifecycle,
+    Item(id: PaneID(number: pane), window: WindowID(number: window ?? pane), title: title, started: 0, parent: nil, lifecycle: lifecycle,
          program_status: ProgramStatus(serial: serial, records: records),
          children: children, mark: mark, inbox: { if case .live(.piAgent) = lifecycle { true } else { false } }())
 }
@@ -42,7 +42,7 @@ func fixtureNode(_ pane: UInt32, window: UInt32? = nil, _ title: String, _ lifec
 
 // A snapshot whose client is the given pane; the first session is the current one.
 func fixtureSnapshot(window: UInt32, pane: UInt32, _ sessions: [(name: String, nodes: [SidebarFeed.Node])]) -> Snapshot {
-    Snapshot(client: .init(session: SessionID(number: 0), window: WindowID(number: window), pane: PaneID(number: pane)),
+    Snapshot(clock: .init(now: 0, local: 0), client: .init(session: SessionID(number: 0), window: WindowID(number: window), pane: PaneID(number: pane)),
              serverInstance: ServerInstance("4242/1791000000"),
              sessions: sessions.enumerated().map { SessionNodes(id: SessionID(number: UInt32($0.offset)), name: $0.element.name, current: $0.offset == 0, nodes: $0.element.nodes) })
 }
@@ -52,6 +52,7 @@ func sidebarFixture(_ edit: (inout Snapshot) -> Void = { _ in }) -> Snapshot {
         SessionNodes(id: SessionID(number: id), name: name, current: id == 0, nodes: nodes)
     }
     var snapshot = Snapshot(
+        clock: .init(now: 0, local: 0),
         client: .init(session: SessionID(number: 0), window: WindowID(number: 824), pane: PaneID(number: 936)),
         serverInstance: ServerInstance("4242/1791000000"),
         sessions: [

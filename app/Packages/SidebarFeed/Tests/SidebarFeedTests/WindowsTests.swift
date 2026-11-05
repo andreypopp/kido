@@ -107,7 +107,7 @@ private struct Step: Sendable, CustomTestStringConvertible {
 }
 
 private func adjacent(_ step: Step) -> UInt32? {
-    let snapshot = Snapshot(client: .init(session: SessionID(number: 0), window: WindowID(number: 0), pane: PaneID(number: 0)), serverInstance: ServerInstance("12345/1780000000"),
+    let snapshot = Snapshot(clock: .init(now: 0, local: 0), client: .init(session: SessionID(number: 0), window: WindowID(number: 0), pane: PaneID(number: 0)), serverInstance: ServerInstance("12345/1780000000"),
                             sessions: step.sessions.enumerated().map { SessionNodes(id: SessionID(number: UInt32($0.offset)), name: "s", current: $0.offset == 0, nodes: $0.element) })
     let surviving = Dictionary(uniqueKeysWithValues: step.sessions.indices.map { index in
         (SessionID(number: UInt32(index)), Set((step.surviving?[index] ?? step.sessions[index].map(\.window.number)).map(WindowID.init(number:))))
@@ -165,7 +165,7 @@ private let chain = [pane(0, children: [pane(1, children: [pane(2)])]), pane(3)]
 }
 
 @Test func navigationFollowsAPendingReorder() {
-    let snapshot = Snapshot(client: .init(session: SessionID(number: 0), window: WindowID(number: 0), pane: PaneID(number: 0)), serverInstance: ServerInstance("12345/1780000000"),
+    let snapshot = Snapshot(clock: .init(now: 0, local: 0), client: .init(session: SessionID(number: 0), window: WindowID(number: 0), pane: PaneID(number: 0)), serverInstance: ServerInstance("12345/1780000000"),
                             sessions: [SessionNodes(id: SessionID(number: 0), name: "a", current: true, nodes: [pane(0), pane(1), pane(2)]),
                                        SessionNodes(id: SessionID(number: 1), name: "b", current: false, nodes: [pane(3), pane(4)])])
     let surviving: [SessionID: Set<WindowID>] = [SessionID(number: 0): [WindowID(number: 0), WindowID(number: 1), WindowID(number: 2)],

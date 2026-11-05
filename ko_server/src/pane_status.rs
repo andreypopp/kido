@@ -482,6 +482,7 @@ mod tests {
     fn rec(id: &str, state: ProgramState, app: Option<&str>, msg: Option<&str>) -> ProgramRecord {
         ProgramRecord {
             id: id.to_owned(),
+            started: None,
             state,
             app: app.map(str::to_owned),
             title: None,

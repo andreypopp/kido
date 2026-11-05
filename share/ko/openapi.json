@@ -2028,6 +2028,11 @@
           "runtime": {
             "$ref": "#/components/schemas/RuntimeName"
           },
+          "started": {
+            "description": "The pane's creation time in server monotonic nanoseconds.",
+            "minimum": 0,
+            "type": "integer"
+          },
           "status": {
             "$ref": "#/components/schemas/PaneStatus"
           },
@@ -2042,6 +2047,7 @@
         },
         "required": [
           "id",
+          "started",
           "command",
           "cwd",
           "title",
@@ -2865,6 +2871,11 @@
           },
           "msg": {
             "type": "string"
+          },
+          "started": {
+            "description": "The server's monotonic start time in nanoseconds for a child record; absent on the root.",
+            "minimum": 0,
+            "type": "integer"
           },
           "title": {
             "type": "string"

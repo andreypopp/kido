@@ -124,7 +124,6 @@ enum {
 typedef struct ko_welcome {
     const char *client;
     const char *instance;
-    uint64_t now;
     bool fresh;
 } ko_welcome;
 

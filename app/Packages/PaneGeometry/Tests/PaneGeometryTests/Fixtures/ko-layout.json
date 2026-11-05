@@ -1,4 +1,5 @@
 {
+  "now" : 100000000000,
   "instance" : "4c7bb52af54bacf3a0985089f4a325e4",
   "layout" : {
     "layout" : {
@@ -164,6 +165,7 @@
         "pid" : 64670
       },
       "id" : "pane_1",
+      "started" : 1000000000,
       "label" : "sh",
       "mark" : "none",
       "pid" : 64670,
@@ -201,6 +203,7 @@
         "pid" : 64671
       },
       "id" : "pane_2",
+      "started" : 1000000000,
       "label" : "sh",
       "mark" : "none",
       "pid" : 64671,
@@ -238,6 +241,7 @@
         "pid" : 64673
       },
       "id" : "pane_3",
+      "started" : 1000000000,
       "label" : "sh",
       "mark" : "none",
       "pid" : 64673,
@@ -275,6 +279,7 @@
         "pid" : 64674
       },
       "id" : "pane_4",
+      "started" : 1000000000,
       "label" : "sh",
       "mark" : "none",
       "pid" : 64674,
@@ -312,6 +317,7 @@
         "pid" : 64672
       },
       "id" : "pane_5",
+      "started" : 1000000000,
       "label" : "sh",
       "mark" : "none",
       "pid" : 64672,
@@ -349,6 +355,7 @@
         "pid" : 64675
       },
       "id" : "pane_6",
+      "started" : 1000000000,
       "label" : "sh",
       "mark" : "none",
       "pid" : 64675,
@@ -386,6 +393,7 @@
         "pid" : 64676
       },
       "id" : "pane_7",
+      "started" : 1000000000,
       "label" : "sh",
       "mark" : "none",
       "pid" : 64676,

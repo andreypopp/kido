@@ -771,7 +771,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         sidebar.viewDidLayout()
         let row = try XCTUnwrap(self.terminal?.panes.first)
         let shown = try XCTUnwrap(currentModel.window)
-        sidebar.list.update(Snapshot(client: .init(session: SessionID(number: 0), window: shown, pane: row.pane), serverInstance: ServerInstance("4242/1791000000"),
+        sidebar.list.update(Snapshot(clock: .init(now: 0, local: 0), client: .init(session: SessionID(number: 0), window: shown, pane: row.pane), serverInstance: ServerInstance("4242/1791000000"),
                                      sessions: [SessionNodes(id: SessionID(number: 0), name: "visual", current: true,
                                                              nodes: [.item(fixtureItem(row.pane.number, window: shown.number, "Terminal", shellLifecycle()))])]))
         let menu = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "View" }?.submenu)
@@ -1964,7 +1964,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertEqual(list.visualTable.selectedRow, selected)
         for row in list.visualRows where row.target != nil {
             let cell = SidebarCell(SidebarFonts())
-            cell.configure(row)
+            cell.configure(row, now: 0)
             XCTAssertNil(cell.toolTip)
             XCTAssertNil(cell.addWindow.toolTip)
             XCTAssertTrue(cell.accessibilityLabel()?.contains(row.indicatorDescription) == true)

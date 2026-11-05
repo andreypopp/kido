@@ -151,6 +151,7 @@ mod tests {
     fn root_app(name: &str) -> Vec<ProgramRecord> {
         vec![ProgramRecord {
             id: String::new(),
+            started: None,
             state: ProgramState::Idle,
             app: Some(name.to_owned()),
             title: None,

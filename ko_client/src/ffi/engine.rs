@@ -203,7 +203,6 @@ impl Engine<'_> {
             Posted::Welcome {
                 client: string(&model.client.to_string()),
                 instance: string(&model.instance.to_string()),
-                now: model.server_now(),
                 fresh,
             },
         );

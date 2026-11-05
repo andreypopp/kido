@@ -32,13 +32,13 @@ func remote(_ pane: PaneKind.Remote, user: String = "alice", host: String = "dev
 
 func record(_ id: String, _ state: ProgramStatus.Record.State, app: String? = nil, kind: KoSchema.ProgramKind? = nil, progress: Int? = nil,
             title: String? = nil, msg: String? = nil) -> ProgramStatus.Record {
-    ProgramStatus.Record(id: id, state: state, app: app, kind: kind, progress: progress, title: title, msg: msg)
+    ProgramStatus.Record(id: id, started: nil, state: state, app: app, kind: kind, progress: progress, title: title, msg: msg)
 }
 
 func pane(_ id: Int, window: Int? = nil, title: String = "", lifecycle: Lifecycle = terminal(),
           records: [ProgramStatus.Record] = [], serial: Int = 0, recordsSeen: Bool = false, mark: KoSchema.Mark = .none_, children: [Node] = []) -> Node {
     let pi = if case .live(.piAgent) = lifecycle { true } else { false }
-    return .item(Item(id: PaneID(number: UInt32(id)), window: WindowID(number: UInt32(window ?? id)), title: title, lifecycle: lifecycle,
+    return .item(Item(id: PaneID(number: UInt32(id)), window: WindowID(number: UInt32(window ?? id)), title: title, started: 0, parent: nil, lifecycle: lifecycle,
                       program_status: ProgramStatus(serial: serial, records: records),
                       children: children, mark: mark, recordsSeen: recordsSeen, inbox: pi))
 }
@@ -49,7 +49,7 @@ func group(_ id: Int, name: String = "group", _ children: [Node]) -> Node {
 
 func makeSnapshot(_ nodes: [Node], client: Int = 0, window: Int? = nil, clientSession: Int = 0, sessions: [Int] = [0],
                   instance: String = "12345/1780000000") -> Snapshot {
-    Snapshot(client: .init(session: SessionID(number: UInt32(clientSession)), window: WindowID(number: UInt32(window ?? client)), pane: PaneID(number: UInt32(client))),
+    Snapshot(clock: .init(now: 0, local: 0), client: .init(session: SessionID(number: UInt32(clientSession)), window: WindowID(number: UInt32(window ?? client)), pane: PaneID(number: UInt32(client))),
              serverInstance: ServerInstance(instance),
              sessions: sessions.map { SessionNodes(id: SessionID(number: UInt32($0)), name: "session-\($0)", current: $0 == 0, nodes: nodes) })
 }

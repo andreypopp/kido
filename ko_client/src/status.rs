@@ -213,6 +213,7 @@ mod tests {
         Pane {
             row: ko_server::protocol::Row {
                 id: id(number),
+                started: 0,
                 pid: Some(1),
                 command: vec!["/bin/sh".to_owned()],
                 cwd: "/".to_owned(),

@@ -1185,17 +1185,39 @@ public enum KoSchema {
     public struct ModelJson: Codable, Equatable, Sendable {
         public var instance: String
         public var layout: Snapshot
+        public var now: Int
         public var outline: [Item]
         public var panes: [PaneJson]
         public var runtimes: [ClientRuntime]
         public var selection: Selection
-        public init(instance: String, layout: Snapshot, outline: [Item], panes: [PaneJson], runtimes: [ClientRuntime], selection: Selection) {
+        public init(instance: String, layout: Snapshot, now: Int, outline: [Item], panes: [PaneJson], runtimes: [ClientRuntime], selection: Selection) {
             self.instance = instance
             self.layout = layout
+            self.now = now
             self.outline = outline
             self.panes = panes
             self.runtimes = runtimes
             self.selection = selection
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.instance = try container.decode(String.self, forKey: .instance)
+            self.layout = try container.decode(Snapshot.self, forKey: .layout)
+            self.now = try container.decode(Int.self, forKey: .now)
+            self.outline = try container.decode([Item].self, forKey: .outline)
+            self.panes = try container.decode([PaneJson].self, forKey: .panes)
+            self.runtimes = try container.decode([ClientRuntime].self, forKey: .runtimes)
+            self.selection = try container.decode(Selection.self, forKey: .selection)
+            guard 0 <= self.now else { throw DecodingError.dataCorruptedError(forKey: .now, in: container, debugDescription: "now is at least 0, not \(self.now)") }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case instance
+            case layout
+            case now
+            case outline
+            case panes
+            case runtimes
+            case selection
         }
     }
 
@@ -1305,10 +1327,11 @@ public enum KoSchema {
         public var progress: Progress?
         public var recordsSeen: Bool
         public var runtime: RuntimeName?
+        public var started: Int
         public var status: PaneStatus?
         public var title: String
         public var vars: [String: JSONValue]
-        public init(close: Close? = nil, command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, inbox: Bool? = nil, label: String, mark: Mark, parent: PaneId? = nil, pid: Int? = nil, place: Place? = nil, progress: Progress? = nil, recordsSeen: Bool, runtime: RuntimeName? = nil, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
+        public init(close: Close? = nil, command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, inbox: Bool? = nil, label: String, mark: Mark, parent: PaneId? = nil, pid: Int? = nil, place: Place? = nil, progress: Progress? = nil, recordsSeen: Bool, runtime: RuntimeName? = nil, started: Int, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
             self.close = close
             self.command = command
             self.cwd = cwd
@@ -1324,9 +1347,33 @@ public enum KoSchema {
             self.progress = progress
             self.recordsSeen = recordsSeen
             self.runtime = runtime
+            self.started = started
             self.status = status
             self.title = title
             self.vars = vars
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.close = try container.decodeIfPresent(Close.self, forKey: .close)
+            self.command = try container.decode([String].self, forKey: .command)
+            self.cwd = try container.decode(String.self, forKey: .cwd)
+            self.dead = try container.decodeIfPresent(Dead.self, forKey: .dead)
+            self.foreground = try container.decodeIfPresent(Foreground.self, forKey: .foreground)
+            self.id = try container.decode(PaneId.self, forKey: .id)
+            self.inbox = try container.decodeIfPresent(Bool.self, forKey: .inbox)
+            self.label = try container.decode(String.self, forKey: .label)
+            self.mark = try container.decode(Mark.self, forKey: .mark)
+            self.parent = try container.decodeIfPresent(PaneId.self, forKey: .parent)
+            self.pid = try container.decodeIfPresent(Int.self, forKey: .pid)
+            self.place = try container.decodeIfPresent(Place.self, forKey: .place)
+            self.progress = try container.decodeIfPresent(Progress.self, forKey: .progress)
+            self.recordsSeen = try container.decode(Bool.self, forKey: .recordsSeen)
+            self.runtime = try container.decodeIfPresent(RuntimeName.self, forKey: .runtime)
+            self.started = try container.decode(Int.self, forKey: .started)
+            self.status = try container.decodeIfPresent(PaneStatus.self, forKey: .status)
+            self.title = try container.decode(String.self, forKey: .title)
+            self.vars = try container.decode([String: JSONValue].self, forKey: .vars)
+            guard 0 <= self.started else { throw DecodingError.dataCorruptedError(forKey: .started, in: container, debugDescription: "started is at least 0, not \(self.started)") }
         }
         private enum CodingKeys: String, CodingKey {
             case close
@@ -1344,6 +1391,7 @@ public enum KoSchema {
             case progress
             case recordsSeen = "records_seen"
             case runtime
+            case started
             case status
             case title
             case vars
@@ -1525,13 +1573,15 @@ public enum KoSchema {
         public var kind: ProgramKind?
         public var msg: String?
         public var progress: Int?
+        public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: String, kind: ProgramKind? = nil, msg: String? = nil, progress: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, id: String, kind: ProgramKind? = nil, msg: String? = nil, progress: Int? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.id = id
             self.kind = kind
             self.msg = msg
             self.progress = progress
+            self.started = started
             self.title = title
         }
         public init(from decoder: Decoder) throws {
@@ -1541,9 +1591,13 @@ public enum KoSchema {
             self.kind = try container.decodeIfPresent(ProgramKind.self, forKey: .kind)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
             self.progress = try container.decodeIfPresent(Int.self, forKey: .progress)
+            self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
             if let value = self.progress {
                 guard 0 <= value, value <= 255 else { throw DecodingError.dataCorruptedError(forKey: .progress, in: container, debugDescription: "progress is 0...255, not \(value)") }
+            }
+            if let value = self.started {
+                guard 0 <= value else { throw DecodingError.dataCorruptedError(forKey: .started, in: container, debugDescription: "started is at least 0, not \(value)") }
             }
         }
         private enum CodingKeys: String, CodingKey {
@@ -1552,6 +1606,7 @@ public enum KoSchema {
             case kind
             case msg
             case progress
+            case started
             case title
         }
     }
@@ -1560,12 +1615,32 @@ public enum KoSchema {
         public var app: String?
         public var id: String
         public var msg: String?
+        public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: String, msg: String? = nil, title: String? = nil) {
+        public init(app: String? = nil, id: String, msg: String? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.id = id
             self.msg = msg
+            self.started = started
             self.title = title
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.app = try container.decodeIfPresent(String.self, forKey: .app)
+            self.id = try container.decode(String.self, forKey: .id)
+            self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
+            self.started = try container.decodeIfPresent(Int.self, forKey: .started)
+            self.title = try container.decodeIfPresent(String.self, forKey: .title)
+            if let value = self.started {
+                guard 0 <= value else { throw DecodingError.dataCorruptedError(forKey: .started, in: container, debugDescription: "started is at least 0, not \(value)") }
+            }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case app
+            case id
+            case msg
+            case started
+            case title
         }
     }
 
@@ -1573,12 +1648,32 @@ public enum KoSchema {
         public var app: String?
         public var id: String
         public var msg: String?
+        public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: String, msg: String? = nil, title: String? = nil) {
+        public init(app: String? = nil, id: String, msg: String? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.id = id
             self.msg = msg
+            self.started = started
             self.title = title
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.app = try container.decodeIfPresent(String.self, forKey: .app)
+            self.id = try container.decode(String.self, forKey: .id)
+            self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
+            self.started = try container.decodeIfPresent(Int.self, forKey: .started)
+            self.title = try container.decodeIfPresent(String.self, forKey: .title)
+            if let value = self.started {
+                guard 0 <= value else { throw DecodingError.dataCorruptedError(forKey: .started, in: container, debugDescription: "started is at least 0, not \(value)") }
+            }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case app
+            case id
+            case msg
+            case started
+            case title
         }
     }
 
@@ -1586,12 +1681,32 @@ public enum KoSchema {
         public var app: String?
         public var id: String
         public var msg: String?
+        public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: String, msg: String? = nil, title: String? = nil) {
+        public init(app: String? = nil, id: String, msg: String? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.id = id
             self.msg = msg
+            self.started = started
             self.title = title
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.app = try container.decodeIfPresent(String.self, forKey: .app)
+            self.id = try container.decode(String.self, forKey: .id)
+            self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
+            self.started = try container.decodeIfPresent(Int.self, forKey: .started)
+            self.title = try container.decodeIfPresent(String.self, forKey: .title)
+            if let value = self.started {
+                guard 0 <= value else { throw DecodingError.dataCorruptedError(forKey: .started, in: container, debugDescription: "started is at least 0, not \(value)") }
+            }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case app
+            case id
+            case msg
+            case started
+            case title
         }
     }
 
@@ -1600,12 +1715,14 @@ public enum KoSchema {
         public var id: String
         public var msg: String?
         public var progress: Int?
+        public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: String, msg: String? = nil, progress: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, id: String, msg: String? = nil, progress: Int? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.id = id
             self.msg = msg
             self.progress = progress
+            self.started = started
             self.title = title
         }
         public init(from decoder: Decoder) throws {
@@ -1614,9 +1731,13 @@ public enum KoSchema {
             self.id = try container.decode(String.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
             self.progress = try container.decodeIfPresent(Int.self, forKey: .progress)
+            self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
             if let value = self.progress {
                 guard 0 <= value, value <= 255 else { throw DecodingError.dataCorruptedError(forKey: .progress, in: container, debugDescription: "progress is 0...255, not \(value)") }
+            }
+            if let value = self.started {
+                guard 0 <= value else { throw DecodingError.dataCorruptedError(forKey: .started, in: container, debugDescription: "started is at least 0, not \(value)") }
             }
         }
         private enum CodingKeys: String, CodingKey {
@@ -1624,6 +1745,7 @@ public enum KoSchema {
             case id
             case msg
             case progress
+            case started
             case title
         }
     }

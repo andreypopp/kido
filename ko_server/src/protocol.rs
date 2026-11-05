@@ -275,6 +275,9 @@ pub enum ProgramState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProgramRecord {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The server's monotonic start time in nanoseconds for a child record; absent on the root.
+    pub started: Option<u64>,
     #[serde(flatten)]
     pub state: ProgramState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -461,6 +464,8 @@ pub struct Progress {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Row {
     pub id: PaneId,
+    /// The pane's creation time in server monotonic nanoseconds.
+    pub started: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<i32>,
     pub command: Vec<String>,
@@ -2084,15 +2089,15 @@ mod tests {
             same::<DeleteVars>(json);
         }
         for json in [
-            r#"{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":null}"#,
-            r#"{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":{"type":"exited","code":7}}}"#,
-            r#"{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":{"type":"signaled","signal":9}}}"#,
-            r#"{"id":"pane_3","pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":{"type":"failed","message":"boom"}}}"#,
+            r#"{"id":"pane_3","started":0,"pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":null}"#,
+            r#"{"id":"pane_3","started":0,"pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":{"type":"exited","code":7}}}"#,
+            r#"{"id":"pane_3","started":0,"pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":{"type":"signaled","signal":9}}}"#,
+            r#"{"id":"pane_3","started":0,"pid":4242,"command":["/bin/sh","-c","echo \"hi\"\n"],"cwd":"/tmp","title":"t\u0001é","dead":{"at":123456789012345,"cause":{"type":"failed","message":"boom"}}}"#,
         ] {
             same::<Row>(json);
         }
         same::<Row>(
-            r#"{"id":"pane_4","pid":1,"command":["/bin/sh"],"cwd":"/","title":"","dead":null,"foreground":{"pid":77,"name":"sleep"},"status":{"kind":{"type":"terminal","phase":{"type":"running","origin":{"type":"command","command":"sleep 2","started_at":5},"fullscreen":false},"report":{"since":4,"msg":"m","state":{"type":"waiting","kind":"question","progress":42}}},"program_status":{"serial":3,"records":[{"id":"","state":"blocked","kind":"question","progress":42,"app":"pi","title":"t","msg":"m"},{"id":"a/b","state":"working"},{"id":"c","state":"done"}]},"title":"sleep 2","message":"m","progress":42,"since":6},"progress":{"state":"set","progress":50}}"#,
+            r#"{"id":"pane_4","started":0,"pid":1,"command":["/bin/sh"],"cwd":"/","title":"","dead":null,"foreground":{"pid":77,"name":"sleep"},"status":{"kind":{"type":"terminal","phase":{"type":"running","origin":{"type":"command","command":"sleep 2","started_at":5},"fullscreen":false},"report":{"since":4,"msg":"m","state":{"type":"waiting","kind":"question","progress":42}}},"program_status":{"serial":3,"records":[{"id":"","state":"blocked","kind":"question","progress":42,"app":"pi","title":"t","msg":"m"},{"id":"a/b","state":"working"},{"id":"c","state":"done"}]},"title":"sleep 2","message":"m","progress":42,"since":6},"progress":{"state":"set","progress":50}}"#,
         );
         for json in [
             r#"{"type":"some_agent","name":"claude-code","status":{"since":1,"state":{"type":"idle","outcome":{"serial":2,"result":"success"}}}}"#,
@@ -2105,7 +2110,7 @@ mod tests {
             same::<Live>(json);
         }
         same::<Listing>(
-            r#"{"id":"pane_4","pid":1,"command":["/bin/sh"],"cwd":"/","title":"","dead":null,"vars":{"n":[1,{"a":null}],"pi.name":"Worker"}}"#,
+            r#"{"id":"pane_4","started":0,"pid":1,"command":["/bin/sh"],"cwd":"/","title":"","dead":null,"vars":{"n":[1,{"a":null}],"pi.name":"Worker"}}"#,
         );
         for json in [
             r#"{"pasted":true,"unsafe":false}"#,
@@ -2212,7 +2217,7 @@ mod tests {
             r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":["file","temp_file","shared_mem"]},"instance":"0123456789abcdef0123456789abcdef","now":123456789,"runtimes":[]}"#,
             r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":83886080,"max_lines":5000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789,"runtimes":[]}"#,
             r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789,"runtimes":[]}"#,
-            r#"{"type":"layout","revision":3,"layout":{"sessions":[{"id":"session_1","name":"s","vars":{"a":1},"windows":[{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"cell_px":{"width":8,"height":16},"zoom":"pane_1","focus":"pane_2","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"pane":"pane_2","cols":39,"rows":24}]},"floats":[{"pane":"pane_3","x":6,"y":4,"cols":28,"rows":8,"z":0,"border":false,"title":""}]}]}]},"panes":[{"id":"pane_3","pid":7,"command":["/bin/sh"],"cwd":"/tmp","title":"t","dead":null,"foreground":{"pid":7,"name":"sh"},"vars":{}}]}"#,
+            r#"{"type":"layout","revision":3,"layout":{"sessions":[{"id":"session_1","name":"s","vars":{"a":1},"windows":[{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"cell_px":{"width":8,"height":16},"zoom":"pane_1","focus":"pane_2","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"pane":"pane_2","cols":39,"rows":24}]},"floats":[{"pane":"pane_3","x":6,"y":4,"cols":28,"rows":8,"z":0,"border":false,"title":""}]}]}]},"panes":[{"id":"pane_3","started":0,"pid":7,"command":["/bin/sh"],"cwd":"/tmp","title":"t","dead":null,"foreground":{"pid":7,"name":"sh"},"vars":{}}]}"#,
             r#"{"type":"layout","revision":0,"layout":{"sessions":[]},"panes":[]}"#,
             r#"{"type":"foreground","pane":"pane_3","foreground":{"pid":7,"name":"sh"}}"#,
             r#"{"type":"selected","session":"session_1","window":"window_1","pane":"pane_2"}"#,

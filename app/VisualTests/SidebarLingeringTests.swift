@@ -6,6 +6,11 @@ import XCTest
 
 @MainActor final class SidebarLingeringTests: VisualTestCase {
     func testJobRecordsAlignWithSubagent() throws {
+        SidebarView.visualNow = 3720_000_000_000
+        defer { SidebarView.visualNow = nil }
+        var child = fixtureItem(2, "subagent", piLifecycle(.running(progress: nil)), mark: .running)
+        child.started = 3708_000_000_000
+        child.parent = .init(number: 1)
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.close() }
@@ -13,18 +18,45 @@ import XCTest
         window.contentView = list
         list.update(fixtureSnapshot(window: 1, pane: 1, [("main", [
             .item(fixtureItem(1, "parent", piLifecycle(.running(progress: nil)), records: [
-                programRecord("job/42", .working, title: "Build app"),
-                programRecord("job/43", .done, title: "Run tests"),
-                programRecord("review", .working, title: "Review"),
-                programRecord("review/missing/check", .working, title: "Check guides"),
+                programRecord("job/42", .working, title: "Build app", started: 3535_000_000_000),
+                programRecord("job/43", .done, title: "Run tests", started: 0),
+                programRecord("review", .blocked, title: "Review", started: 0),
+                programRecord("review/missing/check", .working, title: "Check guides", started: 3710_000_000_000),
             ], serial: 1, mark: .running, children: [
-                fixtureNode(2, "subagent", piLifecycle(.running(progress: nil)), mark: .running),
+                .item(child),
             ])),
         ])]))
         for dark in [false, true] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             sidebarSnapshot(list, dark ? "dark" : "light")
         }
+    }
+
+    func testClockWidthChangeInvalidatesTitle() throws {
+        defer { SidebarView.visualNow = nil }
+        var child = fixtureItem(2, String(repeating: "Long title ", count: 20), piLifecycle(.running(progress: nil), msg: "Activity"))
+        child.started = 0
+        child.parent = .init(number: 1)
+        let snapshot = fixtureSnapshot(window: 1, pane: 1, [("main", [
+            fixtureNode(1, "parent", piLifecycle(), children: [.item(child)]),
+        ])])
+        let row = try XCTUnwrap(sidebarRows(snapshot).first { $0.started != nil })
+        let cell = SidebarCell(SidebarFonts())
+        cell.frame = NSRect(x: 0, y: 0, width: 292, height: row.height)
+        for (before, after) in [(9, 10), (59, 60), (3599, 3600)] {
+            SidebarView.visualNow = before * 1_000_000_000
+            cell.configure(row, now: SidebarView.visualNow!)
+            SidebarView.visualNow = after * 1_000_000_000
+            cell.updateClock(now: SidebarView.visualNow!)
+            XCTAssertEqual(cell.visualClockDirtyRect.minX, 51)
+            XCTAssertEqual(cell.visualClockDirtyRect.minY, 7)
+        }
+        SidebarView.visualNow = 11_000_000_000
+        cell.configure(row, now: SidebarView.visualNow!)
+        SidebarView.visualNow = 12_000_000_000
+        cell.updateClock(now: SidebarView.visualNow!)
+        XCTAssertGreaterThan(cell.visualClockDirtyRect.minX, 200)
+        XCTAssertFalse(cell.visualClockDirtyRect.intersects(NSRect(x: row.leading, y: row.tailY, width: 200, height: 15)))
     }
 
     func testNestedWindowAndLingeringRows() throws {

@@ -1367,7 +1367,7 @@ row (title or full id, message as the activity line, state mapped
 working→running, blocked→waiting, error→failed, done→done, idle after the
 parent's seen suppression for done/error) and drawn through the same row
 path as every other row; there is no separate record view. A record differs
-from a child-window agent row only in having no @ prefix and no clock, and
+from a child-window agent row only in having no @ prefix, and
 in being display-only: never a navigation, click, hover or selection
 target, and skipped by arrow navigation.
 
@@ -1409,7 +1409,24 @@ rows are semibold; every other pane title, Ended and Terminal runs included,
 is regular. Rows have
 a 12pt leading inset, a 16pt leading slot holding the status indicator, and an
 8pt gap; there are no leading icons. The trailing inset is 12pt and the
-trailing column holds only the 10pt tabular clock. The activity line is one
+trailing column holds only the 10pt tabular clock (`fonts.clock`, secondary
+ink, right-aligned on the title line). A row shows the clock only while its
+run lives, and no final duration after the end: a pane row with a `parent`
+whose program lives counts from the pane's `started`, and a record row in
+the working or blocked state counts from the record's `started`. A
+top-level pane, a dead pane and a record in another state have none. The
+text is `sidebarElapsed` in `SidebarFeed/Rows.swift`: seconds under a
+minute (`12s`), then minutes and seconds (`3m05s`), then hours and minutes
+(`1h02m`). The starts stay server `Mono` nanoseconds through the row
+model, so an unchanged start keeps a row equal across snapshots. The
+snapshot keeps the model JSON's `now` (the core's estimate of the server's
+`Mono` time, docs/protocol.md, section 2) with the local
+`CLOCK_UPTIME_RAW` time of the projection, and the sidebar estimates the
+server's time from that pair at each tick. Thus the clock does not follow a
+change of the wall clock and, as the server's clock, does not count sleep.
+One repeating 1 s timer, aligned to the second boundary, runs while a row
+has a clock and updates only the visible cells. The `started` rule is in
+`sidebarRows` alone. The activity line is one
 line, truncated with an ellipsis, from the title's leading edge to the
 trailing inset. Nesting steps 15pt at every depth. Only the focused pane row has a 10%
 labelColor fill, with 7pt corners. Independent keyboard selection also has

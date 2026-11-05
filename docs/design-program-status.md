@@ -44,6 +44,11 @@ callback; `ko-pane` and the coordinator parse nothing.
   `x` removes `x` and every record whose id starts with `x/`.
 - A primary prompt start (OSC 133 `A`) removes every record whose
   state is not done or error. Pane death and RIS remove every record.
+- The set stamps a non-root record with `started`, the server's `Mono`
+  time when the set first stored its id. A later report of the same id
+  keeps the stamp; a report after a `clear` of the id, or after any other
+  removal, gets a new one. The root record has none. A report cannot
+  supply the stamp: it is a fact of the set, not of the program.
 - The serial starts at 0 and increases by one on every change.
 - The published records are sorted by id, bytewise. A working record
   with progress 0 and no app, title or message is dropped from the

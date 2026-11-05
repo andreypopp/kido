@@ -108,6 +108,8 @@ pub(crate) struct PaneJson<'a> {
 
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ModelJson<'a> {
+    /// The server's estimated monotonic time in nanoseconds when this model was read.
+    now: u64,
     instance: String,
     selection: &'a Selection,
     layout: &'a Snapshot,
@@ -201,6 +203,7 @@ impl Model {
     #[cfg(target_vendor = "apple")]
     pub(crate) fn json(&self) -> ModelJson<'_> {
         ModelJson {
+            now: self.server_now(),
             instance: self.instance.to_string(),
             selection: &self.selection,
             layout: &self.layout,
@@ -221,7 +224,8 @@ impl Model {
         }
     }
 
-    pub fn server_now(&self) -> u64 {
+    #[cfg(any(target_vendor = "apple", test))]
+    fn server_now(&self) -> u64 {
         let elapsed = u64::try_from(self.anchor.1.elapsed().as_nanos()).unwrap_or(u64::MAX);
         self.anchor.0.saturating_add(elapsed)
     }
@@ -661,7 +665,7 @@ mod tests {
 
     fn row(id: PaneId) -> Row {
         serde_json::from_value(json!({
-            "id": id, "pid": 1, "command": [], "cwd": "/", "title": "", "dead": null
+            "id": id, "started": 0, "pid": 1, "command": [], "cwd": "/", "title": "", "dead": null
         }))
         .unwrap()
     }

@@ -40,6 +40,42 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     #expect(shape(snapshot.sessions[1].nodes) == ["6"])
 }
 
+@Test func runClocksUseOnlyLiveChildrenAndActiveRecords() throws {
+    var model = try recorded()
+    model.panes[0].parent = .init(number: 5)
+    model.panes[0].started = model.now - 12_000_000_000
+    let ended = try #require(model.panes.firstIndex { $0.id.number == 9 })
+    model.panes[ended].parent = .init(number: 5)
+    model.panes[0].status?.programStatus = .init(records: [
+        .working(.init(id: "job/1", started: model.now - 65_000_000_000)),
+        .blocked(.init(id: "job/2", started: model.now - 125_000_000_000)),
+        .done(.init(id: "job/3", started: model.now - 12_000_000_000)),
+        .idle(.init(id: "job/4", started: model.now - 12_000_000_000)),
+        .error(.init(id: "job/5", started: model.now - 12_000_000_000)),
+    ], serial: 1)
+    let snapshot = try #require(Snapshot(model: model))
+    let rows = sidebarRows(snapshot)
+    let child = try #require(rows.first { $0.target?.pane.number == 1 })
+    let started = try #require(child.started)
+    #expect(started == model.now - 12_000_000_000)
+    #expect(snapshot.clock.now == model.now)
+    #expect(snapshot.clock.local > 0)
+    model.now += 1_000_000_000
+    #expect(sidebarRows(try #require(Snapshot(model: model))) == rows)
+    let jobs = rows.filter { if case .program = $0.id { true } else { false } }
+    #expect(jobs.prefix(5).map { $0.started != nil } == [true, true, false, false, false])
+    #expect(rows.first { $0.target?.pane.number == 2 }?.started == nil)
+    #expect(rows.first { $0.target?.pane.number == 9 }?.started == nil)
+}
+
+@Test func elapsedClockFormatsSecondsMinutesAndHours() {
+    let start = 10_000_000_000
+    for (seconds, expected) in [(-1, "0s"), (12, "12s"), (59, "59s"), (60, "1m00s"),
+                                (185, "3m05s"), (3599, "59m59s"), (3720, "1h02m")] {
+        #expect(sidebarElapsed(started: start, now: start + seconds * 1_000_000_000) == expected)
+    }
+}
+
 private func nest(_ model: inout KoModel, _ moved: [UInt32], under parentNumber: UInt32, window: UInt32) throws {
     let gone = Set(moved.map { PaneID(number: $0) })
     model.outline.removeAll { if case .pane(let pane) = $0 { gone.contains(pane.id) } else { false } }

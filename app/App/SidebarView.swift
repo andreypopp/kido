@@ -94,7 +94,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         edit.cell.renameError.isHidden = true
         edit.cell.needsDisplay = true
         if let row = items.firstIndex(where: { $0.id == edit.id }) {
-            edit.cell.configure(items[row])
+            edit.cell.configure(items[row], now: clockNow)
             resizeRows([row])
         }
         window?.makeFirstResponder(edit.responder)
@@ -146,6 +146,22 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     private var failure: String?
     private let fonts = SidebarFonts()
     private var captionTimer: Timer?
+    private var tick: Timer?
+    private var clockNow = 0
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(self, name: NSWindow.willCloseNotification, object: nil)
+        if let window {
+            NotificationCenter.default.addObserver(self, selector: #selector(windowClosed), name: NSWindow.willCloseNotification, object: window)
+        }
+        updateTick()
+    }
+
+    @objc private func windowClosed() {
+        tick?.invalidate()
+        tick = nil
+    }
     private var captions = SidebarCaptions()
     var captionDelay: TimeInterval = 0.2
 
@@ -271,6 +287,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         let recenter = dragging == nil && next.map { $0.client != snapshot?.client } ?? false
         let previousInstance = snapshot?.serverInstance
         snapshot = next
+        clockNow = serverNow
         let previous = items
         if next == nil || next?.serverInstance != previousInstance { captions = SidebarCaptions() }
         items = captions.apply(sidebarRows(snapshot), now: ProcessInfo.processInfo.systemUptime, delay: captionDelay)
@@ -326,10 +343,44 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
             scroll.contentView.scroll(to: NSPoint(x: origin.x, y: y))
             scroll.reflectScrolledClipView(scroll.contentView)
         }
+        updateTick()
     }
 
     @objc private func captionsChanged() { show(snapshot, captionTick: true) }
 
+    private var serverNow: Int {
+        #if KIDO_VISUAL
+        if let now = Self.visualNow { return now }
+        #endif
+        guard let clock = snapshot?.clock else { return 0 }
+        return clock.now + Int(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) - clock.local
+    }
+
+    private func updateTick() {
+        guard window != nil, !isHidden, items.contains(where: { $0.started != nil }) else {
+            tick?.invalidate()
+            tick = nil
+            return
+        }
+        guard tick == nil else { return }
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.ticked() }
+        }
+        let delay = 1 - Double(serverNow % 1_000_000_000) / 1e9
+        RunLoop.main.add(timer, forMode: .common)
+        timer.fireDate = Date(timeIntervalSinceNow: delay)
+        tick = timer
+    }
+
+    private func ticked() {
+        guard !isHiddenOrHasHiddenAncestor else { return }
+        let visible = table.rows(in: table.visibleRect)
+        guard visible.location != NSNotFound else { return }
+        clockNow = serverNow
+        for row in visible.location..<min(table.numberOfRows, NSMaxRange(visible)) where entry(row)?.started != nil {
+            (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCell)?.updateClock(now: clockNow)
+        }
+    }
     func focus() {
         onIntent()
         table.keyboardSelection = true
@@ -549,7 +600,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
             }
         }
         cell.terminalDark = terminalDark
-        cell.configure(item)
+        cell.configure(item, now: clockNow)
         cell.close.invoke = { [weak self] in self?.closePane(item) }
         cell.addWindow.invoke = { [weak self] in self?.newWindow(item.id.session) }
         return cell
@@ -560,6 +611,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     #endif
 
     #if KIDO_VISUAL
+    static var visualNow: Int?
     var visualTable: NSTableView { table }
     var visualScroll: NSScrollView { scroll }
     var visualRows: [SidebarRow] { items }

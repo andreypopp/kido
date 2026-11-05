@@ -35,6 +35,7 @@ public struct SidebarRow: Equatable, Sendable {
     public var quietShell = false
     public var agent = false
     public var root: WindowID?
+    public var started: Int?
     public var padding: Double { 7 }
     public var leading: Double { 36 + Double(indent) * 15 }
     public var indicatorX: Double { 20 + Double(indent) * 15 }
@@ -173,7 +174,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                                            status: status, indicatorDescription: description,
                                            focused: target == snapshot.client,
                                            quietShell: quietShell,
-                                           agent: agent, root: root))
+                                           agent: agent, root: root, started: { if case .live = item.lifecycle, item.parent != nil { item.started } else { nil } }()))
                     let records = item.program_status.records.filter { !$0.id.isEmpty }.sorted { a, b in
                         let left = a.id.split(separator: "/", omittingEmptySubsequences: false)
                         let right = b.id.split(separator: "/", omittingEmptySubsequences: false)
@@ -203,7 +204,8 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                                                title: record.title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
                                                tail: caption, status: [.done, .error].contains(status) && item.recordsSeen ? .quiet : status,
                                                indicatorDescription: record.state.rawValue,
-                                               focused: false, agent: true, root: root))
+                                               focused: false, agent: true, root: root,
+                                               started: [.working, .blocked].contains(record.state) ? record.started : nil))
                     }
                     if !records.isEmpty {
                         for (index, record) in records.enumerated() {
@@ -230,6 +232,12 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                                title: "", tail: "", status: .quiet, focused: false))
     }
     return rows
+}
+
+public func sidebarElapsed(started: Int, now: Int) -> String {
+    let s = max(0, now - started) / 1_000_000_000
+    return s < 60 ? "\(s)s" : s < 3600 ? String(format: "%dm%02ds", s / 60, s % 60)
+        : String(format: "%dh%02dm", s / 3600, (s / 60) % 60)
 }
 
 public struct SidebarCaptions {

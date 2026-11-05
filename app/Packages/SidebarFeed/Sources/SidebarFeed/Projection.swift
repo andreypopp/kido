@@ -6,7 +6,7 @@ extension Snapshot {
     public init?(model: KoModel, marks: [PaneID: RuntimeMark]? = nil) {
         guard let (session, window, pane) = model.current else { return nil }
         let projection = Projection(model, marks: marks ?? model.runtimeMarks)
-        self.init(client: Position(session: session.id, window: window.id, pane: pane), serverInstance: ServerInstance(model.instance),
+        self.init(clock: .init(now: model.now, local: Int(clock_gettime_nsec_np(CLOCK_UPTIME_RAW))), client: Position(session: session.id, window: window.id, pane: pane), serverInstance: ServerInstance(model.instance),
                   sessions: projection.sessions(current: session.id))
     }
 }
@@ -70,7 +70,7 @@ private struct Projection {
     private func item(_ entry: KoSchema.ItemPane, children: [Node]) -> Item? {
         guard let pane = panes[entry.id] else { return nil }
         return Item(
-            id: entry.id, window: entry.window, title: pane.label,
+            id: entry.id, window: entry.window, title: pane.label, started: pane.started, parent: pane.parent,
             lifecycle: lifecycle(pane),
             program_status: programStatus(pane.status?.programStatus),
             children: children, mark: pane.mark, recordsSeen: pane.recordsSeen, inbox: pane.inbox == true,
@@ -102,13 +102,15 @@ private struct Projection {
         guard let status else { return ProgramStatus(serial: 0, records: []) }
         return ProgramStatus(serial: status.serial, records: status.records.map { record in
             typealias Record = ProgramStatus.Record
-            return switch record {
-            case .idle(let r): Record(id: r.id, state: .idle, app: r.app, kind: nil, progress: nil, title: r.title, msg: r.msg)
-            case .working(let r): Record(id: r.id, state: .working, app: r.app, kind: nil, progress: r.progress, title: r.title, msg: r.msg)
-            case .done(let r): Record(id: r.id, state: .done, app: r.app, kind: nil, progress: nil, title: r.title, msg: r.msg)
-            case .blocked(let r): Record(id: r.id, state: .blocked, app: r.app, kind: r.kind, progress: r.progress, title: r.title, msg: r.msg)
-            case .error(let r): Record(id: r.id, state: .error, app: r.app, kind: nil, progress: nil, title: r.title, msg: r.msg)
+            let values: (String, Int?, Record.State, String?, KoSchema.ProgramKind?, Int?, String?, String?) = switch record {
+            case .idle(let r): (r.id, r.started, .idle, r.app, nil, nil, r.title, r.msg)
+            case .working(let r): (r.id, r.started, .working, r.app, nil, r.progress, r.title, r.msg)
+            case .done(let r): (r.id, r.started, .done, r.app, nil, nil, r.title, r.msg)
+            case .blocked(let r): (r.id, r.started, .blocked, r.app, r.kind, r.progress, r.title, r.msg)
+            case .error(let r): (r.id, r.started, .error, r.app, nil, nil, r.title, r.msg)
             }
+            let (id, started, state, app, kind, progress, title, msg) = values
+            return Record(id: id, started: started, state: state, app: app, kind: kind, progress: progress, title: title, msg: msg)
         })
     }
 

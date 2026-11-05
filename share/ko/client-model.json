@@ -570,6 +570,11 @@
           "layout": {
             "$ref": "#/components/schemas/Snapshot"
           },
+          "now": {
+            "description": "The server's estimated monotonic time in nanoseconds when this model was read.",
+            "minimum": 0,
+            "type": "integer"
+          },
           "outline": {
             "items": {
               "$ref": "#/components/schemas/Item"
@@ -593,6 +598,7 @@
           }
         },
         "required": [
+          "now",
           "instance",
           "selection",
           "layout",
@@ -660,6 +666,11 @@
           "runtime": {
             "$ref": "#/components/schemas/RuntimeName"
           },
+          "started": {
+            "description": "The pane's creation time in server monotonic nanoseconds.",
+            "minimum": 0,
+            "type": "integer"
+          },
           "status": {
             "$ref": "#/components/schemas/PaneStatus"
           },
@@ -676,6 +687,7 @@
           "mark",
           "records_seen",
           "id",
+          "started",
           "command",
           "cwd",
           "title",

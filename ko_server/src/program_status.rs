@@ -1,3 +1,5 @@
+use ko_sys::clock::Mono;
+
 use crate::protocol::{ProgramRecord, ProgramState, ProgramStatus};
 
 const MAX_RECORDS: usize = 64;
@@ -5,7 +7,16 @@ const MAX_RECORDS: usize = 64;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Report {
     Clear { id: String },
-    Set(ProgramRecord),
+    Set(Record),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Record {
+    pub(crate) id: String,
+    pub(crate) state: ProgramState,
+    pub(crate) app: Option<String>,
+    pub(crate) title: Option<String>,
+    pub(crate) msg: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -30,8 +41,8 @@ impl Set {
         self.records.len() != before && self.changed()
     }
 
-    pub(crate) fn apply(&mut self, report: Report) -> bool {
-        let record = match report {
+    pub(crate) fn apply(&mut self, report: Report, now: Mono) -> bool {
+        let report = match report {
             Report::Clear { id } if id.is_empty() => return self.clear(),
             Report::Clear { id } => {
                 let child = format!("{id}/");
@@ -39,10 +50,31 @@ impl Set {
             }
             Report::Set(record) => record,
         };
-        if self.records.contains(&record) {
-            return false;
+        let stored = self
+            .records
+            .iter()
+            .position(|record| record.id == report.id);
+        let started = if report.id.is_empty() {
+            None
+        } else {
+            stored
+                .and_then(|index| self.records.get(index).and_then(|record| record.started))
+                .or(Some(now.nanos()))
+        };
+        let record = ProgramRecord {
+            id: report.id,
+            state: report.state,
+            app: report.app,
+            title: report.title,
+            msg: report.msg,
+            started,
+        };
+        if let Some(index) = stored {
+            if self.records.get(index) == Some(&record) {
+                return false;
+            }
+            self.records.remove(index);
         }
-        self.records.retain(|stored| stored.id != record.id);
         if self.records.len() >= MAX_RECORDS {
             self.records.remove(0);
         }
@@ -110,13 +142,31 @@ mod tests {
     use super::*;
 
     fn set(id: &str, state: ProgramState, app: &str) -> Report {
-        Report::Set(ProgramRecord {
+        Report::Set(Record {
             id: id.to_owned(),
             state,
             app: (!app.is_empty()).then(|| app.to_owned()),
             title: None,
             msg: None,
         })
+    }
+
+    #[test]
+    fn record_start_is_owned_by_the_set() {
+        let mut found = Set::default();
+        found.apply(set("", ProgramState::Idle, "pi"), Mono::from_nanos(1));
+        assert_eq!(found.published().records[0].started, None);
+        found.apply(working("job/1", 1), Mono::from_nanos(2));
+        assert_eq!(found.published().records[1].started, Some(2));
+        assert!(!found.apply(working("job/1", 1), Mono::from_nanos(3)));
+        found.apply(working("job/1", 2), Mono::from_nanos(4));
+        assert_eq!(found.published().records[1].started, Some(2));
+        found.apply(clear("job/1"), Mono::from_nanos(5));
+        found.apply(working("job/1", 3), Mono::from_nanos(6));
+        assert_eq!(found.published().records[1].started, Some(6));
+        found.clear();
+        found.apply(working("job/1", 4), Mono::from_nanos(7));
+        assert_eq!(found.published().records[0].started, Some(7));
     }
 
     fn clear(id: &str) -> Report {
@@ -144,7 +194,7 @@ mod tests {
     fn set_of(records: &[(&str, &str)]) -> Set {
         let mut found = Set::default();
         for (id, app) in records {
-            found.apply(set(id, ProgramState::Idle, app));
+            found.apply(set(id, ProgramState::Idle, app), Mono::from_nanos(1));
         }
         found
     }
@@ -153,17 +203,17 @@ mod tests {
     fn sixty_five_records_evict_the_oldest_updated_and_an_identical_report_moves_nothing() {
         let mut found = Set::default();
         for index in 0..64 {
-            assert!(found.apply(working(&format!("r{index:02}"), 1)));
+            assert!(found.apply(working(&format!("r{index:02}"), 1), Mono::from_nanos(1)));
         }
-        assert!(!found.apply(working("r00", 1)));
+        assert!(!found.apply(working("r00", 1), Mono::from_nanos(1)));
         assert_eq!(found.published().serial, 64);
-        assert!(found.apply(working("r01", 2)));
-        assert!(found.apply(working("new", 1)));
+        assert!(found.apply(working("r01", 2), Mono::from_nanos(1)));
+        assert!(found.apply(working("new", 1), Mono::from_nanos(1)));
         let published = ids(&found);
         assert_eq!(published.len(), 64);
         assert!(!published.contains(&"r00".to_owned()));
         assert!(published.contains(&"r01".to_owned()));
-        assert!(found.apply(working("another", 1)));
+        assert!(found.apply(working("another", 1), Mono::from_nanos(1)));
         assert!(!ids(&found).contains(&"r02".to_owned()));
         assert!(ids(&found).contains(&"r01".to_owned()));
     }
@@ -172,11 +222,11 @@ mod tests {
     fn a_clear_removes_the_record_and_its_children_and_not_a_sibling_with_the_same_prefix() {
         let mut found = set_of(&[("x", ""), ("x/y", ""), ("xy", ""), ("", "")]);
         let serial = found.published().serial;
-        assert!(!found.apply(clear("none")));
+        assert!(!found.apply(clear("none"), Mono::from_nanos(1)));
         assert_eq!(found.published().serial, serial);
-        assert!(found.apply(clear("x")));
+        assert!(found.apply(clear("x"), Mono::from_nanos(1)));
         assert_eq!(ids(&found), ["", "xy"]);
-        assert!(found.apply(clear("")));
+        assert!(found.apply(clear(""), Mono::from_nanos(1)));
         assert!(ids(&found).is_empty());
         assert!(!found.clear());
     }
@@ -184,10 +234,10 @@ mod tests {
     #[test]
     fn a_prompt_start_keeps_only_the_final_records() {
         let mut found = Set::default();
-        found.apply(working("a", 3));
-        found.apply(set("b", ProgramState::Done, ""));
-        found.apply(set("c", ProgramState::Error, ""));
-        found.apply(set("d", ProgramState::Idle, ""));
+        found.apply(working("a", 3), Mono::from_nanos(1));
+        found.apply(set("b", ProgramState::Done, ""), Mono::from_nanos(1));
+        found.apply(set("c", ProgramState::Error, ""), Mono::from_nanos(1));
+        found.apply(set("d", ProgramState::Idle, ""), Mono::from_nanos(1));
         assert!(found.prompt_start());
         assert_eq!(ids(&found), ["b", "c"]);
         assert!(!found.prompt_start());
@@ -196,21 +246,23 @@ mod tests {
     #[test]
     fn bare_zero_progress_sets_no_status() {
         let mut found = Set::default();
-        found.apply(working("bare", 0));
-        found.apply(Report::Set(ProgramRecord {
-            msg: Some("A".to_owned()),
-            ..match working("msg", 0) {
-                Report::Set(record) => record,
-                Report::Clear { .. } => unreachable!(),
-            }
-        }));
-        found.apply(set(
-            "app",
-            ProgramState::Working { progress: Some(0) },
-            "tool",
-        ));
-        found.apply(working("one", 1));
-        found.apply(set("idle", ProgramState::Idle, ""));
+        found.apply(working("bare", 0), Mono::from_nanos(1));
+        found.apply(
+            Report::Set(Record {
+                msg: Some("A".to_owned()),
+                ..match working("msg", 0) {
+                    Report::Set(record) => record,
+                    Report::Clear { .. } => unreachable!(),
+                }
+            }),
+            Mono::from_nanos(1),
+        );
+        found.apply(
+            set("app", ProgramState::Working { progress: Some(0) }, "tool"),
+            Mono::from_nanos(1),
+        );
+        found.apply(working("one", 1), Mono::from_nanos(1));
+        found.apply(set("idle", ProgramState::Idle, ""), Mono::from_nanos(1));
         assert_eq!(ids(&found), ["app", "idle", "msg", "one"]);
     }
 

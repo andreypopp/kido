@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use ko_config::values::RuntimeName;
 use ko_pane_wire::frame::Size;
+use ko_sys::clock::Mono;
 
 use crate::config::Config;
 use crate::delivery::Stamps;
@@ -34,6 +35,7 @@ pub(crate) struct Birth {
 #[derive(Debug)]
 pub(crate) struct Pane {
     id: PaneId,
+    started: Mono,
     proc: PaneProc,
     command: Vec<Vec<u8>>,
     size: Size,
@@ -59,6 +61,7 @@ impl Pane {
     ) -> io::Result<Pane> {
         Ok(Pane {
             id: launch.id,
+            started: Mono::now(),
             proc: PaneProc::spawn(config, launch, stamps, io)?,
             command: birth.program.record,
             size: launch.size,
@@ -79,6 +82,10 @@ impl Pane {
 
     pub(crate) fn id(&self) -> PaneId {
         self.id
+    }
+
+    pub(crate) fn started(&self) -> Mono {
+        self.started
     }
 
     pub(crate) fn proc(&self) -> &PaneProc {

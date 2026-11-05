@@ -167,7 +167,8 @@ removes them. The launcher and Kido.app discovery compare these
 values instead of a server stamp.
 
 Times in status values (a status's `since`, a command's start and
-end) are nanoseconds of the server's monotonic clock (`Mono`), which
+end, a program record's `started`) and a pane row's `started` (when
+the server created the pane, stamped once) are nanoseconds of the server's monotonic clock (`Mono`), which
 has no meaning on another machine. The `Welcome` event and every
 `status` event carry `now`, the server's `Mono` time when it sent the
 message. A client keeps the latest `now` with its own local monotonic

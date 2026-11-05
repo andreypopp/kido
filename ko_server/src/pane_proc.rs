@@ -24,10 +24,10 @@ use ko_sys::signal::Signal;
 use crate::config::Config;
 use crate::delivery::{self, Delivery, Done, Handle, Stamps};
 use crate::ids::PaneId;
-use crate::program_status::Report;
+use crate::program_status::{Record, Report};
 use crate::protocol::{
     ClipboardContent, ClipboardLocation, ClipboardServed, Foreground, ImageShm, ProgramKind,
-    ProgramRecord, ProgramState, Progress, ProgressState, SearchMatch, Text,
+    ProgramState, Progress, ProgressState, SearchMatch, Text,
 };
 use crate::telemetry::Prompt;
 
@@ -137,7 +137,7 @@ fn report_of(record: &frame::Record<'_>) -> Report {
         frame::ProgramState::Blocked => ProgramState::Blocked { kind, progress },
         frame::ProgramState::Error => ProgramState::Error,
     };
-    Report::Set(ProgramRecord {
+    Report::Set(Record {
         id: lossy(record.id),
         state,
         app: text(record.app),

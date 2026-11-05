@@ -145,6 +145,7 @@ fn pane_listing(pane: &Pane) -> Listing {
     Listing {
         row: Row {
             id: pane.id(),
+            started: pane.started().nanos(),
             pid: proc.child_pid().map(|pid| pid.get()),
             command: pane.command().iter().map(|arg| lossy(arg)).collect(),
             cwd: lossy(proc.cwd()),
@@ -944,8 +945,9 @@ impl State {
                 }
             }
             Event::Record(report) => {
+                let now = ko_sys::clock::Mono::now();
                 if let Some(pane) = self.panes.find_mut(id)
-                    && pane.telemetry_mut().records.apply(report)
+                    && pane.telemetry_mut().records.apply(report, now)
                 {
                     self.model.mark(poll, pane);
                 }

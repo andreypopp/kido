@@ -14,10 +14,18 @@ public struct Snapshot: Equatable, Sendable {
         }
     }
 
+    public struct Clock: Equatable, Sendable {
+        public let now: Int
+        public let local: Int
+        public init(now: Int, local: Int) { self.now = now; self.local = local }
+    }
+
+    public var clock: Clock
     public var client: Position
     public var serverInstance: ServerInstance
     public var sessions: [SessionNodes]
-    public init(client: Position, serverInstance: ServerInstance, sessions: [SessionNodes]) {
+    public init(clock: Clock, client: Position, serverInstance: ServerInstance, sessions: [SessionNodes]) {
+        self.clock = clock
         self.client = client
         self.serverInstance = serverInstance
         self.sessions = sessions
@@ -91,6 +99,8 @@ public struct Item: Equatable, Sendable {
     public var pane: PaneID { id }
     public var window: WindowID
     public var title: String
+    public var started: Int
+    public var parent: PaneID?
     public var lifecycle: Lifecycle
     public var program_status: ProgramStatus
     public var children: [Node]
@@ -102,8 +112,10 @@ public struct Item: Equatable, Sendable {
     public var inbox: Bool
     // Where the pane works, when not on the host.
     public var runtime: RuntimeMark?
-    public init(id: PaneID, window: WindowID, title: String, lifecycle: Lifecycle, program_status: ProgramStatus,
+    public init(id: PaneID, window: WindowID, title: String, started: Int, parent: PaneID?, lifecycle: Lifecycle, program_status: ProgramStatus,
                 children: [Node], mark: KoSchema.Mark, recordsSeen: Bool = false, inbox: Bool = false, runtime: RuntimeMark? = nil) {
+        self.started = started
+        self.parent = parent
         self.id = id
         self.window = window
         self.title = title

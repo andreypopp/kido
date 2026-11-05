@@ -182,6 +182,8 @@ fn record<'a>(status: &'a Value, id: &str) -> &'a Value {
 fn program_status_records() {
     let s = start(&[]);
     let pane = s.echo_pane();
+    let started = s.row(&pane)["started"].as_u64().unwrap();
+    assert!(started > 0);
     let mut probe = Probe::new(&s, pane);
     let message = base64("compiling".as_bytes());
     let title = base64("Build".as_bytes());
@@ -193,6 +195,7 @@ fn program_status_records() {
     assert_eq!(report(&status)["state"]["type"], "running");
     assert_eq!(report(&status)["msg"], "compiling");
     assert_eq!(record(&status, "")["title"], "Build");
+    assert!(record(&status, "").get("started").is_none());
 
     let long = "m".repeat(1500);
     let status = probe.osc(&format!(
@@ -207,12 +210,14 @@ fn program_status_records() {
 
     let status = probe.osc("id=child:state=blocked:progress=42");
     assert_eq!(record(&status, "child")["progress"], 42);
+    let child_started = record(&status, "child")["started"].as_u64().unwrap();
     assert!(record(&status, "child")["app"].is_null());
     assert_eq!(report(&status)["state"]["type"], "waiting");
 
     let status = probe.osc("state=working:app=builder");
     assert_eq!(report(&status)["state"]["type"], "waiting");
     let status = probe.osc("id=child:state=error");
+    assert_eq!(record(&status, "child")["started"], child_started);
     assert_eq!(report(&status)["state"]["type"], "running");
     assert!(report(&status)["state"]["outcome"].is_null());
     let failed_at = serial(&status);
@@ -263,6 +268,9 @@ fn program_status_records() {
         report(&status)["state"]["outcome"]["serial"],
         serial(&status)
     );
+    let status = probe.osc("id=child:state=working");
+    assert!(record(&status, "child")["started"].as_u64().unwrap() > child_started);
+    assert_eq!(s.row(&probe.pane)["started"], started);
 }
 
 #[test]

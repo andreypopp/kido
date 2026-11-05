@@ -966,6 +966,8 @@ export interface components {
             pid?: number;
             progress?: components["schemas"]["Progress"];
             runtime?: components["schemas"]["RuntimeName"];
+            /** @description The pane's creation time in server monotonic nanoseconds. */
+            started: number;
             status?: components["schemas"]["PaneStatus"];
             title: string;
             /** @default {} */
@@ -1165,6 +1167,8 @@ export interface components {
             app?: string;
             id: string;
             msg?: string;
+            /** @description The server's monotonic start time in nanoseconds for a child record; absent on the root. */
+            started?: number;
             title?: string;
         } & ({
             /** @constant */
