@@ -1,4 +1,5 @@
 PREFIX ?= $(HOME)/.local
+E2E_THREADS ?= 64
 
 # Homebrew's rustup is keg-only, so cargo is not on PATH; every cargo
 # command runs through a target of this file. CI runners have neither
@@ -212,7 +213,7 @@ probe: build-bench
 
 # the e2e suite drives the built build/ko/bin/ko; E2E is a cargo test name filter
 e2e: build
-	$(CARGO) test --locked -p ko_e2e -- --test-threads=64 $(E2E)
+	$(CARGO) test --locked -p ko_e2e -- --test-threads=$(E2E_THREADS) $(E2E)
 
 # reproduces a CI-runner-only failure in a CPU/memory-capped Linux
 # container instead of by loading the host, e.g.:

@@ -390,8 +390,13 @@ Conventions:
   `fd::wait_writable_within`), and only `ko_e2e` enables it. A `Child`
   of the harness reaps its process under the lock that its signals take,
   after a wait that keeps the zombie, so no signal reaches a reaped pid.
-  `make e2e` runs the tests with `--test-threads=64`, so every test
-  starts at once.
+  `make e2e` runs the tests with `--test-threads=$(E2E_THREADS)`.
+  The default is 64, so on a developer's Mac every test starts at
+  once. CI sets 16: its runners have 3 (macOS) and 4 (Ubuntu) cores,
+  and at 64 the CPU work of all tests at once exceeds the 5 s
+  deadlines. Most tests wait on I/O, so 16 keeps about four tests on
+  each core. A lower count does not fix a test that fails at 64: that
+  test has a race or does too much work.
 - **loom.** `ko_pane_wire::ring::model` checks the ring's records
   and the wakeup handshake on the real `Reader` and `Writer` under
   `--cfg loom` ("Proved modules" below). `make
@@ -961,7 +966,7 @@ verify.
 
 CI (`.github/workflows/ci.yml`) runs on Ubuntu and macOS on every
 push and PR: one `make verify` with the default stages, under
-`KO_VERUS_REQUIRED=1` and `KO_E2E_HOST_SSH=1`, then the installed
+`KO_VERUS_REQUIRED=1`, `KO_E2E_HOST_SSH=1` and `E2E_THREADS=16`, then the installed
 layout check (`make install PREFIX=$HOME/ko-install`, `ko version`
 from it, and the `ko` shim executable under its `share/ko/bin`).
 It does not build Kido.app
@@ -980,8 +985,8 @@ PASS/FAIL line. A change that makes a stage slower needs a reason.
   one where a positive assertion shows the same fact.
 - Shorten a product timer through the server's environment
   ("Knobs" in docs/design.md) or, for the linger and the runtime
-  idle, through the `server:` key of the server's configuration file. The e2e suite runs with
-  `--test-threads=64`, so each server start costs the whole suite:
+  idle, through the `server:` key of the server's configuration file. The e2e suite runs all
+  its tests at once (`E2E_THREADS`), so each server start costs the whole suite:
   put cases that need the same setup in one test, on one server.
 - Test pure logic in a unit test, not through a server.
 - In the TypeScript suite, the fake `ko` is the Rust binary
