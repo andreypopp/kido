@@ -1519,7 +1519,11 @@ section 15, "The cwd of a new pane"); a new session with no focused
 pane starts in the home directory. In the table,
 arrows and j/k move pane-only selection, Return activates with exactly one
 select, and Escape releases side focus and returns to the pane, also
-without a connection. Left/Right do nothing; headers do not activate or
+without a connection. While the table is first responder, docked or
+floating, a pane menu command (Command-W, Command-T, the splits, pane
+selection, zoom) first leaves the sidebar as Escape does and then acts on
+the active pane, as it would without sidebar focus; the menu's
+nil-target action otherwise finds no responder there. Left/Right do nothing; headers do not activate or
 fold. Only the first selected event after a request installs deferred
 focus; failures preserve focus. One monotonic UI-intent revision advances
 on selection/focus changes and navigation. Each request captures it; only

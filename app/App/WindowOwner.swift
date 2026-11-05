@@ -248,6 +248,7 @@ private class AlertEscape: NSView {
         sidebar.changed = { [weak self] in self?.menuChanged() }
         sidebar.list.navigate = { [weak self] in self?.perform($0) }
         sidebar.list.onIntent = { [weak self] in self?.supersedeIntent() }
+        sidebar.list.commandTarget = { [weak self] in self?.session?.activePane }
         sidebar.list.newSession = { [weak self] in self?.newSession() }
         sidebar.list.newWindow = { [weak self] session in self?.newWindow(in: session) }
         sidebar.list.renameSession = { [weak self] id, name, done in

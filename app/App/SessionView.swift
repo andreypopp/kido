@@ -126,6 +126,7 @@ final class SessionView: NSView {
     }
 
     private var shown: WindowView? { windows.values.first { !$0.isHidden } }
+    var activePane: PaneView? { shown?.activePane }
 
     func show(_ window: WindowID?) {
         let start = DispatchTime.now(), before = shown, last = recent.first

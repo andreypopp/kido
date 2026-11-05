@@ -7,7 +7,7 @@ extension NSPasteboard.PasteboardType {
     static let kidoReorder = Self("com.andreypopp.kido.reorder")
 }
 
-final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
+final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSMenuItemValidation {
     private enum Source {
         case session(SessionID), window(SessionID, WindowID)
         var session: SessionID { switch self { case .session(let session), .window(let session, _): session } }
@@ -49,6 +49,15 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private let dragOwner = UUID().uuidString
     var navigate: (Navigation) -> Void = { _ in }
     var onIntent: () -> Void = {}
+    var commandTarget: () -> PaneView? = { nil }
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        item.action == #selector(runCommand(_:)) && window?.firstResponder === table && commandTarget()?.validateMenuItem(item) == true
+    }
+    @objc func runCommand(_ sender: NSMenuItem) {
+        guard window?.firstResponder === table, let pane = commandTarget() else { return }
+        leave()
+        pane.runCommand(sender)
+    }
     var leave: () -> Void = {}
     private var rendering = false
 

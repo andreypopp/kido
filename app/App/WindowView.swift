@@ -191,8 +191,10 @@ final class WindowView: NSView {
         focusActive(force: false)
     }
 
+    var activePane: PaneView? { panes.first { $0.pane == active } }
+
     func focusActive(force: Bool) {
-        guard !isHidden, let view = panes.first(where: { $0.pane == active }), let window else { return }
+        guard !isHidden, let view = activePane, let window else { return }
         let focused = window.firstResponder
         guard force || focused === window || focused == nil || (focused as? PaneView)?.isDescendant(of: session ?? self) == true
         else { return }

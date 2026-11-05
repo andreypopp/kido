@@ -815,6 +815,61 @@ import PaneGeometry
         XCTAssertTrue(prompt.textView.string.hasPrefix("か"))
     }
 
+    func testSidebarPaneCommandShortcuts() async throws {
+        let fixture = try PromptFixture(self)
+        defer { fixture.close() }
+        let owner = fixture.owner
+        _ = try await fixture.startServer(self, [koPane("exec cat")])
+        owner.start()
+        try await wait("pane ready") { owner.testSession?.activePane != nil }
+        let previousDelegate = NSApp.delegate
+        NSApp.delegate = fixture.app
+        defer { NSApp.delegate = previousDelegate }
+        let paneCount = { owner.testSession?.windows.values.flatMap(\.panes).count ?? 0 }
+        let focusSidebar = { (floating: Bool) in
+            owner.sidebar.isCollapsed = floating
+            try sendKey(owner.window, "s", code: 1, modifiers: .command)
+            XCTAssertTrue(owner.sidebar.list.containsFocus)
+            XCTAssertEqual(owner.sidebar.isFloating, floating)
+        }
+        for floating in [true, false] {
+            try focusSidebar(floating)
+            let old = try XCTUnwrap(owner.testSession?.activePane)
+            let count = owner.sidebar.tabs.entries.count
+            try sendKey(owner.window, "t", code: 17, modifiers: .command)
+            try await wait("sidebar Cmd-T creates a tab") { owner.sidebar.tabs.entries.count == count + 1 }
+            try await wait("new tab's pane receives terminal focus") {
+                owner.testSession?.activePane !== old && owner.window.firstResponder === owner.testSession?.activePane
+            }
+            XCTAssertFalse(owner.sidebar.isFloating)
+            try focusSidebar(floating)
+            let split = try XCTUnwrap(owner.testSession?.activePane)
+            let panes = paneCount()
+            try sendKey(owner.window, "d", code: 2, modifiers: .command)
+            try await wait("sidebar Cmd-D splits the current pane") { paneCount() == panes + 1 }
+            try await wait("new split's pane receives terminal focus") {
+                owner.testSession?.activePane !== split && owner.window.firstResponder === owner.testSession?.activePane
+            }
+            XCTAssertFalse(owner.sidebar.isFloating)
+        }
+        for index in 0..<paneCount() {
+            let pane = try XCTUnwrap(owner.testSession?.activePane).pane
+            owner.testReceive(withLifecycle(try XCTUnwrap(owner.snapshot), pane: pane,
+                .live(.terminal(ShellStatus(phase: .unknown, report: nil))), mark: .none_))
+            try focusSidebar(index.isMultiple(of: 2))
+            try sendKey(owner.window, "w", code: 13, modifiers: .command)
+            try await wait("sidebar Cmd-W closes the active pane") { owner.testSession?.pane(pane) == nil }
+            XCTAssertNil(owner.preparedAlert)
+            XCTAssertFalse(owner.sidebar.isFloating)
+            if paneCount() > 0 {
+                try await wait("remaining active pane receives terminal focus") {
+                    owner.testSession?.activePane != nil && owner.window.firstResponder === owner.testSession?.activePane
+                }
+            }
+        }
+        XCTAssertNil(owner.testSession?.activePane)
+    }
+
     func testStandardEditMenuPreservesPaneSelectAll() async throws {
         let fixture = try PromptFixture(self)
         defer { fixture.close() }
