@@ -202,6 +202,18 @@ A size has at least one column and row and at most
 a hello or a size outside that range. A larger grid is never useful,
 and one 65535x65535 grid takes gigabytes.
 
+A message that the server refuses on this connection (a hello that does
+not decode or that breaks a rule above, a request before the hello, a
+second hello) gets one `refused` event with the server's own error text,
+and then the connection closes. A client shows that text: it is the
+reason, such as a field that only another ko build sends or requires.
+A refusal before the `Welcome` means that a reconnect with the same hello
+fails again, so the client does not retry. Only the event is a refusal: a
+close or a transport failure without it is an outage, and the client
+connects again. A refusal after the `Welcome` is a client fault; the
+client treats it as a lost connection and connects again with a new
+hello.
+
 A size can carry `cell_px`, the pixel size of one cell of the client's
 font. The window keeps the last `cell_px` that its sizing client sent;
 a size without it keeps the earlier one. Each pane of the window gets

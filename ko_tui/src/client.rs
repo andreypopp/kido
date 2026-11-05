@@ -11,7 +11,7 @@ use crate::clipboard;
 use ko_client::edit::{Edge, Edit};
 use ko_client::launch::{self, BACKOFF_FIRST, PATIENCE, backoff_after};
 use ko_client::layout::{EditError, Edited};
-use ko_client::model::{Applied, Item, Model, Notice, Rejoin, cycle};
+use ko_client::model::{Applied, Item, JoinError, Model, Notice, Rejoin, cycle};
 use ko_client::remote::{Progress, Remote};
 use ko_client::wire::{self, Link, Next, WATCHDOG, silent, text};
 use ko_config::values::{AbsPath, RuntimeName};
@@ -422,7 +422,9 @@ impl Client {
         };
         let sidebar_width = sidebar::width(sidebar::DEFAULT_WIDTH, geometry.cols);
         let hello = hello(geometry, panel, sidebar_width, true);
-        let model = Model::join(&mut link, hello)?;
+        let model = Model::join(&mut link, hello).map_err(|error| match error {
+            JoinError::Refused(message) | JoinError::Protocol(message) => message,
+        })?;
         let link_token = link.watch(&mut poll).map_err(text)?;
         let (wake, escape, repeat, watchdog, retry) = (
             Deadline::new(&mut poll),
@@ -1801,7 +1803,8 @@ impl Client {
             }
             Ok(Progress::Up) => match self.reconnect(left, restore) {
                 Ok(()) => return Ok(()),
-                Err(error) => error,
+                Err(JoinError::Refused(message)) => return Err(message),
+                Err(JoinError::Protocol(message)) => message,
             },
             Err(error) => error.to_string(),
         };
@@ -1814,13 +1817,15 @@ impl Client {
         self.retry.set(&mut self.poll, Some(Instant::now() + wait))
     }
 
-    fn reconnect(&mut self, left: Duration, mut restore: Restore) -> Result<(), String> {
+    fn reconnect(&mut self, left: Duration, mut restore: Restore) -> Result<(), JoinError> {
         let mut link = Link::connect_within(&self.socket, None, &Route::Client {}, None, left)
-            .map_err(text)?;
+            .map_err(|error| JoinError::Protocol(text(error)))?;
         let mut hello = hello(self.geometry, self.panel, self.sidebar_width, self.focused);
         hello.selection.window = self.view.as_ref().map(|shown| shown.window);
         let rejoin = self.model.rejoin(&mut link, hello)?;
-        let token = link.watch(&mut self.poll).map_err(text)?;
+        let token = link
+            .watch(&mut self.poll)
+            .map_err(|error| JoinError::Protocol(text(error)))?;
         self.link.unwatch(&mut self.poll);
         self.link = link;
         self.link_token = token;
@@ -1835,14 +1840,17 @@ impl Client {
         if let Some(outage) = self.reconnecting.as_mut() {
             outage.restore = restore;
         }
-        self.client(wire::buffered(token), Instant::now())?;
+        self.client(wire::buffered(token), Instant::now())
+            .map_err(JoinError::Protocol)?;
         let outage = self.reconnecting.take();
         if let Err(error) = self.restore(restore) {
             self.reconnecting = outage;
-            return Err(error);
+            return Err(JoinError::Protocol(error));
         }
         self.immediate = true;
-        self.retry.set(&mut self.poll, None)
+        self.retry
+            .set(&mut self.poll, None)
+            .map_err(JoinError::Protocol)
     }
 
     fn restore(&mut self, restore: Restore) -> Result<(), String> {

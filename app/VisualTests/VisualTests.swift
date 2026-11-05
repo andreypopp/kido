@@ -390,6 +390,27 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
     }
 
+    func testClientRefusalBanner() async throws {
+        for side in ["light", "dark"] {
+            let config = directory.appendingPathComponent("refusal-\(side).yaml")
+            try "app: {theme: kido-\(side)}\n".write(to: config, atomically: true, encoding: .utf8)
+            try loadRuntime(configFile: config.path)
+            for host in [Host.local, .remote("example")] {
+                let owner = WindowOwner(host: host, runtime: runtime, start: false)
+                owner.window.appearance = NSAppearance(named: side == "dark" ? .darkAqua : .aqua)
+                owner.window.colorSpace = .displayP3
+                owner.refused("missing field `required_extra`")
+                owner.window.layoutIfNeeded()
+                owner.testBanner.layoutSubtreeIfNeeded()
+                let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+                let name = "\(side)-\(host == .local ? "local" : "remote")"
+                if let failure = verifySnapshot(of: owner.testBanner, as: .image, named: name, record: record),
+                   !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+                owner.close()
+            }
+        }
+    }
+
     func testConfigErrorBanner() async throws {
         let config = directory.appendingPathComponent("config.yaml")
         try "app: {theme: kido-light}\n".write(to: config, atomically: true, encoding: .utf8)

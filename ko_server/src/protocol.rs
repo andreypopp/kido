@@ -1559,6 +1559,9 @@ pub struct StatusChange {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientEvent {
+    Refused {
+        message: String,
+    },
     Welcome(Welcome),
     Layout(LayoutPanes),
     Focus {

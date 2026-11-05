@@ -2489,6 +2489,29 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_hello_reports_the_server_text_before_welcome() {
+        let mut routes = client_script(|socket, _| send(socket, "not json"));
+        routes.clients.push(Box::new(|socket, _| {
+            send(
+                socket,
+                r#"{"type":"refused","message":"missing field `required_extra`"}"#,
+            );
+            wait_for_hangup(socket);
+        }));
+        let server = serve("refused-hello", routes);
+        let fixture = Fixture::new();
+        let client = fixture.connect(&server);
+        assert!(matches!(fixture.next(), Seen::Failed(Code::Protocol, _)));
+        assert_eq!(
+            fixture.next(),
+            Seen::Failed(Code::Refused, "missing field `required_extra`".to_owned())
+        );
+        assert_eq!(fixture.quiet_for(Duration::from_millis(500)), []);
+        assert_eq!(server.heads("GET", "/client").len(), 2);
+        close(client);
+    }
+
+    #[test]
     fn an_outage_reports_its_first_failure_and_a_later_missing_server_once() {
         let fixture = Fixture::new();
         let nowhere = Server {

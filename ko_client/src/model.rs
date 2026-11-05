@@ -131,20 +131,36 @@ pub enum Rejoin {
     Fresh(Model),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JoinError {
+    Refused(String),
+    Protocol(String),
+}
+
 impl Model {
-    pub fn join(link: &mut Link, hello: Hello) -> Result<Model, String> {
+    pub fn join(link: &mut Link, hello: Hello) -> Result<Model, JoinError> {
         link.send(protocol::json(&ClientRequest::Hello(hello)))
             .and_then(|()| link.flush_blocking())
-            .map_err(text)?;
-        let mut next = || match link.receive().map_err(text)? {
-            Next::Text(event) => protocol::decode::<ClientEvent>(event.as_bytes()).map_err(text),
-            _ => Err("client event missing".to_owned()),
+            .map_err(|error| JoinError::Protocol(text(error)))?;
+        let mut next = || match link
+            .receive()
+            .map_err(|error| JoinError::Protocol(text(error)))?
+        {
+            Next::Text(event) => {
+                match protocol::decode::<ClientEvent>(event.as_bytes())
+                    .map_err(|error| JoinError::Protocol(text(error)))?
+                {
+                    ClientEvent::Refused { message } => Err(JoinError::Refused(message)),
+                    event => Ok(event),
+                }
+            }
+            _ => Err(JoinError::Protocol("client event missing".to_owned())),
         };
         let ClientEvent::Welcome(welcome) = next()? else {
-            return Err("welcome missing".to_owned());
+            return Err(JoinError::Protocol("welcome missing".to_owned()));
         };
         let ClientEvent::Layout(layout) = next()? else {
-            return Err("layout missing".to_owned());
+            return Err(JoinError::Protocol("layout missing".to_owned()));
         };
         Ok(Model::new(welcome, layout))
     }
@@ -168,7 +184,7 @@ impl Model {
         model
     }
 
-    pub fn rejoin(&mut self, link: &mut Link, hello: Hello) -> Result<Rejoin, String> {
+    pub fn rejoin(&mut self, link: &mut Link, hello: Hello) -> Result<Rejoin, JoinError> {
         let joined = Model::join(link, hello)?;
         Ok(self.gate(joined))
     }
@@ -420,7 +436,7 @@ impl Model {
                 self.runtimes.retain(|known| known.name != name);
                 return Applied::State;
             }
-            ClientEvent::Welcome(_) => {}
+            ClientEvent::Welcome(_) | ClientEvent::Refused { .. } => {}
         }
         Applied::Nothing
     }

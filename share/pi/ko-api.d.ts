@@ -493,7 +493,11 @@ export interface components {
             width: number;
         };
         Cells: number;
-        ClientEvent: ({
+        ClientEvent: {
+            message: string;
+            /** @constant */
+            type: "refused";
+        } | ({
             /** @constant */
             type: "welcome";
         } & components["schemas"]["Welcome"]) | ({

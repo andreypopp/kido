@@ -112,10 +112,13 @@ private class AlertEscape: NSView {
     private var welcomed = false
     private var selectedFirst = false
     private var receiving = false
-    var canNavigate: Bool {
-        if case .mismatch = link { return false }
-        return alive && snapshot != nil
+    private var needsRestart: Bool {
+        switch link {
+        case .mismatch, .refused: true
+        default: false
+        }
     }
+    var canNavigate: Bool { alive && !needsRestart && snapshot != nil }
     private var pendingNewSession = false
     private var pendingInitialSession = false
     private var navigationModel = SessionModel()
@@ -172,12 +175,13 @@ private class AlertEscape: NSView {
     }
 
     @objc private func localServerRestarted(_ notification: Notification) {
-        guard alive, host == .local, case .mismatch = link, notification.object as? String == serverDir else { return }
+        guard alive, host == .local, needsRestart, notification.object as? String == serverDir else { return }
         begin(.serverRestart)
     }
 
     private enum Link {
         case down
+        case refused
         case starting
         case mismatch(code: ko_code, server: KoVersion, own: KoVersion)
         case changed
@@ -312,11 +316,11 @@ private class AlertEscape: NSView {
     func windowDidEnterFullScreen(_ notification: Notification) { updateAppearance() }
     func windowDidExitFullScreen(_ notification: Notification) { updateAppearance() }
 
-    func down(_ title: String, _ detail: String, button: String?) {
+    func down(_ title: String, _ detail: String, button: String?, action: Selector = #selector(WindowOwner.start)) {
         guard alive else { return }
         sidebar.list.leave()
         sidebar.showConfigError(nil)
-        banner.show(title, detail, button: button)
+        banner.show(title, detail, button: button, action: action)
         sidebar.list.offline(title)
     }
 
@@ -363,9 +367,9 @@ private class AlertEscape: NSView {
         guard alive else { return }
         switch link {
         case .starting, .connected, .changed: return
-        case .mismatch, .down: break
+        case .mismatch, .refused, .down: break
         }
-        invalidate(keepingSnapshot: { if case .mismatch = link { true } else { false } }())
+        invalidate(keepingSnapshot: needsRestart)
         connect(cause: cause)
     }
 
@@ -454,6 +458,9 @@ private class AlertEscape: NSView {
         }
     }
 
+    static let restartTitle = "Restart Server"
+    static let restartWarning = "Restarting ends all sessions and panes on this local ko server. Running commands and agents will stop. Other clients attached to this server will disconnect."
+
     static func mismatchAlert(host: Host, code: ko_code, server: KoVersion, own: KoVersion, serverDir: String) -> NSAlert {
         let alert = NSAlert()
         let local = host == .local
@@ -465,7 +472,7 @@ private class AlertEscape: NSView {
             let detail = code == KO_ERR_PROTOCOL_MISMATCH ? protocols : "This app runs terminal revision \(own.vt.prefix(9)). The server runs \(server.vt.prefix(9))."
             alert.messageText = "Restart the local ko server"
             alert.informativeText = "The running server is a different version and must be restarted to upgrade. \(detail) \(builds)"
-                + "\n\nRestarting ends all sessions and panes on this local ko server. Running commands and agents will stop. Other clients attached to this server will disconnect."
+                + "\n\n" + restartWarning
         } else if code == KO_ERR_PROTOCOL_MISMATCH, let major = server.major, let ours = own.major, major > ours {
             alert.messageText = "Update Kido.app to connect to \(host.label)"
             alert.informativeText = "The server speaks ko protocol \(server.protocolVersion); this app speaks \(own.protocolVersion). Update Kido.app on this Mac. \(builds)"
@@ -479,7 +486,7 @@ private class AlertEscape: NSView {
         if !local {
             alert.informativeText += "\n\nOn \(host.label), stop the server with the command below, then run ko server. All sessions and panes on that server will end."
         }
-        alert.addButton(withTitle: local ? "Restart Server" : "Reconnect").hasDestructiveAction = local
+        alert.addButton(withTitle: local ? restartTitle : "Reconnect").hasDestructiveAction = local
         alert.addButton(withTitle: "Close").keyEquivalent = "\u{1b}"
         alert.buttons[0].keyEquivalent = ""
         alert.window.defaultButtonCell = alert.buttons[1].cell as? NSButtonCell
@@ -508,21 +515,35 @@ private class AlertEscape: NSView {
             guard let self, accepts(generation) else { return }
             guard response == .alertFirstButtonReturn else { banner.isHidden = false; return }
             if host != .local { return start() }
-            link = .starting
-            task = Task {
-                do throws(Failure) {
-                    try await KoServer.stop(dir: serverDir)
-                    guard accepts(generation) else { return }
-                    NotificationCenter.default.post(name: Self.localServerRestarted, object: serverDir)
-                    link = .down
-                    begin(.serverRestart)
-                } catch {
-                    guard accepts(generation) else { return }
-                    link = .down
-                    down("Could not restart the ko server", error.message, button: "Reconnect")
-                }
+            restartServer()
+        }
+    }
+
+    @objc func restartServer() {
+        guard host == .local else { return }
+        invalidate(keepingSnapshot: true)
+        link = .starting
+        down("Restarting the ko server…", "", button: nil)
+        let generation = generation
+        task = Task {
+            do throws(Failure) {
+                try await KoServer.stop(dir: serverDir)
+                guard accepts(generation) else { return }
+                NotificationCenter.default.post(name: Self.localServerRestarted, object: serverDir)
+                link = .down
+                begin(.serverRestart)
+            } catch {
+                guard accepts(generation) else { return }
+                link = .down
+                down("Could not restart the ko server", error.message, button: "Reconnect")
             }
         }
+    }
+
+    func refused(_ message: String) {
+        invalidate(keepingSnapshot: true)
+        link = .refused
+        down("The ko server refused the connection", message + (host == .local ? "\n\n" + Self.restartWarning : ""), button: host == .local ? Self.restartTitle : "Reconnect", action: host == .local ? #selector(restartServer) : #selector(start))
     }
 
     #if KIDO_VISUAL || KIDO_STRESS
@@ -904,6 +925,7 @@ private class AlertEscape: NSView {
                 sidebar.list.leave()
             }
         case .failed(let code, let message):
+            if code == KO_ERR_REFUSED { return refused(message) }
             welcomed = false
             guard recovering == nil else { return }
             if host == .local, code == KO_ERR_NO_SERVER { return startServer() }

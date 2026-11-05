@@ -19,7 +19,7 @@ use tungstenite::Bytes;
 use super::view::{Feed, Slice, View};
 use super::{Code, Command, Posted, Shared, ViewEvent, layout_of, locked, post, string};
 use crate::launch::{self, BACKOFF_FIRST, backoff_after};
-use crate::model::{Applied, Model, Rejoin};
+use crate::model::{Applied, JoinError, Model, Rejoin};
 use crate::wire::{Link, Next, READ_TIMEOUT, WATCHDOG, buffered, silent, text};
 
 const WATCH: Duration = Duration::from_secs(2);
@@ -136,7 +136,18 @@ impl Engine<'_> {
         if self.shared.cancel.is_set() {
             return;
         }
-        if code != Code::NoServer
+        if code == Code::Refused {
+            if let Some(mut session) = self.session.take() {
+                session.link.unwatch(&mut self.poll);
+            }
+            self.shared.up.store(false, Ordering::SeqCst);
+            self.poll.stop(self.watch);
+            self.poll.stop(self.retry);
+            for open in std::mem::take(&mut self.views) {
+                self.close_view(open, code, &message);
+            }
+            post(self.shared, Posted::Failed(code, string(&message)));
+        } else if code != Code::NoServer
             && let Some((code, server)) = self.mismatch()
         {
             self.shared.up.store(false, Ordering::SeqCst);
@@ -165,7 +176,10 @@ impl Engine<'_> {
         )
         .map_err(|error| failure(&error))?;
         let hello = locked(&shared.hello).clone();
-        let joined = Model::join(&mut link, hello).map_err(protocol_error)?;
+        let joined = Model::join(&mut link, hello).map_err(|error| match error {
+            JoinError::Refused(message) => (Code::Refused, message),
+            JoinError::Protocol(message) => protocol_error(message),
+        })?;
         let rejoin = match locked(&shared.model).as_mut() {
             Some(earlier) => earlier.gate(joined),
             None => Rejoin::Fresh(joined),

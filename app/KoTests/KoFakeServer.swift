@@ -1,11 +1,12 @@
 import Darwin
+import CryptoKit
 import Foundation
 
 final class KoFakeServer: @unchecked Sendable {
     private let listener: Int32
     let socket: String
 
-    init(directory: String, version: String?) throws {
+    init(directory: String, version: String?, refusal: String? = nil) throws {
         socket = directory + "/socket"
         listener = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         var address = sockaddr_un()
@@ -21,10 +22,28 @@ final class KoFakeServer: @unchecked Sendable {
             while true {
                 let connection = accept(listener, nil, nil)
                 if connection < 0 { return }
-                guard let version, var mismatch = fields else { continue }
+                guard version != nil || refusal != nil else { continue }
+                var timeout = timeval(tv_sec: 5, tv_usec: 0)
+                _ = setsockopt(connection, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
                 var request = [UInt8](repeating: 0, count: 4096)
                 let count = read(connection, &request, request.count)
-                let head = String(decoding: request.prefix(max(count, 0)), as: UTF8.self).lowercased()
+                let lines = String(decoding: request.prefix(max(count, 0)), as: UTF8.self).components(separatedBy: "\r\n")
+                let head = lines.joined(separator: "\r\n").lowercased()
+                if let refusal {
+                    guard head.hasPrefix("get /client ") else { close(connection); continue }
+                    let key = lines.first { $0.lowercased().hasPrefix("sec-websocket-key:") }?.dropFirst("sec-websocket-key:".count).trimmingCharacters(in: .whitespaces) ?? ""
+                    let accept = Data(Insecure.SHA1.hash(data: Data((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").utf8))).base64EncodedString()
+                    let upgrade = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: \(accept)\r\n\r\n"
+                    _ = write(connection, upgrade, upgrade.utf8.count)
+                    _ = read(connection, &request, request.count)
+                    let body = try! JSONEncoder().encode(["type": "refused", "message": refusal])
+                    precondition(body.count < 126)
+                    let frame = Data([0x81, UInt8(body.count)]) + body
+                    frame.withUnsafeBytes { _ = write(connection, $0.baseAddress, $0.count) }
+                    close(connection)
+                    continue
+                }
+                guard let version, var mismatch = fields else { close(connection); continue }
                 let discovery = head.hasPrefix("get /version ") && !head.contains("\r\nko-protocol:") && !head.contains("\r\nko-vt:")
                 let supplied = head.components(separatedBy: "\r\n").first { $0.hasPrefix("ko-protocol:") }?.dropFirst("ko-protocol:".count).trimmingCharacters(in: .whitespaces)
                 let protocolMismatch = supplied?.split(separator: ".").first != mismatch["protocol"]?.split(separator: ".").first

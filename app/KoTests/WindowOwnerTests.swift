@@ -168,6 +168,45 @@ import KoModel
         XCTAssertEqual(version["build"], KoClient.version.build)
     }
 
+    func testARefusedHelloShowsTheServerErrorWithoutTheWelcomeTimeout() throws {
+        let dir = try stateDir()
+        let server = try KoFakeServer(directory: dir, version: nil, refusal: "missing field `required_extra`")
+        defer { server.stop() }
+        let owner = try owner(dir)
+        wait("the refusal") { owner.testBanner.testText.button == "Restart Server" }
+        XCTAssertTrue(owner.testBanner.testText.detail.hasPrefix("missing field `required_extra`"))
+        XCTAssertEqual(owner.testBanner.testText.title, "The ko server refused the connection")
+    }
+
+    func testRestartAfterRefusalReplacesTheLocalServerAndItsPanes() throws {
+        let dir = try stateDir()
+        let owner = try owner(dir)
+        wait("the first session") { self.names(owner) == ["session"] && owner.testBanner.isHidden }
+        owner.renameSession(SessionID(number: 1), "before-restart") { error in XCTAssertNil(error) }
+        wait("the old session") { self.names(owner) == ["before-restart"] }
+        owner.refused("hello refused")
+        let stack = try XCTUnwrap(owner.testBanner.subviews.first as? NSStackView)
+        try XCTUnwrap(stack.arrangedSubviews.compactMap { $0 as? NSButton }.first).performClick(nil)
+        wait("the replacement server") { self.names(owner) == ["session"] && owner.testBanner.isHidden }
+    }
+
+    func testARefusalShowsTheServerTextAndOnlyLocalOffersRestart() throws {
+        let dir = try stateDir()
+        let local = try owner(dir, start: false)
+        local.refused("missing field `required_extra`")
+        XCTAssertEqual(local.testBanner.testText.title, "The ko server refused the connection")
+        XCTAssertTrue(local.testBanner.testText.detail.hasPrefix("missing field `required_extra`"))
+        XCTAssertTrue(local.testBanner.testText.detail.contains(WindowOwner.restartWarning))
+        XCTAssertEqual(local.testBanner.testText.button, "Restart Server")
+        XCTAssertFalse(local.canNavigate)
+        let remote = WindowOwner(host: .remote("example"), runtime: local.runtime, start: false)
+        defer { remote.close() }
+        remote.refused("missing field `required_extra`")
+        XCTAssertEqual(remote.testBanner.testText.detail, "missing field `required_extra`")
+        XCTAssertEqual(remote.testBanner.testText.button, "Reconnect")
+        XCTAssertNil(remote.preparedAlert)
+    }
+
     func testAServerThatNeverWelcomesEndsInTheStartBannerAtTheDeadline() throws {
         let dir = try stateDir()
         let server = try KoFakeServer(directory: dir, version: nil)

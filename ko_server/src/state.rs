@@ -1434,10 +1434,15 @@ impl State {
         let id = client.id;
         let layout = document.layout();
         let change = request
-            .map_err(|_| "invalid message")
-            .and_then(|request| client.receive(request));
-        let Ok(change) = change else {
-            return wire.ws.reject(wire.out, "invalid");
+            .map_err(|error| error.to_string())
+            .and_then(|request| client.receive(request).map_err(str::to_owned));
+        let change = match change {
+            Ok(change) => change,
+            Err(message) => {
+                wire.ws
+                    .send(wire.out, protocol::json(&ClientEvent::Refused { message }));
+                return wire.ws.reject(wire.out, "invalid");
+            }
         };
         let (current, notify) = match change {
             Change::Hello(selection) => {

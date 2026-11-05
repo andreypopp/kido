@@ -212,6 +212,22 @@
       "ClientEvent": {
         "oneOf": [
           {
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "type": {
+                "const": "refused",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "message"
+            ],
+            "type": "object"
+          },
+          {
             "allOf": [
               {
                 "$ref": "#/components/schemas/Welcome"

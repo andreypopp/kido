@@ -26,6 +26,21 @@ fn wait_doc(what: &str, s: &Server, mut check: impl FnMut(&Value) -> bool) {
 }
 
 #[test]
+fn a_bad_client_hello_reports_the_decode_error_before_closing() {
+    let s = start(&[]);
+    let mut client = s.ws("/client");
+    client.send(&json!({"type": "hello", "focused": false, "size": {"cols": 80, "rows": 24}}));
+    let refusal = client.event("refused");
+    assert_eq!(refusal["message"], "missing field `name`");
+    client.closed("the refused hello");
+
+    let mut client = s.ws("/client");
+    client.send(&json!({"type": "focused", "focused": false}));
+    assert_eq!(client.event("refused")["message"], "hello must be first");
+    client.closed("the request before hello");
+}
+
+#[test]
 fn a_tree_scaled_down_to_one_column_for_each_pane_and_back() {
     let s = start(&[]);
     let tree_of = split(

@@ -62,7 +62,9 @@ extern "C" {
  * inside a ko_restore_fn.
  *
  * Reconnect. The core connects again by itself after the connection ended,
- * with a delay that grows to two seconds, except after KO_EVENT_MISMATCH. KO_EVENT_FAILED reports the first
+ * with a delay that grows to two seconds, except after KO_EVENT_MISMATCH or
+ * a KO_EVENT_FAILED with KO_ERR_REFUSED. A refusal before Welcome carries the
+ * server's text and stops reconnect attempts. KO_EVENT_FAILED reports the first
  * failure of an outage, and reports once more if a later attempt first finds
  * no server (KO_ERR_NO_SERVER). A new KO_EVENT_WELCOME ends the outage. Its
  * `fresh` is true when the server is another process than the one before

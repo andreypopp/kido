@@ -70,7 +70,7 @@ visual visual-fast visual-slow: project
 	trap '$(KO_ABS)/build/ko/bin/ko kill-server --server "$$server" 2>/dev/null || true; rm -rf "$$server"' EXIT; \
 	xcodebuild -project Kido.xcodeproj -scheme Visual -configuration Debug KIDO_VISUAL_SERVER="$$server" \
 		-destination platform=macOS -derivedDataPath $(DERIVED) KO_CHECKOUT=$(KO_ABS) KIDO_VISUAL_CONDITION=KIDO_VISUAL \
-		KIDO_VISUAL_RECORD=$(RECORD) $$select test 2>&1 | $(XCODE_PROGRESS)
+		KIDO_VISUAL_RECORD=$(RECORD) $(if $(ONLY),-only-testing:VisualTests/$(ONLY)) $$select test 2>&1 | $(XCODE_PROGRESS)
 	python3 scripts/quit-check.py $(abspath $(APP))
 
 ko-test: DERIVED = build/xcode.noindex/derived-$@

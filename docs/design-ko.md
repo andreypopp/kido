@@ -753,7 +753,9 @@ started on the directory is used as it is. When that server refuses the
 another protocol or terminal revision, fails with both versions and
 builds, the command `ko kill-server` that ends every session and pane,
 and the advice to start again (`ko_tui/src/client.rs`); for `ko HOST`
-the command runs on the host.
+the command runs on the host. A server that refuses the hello
+(docs/protocol.md, section 3), at the first join or at a reconnect, makes
+the terminal client fail at once with the server's own text.
 
 `ko api` sends one HTTP request, as `gh api` does, and never starts a
 server. With `--stream`, it upgrades a WebSocket route, prints each

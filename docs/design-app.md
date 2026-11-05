@@ -55,7 +55,7 @@ stale, and once per main-queue turn the owner reads it again with
 `ko_client_model`, decodes it into `KoModel` and derives the session view,
 the sidebar `Snapshot` and the tabs from it. The owner keeps only that
 model; the layout editor still gets every layout revision. The owner's link is
-`down`, `starting`, `mismatch`, `changed` (the bundle changed on disk) or
+`down`, `starting`, `mismatch`, `refused`, `changed` (the bundle changed on disk) or
 `connected`. There is no second long-lived connection: an image fetch
 (`ko_client_image`) is one request on its own short connection.
 
@@ -67,7 +67,7 @@ Finder or the Dock opens gets launchd's environment, not the shell's: a
 `KO_STATE_DIR` or `XDG_STATE_HOME` that only the shell sets selects another
 server for `ko`. `KIDO_APP_SERVER` overrides the directory, in VISUAL and STRESS
 builds only. The app never stops the server on quit; only the local
-mismatch sheet's Restart stops it. When no local server runs, the app
+mismatch sheet's Restart and the refusal banner's Restart Server stop it. When no local server runs, the app
 starts one: every local connection (at launch, for each new local window
 and on Reconnect) runs `KoServer.launch`, which calls
 `ko_client_launch(dir, bundled ko)` on a detached task. It starts a server
@@ -148,6 +148,24 @@ directory dials again. A failed restart is a banner, "Could not restart
 the ko server", with Reconnect. The bundle's `Resources/ko/BUILD-ID` is
 read at launch; a different value at a later connection means that the app
 was replaced on disk and requires a relaunch.
+
+**Refusal.** A server that refuses the hello (docs/protocol.md, section 3)
+is usually another ko build of the same protocol and terminal revision,
+so the version check passes. The core reports `KO_EVENT_FAILED` with
+`KO_ERR_REFUSED` and the server's text, and does not retry
+(`ko_client/include/ko_client.h`, "Reconnect"). The owner's link becomes
+`refused` at once, without the welcome deadline: it keeps its last
+snapshot read-only and shows the banner "The ko server refused the
+connection" with the server's text. A local owner adds the mismatch
+sheet's warning that a restart ends the server's sessions, panes, commands
+and agents, and its button Restart Server, which does what the sheet's
+Restart does: it
+stops the server with `ko_client_stop_server`, posts the same
+notification, and every local owner in the `mismatch` or `refused` state
+on that directory dials again, which starts a fresh server through
+`KoServer.launch`. A remote owner shows the text with Reconnect, which
+dials again as after a remote mismatch: the app never stops a remote
+server.
 ## Remote hosts
 
 A remote window reaches the ko server on the host through an SSH forward
@@ -2050,7 +2068,9 @@ config is its own `$TMPDIR/kido-visual-PID.yaml`, removed in the class
 teardown. `testYAMLSettingsRendering` records the system font, a font
 family and size, a dark theme and a user theme of the test's own
 `themes` directory; `testConfigErrorBanner` records the error strip in
-light and dark. A test-only
+light and dark; `testClientRefusalBanner` records the refusal banner of a
+local owner (with Restart Server) and a remote one (with Reconnect), in light
+and dark. A test-only
 `KIDO_VISUAL` build condition exposes an occlusion bypass through
 `@testable`; normal builds retain their occlusion policy. Each image waits
 for a tokened Ghostty presented-frame callback, not a timed delay. The fence

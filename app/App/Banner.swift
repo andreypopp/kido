@@ -34,10 +34,11 @@ final class Banner: NSView {
         fatalError("init(coder:) is not supported")
     }
 
-    func show(_ title: String, _ detail: String, button: String?) {
+    func show(_ title: String, _ detail: String, button: String?, action: Selector) {
         self.title.stringValue = title
         self.detail.stringValue = detail
         self.button.title = button ?? ""
+        self.button.action = action
         self.button.isHidden = button == nil
         isHidden = false
         window?.makeFirstResponder(nil)
