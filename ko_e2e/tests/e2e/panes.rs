@@ -9,10 +9,14 @@ use serde_json::{Value, json};
 use crate::harness::{
     Dir, PRINT_TOKEN, Run, Server, poll, run_ko, start_in, stays, test_env, wait_gone, write_config,
 };
+
 use crate::layout::windows;
-use crate::runs::{caller, code, has_pane, id_of, ko_as, pane_of, run_of, wait_pane_gone};
 
 pub(crate) type Headers = Vec<(String, String)>;
+
+fn wait_pane_gone(s: &Server, pane: &str) {
+    poll(&format!("{pane} to be removed"), || !s.has_pane(pane));
+}
 
 fn tuned() -> Server {
     let dir = Dir::new("ko-");
@@ -20,17 +24,14 @@ fn tuned() -> Server {
     start_in(
         dir,
         Path::new("/bin/sh"),
-        &[
-            ("KO_STOP_ESCALATION_MS", "600"),
-            ("KO_RUN_SCREEN_BYTES", "6000"),
-        ],
+        &[("KO_STOP_ESCALATION_MS", "600")],
         &[],
     )
 }
 
 pub(crate) fn api(s: &Server, who: Option<&str>, method: &str, path: &str, body: &Value) -> Run {
     let args = ["api", "-X", method, "--input", "-", path];
-    ko_as(s, who, &args, &body.to_string())
+    s.ko_as(who, &args, &body.to_string())
 }
 
 pub(crate) fn post(s: &Server, who: Option<&str>, path: &str, body: &Value) -> Value {
@@ -240,14 +241,6 @@ fn placement(s: &Server) {
         3,
         "no session and no parent or caller is a new session"
     );
-
-    let run = run_of(s, &other, "placed", &["sleep", "300"]);
-    assert_eq!(
-        window_names(s, 1),
-        ["w", "placed", "c1", "tail"],
-        "a run goes where a pane goes: after its caller's window"
-    );
-    s.delete(&format!("/panes/{}", pane_of(&run))).ok();
 }
 
 fn refusals_leave_the_document(s: &Server) {
@@ -290,7 +283,7 @@ fn refusals_leave_the_document(s: &Server) {
         (&before["layout"], &before["revision"]),
         "no refused request changed the document"
     );
-    assert!(has_pane(s, &live));
+    assert!(s.has_pane(&live));
 
     let put = s.put(&put_with(&live, "on_exit"));
     let kid = put["layout"]["sessions"][0]["windows"]
@@ -318,7 +311,7 @@ fn refusals_leave_the_document(s: &Server) {
 }
 
 fn stops(s: &Server) {
-    let caller = caller(s);
+    let caller = s.token_pane("exec cat");
     let stop = |pane: &str, wait_ms: u64| {
         api(
             s,
@@ -337,35 +330,26 @@ fn stops(s: &Server) {
         took >= Duration::from_millis(400) && took < Duration::from_secs(3),
         "the stop ended with the pane: {took:?}"
     );
-    assert!(!has_pane(s, &polite));
+    assert!(!s.has_pane(&polite));
 
     let patient = s.pane("exec cat");
     let began = Instant::now();
     stop(&patient, 300).ok();
     assert!(began.elapsed() >= Duration::from_millis(250));
-    assert!(!has_pane(s, &patient), "removed when the wait ran out");
+    assert!(!s.has_pane(&patient), "removed when the wait ran out");
 
     let hasty = s.pane("exec cat");
     stop(&hasty, 0).ok();
-    assert!(!has_pane(s, &hasty), "no wait removes at once");
+    assert!(!s.has_pane(&hasty), "no wait removes at once");
 
     let ended = s.pane("exit 0");
     poll("the pane to die", || s.row(&ended)["dead"].is_object());
     stop(&ended, 4000).ok();
-    assert!(!has_pane(s, &ended), "a dead pane is removed at once");
+    assert!(!s.has_pane(&ended), "a dead pane is removed at once");
 
     refused(stop("pane_999", 0), 404, "not_found", "");
     refused(stop(&caller, 3_600_001), 400, "invalid", "too long");
-    assert!(has_pane(s, &caller), "a refused stop removes nothing");
-
-    let run = run_of(s, &caller, "stopped-by-pane", &["sleep", "300"]);
-    stop(pane_of(&run), 0).ok();
-    wait_pane_gone(s, pane_of(&run));
-    assert_eq!(
-        crate::runs::ending(s, id_of(&run)).0,
-        "died",
-        "a pane stop records no outcome of the run"
-    );
+    assert!(s.has_pane(&caller), "a refused stop removes nothing");
 }
 
 fn escalation(s: &Server) {
@@ -421,35 +405,102 @@ fn closing(s: &Server) {
     let gone = new(json!({"command": dies(), "close": "on_exit"}));
     let kept = new(json!({"command": dies(), "close": "keep"}));
     let shown = new(json!({"command": dies(), "close": "on_exit"}));
+    let unfocused = new(json!({"command": dies(), "close": "on_exit"}));
     let (mut client, _) = s.app_client(json!({"pane": shown}), true, (80, 24));
+    let (_other, _) = s.app_client(json!({"pane": kept}), true, (80, 24));
+    let (_unfocused, _) = s.app_client(json!({"pane": unfocused}), false, (80, 24));
+    wait_pane_gone(s, &unfocused);
     wait_pane_gone(s, &gone);
     sweep_witness(s);
     assert!(
-        has_pane(s, &kept) && has_pane(s, &shown),
+        s.has_pane(&kept) && s.has_pane(&shown),
         "a pane that keeps, or that a focused client shows, went"
     );
     client.send(&json!({"type": "focused", "focused": false}));
     wait_pane_gone(s, &shown);
-    assert!(has_pane(s, &kept), "keep stays dead");
+    assert!(s.has_pane(&kept), "keep stays dead");
 
-    let parent = new(json!({"command": cat()}));
+    let finish = s.scratch.join("split-finish");
+    let root = new(
+        json!({"close": "on_exit", "command": {"type": "shell", "command": format!("while [ ! -f '{}' ]; do sleep 0.05; done", finish.display())}}),
+    );
+    let put = s.edit(|layout| {
+        for session in layout["sessions"].as_array_mut().unwrap() {
+            for window in session["windows"].as_array_mut().unwrap() {
+                if window["tree"]["pane"] == root {
+                    window["tree"] = json!({"split": "h", "children": [
+                        {"pane": root}, {"pane": {"new": {"command": cat()}}}
+                    ]});
+                }
+            }
+        }
+    });
+    let split = crate::layout::windows(&put)
+        .into_iter()
+        .find(|window| window["tree"]["children"][0]["pane"] == root)
+        .unwrap()["tree"]["children"][1]["pane"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    fs::write(&finish, "").unwrap();
+    wait_pane_gone(s, &root);
+    assert!(s.has_pane(&split));
+    assert!(
+        crate::layout::windows(&s.doc())
+            .iter()
+            .any(|window| window["tree"]["pane"] == split)
+    );
+    let solo = post(
+        s,
+        None,
+        "/panes",
+        &json!({"close": "on_exit", "command": dies()}),
+    );
+    wait_pane_gone(s, solo["pane"].as_str().unwrap());
+    assert!(
+        s.doc()["layout"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|session| session["id"] != solo["session"])
+    );
+
+    let parent = new(
+        json!({"command": {"type": "shell", "command": "stty raw -echo; printf '\\033]7501;state=idle:app=pi\\007'; exec cat"}}),
+    );
+    s.wait_row(&parent, "its pi root", |row| {
+        row["status"]["program_status"]["records"]
+            .as_array()
+            .is_some_and(|records| !records.is_empty())
+    });
     let live_child = new(json!({"parent": parent, "command": cat()}));
     let dead_child = new(json!({"parent": parent, "command": dies()}));
     let grandchild = new(json!({"parent": live_child, "command": cat()}));
     poll("the dead child to die", || {
         s.row(&dead_child)["dead"].is_object()
     });
+    s.text(&parent, &crate::status::osc7501("state=clear"));
+    s.wait_row(&parent, "the cleared pi root", |row| {
+        row["status"]["program_status"]["records"] == json!([])
+    });
+    let child_pid = s.wait_row(&live_child, "its child process", |row| {
+        row["pid"].is_number()
+    })["pid"]
+        .as_u64()
+        .unwrap();
+    let child_pid = ko_sys::pid::Pid::new(child_pid.try_into().unwrap()).unwrap();
     sweep_witness(s);
     assert!(
         [&live_child, &dead_child, &grandchild]
             .iter()
-            .all(|pane| has_pane(s, pane)),
+            .all(|pane| s.has_pane(pane)),
         "a child went while its parent lived"
     );
     s.delete(&format!("/panes/{parent}")).ok();
     for pane in [&live_child, &dead_child, &grandchild] {
         wait_pane_gone(s, pane);
     }
+    crate::harness::wait_gone(child_pid, "the orphan command");
 
     let gate = s.scratch.join("gate");
     let wait = format!("while [ ! -f {} ]; do sleep 0.05; done", gate.display());
@@ -463,49 +514,9 @@ fn closing(s: &Server) {
     );
 }
 
-fn captured_screen(s: &Server) {
-    let caller = caller(s);
-    let run = run_of(
-        s,
-        &caller,
-        "long",
-        &["sh", "-c", "seq 1 1500; echo LAST-LINE; exit 3"],
-    );
-    wait_pane_gone(s, pane_of(&run));
-    let screen = s
-        .ko(&["api", &format!("/runs/{}/screen", id_of(&run))], "")
-        .ok();
-    assert_eq!(
-        screen.len(),
-        6000,
-        "the end up to the configured size: {}",
-        screen.len()
-    );
-    assert!(screen.contains("LAST-LINE"));
-    assert!(
-        screen.contains("\n400\n"),
-        "the history from before the last 1000 rows is kept"
-    );
-    assert!(!screen.contains("\n50\n"), "the head beyond the cap is cut");
-    let shown = ko_as(s, None, &["runs", id_of(&run)], "").ok();
-    assert!(
-        shown.contains("screen:\n") && shown.contains("LAST-LINE"),
-        "{shown}"
-    );
-    let listed = ko_as(s, None, &["runs", "--json", id_of(&run)], "").json();
-    assert_eq!(listed.get("screen"), None, "the detail names no screen");
-    let none = ko_as(
-        s,
-        None,
-        &["api", "/runs/00000000000000000000000000000000/screen"],
-        "",
-    );
-    assert_eq!(code(&none), 1);
-}
-
 fn identity(s: &Server) {
     let user = s.headers();
-    let p = caller(s);
+    let p = s.token_pane("exec cat");
     let q = s.token_pane("exec cat");
     let r = token_pane_in_new_session(s, "elsewhere");
     let (by_p, by_q) = (s.as_pane(&p), s.as_pane(&q));
@@ -588,17 +599,6 @@ fn identity(s: &Server) {
         .unwrap()
         .to_owned();
 
-    let run_body =
-        |parent: &str| json!({"name": "r", "argv": ["/bin/sleep", "300"], "parent": parent});
-    refused(
-        api(s, Some(&p), "POST", "/runs", &run_body(&q)),
-        409,
-        "refused",
-        "name only itself",
-    );
-    let run = post(s, Some(&p), "/runs", &run_body(&p));
-    assert_eq!(s.row(run["pane"].as_str().unwrap())["parent"], p.as_str());
-
     let stop = |who: Option<&str>, pane: &str| {
         api(s, who, "POST", &format!("/panes/{pane}/stop"), &json!({}))
     };
@@ -608,13 +608,13 @@ fn identity(s: &Server) {
         "refused",
         "not a child, sibling or ancestor",
     );
-    assert!(has_pane(s, &r));
+    assert!(s.has_pane(&r));
     stop(Some(&p), &q).ok();
-    assert!(!has_pane(s, &q), "a sibling is in scope");
+    assert!(!s.has_pane(&q), "a sibling is in scope");
     stop(Some(&p), &child).ok();
-    assert!(!has_pane(s, &child), "a child is in scope");
+    assert!(!s.has_pane(&child), "a child is in scope");
     stop(None, &r).ok();
-    assert!(!has_pane(s, &r), "the user stops any pane");
+    assert!(!s.has_pane(&r), "the user stops any pane");
 
     let other = s.token_pane("exec cat");
     refused(
@@ -642,6 +642,5 @@ fn panes_are_made_stopped_swept_and_acted_for_by_their_token() {
     escalation(&s);
     abandoned_stop(&s);
     closing(&s);
-    captured_screen(&s);
     identity(&s);
 }

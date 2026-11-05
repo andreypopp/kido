@@ -30,28 +30,40 @@ pub fn decode(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-pub struct Encoded<'a>(pub &'a [u8]);
-
-impl std::fmt::Display for Encoded<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use std::fmt::Write as _;
-        for group in self.0.chunks(3) {
-            let mut word = [0; 4];
-            word[1..=group.len()].copy_from_slice(group);
-            let word = u32::from_be_bytes(word);
-            for index in 0..4 {
-                if index <= group.len() {
-                    let symbol = (word >> (18 - 6 * index)) & 63;
-                    f.write_char(char::from(BASE64[symbol as usize]))?;
-                } else {
-                    f.write_char('=')?;
-                }
+pub fn encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for group in bytes.chunks(3) {
+        let mut word = [0; 4];
+        word[1..=group.len()].copy_from_slice(group);
+        let word = u32::from_be_bytes(word);
+        for index in 0..4 {
+            if index <= group.len() {
+                let symbol = (word >> (18 - 6 * index)) & 63;
+                out.push(char::from(BASE64[symbol as usize]));
+            } else {
+                out.push('=');
             }
         }
-        Ok(())
     }
+    out
 }
 
-pub fn encode(bytes: &[u8]) -> String {
-    Encoded(bytes).to_string()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encoded_bytes_keep_padding_and_binary_values() {
+        for (bytes, expected) in [
+            (&b""[..], ""),
+            (b"f", "Zg=="),
+            (b"fo", "Zm8="),
+            (b"foo", "Zm9v"),
+            (b"foob", "Zm9vYg=="),
+            (&[0xff, 0xff, 0xff], "////"),
+            (&[0xff, 0xfe, 0x80], "//6A"),
+        ] {
+            assert_eq!(encode(bytes), expected);
+        }
+    }
 }

@@ -17,12 +17,9 @@ use serde_json::Value;
 use crate::api::WaitMs;
 use crate::config::BUILD;
 use crate::http::Status;
-use crate::ids::{
-    ClientId, Instance, MessageId, Name, PaneId, RunId, SessionId, VarName, WindowId,
-};
+use crate::ids::{ClientId, Instance, MessageId, Name, PaneId, SessionId, VarName, WindowId};
 use crate::pane_proc::{self, Death};
 use crate::route::{Body, Invalid};
-use crate::runs::{Meta, Parent, RunName, RunOutcome, RunResult};
 use crate::vars::{Loose, Vars};
 
 const PROTOCOL: &str = "1.0";
@@ -70,12 +67,6 @@ fn records_are_objects(input: &Value, output: &Value) -> bool {
 
 pub fn json(value: &impl Serialize) -> String {
     serde_json::to_string(value).unwrap_or_default()
-}
-
-pub(crate) fn json_sized(value: &impl Serialize, capacity: usize) -> String {
-    let mut buffer = Vec::with_capacity(capacity);
-    let _ = serde_json::to_writer(&mut buffer, value);
-    String::from_utf8(buffer).unwrap_or_default()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -483,8 +474,6 @@ pub struct Row {
     pub status: Option<PaneStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress: Option<Progress>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run: Option<RunRow>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<PaneId>,
     #[serde(default, skip_serializing_if = "Close::is_keep")]
@@ -1625,7 +1614,6 @@ pub enum ClientEvent {
         #[schemars(extend("x-always-sent" = true))]
         progress: Option<Progress>,
     },
-    Run(RunRow),
     Inbox {
         pane: PaneId,
         inbox: bool,
@@ -1756,48 +1744,6 @@ pub const IMAGE_GAP_HEADER: &str = "ko-image-gap-ms";
 pub const IMAGE_FRAMES_HEADER: &str = "ko-image-frames";
 pub const ACCEPT_SHM_HEADER: &str = "ko-accept-shm";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct RunRow {
-    #[serde(flatten)]
-    pub meta: Meta,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub outcome: Option<RunOutcome>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Show {
-    Live,
-    Present,
-    All,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Reported {
-    Completed,
-    Failed,
-    Stopped,
-}
-
-impl From<Reported> for RunResult {
-    fn from(reported: Reported) -> RunResult {
-        match reported {
-            Reported::Completed => RunResult::Completed,
-            Reported::Failed => RunResult::Failed,
-            Reported::Stopped => RunResult::Stopped,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct Info {
-    #[serde(flatten)]
-    pub run: RunRow,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum SessionRef {
@@ -1836,57 +1782,6 @@ impl From<SessionRef> for String {
             SessionRef::Name(name) => name.into(),
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct StartRun {
-    pub name: RunName,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cwd: Option<Cwd>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session: Option<SessionRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<Parent>,
-    #[serde(default)]
-    pub env: Vec<Variable>,
-    /// The runtime of the run's pane, with the rules of a new pane.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime: Option<RuntimeName>,
-    pub argv: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct Started {
-    pub id: RunId,
-    pub window: WindowId,
-    pub pane: PaneId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct Waited {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub outcome: Option<RunOutcome>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct ReportOutcome {
-    pub result: Reported,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub text: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum StopResult {
-    Stopped,
-    Completed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct StopRun {
-    #[serde(default = "WaitMs::none")]
-    pub wait_ms: WaitMs,
-    pub result: StopResult,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -2136,35 +2031,6 @@ pub enum ViewEvent {
     Pasted(PasteResult),
 }
 
-/// One message of the raw output stream of a pane. Offsets count the pane's output bytes from the
-/// start of the pane. Consecutive bytes records have consecutive offsets.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum OutputEvent {
-    /// The bytes that start at the offset.
-    Bytes { offset: u64, data: Text },
-    /// The ring overran the reader: the bytes from `from` up to `to` are lost. The next bytes
-    /// record starts at `to`.
-    Skip { from: u64, to: u64 },
-    /// The pane died, and the stream sent every byte of it. The close follows.
-    Dead(Dead),
-}
-
-/// The bytes record of `OutputEvent`, serialized from a borrowed slice without a copy.
-#[derive(Debug, Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum OutputBytes<'a> {
-    Bytes {
-        offset: u64,
-        #[serde(serialize_with = "base64_text")]
-        data: &'a [u8],
-    },
-}
-
-fn base64_text<S: serde::Serializer>(data: &&[u8], serializer: S) -> Result<S::Ok, S::Error> {
-    serializer.collect_str(&ko_pane_wire::base64::Encoded(data))
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub(crate) enum InputResult {
@@ -2256,42 +2122,6 @@ mod tests {
         ] {
             same::<ClientRequest>(json);
         }
-        for json in [
-            r#"{"name":"w","env":[],"argv":["/bin/sh"]}"#,
-            r#"{"name":"w","cwd":{"pane":"pane_4"},"env":[],"argv":["/bin/sh"]}"#,
-            r#"{"name":"w","cwd":"/tmp","session":"session_2","parent":"pane_1","env":[{"name":"X","value":"y"}],"argv":["/bin/sh","-c","x"]}"#,
-            r#"{"name":"w","session":"work","parent":"0123456789abcdef0123456789abcdef","env":[],"argv":["/bin/sh"]}"#,
-        ] {
-            same::<StartRun>(json);
-        }
-        same::<Started>(
-            r#"{"id":"0123456789abcdef0123456789abcdef","window":"window_2","pane":"pane_3"}"#,
-        );
-        for json in [
-            r#"{}"#,
-            r#"{"outcome":{"result":"failed","text":"exit 2","at":"2023-11-14T22:13:20Z"}}"#,
-        ] {
-            same::<Waited>(json);
-        }
-        for json in [
-            r#"{"result":"completed"}"#,
-            r#"{"result":"failed","text":"why"}"#,
-            r#"{"result":"stopped"}"#,
-        ] {
-            same::<ReportOutcome>(json);
-        }
-        for json in [
-            r#"{"wait_ms":0,"result":"stopped"}"#,
-            r#"{"wait_ms":1500,"result":"completed"}"#,
-        ] {
-            same::<StopRun>(json);
-        }
-        same::<RunRow>(
-            r#"{"id":"0123456789abcdef0123456789abcdef","name":"w","parent":"pane_1","pane":"pane_3","argv":["/bin/sh","-c","x"],"cwd":"/tmp","startedAt":"2023-11-14T22:13:20Z","outcome":{"result":"died"}}"#,
-        );
-        same::<ClientEvent>(
-            r#"{"type":"run","id":"0123456789abcdef0123456789abcdef","name":"w","pane":"pane_3","argv":["/bin/sh"],"cwd":"/tmp","startedAt":"2023-11-14T22:13:20Z"}"#,
-        );
         same::<SendPrompt>(
             r#"{"from":"pane_1","id":"abcdefgh","target":"pane_2","text":"hi\nthere"}"#,
         );
@@ -2351,15 +2181,6 @@ mod tests {
         same::<Candidate>(
             r#"{"pane":"pane_2","session":"session_1","window":"window_3","title":"Worker","inbox":true}"#,
         );
-        for bad in [
-            r#"{"name":"w","argv":["/bin/sh"],"parent":"../x"}"#,
-            r#"{"name":"w","argv":["/bin/sh"],"session":"a\nb"}"#,
-            r#"{"name":"a\nb","argv":["/bin/sh"]}"#,
-            r#"{"name":"w"}"#,
-            r#"["w",["/bin/sh"]]"#,
-        ] {
-            assert!(decode::<StartRun>(bad.as_bytes()).is_err(), "{bad}");
-        }
         for json in [
             r#"{"env":[]}"#,
             r#"{"cwd":"/tmp","command":{"type":"argv","argv":["/bin/sh","-c","x"]},"env":[{"name":"X","value":"y"}]}"#,
@@ -2388,7 +2209,7 @@ mod tests {
             r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":["file","temp_file","shared_mem"]},"instance":"0123456789abcdef0123456789abcdef","now":123456789,"runtimes":[]}"#,
             r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback","max_bytes":83886080,"max_lines":5000},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789,"runtimes":[]}"#,
             r#"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"scrollback"},"apc_max_bytes":68157440,"kitty_images_max_bytes":10000000,"continuation_max_bytes":68157440},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":123456789,"runtimes":[]}"#,
-            r#"{"type":"layout","revision":3,"layout":{"sessions":[{"id":"session_1","name":"s","vars":{"a":1},"windows":[{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"cell_px":{"width":8,"height":16},"zoom":"pane_1","focus":"pane_2","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"pane":"pane_2","cols":39,"rows":24}]},"floats":[{"pane":"pane_3","x":6,"y":4,"cols":28,"rows":8,"z":0,"border":false,"title":""}]}]}]},"panes":[{"id":"pane_3","pid":7,"command":["/bin/sh"],"cwd":"/tmp","title":"t","dead":null,"foreground":{"pid":7,"name":"sh"},"run":{"id":"0123456789abcdef0123456789abcdef","name":"w","pane":"pane_3","argv":["/bin/sh"],"cwd":"/tmp","startedAt":"2023-11-14T22:13:20Z"},"vars":{}}]}"#,
+            r#"{"type":"layout","revision":3,"layout":{"sessions":[{"id":"session_1","name":"s","vars":{"a":1},"windows":[{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"cell_px":{"width":8,"height":16},"zoom":"pane_1","focus":"pane_2","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"pane":"pane_2","cols":39,"rows":24}]},"floats":[{"pane":"pane_3","x":6,"y":4,"cols":28,"rows":8,"z":0,"border":false,"title":""}]}]}]},"panes":[{"id":"pane_3","pid":7,"command":["/bin/sh"],"cwd":"/tmp","title":"t","dead":null,"foreground":{"pid":7,"name":"sh"},"vars":{}}]}"#,
             r#"{"type":"layout","revision":0,"layout":{"sessions":[]},"panes":[]}"#,
             r#"{"type":"foreground","pane":"pane_3","foreground":{"pid":7,"name":"sh"}}"#,
             r#"{"type":"selected","session":"session_1","window":"window_1","pane":"pane_2"}"#,
@@ -2416,34 +2237,6 @@ mod tests {
             r#"{"type":"pasted","id":77,"pasted":true,"unsafe":false}"#,
         ] {
             same::<ViewEvent>(json);
-        }
-        for json in [
-            r#"{"type":"bytes","offset":4096,"data":"aGk="}"#,
-            r#"{"type":"skip","from":10,"to":20}"#,
-            r#"{"type":"dead","at":123456789012345,"cause":{"type":"exited","code":7}}"#,
-            r#"{"type":"dead","at":5,"cause":{"type":"failed","message":"io"}}"#,
-        ] {
-            same::<OutputEvent>(json);
-        }
-    }
-
-    #[test]
-    fn the_borrowed_bytes_record_has_the_json_of_the_schema_record() {
-        for data in [
-            &[][..],
-            &[1],
-            &[1, 2],
-            &[1, 2, 3],
-            &[1, 2, 3, 4],
-            &[0xff, 0xfe, 0x80],
-        ] {
-            let borrowed = json(&OutputBytes::Bytes { offset: 7, data });
-            let owned = OutputEvent::Bytes {
-                offset: 7,
-                data: Text(data.to_vec()),
-            };
-            assert_eq!(borrowed, json(&owned));
-            assert_eq!(decode::<OutputEvent>(borrowed.as_bytes()).ok(), Some(owned));
         }
     }
 

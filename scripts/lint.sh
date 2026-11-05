@@ -86,6 +86,27 @@ def lexical(text):
         return re.sub(r'[^\n]', ' ', token)
     return re.sub(pattern, mask, text), comments
 
+signal_calls = 0
+for path in glob.glob('share/pi/*.ts'):
+    text = pathlib.Path(path).read_text()
+    code, _ = lexical(text)
+    function = re.search(r'\bfunction\s+signalJob\s*\([^)]*\)[^{]*\{', code)
+    start = end = -1
+    if path == 'share/pi/ko-pi.ts' and function:
+        start = function.end()
+        depth = 1
+        end = start
+        while end < len(code) and depth:
+            depth += (code[end] == '{') - (code[end] == '}')
+            end += 1
+    for match in re.finditer(r'\bprocess\.kill\s*\(', code):
+        if start <= match.start() < end:
+            signal_calls += 1
+        else:
+            report(path, text, match.start(), 'process.kill must occur only in signalJob')
+if signal_calls != 1:
+    report('share/pi/ko-pi.ts', '', 0, 'expected exactly one process.kill call in signalJob')
+
 # A glob or named import of libc's kill makes a bare kill( call; only ko_sys::pid signals.
 for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', recursive=True):
     if path == 'ko_sys/src/pid.rs':
@@ -153,7 +174,6 @@ for path in ['AGENTS.md', *glob.glob('docs/*.md'), 'share/pi/README.md']:
 # ko_e2e waits for events; its one fixed wait is the idle measurement, and harness.rs holds the poll tick.
 rust_sleeps = {
     'ko_e2e/tests/e2e/idle.rs': {'std::thread::sleep(Duration::from_secs(2));': 1},
-    'ko_e2e/tests/e2e/wait.rs': {'std::thread::sleep(Duration::from_secs(2));': 1},
 }
 for path in candidates(r'thread::(sleep|park_timeout)', glob.glob('ko_e2e/tests/e2e/*.rs')):
     if path == 'ko_e2e/tests/e2e/harness.rs':

@@ -21,8 +21,6 @@ fn hostile_clients_do_not_affect_others() {
         .collect();
     let upgrade = format!("GET /panes/{p}/view?history=all HTTP/1.1\r\nHost: ko\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n{head}\r\n").into_bytes();
     let after = |tail: &[u8]| [upgrade.as_slice(), tail].concat();
-    let upgrade_output = format!("GET /panes/{p}/output HTTP/1.1\r\nHost: ko\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n{head}\r\n").into_bytes();
-    let after_output = |tail: &[u8]| [upgrade_output.as_slice(), tail].concat();
     let hostile: Vec<Vec<u8>> = vec![
         format!(
             "GET /version HTTP/1.1\r\nHost: ko\r\n{}\r\n",
@@ -39,12 +37,6 @@ fn hostile_clients_do_not_affect_others() {
         ]),
         after(&[0x01, 0x80, 0, 0, 0, 0, 0x80, 0x80, 0, 0, 0, 0]),
         after(&[0x89, 0x80, 0, 0, 0, 0].repeat(5000)),
-        after_output(&[
-            0x81, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0,
-        ]),
-        after_output(&[0x81, 0x81, 0, 0, 0, 0, b'x']),
-        after_output(&[0x82, 0x80, 0, 0, 0, 0]),
-        after_output(&[0x89, 0x80, 0, 0, 0, 0].repeat(5000)),
     ];
     for (i, hostile) in hostile.iter().enumerate() {
         let mut conn = s.dial().unwrap();

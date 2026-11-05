@@ -147,7 +147,6 @@ macro_rules! hex_id {
 }
 
 hex_id!(pub Instance);
-hex_id!(pub RunId);
 hex_id!(pub PaneToken);
 
 impl PaneToken {

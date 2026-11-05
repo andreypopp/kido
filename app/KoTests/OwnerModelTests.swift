@@ -124,12 +124,12 @@ import XCTest
         XCTAssertEqual(first.testModel?.layout.layout.sessions.first?.id, second.testModel?.layout.layout.sessions.first?.id)
     }
 
-    func testSwitchingWindowsSkipsANestedRunWindow() throws {
+    func testSwitchingWindowsSkipsANestedChildWindow() throws {
         let pi = shell("printf '\\033]7501;state=idle:app=pi\\007'; " + cat, vars: #"{"pi.session":"s1","pi.name":"Parent"}"#)
         let (dir, owner) = try shown(#"[{"name":"parent","tree":\#(pi)},{"name":"last","tree":\#(shell(cat))}]"#)
         let before = Set(try XCTUnwrap(owner.testModel.map(\.layout.layout.windows)).map(\.id))
-        try run(["run-child", "--session", "session_1", "--name", "kid", "pane_1", "--", "/bin/sleep", "60"], dir: dir)
-        wait("the run window nested under its parent pane") {
+        _ = try createPane(#"{"session":"session_1","name":"kid","parent":"pane_1","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
+        wait("the child window nested under its parent pane") {
             owner.snapshot?.sessions.first?.nodes.count == 2 && owner.snapshot?.sessions.first?.nodes.first?.children.isEmpty == false
         }
         let windows = try XCTUnwrap(owner.testModel.map(\.layout.layout.windows)).map(\.id)
@@ -142,7 +142,7 @@ import XCTest
         wait("the first window again") { owner.navigation.window == top[0] }
         let session = try XCTUnwrap(owner.navigation.session)
         owner.perform(.selectWindow(session, nested))
-        wait("the nested run window") { owner.navigation.window == nested }
+        wait("the nested child window") { owner.navigation.window == nested }
         owner.perform(.switchWindow(next: false))
         wait("its parent") { owner.navigation.window == top[0] }
     }

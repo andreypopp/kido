@@ -12,9 +12,9 @@ use ko_sys::event::Token;
 
 use crate::config::{Config, Settings, path_with, terminal};
 use crate::delivery::{Stamps, mint_stamps};
-use crate::ids::{PaneId, PaneToken, RunId, SessionId};
+use crate::ids::{PaneId, PaneToken, SessionId};
 use crate::pane::{Birth, Pane, Program};
-use crate::pane_proc::{Cause, Io, Launch, Life};
+use crate::pane_proc::{Io, Launch, Life};
 use crate::protocol::{Close, Command, CreatePane, Error, ErrorKind, Relation, Variable};
 
 #[derive(Debug)]
@@ -303,16 +303,15 @@ impl Panes {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum Condition<'a> {
+pub(crate) enum Condition {
     Live,
-    Dead { at: Mono, cause: &'a Cause },
+    Dead { at: Mono },
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Seen<'a> {
+pub(crate) struct Seen {
     pub(crate) id: PaneId,
-    pub(crate) run: Option<RunId>,
-    pub(crate) condition: Condition<'a>,
+    pub(crate) condition: Condition,
     pub(crate) parent: Option<PaneId>,
     pub(crate) close: Close,
     pub(crate) shown: bool,
@@ -325,7 +324,7 @@ pub(crate) enum Standing {
     Gone,
 }
 
-pub(crate) fn standing(panes: &[Seen<'_>], id: PaneId) -> Standing {
+pub(crate) fn standing(panes: &[Seen], id: PaneId) -> Standing {
     match panes.iter().find(|pane| pane.id == id) {
         None => Standing::Gone,
         Some(pane) if matches!(pane.condition, Condition::Dead { .. }) => Standing::Dead,
@@ -339,7 +338,7 @@ pub(crate) struct Swept {
     pub(crate) next: Option<Duration>,
 }
 
-pub(crate) fn sweep(panes: &[Seen<'_>], now: Mono, linger: impl Fn() -> Duration) -> Swept {
+pub(crate) fn sweep(panes: &[Seen], now: Mono, linger: impl Fn() -> Duration) -> Swept {
     let mut swept = Swept::default();
     let grace = std::cell::OnceCell::new();
     for pane in panes {
@@ -347,7 +346,7 @@ pub(crate) fn sweep(panes: &[Seen<'_>], now: Mono, linger: impl Fn() -> Duration
             .parent
             .is_some_and(|parent| standing(panes, parent) != Standing::Live);
         let lingered = match pane.condition {
-            Condition::Dead { at, .. } if pane.close == Close::OnExit => {
+            Condition::Dead { at } if pane.close == Close::OnExit => {
                 let age = Duration::from_nanos(now.nanos().saturating_sub(at.nanos()));
                 let grace = *grace.get_or_init(&linger);
                 if age < grace {
@@ -386,14 +385,6 @@ fn children<'a>(edges: &'a [Edge], me: &'a Edge) -> impl Iterator<Item = &'a Edg
     edges
         .iter()
         .filter(move |edge| edge.session == me.session && edge.parent == Some(me.pane))
-}
-
-pub(crate) fn reads_output(edges: &[Edge], caller: PaneId, target: PaneId) -> bool {
-    caller == target
-        || edges
-            .iter()
-            .find(|edge| edge.pane == caller)
-            .is_some_and(|me| children(edges, me).any(|edge| edge.pane == target))
 }
 
 fn ancestors(edges: &[Edge], of: &Edge) -> Vec<Edge> {
@@ -587,7 +578,6 @@ mod tests {
             cwd: PathBuf::from("/"),
             hostname: String::new(),
             stop_escalation: crate::config::STOP_ESCALATION,
-            run_screen_bytes: crate::config::RUN_SCREEN_BYTES,
             clipboard_wait: crate::config::CLIPBOARD_WAIT,
             message_ack: crate::config::MESSAGE_ACK,
             view_queue: crate::config::ViewQueue::default(),
@@ -602,10 +592,9 @@ mod tests {
     const NOW: u64 = 1_000_000_000_000;
     const GRACE: Duration = Duration::from_secs(1);
 
-    fn seen(id: u64, parent: Option<u64>, close: Close, condition: Condition<'_>) -> Seen<'_> {
+    fn seen(id: u64, parent: Option<u64>, close: Close, condition: Condition) -> Seen {
         Seen {
             id: PaneId::new(id),
-            run: None,
             condition,
             parent: parent.map(PaneId::new),
             close,
@@ -613,14 +602,13 @@ mod tests {
         }
     }
 
-    fn dead(secs_ago: u64, cause: &Cause) -> Condition<'_> {
+    fn dead(secs_ago: u64) -> Condition {
         Condition::Dead {
             at: Mono::from_nanos(NOW - secs_ago * 1_000_000_000),
-            cause,
         }
     }
 
-    fn removed(panes: &[Seen<'_>]) -> Vec<u64> {
+    fn removed(panes: &[Seen]) -> Vec<u64> {
         sweep(panes, Mono::from_nanos(NOW), || GRACE)
             .removed
             .iter()
@@ -635,16 +623,15 @@ mod tests {
 
     #[test]
     fn the_sweep_removes_a_lingered_on_exit_pane_and_a_pane_whose_parent_is_gone_or_dead() {
-        let cause = Cause::Exit(ko_sys::pid::Exit::Exited(0));
         let live = Condition::Live;
         let panes = [
-            seen(1, None, Close::OnExit, dead(5, &cause)),
-            seen(2, None, Close::Keep, dead(5, &cause)),
-            seen(3, None, Close::OnExit, dead(0, &cause)),
+            seen(1, None, Close::OnExit, dead(5)),
+            seen(2, None, Close::Keep, dead(5)),
+            seen(3, None, Close::OnExit, dead(0)),
             seen(4, None, Close::Keep, live),
             seen(5, Some(4), Close::Keep, live),
             seen(6, Some(2), Close::Keep, live),
-            seen(7, Some(9), Close::Keep, dead(0, &cause)),
+            seen(7, Some(9), Close::Keep, dead(0)),
         ];
         assert_eq!(removed(&panes), [1, 6, 7]);
         assert_eq!(
@@ -654,7 +641,7 @@ mod tests {
         );
         let shown = Seen {
             shown: true,
-            ..seen(1, None, Close::OnExit, dead(5, &cause))
+            ..seen(1, None, Close::OnExit, dead(5))
         };
         assert_eq!(removed(&[shown]), Vec::<u64>::new(), "a shown pane stays");
         assert_eq!(standing(&panes, PaneId::new(2)), Standing::Dead);
@@ -664,7 +651,6 @@ mod tests {
 
     #[test]
     fn the_sweep_reads_the_linger_once_and_only_for_a_dead_on_exit_pane() {
-        let cause = Cause::Exit(ko_sys::pid::Exit::Exited(0));
         let reads = std::cell::Cell::new(0);
         let read = || {
             reads.set(reads.get() + 1);
@@ -672,13 +658,13 @@ mod tests {
         };
         let idle = [
             seen(1, None, Close::OnExit, Condition::Live),
-            seen(2, None, Close::Keep, dead(5, &cause)),
+            seen(2, None, Close::Keep, dead(5)),
         ];
         sweep(&idle, Mono::from_nanos(NOW), read);
         assert_eq!(reads.get(), 0);
         let two = [
-            seen(1, None, Close::OnExit, dead(5, &cause)),
-            seen(2, None, Close::OnExit, dead(0, &cause)),
+            seen(1, None, Close::OnExit, dead(5)),
+            seen(2, None, Close::OnExit, dead(0)),
         ];
         sweep(&two, Mono::from_nanos(NOW), read);
         assert_eq!(reads.get(), 1);
@@ -801,7 +787,6 @@ mod tests {
             )?;
             let birth = Birth {
                 vars: Default::default(),
-                run: None,
                 parent: None,
                 close: Default::default(),
                 runtime: None,

@@ -6,7 +6,7 @@ import Testing
     func rows(_ text: String) -> [SidebarRow] {
         [SidebarRow(id: .pane(.init(number: 0), .init(number: 0)), kind: .pane(nil), indent: 0,
                     height: text.isEmpty ? 32 : 48, title: "Title", tail: text,
-                    status: .running, started: nil, focused: false)]
+                    status: .running, focused: false)]
     }
     func check(_ raw: String, _ time: Double, _ shown: String) {
         let row = captions.apply(rows(raw), now: time, delay: 0.2)[0]

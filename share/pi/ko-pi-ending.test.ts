@@ -25,7 +25,7 @@ test("the ended message of a child that reported is a one-line notice", async ()
     fx.setScreen("pane_5", "never read");
     fx.feed({ id: "ended-pane_5", kind: "ended", relation: "child", from: { type: "pane", pane: "pane_5" }, end: end(exited(0).cause) });
     await pollUntil(() => notices(s).length === 1, 2000, "the ending notice");
-    assert.deepEqual(notices(s), ["notice from kid (a subagent or background run's report, not the user):\nsubagent \"kid\" ended: exit 0; it had reported"]);
+    assert.deepEqual(notices(s), ["notice from kid (a subagent or background job's report, not the user):\nsubagent \"kid\" ended: exit 0; it had reported"]);
     assert.equal(fx.apiCalls().some((call) => call.path.includes("/screen")), false, "no screen when it had reported");
     assert.deepEqual(entriesOf(s, "ko-pi.ended").map((e) => [e.child, e.pane]), [["kid-session", "pane_5"]]);
   } finally {

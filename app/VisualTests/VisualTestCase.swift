@@ -156,7 +156,7 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
     func withLifecycle(_ snapshot: Snapshot, pane: PaneID, _ lifecycle: Lifecycle, mark: KoSchema.Mark) -> Snapshot {
         func item(_ item: Item) -> Item {
             Item(id: item.id, window: item.window, title: item.title, lifecycle: item.id == pane ? lifecycle : item.lifecycle,
-                 program_status: item.program_status, run: item.run, started: item.started, children: item.children.map(node),
+                 program_status: item.program_status, children: item.children.map(node),
                  mark: item.id == pane ? mark : item.mark, inbox: item.inbox)
         }
         func node(_ node: SidebarFeed.Node) -> SidebarFeed.Node {

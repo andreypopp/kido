@@ -1,5 +1,5 @@
 {
-  "instance" : "d07cd59263c35f7b380fe51395ba87e4",
+  "instance" : "4c7bb52af54bacf3a0985089f4a325e4",
   "layout" : {
     "layout" : {
       "sessions" : [
@@ -161,12 +161,12 @@
       "cwd" : "\/",
       "foreground" : {
         "name" : "sh",
-        "pid" : 82015
+        "pid" : 64670
       },
       "id" : "pane_1",
       "label" : "sh",
       "mark" : "none",
-      "pid" : 0,
+      "pid" : 64670,
       "records_seen" : false,
       "status" : {
         "kind" : {
@@ -181,7 +181,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1776826860298583,
+        "since" : 1940500689359916,
         "title" : "sh"
       },
       "title" : "",
@@ -198,12 +198,12 @@
       "cwd" : "\/",
       "foreground" : {
         "name" : "sh",
-        "pid" : 82033
+        "pid" : 64671
       },
       "id" : "pane_2",
       "label" : "sh",
       "mark" : "none",
-      "pid" : 0,
+      "pid" : 64671,
       "records_seen" : false,
       "status" : {
         "kind" : {
@@ -218,7 +218,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1776826921802958,
+        "since" : 1940500689365500,
         "title" : "sh"
       },
       "title" : "",
@@ -235,12 +235,12 @@
       "cwd" : "\/",
       "foreground" : {
         "name" : "sh",
-        "pid" : 82014
+        "pid" : 64673
       },
       "id" : "pane_3",
       "label" : "sh",
       "mark" : "none",
-      "pid" : 0,
+      "pid" : 64673,
       "records_seen" : false,
       "status" : {
         "kind" : {
@@ -255,7 +255,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1776826860301875,
+        "since" : 1940500689365666,
         "title" : "sh"
       },
       "title" : "",
@@ -272,12 +272,12 @@
       "cwd" : "\/",
       "foreground" : {
         "name" : "sh",
-        "pid" : 82019
+        "pid" : 64674
       },
       "id" : "pane_4",
       "label" : "sh",
       "mark" : "none",
-      "pid" : 0,
+      "pid" : 64674,
       "records_seen" : false,
       "status" : {
         "kind" : {
@@ -292,7 +292,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1776826860302041,
+        "since" : 1940500689365875,
         "title" : "sh"
       },
       "title" : "",
@@ -309,12 +309,12 @@
       "cwd" : "\/",
       "foreground" : {
         "name" : "sh",
-        "pid" : 82017
+        "pid" : 64672
       },
       "id" : "pane_5",
       "label" : "sh",
       "mark" : "none",
-      "pid" : 0,
+      "pid" : 64672,
       "records_seen" : false,
       "status" : {
         "kind" : {
@@ -329,7 +329,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1776826860302208,
+        "since" : 1940500689366083,
         "title" : "sh"
       },
       "title" : "",
@@ -346,12 +346,12 @@
       "cwd" : "\/",
       "foreground" : {
         "name" : "sh",
-        "pid" : 82016
+        "pid" : 64675
       },
       "id" : "pane_6",
       "label" : "sh",
       "mark" : "none",
-      "pid" : 0,
+      "pid" : 64675,
       "records_seen" : false,
       "status" : {
         "kind" : {
@@ -366,7 +366,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1776826860302291,
+        "since" : 1940500689366583,
         "title" : "sh"
       },
       "title" : "",
@@ -383,12 +383,12 @@
       "cwd" : "\/",
       "foreground" : {
         "name" : "sh",
-        "pid" : 82018
+        "pid" : 64676
       },
       "id" : "pane_7",
       "label" : "sh",
       "mark" : "none",
-      "pid" : 0,
+      "pid" : 64676,
       "records_seen" : false,
       "status" : {
         "kind" : {
@@ -403,7 +403,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1776826860302875,
+        "since" : 1940500689366708,
         "title" : "sh"
       },
       "title" : "",

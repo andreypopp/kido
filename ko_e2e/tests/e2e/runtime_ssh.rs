@@ -10,7 +10,6 @@ use crate::harness::{
 };
 use crate::harness::{enabled, ko};
 use crate::panes::{headers, raw};
-use crate::runs::has_pane;
 use crate::runtime::{
     Rt, closed_with, dead, fifo, read_exec, release, rt_pane, serve_in, start_exec, start_tree,
     state, stop_pane, tree_pids, wait_state,
@@ -229,7 +228,7 @@ fn an_ssh_pane_rides_the_master_and_a_dead_master_ends_its_panes_and_never_recon
     let before = calls("-O exit");
     boxed.down(true);
     poll("the farewell to start", || calls("-O exit") == before + 1);
-    assert!(!has_pane(s, &again));
+    assert!(!s.has_pane(&again));
     let deleted = raw(s, "DELETE", "/runtimes/box", &headers(s, &[]), &Value::Null);
     assert_eq!(deleted.0, 200, "{}", deleted.1);
     assert!(

@@ -380,7 +380,7 @@ try:
                 edit({'type': 'reorder_windows', 'session': session['id'], 'order': order})
                 counts['swap-window'] += 1
         elif a == 18 and target:
-            api('POST', f'/panes/{target}/input', typed(f'\x03{args.ko} run --name stress-child-{i} -- sleep 8\r'))
+            api('POST', '/panes', {'parent': target, 'close': 'on_exit', 'command': {'type': 'argv', 'argv': ['/bin/sleep', '8']}})
             counts['child-window-attempted'] += 1
         due = start + (i + 1) * 0.4
         time.sleep(max(0, due - time.time()))

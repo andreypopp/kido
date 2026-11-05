@@ -369,8 +369,6 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         let board = NSPasteboard(name: .init("shade-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
         let fixture = sidebarFixture()
-        SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
-        defer { SidebarView.visualNow = nil }
         for hex in ["fffaf0", "172029"] {
             for value in [nil, "30%", "20%"] as [String?] {
                 try configYAML(at: config, background: hex, sidebarShade: value).write(to: config, atomically: true, encoding: .utf8)
@@ -531,8 +529,6 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         }
         let list = owner.sidebar.list
         list.update(sidebarFixture())
-        SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
-        defer { SidebarView.visualNow = nil }
         for floating in [false, true] {
             owner.sidebar.dismissFloating()
             owner.sidebar.isCollapsed = floating
@@ -659,7 +655,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
 
     func testOrphanedTab() throws {
         let snapshot = fixtureSnapshot(window: 1, pane: 1, [("s", [fixtureNode(0, "", shellLifecycle(.unknown), children: [
-            fixtureNode(1, "", shellLifecycle(.unknown), run: "bash"),
+            fixtureNode(1, "", shellLifecycle(.unknown)),
         ])])])
         let model = SessionModel(session: SessionID(number: 0), windows: [.init(id: WindowID(number: 1), name: "Child")], window: WindowID(number: 1))
         XCTAssertEqual(model.navigation(snapshot).tabs.map(\.id), [WindowID(number: 1)], "orphan child must retain a tab")

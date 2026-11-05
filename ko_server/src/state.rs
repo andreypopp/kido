@@ -20,7 +20,7 @@ use crate::conn::{Conn, Phase};
 use crate::deflate::Deflate;
 use crate::delivery::{Delivery, Handle};
 use crate::http::lossy;
-use crate::ids::{ClientId, Instance, Name, PaneId, RunId, SessionId, VarName, WindowId};
+use crate::ids::{ClientId, Instance, Name, PaneId, SessionId, VarName, WindowId};
 use crate::layout::{self, Document, PutError, Removal, Resized};
 use crate::link::{Role, Wire};
 use crate::model::{self, Model};
@@ -33,7 +33,6 @@ use crate::protocol::{
     StatusChange, Title, VarCondition, ViewEvent, ViewRequest, Welcome,
 };
 use crate::router;
-use crate::runs;
 use crate::runtime::Registry;
 use crate::runtime::leaving::Leaving;
 use crate::runtime::pane::Dir;
@@ -48,8 +47,8 @@ mod media;
 mod messages;
 mod pane_ops;
 mod prompt;
-mod run_ops;
 mod runtime_ops;
+mod sweep;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Owner {
@@ -60,7 +59,6 @@ pub(crate) enum Owner {
     HttpPaste(Token, Option<u64>),
     ViewPaste(Token, Option<u64>),
     Snapshot(Token),
-    Capture,
     Prompt(Token),
     Image {
         conn: Option<Token>,
@@ -106,7 +104,7 @@ pub(crate) struct State {
     ticker: Timer,
     tick: Duration,
     model: Model,
-    runs: run_ops::RunState,
+    sweep: sweep::Sweep,
     runtimes: Registry,
     execs: exec_ops::Execs,
     leaving: Leaving,
@@ -130,28 +128,18 @@ pub(crate) enum Wake {
 pub(crate) fn client_of(conn: &Conn) -> Option<&Client> {
     match conn.role()? {
         Role::Client(client) => Some(client),
-        Role::View(_) | Role::Tail(_) | Role::Search(_) | Role::Messages(_) | Role::Exec(_) => None,
+        Role::View(_) | Role::Search(_) | Role::Messages(_) | Role::Exec(_) => None,
     }
 }
 
 fn view_of(conn: &Conn) -> Option<&View> {
     match conn.role()? {
         Role::View(view) => Some(view),
-        Role::Client(_) | Role::Tail(_) | Role::Search(_) | Role::Messages(_) | Role::Exec(_) => {
-            None
-        }
-    }
-}
-
-fn streamed_pane(conn: &Conn) -> Option<PaneId> {
-    match conn.role()? {
-        Role::View(view) => Some(view.pane),
-        Role::Tail(tail) => Some(tail.pane),
         Role::Client(_) | Role::Search(_) | Role::Messages(_) | Role::Exec(_) => None,
     }
 }
 
-fn pane_listing(pane: &Pane, root: &Path) -> Listing {
+fn pane_listing(pane: &Pane) -> Listing {
     let proc = pane.proc();
     let telemetry = pane.telemetry();
     Listing {
@@ -165,7 +153,6 @@ fn pane_listing(pane: &Pane, root: &Path) -> Listing {
             foreground: telemetry.foreground.clone(),
             status: pane.model().status().cloned(),
             progress: telemetry.progress,
-            run: run_ops::run_row(root, pane),
             parent: pane.parent(),
             close: pane.close(),
             inbox: pane.inbox().stream().is_some(),
@@ -175,18 +162,13 @@ fn pane_listing(pane: &Pane, root: &Path) -> Listing {
     }
 }
 
-fn layout_panes(
-    document: &Document,
-    panes: &Panes,
-    root: &Path,
-    keep: impl Fn(PaneId) -> bool,
-) -> LayoutPanes {
+fn layout_panes(document: &Document, panes: &Panes, keep: impl Fn(PaneId) -> bool) -> LayoutPanes {
     LayoutPanes {
         snapshot: document.snapshot(),
         panes: panes
             .iter()
             .filter(|pane| keep(pane.id()))
-            .map(|pane| pane_listing(pane, root))
+            .map(pane_listing)
             .collect(),
     }
 }
@@ -217,7 +199,7 @@ impl State {
         poll: &mut Poll,
         tick: Duration,
     ) -> State {
-        let runs = run_ops::RunState::new(&config, poll);
+        let sweep = sweep::Sweep::new(poll);
         let runtimes = Registry::new(&config);
         let execs = exec_ops::Execs::new();
         let leaving = Leaving::new(poll);
@@ -239,7 +221,7 @@ impl State {
             ticker: poll.timer(),
             tick,
             model: Model::new(poll),
-            runs,
+            sweep,
             runtimes,
             execs,
             leaving,
@@ -365,18 +347,16 @@ impl State {
     }
 
     pub(crate) fn layout_panes(&self) -> LayoutPanes {
-        layout_panes(&self.document, &self.panes, self.runs.root(), |_| true)
+        layout_panes(&self.document, &self.panes, |_| true)
     }
 
     pub(crate) fn visible_layout(&self, visible: &BTreeSet<PaneId>) -> LayoutPanes {
-        layout_panes(&self.document, &self.panes, self.runs.root(), |pane| {
-            visible.contains(&pane)
-        })
+        layout_panes(&self.document, &self.panes, |pane| visible.contains(&pane))
     }
 
     pub(crate) fn pane_listing(&self, id: PaneId) -> Option<Listing> {
         let pane = self.panes.find(id)?;
-        Some(pane_listing(pane, self.runs.root()))
+        Some(pane_listing(pane))
     }
 
     fn vars_used(&self) -> usize {
@@ -406,18 +386,16 @@ impl State {
         &mut self,
         poll: &mut Poll,
         request: PutLayout,
-        run: Option<RunId>,
         caller: Option<PaneId>,
     ) -> Result<Snapshot, PutFailure> {
         let read = Read::new(&self.config.file);
-        self.put_layout_in(poll, request, run, caller, &read)
+        self.put_layout_in(poll, request, caller, &read)
     }
 
     fn put_layout_in(
         &mut self,
         poll: &mut Poll,
         request: PutLayout,
-        run: Option<RunId>,
         caller: Option<PaneId>,
         read: &Read,
     ) -> Result<Snapshot, PutFailure> {
@@ -474,13 +452,7 @@ impl State {
             let size = sizes.get(&id).copied().unwrap_or(Size::DEFAULT);
             let settings = settings.get_or_init(|| self.config.settings(&read.server()));
             let added = self
-                .birth(
-                    id,
-                    &settings.shell,
-                    &request,
-                    (vars, run.clone()),
-                    (&chosen, &dir),
-                )
+                .birth(id, &settings.shell, &request, vars, (&chosen, &dir))
                 .and_then(|birth| self.add_pane(poll, settings, id, size, birth));
             match added {
                 Ok(()) => started.push(id),
@@ -529,7 +501,7 @@ impl State {
         let mut layout = DraftLayout::from(self.document.layout());
         layout.sessions.push(DraftSession::single(name, request));
         let revision = self.document.revision();
-        self.put_layout(poll, PutLayout { revision, layout }, None, None)?;
+        self.put_layout(poll, PutLayout { revision, layout }, None)?;
         self.document
             .layout()
             .sessions
@@ -568,7 +540,8 @@ impl State {
             self.tell_parent_gone(pane);
             self.stop_pane(poll, pane);
         }
-        self.runs_changed(poll);
+        self.sweep_soon(poll);
+        self.settle_stops(poll);
         self.changed(poll, &before);
         true
     }
@@ -610,9 +583,7 @@ impl State {
             .difference(&before.panes())
             .copied()
             .collect();
-        let announced = layout_panes(&self.document, &self.panes, self.runs.root(), |pane| {
-            added.contains(&pane)
-        });
+        let announced = layout_panes(&self.document, &self.panes, |pane| added.contains(&pane));
         self.broadcast(&ClientEvent::Layout(announced));
         let sizes = self.document.layout().pane_sizes().into_iter().collect();
         self.resize_panes(poll, &sizes);
@@ -700,7 +671,7 @@ impl State {
 
     fn refocus(&mut self, poll: &mut Poll) {
         let shown = self.focused_panes();
-        if self.runs.focus_changed(shown.clone()) {
+        if self.sweep.shown_changed(&shown) {
             self.sweep_soon(poll);
         }
         self.each_pane(poll, |pane, io| pane.focus(shown.contains(&pane.id()), io));
@@ -743,7 +714,7 @@ impl State {
 
     fn publish(&mut self) {
         self.document.publish();
-        let announced = layout_panes(&self.document, &self.panes, self.runs.root(), |_| false);
+        let announced = layout_panes(&self.document, &self.panes, |_| false);
         self.broadcast(&ClientEvent::Layout(announced));
     }
 
@@ -761,7 +732,8 @@ impl State {
 
     pub(crate) fn remove_pane(&mut self, poll: &mut Poll, id: PaneId) {
         self.stop_pane(poll, id);
-        self.runs_changed(poll);
+        self.sweep_soon(poll);
+        self.settle_stops(poll);
     }
 
     fn stop_pane(&mut self, poll: &mut Poll, id: PaneId) {
@@ -830,7 +802,7 @@ impl State {
         self.runtimes_changed(poll);
         poll.stop(self.ticker);
         self.model.stop(poll);
-        self.runs.stop(poll);
+        self.sweep.stop(poll);
         self.stops.stop(poll);
     }
 
@@ -853,7 +825,7 @@ impl State {
         for (pane, status) in changed {
             self.broadcast(&ClientEvent::Status(StatusChange { pane, status, now }));
         }
-        if self.runs.take_due() {
+        if self.sweep.take_due() {
             self.sweep(poll);
         }
     }
@@ -952,19 +924,13 @@ impl State {
                     pane: id,
                     dead: (&death).into(),
                 }));
-                let ended = self.panes.find(id).and_then(|pane| {
-                    run_ops::run_row(self.runs.root(), pane)
-                        .filter(|row| !runs::recorded(self.runs.root(), &row.meta.id))
-                });
-                if let Some(row) = ended {
-                    self.broadcast(&ClientEvent::Run(row));
-                }
                 if let pane_proc::Cause::Failed(_) = death.cause {
                     self.delete_pane(poll, id);
                 }
                 self.runtimes.pane_ended(poll, id);
                 self.runtimes_changed(poll);
-                self.runs_changed(poll);
+                self.sweep_soon(poll);
+                self.settle_stops(poll);
             }
             Event::Prompt(prompt) => {
                 if let Some(pane) = self.panes.find_mut(id) {
@@ -1061,12 +1027,6 @@ impl State {
             }
             Event::Screen { req, chunk, last } => {
                 let key = (id, req);
-                if self.owners.get(&key) == Some(&Owner::Capture) {
-                    if last {
-                        self.owners.remove(&key);
-                    }
-                    return self.capture_chunk(poll, id, req, &chunk, last);
-                }
                 let Some(Owner::Screen { conn, started }) = self.owners.get(&key).cloned() else {
                     return;
                 };
@@ -1109,7 +1069,6 @@ impl State {
                     Some(
                         Owner::Screen { .. }
                         | Owner::Snapshot(_)
-                        | Owner::Capture
                         | Owner::Image { .. }
                         | Owner::Search(_),
                     )
@@ -1131,7 +1090,6 @@ impl State {
                     }
                 }
                 Some(Owner::Prompt(conn)) => router::failed(self, poll, conn, false, &message),
-                Some(Owner::Capture) => self.capture_failed(poll, id, req),
                 Some(Owner::Image { conn, minted, .. }) => {
                     self.leaks.gone(&minted);
                     if let Some(conn) = conn {
@@ -1189,7 +1147,6 @@ impl State {
         for conn in &mut self.conns {
             match conn.role_mut() {
                 Some((Role::View(view), wire)) if view.pane == pane => view.close(wire.out),
-                Some((Role::Tail(tail), mut wire)) if tail.pane == pane => tail.remove(&mut wire),
                 _ => {}
             }
         }
@@ -1197,33 +1154,15 @@ impl State {
 
     fn pump_views(&mut self, poll: &mut Poll, pane: PaneId) {
         for index in 0..self.conns.len() {
-            if self.conns.get(index).and_then(streamed_pane) == Some(pane) {
-                self.pump_link(poll, index);
+            if self
+                .conns
+                .get(index)
+                .and_then(view_of)
+                .map(|view| view.pane)
+                == Some(pane)
+            {
+                self.pump_view(poll, index);
             }
-        }
-    }
-
-    fn pump_link(&mut self, poll: &mut Poll, index: usize) {
-        match self.conns.get(index).and_then(Conn::role) {
-            Some(Role::Tail(_)) => self.pump_tail(index),
-            _ => self.pump_view(poll, index),
-        }
-    }
-
-    pub(crate) fn pump_tail(&mut self, index: usize) {
-        let State { panes, conns, .. } = self;
-        let Some((Role::Tail(tail), mut wire)) = conns.get_mut(index).and_then(Conn::role_mut)
-        else {
-            return;
-        };
-        let Some((dead, Some(delivery))) = panes
-            .find_mut(tail.pane)
-            .map(|pane| pane.proc_mut().dead_and_delivery())
-        else {
-            return tail.remove(&mut wire);
-        };
-        if tail.pump(&mut wire, delivery, dead).is_err() {
-            tail.close(wire.out);
         }
     }
 
@@ -1366,12 +1305,11 @@ impl State {
                     self.tick(poll);
                 } else if self.model.is_tick(due.timer) {
                     self.model_tick(poll);
-                } else if self.runs.is_sweep(due.timer) {
+                } else if self.sweep.is_timer(due.timer) {
                     self.sweep(poll);
                 } else if self.stops.is_escalation(due.timer) {
                     self.escalate(poll);
-                } else if self.wait_due(poll, due.timer)
-                    || self.runtime_due(poll, due.timer)
+                } else if self.runtime_due(poll, due.timer)
                     || self.leaving_due(poll, due.timer)
                     || self.exec_due(poll, due.timer)
                     || self.stop_due(poll, due.timer)
@@ -1412,7 +1350,7 @@ impl State {
                     conn.phase = Phase::Head;
                     self.serve(poll, index);
                 }
-                self.pump_link(poll, index);
+                self.pump_view(poll, index);
             }
             self.pump_exec(poll, index);
         }
@@ -1468,7 +1406,7 @@ impl State {
             match link.role {
                 Role::Client(_) => self.client_text(poll, index, text.as_bytes()),
                 Role::View(_) => self.view_text(poll, index, text.as_bytes()),
-                Role::Tail(_) | Role::Search(_) => link.ws.reject(out, "invalid"),
+                Role::Search(_) => link.ws.reject(out, "invalid"),
                 Role::Messages(pane) => self.stream_text(poll, index, pane, text.as_bytes()),
                 Role::Exec(_) => self.exec_text(poll, index, text.as_bytes()),
             }
@@ -1487,7 +1425,6 @@ impl State {
             document,
             conns,
             panes,
-            runs,
             ..
         } = self;
         let Some((Role::Client(client), wire)) = conns.get_mut(index).and_then(Conn::role_mut)
@@ -1524,8 +1461,7 @@ impl State {
                     runtimes,
                 });
                 wire.ws.send(wire.out, protocol::json(&welcome));
-                let announced =
-                    ClientEvent::Layout(layout_panes(document, panes, runs.root(), |_| true));
+                let announced = ClientEvent::Layout(layout_panes(document, panes, |_| true));
                 wire.ws.send(wire.out, protocol::json(&announced));
                 let notify = current.is_some_and(|current| selection.pane != Some(current.pane));
                 (current, notify)
@@ -1626,7 +1562,7 @@ impl State {
         let mut produced = false;
         self.each_pane(poll, |pane, io| produced |= pane.proc_mut().scan(io));
         for index in 0..self.conns.len() {
-            self.pump_link(poll, index);
+            self.pump_view(poll, index);
         }
         let waiting = self
             .conns
@@ -1674,7 +1610,6 @@ impl State {
             let conn = self.conns.remove(index);
             poll.unwatch(conn.token);
             poll.free(conn.timer);
-            self.runs.forget(conn.token);
             self.runtimes.forget_wait(poll, conn.token);
             self.forget_stops(poll, conn.token);
             self.messages.forget(conn.token);
@@ -1695,7 +1630,7 @@ impl State {
                     Role::Search(search) => self.cancel_search(poll, search),
                     Role::Messages(pane) => self.stream_closed(poll, pane, conn.token),
                     Role::Exec(session) => self.exec_gone(poll, conn.token, session),
-                    Role::View(_) | Role::Tail(_) => {}
+                    Role::View(_) => {}
                 }
             }
         }

@@ -16,14 +16,14 @@ import XCTest
             fixtureNode(3, "exit 0, on_exit", .lingering(.exited(.init(code: 0)))),
             fixtureNode(4, "exit 2, on_exit", .lingering(.exited(.init(code: 2)))),
             fixtureNode(5, "signal, on_exit", .lingering(.signaled(.init(signal: 9)))),
-            fixtureNode(6, "exit 0, keep", .ended(.completed)),
-            fixtureNode(7, "exit 2, keep", .ended(.failed)),
+            fixtureNode(6, "exit 0, keep", .ended(.exited(.init(code: 0)))),
+            fixtureNode(7, "exit 2, keep", .ended(.exited(.init(code: 2)))),
         ])]))
         let rows = list.visualRows.filter { $0.target != nil }
         XCTAssertEqual(rows.map(\.indent), [0, 1, 0, 0, 0, 0, 0])
         XCTAssertEqual(rows.map(\.status), [.quiet, .quiet, .endedClean, .endedFailed, .endedFailed, .done, .error])
         XCTAssertEqual(rows.map(\.indicatorDescription).suffix(5),
-                       ["gone, exited", "gone, exited with code 2", "gone, killed by signal 9", "gone, completed", "gone, failed"])
+                       ["gone, exited", "gone, exited with code 2", "gone, killed by signal 9", "gone, completed", "gone, exited with code 2"])
         for dark in [false, true] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             sidebarSnapshot(list, dark ? "dark" : "light")

@@ -1,5 +1,5 @@
 {
-  "instance" : "a2abbf0a9cc6689d5f94c40b81c8b715",
+  "instance" : "9d94994928d6b11bca338055b97cdf68",
   "layout" : {
     "layout" : {
       "sessions" : [
@@ -255,18 +255,18 @@
       "cwd" : "\/",
       "foreground" : {
         "name" : "cat",
-        "pid" : 82085
+        "pid" : 64733
       },
       "id" : "pane_1",
       "label" : "claude-code",
       "mark" : "running",
-      "pid" : 82085,
+      "pid" : 64733,
       "records_seen" : false,
       "status" : {
         "kind" : {
           "name" : "claude-code",
           "status" : {
-            "since" : 1776827526886500,
+            "since" : 1940501360660791,
             "state" : {
               "type" : "running"
             }
@@ -283,7 +283,7 @@
           ],
           "serial" : 1
         },
-        "since" : 1776827526886500,
+        "since" : 1940501360660791,
         "title" : "claude-code"
       },
       "title" : "",
@@ -300,18 +300,18 @@
       "cwd" : "\/",
       "foreground" : {
         "name" : "cat",
-        "pid" : 82086
+        "pid" : 64734
       },
       "id" : "pane_2",
       "label" : "claude-code",
       "mark" : "waiting",
-      "pid" : 82086,
+      "pid" : 64734,
       "records_seen" : false,
       "status" : {
         "kind" : {
           "name" : "claude-code",
           "status" : {
-            "since" : 1776827526890708,
+            "since" : 1940501360675333,
             "state" : {
               "kind" : "permission",
               "type" : "waiting"
@@ -331,7 +331,7 @@
           ],
           "serial" : 1
         },
-        "since" : 1776827526890708,
+        "since" : 1940501360675333,
         "title" : "claude-code"
       },
       "title" : "",
@@ -348,12 +348,12 @@
       "cwd" : "\/",
       "foreground" : {
         "name" : "bash",
-        "pid" : 82087
+        "pid" : 64736
       },
       "id" : "pane_3",
       "label" : "make",
       "mark" : "running",
-      "pid" : 82087,
+      "pid" : 64736,
       "records_seen" : false,
       "status" : {
         "kind" : {
@@ -361,7 +361,7 @@
             "fullscreen" : false,
             "origin" : {
               "command" : "make",
-              "started_at" : 1776827522438041,
+              "started_at" : 1940501355970791,
               "type" : "command"
             },
             "type" : "running"
@@ -374,7 +374,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1776827744442583,
+        "since" : 1940501578309791,
         "title" : "make"
       },
       "title" : "",
@@ -391,12 +391,12 @@
       "cwd" : "\/",
       "foreground" : {
         "name" : "bash",
-        "pid" : 82089
+        "pid" : 64735
       },
       "id" : "pane_4",
       "label" : "bash",
       "mark" : "none",
-      "pid" : 82089,
+      "pid" : 64735,
       "records_seen" : false,
       "status" : {
         "kind" : {
@@ -404,8 +404,8 @@
             "last" : {
               "code" : 1,
               "command" : "false",
-              "ended_at" : 1776827523343000,
-              "started_at" : 1776827523343000
+              "ended_at" : 1940501355757916,
+              "started_at" : 1940501355757916
             },
             "type" : "idle"
           },
@@ -417,7 +417,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1776827526891875,
+        "since" : 1940501360679541,
         "title" : "bash"
       },
       "title" : "",
@@ -434,18 +434,18 @@
       "cwd" : "\/",
       "foreground" : {
         "name" : "cat",
-        "pid" : 82088
+        "pid" : 64738
       },
       "id" : "pane_5",
       "label" : "Worker",
       "mark" : "running",
-      "pid" : 82088,
+      "pid" : 64738,
       "records_seen" : false,
       "status" : {
         "kind" : {
           "session" : "s1",
           "status" : {
-            "since" : 1776827526892041,
+            "since" : 1940501360680458,
             "state" : {
               "type" : "running"
             }
@@ -462,7 +462,7 @@
           ],
           "serial" : 1
         },
-        "since" : 1776827526892041,
+        "since" : 1940501360680458,
         "title" : "Worker"
       },
       "title" : "",
@@ -480,12 +480,12 @@
       "cwd" : "\/",
       "foreground" : {
         "name" : "sh",
-        "pid" : 82090
+        "pid" : 64737
       },
       "id" : "pane_6",
       "label" : "sh",
       "mark" : "none",
-      "pid" : 82090,
+      "pid" : 64737,
       "records_seen" : false,
       "status" : {
         "kind" : {
@@ -500,7 +500,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1776827526895083,
+        "since" : 1940501360688500,
         "title" : "sh"
       },
       "title" : "",
@@ -509,6 +509,7 @@
       }
     },
     {
+      "close" : "on_exit",
       "command" : [
         "\/bin\/sleep",
         "60"
@@ -516,25 +517,14 @@
       "cwd" : "\/",
       "foreground" : {
         "name" : "sleep",
-        "pid" : 82117
+        "pid" : 64761
       },
       "id" : "pane_7",
       "label" : "sleep",
       "mark" : "none",
-      "pid" : 0,
+      "parent" : "pane_5",
+      "pid" : 64761,
       "records_seen" : false,
-      "run" : {
-        "argv" : [
-          "\/bin\/sleep",
-          "60"
-        ],
-        "cwd" : "\/",
-        "id" : "b15c2df5afbac0d0b5aab2132aa812da",
-        "name" : "first",
-        "pane" : "pane_7",
-        "parent" : "pane_5",
-        "startedAt" : "2026-11-03T11:17:11.496267Z"
-      },
       "status" : {
         "kind" : {
           "phase" : {
@@ -548,7 +538,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1776827779163083,
+        "since" : 1940501606776166,
         "title" : "sleep"
       },
       "title" : "",
@@ -557,6 +547,7 @@
       }
     },
     {
+      "close" : "on_exit",
       "command" : [
         "\/bin\/sleep",
         "60"
@@ -564,25 +555,14 @@
       "cwd" : "\/",
       "foreground" : {
         "name" : "sleep",
-        "pid" : 82120
+        "pid" : 64764
       },
       "id" : "pane_8",
       "label" : "sleep",
       "mark" : "none",
-      "pid" : 0,
+      "parent" : "pane_7",
+      "pid" : 64764,
       "records_seen" : false,
-      "run" : {
-        "argv" : [
-          "\/bin\/sleep",
-          "60"
-        ],
-        "cwd" : "\/",
-        "id" : "7c44e568ddbb65d3a404a58e82a97f22",
-        "name" : "nested",
-        "pane" : "pane_8",
-        "parent" : "b15c2df5afbac0d0b5aab2132aa812da",
-        "startedAt" : "2026-11-03T11:17:11.50329Z"
-      },
       "status" : {
         "kind" : {
           "phase" : {
@@ -596,7 +576,7 @@
           ],
           "serial" : 0
         },
-        "since" : 1776827779166041,
+        "since" : 1940501606780875,
         "title" : "sleep"
       },
       "title" : "",
@@ -612,7 +592,7 @@
       ],
       "cwd" : "\/",
       "dead" : {
-        "at" : 1776827776819333,
+        "at" : 1940501614923375,
         "cause" : {
           "code" : 3,
           "type" : "exited"
@@ -620,45 +600,13 @@
       },
       "foreground" : {
         "name" : "sh",
-        "pid" : 82122
+        "pid" : 64766
       },
       "id" : "pane_9",
       "label" : "sh",
       "mark" : "none",
-      "pid" : 0,
+      "pid" : 64766,
       "records_seen" : false,
-      "run" : {
-        "argv" : [
-          "\/bin\/sh",
-          "-c",
-          "exit 3"
-        ],
-        "cwd" : "\/",
-        "id" : "34094f4c0bc4d210297e3a1545880cb2",
-        "name" : "ended",
-        "outcome" : {
-          "result" : "failed",
-          "text" : "exit 3"
-        },
-        "pane" : "pane_9",
-        "startedAt" : "2026-11-03T11:17:11.509301Z"
-      },
-      "status" : {
-        "kind" : {
-          "phase" : {
-            "type" : "unknown"
-          },
-          "type" : "terminal"
-        },
-        "program_status" : {
-          "records" : [
-
-          ],
-          "serial" : 0
-        },
-        "since" : 1776827779166166,
-        "title" : "sh"
-      },
       "title" : "",
       "vars" : {
 

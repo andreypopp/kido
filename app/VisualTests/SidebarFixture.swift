@@ -3,7 +3,7 @@ import KoModel
 @testable import SidebarFeed
 import PaneGeometry
 
-// The sidebar tree of a live session list: five sessions, nested runs, window groups.
+// The sidebar tree of a live session list: five sessions, nested child panes, window groups.
 
 let fixtureSince = Date(timeIntervalSince1970: 1791131000)
 
@@ -28,16 +28,16 @@ func programRecord(_ id: String, _ state: ProgramStatus.Record.State, app: Strin
     ProgramStatus.Record(id: id, state: state, app: app, kind: kind, progress: nil, title: title, msg: msg)
 }
 
-func fixtureItem(_ pane: UInt32, window: UInt32? = nil, _ title: String, _ lifecycle: Lifecycle, run: String? = nil, started: Double? = nil,
+func fixtureItem(_ pane: UInt32, window: UInt32? = nil, _ title: String, _ lifecycle: Lifecycle,
                  records: [ProgramStatus.Record] = [], serial: Int = 0, mark: KoSchema.Mark = .none_, children: [SidebarFeed.Node] = []) -> Item {
     Item(id: PaneID(number: pane), window: WindowID(number: window ?? pane), title: title, lifecycle: lifecycle,
-         program_status: ProgramStatus(serial: serial, records: records), run: run, started: started.map(Date.init(timeIntervalSince1970:)),
+         program_status: ProgramStatus(serial: serial, records: records),
          children: children, mark: mark, inbox: { if case .live(.piAgent) = lifecycle { true } else { false } }())
 }
 
-func fixtureNode(_ pane: UInt32, window: UInt32? = nil, _ title: String, _ lifecycle: Lifecycle, run: String? = nil, started: Double? = nil,
+func fixtureNode(_ pane: UInt32, window: UInt32? = nil, _ title: String, _ lifecycle: Lifecycle,
                  mark: KoSchema.Mark = .none_, children: [SidebarFeed.Node] = []) -> SidebarFeed.Node {
-    .item(fixtureItem(pane, window: window, title, lifecycle, run: run, started: started, mark: mark, children: children))
+    .item(fixtureItem(pane, window: window, title, lifecycle, mark: mark, children: children))
 }
 
 // A snapshot whose client is the given pane; the first session is the current one.
@@ -59,18 +59,18 @@ func sidebarFixture(_ edit: (inout Snapshot) -> Void = { _ in }) -> Snapshot {
                 fixtureNode(0, "working-on-kido", piLifecycle(session: "session-0"), children: [
                     fixtureNode(892, window: 786, "main-watch",
                                 shellLifecycle(.running(.init(command: "main-watch", startedAt: Date(timeIntervalSince1970: 1791098646)), fullscreen: false)),
-                                run: "r-892", started: 1791098646.964646, mark: .running),
+                                mark: .running),
                 ]),
                 .window(.init(id: WindowID(number: 458), name: "kido-app", children: [
                     fixtureItem(502, window: 458, "kido-app", piLifecycle(session: "session-502"), children: [
                         fixtureNode(936, window: 824, "sidebar-mockup", piLifecycle(.running(progress: nil), session: "session-936"),
-                                    run: "r-936", started: 1791131078.818641, mark: .running),
+                                    mark: .running),
                     ]),
                     fixtureItem(937, window: 458, "make -C ../kido-app/app demo", shellLifecycle()),
                 ])),
                 fixtureNode(905, window: 797, "pi-ui", piLifecycle(session: "session-905"), children: [
                     fixtureNode(934, window: 822, "pi-ui-perf", piLifecycle(.running(progress: nil), session: "session-934"),
-                                run: "r-934", started: 1791125890.55034, mark: .running),
+                                mark: .running),
                 ]),
             ]),
             session(1, "visa", [fixtureNode(11, "main", piLifecycle(session: "session-11"))]),

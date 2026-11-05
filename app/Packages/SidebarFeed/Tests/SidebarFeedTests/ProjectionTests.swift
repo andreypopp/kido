@@ -47,14 +47,14 @@ private func nest(_ model: inout KoModel, _ moved: [UInt32], under parentNumber:
     model.outline.insert(contentsOf: moved.map { .pane(.init(depth: 1, id: .init(number: $0), window: .init(number: window))) }, at: parent + 1)
 }
 
-@Test func theTwoPanesOfARunWindowAreOneGroupUnderTheParentPane() throws {
+@Test func theTwoPanesOfAChildWindowAreOneGroupUnderTheParentPane() throws {
     var model = try recorded()
     try nest(&model, [3, 4], under: 5, window: 2)
     let snapshot = try #require(Snapshot(model: model))
     #expect(shape(snapshot.sessions[0].nodes) == ["build[1,2]", "5>running[3,4],7>8", "9"])
 }
 
-@Test func statusesRunsAndEndedPanesKeepTheirMeaning() throws {
+@Test func statusesAndEndedPanesKeepTheirMeaning() throws {
     let found = items(try #require(Snapshot(model: recorded())))
     func item(_ number: UInt32) throws -> Item { try #require(found[.init(number: number)]) }
     let working = try item(1)
@@ -74,11 +74,9 @@ private func nest(_ model: inout KoModel, _ moved: [UInt32], under parentNumber:
     #expect(try item(5).title == "Worker")
     #expect(try item(6).shell?.phase == .unknown)
     let child = try item(7)
-    #expect(child.run != nil && child.started != nil)
-    #expect(try item(8).run != nil)
+    #expect(shape(child.children) == ["8"])
     let ended = try item(9)
-    #expect(ended.lifecycle == .ended(.failed))
-    #expect(ended.run != nil && ended.started == nil)
+    #expect(ended.lifecycle == .ended(try #require(recorded().panes.first { $0.id.number == 9 }?.dead?.cause)))
     #expect(try [1, 2, 4].map { try item($0).mark } == [.running, .waiting, .none_], "the core's mark; an exit before the connection is no news")
     #expect(try !item(5).inbox && !item(5).isMessageable, "a pi agent without an inbox takes no prompt")
 }
@@ -91,7 +89,7 @@ private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void)
     return try #require(items(snapshot)[.init(number: number)])
 }
 
-@Test func aPaneWithAParentNestsUnderItWhetherOrNotItIsARun() throws {
+@Test func aPaneWithAParentNestsUnderIt() throws {
     var model = try recorded()
     let at = try #require(model.panes.firstIndex { $0.id == .init(number: 4) })
     model.panes[at].parent = .init(number: 5)
@@ -105,7 +103,7 @@ private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void)
     #expect(try edited(5) { $0.inbox = true }.inbox)
 }
 
-@Test func aDeadPaneThatClosesOnExitLingersByItsCauseAndAKeptOrRunPaneDoesNot() throws {
+@Test func aDeadPaneThatClosesOnExitLingersByItsCauseAndAKeptPaneDoesNot() throws {
     func lingering(_ cause: KoSchema.Cause, close: KoSchema.Close = .onExit) throws -> (SidebarRow.Status, String) {
         try edited(4) { $0.dead = .init(at: 1, cause: cause); $0.close = close }.indicator
     }
@@ -115,8 +113,10 @@ private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void)
     #expect(try lingering(.failed(.init(message: "no such file"))) == (.endedFailed, "gone, failed to start"))
     #expect(try edited(4) { $0.dead = .init(at: 1, cause: .exited(.init(code: 0))) }.indicator == (.done, "gone, completed"), "no close is a kept pane")
     #expect(try lingering(.exited(.init(code: 0)), close: .keep) == (.done, "gone, completed"))
-    #expect(try lingering(.exited(.init(code: 3)), close: .keep) == (.error, "gone, failed"))
-    #expect(try edited(9) { $0.close = .onExit }.indicator == (.error, "gone, failed"), "a run pane keeps the outcome of its run")
+    #expect(try lingering(.exited(.init(code: 3)), close: .keep) == (.error, "gone, exited with code 3"))
+    #expect(try lingering(.signaled(.init(signal: 9)), close: .keep) == (.error, "gone, killed by signal 9"))
+    #expect(try lingering(.failed(.init(message: "no such file")), close: .keep) == (.error, "gone, failed to start"))
+    #expect(try edited(9) { $0.close = .onExit }.indicator == (.endedFailed, "gone, exited with code 3"))
 }
 
 @Test func theProjectedTreeDrawsOneRowForEachPane() throws {

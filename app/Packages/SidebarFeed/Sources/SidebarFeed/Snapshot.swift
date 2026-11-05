@@ -32,8 +32,7 @@ public struct Snapshot: Equatable, Sendable {
             }
         }
         for session in sessions { walk(session.nodes, session: session.id) }
-        let runs = Set(items.compactMap { $0.1.run == nil ? nil : $0.1.window })
-        return items.map { (session: $0.0, pane: $0.1.pane, agent: $0.1.isAgent && !runs.contains($0.1.window)) }
+        return items.map { (session: $0.0, pane: $0.1.pane, agent: $0.1.isAgent) }
     }
 }
 
@@ -94,8 +93,6 @@ public struct Item: Equatable, Sendable {
     public var title: String
     public var lifecycle: Lifecycle
     public var program_status: ProgramStatus
-    public var run: String?
-    public var started: Date?
     public var children: [Node]
     // The core's mark: an outcome that no attended view showed yet, or the work of the pane.
     public var mark: KoSchema.Mark
@@ -105,15 +102,13 @@ public struct Item: Equatable, Sendable {
     public var inbox: Bool
     // Where the pane works, when not on the host.
     public var runtime: RuntimeMark?
-    public init(id: PaneID, window: WindowID, title: String, lifecycle: Lifecycle, program_status: ProgramStatus, run: String?, started: Date?,
+    public init(id: PaneID, window: WindowID, title: String, lifecycle: Lifecycle, program_status: ProgramStatus,
                 children: [Node], mark: KoSchema.Mark, recordsSeen: Bool = false, inbox: Bool = false, runtime: RuntimeMark? = nil) {
         self.id = id
         self.window = window
         self.title = title
         self.lifecycle = lifecycle
         self.program_status = program_status
-        self.run = run
-        self.started = started
         self.children = children
         self.mark = mark
         self.recordsSeen = recordsSeen
@@ -124,7 +119,7 @@ public struct Item: Equatable, Sendable {
 
 public enum Lifecycle: Equatable, Sendable {
     case live(PaneKind)
-    case ended(KoSchema.RunResult)
+    case ended(KoSchema.Cause)
     case lingering(KoSchema.Cause)
 }
 public enum PaneKind: Equatable, Sendable {

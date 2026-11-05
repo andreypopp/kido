@@ -8,6 +8,44 @@ use crate::harness::{DEADLINE, Dir, HEAVY, Server, quote, run_ko, start, text_of
 use crate::layout::{put_edit, window_size, windows};
 use crate::outer::{DOWN_PRESS_RELEASE, FOCUS_IN, FOCUS_OUT, Keys, Outer, UP};
 
+#[test]
+fn the_client_lists_a_child_pane_under_its_parent_indented_one_column() {
+    let s = start(&[]);
+    let title = |name: &str| {
+        serde_json::json!({
+            "command": {"type": "shell", "command": format!("printf '\\033]0;{name}\\007'; {}; exec cat", crate::harness::PRINT_TOKEN)},
+        })
+    };
+    let parent = s.new_pane(title("parent"));
+    s.screen_has(&parent, "TOKEN<");
+    s.new_pane(title("other"));
+    let mut request = title("child");
+    request["parent"] = serde_json::json!(parent);
+    request["close"] = serde_json::json!("on_exit");
+    let child = s.new_pane(request);
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.attach("");
+    o.wait("the nested rows", || {
+        let lines = o.lines();
+        lines.iter().any(|line| line.starts_with("1  parent"))
+            && lines.iter().any(|line| line.starts_with("2   child"))
+            && lines.iter().any(|line| line.starts_with("3  other"))
+    });
+    let lines = o.lines();
+    let at = |prefix: &str| {
+        lines
+            .iter()
+            .position(|line| line.starts_with(prefix))
+            .unwrap()
+    };
+    assert!(
+        at("1  parent") < at("2   child") && at("2   child") < at("3  other"),
+        "{lines:?}"
+    );
+    assert!(s.has_pane(&child));
+    o.detach();
+}
+
 const PANE_X: usize = 25;
 
 const SPLIT_ECHO: &str = r#"import os,sys,tty

@@ -680,8 +680,7 @@ mode ([Command palette](#command-palette)), with the selection appended as a
 markdown quote, or with no quote. ⌘O does nothing while copy mode is still entering. The title
 follows the focused pane when the Edit menu opens. The item is disabled with no
 focused pane, and when the pane's session has no agent that a prompt
-can reach: no sidebar row of that session is an agent outside a run
-window. Then ⌘O beeps and opens nothing, also in copy mode. In copy mode, `p`
+can reach: no sidebar row of that session is an agent. Then ⌘O beeps and opens nothing, also in copy mode. In copy mode, `p`
 enters Prompt mode only with a selection, and beeps without one. While copy
 mode is still entering, mouse clicks are ignored, except that a held
 Shift-press gesture continues. The wheel still scrolls.
@@ -1234,8 +1233,7 @@ its panes' `parent` names, at any depth. The order and the parent edges
 are the core's `outline` (each item carries its window; design.md, "The
 sidebar tree"); the app only groups it by window. A pane item's title is
 the core's label, its lifecycle comes from the pane's status and, for a
-dead pane, its `close` and run (below), `run` is its run id, `started` is
-the run's start while it is live, `mark` is the core's seen mark and
+dead pane, its `close` (below), `mark` is the core's seen mark and
 `inbox` tells whether the row's `inbox` is true (its message stream is
 open). The snapshot's
 `ServerInstance` is the model's instance string. The Swift types of the
@@ -1301,7 +1299,7 @@ step. It reads the displayed order, so a pending reorder counts. From a
 top-level window, a step goes to the adjacent top-level window. It never
 goes into child windows, and it wraps across sessions in both directions.
 A window that the snapshot does not nest under a pane is a top-level
-window: a shell's, a top-level pi's or a parentless run's. From a child
+window: a shell's or a top-level pi's. From a child
 window, a step goes to its adjacent sibling. Previous from the first
 sibling selects the parent. Next from the last sibling selects the
 top-level window after its top-level ancestor. When the target is the
@@ -1402,29 +1400,28 @@ Geometry is derived in the row model as per-row guide segments, not
 maintained in a separate view tree.
 The display-only @
 prefix, never doubled, marks an agent that can be messaged, which is exactly
-a live pi agent pane. A run pane gets no @ while it is a Terminal or Ended: its
-inbox is not up yet or is gone. A native agent pane (such as
+a live pi agent pane. A native agent pane (such as
 Claude Code) and an agent over SSH (an Ssh pane with a remote agent, out of
 reach of message_agent, which only reaches pi sessions on the same server)
 cannot be messaged, so they keep the semibold title without the @. Idle local shell panes
-(Live Terminal at a known Idle prompt, no run, idle/done/failed indicator) display secondary-colored
-`Terminal`; an Unknown phase, full-screen programs, SSH, and run items keep their labels. Both display
+(Live Terminal at a known Idle prompt, idle/done/failed indicator) display secondary-colored
+`Terminal`; an Unknown phase, full-screen programs and SSH keep their labels. Both display
 rules leave raw pane labels and tab/window titles unchanged.
 
 The app composes the row from the core's label. The label is the core's title,
-except that a local shell without a program report and not in a run shows a
+except that a local shell without a program report shows a
 non-empty running non-fullscreen command, and a remote terminal shows
 `ssh user@host`, adding `: command` only for an interactive, report-free,
 non-fullscreen running command. The caption is the agent's or report's `msg`
-and progress percentage, joined by a space; Ended rows show their result
-except completed or unknown, which show none: the green check alone marks
-completion, while accessibility still reads "gone, completed". A run's
-start metadata drives the clock even when a caption is shown. A live pane's indicator is its core `mark`
+and progress percentage, joined by a space; an Ended row of a failure
+shows its cause (`exited with code 2`, the signal, the start failure),
+and a completed one shows none: the green check alone marks
+completion, while accessibility still reads "gone, completed". A live pane's indicator is its core `mark`
 (running, waiting, done, failed, or none, which is quiet); the app adds
-only the Ended, lingering and run cases. A dead pane with a run, or with
-`close: keep`, is Ended with its run's result, else with its exit: Ended
-completed is done, failed and died are errors, stopped and unknown are
-quiet. A dead pane with `close: on_exit` and no run lingers until the sweep
+only the Ended and lingering cases. A dead pane with `close: keep` is
+Ended with its exit: exit 0 is completed and done; another exit, a
+signal or a start failure is failed and an error. A dead pane with
+`close: on_exit` lingers until the sweep
 removes it: its lifecycle carries the cause, it has no caption, and its
 indicator is a dimmed checkmark for exit 0 and a dimmed × for any other
 cause, so a finished child that ko is about to close reads as gone, not as
@@ -1462,7 +1459,7 @@ The toolbar and Shift-Command-S toggle the sidebar; the View menu's
 Show/Hide title follows its collapsed state. Focus Sidebar uses
 Command-S. Control-Command-F enters full screen.
 Command-{/} and Ghostty previous/next tab step through every window of
-every session in sidebar tree order, nested run windows after their
+every session in sidebar tree order, nested child windows after their
 parent, with wraparound, and select it with `ko_client_select`.
 Option-Command-]/[ switches sessions
 with `ko_client_switch`, in the server's session order, with wraparound
@@ -1473,7 +1470,7 @@ selected event for every select, also for the pane that is already
 current, so the selection is only the server's; the core refuses an
 unknown pane with `KO_ERR_NOT_FOUND` before it sends. Command-{/} keep
 their own walk because the server's window switch follows document order,
-and the sidebar puts a run window after its parent pane.
+and the sidebar puts a child window after its parent pane.
 Command-N and toolbar plus create a session ([Command palette](#command-palette),
 New session). File → New Session with no key window uses an open local
 window that is not key, or opens a local window. The window that it opens
@@ -1564,8 +1561,8 @@ The root list is built from live state, in this order:
   never jumps to another owner: not from Local to a remote host, not between
   hosts, and not to another window of the same host. With no anchor, there are
   no pane rows. A top-level pane is a sidebar pane row at indent 0
-  (`SidebarRow.topLevel`, which the sidebar's drag source also uses): a child window that the snapshot nests under a pane (a subagent or a
-  run) is not in the list, and neither is an OSC 7501 program record row.
+  (`SidebarRow.topLevel`, which the sidebar's drag source also uses): a child window that the snapshot nests under a pane (a subagent) is
+  not in the list, and neither is an OSC 7501 program record row.
   There are no session rows; the session commands below stay. A pane row has
   its status mark and jumps through one `ko_client_select`, as a sidebar row does. The
   anchor's window comes to the front first. The detail is the session name,
@@ -1688,7 +1685,7 @@ optional preselected agent pane. The entry points are:
   selection, if any. With the palette closed, `WindowOwner` forwards the pane
   to `AppDelegate.openPrompt`, which opens the palette over the pane's window
   with the pane as the focus to restore.
-- ⌘O in the root list. On a highlighted agent pane row outside a run window,
+- ⌘O in the root list. On a highlighted agent pane row,
   the source is that agent's own pane, preselected, with no quote, from the
   anchor, if the row's check still passes. On any
   other row, ⌘O acts as the Prompt… row. Only the highlighted agent row shows "⌘O prompt" in its
@@ -1696,8 +1693,7 @@ optional preselected agent pane. The entry points are:
 - The root row Prompt…: the focused pane, with its current selection.
 
 The pane entries first check for an agent in the source pane's session, from
-the snapshot that the sidebar draws. Agents in a run window do not count,
-because a prompt excludes every pane of a run window. Without one, a
+the snapshot that the sidebar draws. Without one, a
 key entry beeps and opens nothing, the context-menu item and the Edit item are
 disabled, and the root list has no Prompt… row. Root ⌘O on an agent row needs
 no other check, because the row is the agent. Thus, no entry opens Prompt mode
@@ -1948,12 +1944,10 @@ app decides what deserves a banner. `SidebarFeed/Notifications.swift` is the
 pure step; `App/Notifications.swift` holds the two posters and the
 app-wide `Notifier`; `main.swift` installs the delegate and routes clicks.
 
-**Eligibility.** A pane wants a notification when its lifecycle is Live,
-it is not a run nested under another item (the parent agent gets the notice;
-a run at the top level of the tree, even inside its window's group, has no
-parent and notifies), and its core `mark` is waiting or failed. The reason
+**Eligibility.** A pane wants a notification when its lifecycle is Live
+and its core `mark` is waiting or failed. The reason
 is the mark: a changed waiting kind does not repost, and a second failure
-while the mark is still failed posts nothing. Done, finished runs,
+while the mark is still failed posts nothing. Done,
 successes, running, Ended rows and a command exit of 130 never notify.
 
 **One notifier, entries per window.** Every `WindowOwner` has its own
@@ -2304,8 +2298,8 @@ windows with three panes, including 1M- and 100k-line history panes and a
 float. Every 0.4 s it applies a server
 action chosen from `SEED`: a client select, layout edits (split, zoom, add
 or move a float, add or drop a session, add a window, rename, swap
-windows) with `ko layout edit`; pane and window deletes; text input; `clear_history`; `ko run`
-in a pane; and server restarts at 40% and 80%. The stress build logs the
+windows) with `ko layout edit`; pane and window deletes; text input; `clear_history`; a
+child pane (`POST /panes` with `parent` and `close: on_exit`); and server restarts at 40% and 80%. The stress build logs the
 client id of each welcome, and the script reads it from the app's stderr
 log to select for the app's client. Stress also resizes while a window is
 hidden (`hidden-resize`). In the app `Stress` does the same on the main

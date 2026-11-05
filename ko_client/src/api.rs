@@ -9,11 +9,42 @@ use ko_server::config::{self, Dir};
 use ko_server::http::Response;
 use ko_server::protocol::{self, ErrorKind, Snapshot, Version};
 use ko_sys::event::{Events, Interest, Mode, Poll, Wake};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::edit::Edit;
 use crate::launch;
 use crate::layout::{self, Document, Edited};
 use crate::wire::{self, Caller, Link, Next};
+
+#[derive(Debug)]
+pub enum ReplyError {
+    Server(Failure),
+    Refused(protocol::Error),
+}
+
+pub(crate) fn call<T: Serialize + DeserializeOwned>(
+    dir: &Path,
+    route: &Route,
+    caller: Option<Caller>,
+    body: Option<&impl Serialize>,
+    within: Duration,
+) -> Result<T, ReplyError> {
+    let (method, path) = route.to_request();
+    let body = body.map(|body| protocol::json(body)).unwrap_or_default();
+    let response = exchange(dir, caller, (method, &path), body.as_bytes(), within)
+        .map_err(ReplyError::Server)?;
+    if response.status / 100 != 2 {
+        return Err(match protocol::decode::<protocol::Error>(&response.body) {
+            Ok(error) => ReplyError::Refused(error),
+            Err(_) => ReplyError::Server(Failure::Failed(
+                String::from_utf8_lossy(&response.body).into_owned(),
+            )),
+        });
+    }
+    protocol::decode(&response.body)
+        .map_err(|error| ReplyError::Server(Failure::Failed(error.to_string())))
+}
 
 pub fn version(
     socket: &Path,

@@ -43,10 +43,6 @@ fn append(name: &str, line: &str) {
     }
 }
 
-fn log(name: &str, argv: &[String]) {
-    append(name, &json!(argv).to_string());
-}
-
 fn text(row: &Value, key: &str) -> String {
     row[key].as_str().unwrap_or_default().to_owned()
 }
@@ -60,12 +56,6 @@ fn rows(name: &str) -> Vec<Value> {
         Some(Value::Array(rows)) => rows,
         _ => Vec::new(),
     }
-}
-
-fn after<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
-    argv.windows(2)
-        .find(|pair| pair[0] == flag)
-        .map(|pair| pair[1].as_str())
 }
 
 #[derive(Debug)]
@@ -94,168 +84,11 @@ impl Drop for Locked {
     }
 }
 
-fn runs_path() -> String {
-    env("KO_FAKE_RUNS_FILE")
-}
-
 fn write_rows(path: &str, rows: &[Value]) {
     if !path.is_empty() {
         let temp = format!("{path}.tmp");
         if fs::write(&temp, Value::Array(rows.to_vec()).to_string()).is_ok() {
             let _ = fs::rename(temp, path);
-        }
-    }
-}
-
-fn find_row(id: &str) -> Option<Value> {
-    rows("KO_FAKE_RUNS_FILE")
-        .into_iter()
-        .find(|row| text(row, "id") == id)
-}
-
-fn with_outcome(mut row: Value, result: &str, outcome_text: &str) -> Value {
-    row["outcome"] = json!({"result": result, "text": outcome_text});
-    row
-}
-
-fn with_row(id: &str, change: impl Fn(Value) -> Value) {
-    let path = runs_path();
-    if path.is_empty() {
-        return;
-    }
-    let _lock = Locked::take(&path);
-    let changed: Vec<Value> = rows("KO_FAKE_RUNS_FILE")
-        .into_iter()
-        .map(|row| {
-            if text(&row, "id") == id {
-                change(row)
-            } else {
-                row
-            }
-        })
-        .collect();
-    write_rows(&runs_path(), &changed);
-}
-
-fn positional(argv: &[String]) -> String {
-    argv.get(1).cloned().unwrap_or_default()
-}
-
-fn start_run(name: &str, parent: &str) -> Value {
-    let run_id = std::env::var("KO_FAKE_RUN_ID").unwrap_or_else(|_| "fake-run-id".to_owned());
-    let pane = std::env::var("KO_FAKE_RUN_PANE").unwrap_or_else(|_| "pane_9".to_owned());
-    if !runs_path().is_empty() {
-        let _lock = Locked::take(&runs_path());
-        let mut all = rows("KO_FAKE_RUNS_FILE");
-        all.push(json!({
-            "id": run_id,
-            "name": name,
-            "parent": parent,
-            "pane": pane,
-            "argv": [],
-            "cwd": "",
-            "startedAt": "2023-11-14T22:00:00Z",
-        }));
-        write_rows(&runs_path(), &all);
-    }
-    json!({"id": run_id, "window": "window_9", "pane": pane})
-}
-
-fn run(argv: &[String]) -> ExitCode {
-    log("KO_FAKE_RUN_LOG", argv);
-    println!(
-        "{}",
-        start_run(after(argv, "--name").unwrap_or_default(), &positional(argv))
-    );
-    ExitCode::SUCCESS
-}
-
-fn post_run(body: &str) -> ExitCode {
-    let request: Value = serde_json::from_str(body).unwrap_or(Value::Null);
-    println!(
-        "{}",
-        start_run(&text(&request, "name"), &text(&request, "parent"))
-    );
-    ExitCode::SUCCESS
-}
-
-fn runs(argv: &[String]) -> ExitCode {
-    log("KO_FAKE_RUNS_LOG", argv);
-    let (mut parent, mut id, mut all) = (None, None, false);
-    let mut rest = argv.iter().skip(1);
-    while let Some(arg) = rest.next() {
-        match arg.as_str() {
-            "--parent" => parent = rest.next().cloned(),
-            "--json" => {}
-            "--all" => all = true,
-            other => {
-                id.get_or_insert_with(|| other.to_owned());
-            }
-        }
-    }
-    if let Some(id) = id {
-        return match find_row(&id) {
-            Some(row) => {
-                println!("{row}");
-                ExitCode::SUCCESS
-            }
-            None => {
-                eprintln!("run {id}: no such run");
-                ExitCode::from(3)
-            }
-        };
-    }
-    let listed: Vec<Value> = rows("KO_FAKE_RUNS_FILE")
-        .into_iter()
-        .filter(|row| {
-            parent
-                .as_ref()
-                .is_none_or(|parent| text(row, "parent") == *parent)
-        })
-        .filter(|row| all || row.get("outcome").is_none())
-        .collect();
-    println!("{}", Value::Array(listed));
-    ExitCode::SUCCESS
-}
-
-fn run_wait(argv: &[String]) -> ExitCode {
-    log("KO_FAKE_RUN_WAIT_LOG", argv);
-    wait_gate("KO_FAKE_RUN_WAIT_GATE");
-    let id = positional(argv);
-    let stored = rows("KO_FAKE_RUNS_FILE")
-        .into_iter()
-        .find(|row| text(row, "id") == id)
-        .and_then(|row| row.get("outcome").cloned());
-    let answer = match std::env::var("KO_FAKE_RUN_WAIT_OUTCOME") {
-        Ok(raw) => raw,
-        Err(_) => stored.map_or_else(
-            || "{\"result\":\"completed\"}".to_owned(),
-            |json| json.to_string(),
-        ),
-    };
-    println!("{answer}");
-    ExitCode::SUCCESS
-}
-
-fn run_stop(argv: &[String]) -> ExitCode {
-    log("KO_FAKE_RUN_STOP_LOG", argv);
-    let result = if after(argv, "--result") == Some("completed") {
-        "completed"
-    } else {
-        "stopped"
-    };
-    let id = positional(argv);
-    match find_row(&id) {
-        None => {
-            eprintln!("run {id}: no such run");
-            ExitCode::from(3)
-        }
-        Some(row) => {
-            if row.get("outcome").is_none() {
-                with_row(&id, |row| with_outcome(row, result, ""));
-            }
-            println!("stopped run {id}; killed its pane");
-            ExitCode::SUCCESS
         }
     }
 }
@@ -498,7 +331,6 @@ fn screen(path: &str) -> ExitCode {
         .collect::<Vec<_>>()[..]
     {
         ["", "panes", pane, "screen"] => pane.to_owned(),
-        ["", "runs", run, "screen"] => format!("run-{run}"),
         _ => return ExitCode::FAILURE,
     };
     match fs::read_to_string(Path::new(&env("KO_FAKE_SCREENS")).join(name)) {
@@ -604,45 +436,6 @@ fn stream_messages(pane: &str) -> ExitCode {
             if !printed.contains(&id) && !answered(&id) {
                 emit(line);
                 printed.insert(id);
-            }
-        }
-        std::thread::sleep(POLL);
-    }
-}
-
-fn b64_len(data: &str) -> u64 {
-    let pad = data.bytes().rev().take_while(|byte| *byte == b'=').count() as u64;
-    (data.len() as u64 / 4) * 3 - pad
-}
-
-fn stream_output(query: &str) -> ExitCode {
-    let start: u64 = query
-        .split('&')
-        .find_map(|pair| pair.strip_prefix("offset="))
-        .and_then(|offset| offset.parse().ok())
-        .unwrap_or(0);
-    let mut seen = 0;
-    loop {
-        let feed = fs::read_to_string(env("KO_FAKE_OUTPUT")).unwrap_or_default();
-        for line in feed.lines().skip(seen) {
-            seen += 1;
-            let Ok(record) = serde_json::from_str::<Value>(line) else {
-                continue;
-            };
-            let old = match record["type"].as_str() {
-                Some("bytes") => {
-                    record["offset"].as_u64().unwrap_or(0) + b64_len(&text(&record, "data"))
-                        <= start
-                }
-                Some("skip") => record["to"].as_u64().unwrap_or(0) <= start,
-                _ => false,
-            };
-            if old {
-                continue;
-            }
-            emit(line);
-            if record["type"] == "dead" {
-                return ExitCode::SUCCESS;
             }
         }
         std::thread::sleep(POLL);
@@ -890,15 +683,15 @@ fn api(argv: &[String]) -> ExitCode {
         "KO_FAKE_API_LOG",
         &json!({"method": method, "path": path, "body": body}).to_string(),
     );
-    let (route, query) = path.split_once('?').unwrap_or((&path, ""));
+    let route = path
+        .split_once('?')
+        .map_or(path.as_str(), |(route, _)| route);
     let segments: Vec<&str> = route.split('/').collect();
     match (method.as_str(), segments.as_slice()) {
         ("STREAM", ["", "panes", pane, "messages"]) => return stream_messages(pane),
-        ("STREAM", ["", "panes", _, "output"]) => return stream_output(query),
         ("STREAM", ["", "runtimes", name, "exec"]) => return exec_session(name),
         ("GET", ["", "runtimes"]) => return get_runtimes(None),
         ("GET", ["", "runtimes", name]) => return get_runtimes(Some(name)),
-        ("POST", ["", "runs"]) => return post_run(&body),
         ("GET", ["", "layout"]) => {
             if env("KO_FAKE_LAYOUT_FAIL") == "1" {
                 return ExitCode::FAILURE;
@@ -916,7 +709,7 @@ fn api(argv: &[String]) -> ExitCode {
         ("POST", ["", "panes"]) => return new_pane(&body),
         ("POST", ["", "panes", pane, "stop"]) => return stop_pane(pane),
         ("POST", ["", "panes", pane, "messages"]) => return send_message(pane, &body),
-        ("GET", ["", "panes", _, "screen"] | ["", "runs", _, "screen"]) => return screen(&path),
+        ("GET", ["", "panes", _, "screen"]) => return screen(&path),
         ("PUT", ["", "panes", pane, "vars", name]) => return put_var(pane, name, &body),
         ("DELETE", ["", "panes", pane, "vars", name]) => {
             set_var(pane, name, None);
@@ -932,10 +725,6 @@ fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     append("KO_FAKE_LOG", &json!(argv).to_string());
     match argv.first().map(String::as_str) {
-        Some("run-child") => run(&argv),
-        Some("runs") => runs(&argv),
-        Some("run-wait") => run_wait(&argv),
-        Some("run-stop") => run_stop(&argv),
         Some("api") => api(&argv),
         _ => ExitCode::FAILURE,
     }

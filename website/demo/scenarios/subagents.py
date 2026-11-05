@@ -26,9 +26,9 @@ print(f"{a} + {b} = {a + b}")
 ''')
     demo.open_pi()
     demo.prompt("spawn 2 subagents A and B, A should compute a sum of two random 0-10 numbers and tell B, B should compute result of A*2 and tell you the result")
-    wait_for("first real child", lambda: len(demo.runs()) >= 1, 90)
+    wait_for("first real child", lambda: len(demo.children()) >= 1, 90)
     demo.mark("child")
-    wait_for("both real children", lambda: len(demo.runs()) == 2, 90)
+    wait_for("both real children", lambda: len(demo.children()) == 2, 90)
     demo.mark("children")
     wait_for("A messages B", lambda: "message_agent" in demo.calls(), 120)
     def results_arrived():
@@ -54,11 +54,11 @@ print(f"{a} + {b} = {a + b}")
     expected = f"Result: ({a} + {b}) × 2 = {(a + b) * 2}."
     wait_for("actual final arithmetic", lambda: expected in demo.screen(demo.agent).replace("\n", " ")
              and any(r["status"] == "idle" and not r.get("parent") for r in demo.status()), 60)
-    assert {m["name"] for m, _ in demo.runs()} == {"A", "B"}
+    assert {m["name"] for m, _ in demo.children()} == {"A", "B"}
     demo.mark("done")
     time.sleep(2)
     demo.mark("verified")
     evidence = HERE / "output/subagents"
     evidence.mkdir(exist_ok=True)
     (evidence / "evidence.json").write_text(json.dumps({"numbers": numbers, "result": (a + b) * 2,
-        "runs": demo.runs(), "calls": demo.calls(), "status": demo.status(), "screen": demo.screen(demo.agent)}, indent=2))
+        "runs": demo.children(), "calls": demo.calls(), "status": demo.status(), "screen": demo.screen(demo.agent)}, indent=2))

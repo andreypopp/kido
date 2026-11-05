@@ -102,32 +102,32 @@ func notificationWithdraws(cause: String) throws {
     #expect(sidebarRows(makeSnapshot(nodes)).contains { $0.status == .error })
 }
 
-@Test func notificationTopLevelRunPosts() throws {
+@Test func notificationTopLevelPanePosts() throws {
     var state = try notifier()
-    let effects = try step(&state, [pane(1, lifecycle: piAgent(waiting()), run: "r-top", mark: .waiting)])
+    let effects = try step(&state, [pane(1, lifecycle: piAgent(waiting()), mark: .waiting)])
     #expect(effects.post.count == 1 && effects.post.first?.kind == .waiting)
 }
 
-@Test func notificationNestedRunIsSilent() throws {
+@Test func notificationNestedPanePosts() throws {
     var state = try notifier()
-    let parent = pane(0, lifecycle: piAgent(working()), mark: .running, children: [pane(1, lifecycle: piAgent(waiting()), run: "r-child", mark: .waiting)])
-    #expect(try step(&state, [parent]).post.isEmpty)
+    let parent = pane(0, lifecycle: piAgent(working()), mark: .running, children: [pane(1, lifecycle: piAgent(waiting()), mark: .waiting)])
+    #expect(try step(&state, [parent]).post.count == 1)
 }
 
-private func runGroup() -> Node {
-    group(5, [pane(1, window: 5, lifecycle: piAgent(waiting()), run: "r-1", mark: .waiting), pane(2, window: 5, lifecycle: terminal())])
+private func paneGroup() -> Node {
+    group(5, [pane(1, window: 5, lifecycle: piAgent(waiting()), mark: .waiting), pane(2, window: 5, lifecycle: terminal())])
 }
 
-@Test func notificationTopLevelGroupRunPosts() throws {
+@Test func notificationTopLevelGroupPanePosts() throws {
     var state = try notifier()
-    let effects = try step(&state, [runGroup()])
+    let effects = try step(&state, [paneGroup()])
     #expect(effects.post.count == 1 && effects.post.first?.key.pane == PaneID(number: 1))
 }
 
-@Test func notificationNestedGroupRunIsSilent() throws {
+@Test func notificationNestedGroupPanePosts() throws {
     var state = try notifier()
-    let parent = pane(0, lifecycle: piAgent(working()), mark: .running, children: [runGroup()])
-    #expect(try step(&state, [parent]).post.isEmpty)
+    let parent = pane(0, lifecycle: piAgent(working()), mark: .running, children: [paneGroup()])
+    #expect(try step(&state, [parent]).post.count == 1)
 }
 
 @Test func notificationNonFailuresNeverPost() throws {

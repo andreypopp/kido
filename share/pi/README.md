@@ -8,9 +8,9 @@ the session. These work without the extension.
 
 The extension reaches ko only through `ko` commands: `ko api` for
 routes (`/layout`, `/version`, `POST /panes`, the pane messages and
-stop, screens, `/panes/$KO_PANE/vars`), `ko api --stream` for its own
-message stream and a run's output stream, and the run commands
-(`run-child`, `runs --json`, `run-wait --json`, `run-stop`). It never
+stop, screens, `/panes/$KO_PANE/vars`) and `ko api --stream` for its
+own message stream and a routed pi's exec sessions. Its background
+commands are jobs, child processes of pi, not ko runs. It never
 opens ko's socket itself, never reads ko's state directory and has no
 state directory of its own: its registry of children and their
 reports are custom entries in its own pi session.
@@ -49,10 +49,13 @@ session id:
 - for a subagent (`KO_AGENT_SESSION` equal to its own session id),
   delivers the `ko-pi.task` variable once, watches its parent's pane,
   and sends its report to the parent when a turn of its work settles.
-- at shutdown, stops its own live `async_bash` runs.
+- replaces pi's builtin `bash` with pi's own definition over its job
+  operations: a call that runs past 60 s, or that ctrl+b moves,
+  continues as a job, and the call returns at once.
+- keeps its jobs across `/reload`; at quit, `/new`, `/resume` and
+  `/fork` it stops them.
 - with `--runtime NAME` (the routed mode), runs its built-in tools,
-  `!` commands and `async_bash` in that runtime through exec sessions
-  and runs, reads the context files there, and writes `pi.runtime` and
+  `!` commands and jobs in that runtime through exec sessions, reads the context files there, and writes `pi.runtime` and
   `ko.runtime` (docs/design-runtimes.md, "Agents in a runtime").
 
 Outside ko, without a UI or without a session id, it writes nothing and
@@ -67,8 +70,8 @@ unavailable.
   report.
 - `read_report(agent, which?)`: the whole last report of an own
   subagent, or all of them.
-- `list_async_bash()`: the caller's own runs, all running and the
-  newest 20 ended.
+- `list_async_bash()`: the caller's own jobs, all running and the
+  newest 20 ended, with their logs.
 - `message_agent(to, message, mode?)`: `message` (the default) queues
   for any agent until its turn ends; to an ended own subagent, it
   restarts the subagent in its own session, with its history, and the
@@ -89,11 +92,11 @@ unavailable.
 - `stop_agent(agent, force?)`: one agent in scope, by a stop message
   and then the pane stop; `force` kills an agent that is not receiving
   messages. A subagent that the caller stops sends no ending notice.
-- `async_bash(command, name, stream?)`: a command through
-  `ko run-child $KO_PANE ... -- bash -o pipefail -c CMD`. Its output is
-  the pane's screen. Its ending arrives as a notice with the screen's
-  tail; with `stream`, batches of output arrive while it runs.
-- `stop_async_bash(run)`: one own run, through `ko run-stop`.
+- `async_bash(command, name, stream?)`: a job through pi's shell
+  configuration. Both streams go to one log in the temp directory. Its
+  ending arrives as a notice with the output's tail; with `stream`,
+  batches of output arrive while it runs.
+- `stop_async_bash(job)`: one own job, by id or name.
 
 A subagent has no report tool. When its turn ends with nothing of its
 own still running, its last message goes to its parent as a notice,
@@ -105,8 +108,8 @@ once for each piece of work, and the parent keeps it whole.
 TypeScript support, on the fake `ko` of `testdata/fake_ko/` (a Rust
 binary that `make build-fake-ko` builds). The fake answers the routes
 that the extension calls with the real server's shapes, and serves the
-message and output streams from files that a test writes, reading the
-acks on stdin. It serves a runtime's exec session by running the argv
+message stream from files that a test writes, reading the acks on
+stdin. Local jobs run real shells, gated on files that a test writes. It serves a runtime's exec session by running the argv
 on the host with only the requested environment; one test drives the
 same exec client against a real `ko server` with a `command` runtime. A fake delay is a `KO_FAKE_*` gate that a test
 releases. `testdata/ko-prompts.txt` is the snapshot of every prompt

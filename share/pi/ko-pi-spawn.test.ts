@@ -30,7 +30,6 @@ test("spawn_agent creates one pane with a parent, close on_exit, the task as a v
     assert.equal(env(body!, "KO_AGENT_PARENT_SESSION"), "self-session");
     assert.equal(env(body!, "KO_AGENT_TRUSTED_CWD"), undefined, "a session that does not trust its project passes no trust");
     assert.deepEqual(body!.vars, { "ko-pi.task": { text: "build it", from: { session: "self-session", name: "Self", pane: "pane_1" } } });
-    assert.equal(fx.runCalls().length, 0, "an agent is no run");
 
     assert.match(reply, new RegExp(`^spawned worker \\(session ${session}, window window_10, pane pane_10\\); session id is what resume_from takes later; its result arrives as a notice`));
     assert.match(reply, /list_agents lists this agent and stop_agent stops it/);

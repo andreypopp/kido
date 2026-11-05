@@ -1,4 +1,3 @@
-use std::io::Read;
 use std::sync::Arc;
 
 use ko_sys::event::{Poll, Token};
@@ -21,7 +20,6 @@ use crate::route::{self, Alt, Endpoint, Invalid};
 use crate::runtime::exec::Session;
 use crate::server::Origin;
 use crate::state::{Owner, PutFailure, State};
-use crate::tail::Tail;
 use crate::view::View;
 use crate::ws::{self, Ws};
 use ko_pane_wire::frame::ImageKey;
@@ -274,7 +272,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             };
             ok::<routes::GetLayout>(&mut state.conns[index], &layout);
         }
-        Request::PutLayout { body } => match state.put_layout(poll, body, None, caller) {
+        Request::PutLayout { body } => match state.put_layout(poll, body, caller) {
             Ok(snapshot) => ok::<routes::PutLayout>(&mut state.conns[index], &snapshot),
             Err(PutFailure::Stale(snapshot)) => {
                 alt::<routes::PutLayout, 409>(&mut state.conns[index], &snapshot);
@@ -384,40 +382,6 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             state.delete_var(poll, id, name);
             ok::<routes::DeleteVar>(&mut state.conns[index], &Empty {});
         }
-        Request::StartRun { body } => {
-            let result = state.start_run(poll, caller, &origin, body);
-            reply::<routes::StartRun>(&mut state.conns[index], result);
-        }
-        Request::ListRuns { show, parent } => {
-            let mut infos = state.list_runs(show, parent.as_ref());
-            if let (Origin::Runtime(runtime), Some(caller)) = (&origin, caller) {
-                infos = state.visible_runs(runtime, caller, infos);
-            }
-            ok::<routes::ListRuns>(&mut state.conns[index], &infos);
-        }
-        Request::RunScreen { id } => {
-            let screen = state.run_screen(&id);
-            file_body::<routes::RunScreen>(&mut state.conns[index], screen);
-        }
-        Request::GetRun { id } => {
-            let result = state.run_detail(&id);
-            reply::<routes::GetRun>(&mut state.conns[index], result);
-        }
-        Request::WaitRun { id, timeout_ms } => {
-            if let Some(result) = state.wait_run(poll, index, id, timeout_ms.get()) {
-                reply::<routes::WaitRun>(&mut state.conns[index], result);
-            }
-        }
-        Request::RunOutcome { id, body } => {
-            if let Some(result) = state.run_outcome(poll, index, id, body) {
-                reply::<routes::RunOutcome>(&mut state.conns[index], result);
-            }
-        }
-        Request::StopRun { id, body } => {
-            if let Some(result) = state.stop_run(poll, index, id, body) {
-                reply::<routes::StopRun>(&mut state.conns[index], result);
-            }
-        }
         Request::ListRuntimes {} => {
             let result = state.list_runtimes();
             reply::<routes::ListRuntimes>(&mut state.conns[index], result);
@@ -498,39 +462,6 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                 ),
             }
         }
-        Request::Output { id, offset } => {
-            if let Err(Error { kind, message }) = state.may_read_output(caller, id) {
-                return error(&mut state.conns[index], kind, message);
-            }
-            let opened = state
-                .panes
-                .find_mut(id)
-                .and_then(|pane| pane.proc_mut().delivery_mut())
-                .map(|delivery| Tail::new(id, delivery, offset.map(Offset::get)));
-            let tail = match opened {
-                Some(Ok(Some(tail))) => tail,
-                Some(Ok(None)) => {
-                    return error(
-                        &mut state.conns[index],
-                        ErrorKind::Invalid,
-                        "offset is past the end of the output",
-                    );
-                }
-                Some(Err(_)) | None => {
-                    return error(
-                        &mut state.conns[index],
-                        ErrorKind::Io,
-                        Refusal::Ended.to_string(),
-                    );
-                }
-            };
-            let Some(response) = handshake(state, index, &head) else {
-                return;
-            };
-            upgrade(state, poll, index, response, Role::Tail(tail));
-            state.pump_tail(index);
-            state.read_ws(poll, index);
-        }
         Request::View {
             id,
             history,
@@ -577,27 +508,6 @@ fn finish(state: &mut State, poll: &mut Poll, conn: Token, reply: impl FnOnce(&m
     if matches!(state.conns[index].phase, Phase::Handling) {
         state.conns[index].phase = Phase::Head;
         state.serve(poll, index);
-    }
-}
-
-fn file_body<E: Endpoint<Reply = route::text>>(
-    conn: &mut Conn,
-    found: Result<(std::fs::File, usize), Error>,
-) {
-    let (mut file, length) = match found {
-        Ok(found) => found,
-        Err(Error { kind, message }) => return error(conn, kind, message),
-    };
-    let size = length.to_string();
-    let mut bytes = http::response(
-        Status::Ok,
-        &[("content-type", "text/plain"), ("content-length", &size)],
-        b"",
-    );
-    bytes.reserve(length);
-    match file.read_to_end(&mut bytes) {
-        Ok(_) => conn.out.send_reply(bytes),
-        Err(failure) => error(conn, ErrorKind::Io, failure.to_string()),
     }
 }
 
@@ -737,14 +647,6 @@ mod tests {
     }
 
     impl Harness {
-        fn linger(&self, seconds: &str) {
-            std::fs::write(
-                &self.state.config.file,
-                format!("server:\n  linger_seconds: {seconds}\n"),
-            )
-            .unwrap();
-        }
-
         fn reply(&mut self, request: &str, rest: &str) -> String {
             let request = format!("{request} HTTP/1.1\r\n{}{rest}", ko_headers());
             String::from_utf8_lossy(self.exchange(request.as_bytes())).into_owned()
@@ -1471,9 +1373,14 @@ mod tests {
         a.send(&mut server, r#"{"type":"focused","focused":false}"#);
         assert_eq!(focused(&server), [true, false, false]);
         drop(b);
-        step_until(&mut server, "the hangup to clear the focus", |server| {
-            focused(server) == [false, false, false]
-        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while focused(&server) != [false, false, false] {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "wait for the hangup to clear the focus"
+            );
+            server.step(Mode::Wait);
+        }
     }
 
     #[test]
@@ -1550,132 +1457,6 @@ mod tests {
         assert_eq!(
             server.status("POST /panes/pane_9/clear_history", "\r\n"),
             "HTTP/1.1 404"
-        );
-    }
-
-    impl Harness {
-        fn run_screen(&mut self, id: &str) -> (String, String) {
-            let reply = self.reply(&format!("GET /runs/{id}/screen"), "\r\n");
-            let status = reply[9..12].to_owned();
-            let body = reply.split_once("\r\n\r\n").map_or("", |(_, body)| body);
-            (status, body.to_owned())
-        }
-
-        fn call(&mut self, request: &str, body: &Value) -> (String, Value) {
-            let body = if body.is_null() {
-                String::new()
-            } else {
-                body.to_string()
-            };
-            let reply = self.reply(
-                request,
-                &format!("Content-Length: {}\r\n\r\n{body}", body.len()),
-            );
-            let status = reply[9..12].to_owned();
-            let json = reply
-                .split_once("\r\n\r\n")
-                .and_then(|(_, body)| serde_json::from_str(body).ok())
-                .unwrap_or(Value::Null);
-            (status, json)
-        }
-    }
-
-    #[test]
-    fn a_run_is_a_marked_window_whose_first_outcome_stands() {
-        let mut server = harness("runs");
-        let mut peer = server.peer(&hello("", false, 80, 24));
-        assert_eq!(kinds(&peer.events(&mut server)), ["welcome", "layout"]);
-        let cat = json!(["/bin/sh", "-c", "exec cat"]);
-        let (status, started) = server.call(
-            "POST /runs",
-            &json!({"name": "job", "session": "s", "env": [], "argv": cat}),
-        );
-        assert_eq!(status, "200", "{started}");
-        let (id, pane) = (
-            started["id"].as_str().unwrap(),
-            started["pane"].as_str().unwrap(),
-        );
-        assert_eq!(
-            server
-                .state
-                .panes
-                .find(pane.parse().unwrap())
-                .and_then(|pane| pane.run().map(ToString::to_string)),
-            Some(id.to_owned())
-        );
-        let (_, listed) = server.call("GET /runs?show=live", &json!(null));
-        assert_eq!(listed[0]["name"], "job");
-        assert_eq!(listed[0]["pane"], pane);
-        assert_eq!(listed[0]["argv"], cat);
-        assert_eq!(listed[0].get("outcome"), None);
-
-        let events = peer.events(&mut server);
-        assert_eq!(
-            kinds(&events),
-            ["layout"],
-            "a run's start is one layout event, with no event of its own"
-        );
-        assert_eq!(
-            events[0]["panes"][0]["run"],
-            json!({"id": id, "name": "job", "pane": pane, "argv": cat, "cwd": "", "startedAt": listed[0]["startedAt"]})
-        );
-        assert_eq!(events[0]["panes"][0]["id"], pane);
-        assert_eq!(events[0]["panes"].as_array().map(Vec::len), Some(1));
-        let started_layout = serde_json::to_value(server.state.layout_panes().snapshot).unwrap();
-        let began = std::time::Instant::now();
-        let (_, waited) = server.call(&format!("GET /runs/{id}/wait?timeout_ms=150"), &json!(null));
-        assert_eq!(waited, json!({}));
-        assert!(began.elapsed() >= std::time::Duration::from_millis(140));
-
-        let outcome = |server: &mut Harness| {
-            server
-                .call(
-                    &format!("POST /runs/{id}/outcome"),
-                    &json!({"result": "completed"}),
-                )
-                .0
-        };
-        assert_eq!(outcome(&mut server), "200");
-        assert_eq!(outcome(&mut server), "409");
-        let ended: Vec<Value> = peer
-            .events(&mut server)
-            .into_iter()
-            .filter(|event| event["type"] == "run")
-            .collect();
-        assert_eq!(ended.len(), 1, "a lost write announces nothing: {ended:?}");
-        assert_eq!(ended[0]["outcome"]["result"], "completed");
-        assert_eq!(ended[0]["pane"], pane);
-        assert_eq!(ended[0]["argv"], cat);
-        let stale = started_layout.to_string();
-        assert_eq!(
-            server.status(
-                "PUT /layout",
-                &format!("Content-Length: {}\r\n\r\n{stale}", stale.len())
-            ),
-            "HTTP/1.1 200",
-            "an outcome moved no revision, so the layout from before it is current"
-        );
-        let (_, waited) = server.call(&format!("GET /runs/{id}/wait"), &json!(null));
-        assert_eq!(waited["outcome"]["result"], "completed");
-        let (_, live) = server.call("GET /runs", &json!(null));
-        assert_eq!(live, json!([]));
-        let (_, all) = server.call("GET /runs?show=all", &json!(null));
-        assert_eq!(all[0]["outcome"]["result"], "completed");
-
-        let stop = json!({"wait_ms": 0, "result": "stopped"});
-        assert_eq!(
-            server.call(&format!("POST /runs/{id}/stop"), &stop).0,
-            "200"
-        );
-        assert!(server.state.panes.find(pane.parse().unwrap()).is_none());
-        assert_eq!(
-            server.call(&format!("POST /runs/{id}/stop"), &stop).0,
-            "409"
-        );
-        let (_, detail) = server.call(&format!("GET /runs/{id}"), &json!(null));
-        assert_eq!(
-            detail["outcome"]["result"], "completed",
-            "the first outcome stands"
         );
     }
 
@@ -1781,79 +1562,6 @@ mod tests {
         server.reply("DELETE /panes/pane_1/vars/v0", "\r\n");
         let reply = set(&mut server, "pane_3", "v");
         assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
-    }
-
-    #[test]
-    fn a_run_pane_that_dies_without_an_outcome_tells_clients_the_outcome_a_fresh_welcome_shows() {
-        let mut server = harness("run-death");
-        server.linger("3600");
-        let mut peer = server.peer(&hello("", false, 80, 24));
-        peer.events(&mut server);
-        let (id, pane) = dying_run(&mut server, "dies");
-        let events = peer.events(&mut server);
-        let run = events
-            .iter()
-            .rfind(|event| event["type"] == "run")
-            .unwrap_or_else(|| panic!("no run event: {events:?}"));
-        assert_eq!(run["id"], id);
-        assert_eq!(run["pane"], pane.to_string());
-        assert_eq!(
-            run["outcome"],
-            json!({"result": "failed", "text": "exit 3"})
-        );
-        let (_, layout) = server.call("GET /layout", &json!(null));
-        let fresh = layout["panes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["id"] == pane.to_string())
-            .unwrap();
-        let mut event = run.clone();
-        event.as_object_mut().unwrap().remove("type");
-        assert_eq!(fresh["run"], event);
-    }
-
-    #[test]
-    fn a_run_refuses_a_bad_name_session_and_parent() {
-        let mut server = harness("run-refusals");
-        let argv = json!(["/bin/sh"]);
-        let unknown = "0123456789abcdef0123456789abcdef";
-        let long = "n".repeat(65);
-        let cases = [
-            (json!({"name": long, "session": "s", "argv": argv}), "400"),
-            (
-                json!({"name": "a", "session": "absent", "argv": argv}),
-                "400",
-            ),
-            (json!({"name": "a", "argv": argv}), "400"),
-            (
-                json!({"name": "a", "session": "s", "parent": unknown, "argv": argv}),
-                "404",
-            ),
-            (
-                json!({"name": "a", "session": "s", "parent": "pane_99", "argv": argv}),
-                "404",
-            ),
-            (json!({"name": "a", "session": "s", "argv": ["sh"]}), "400"),
-        ];
-        for (body, want) in cases {
-            assert_eq!(server.call("POST /runs", &body).0, want, "{body}");
-        }
-        assert_eq!(server.state.panes.len(), 1, "a refused run starts nothing");
-        assert_eq!(server.call("GET /runs/abc", &json!(null)).0, "404");
-        assert_eq!(
-            server.call(&format!("GET /runs/{unknown}"), &json!(null)).0,
-            "404"
-        );
-        assert_eq!(
-            server
-                .call(
-                    &format!("POST /runs/{unknown}/outcome"),
-                    &json!({"result": "failed"})
-                )
-                .0,
-            "404"
-        );
     }
 
     fn pi_pane(name: &str) -> Value {
@@ -1963,169 +1671,5 @@ mod tests {
         );
         assert_eq!(send(&mut server, &paste, "").0, "400");
         assert_eq!(server.status("GET /prompt/resolve", "\r\n"), "HTTP/1.1 400");
-    }
-
-    fn step_until(server: &mut Harness, what: &str, mut done: impl FnMut(&mut Harness) -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !done(server) {
-            assert!(std::time::Instant::now() < deadline, "wait for {what}");
-            server.step(Mode::Wait);
-        }
-    }
-
-    #[test]
-    fn the_sweep_closes_a_dead_run_after_the_grace_unless_a_client_shows_it() {
-        let mut server = harness("sweep-grace");
-        server.linger("0.15");
-        let (_, started) = server.call(
-            "POST /runs",
-            &json!({"name": "dies", "session": "s", "argv": ["/bin/sh", "-c", "echo last words; exit 3"]}),
-        );
-        let (id, pane) = (
-            started["id"].as_str().unwrap(),
-            started["pane"].as_str().unwrap(),
-        );
-        let mut watcher = server.peer(&hello(&format!(r#""pane":"{pane}","#), true, 80, 24));
-        step_until(&mut server, "the pane to die", |server| {
-            server
-                .state
-                .panes
-                .find(pane.parse().unwrap())
-                .is_some_and(|p| p.proc().dead().is_some())
-        });
-        let (_, waited) = server.call(&format!("GET /runs/{id}/wait"), &json!(null));
-        assert_eq!(
-            waited["outcome"],
-            json!({"result": "failed", "text": "exit 3"})
-        );
-        let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
-        while std::time::Instant::now() < until {
-            server.step(Mode::Wait);
-        }
-        assert!(
-            server.state.panes.find(pane.parse().unwrap()).is_some(),
-            "a pane that a client shows stays"
-        );
-        watcher.send(&mut server, r#"{"type":"select","pane":"pane_1"}"#);
-        step_until(&mut server, "the sweep", |server| {
-            server.state.panes.find(pane.parse().unwrap()).is_none()
-        });
-        let (_, detail) = server.call(&format!("GET /runs/{id}"), &json!(null));
-        assert_eq!(detail["outcome"]["result"], "failed");
-        assert_eq!(detail["outcome"]["text"], "exit 3");
-        let (status, screen) = server.run_screen(id);
-        assert!(
-            status == "200" && screen.contains("last words"),
-            "{status} {screen}"
-        );
-        let layout = server.state.layout_panes().snapshot.layout;
-        assert_eq!(layout.windows().count(), 1, "the run's window is gone");
-    }
-
-    fn dying_run(server: &mut Harness, name: &str) -> (String, crate::ids::PaneId) {
-        let (_, started) = server.call(
-            "POST /runs",
-            &json!({"name": name, "session": "s", "argv": ["/bin/sh", "-c", "echo bye; exit 3"]}),
-        );
-        let id = started["id"].as_str().unwrap().to_owned();
-        let pane: crate::ids::PaneId = started["pane"].as_str().unwrap().parse().unwrap();
-        step_until(server, "the pane to die", |server| {
-            server
-                .state
-                .panes
-                .find(pane)
-                .is_some_and(|p| p.proc().dead().is_some())
-        });
-        (id, pane)
-    }
-
-    #[test]
-    fn a_pane_that_is_no_longer_sweepable_when_its_screen_arrives_stays() {
-        let mut server = harness("sweep-recheck");
-        server.linger("3600");
-        let (id, pane) = dying_run(&mut server, "recheck");
-        server.linger("0.001");
-        server.state.sweep_now(&mut server.poll);
-        server.linger("3600");
-        let until = std::time::Instant::now() + std::time::Duration::from_millis(400);
-        while std::time::Instant::now() < until {
-            server.step(Mode::Wait);
-        }
-        assert!(server.state.panes.find(pane).is_some());
-        let (_, detail) = server.call(&format!("GET /runs/{id}"), &json!(null));
-        assert_eq!(
-            server.run_screen(&id).0,
-            "404",
-            "nothing was recorded: {detail}"
-        );
-    }
-
-    #[test]
-    fn a_finished_capture_that_lost_its_write_still_lets_the_sweep_collect_the_pane() {
-        let mut server = harness("sweep-after-capture");
-        server.linger("3600");
-        let (id, pane) = dying_run(&mut server, "after");
-        let done = json!({"result": "completed"});
-        assert_eq!(
-            server.call(&format!("POST /runs/{id}/outcome"), &done).0,
-            "200"
-        );
-        server.linger("0.001");
-        let failed = json!({"result": "failed", "text": "late"});
-        assert_eq!(
-            server.call(&format!("POST /runs/{id}/outcome"), &failed).0,
-            "409"
-        );
-        step_until(&mut server, "the pane to be collected", |server| {
-            server.state.panes.find(pane).is_none()
-        });
-        let (_, detail) = server.call(&format!("GET /runs/{id}"), &json!(null));
-        assert_eq!(detail["outcome"]["result"], "completed");
-    }
-
-    #[test]
-    fn the_sweep_stops_a_run_whose_parent_pane_ended() {
-        let mut server = harness("sweep-orphan");
-        let cat = json!(["/bin/sh", "-c", "exec cat"]);
-        let start = |server: &mut Harness, name: &str, parent: Value| {
-            let (status, started) = server.call(
-                "POST /runs",
-                &json!({"name": name, "session": "s", "parent": parent, "argv": cat}),
-            );
-            assert_eq!(status, "200", "{started}");
-            started
-        };
-        let parent = start(&mut server, "parent", Value::Null);
-        let child = start(&mut server, "child", parent["id"].clone());
-        let (parent_id, child_id) = (
-            parent["id"].as_str().unwrap(),
-            child["id"].as_str().unwrap(),
-        );
-        let child_pane: crate::ids::PaneId = child["pane"].as_str().unwrap().parse().unwrap();
-        let outcome = json!({"result": "completed"});
-        assert_eq!(
-            server
-                .call(&format!("POST /runs/{parent_id}/outcome"), &outcome)
-                .0,
-            "200"
-        );
-        server.step(Mode::Peek);
-        assert!(
-            server.state.panes.find(child_pane).is_some(),
-            "a run that has an outcome and a live pane still holds its child"
-        );
-        let parent_pane: crate::ids::PaneId = parent["pane"].as_str().unwrap().parse().unwrap();
-        server.state.delete_pane(&mut server.poll, parent_pane);
-        step_until(&mut server, "the orphan to be collected", |server| {
-            server.state.panes.find(child_pane).is_none()
-        });
-        let (_, detail) = server.call(&format!("GET /runs/{child_id}"), &json!(null));
-        assert_eq!(
-            (&detail["outcome"]["result"], &detail["outcome"]["text"]),
-            (&json!("failed"), &json!("its parent ended")),
-            "{detail}"
-        );
-        assert!(detail["outcome"]["at"].is_string());
-        assert_eq!(windows(&server).len(), 1, "only the first window remains");
     }
 }

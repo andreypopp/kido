@@ -48,6 +48,13 @@ final class Recorder {
         }
     }
 
+    func createPane(_ request: String, dir: String) throws -> String {
+        let input = dir + "/pane-request.json"
+        try request.write(toFile: input, atomically: true, encoding: .utf8)
+        let reply = try output(["api", "-X", "POST", "--input", input, "/panes"], dir: dir)
+        return try XCTUnwrap(JSONDecoder().decode([String: String].self, from: Data(reply.utf8))["pane"])
+    }
+
     func put(_ layout: String, dir: String) throws {
         try run(layoutPut(layout, dir: dir), dir: dir)
     }

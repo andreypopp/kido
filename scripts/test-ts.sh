@@ -46,4 +46,7 @@ export KO_FAKE_KO
 ./node_modules/.bin/tsc --strict --noEmit --module NodeNext --moduleResolution NodeNext \
 	--target ES2024 --allowImportingTsExtensions --erasableSyntaxOnly --skipLibCheck \
 	--typeRoots ./node_modules/@types ../../.pi/tests/no-git-writes.test.ts
+if [ "$#" -gt 0 ]; then
+	exec node --test --test-concurrency=4 --test-reporter=spec "$@"
+fi
 exec node --test --test-concurrency=4 --test-reporter=spec ko-pi-*.test.ts ../../.pi/tests/no-git-writes.test.ts

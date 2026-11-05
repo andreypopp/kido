@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::time::Instant;
 
 use super::runtime_ops::resolve_runtime;
@@ -13,17 +12,10 @@ use crate::protocol::{
 use crate::runtime::pane::{Dir, host_cwd};
 use crate::server::Origin;
 
-#[derive(Debug, Clone, Copy)]
-pub(super) enum Via {
-    Pane,
-    Run,
-}
-
 #[derive(Debug)]
 struct Stop {
     conn: Token,
     pane: PaneId,
-    via: Via,
 }
 
 #[derive(Debug)]
@@ -84,20 +76,6 @@ impl State {
             Some(caller) if !scope(edges, caller).contains(&target) => Err(Error::new(
                 ErrorKind::Refused,
                 format!("{target} is not a child, sibling or ancestor of {caller}"),
-            )),
-            _ => Ok(()),
-        }
-    }
-
-    pub(crate) fn may_read_output(
-        &self,
-        caller: Option<PaneId>,
-        target: PaneId,
-    ) -> Result<(), Error> {
-        match caller {
-            Some(caller) if !panes::reads_output(&self.edges(), caller, target) => Err(Error::new(
-                ErrorKind::Refused,
-                format!("{caller} may read the output of itself and its children, not of {target}"),
             )),
             _ => Ok(()),
         }
@@ -189,19 +167,6 @@ impl State {
         }
     }
 
-    pub(super) fn recorded_dir(
-        &mut self,
-        request: &CreatePane,
-        dir: &Dir,
-        read: &Read,
-    ) -> Result<String, Error> {
-        let start = match &request.runtime {
-            None => dir.host().map(Path::to_path_buf),
-            Some(name) => dir.in_runtime(&self.runtimes.settings_in(name, read.get())?),
-        };
-        Ok(start.map_or_else(String::new, |path| path.to_string_lossy().into_owned()))
-    }
-
     pub(crate) fn new_pane(
         &mut self,
         poll: &mut Poll,
@@ -212,21 +177,9 @@ impl State {
         let NewWindow {
             session,
             name,
-            pane,
+            mut pane,
         } = request;
         let read = Read::new(&self.config.file);
-        self.place_pane(poll, (caller, origin), session, name, pane, (None, &read))
-    }
-
-    pub(super) fn place_pane(
-        &mut self,
-        poll: &mut Poll,
-        (caller, origin): (Option<PaneId>, &Origin),
-        session: Option<SessionRef>,
-        name: Option<Name>,
-        mut pane: CreatePane,
-        (run, read): (Option<RunId>, &Read),
-    ) -> Result<Placement, Error> {
         pane.runtime = resolve_runtime(origin, pane.runtime)?;
         self.admit_cwd(caller, origin, pane.cwd.as_ref())?;
         if let Some(parent) = pane.parent {
@@ -298,9 +251,8 @@ impl State {
                     revision,
                     layout: draft,
                 },
-                run,
                 caller,
-                read,
+                &read,
             )
             .map_err(Error::from)?;
         snapshot
@@ -319,27 +271,6 @@ impl State {
             .ok_or_else(|| Error::new(ErrorKind::Io, "the new pane is missing"))
     }
 
-    pub(super) fn stop_after(
-        &mut self,
-        poll: &mut Poll,
-        index: usize,
-        pane: PaneId,
-        wait: WaitMs,
-        via: Via,
-    ) -> Option<Result<Empty, Error>> {
-        let found = match self.pane(pane) {
-            Ok(found) => found,
-            Err(error) => return Some(Err(error)),
-        };
-        if found.proc().dead().is_some() || wait == WaitMs::NONE {
-            self.kill_pane(poll, pane);
-            return Some(Ok(Empty {}));
-        }
-        let conn = self.hold(poll, index, Duration::from_millis(wait.get()));
-        self.stops.waits.push(Stop { conn, pane, via });
-        None
-    }
-
     pub(crate) fn stop_route(
         &mut self,
         poll: &mut Poll,
@@ -351,15 +282,22 @@ impl State {
         if let Err(error) = self.may_reach(&self.edges(), caller, pane) {
             return Some(Err(error));
         }
-        self.stop_after(poll, index, pane, wait, Via::Pane)
+        let found = match self.pane(pane) {
+            Ok(found) => found,
+            Err(error) => return Some(Err(error)),
+        };
+        if found.proc().dead().is_some() || wait == WaitMs::NONE {
+            self.kill_pane(poll, pane);
+            return Some(Ok(Empty {}));
+        }
+        let conn = self.hold(poll, index, Duration::from_millis(wait.get()));
+        self.stops.waits.push(Stop { conn, pane });
+        None
     }
 
     fn answer_stop(&mut self, poll: &mut Poll, stop: Stop) {
         self.kill_pane(poll, stop.pane);
-        match stop.via {
-            Via::Pane => router::answer::<routes::StopPane>(self, poll, stop.conn, Ok(Empty {})),
-            Via::Run => router::answer::<routes::StopRun>(self, poll, stop.conn, Ok(Empty {})),
-        }
+        router::answer::<routes::StopPane>(self, poll, stop.conn, Ok(Empty {}));
     }
 
     pub(super) fn settle_stops(&mut self, poll: &mut Poll) {

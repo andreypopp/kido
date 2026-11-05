@@ -45,13 +45,13 @@ private func windowsFixture(_ state: Report.State = waiting(), mark: KoSchema.Ma
 }
 
 @Test func tabLabelsShareSidebarAgentRule() throws {
-    let cases: [(Lifecycle, String?, Bool, Bool)] = [(piAgent(idle()), nil, true, true),
-        (agent(idle()), nil, true, false),
-        (remote(.agent(name: "pi", report(idle()))), nil, true, false),
-        (terminal(), "r-1", false, false), (terminal(), nil, false, false)]
-    for (lifecycle, run, isAgent, messageable) in cases {
+    let cases: [(Lifecycle, Bool, Bool)] = [(piAgent(idle()), true, true),
+        (agent(idle()), true, false),
+        (remote(.agent(name: "pi", report(idle()))), true, false),
+        (terminal(), false, false)]
+    for (lifecycle, isAgent, messageable) in cases {
         for title in ["name", "@name"] {
-            let snapshot: Snapshot = makeSnapshot([pane(0, title: title, lifecycle: lifecycle, run: run)])
+            let snapshot: Snapshot = makeSnapshot([pane(0, title: title, lifecycle: lifecycle)])
             let label = try #require(sidebarWindows(snapshot, session: SessionID(number: 0), surviving: [WindowID(number: 0)],
                                                    activePanes: [WindowID(number: 0): PaneID(number: 0)]).labels[WindowID(number: 0)])
             #expect(label.title == title)
@@ -117,13 +117,13 @@ private func adjacent(_ step: Step) -> UInt32? {
 
 private let flat = [pane(0), pane(1), pane(2)]
 private let twoSessions = [[pane(0), pane(1)], [pane(2), pane(3)]]
-private let mixed = [pane(0, children: [pane(1, run: "r-1")]), pane(2, run: "r-2"), pane(3)]
-private let siblings = [pane(0, children: [pane(1, run: "r-1"), pane(2, run: "r-2"), pane(3, run: "r-3")]), pane(4)]
-private let grand = [pane(0, children: [pane(1, run: "r-1", children: [pane(2, run: "r-2")]), pane(3, run: "r-3")]), pane(4)]
-private let twoPanes = [group(0, [pane(0, children: [pane(1, run: "r-1")]), pane(5, window: 0, children: [pane(2, run: "r-2")])]), pane(3)]
-private let appearsTwice = [pane(0, children: [pane(1, run: "r-1")]), pane(5, window: 0, children: [pane(1, run: "r-1")]), pane(3)]
-private let hiddenRoot = [pane(0, children: [pane(1, run: "r-1")]), pane(2)]
-private let chain = [pane(0, children: [pane(1, run: "r-1", children: [pane(2, run: "r-2")])]), pane(3)]
+private let mixed = [pane(0, children: [pane(1)]), pane(2), pane(3)]
+private let siblings = [pane(0, children: [pane(1), pane(2), pane(3)]), pane(4)]
+private let grand = [pane(0, children: [pane(1, children: [pane(2)]), pane(3)]), pane(4)]
+private let twoPanes = [group(0, [pane(0, children: [pane(1)]), pane(5, window: 0, children: [pane(2)])]), pane(3)]
+private let appearsTwice = [pane(0, children: [pane(1)]), pane(5, window: 0, children: [pane(1)]), pane(3)]
+private let hiddenRoot = [pane(0, children: [pane(1)]), pane(2)]
+private let chain = [pane(0, children: [pane(1, children: [pane(2)])]), pane(3)]
 
 @Test(arguments: [
     Step(name: "next in a session", sessions: [flat], from: 0, next: true, expected: 1),
@@ -135,8 +135,8 @@ private let chain = [pane(0, children: [pane(1, run: "r-1", children: [pane(2, r
     Step(name: "next wraps to the first session", sessions: twoSessions, from: 3, next: true, expected: 0),
     Step(name: "previous wraps to the last session", sessions: twoSessions, from: 0, next: false, expected: 3),
     Step(name: "top-level next skips a child", sessions: [mixed], from: 0, next: true, expected: 2),
-    Step(name: "an orphan run window is visited", sessions: [mixed], from: 2, next: true, expected: 3),
-    Step(name: "previous visits the orphan run window", sessions: [mixed], from: 3, next: false, expected: 2),
+    Step(name: "an unparented window is visited", sessions: [mixed], from: 2, next: true, expected: 3),
+    Step(name: "previous visits the unparented window", sessions: [mixed], from: 3, next: false, expected: 2),
     Step(name: "previous skips a child", sessions: [mixed], from: 2, next: false, expected: 0),
     Step(name: "a sole root next", sessions: [[pane(0)]], from: 0, next: true, expected: nil),
     Step(name: "a sole root previous", sessions: [[pane(0)]], from: 0, next: false, expected: nil),
@@ -147,8 +147,8 @@ private let chain = [pane(0, children: [pane(1, run: "r-1", children: [pane(2, r
     Step(name: "child previous", sessions: [siblings], from: 3, next: false, expected: 2),
     Step(name: "previous from the first child", sessions: [siblings], from: 1, next: false, expected: 0),
     Step(name: "next from the last child", sessions: [siblings], from: 3, next: true, expected: 4),
-    Step(name: "next from the last child wraps", sessions: [[pane(4), pane(0, children: [pane(1, run: "r-1")])]], from: 1, next: true, expected: 4),
-    Step(name: "next from the last child, in the next session", sessions: [[pane(0, children: [pane(1, run: "r-1")])], [pane(2)]], from: 1, next: true, expected: 2),
+    Step(name: "next from the last child wraps", sessions: [[pane(4), pane(0, children: [pane(1)])]], from: 1, next: true, expected: 4),
+    Step(name: "next from the last child, in the next session", sessions: [[pane(0, children: [pane(1)])], [pane(2)]], from: 1, next: true, expected: 2),
     Step(name: "previous from the first grandchild", sessions: [grand], from: 2, next: false, expected: 1),
     Step(name: "next from the last grandchild", sessions: [grand], from: 2, next: true, expected: 4),
     Step(name: "next from a child with a grandchild", sessions: [grand], from: 1, next: true, expected: 3),

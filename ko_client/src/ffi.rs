@@ -2649,7 +2649,6 @@ mod tests {
             foreground: None,
             status,
             progress: None,
-            run: None,
             parent: None,
             close: Default::default(),
             inbox: false,
@@ -3096,9 +3095,9 @@ mod tests {
     }
 
     #[test]
-    fn runs_and_prompts_go_to_the_server_as_written_and_come_back_verbatim() {
+    fn prompts_go_to_the_server_as_written_and_come_back_verbatim() {
         let server = serve(
-            "runs",
+            "prompts",
             client_script(|socket, _| {
                 welcomed(socket);
                 wait_for_hangup(socket);
@@ -3123,9 +3122,6 @@ mod tests {
                 target if target.starts_with("/prompt/resolve") => {
                     Some((200, format!(r#"[{{"asked":"{target}"}}]"#)))
                 }
-                target if target.starts_with("/runs") => {
-                    Some((200, format!(r#"[{{"shown":"{target}"}}]"#)))
-                }
                 _ => answer_empty(request),
             }),
         );
@@ -3133,17 +3129,6 @@ mod tests {
         let client = fixture.connect(&server);
         assert!(matches!(fixture.next(), Seen::Welcome(..)));
         assert!(matches!(fixture.next(), Seen::Layout(0, ..)));
-        for (show, expected) in [
-            (1, "/runs"),
-            (2, "/runs?show=present"),
-            (3, "/runs?show=all"),
-        ] {
-            let mut out = empty_buffer();
-            // SAFETY: the client is live and out is writable.
-            assert_eq!(unsafe { ko_client_runs(client, show, &mut out) }, Code::Ok);
-            assert_eq!(contents(&out), format!(r#"[{{"shown":"{expected}"}}]"#));
-            freed_once(&mut out);
-        }
         let prompt = |target: &CStr, text: &[u8]| {
             let mut out = empty_buffer();
             // SAFETY: the client is live, the strings are valid and out is writable.
@@ -3236,9 +3221,6 @@ mod tests {
         }
         assert_eq!(prompt(c"pane_3", &[0xff, 0xfe]).0, Code::Argument);
         assert_eq!(prompt(c"nonsense", b"x").0, Code::Argument);
-        // SAFETY: the client is live; the show value is refused.
-        let code = unsafe { ko_client_runs(client, 4, &mut empty_buffer()) };
-        assert_eq!(code, Code::Argument);
         for (kind, id, expected) in [
             (1, c"pane_4", Code::Ok),
             (2, c"window_2", Code::Ok),
@@ -3762,10 +3744,6 @@ mod tests {
             );
             assert_eq!(
                 ko_client_put_layout(std::ptr::null(), b"{}".as_ptr(), 2, &mut empty_buffer()),
-                Code::Argument
-            );
-            assert_eq!(
-                ko_client_runs(std::ptr::null(), 1, &mut empty_buffer()),
                 Code::Argument
             );
             assert_eq!(

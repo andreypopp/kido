@@ -4,8 +4,9 @@ A subagent is a pi session that another agent starts in a window of
 its own. Its pane has the spawner's pane as its `parent` and `close:
 on_exit`. ko keeps no record of an agent after its pane goes: the
 parent's own pi session holds what the parent knows about its
-children, and each harness keeps only its own facts. Runs stay for
-`async_bash` and `ko run`. This document follows a subagent from the
+children, and each harness keeps only its own facts. An agent's
+background commands are jobs of its own harness, not panes ("A
+job", below). This document follows a subagent from the
 tool call that creates it to the sweep that removes its pane.
 
 [design.md](design.md) describes the mechanisms that subagents use:
@@ -15,7 +16,6 @@ tool call that creates it to the sweep that removes its pane.
 - Addressing
 - Identity
 - The window lifecycle
-- Run outcomes
 
 This document refers to those sections by name instead of repeating them.
 `AGENTS.md` describes what ko cannot change.
@@ -34,15 +34,14 @@ subcommand of its own.
 |---|---|
 | `list_agents(which?)` | `ko api /layout`, `/version`, the registry in the own session |
 | `read_report(agent, which?)` | the own session's `ko-pi.report` entries |
-| `list_async_bash()` | `ko runs --json --all --parent $KO_PANE` |
+| `list_async_bash()` | the process's job registry |
 | `message_agent(to, message, mode?)` | `POST /panes/{t}/messages`; `POST /panes` to restart an ended child |
 | `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?)` | pi's session directories, `pi --list-models`, `GET /runtimes/NAME`, `POST /panes` |
 | `stop_agent(agent, force?)` | `POST /panes/{t}/messages` kind `stop`, then `POST /panes/{t}/stop` |
-| `async_bash(command, name, stream?)` | `ko run-child $KO_PANE --name N -- bash -o pipefail -c CMD` (a routed pi: `POST /runs` with `runtime`), `ko run-wait ID --json`, `ko api --stream /panes/P/output` |
-| `stop_async_bash(run)` | `ko run-stop ID` |
+| `async_bash(command, name, stream?)` | a child process of pi through pi's shell configuration (a routed pi: `ko api --stream /runtimes/NAME/exec`) |
+| `stop_async_bash(job)` | `signalJob` on the job's own process |
 
-The parent of every run and every child is `$KO_PANE`. No agent has
-`KO_RUN_ID`. A tool checks its own arguments and refuses them with a
+The parent of every child is `$KO_PANE`. A tool checks its own arguments and refuses them with a
 reason, which the model reads as the tool result. Tools register
 unconditionally and report ko as unavailable outside ko.
 
@@ -76,10 +75,10 @@ yet published `pi.session`.
 or with `which: all` every report in order with its time, from the
 caller's own session. It never reads the child's session.
 
-**list_async_bash** lists the caller's own runs: all running and the
-newest 20 ended, newest first. Each row names the run, its state and
-outcome, its pane and the `ko api` command that reads the pane's
-screen.
+**list_async_bash** lists the caller's own jobs: all running and the
+newest 20 ended, newest first. Each row names the job id, the name,
+the command, the state, the end of an ended job, the start time, the
+log and, for a routed job, the runtime.
 
 A report notice has a bound of 4000 bytes. The parent keeps the
 report whole, because it is a work product ("Reporting", below).
@@ -138,8 +137,12 @@ nothing reads the other side.
 refuses a name over 64 bytes or with a control character (design.md,
 "Spawning"); the harness also refuses an empty name, `.`, `..` and a
 name with `/`. A child's name is unique among the caller's registry
-children and its live own children. A run's name is unique among the
-caller's runs and its registry children. A reused name is refused
+children and its live own children. A job's name is unique,
+case-insensitive, among the running jobs and the caller's registry
+children: an ended job frees its name, so a watcher can start again
+under its name. `stop_async_bash` by name takes the running job of
+that name, else the newest ended one. A moved `bash` call has no name: its job id stands for it.
+A reused name is refused
 with "message it instead" (spawn) or "choose another name"
 (async_bash). A `toplevel` name is unique among the live agents of
 the caller's session instead.
@@ -280,11 +283,12 @@ child. One of the caller's own children cannot become top-level.
    a message with the sender header. Then it deletes the variable,
    which is the delivered marker. A failed read leaves the variable
    for the next attempt.
-4. Adopts its live runs and starts the parent watch.
+4. Starts the parent watch. The job registry's adopt runs before step
+   3 ("Jobs across /reload").
 
 Every turn's system prompt then contains these standing instructions:
 
-- While an async run of your own is running or a subagent of your own
+- While an async job of your own is running or a subagent of your own
   still owes a report, ending your turn sends nothing to your parent.
 - You were spawned. Your report is the last message of a turn that
   ends after all of them finish, once for each piece of work from
@@ -328,9 +332,9 @@ order:
    registry". Thus, a turn that something else started (a prompt
    typed into the pane, a notice, a stream batch, a sibling's
    message) sends nothing after the report.
-5. Its runs and its children are readable. A failed read sends
-   nothing, and the next settle reads again.
-6. No own bash run is live, and no own live child owes a report.
+5. Its children are readable. A failed read sends nothing, and the
+   next settle reads again.
+6. No own job is running, and no own live child owes a report.
    When the last one ends or reports, its notice wakes the child for
    a turn whose last message is the report.
 
@@ -417,20 +421,19 @@ its scope, the user or the orphan rule ends it.
 stopped or loses its parent:
 
 1. The exit notice, when it is owed.
-2. `ko run-stop` for each own live bash run.
+2. It stops each own running job ("Stopping a job").
 3. It closes the message stream.
 4. It deletes its pane variables with the conditional delete of
    design.md, "The variables".
 
-No outcome is recorded: an agent has no run. `/reload` keeps the
-message stream, the variables and the run watches. `/new`, `/resume`
+ko records nothing for an agent's ending. `/reload` keeps the
+message stream, the variables and the jobs. `/new`, `/resume`
 and `/fork` tear down as a quit does, without the exit notice.
 
 **The pane.** The sweep removes the child's pane after it has been
 dead for the linger grace (`close: on_exit`), or at once when its
-parent pane is gone or dead (design.md, "Window lifecycle"). An
-agent's pane gets no screen capture: the ending notice reads the
-screen while the pane lingers.
+parent pane is gone or dead (design.md, "Window lifecycle"). The
+ending notice reads the screen while the pane lingers.
 
 ## Redirecting one, and ending one from outside
 
@@ -509,53 +512,106 @@ after `--`. The rules:
   restart finds the first one's live pane and goes to it.
 - The new pane's `parent` is the sender's current pane.
 
-## An async bash run
+## A job
 
-`async_bash(command, name, stream?)` runs a command in its own
-window and tells the caller once the command ends. It is a run, not
-an agent:
+A job is a command that runs in the background as a child process
+of pi, and that tells the caller once it ends. It is not a pane: it has no window and no sidebar row. Two tools make
+one:
 
-    ko run-child $KO_PANE --name N -- bash -o pipefail -c '<command>'
+- `async_bash(command, name, stream?)` starts a job.
+- A `bash` call that still runs after `KO_JOB_MOVE_MS` (60 000), or
+  that the user moves with ctrl+b, becomes a job ("The bash tool's
+  move").
 
-The server starts the argv directly, so text from the model never
-reaches a shell other than that `bash`. A routed pi starts the same
-argv in its runtime ("Agents in a runtime" in design-runtimes.md). There is no wrapper: the
-command's output is its pane's content. The depth ceiling does not
-apply.
+**The registry.** Every job is a `Job` record of one registry for
+each process, `globalThis[Symbol.for("ko-pi.jobs")]`. Its envelope
+(`JobRegistry` in `ko-pi.ts`) never changes shape; `JOB_SHAPE` is
+raised with each change of the `Job` layout. The pipe listeners of a
+job write its log and its buffers and never call pi; only the hooks
+of the current extension instance call pi. Thus, a job and its
+output survive `/reload`, whose old instance can no longer send a
+message ("Jobs across /reload"). It is a `Symbol.for` key with a
+fixed envelope, not a typed global, because a ko-pi of another
+version must still read and stop it. The registry keeps every running
+job, every ended job whose notice is still owed, and the newest 20
+announced ones, so a list can show more than 20 ended jobs while
+notices are owed. Nothing reads ko for the list. A
+`bash` call that runs in the foreground also has a record, so its
+abort and its stop go through the same signal function; it is not a
+job, and no list, name, notice or stream sees it.
 
-The result names the run id, the window and the pane, and the `ko
-api` command that reads the screen. The harness starts `ko run-wait
-ID --json` in the background and formats the ending notice:
+**The command.** A local job runs through pi's shell configuration
+(`getShellConfig` with the user's `shellPath`, and pi's shell
+environment), as pi's `bash` does, in its own process group
+(`detached`), with the call's cwd. It copies pi's local operations
+(`createLocalShellOperations` in pi's `dist/core/tools/bash.js`),
+because those hide the `ChildProcess` that a move and a stop need; a
+pi upgrade checks the copy. `set -o pipefail` is the model's to write. A routed pi
+runs the command in its runtime: the job's process is the `ko api
+--stream /runtimes/NAME/exec` child of pi (design-runtimes.md,
+"Agents in a runtime"). The depth ceiling does not apply.
 
-    async run "build" failed: exit 3
-    pane: pane_7
-    --- last 4000 bytes of its screen ---
+**The log.** Both pipes write one file in arrival order, raw, with
+no size cap: `<tmpdir>/ko-pi/<session id>-<job id>.log`, the
+directory mode 0700 and the file 0600. It is never deleted, as pi's
+own `bash` output files are not: the user or the model reads it after
+the end. Only the in-memory tail (64 KiB) is bounded. The result of
+`async_bash` names the job id, the name and the log.
+
+**Exactly one notice.** At the end, the harness sends one notice
+(`deliverAs: "steer"`, `triggerTurn: true`):
+
+    job "build" (j4k2m9qp) exit 3
+    --- last 4000 bytes of its output ---
     ...
+    log: /tmp/ko-pi/<session>-j4k2m9qp.log
 
-The tail is the last 4000 bytes of `GET
-/panes/pane_N/screen?history=all` while the pane lingers, else of `GET
-/runs/ID/screen`, the capture of the sweep. It uses the tail, because
-failure information comes last.
+The first line names the end: `exit N`, `signal NAME`, `failed:
+<message>`, or `timed out after N s`. The tail is the last 4000 bytes
+with escape sequences stripped, because failure information comes
+last. A job that `stop_async_bash` stopped sends none; a stop of an
+ended job answers `had already ended` with its end. Each job sends
+its own notice; ko-pi groups none.
 
-**Exactly one notice.** `run-wait` exits once, so the harness sends
-one notice for each run, or none for a run that it stopped with
-`stop_async_bash`, which silences the watch first. A stop that fails
-clears the silence. When `run-stop` exits 5, because the run had
-already ended, the line reads `had already ended`.
+A job is not an agent. `message_agent` and `stop_agent` do not
+resolve it.
 
-A bash run is not an agent. `message_agent` and `stop_agent` do not
-resolve it. The orphan rule collects it.
+## Stopping a job
 
-## Streaming a run's output
+Every signal of ko-pi goes through `signalJob(job, signal)`, which
+takes a record of the registry, never a pid from an argument, a
+message or a tool parameter. A local job's signal goes to the group
+that its `detached` spawn created. The function refuses when the
+shell has exited: Node has reaped it, and the group id can be reused
+once its last member is gone. A job whose shell exited while a
+descendant holds its pipes waits for the pipes, and a stop sends
+nothing. A routed job's stop is `kill()` of its own `ko api` child:
+ko closes the exec session, and the inside ko signals the command's
+group (design-runtimes.md, "The exec session"). ko-pi sends no
+`signal` frame. A process that leaves its group (`setsid`) escapes.
 
-With `stream: true`, the harness opens `ko api --stream
-/panes/pane_N/output?offset=O` beside the `run-wait` (protocol.md,
-section 4, "The output stream") and reads its `bytes` and `skip`
-records. It strips escape sequences (CSI, OSC, DCS, APC, PM, SOS and
-other ESC sequences), keeps text, tabs and newlines, and applies the
-carriage-return rule: a `\r` that a `\n` does not follow starts the
-line over, so a progress bar leaves its last state. A `skip` adds `...
-N bytes omitted (the pane's screen has them)` to the next batch.
+A stop sends `SIGTERM`, then `SIGKILL` after `KO_JOB_KILL_MS` (5000)
+when the job still runs. The registry's one `process.on("exit")`
+handler sends `SIGKILL` through `signalJob` to every local group that
+still runs at pi's exit; a registry that was replaced keeps its
+handler until its jobs have closed. `scripts/lint.sh` refuses
+`process.kill(` in `share/pi/` outside `signalJob`.
+
+**Known limit: an orphan after `SIGKILL`.** A pane's hangup sends
+`SIGHUP` to pi's group and `SIGKILL` 250 ms later. pi's `SIGHUP`
+handler runs a `quit` shutdown, which sends `SIGTERM` to every job,
+but the exit handler does not run after `SIGKILL`, and a detached
+job lives on in its own group. The user accepted this limit on
+2026-11-05: pi's own detached `bash` commands have it already, and a
+job only lengthens the window.
+
+## Streaming a job's output
+
+With `stream: true`, the job's pipe listener also splits the output
+into lines. It strips escape sequences (CSI, OSC, DCS, APC, PM, SOS
+and other ESC sequences), keeps text, tabs and newlines, and applies
+the carriage-return rule: a `\r` that a `\n` does not follow starts
+the line over, so a progress bar leaves its last state.
 
 The held lines go as one collapsed custom message (`deliverAs:
 "steer"`, `triggerTurn: true`) at one of two times:
@@ -567,21 +623,81 @@ The held lines go as one collapsed custom message (`deliverAs:
   delay, up to `KO_STREAM_MAX_WAIT_MS` (30000). A tool boundary
   resets the delay.
 
-Each run has a budget of `KO_STREAM_BUDGET_BYTES` (256 KiB) of sent
-batches. After it, one last message names the screen route and no
-more batches go. A batch keeps a tail of up to 200 lines within 16 KB;
-one line above it reads `... N lines omitted (the pane's screen has
-them)`, for lines cut by the cap and lines dropped from the held
-5000-line buffer.
+Each job has a budget of `KO_STREAM_BUDGET_BYTES` (256 KiB) of sent
+batches. After it, one last message names the log and no more
+batches go. A batch keeps a tail of up to 200 lines within 16 KB;
+one line above it reads `... N lines omitted (the log has them)`,
+for lines cut by the cap and lines dropped from the held 5000-line
+buffer. The held text has a bound of 64 KiB, the partial line
+included; a batch that lost the start of a long line says `... long
+lines were truncated (the log has them)`. The log keeps every byte. A batch leaves the buffer only when its message
+went, so a failed send keeps it for the next adopt. A pipe loses nothing, so no batch reports lost bytes. At the
+end, the partial last line and the held lines go before the notice:
+the model never reads "this is how it ended" before the output.
 
-When `run-wait` exits, the harness waits up to `KO_STREAM_DRAIN_MS`
-(1500) for the output stream to close after the pane's death, sends
-the partial last line and the held lines, then the ending notice.
-Thus, the model never reads "this is how it ended" before the output.
-A `/reload` parks each watch with its offset and held lines on
-`globalThis`, and the reloaded module reopens the stream at that
-offset, the resume path. A restarted harness re-watches a live run
-for its ending only.
+## The bash tool's move
+
+At `session_start`, when the `bash` of `pi.getAllTools()` is pi's
+builtin (`sourceInfo.path` starts with `builtin:`), ko-pi registers
+a `bash` with pi's own definition (`createBashToolDefinition`, with
+the user's `shellPath` and `shellCommandPrefix`), whose operations
+are `handoff(localExec)`. An extension tool with a builtin's name
+replaces it. A routed pi's `bash` is ko-pi's routed tool, with
+`handoff` over the exec session. Another extension's `bash` stays
+alone: no move and no ctrl+b. `!` commands are not wrapped.
+
+- A `timeout` under `KO_JOB_MOVE_MS` passes through: the command is
+  stopped at its timeout with pi's timeout error.
+- No `timeout`, or a longer one: at `KO_JOB_MOVE_MS`, the running
+  command becomes a job and the call returns at once, not as an
+  error: `still running after 60 s; it continues as job ID; a notice
+  arrives when it ends; output so far:`, the tail, and the log. The
+  command is not stopped. An explicit timeout becomes the job's
+  deadline, and its notice reads `timed out after N s`.
+- With a UI, ctrl+b (`ctx.ui.onTerminalInput`) moves every running
+  call at once; the key is consumed only then. After
+  `KO_JOB_HINT_MS` (3000) of a call, the widget `ko-job-hint` shows
+  `ctrl+b moves this command to a job`, until the call ends or moves.
+- A call that runs at a `/reload` shutdown moves, because the new
+  instance cannot complete the old call.
+
+The foreground call keeps the last 64 KiB of its output, so a moved
+job's log starts with it; when the call produced more, the first line
+of the log says that the earlier output is cut.
+
+## Jobs across /reload
+
+pi reloads an extension in the same Node process, so the children
+and their listeners live on. These facts of pi 1.4.0 decide the
+design; a probe extension observed them through one `/reload`:
+
+- A child and the `data` and `close` listeners of the old instance
+  keep firing after the reload, beside the new instance's own.
+- `session_shutdown` with reason `reload` runs on the old instance,
+  then the new factory, then `session_start` with reason `reload`,
+  about 150 ms later.
+- After the reload, the old instance's `pi.sendMessage` throws ("This
+  extension ctx is stale after session replacement or reload").
+
+Thus the registry keeps a job's output and ending as plain data, and
+only the current instance calls pi. At `session_shutdown` with reason
+`reload`, ko-pi moves its running `bash` calls, clears each job's
+hooks and flush timers, removes the hint and the ctrl+b listener,
+and leaves the registry on `globalThis`. At the next `session_start`,
+after the pane variables and before the task, the new instance:
+
+- adopts the registry when its shape and session are its own: it
+  sets the hooks, sends the notice of each job that ended in the gap,
+  and schedules the flush of a streaming job, whose held lines and
+  UTF-8 carry crossed the reload. A deadline's timer calls the stop,
+  not pi, so it keeps running. A notice that fails stays owed for the
+  next adopt.
+- otherwise stops the old jobs through the old registry's `stopAll`,
+  replaces the registry and sends one notice: `N async_bash jobs of
+  the previous ko-pi version were stopped at /reload: a, b`.
+
+The other reasons (`quit`, `new`, `resume`, `fork`) stop every job,
+wait up to `KO_JOB_KILL_MS` for the ends and clear the registry.
 
 ## A human at a shell
 
@@ -590,7 +706,6 @@ A human uses ko's own commands, not the tools:
 - `ko prompt` sends text to an agent in scope as kind `user`, which
   the agent reads as the user's own words (design.md, "Delivery, and
   when a paste is allowed").
-- `ko run --name N -- CMD...` starts a parentless run.
 - `ko-pi` in a pane starts a top-level agent.
 
 A shell has no message stream and no session. It cannot receive a
@@ -613,11 +728,7 @@ for a live and a finished child alike. Thus, a finished child remains
 nested while its window lingers. A child whose parent is absent or in
 another session is a root.
 
-In Kido.app, a lingering run window shows its run's result in the
-status slot, by the Ended rule of design-app.md ("Sidebar"): the
-green check for `completed`, the error dot for `failed` and `died`,
-and the quiet dot of an idle pane for `stopped`. A subagent's pane
-has no run and has `close: on_exit`: it shows a dimmed check for exit
+In Kido.app, a subagent's pane has `close: on_exit`: it shows a dimmed check for exit
 0 and a dimmed `×` otherwise until the sweep removes it.
 
 These nested windows do not follow the document's window order.
@@ -630,19 +741,27 @@ These nested windows do not follow the document's window order.
 - A message queued for a pane that dies is dropped without word to
   its sender.
 - The task variable is visible to clients until the child deletes it.
-- An agent's pane gets no screen capture. The ending notice reads the
-  screen while the pane lingers.
+- The ending notice reads a child's screen only while its pane
+  lingers; ko keeps nothing after the sweep.
 - The escape stripper is simpler than a terminal: a sequence it does
-  not know reaches the model as noise. A `skip` loses bytes that only
-  the screen keeps.
-- A run's output is bounded by the terminal's scrollback and the
-  capture's cap.
+  not know reaches the model as noise. The log keeps the raw bytes.
+- A job of a pi that ends with `SIGKILL` is an orphan ("Stopping a
+  job").
+- A moved `bash` call's log starts with the last 64 KiB before the
+  move.
+- The jobs rest on pi 1.4.0 internals: `createBashToolDefinition`,
+  `getShellConfig`, `rawKeyHint`, `onTerminalInput`, the `builtin:`
+  prefix of `sourceInfo.path`, the override of a builtin by name, and
+  the copy of pi's local shell operations. A pi upgrade checks them.
+- A runtime's cap of 32 exec sessions counts its routed jobs, so many
+  long jobs make the routed tools wait.
+- A routed job's log is on the host. The routed `read` runs in the
+  runtime, so it cannot read a log that the runtime does not map.
 - Nesting stops at depth 2 within each parent chain.
-- A re-watched bash run after a restart sends no batches.
 - `/reload` forgets the last turn's error and that the first turn
   never ran.
-- A child idle behind an async bash run that never ends, such as a
-  watcher, never reports while that run lives.
+- A child idle behind a job that never ends, such as a watcher, never
+  reports while that job runs.
 - A subagent's window moved to another session is outside its
   parent's scope.
 - The name claim and the restart lock are in the caller's process.

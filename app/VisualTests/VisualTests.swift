@@ -623,9 +623,13 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await wait("three tabs") { owner.sidebar.tabs.entries.count == 3 }
         let windows = try XCTUnwrap(owner.testModel.map(\.layout.layout.windows)).map(\.id)
         let (shell, middle, last) = (windows[0], windows[1], windows[2])
-        try await ko(["run-child", "--session", "session_1", "--name", "Child run", "pane_2", "--", "/bin/sh", "-c",
-                      "printf '\\033]7501;state=blocked:app=agent\\007'; exec tail -f " + SSH.quote(feed)], dir: directory.path)
-        try await wait("the child run nests under the editor") { owner.testModel.map(\.layout.layout.windows)?.count == 4 && owner.sidebar.tabs.entries.count == 3 }
+        let childRequest = directory.appendingPathComponent("child.json")
+        try JSONSerialization.data(withJSONObject: [
+            "session": "session_1", "name": "Child", "parent": "pane_2", "close": "on_exit",
+            "command": ["type": "argv", "argv": ["/bin/sh", "-c", "printf '\\033]7501;state=blocked:app=agent\\007'; exec tail -f " + SSH.quote(feed)]]
+        ]).write(to: childRequest)
+        try await ko(["api", "-X", "POST", "--input", childRequest.path, "/panes"], dir: directory.path)
+        try await wait("the child pane nests under the editor") { owner.testModel.map(\.layout.layout.windows)?.count == 4 && owner.sidebar.tabs.entries.count == 3 }
         let child = try XCTUnwrap(owner.testModel.map(\.layout.layout.windows)?.map(\.id).first { ![shell, middle, last].contains($0) })
         let sidebar = owner.sidebar
         let root = try XCTUnwrap(owner.window.contentView?.superview)
@@ -641,7 +645,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await wait("waiting again") { sidebar.tabs.entries[1].status == .waiting }
         try owner.testClient?.select(KO_SELECT_WINDOW, child)
         try await wait("descendant active") { owner.navigation.window == child }
-        XCTAssertEqual(sidebar.tabs.entries.first { $0.active }?.id, middle, "a run window's tab is its parent's")
+        XCTAssertEqual(sidebar.tabs.entries.first { $0.active }?.id, middle, "a child window's tab is its parent's")
         root.layoutSubtreeIfNeeded()
         sidebar.viewDidLayout()
         try await wait("native tabs layout") { sidebar.tabs.frame.width > 300 && sidebar.tabs.frame.height == 36 }
@@ -1000,8 +1004,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     }
 
     func testPaneFocusTreatment() async throws {
-        SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
-        defer { SidebarView.visualNow = nil }
         let config = directory.appendingPathComponent("focus.yaml")
         try "app: {font: {size: 13}}\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
@@ -1538,8 +1540,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         window.colorSpace = .displayP3
         let list = SidebarView()
         window.contentView = list
-        SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
-        defer { SidebarView.visualNow = nil }
         let fixture = sidebarFixture { snapshot in
             snapshot.sessions[0].nodes.insert(.item(fixtureItem(2000, "Claude Code", agentLifecycle(.running(progress: nil)), records: [
                 programRecord("", .working, app: "claude-code"),
@@ -1582,8 +1582,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let list = SidebarView()
         list.captionDelay = 0
         window.contentView = list
-        SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
-        defer { SidebarView.visualNow = nil }
         let live = sidebarFixture()
         for dark in [false, true] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
@@ -1594,8 +1592,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             snapshot.client = .init(session: SessionID(number: 0), window: WindowID(number: 458), pane: PaneID(number: 502))
             snapshot.sessions[0].nodes[0].item.lifecycle = piLifecycle(.idle(Outcome(serial: 1, result: .success)))
             snapshot.sessions[0].nodes[0].item.mark = .done
-            snapshot.sessions[0].nodes[0].item.children[0].item.lifecycle = .ended(.completed)
-            snapshot.sessions[0].nodes[0].item.children[0].item.started = nil
+            snapshot.sessions[0].nodes[0].item.children[0].item.lifecycle = .ended(.exited(.init(code: 0)))
             snapshot.sessions[0].nodes[1].group.children[0].lifecycle = piLifecycle(.waiting(nil, progress: nil),
                                                                                   msg: "Rebuilding the sidebar cards and testing nested window corners")
             snapshot.sessions[0].nodes[1].group.children[0].mark = .waiting
@@ -1616,7 +1613,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let subtree = sidebarFixture { snapshot in
             let zsh = fixtureNode(1991, "zsh", shellLifecycle(shellExit(0)), mark: .done)
             let notes = fixtureNode(1990, "review-notes", piLifecycle(.running(progress: nil), msg: "Checking nested activity"),
-                                    run: "r-subtree", started: 1791131100, mark: .running, children: [zsh])
+                                    mark: .running, children: [zsh])
             var child = snapshot.sessions[0].nodes[1].group.children[0].children[0].item
             child.children = [notes]
             snapshot.sessions[0].nodes[1].group.children[0].children[0] = .item(child)
@@ -1959,47 +1956,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             XCTAssertEqual((cell.addWindow.cell as? NSButtonCell)?.highlightsBy, [])
         }
         XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
-    }
-
-    func testClockWidthChangeInvalidatesTitle() throws {
-        defer { SidebarView.visualNow = nil }
-        for multi in [false, true] {
-            let fixture = sidebarFixture { snapshot in
-                var child = snapshot.sessions[0].nodes[0].item.children[0].item
-                child.title = String(repeating: "Long title ", count: 20)
-                child.lifecycle = shellLifecycle(.unknown, report: Report(since: fixtureSince, msg: "Activity", state: .running(progress: nil)))
-                child.mark = .running
-                if multi {
-                    var sibling = child
-                    sibling.id = PaneID(number: 1999)
-                    snapshot.sessions[0].nodes[0].item.children[0] = .window(.init(id: child.window, name: "group", children: [child, sibling]))
-                } else {
-                    snapshot.sessions[0].nodes[0].item.children[0] = .item(child)
-                }
-            }
-            let row = try XCTUnwrap(sidebarRows(fixture).first { $0.started != nil })
-            XCTAssertFalse(row.tail.isEmpty)
-            let started = try XCTUnwrap(row.started)
-            let cell = SidebarCell(SidebarFonts())
-            cell.frame = NSRect(x: 0, y: 0, width: 292, height: row.height)
-            for (before, after) in [(9.0, 10.0), (59.0, 60.0), (3599.0, 3600.0)] {
-                SidebarView.visualNow = started.addingTimeInterval(before)
-                cell.configure(row)
-                SidebarView.visualNow = started.addingTimeInterval(after)
-                cell.updateClock()
-                XCTAssertEqual(cell.visualClockDirtyRect.minX, 51,
-                               "width-changing tick must invalidate the nested title’s truncation edge")
-                XCTAssertEqual(cell.visualClockDirtyRect.minY, 7)
-            }
-            SidebarView.visualNow = started.addingTimeInterval(11)
-            cell.configure(row)
-            SidebarView.visualNow = started.addingTimeInterval(12)
-            cell.updateClock()
-            XCTAssertGreaterThan(cell.visualClockDirtyRect.minX, 200, "equal-width tick must remain clock-only")
-            let activityRect = NSRect(x: row.leading, y: row.tailY, width: cell.bounds.width - row.leading - 24, height: 15)
-            XCTAssertFalse(cell.visualClockDirtyRect.intersects(activityRect),
-                           "equal-width nested \(multi ? "multi" : "single") clock must not redraw activity")
-        }
     }
 
     func testNavigationFeedFirst() throws {

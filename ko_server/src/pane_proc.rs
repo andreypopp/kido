@@ -489,10 +489,6 @@ impl PaneProc {
         self.dead.as_ref()
     }
 
-    pub(crate) fn dead_and_delivery(&mut self) -> (Option<&Death>, Option<&mut Delivery>) {
-        (self.dead.as_ref(), self.stage.delivery_mut())
-    }
-
     pub(crate) fn busy(&self) -> bool {
         self.busy
     }

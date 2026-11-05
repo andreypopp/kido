@@ -146,7 +146,7 @@ none, and a kind can have panes without a link.
 
 **The first pane starts the runtime.** No request brings a runtime
 up. A request that creates a pane in a runtime that is `Down` or
-`Failed` (`POST /panes`, `POST /runs`, a new pane of `PUT /layout`)
+`Failed` (`POST /panes`, a new pane of `PUT /layout`)
 starts the link and returns at once with the pane, as for a host
 pane; an exec session starts it too. A `Failed` runtime starts again
 at the next request. The start binds the listener, then runs the
@@ -237,16 +237,13 @@ stop and the messages (protocol.md, section 7; `ko_server/src/panes.rs`):
 
 - `GET /layout` and `GET /panes`: the document whole, the rows only
   of visible panes.
-- `GET /panes/{t}` and the runs' reads: `t` visible. A run whose pane
-  is gone is visible only when the run was started in `R`, which its
-  run record keeps.
-- `/screen`, `/clear_history`, `/input` and a run's screen: `t` in
+- `GET /panes/{t}`: `t` visible.
+- `/screen`, `/clear_history`, `/input`: `t` in
   `R` or a descendant of `c`.
-- `POST /panes`, `POST /runs`, the stop, the variable writes, the
-  output stream and the messages: the rules that every pane identity
-  has (protocol.md, sections 7 and 10), unchanged, so a parent and a
-  child in different runtimes exchange messages and the parent reads
-  the child's output.
+- `POST /panes`, the stop, the variable writes and
+  the messages: the rules that every pane identity has (protocol.md,
+  sections 7 and 10), unchanged, so a parent and a child in different
+  runtimes exchange messages.
 - The prompt routes: `from` is the caller, and the candidates follow
   the scope rule. A send that would end as a paste is `refused` unless
   its target is in `R` or a descendant of `c`, the rule of `/input`;
@@ -816,8 +813,8 @@ The pane is a host pane in every row field.
   first tool wait for it. A read that fails is tried again at the
   next prompt or tool when it was the only way to learn the cwd. It is also the exec that starts a runtime that is down: the
   harness itself never starts one, and `GET /runtimes/NAME` starts
-  nothing. A prompt section `runtime` says that the built-in tools
-  and `!` run in the runtime at its cwd and that every other tool runs
+  nothing. A prompt section `runtime` says that the built-in tools,
+  `async_bash` and `!` run in the runtime at its cwd and that every other tool runs
   on the host at the host cwd, and names those tools; a notice at
   `session_start` tells the user the same. Other extensions' tools,
   MCP tools and codemode stay on the host: the harness cannot know
@@ -832,10 +829,16 @@ The pane is a host pane in every row field.
   notice. A `Failed` runtime does not
   refuse: the next exec starts it again, and a failed start reaches
   the tool as the exec's `error`.
-- **`async_bash`** is `POST /runs` through `ko api` with `runtime`,
-  `parent` the own pane and `cwd` the host cwd, which the server maps
-  as for a new pane, because `ko run-child` has no runtime flag. Its pane is a runtime pane; the
-  wait, the stop, the output stream and the list are a host run's.
+- **Jobs.** `async_bash` and a moved `bash` call are jobs of the
+  harness (design-subagents.md, "A job") over the same operations:
+  the job's process is the `ko api --stream /runtimes/NAME/exec`
+  child of pi, in the registry beside the local jobs. A stop kills
+  that child, so ko closes the session and the ko inside ends the
+  command's group ("Cancel"); the harness sends no `signal` frame.
+  The child's connection survives `/reload` as any child does. The
+  log is written on the host, so the routed `read`, which runs in the
+  runtime, reads it only where the runtime maps it. A job counts
+  against the 32 exec sessions and keeps the runtime from going idle.
 - **The variables.** The harness writes `pi.runtime` (`{ name, cwd }`,
   the runtime cwd) beside `pi.session`, believed under the same trust
   rule, and `ko.runtime` (the name), and deletes both with the others
@@ -887,7 +890,7 @@ Fixed before the design, 2026-11-03:
 - No stdio fallback for attaching clients, and no views and no
   `/client` on a runtime socket.
 - Runtimes are managed through the HTTP API only: no `ko runtime`
-  subcommands and no `--runtime` flag on `ko run` or `ko layout edit`.
+  subcommands and no `--runtime` flag on `ko layout edit`.
   A runtime starts with its first pane and stops by the idle rule,
   600 s.
 - ko ships a static musl Linux `ko` for the container kind. The
@@ -954,8 +957,8 @@ The configuration file, 2026-11-04:
 - The remote directory is resolved on the remote by `ko enter`, both
   for `--prepare` and for a pane, so the pane's argv needs no fact
   of the link.
-- The exec session is a WebSocket, not a run: a run would give every
-  tool call a pane, a pty that merges stderr and rewrites bytes, a
+- The exec session is a WebSocket, not a pane: a pane would give every
+  tool call a pty that merges stderr and rewrites bytes, a
   window in the layout and a sweep; the tools need bytes, a status and
   stdin.
 - No file routes. Read, write, list and search inside a runtime are
@@ -992,10 +995,13 @@ Agents in a runtime, 2026-11-04:
 - Other extensions' tools in a routed pi run on the host, with a
   prompt section and a notice, not a refusal.
 - `@` completion in a routed pi lists host files.
-- A routed pi's `async_bash` is a run in the runtime, through `POST
-  /runs`, not an exec session: it keeps a pane, a screen and the
-  run's lifecycle.
 - A routed tool's cancel is ko's, not the harness's.
+
+Jobs in a runtime, 2026-11-05:
+
+- A routed pi's `async_bash` and moved `bash` call are exec sessions,
+  not runs: a job has no pane and no screen, and the exec session is
+  the one path that the routed tools already take.
 
 Exec cancel, 2026-11-04:
 

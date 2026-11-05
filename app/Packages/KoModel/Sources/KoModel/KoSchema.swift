@@ -1304,12 +1304,11 @@ public enum KoSchema {
         public var place: Place?
         public var progress: Progress?
         public var recordsSeen: Bool
-        public var run: RunRow?
         public var runtime: RuntimeName?
         public var status: PaneStatus?
         public var title: String
         public var vars: [String: JSONValue]
-        public init(close: Close? = nil, command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, inbox: Bool? = nil, label: String, mark: Mark, parent: PaneId? = nil, pid: Int? = nil, place: Place? = nil, progress: Progress? = nil, recordsSeen: Bool, run: RunRow? = nil, runtime: RuntimeName? = nil, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
+        public init(close: Close? = nil, command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, inbox: Bool? = nil, label: String, mark: Mark, parent: PaneId? = nil, pid: Int? = nil, place: Place? = nil, progress: Progress? = nil, recordsSeen: Bool, runtime: RuntimeName? = nil, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
             self.close = close
             self.command = command
             self.cwd = cwd
@@ -1324,7 +1323,6 @@ public enum KoSchema {
             self.place = place
             self.progress = progress
             self.recordsSeen = recordsSeen
-            self.run = run
             self.runtime = runtime
             self.status = status
             self.title = title
@@ -1345,7 +1343,6 @@ public enum KoSchema {
             case place
             case progress
             case recordsSeen = "records_seen"
-            case run
             case runtime
             case status
             case title
@@ -1390,8 +1387,6 @@ public enum KoSchema {
             case title
         }
     }
-
-    public typealias Parent = String
 
     public enum Phase: Codable, Equatable, Sendable {
         case unknown
@@ -1723,51 +1718,6 @@ public enum KoSchema {
         }
     }
 
-    public typealias RunId = String
-
-    public typealias RunName = String
-
-    public struct RunOutcome: Codable, Equatable, Sendable {
-        public var at: Timestamp?
-        public var result: RunResult
-        public var text: String?
-        public init(at: Timestamp? = nil, result: RunResult, text: String? = nil) {
-            self.at = at
-            self.result = result
-            self.text = text
-        }
-    }
-
-    public enum RunResult: String, Codable, Equatable, Sendable {
-        case completed
-        case failed
-        case died
-        case stopped
-    }
-
-    public struct RunRow: Codable, Equatable, Sendable {
-        public var argv: [String]
-        public var cwd: String
-        public var id: RunId
-        public var name: RunName
-        public var outcome: RunOutcome?
-        public var pane: PaneId?
-        public var parent: Parent?
-        public var runtime: RuntimeName?
-        public var startedAt: Timestamp
-        public init(argv: [String], cwd: String, id: RunId, name: RunName, outcome: RunOutcome? = nil, pane: PaneId? = nil, parent: Parent? = nil, runtime: RuntimeName? = nil, startedAt: Timestamp) {
-            self.argv = argv
-            self.cwd = cwd
-            self.id = id
-            self.name = name
-            self.outcome = outcome
-            self.pane = pane
-            self.parent = parent
-            self.runtime = runtime
-            self.startedAt = startedAt
-        }
-    }
-
     public typealias RuntimeColor = String
 
     public enum RuntimeKind: String, Codable, Equatable, Sendable {
@@ -1870,8 +1820,6 @@ public enum KoSchema {
             self.light = light
         }
     }
-
-    public typealias Timestamp = String
 
     public typealias UnfocusedShift = Double
 

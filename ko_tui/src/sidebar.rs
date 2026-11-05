@@ -145,7 +145,6 @@ mod tests {
                 foreground: None,
                 status: None,
                 progress: None,
-                run: None,
                 parent: None,
                 close: Default::default(),
                 inbox: false,

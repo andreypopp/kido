@@ -4,6 +4,7 @@ import {
   DEFAULT_MAX_BYTES,
   type ExtensionAPI,
   type ExtensionContext,
+  type ExtensionToolContext,
   type FindOperations,
   type GrepToolDetails,
   type GrepToolInput,
@@ -13,7 +14,6 @@ import {
   type Theme,
   type ToolDefinition,
   type WriteOperations,
-  createBashTool,
   createBashToolDefinition,
   createEditTool,
   createEditToolDefinition,
@@ -28,13 +28,16 @@ import {
   createWriteToolDefinition,
   formatSize,
   getAgentDir,
+  getShellConfig,
+  rawKeyHint,
   truncateHead,
   truncateLine,
 } from "@earendil-works/pi-coding-agent";
-import { type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Key, matchesKey, type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { accessSync, closeSync, constants, openSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { type WriteStream, accessSync, closeSync, constants, createWriteStream, mkdirSync, openSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
+import os from "node:os";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
@@ -42,9 +45,8 @@ import type { components } from "./ko-api.d.ts";
 
 type Api = components["schemas"];
 
-type Outcome = Required<Pick<Api["RunOutcome"], "text">> & { result: string };
-
 const KO_TIMEOUT_MS = 5000;
+const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
 const VAR_SESSION = "pi.session";
 const VAR_NAME = "pi.name";
@@ -70,19 +72,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
-
-const parseOutcome = (value: unknown): Outcome | undefined => {
-  if (!isRecord(value) || typeof value.result !== "string") return undefined;
-  return { result: value.result, text: str(value.text) };
-};
-
-const outcomeOf = (text: string): Outcome | undefined => {
-  try {
-    return parseOutcome(JSON.parse(text.trim()));
-  } catch {
-    return undefined;
-  }
-};
 
 function findKo(): string | null {
   const path = process.env.PATH;
@@ -118,7 +107,7 @@ async function runCommand(command: string, args: string[], opts: { timeoutMs: nu
     timer.unref();
     child.stdout?.on("data", (c: Buffer) => stdout.push(c));
     child.stderr?.on("data", (c: Buffer) => stderr.push(c));
-    child.on("error", (err) => finish({ ok: false, error: err instanceof Error ? err.message : String(err), out: "", err: "" }));
+    child.on("error", (err) => finish({ ok: false, error: errorText(err), out: "", err: "" }));
     child.on("close", (code) => {
       const out = Buffer.concat(stdout).toString("utf8");
       const err = Buffer.concat(stderr).toString("utf8");
@@ -275,7 +264,7 @@ const causeText = (dead: Dead): string => {
 
 const NOTICE_CUSTOM_TYPE = "ko-notice";
 
-export const noticeHeader = (from: string): string => `notice from ${from} (a subagent or background run's report, not the user):`;
+export const noticeHeader = (from: string): string => `notice from ${from} (a subagent or background job's report, not the user):`;
 
 const MESSAGE_CUSTOM_TYPE = "ko-message";
 
@@ -380,7 +369,6 @@ type ChildData = {
   pane: { instance: string; pane: string };
 };
 
-type RunRow = Pick<Api["Info"], "id"> & Partial<Pick<Api["Info"], "name" | "parent" | "pane" | "cwd" | "startedAt">> & { outcome?: Outcome };
 
 const handleClick = (event: TuiMouseEvent, click: () => void) => {
   if (event.button !== "left") return;
@@ -417,7 +405,7 @@ AgentSession.prototype.clearQueue = function () {
 };
 
 const NEVER_SLEEP_RULE =
-  "Never run `sleep` in bash to wait for anything - an async run, a subagent, a message, or another agent's work settling. What you are waiting for arrives as a notice or message that wakes you after you end your turn; if a build breaks because of another agent's half-done work, report that rather than sleeping until it clears. Ending your turn while you wait is always safe: a running async run or subagent of yours keeps you alive, and its notice starts your next turn.";
+  "Never run `sleep` in bash to wait for anything - an async job, a subagent, a message, or another agent's work settling. What you are waiting for arrives as a notice or message that wakes you after you end your turn; if a build breaks because of another agent's half-done work, report that rather than sleeping until it clears. Ending your turn while you wait is always safe: a running async job or subagent of yours keeps you alive, and its notice starts your next turn.";
 
 const NOT_THE_USER_RULE =
   "A notice is information, not the user speaking: act on it, do not thank or answer it. A message from another agent says in its first line who sent it and how they stand to you.";
@@ -426,38 +414,388 @@ export const SPAWN_RESULT_RULE =
   "its result arrives as a notice when it ends a turn with nothing of its own still running - you know nothing about it until then, so do not report, assume or predict it, continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_agents lists this agent and stop_agent stops it";
 
 export const SUBAGENT_RESULT_RULE =
-  "; ending your turn now sends no report to your parent: your report is the last message of a turn that ends when no run of yours is running and no subagent of yours owes you a report";
+  "; ending your turn now sends no report to your parent: your report is the last message of a turn that ends when no job of yours is running and no subagent of yours owes you a report";
 
 const SUBAGENT_INSTRUCTION =
-  "While an async run of yours is running, or a subagent of yours still owes you a report, ending your turn sends nothing to your parent. You were spawned as a subagent: your report is the last message of a turn that ends after all of them finish, once for each piece of work your parent gives you. Your parent is not watching this session and reads nothing else. End your work with a message that stands on its own: what you did, what failed, and what you left undone. " +
+  "While an async job of yours is running, or a subagent of yours still owes you a report, ending your turn sends nothing to your parent. You were spawned as a subagent: your report is the last message of a turn that ends after all of them finish, once for each piece of work your parent gives you. Your parent is not watching this session and reads nothing else. End your work with a message that stands on its own: what you did, what failed, and what you left undone. " +
   "If you must stop to wait for another agent or for the user, say so in that message; when the work completes later, tell your parent with message_agent. " +
   "Reporting does not end this session: it stays alive until your parent ends it with stop_agent, and the parent can continue it with message_agent.";
 
 type ShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
 
-// What a /reload keeps in the process: the pane's message stream and the
-// received-id ring survive it, and the run watches resume at their offsets.
+// pi /reload keeps the process, its message stream and its received-id ring.
 type ReceiverHold = { child: ChildProcess; partial: Buffer };
 
-type ParkedWatch = {
-  run: string;
-  name: string;
-  pane: string;
-  stream: boolean;
-  offset: number;
-  lines: string[];
-  dropped: number;
-  skipped: number;
-  split: SplitState;
-  carry: Buffer;
-  budget: number;
-  budgetTold: boolean;
+type JobEnd = { type: "exit"; code: number } | { type: "signal"; signal: NodeJS.Signals } | { type: "failed"; message: string } | { type: "stopped" } | { type: "timeout"; seconds: number };
+type JobCall = {
+  forward(bytes: Buffer): void;
+  resolve(result: { exitCode: number | null }): void;
+  reject(error: unknown): void;
+  abort: { signal: AbortSignal; listener: () => void } | null;
 };
+type JobOutput = {
+  type: "job";
+  name: string;
+  origin: { type: "async_bash"; stream: boolean } | { type: "bash"; move: "timeout" | "key" | "reload" };
+  log: string;
+  output: WriteStream;
+  logClosed: Promise<void>;
+  stream: { held: number; lines: string[]; dropped: number; cut: boolean; split: SplitState; carry: Buffer; budget: number; budgetTold: boolean; timer: NodeJS.Timeout | null; idleDelay: number };
+};
+type Job = {
+  id: string;
+  command: string;
+  startedAt: string;
+  where: { type: "local"; child: ChildProcess } | { type: "routed"; runtime: string; child: ChildProcess };
+  tail: Buffer;
+  producedBytes: number;
+  mode: { type: "foreground"; call: JobCall | null } | JobOutput;
+  state: { type: "running" } | { type: "ended"; end: JobEnd; announced: boolean };
+  deadline: NodeJS.Timeout | null;
+  stopping: { end: JobEnd; timer: NodeJS.Timeout } | null;
+  closed: Promise<void>;
+};
+type BackgroundJob = Job & { mode: JobOutput };
+const isBackgroundJob = (job: Job): job is BackgroundJob => job.mode.type === "job";
+const streams = (job: BackgroundJob): boolean => job.mode.origin.type === "async_bash" && job.mode.origin.stream;
+const TAIL_BYTES = 4000;
+const HELD_BYTES = 64 * 1024;
+type JobOperations = {
+  exec(command: string, cwd: string, options: Parameters<BashOperations["exec"]>[2] & { onStart?(job: Job): void }): ReturnType<BashOperations["exec"]>;
+};
+class MovedToJob extends Error {
+  readonly job: BackgroundJob;
+  readonly reason: "timeout" | "key" | "reload";
+
+  constructor(job: BackgroundJob, reason: MovedToJob["reason"]) {
+    super("moved to job");
+    this.job = job;
+    this.reason = reason;
+  }
+}
+type JobRegistry = {
+  shape: number;
+  session: string;
+  stopAll(): string[];
+  jobs: Map<string, Job>;
+  owner: { onLines(job: BackgroundJob): void; onEnd(job: BackgroundJob): void } | null;
+  exit: () => void;
+  keys: () => void;
+};
+const JOBS = Symbol.for("ko-pi.jobs");
+const JOB_SHAPE = 1;
+function isJobRegistry(value: unknown): value is JobRegistry {
+  return isRecord(value) && typeof value.shape === "number" && typeof value.session === "string"
+    && value.jobs instanceof Map && typeof value.stopAll === "function" && typeof value.exit === "function" && typeof value.keys === "function";
+}
+
+function jobRunning(job: Job): boolean {
+  return job.state.type !== "ended" && job.where.child.exitCode === null && job.where.child.signalCode === null;
+}
+
+function signalJob(job: Job, signal: NodeJS.Signals): boolean {
+  const child = job.where.child;
+  if (!jobRunning(job) || !child.pid) return false;
+  try {
+    if (job.where.type === "local") process.kill(-child.pid, signal);
+    else child.kill();
+    return true;
+  } catch (error) {
+    if (isRecord(error) && error.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+const jobEndText = (end: JobEnd): string => {
+  switch (end.type) {
+    case "exit": return `exit ${end.code}`;
+    case "signal": return `signal ${end.signal}`;
+    case "failed": return `failed: ${end.message}`;
+    case "stopped": return "stopped";
+    case "timeout": return `timed out after ${end.seconds} s`;
+  }
+};
+
+function execCode(end: JobEnd, where: Job["where"]["type"]): number | null {
+  if (end.type === "exit") return end.code;
+  if (end.type !== "signal") return null;
+  const signal = where === "local" ? os.constants.signals[end.signal]
+    : Object.entries(SIGNAL_NUMBERS).find(([name]) => `SIG${name}` === end.signal)?.[1];
+  return signal === undefined ? null : 128 + signal;
+}
+
+function validateJobTimeout(timeout: number | undefined): void {
+  if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0 || timeout * 1000 > 2147483647)) throw new Error("Invalid timeout: must be a finite positive number of seconds within the timer limit");
+}
+
+const jobKillMs = (): number => envMs("KO_JOB_KILL_MS", 5000);
+
+function armJobDeadline(job: Job, seconds: number, at = performance.now() + seconds * 1000): void {
+  if (job.deadline) clearTimeout(job.deadline);
+  job.deadline = setTimeout(() => stopJob(job, { type: "timeout", seconds }), Math.max(0, Math.ceil(at - performance.now())));
+  job.deadline.unref();
+}
+
+function detachJob(job: BackgroundJob): void {
+  if (job.mode.stream.timer) clearTimeout(job.mode.stream.timer);
+  job.mode.stream.timer = null;
+}
+
+function detachKeys(registry: JobRegistry): void {
+  const detach = registry.keys;
+  registry.keys = () => {};
+  detach();
+}
+
+function stopJob(job: Job, end: JobEnd = { type: "stopped" }): void {
+  if (job.state.type === "ended" || job.stopping) return;
+  if (job.deadline) clearTimeout(job.deadline);
+  job.deadline = null;
+  signalJob(job, "SIGTERM");
+  const timer = setTimeout(() => signalJob(job, "SIGKILL"), jobKillMs());
+  timer.unref();
+  job.stopping = { end, timer };
+}
+
+async function waitJobs(jobs: Job[]): Promise<void> {
+  await Promise.race([Promise.all(jobs.map((job) => job.closed)), sleep(jobKillMs())]);
+}
+
+function pruneJobs(registry: JobRegistry): void {
+  let retained = [...registry.jobs.values()].filter((job) => job.state.type === "ended" && job.state.announced).length;
+  for (const job of registry.jobs.values()) {
+    if (retained <= 20) break;
+    if (job.state.type === "ended" && job.state.announced) {
+      registry.jobs.delete(job.id);
+      retained--;
+    }
+  }
+}
+
+function createJobRegistry(session: string): JobRegistry {
+  const jobs = new Map<string, Job>();
+  const registry: JobRegistry = {
+    shape: JOB_SHAPE, session, jobs, owner: null, keys: () => {},
+    stopAll() {
+      registry.owner = null;
+      const live = [...jobs.values()].filter((job) => job.state.type !== "ended");
+      for (const job of live) {
+        if (isBackgroundJob(job)) detachJob(job);
+        stopJob(job);
+      }
+      void Promise.all([...jobs.values()].map((job) => job.closed)).then(() => process.removeListener("exit", registry.exit));
+      return live.filter(isBackgroundJob).map((job) => job.mode.name);
+    },
+    exit() {
+      for (const job of jobs.values()) {
+        if (job.where.type === "local") try { signalJob(job, "SIGKILL"); } catch {}
+      }
+    },
+  };
+  process.on("exit", registry.exit);
+  return registry;
+}
+
+function writeJobOutput(job: BackgroundJob, bytes: Buffer): void {
+  const output = job.mode.output;
+  if (output.destroyed || output.write(bytes)) return;
+  const child = job.where.child;
+  child.stdout?.pause();
+  child.stderr?.pause();
+  const resume = (): void => {
+    output.removeListener("drain", resume);
+    output.removeListener("error", resume);
+    child.stdout?.resume();
+    child.stderr?.resume();
+  };
+  output.once("drain", resume);
+  output.once("error", resume);
+}
+
+function trimStream(job: BackgroundJob): void {
+  const stream = job.mode.stream;
+  let removed = 0;
+  while (stream.lines.length - removed > STREAM_BUFFER_LINES || (stream.held > HELD_BYTES && stream.lines.length > removed)) {
+    if (stream.lines.length - removed === 1 && !stream.split.line) {
+      const old = stream.lines[removed] ?? "";
+      stream.lines[removed] = utf8Suffix(old, HELD_BYTES - stream.carry.length - 1);
+      stream.held -= Buffer.byteLength(old) - Buffer.byteLength(stream.lines[removed] ?? "");
+      stream.cut = true;
+      break;
+    }
+    stream.held -= Buffer.byteLength(stream.lines[removed] ?? "") + 1;
+    removed++;
+  }
+  if (removed) {
+    stream.lines = stream.lines.slice(removed);
+    stream.dropped += removed;
+  }
+  if (stream.held > HELD_BYTES) {
+    const before = Buffer.byteLength(stream.split.line);
+    stream.split.line = utf8Suffix(stream.split.line, HELD_BYTES - stream.carry.length);
+    stream.held -= before - Buffer.byteLength(stream.split.line);
+    stream.cut = true;
+  }
+}
+
+function jobData(registry: JobRegistry, job: Job, bytes: Buffer): void {
+  job.tail = Buffer.concat([job.tail.subarray(Math.max(0, job.tail.length + bytes.length - HELD_BYTES)), bytes.subarray(-HELD_BYTES)]);
+  job.producedBytes += bytes.length;
+  if (!isBackgroundJob(job)) {
+    if (job.mode.type === "foreground") job.mode.call?.forward(bytes);
+    return;
+  }
+  writeJobOutput(job, bytes);
+  if (!streams(job) || job.stopping?.end.type === "stopped") return;
+  const stream = job.mode.stream;
+  if (stream.budget <= 0 && stream.budgetTold) return;
+  const before = Buffer.byteLength(stream.split.line) + stream.carry.length;
+  const decoded = utf8Complete(stream.carry, bytes);
+  const lines = splitLines(stream.split, decoded.text);
+  stream.lines.push(...lines);
+  stream.held += lines.reduce((bytes, line) => bytes + Buffer.byteLength(line) + 1, 0) + Buffer.byteLength(stream.split.line) + decoded.carry.length - before;
+  stream.carry = decoded.carry;
+  trimStream(job);
+  registry.owner?.onLines(job);
+}
+
+function jobTail(job: Job): string {
+  return utf8Suffix(splitLines(newSplit(), job.tail.subarray(-4 * TAIL_BYTES).toString("utf8") + "\n").join("\n"), TAIL_BYTES);
+}
+
+function detachCall(job: Job): JobCall | null {
+  if (job.mode.type !== "foreground") return null;
+  const call = job.mode.call;
+  job.mode.call = null;
+  if (call?.abort) call.abort.signal.removeEventListener("abort", call.abort.listener);
+  return call;
+}
+
+async function finishJob(registry: JobRegistry, job: Job, result: ExecResult): Promise<void> {
+  if (job.deadline) clearTimeout(job.deadline);
+  if (isBackgroundJob(job)) {
+    if (streams(job) && !(job.mode.stream.budget <= 0 && job.mode.stream.budgetTold)) {
+      if (job.mode.stream.split.line) {
+        job.mode.stream.lines.push(job.mode.stream.split.line);
+        job.mode.stream.held++;
+      }
+      job.mode.stream.split.line = "";
+      trimStream(job);
+    }
+    job.mode.output.end();
+    await job.mode.logClosed;
+  }
+  if (job.stopping) clearTimeout(job.stopping.timer);
+  job.state = { type: "ended", end: job.stopping?.end ?? result.end, announced: false };
+  if (isBackgroundJob(job)) {
+    registry.jobs.delete(job.id);
+    registry.jobs.set(job.id, job);
+    try { registry.owner?.onEnd(job); } catch {}
+    pruneJobs(registry);
+  } else {
+    const call = detachCall(job);
+    registry.jobs.delete(job.id);
+    if (call?.abort?.signal.aborted) call.reject(new Error("aborted"));
+    else if (job.state.end.type === "failed") call?.reject(new Error(job.state.end.message));
+    else if (job.state.end.type === "timeout") call?.reject(new Error(`timeout:${job.state.end.seconds}`));
+    else call?.resolve({ exitCode: execCode(result.end, job.where.type) });
+  }
+}
+
+function failJob(registry: JobRegistry, job: Job, error: unknown): Promise<void> {
+  return finishJob(registry, job, { end: { type: "failed", message: errorText(error) } });
+}
+
+function observeJob(registry: JobRegistry, where: Job["where"], command: string, options: Parameters<JobOperations["exec"]>[2], completion: Promise<ExecResult>) {
+  let id: string;
+  do { id = "j" + randomBytes(6).readUIntBE(0, 6).toString(36).padStart(7, "0").slice(-7); } while (registry.jobs.has(id));
+  const job: Job = {
+    id, command, startedAt: new Date().toISOString(), where, tail: Buffer.alloc(0), producedBytes: 0,
+    mode: { type: "foreground", call: null }, state: { type: "running" }, deadline: null, stopping: null, closed: Promise.resolve(),
+  };
+  registry.jobs.set(id, job);
+  const result = new Promise<{ exitCode: number | null }>((resolve, reject) => {
+    const listener = stopJob.bind(null, job, { type: "stopped" });
+    job.mode = { type: "foreground", call: { forward: options.onData, resolve, reject, abort: options.signal ? { signal: options.signal, listener } : null } };
+    options.signal?.addEventListener("abort", listener, { once: true });
+    if (options.signal?.aborted) listener();
+  });
+  job.closed = completion.then(finishJob.bind(null, registry, job), failJob.bind(null, registry, job));
+  if (options.timeout !== undefined) armJobDeadline(job, options.timeout);
+  try { options.onStart?.(job); }
+  catch (error) { detachCall(job)?.reject(error); stopJob(job); }
+  return { job, result };
+}
+
+function promoteJob(registry: JobRegistry, job: Job, origin: JobOutput["origin"], name = job.id): BackgroundJob {
+  if (isBackgroundJob(job)) return job;
+  const dir = join(os.tmpdir(), "ko-pi");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const log = join(dir, `${registry.session}-${job.id}.log`);
+  const output = createWriteStream(log, { flags: "wx", mode: 0o600 });
+  const logClosed = new Promise<void>((done) => { output.once("finish", done); output.once("error", () => done()); });
+  output.on("error", (error) => stopJob(job, { type: "failed", message: error.message }));
+  const call = detachCall(job);
+  const mode: JobOutput = {
+    type: "job", name, origin, log, output, logClosed,
+    stream: { held: 0, lines: [], dropped: 0, cut: false, split: newSplit(), carry: Buffer.alloc(0), budget: envMs("KO_STREAM_BUDGET_BYTES", 256 * 1024), budgetTold: false, timer: null, idleDelay: envMs("KO_STREAM_FLUSH_MS", 1000) },
+  };
+  const moved = Object.assign(job, { mode });
+  if (job.producedBytes > job.tail.length) writeJobOutput(moved, Buffer.from(`--- earlier output is cut; this log starts with the last ${HELD_BYTES / 1024} KiB before the move ---\n`));
+  writeJobOutput(moved, job.tail);
+  call?.resolve({ exitCode: null });
+  return moved;
+}
+
+function getShellEnv(): NodeJS.ProcessEnv {
+  const bin = join(getAgentDir(), "bin");
+  const key = Object.keys(process.env).find((key) => key.toLowerCase() === "path") ?? "PATH";
+  const path = process.env[key] ?? "";
+  return { ...process.env, [key]: path.split(delimiter).filter(Boolean).includes(bin) ? path : [bin, path].filter(Boolean).join(delimiter) };
+}
+
+function localCompletion(child: ChildProcess): Promise<ExecResult> {
+  return new Promise((resolve) => {
+    let failure: string | undefined;
+    child.on("error", (error) => { failure = error.message; });
+    child.on("close", (code, signal) => resolve({ end: failure ? { type: "failed", message: failure } : signal ? { type: "signal", signal } : { type: "exit", code: code ?? 1 } }));
+  });
+}
+
+function localJob(registry: JobRegistry, shell: ReturnType<typeof getShellConfig>, command: string, cwd: string, options: Parameters<JobOperations["exec"]>[2]): ReturnType<BashOperations["exec"]> {
+  if (options.signal?.aborted) return Promise.reject(new Error("aborted"));
+  const stdin = shell.commandTransport === "stdin";
+  const child = spawn(shell.shell, stdin ? shell.args : [...shell.args, command], { cwd, env: options.env ?? getShellEnv(), detached: true, stdio: [stdin ? "pipe" : "ignore", "pipe", "pipe"] });
+  if (stdin) { child.stdin?.on("error", () => {}); child.stdin?.end(command); }
+  const observed = observeJob(registry, { type: "local", child }, command, options, localCompletion(child));
+  const data = jobData.bind(null, registry, observed.job);
+  child.stdout?.on("data", data);
+  child.stderr?.on("data", data);
+  return observed.result;
+}
+
+async function routedJob(registry: JobRegistry, r: Routed, command: string, cwd: string, options: Parameters<JobOperations["exec"]>[2]): ReturnType<BashOperations["exec"]> {
+  const shell = (await abortable(r.facts(), options.signal)).programs.get("bash") ?? "sh";
+  if (options.signal?.aborted) throw new Error("aborted");
+  const runtime = r.name;
+  let start: Parameters<JobOperations["exec"]>[2] | null = options;
+  let observed: ReturnType<typeof observeJob> | undefined;
+  void runtimeExec(r.ko, runtime, {
+    argv: [shell, "-lc", command], cwd: toRuntime(r, cwd),
+    onSpawn(child, completion) {
+      if (start) observed = observeJob(registry, { type: "routed", runtime, child }, command, start, completion);
+      start = null;
+    },
+    onStdout: (data) => { if (observed) jobData(registry, observed.job, data); },
+    onStderr: (data) => { if (observed) jobData(registry, observed.job, data); },
+  });
+  if (!observed) throw new Error("the runtime exec did not start");
+  return observed.result;
+}
 
 declare global {
   var __koPiExtensionReceiver: ReceiverHold | undefined;
   var __koPiExtensionReceived: string[] | undefined;
-  var __koPiExtensionWatches: ParkedWatch[] | undefined;
   var __koPiExtensionCopy: string | undefined;
   var __koPiExtensionClearQueue: AgentSession["clearQueue"] | undefined;
   var __koPiExtensionExit: (() => void) | undefined;
@@ -530,17 +868,6 @@ function isMessage(value: unknown): value is Api["Message"] {
 
 function isPlacement(value: unknown): value is Api["Placement"] {
   return isRecord(value) && isString(value.pane) && isString(value.session) && isString(value.window);
-}
-
-function isStarted(value: unknown): value is Api["Started"] {
-  return isRecord(value) && isString(value.id) && isString(value.pane) && isString(value.window);
-}
-
-function isOutputEvent(value: unknown): value is Api["OutputEvent"] {
-  if (!isRecord(value)) return false;
-  if (value.type === "bytes") return isString(value.data) && typeof value.offset === "number";
-  if (value.type === "skip") return typeof value.from === "number" && typeof value.to === "number";
-  return value.type === "dead" && typeof value.at === "number" && isCause(value.cause);
 }
 
 function isExecServer(value: unknown): value is Api["ExecServer"] {
@@ -716,7 +1043,7 @@ export function splitLines(state: SplitState, text: string): string[] {
   return lines;
 }
 
-export function streamBatch(lines: string[], alreadyDropped = 0, skippedBytes = 0): string {
+export function streamBatch(lines: string[], alreadyDropped = 0): string {
   let start = Math.max(0, lines.length - STREAM_BATCH_LINES);
   let bytes = 0;
   for (let i = lines.length - 1; i >= start; i--) {
@@ -730,8 +1057,7 @@ export function streamBatch(lines: string[], alreadyDropped = 0, skippedBytes = 
   const kept = lines.slice(start).map((line) => utf8Prefix(line, STREAM_BATCH_BYTES));
   const omitted = lines.length - kept.length + alreadyDropped;
   const notes: string[] = [];
-  if (omitted > 0) notes.push(`... ${omitted} lines omitted (the pane's screen has them)`);
-  if (skippedBytes > 0) notes.push(`... ${skippedBytes} bytes omitted (the pane's screen has them)`);
+  if (omitted > 0) notes.push(`... ${omitted} lines omitted (the log has them)`);
   return [...notes, ...kept].join("\n");
 }
 
@@ -820,7 +1146,11 @@ type Facts = { programs: Map<string, string>; home: string };
 
 type Run = { out: Buffer; err: Buffer; exitCode: number | null };
 
+type ExecResult = { end: JobEnd };
+const isNodeSignal = (signal: string): signal is NodeJS.Signals => Object.hasOwn(os.constants.signals, signal);
+
 type ExecOptions = {
+  onSpawn?: (child: ChildProcess, completion: Promise<ExecResult>) => void;
   argv: string[];
   cwd?: string;
   input?: Buffer;
@@ -844,15 +1174,12 @@ function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined): Promis
 
 // One `ko api --stream /runtimes/R/exec` process is one command in the runtime. It runs without a shell
 // and with no environment of this process: the runtime's own environment applies.
-function runtimeExec(ko: string, runtime: string, opts: ExecOptions): Promise<{ exitCode: number | null }> {
-  return new Promise((resolve, reject) => {
-    if (opts.signal?.aborted) {
-      reject(new Error("aborted"));
-      return;
-    }
-    const child = openStream(ko, `/runtimes/${runtime}/exec`, "pipe", "pipe");
+function runtimeExec(ko: string, runtime: string, opts: ExecOptions): Promise<ExecResult> {
+  if (opts.signal?.aborted) return Promise.reject(new Error("aborted"));
+  const child = openStream(ko, `/runtimes/${runtime}/exec`, "pipe", "pipe");
+  const completion = new Promise<ExecResult>((resolve, reject) => {
     const stdin = child.stdin;
-    let ended: { exitCode: number | null } | Error | undefined;
+    let ended: ExecResult | Error | undefined;
     let aborted = false;
     const stderr: Buffer[] = [];
     const onAbort = (): void => {
@@ -891,8 +1218,13 @@ function runtimeExec(ko: string, runtime: string, opts: ExecOptions): Promise<{ 
         }
         if (!isExecServer(message)) return;
         if ("data" in message) (message.type === "stdout" ? opts.onStdout : opts.onStderr)?.(Buffer.from(message.data, "base64"));
-        else if ("status" in message) ended = { exitCode: message.status };
-        else if ("signal" in message) ended = { exitCode: message.signal === "OTHER" ? null : 128 + SIGNAL_NUMBERS[message.signal] };
+        else if ("status" in message) ended = { end: { type: "exit", code: message.status } };
+        else if ("signal" in message) {
+          const signal = `SIG${message.signal}`;
+          ended = {
+            end: isNodeSignal(signal) ? { type: "signal", signal } : { type: "failed", message: "the command ended with an unknown signal" },
+          };
+        }
         else if ("message" in message) ended = new Error(message.message);
       }),
     );
@@ -910,12 +1242,13 @@ function runtimeExec(ko: string, runtime: string, opts: ExecOptions): Promise<{ 
       else reject(new Error(Buffer.concat(stderr).toString("utf8").trim() || "the exec session ended without an exit"));
     });
   });
+  opts.onSpawn?.(child, completion);
+  return completion;
 }
-
 async function execRun(r: Pick<Routed, "ko" | "name">, opts: ExecOptions): Promise<Run> {
   const out: Buffer[] = [];
   const err: Buffer[] = [];
-  const { exitCode } = await runtimeExec(r.ko, r.name, {
+  const { end } = await runtimeExec(r.ko, r.name, {
     ...opts,
     onStdout: (data) => {
       out.push(data);
@@ -926,7 +1259,7 @@ async function execRun(r: Pick<Routed, "ko" | "name">, opts: ExecOptions): Promi
       opts.onStderr?.(data);
     },
   });
-  return { out: Buffer.concat(out), err: Buffer.concat(err), exitCode };
+  return { out: Buffer.concat(out), err: Buffer.concat(err), exitCode: execCode(end, "routed") };
 }
 
 const commandFailure = (run: Pick<Run, "err" | "exitCode">, program: string): Error => new Error(run.err.toString("utf8").trim() || `${program} exited with ${run.exitCode}`);
@@ -996,31 +1329,6 @@ const writeOperations = (r: Routed): WriteOperations => ({
   },
 });
 
-const bashOperations = (r: Routed): BashOperations => ({
-  exec: async (command, cwd, { onData, signal, timeout }) => {
-    const controller = new AbortController();
-    const onAbort = (): void => controller.abort();
-    signal?.addEventListener("abort", onAbort, { once: true });
-    let timedOut = false;
-    const timer = timeout
-      ? setTimeout(() => {
-          timedOut = true;
-          controller.abort();
-        }, timeout * 1000)
-      : undefined;
-    try {
-      const shell = (await abortable(r.facts(), controller.signal)).programs.get("bash") ?? "sh";
-      return await runtimeExec(r.ko, r.name, { argv: [shell, "-lc", command], cwd: toRuntime(r, cwd), signal: controller.signal, onStdout: onData, onStderr: onData });
-    } catch (error) {
-      if (timedOut) throw new Error(`timeout:${timeout}`);
-      throw error;
-    } finally {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", onAbort);
-    }
-  },
-});
-
 // One `ls -1Ap` answers exists, stat and readdir of a directory and the stat of each of its entries.
 const lsOperations = (r: Routed): LsOperations => {
   const script = 'if [ ! -e "$1" ]; then exit 2; elif [ ! -d "$1" ]; then exit 3; fi; exec ls -1Ap -- "$1"';
@@ -1075,7 +1383,8 @@ const findOperations = (r: Routed): FindOperations => ({
       if (stop.signal.aborted) return undefined;
       throw error;
     });
-    if (ended && ended.exitCode !== 0 && found.length === 0 && stderr.length > 0) throw commandFailure({ err: Buffer.concat(stderr), exitCode: ended.exitCode }, argv[0] ?? "find");
+    const exitCode = ended ? execCode(ended.end, "routed") : null;
+    if (ended && exitCode !== 0 && found.length === 0 && stderr.length > 0) throw commandFailure({ err: Buffer.concat(stderr), exitCode }, argv[0] ?? "find");
     return found.filter((path) => path !== root).map((path) => (path.startsWith(root) ? cwd + path.slice(root.length) : path));
   },
 });
@@ -1131,7 +1440,7 @@ async function routedGrep(r: Routed, params: GrepToolInput, signal: AbortSignal 
   });
   let exitCode: number | null = 0;
   try {
-    exitCode = (await runtimeExec(r.ko, r.name, { argv, signal: stop.signal, onStdout: onLine, onStderr: (data) => stderr.push(data) })).exitCode;
+    exitCode = execCode((await runtimeExec(r.ko, r.name, { argv, signal: stop.signal, onStdout: onLine, onStderr: (data) => stderr.push(data) })).end, "routed");
   } catch (error) {
     if (signal?.aborted || !state.limitReached) throw error;
   } finally {
@@ -1615,11 +1924,10 @@ export default function (pi: ExtensionAPI) {
     deliverNotice(reportNotice(child, text), child.name);
   };
 
-  const SCREEN_TAIL_BYTES = 4000;
 
   const screenTail = async (route: string): Promise<string | undefined> => {
     const body = apiBody(await apiCall("GET", route));
-    return body === undefined ? undefined : utf8Suffix(body, SCREEN_TAIL_BYTES);
+    return body === undefined ? undefined : utf8Suffix(body, TAIL_BYTES);
   };
 
   const announceEnding = async (child: ChildData, end: Api["End"] | { type: "missing" }): Promise<void> => {
@@ -1629,7 +1937,7 @@ export default function (pi: ExtensionAPI) {
     let body = `subagent ${quote(child.name)} ended: ${how}; it had ${reported ? "reported" : "not reported on its last work"}`;
     if (!reported) {
       const tail = end.type === "dead" ? await screenTail(`/panes/${child.pane.pane}/screen?history=all`) : undefined;
-      if (tail !== undefined) body += `\n--- last ${SCREEN_TAIL_BYTES} bytes of its screen ---\n${tail}`;
+      if (tail !== undefined) body += `\n--- last ${TAIL_BYTES} bytes of its screen ---\n${tail}`;
       body += "\nmessage it to continue it, or stop_agent to end it";
     }
     deliverNotice(body, child.name);
@@ -1781,248 +2089,203 @@ export default function (pi: ExtensionAPI) {
     else hold.child.kill();
   };
 
-  // ---- async_bash runs ----
-
-  type Watch = ParkedWatch & {
-    silenced: boolean;
-    waiter: ChildProcess | null;
-    reader: ChildProcess | null;
-    readerClosed: Promise<void>;
-    flushTimer: NodeJS.Timeout | null;
-    idleDelay: number;
+  const savedJobs: unknown = Reflect.get(globalThis, JOBS);
+  let registry = isJobRegistry(savedJobs) ? savedJobs : undefined;
+  const jobRegistry = (): JobRegistry => {
+    if (!registry) {
+      registry = createJobRegistry(ownSessionId ?? "");
+      Reflect.set(globalThis, JOBS, registry);
+    }
+    return registry;
   };
-
-  const watches = new Map<string, Watch>();
-
   const streamFlushMs = (): number => envMs("KO_STREAM_FLUSH_MS", 1000);
   const streamCap = (): number => envMs("KO_STREAM_MAX_WAIT_MS", 30000);
-
   let agentWorking = false;
-
-  const sendStream = (watch: Watch, body: string): void => {
-    pi.sendMessage(
-      {
-        customType: STREAM_CUSTOM_TYPE,
-        content: `async run ${JSON.stringify(watch.name)} output (run ${watch.run})\n${body}`,
-        display: true,
-        details: { from: watch.name, run: watch.run, pane: watch.pane },
-      },
-      { deliverAs: "steer", triggerTurn: true },
-    );
+  const sendStream = (job: BackgroundJob, body: string): void => {
+    pi.sendMessage({
+      customType: STREAM_CUSTOM_TYPE,
+      content: `job ${JSON.stringify(job.mode.name)} output (job ${job.id})\n${body}`,
+      display: true,
+      details: { from: job.mode.name, job: job.id },
+    }, { deliverAs: "steer", triggerTurn: true });
   };
-
-  const flushWatch = (watch: Watch): boolean => {
-    if (watch.lines.length === 0 && watch.skipped === 0) return false;
-    if (watch.budget <= 0) {
-      watch.lines = [];
-      watch.dropped = 0;
-      watch.skipped = 0;
-      if (!watch.budgetTold) {
-        watch.budgetTold = true;
-        sendStream(watch, `... output budget spent; the rest is only on the pane's screen (ko api '/panes/${watch.pane}/screen?history=all')`);
-      }
+  const flushJob = (job: BackgroundJob): boolean => {
+    const stream = job.mode.stream;
+    if (!stream.lines.length) return false;
+    if (stream.budget <= 0) {
+      if (!stream.budgetTold) sendStream(job, `... output budget spent; the log has the rest: ${job.mode.log}`);
+      stream.budgetTold = true;
+      stream.lines = [];
+      stream.dropped = 0;
+      stream.cut = false;
+      stream.split.line = "";
+      stream.carry = Buffer.alloc(0);
+      stream.held = 0;
       return true;
     }
-    const batch = streamBatch(watch.lines, watch.dropped, watch.skipped);
-    watch.lines = [];
-    watch.dropped = 0;
-    watch.skipped = 0;
-    watch.budget -= Buffer.byteLength(batch, "utf8");
-    sendStream(watch, batch);
+    const batch = (stream.cut ? "... long lines were truncated (the log has them)\n" : "") + streamBatch(stream.lines, stream.dropped);
+    sendStream(job, batch);
+    stream.lines = [];
+    stream.dropped = 0;
+    stream.cut = false;
+    stream.held = Buffer.byteLength(stream.split.line) + stream.carry.length;
+    stream.budget -= Buffer.byteLength(batch);
     return true;
   };
-
-  const clearFlush = (watch: Watch): void => {
-    if (watch.flushTimer) clearTimeout(watch.flushTimer);
-    watch.flushTimer = null;
+  const scheduleFlush = (job: BackgroundJob): void => {
+    const stream = job.mode.stream;
+    if (agentWorking || !stream.lines.length || stream.timer || !registry?.owner) return;
+    stream.idleDelay = Math.min(stream.idleDelay, streamCap());
+    stream.timer = setTimeout(() => {
+      stream.timer = null;
+      try {
+        if (flushJob(job)) stream.idleDelay = Math.min(stream.idleDelay * 2, streamCap());
+      } catch { scheduleFlush(job); }
+    }, stream.idleDelay);
+    stream.timer.unref();
   };
-
-  const scheduleFlush = (watch: Watch): void => {
-    if (agentWorking || (watch.lines.length === 0 && watch.skipped === 0) || watch.flushTimer) return;
-    watch.idleDelay = Math.min(watch.idleDelay, streamCap());
-    watch.flushTimer = setTimeout(() => {
-      watch.flushTimer = null;
-      if (flushWatch(watch)) watch.idleDelay = Math.min(watch.idleDelay * 2, streamCap());
-    }, watch.idleDelay);
-    watch.flushTimer.unref();
+  const backgroundJobs = (): BackgroundJob[] => [...registry?.jobs.values() ?? []].filter(isBackgroundJob);
+  const jobNamed = (wanted: string): BackgroundJob | undefined => {
+    const matches = backgroundJobs().reverse().filter((job) => job.mode.name.toLowerCase() === wanted.toLowerCase());
+    return matches.find((job) => job.state.type === "running") ?? matches[0];
   };
-
   const finishWorking = (): void => {
     agentWorking = false;
-    for (const watch of watches.values()) if (watch.stream) scheduleFlush(watch);
+    for (const job of backgroundJobs()) if (streams(job)) scheduleFlush(job);
   };
-
   const flushStreams = (): void => {
-    for (const watch of watches.values()) {
-      if (!watch.stream) continue;
-      clearFlush(watch);
-      watch.idleDelay = streamFlushMs();
-      flushWatch(watch);
+    for (const job of backgroundJobs()) {
+      if (!streams(job)) continue;
+      detachJob(job);
+      job.mode.stream.idleDelay = streamFlushMs();
+      flushJob(job);
     }
   };
-
-  const pushLines = (watch: Watch, lines: string[]): void => {
-    if (lines.length === 0) return;
-    watch.lines.push(...lines);
-    if (watch.lines.length > STREAM_BUFFER_LINES) {
-      watch.dropped += watch.lines.length - STREAM_BUFFER_LINES;
-      watch.lines = watch.lines.slice(watch.lines.length - STREAM_BUFFER_LINES);
-    }
-    scheduleFlush(watch);
+  const localExec: JobOperations = {
+    async exec(command, cwd, options) {
+      return localJob(jobRegistry(), getShellConfig(pi.getSettings().shellPath), command, cwd, options);
+    },
   };
-
-  const onOutputRecord = (watch: Watch, line: string): void => {
-    let record: unknown;
-    try {
-      record = JSON.parse(line);
-    } catch {
-      return;
+  const bashOperations = (r: Routed): JobOperations => ({
+    exec: (command, cwd, options) => routedJob(jobRegistry(), r, command, cwd, options),
+  });
+  const adoptJobs = (): void => {
+    let stopped: string[] | undefined;
+    if (registry && (registry.shape !== JOB_SHAPE || registry.session !== (ownSessionId ?? ""))) {
+      detachKeys(registry);
+      stopped = registry.stopAll();
+      registry = undefined;
+      Reflect.deleteProperty(globalThis, JOBS);
     }
-    if (!isOutputEvent(record)) return;
-    if (record.type === "bytes") {
-      const bytes = Buffer.from(record.data, "base64");
-      watch.offset = record.offset + bytes.length;
-      const decoded = utf8Complete(watch.carry, bytes);
-      watch.carry = decoded.carry;
-      pushLines(watch, splitLines(watch.split, decoded.text));
-    } else if (record.type === "skip") {
-      watch.skipped += record.to - record.from;
-      watch.offset = record.to;
-      watch.split = newSplit();
-      watch.carry = Buffer.alloc(0);
-      scheduleFlush(watch);
-    }
-  };
-
-  const openReader = (watch: Watch): void => {
-    if (!ko) return;
-    const child = openStream(ko, `/panes/${watch.pane}/output?offset=${watch.offset}`, "ignore");
-    watch.reader = child;
-    child.stdout?.on("data", lineReader({ partial: Buffer.alloc(0) }, (line) => onOutputRecord(watch, line)));
-    watch.readerClosed = new Promise((resolve) => child.on("close", () => resolve()));
-  };
-
-  const endingBody = async (watch: Watch, outcome: Outcome): Promise<string> => {
-    let body = `async run ${quote(watch.name)} ${outcome.result}${outcome.text ? `: ${outcome.text}` : ""}\npane: ${watch.pane}\n`;
-    const tail = (await screenTail(`/panes/${watch.pane}/screen?history=all`)) ?? (await screenTail(`/runs/${watch.run}/screen`));
-    if (tail === undefined) body += "--- its screen is gone ---";
-    else if (!tail.trim()) body += "--- no output ---";
-    else body += `--- last ${SCREEN_TAIL_BYTES} bytes of its screen ---\n${tail}`;
-    return body;
-  };
-
-  const finishWatch = async (watch: Watch, out: string): Promise<void> => {
-    if (watches.get(watch.run) !== watch) return;
-    const outcome = outcomeOf(out);
-    if (!outcome) {
-      watches.delete(watch.run);
-      return;
-    }
-    if (watch.reader) {
-      await Promise.race([watch.readerClosed, sleep(envMs("KO_STREAM_DRAIN_MS", 1500))]);
-      watch.reader.kill();
-    }
-    clearFlush(watch);
-    watches.delete(watch.run);
-    if (watch.silenced) return;
-    if (watch.stream) {
-      const rest = watch.split.line;
-      watch.split.line = "";
-      pushLines(watch, rest ? [rest] : []);
-      clearFlush(watch);
-      flushWatch(watch);
-    }
-    deliverNotice(await endingBody(watch, outcome), watch.name);
-  };
-
-  const watchRun = (data: Pick<Watch, "run" | "name" | "pane" | "stream"> & Partial<ParkedWatch>): void => {
-    const command = ko;
-    if (!command || watches.has(data.run)) return;
-    const watch: Watch = {
-      run: data.run,
-      name: data.name,
-      pane: data.pane,
-      stream: data.stream,
-      silenced: false,
-      waiter: null,
-      reader: null,
-      readerClosed: Promise.resolve(),
-      offset: data.offset ?? 0,
-      lines: data.lines ?? [],
-      dropped: data.dropped ?? 0,
-      skipped: data.skipped ?? 0,
-      split: data.split ?? newSplit(),
-      carry: data.carry ?? Buffer.alloc(0),
-      budget: data.budget ?? envMs("KO_STREAM_BUDGET_BYTES", 256 * 1024),
-      budgetTold: data.budgetTold ?? false,
-      flushTimer: null,
-      idleDelay: streamFlushMs(),
+    const owner = jobRegistry();
+    owner.owner = {
+      onLines(job) { if (streams(job)) scheduleFlush(job); },
+      onEnd(job) {
+        detachJob(job);
+        if (job.state.type !== "ended" || job.state.announced) return;
+        if (job.state.end.type !== "stopped") {
+          if (streams(job)) flushJob(job);
+          deliverNotice(`job ${quote(job.mode.name)} (${job.id}) ${jobEndText(job.state.end)}\n--- last ${TAIL_BYTES} bytes of its output ---\n${jobTail(job)}\nlog: ${job.mode.log}`, job.mode.name);
+        }
+        job.state.announced = true;
+        job.tail = Buffer.alloc(0);
+        pruneJobs(owner);
+      },
     };
-    watches.set(watch.run, watch);
-    if (watch.stream) {
-      openReader(watch);
-      scheduleFlush(watch);
+    for (const job of backgroundJobs()) {
+      if (job.state.type === "ended" && !job.state.announced) {
+        try { owner.owner?.onEnd(job); } catch {}
+      } else if (job.state.type !== "ended" && streams(job)) scheduleFlush(job);
     }
-    const waiter = spawn(command, ["run-wait", watch.run, "--json"], { stdio: ["ignore", "pipe", "ignore"], env: process.env });
-    watch.waiter = waiter;
-    const chunks: Buffer[] = [];
-    waiter.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk));
-    waiter.on("error", () => {});
-    waiter.on("close", () => void finishWatch(watch, Buffer.concat(chunks).toString("utf8")));
-  };
-
-  const parkWatches = (): ParkedWatch[] =>
-    [...watches.values()].map((watch) => ({
-      run: watch.run,
-      name: watch.name,
-      pane: watch.pane,
-      stream: watch.stream,
-      offset: watch.offset,
-      lines: watch.lines,
-      dropped: watch.dropped,
-      skipped: watch.skipped,
-      split: watch.split,
-      carry: watch.carry,
-      budget: watch.budget,
-      budgetTold: watch.budgetTold,
-    }));
-
-  const dropWatches = (): void => {
-    const gone = [...watches.values()];
-    watches.clear();
-    for (const watch of gone) {
-      clearFlush(watch);
-      watch.reader?.kill();
-      watch.waiter?.kill();
+    if (stopped) {
+      try { deliverNotice(`${stopped.length} async_bash jobs of the previous ko-pi version were stopped at /reload: ${stopped.join(", ")}`, "ko-pi"); } catch {}
     }
   };
-
-  const readRuns = async (args: string[]): Promise<RunRow[] | undefined> => {
-    const command = ko;
-    if (!command) return undefined;
-    const res = await runCommand(command, ["runs", "--json", ...args], { timeoutMs: 2000 });
-    if (!res.ok) return undefined;
+  type BashCall = { type: "bash"; hint: "waiting" | "shown"; cancel(reason?: ShutdownReason): void; move(reason: "timeout" | "key" | "reload"): boolean };
+  type PendingCall = BashCall | { type: "async_bash"; cancel(reason?: ShutdownReason): void };
+  const calls = new Set<PendingCall>();
+  const updateHint = (): void => {
+    if (session?.hasUI) session.ui.setWidget("ko-job-hint", [...calls].some((call) => call.type === "bash" && call.hint === "shown") ? [rawKeyHint("ctrl+b", "moves this command to a job")] : undefined);
+  };
+  const handoff = (ops: JobOperations): BashOperations => ({
+    exec(command, cwd, options) {
+      validateJobTimeout(options.timeout);
+      const started = performance.now();
+      const moveMs = envMs("KO_JOB_MOVE_MS", 60000);
+      const controller = new AbortController();
+      const abort = (): void => controller.abort();
+      options.signal?.addEventListener("abort", abort, { once: true });
+      if (options.signal?.aborted) abort();
+      return new Promise((resolve, reject) => {
+        let job: Job | undefined;
+        let pendingReload = false;
+        let moveTimer: NodeJS.Timeout | undefined;
+        let hintTimer: NodeJS.Timeout | undefined;
+        const cleanup = (): void => {
+          clearTimeout(moveTimer);
+          clearTimeout(hintTimer);
+          options.signal?.removeEventListener("abort", abort);
+          if (calls.delete(call)) updateHint();
+        };
+        const call: BashCall = {
+          type: "bash", hint: "waiting", cancel: abort,
+          move(reason: "timeout" | "key" | "reload"): boolean {
+            if (!job && reason === "reload") { pendingReload = true; cleanup(); }
+            if (!job || isBackgroundJob(job) || job.state.type === "ended" || controller.signal.aborted) return false;
+            try {
+              const moved = promoteJob(jobRegistry(), job, { type: "bash", move: reason });
+              if (options.timeout !== undefined && !job.deadline) armJobDeadline(job, options.timeout, started + options.timeout * 1000);
+              cleanup();
+              reject(new MovedToJob(moved, reason));
+              return true;
+            } catch (error) {
+              cleanup();
+              controller.abort();
+              reject(error);
+              return false;
+            }
+          },
+        };
+        calls.add(call);
+        void ops.exec(command, cwd, {
+          ...options, signal: controller.signal,
+          timeout: options.timeout !== undefined && options.timeout * 1000 < moveMs ? options.timeout : undefined,
+          onStart(startedJob) {
+            job = startedJob;
+            if (pendingReload) { call.move("reload"); return; }
+            hintTimer = setTimeout(() => { call.hint = "shown"; updateHint(); }, Math.max(0, Math.ceil(started + envMs("KO_JOB_HINT_MS", 3000) - performance.now())));
+            hintTimer.unref();
+            if (options.timeout === undefined || options.timeout * 1000 >= moveMs) {
+              moveTimer = setTimeout(() => call.move("timeout"), Math.max(0, Math.ceil(started + moveMs - performance.now())));
+              moveTimer.unref();
+            }
+          },
+        }).then(resolve, reject).finally(cleanup);
+      });
+    },
+  });
+  const executeBash = async (definition: ReturnType<typeof createBashToolDefinition>, ...args: Parameters<ReturnType<typeof createBashToolDefinition>["execute"]>) => {
     try {
-      const parsed: unknown = JSON.parse(res.out);
-      if (!Array.isArray(parsed)) return undefined;
-      return parsed.flatMap((value): RunRow[] =>
-        isRecord(value) && typeof value.id === "string"
-          ? [{ id: value.id, name: str(value.name), parent: str(value.parent), pane: str(value.pane), cwd: str(value.cwd), startedAt: str(value.startedAt), outcome: parseOutcome(value.outcome) }]
-          : [],
-      );
-    } catch {
-      return undefined;
+      return await definition.execute(...args);
+    } catch (error) {
+      if (!(error instanceof MovedToJob)) throw error;
+      const why = error.reason === "timeout" ? `still running after ${envMs("KO_JOB_MOVE_MS", 60000) / 1000} s` : "still running";
+      return { content: [{ type: "text" as const, text: `${why}; it continues as job ${error.job.id}; a notice arrives when it ends; output so far:\n${jobTail(error.job)}\nlog: ${error.job.mode.log}` }], details: undefined };
     }
   };
-
-  const ownRuns = async (all: boolean): Promise<RunRow[] | undefined> => (pane ? readRuns([...(all ? ["--all"] : []), "--parent", pane]) : []);
-
-  const adoptLiveRuns = async (): Promise<RunRow[] | undefined> => {
-    const live = await ownRuns(false);
-    for (const run of live ?? []) {
-      if (!run.outcome) watchRun({ run: run.id, name: run.name ?? run.id, pane: run.pane ?? "", stream: false });
-    }
-    return live;
+  const registerLocalBash = (ctx: ExtensionContext): boolean => {
+    if (routed || !pi.getAllTools().some((tool) => tool.name === "bash" && tool.sourceInfo.path.startsWith("builtin:"))) return false;
+    const definition = createBashToolDefinition(ctx.cwd);
+    pi.registerTool({
+      ...definition,
+      async execute(id, params, signal, onUpdate, context) {
+        const settings = pi.getSettings();
+        return executeBash(createBashToolDefinition(context.cwd, {
+          operations: handoff(localExec), shellPath: settings.shellPath, commandPrefix: settings.shellCommandPrefix,
+        }), id, params, signal, onUpdate, context);
+      },
+    });
+    return true;
   };
 
   // ---- the parent: reports, the watch, the exit notice ----
@@ -2100,11 +2363,8 @@ export default function (pi: ExtensionAPI) {
     tick.unref();
   };
 
-  // True while a bash run of this agent lives or a child of it owes a report; undefined when that is unreadable.
   const ownLiveWork = async (): Promise<boolean | undefined> => {
-    const live = await adoptLiveRuns();
-    if (!live) return undefined;
-    if (live.length > 0) return true;
+    if (backgroundJobs().some((job) => job.state.type !== "ended")) return true;
     const snapshot = await listPanesResult();
     if (!snapshot.ok) return undefined;
     await readInstance();
@@ -2279,13 +2539,6 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  const stopOwnRuns = async (): Promise<void> => {
-    const command = ko;
-    const live = command ? await ownRuns(false) : undefined;
-    if (!command || !live) return;
-    await Promise.all(live.filter((run) => !run.outcome).map((run) => runCommand(command, ["run-stop", run.id], { timeoutMs: 3000 })));
-  };
-
   // ---- rendering ----
 
   const inboundExpanded = new Map<string, boolean>();
@@ -2394,25 +2647,16 @@ export default function (pi: ExtensionAPI) {
     name: "list_async_bash",
     label: "List Async Bash",
     description:
-      "List your own async_bash jobs: all running and the newest 20 ended, newest first, with the run id that stop_async_bash takes and the pane whose screen holds the output.",
-    promptSnippet: "list_async_bash() - your own async_bash jobs, with the pane whose screen holds the output",
+      "List your own async_bash jobs: all running, all with an undelivered ending notice, and the newest 20 announced endings, newest first, with the job id that stop_async_bash takes and the log that holds the output.",
+    promptSnippet: "list_async_bash() - your own async_bash jobs, with their output logs",
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute() {
-      const runs = await ownRuns(true);
-      if (!runs) return reply("could not list async_bash jobs: ko runs failed");
-      const newest = [...runs].sort((a, b) => (b.startedAt ?? "").localeCompare(a.startedAt ?? ""));
-      let ended = 0;
-      const listed = newest
-        .filter((run) => !run.outcome || ++ended <= 20)
-        .map((run) => ({
-          run: run.id,
-          name: run.name,
-          state: run.outcome ? "ended" : "running",
-          outcome: run.outcome,
-          startedAt: run.startedAt,
-          pane: run.pane,
-          screen: `ko api '/panes/${run.pane}/screen?history=all'`,
-        }));
+      const listed = backgroundJobs().reverse().map((job) => ({
+        job: job.id, name: job.mode.name, command: job.command, state: job.state.type === "ended" ? "ended" : jobRunning(job) ? "running" : "ending",
+        ...(job.state.type === "ended" ? { end: jobEndText(job.state.end) } : {}),
+        startedAt: job.startedAt, log: job.mode.log,
+        ...(job.where.type === "routed" ? { runtime: job.where.runtime } : {}),
+      }));
       return reply(JSON.stringify(listed), listed);
     },
   });
@@ -2607,7 +2851,7 @@ export default function (pi: ExtensionAPI) {
           const holds = toplevel
             ? [...snapshot.all].some((a) => a.state === "running" && a.name.toLowerCase() === wanted)
             : !existing && ([...children()].some((c) => c.name.toLowerCase() === wanted) || snapshot.all.some((a) => a.relationship === "own" && a.name.toLowerCase() === wanted));
-          if (holds) return taken();
+          if (holds || jobNamed(wanted)?.state.type === "running") return taken();
           if (!toplevel && snapshot.depth + 1 > MAX_DEPTH) return refuse(`refusing to spawn at depth ${snapshot.depth + 1}: maximum nesting is ${MAX_DEPTH} (root 0, subagent 1, subagent 2)`);
           const plan: Plan = {
             name,
@@ -2691,22 +2935,22 @@ export default function (pi: ExtensionAPI) {
     name: "async_bash",
     label: "Async Bash",
     description:
-      "Run a shell command in the background, for a command whose result you do not need for your next step - this session keeps working while it runs. Exactly one notice arrives when the command ends, carrying its exit status and a tail of its output. Its output is the pane's screen: read it with ko api /panes/PANE/screen?history=all meanwhile. With stream=true the new lines arrive in batches. list_async_bash lists it and stop_async_bash stops it. If your next step needs the result and you have nothing else to do meanwhile, use bash with a timeout instead.",
+      "Run a shell command in the background, for a command whose result you do not need for your next step - this session keeps working while it runs. Exactly one notice arrives when the command ends, carrying its exit status and a tail of its output. Its full output is in the log file; read it meanwhile. With stream=true the new lines arrive in batches. list_async_bash lists it and stop_async_bash stops it. If your next step needs the result and you have nothing else to do meanwhile, use bash with a timeout instead.",
     promptSnippet:
-      "async_bash(command, name, stream?) - run a command in the background; a notice with its exit status arrives when it ends, read the pane's screen meanwhile; list_async_bash lists it and stop_async_bash stops it",
+      "async_bash(command, name, stream?) - run a command in the background; a notice with its exit status arrives when it ends, read its output log meanwhile; list_async_bash lists it and stop_async_bash stops it",
     promptGuidelines: [
-      "Use async_bash when you can do other work while a command runs, when someone (the user, your parent or a child) may need an answer from you meanwhile, when you start several independent jobs at once, or for a server that keeps running. Once a command is in async_bash, its notice is the only way you learn that it ended: never run `sleep` in bash to wait for it, and never loop over its screen. If you have nothing else to do, end your turn; the notice wakes you.",
+      "Use async_bash when you can do other work while a command runs, when someone (the user, your parent or a child) may need an answer from you meanwhile, when you start several independent jobs at once, or for a server that keeps running. Once a command is in async_bash, its notice is the only way you learn that it ended: never run `sleep` in bash to wait for it, and never loop over its log. If you have nothing else to do, end your turn; the notice wakes you.",
       "Use async_bash instead of background bash jobs (`nohup`, a trailing `&`, `setsid`, `disown`).",
-      "list_async_bash lists an async_bash job and stop_async_bash stops it by its run id.",
+      "list_async_bash lists an async_bash job and stop_async_bash stops it by its job id.",
       NOT_THE_USER_RULE,
     ],
     parameters: Type.Object(
       {
         command: Type.String({
           description:
-            'The command to run in the background, as a shell command line (e.g. "make -j8 && ./run"), run under bash -c.',
+            'The command to run in the background, as a shell command line (e.g. "make -j8 && ./run"), run through the configured pi shell.',
         }),
-        name: Type.String({ description: "A name for the run and its window; it must be unique among this session's runs, since a reused name is refused." }),
+        name: Type.String({ description: "A name for the job; it must be unused by this session's running jobs and children. An ended job releases its name." }),
         stream: Type.Optional(
           Type.Boolean({
             description:
@@ -2716,80 +2960,60 @@ export default function (pi: ExtensionAPI) {
       },
       { additionalProperties: false },
     ),
-    async execute(_toolCallId, params) {
-      const command = ko;
-      if (!command) return reply("could not start background command: ko is not on PATH");
+    async execute(_toolCallId, params, _signal, _update, ctx) {
       if (routed && "refusal" in routed) return reply(`could not start background command: ${routed.refusal}`);
       if (!params.name) return reply("could not start background command: --name is required");
       const nameError = checkName(params.name);
       if (nameError) return reply(`could not start background command: ${nameError}`);
-      const taken = `could not start background command: the name ${quote(params.name)} is already taken by one of this session's runs; choose another name`;
+      const taken = `could not start background command: the name ${quote(params.name)} is already taken by one of this session's running jobs or children; choose another name`;
       if (!claimName(params.name)) return reply(taken);
+      const controller = new AbortController();
+      const abort = (): void => controller.abort(new Error("the tool call"));
+      const pending: PendingCall = { type: "async_bash", cancel(reason) { controller.abort(new Error(`session ${reason ?? "shutdown"}`)); } };
+      calls.add(pending);
+      _signal?.addEventListener("abort", abort, { once: true });
+      if (_signal?.aborted) abort();
+      const cleanup = (): void => {
+        calls.delete(pending);
+        _signal?.removeEventListener("abort", abort);
+      };
       try {
-        if (!pane) return reply("could not start background command: this session has no pane to parent a run from");
         const wanted = params.name.toLowerCase();
-        const runs = (await ownRuns(true)) ?? [];
-        if (runs.some((r) => (r.name ?? "").toLowerCase() === wanted) || children().some((c) => c.name.toLowerCase() === wanted)) return reply(taken);
-        let started: unknown;
-        if (routed) {
-          const answer = await apiCall("POST", "/runs", { name: params.name, argv: ["bash", "-o", "pipefail", "-c", params.command], cwd: routed.hostCwd, parent: pane, runtime: routed.name } satisfies Api["StartRun"], envMs("KO_SPAWN_TIMEOUT_MS", 5000));
-          started = apiJson(answer);
-          if (!isStarted(started)) return reply(`could not start background command: ${apiError(answer).message}`);
-        } else {
-          const res = await runCommand(command, ["run-child", pane, "--name", params.name, "--", "bash", "-o", "pipefail", "-c", params.command], { timeoutMs: envMs("KO_SPAWN_TIMEOUT_MS", 5000) });
-          if (!res.ok) return reply(`could not start background command: ${res.error}`);
-          try {
-            started = JSON.parse(res.out);
-          } catch {}
-          if (!isStarted(started)) return reply("could not start background command: ko printed no run");
-        }
-        watchRun({ run: started.id, name: params.name, pane: started.pane, stream: !!params.stream });
-        return reply(
-          `started run ${started.id} (${params.name}) in window ${started.window}, pane ${started.pane}; list_async_bash lists it and stop_async_bash stops it; ` +
-            `a notice with its exit status and a tail of its screen arrives when it ends and starts your next turn; you stay alive while it runs, so ending your turn now is safe - do not sleep or poll for it, and end your turn if nothing else is left - ` +
-            liveRunRule(params.stream
-              ? `batches of its new lines arrive meanwhile, capped; its whole output is the pane's screen: ko api '/panes/${started.pane}/screen?history=all'`
-              : `its output is the pane's screen: read it with ko api '/panes/${started.pane}/screen?history=all' to check on it meanwhile`),
-          { name: params.name, window: started.window, pane: started.pane, run: started.id, stream: !!params.stream },
-        );
-      } finally {
-        releaseName(params.name);
-      }
+        if (jobNamed(wanted)?.state.type === "running" || children().some((child) => child.name.toLowerCase() === wanted)) return reply(taken);
+        const runtime = routed ? await liveRouted(controller.signal) : undefined;
+        const operations = runtime ? bashOperations(runtime) : localExec;
+        const job = await new Promise<BackgroundJob>((resolve, reject) => {
+          void operations.exec(params.command, runtime?.cwd ?? ctx.cwd, {
+            signal: controller.signal, onData: () => {},
+            onStart(job) {
+              cleanup();
+              resolve(promoteJob(jobRegistry(), job, { type: "async_bash", stream: !!params.stream }, params.name));
+            },
+          }).catch(reject);
+        });
+        return reply(`started job ${job.id} (${job.mode.name}); list_async_bash lists it and stop_async_bash stops it; a notice with its exit status and an output tail arrives when it ends and starts your next turn; you stay alive while it runs, so ending your turn now is safe - do not sleep or poll for it, and end your turn if nothing else is left - ${liveRunRule(params.stream ? "batches of its new lines arrive meanwhile, capped; the log holds its whole output" : "read the log to check its output meanwhile")}; log: ${job.mode.log}`, { job: job.id, name: job.mode.name, log: job.mode.log, stream: !!params.stream });
+      } catch (error) {
+        const message = controller.signal.aborted ? `start cancelled by ${errorText(controller.signal.reason)}; no job was started` : errorText(error);
+        return { ...reply(`could not start background command: ${message}`), isError: true };
+      } finally { cleanup(); releaseName(params.name); }
     },
   });
 
   pi.registerTool({
     name: "stop_async_bash",
     label: "Stop Async Bash",
-    description:
-      "Stop one of your async_bash jobs by run id, name or unique id prefix; its pane is killed and lingers for a while with its last output.",
-    promptSnippet: "stop_async_bash(run) - stop one of your async_bash jobs",
-    parameters: Type.Object(
-      {
-        run: Type.String({ description: `A run id of list_async_bash, its name, or a unique id prefix of at least ${MIN_ID_PREFIX} characters.` }),
-      },
-      { additionalProperties: false },
-    ),
+    description: "Stop one of your async_bash jobs by job id or name. A name selects a running job, or the newest ended job. Its output stays in its log.",
+    promptSnippet: "stop_async_bash(job) - stop one of your async_bash jobs",
+    parameters: Type.Object({ job: Type.String({ description: "A job id from list_async_bash or its name." }) }, { additionalProperties: false }),
     async execute(_toolCallId, params) {
-      const command = ko;
-      if (!command) return reply("could not stop: ko is not on PATH");
-      const runs = await ownRuns(true);
-      if (!runs) return { ...reply("could not stop: ko runs failed"), isError: true };
-      const jobs = runs.map((job) => ({ id: job.id, pane: job.pane ?? "", name: job.name ?? "", named: true, state: job.outcome ? ("ended" as const) : ("running" as const), job }));
-      const found = matchAddress(jobs, normalizeAddress(params.run));
-      if (!found) return { ...reply(`${quote(params.run)}: error: no async_bash job matches`), isError: true };
-      if ("error" in found) return { ...reply(`${quote(params.run)}: error: ${found.error}`), isError: true };
-      const run = found.agent.job;
-      const screen = `ko api '/panes/${run.pane}/screen?history=all' while the pane lingers, then ko api /runs/${run.id}/screen`;
-      const had = `run ${run.id} (${run.name}) had already ended`;
-      if (run.outcome) return reply(`${had}: ${run.outcome.result}${run.outcome.text ? `: ${run.outcome.text}` : ""}; its output: ${screen}`);
-      const watch = watches.get(run.id);
-      if (watch) watch.silenced = true;
-      const res = await runCommand(command, ["run-stop", run.id], { timeoutMs: STOP_CALL_MS });
-      if (res.ok) return reply(`${res.out}; pane ${run.pane}; its output: ${screen}`);
-      if (res.code === 5) return reply(`${had}; its output: ${screen}`);
-      if (watch) watch.silenced = false;
-      return { ...reply(`could not stop ${run.id}: ${res.error}`), isError: true };
+      const jobs = backgroundJobs();
+      const job = jobs.find((job) => job.id === params.job) ?? jobNamed(params.job);
+      if (!job) return { ...reply(`${quote(params.job)}: error: no async_bash job matches`), isError: true };
+      if (job.state.type === "ended") return reply(`job ${job.id} (${job.mode.name}) had already ended: ${jobEndText(job.state.end)}; log: ${job.mode.log}`);
+      stopJob(job);
+      detachJob(job);
+      await waitJobs([job]);
+      return reply(`stopped job ${job.id} (${job.mode.name}); log: ${job.mode.log}`);
     },
   });
 
@@ -2802,18 +3026,18 @@ export default function (pi: ExtensionAPI) {
 
   const route = <D extends Pick<ToolDefinition, "name" | "label" | "description" | "parameters"> & { execute: (...args: never[]) => Promise<unknown> }>(
     local: D,
-    execute: (r: Routed, id: string, params: Parameters<D["execute"]>[1], signal: AbortSignal | undefined, onUpdate: Parameters<D["execute"]>[3]) => ReturnType<D["execute"]>,
+    execute: (r: Routed, id: string, params: Parameters<D["execute"]>[1], signal: AbortSignal | undefined, onUpdate: Parameters<D["execute"]>[3], context: ExtensionToolContext) => ReturnType<D["execute"]>,
   ): void =>
     pi.registerTool({
       ...local,
-      async execute(id: string, params: Parameters<D["execute"]>[1], signal: AbortSignal | undefined, onUpdate: Parameters<D["execute"]>[3]) {
-        return execute(await liveRouted(signal), id, params, signal, onUpdate);
+      async execute(id: string, params: Parameters<D["execute"]>[1], signal: AbortSignal | undefined, onUpdate: Parameters<D["execute"]>[3], context: ExtensionToolContext) {
+        return execute(await liveRouted(signal), id, params, signal, onUpdate, context);
       },
     });
 
   const registerRouted = (): void => {
     const cwd = process.cwd();
-    route(createBashToolDefinition(cwd), (r, id, params, signal, onUpdate) => createBashTool(r.cwd, { operations: bashOperations(r), exposeSessionEnvironment: false }).execute(id, params, signal, onUpdate));
+    route(createBashToolDefinition(cwd), (r, id, params, signal, onUpdate, context) => executeBash(createBashToolDefinition(r.cwd, { operations: handoff(bashOperations(r)), exposeSessionEnvironment: false }), id, params, signal, onUpdate, { ...context, cwd: r.cwd }));
     route(createReadToolDefinition(cwd), async (r, id, params, signal, onUpdate) => createReadTool(r.cwd, { operations: readOperations(r) }).execute(id, { ...params, path: await homed(r, params.path, signal) }, signal, onUpdate));
     route(createWriteToolDefinition(cwd), async (r, id, params, signal, onUpdate) => createWriteTool(r.cwd, { operations: writeOperations(r) }).execute(id, { ...params, path: await homed(r, params.path, signal) }, signal, onUpdate));
     route(createEditToolDefinition(cwd), async (r, id, params, signal, onUpdate) =>
@@ -2844,7 +3068,7 @@ export default function (pi: ExtensionAPI) {
     try {
       await r.ready();
     } catch (error) {
-      session?.ui?.notify(error instanceof Error ? error.message : String(error), "error");
+      session?.ui?.notify(errorText(error), "error");
       return;
     }
     const options = event.systemPromptOptions;
@@ -2883,7 +3107,7 @@ export default function (pi: ExtensionAPI) {
           await markRouted();
         }
       } catch (error) {
-        const message = `runtime ${name}: ${error instanceof Error ? error.message : String(error)}`;
+        const message = `runtime ${name}: ${errorText(error)}`;
         if (found === undefined) {
           attempt = undefined;
           throw new Error(message);
@@ -2893,7 +3117,7 @@ export default function (pi: ExtensionAPI) {
     };
     routed = r;
     if (found !== undefined) announce();
-    void r.ready().catch((error: unknown) => ctx.ui?.notify(error instanceof Error ? error.message : String(error), "error"));
+    void r.ready().catch((error: unknown) => ctx.ui?.notify(errorText(error), "error"));
   };
 
   const markRouted = async (): Promise<void> => {
@@ -2959,22 +3183,30 @@ export default function (pi: ExtensionAPI) {
     }
 
     await startRouted(ctx);
-    active = false;
-    if (!ctx.hasUI || !ownSessionId || !ko || !pane) return;
-    active = true;
-
-    startReceiver();
-    await writeVars([
-      [VAR_SESSION, ownSessionId],
-      [VAR_NAME, pi.getSessionName() ?? ""],
-    ]);
-    await markRouted();
-    await readInstance();
+    active = !!(ctx.hasUI && ownSessionId && ko && pane);
+    if (active) {
+      startReceiver();
+      await writeVars([
+        [VAR_SESSION, ownSessionId ?? ""],
+        [VAR_NAME, pi.getSessionName() ?? ""],
+      ]);
+      await markRouted();
+      await readInstance();
+    }
+    adoptJobs();
+    const wrapsBash = registerLocalBash(ctx) || !!(routed && !("refusal" in routed));
+    if (wrapsBash && ctx.hasUI) {
+      const owner = jobRegistry();
+      detachKeys(owner);
+      owner.keys = ctx.ui.onTerminalInput((data) => {
+        if (!matchesKey(data, Key.ctrl("b"))) return;
+        let moved = false;
+        for (const call of [...calls]) if (call.type === "bash") moved = call.move("key") || moved;
+        if (moved) return { consume: true };
+      });
+    }
+    if (!active) return;
     await deliverTask();
-    const parked = globalThis.__koPiExtensionWatches;
-    globalThis.__koPiExtensionWatches = undefined;
-    for (const data of parked ?? []) watchRun(data);
-    await adoptLiveRuns();
     await reconcileChildren();
     startTick();
   });
@@ -3046,20 +3278,30 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {
     const reason = event?.reason;
+    if (registry) detachKeys(registry);
+    if (reason === "reload") for (const call of [...calls]) {
+      if (call.type === "bash") call.move("reload");
+      else call.cancel(reason);
+    }
+    if (session?.hasUI) session.ui.setWidget("ko-job-hint", undefined);
     stopTick();
     if (reason === "reload") {
       stopReceiver(true);
-      globalThis.__koPiExtensionWatches = parkWatches();
-      dropWatches();
+      if (registry) registry.owner = null;
+      for (const job of backgroundJobs()) detachJob(job);
     } else {
-      globalThis.__koPiExtensionWatches = undefined;
+      for (const call of calls) call.cancel(reason);
       if (reason === "quit" && edge && leaving === null && active) {
         const text = exitNoticeText();
         exitNoticeId ||= mintId();
         if (text) await statusNotice(text, exitNoticeId);
       }
-      if (active) await stopOwnRuns();
-      dropWatches();
+      if (registry) {
+        registry.stopAll();
+        await waitJobs([...registry.jobs.values()]);
+        Reflect.deleteProperty(globalThis, JOBS);
+        registry = undefined;
+      }
       stopReceiver(false);
       if (active) await unsetVars();
       if (globalThis.__koPiExtensionExit === unsetVarsSync) {

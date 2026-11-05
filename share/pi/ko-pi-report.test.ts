@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { makeFixture, agentPane, selfPane, startSession, entriesOf, asSubagent, withEnv, pollUntil, idleTurn, assistant, exited, type Fixture, type Started } from "./ko-pi-fixture.ts";
+import { gatedCommand, makeFixture, agentPane, selfPane, startSession, entriesOf, asSubagent, withEnv, pollUntil, idleTurn, assistant, exited, type Fixture, type Started } from "./ko-pi-fixture.ts";
 
 const TASK = { text: "the work", from: { session: "boss-session", name: "boss", pane: "pane_2" } };
 const NOTICES = "/panes/pane_2/messages";
@@ -124,10 +124,10 @@ test("a child reports nothing while a bash run of its own lives or a subagent of
   try {
     asChild(fx);
     await child(async (s) => {
-      fx.setRuns([{ id: "run-1", name: "build", parent: "pane_1", pane: "pane_9", startedAt: "t" }]);
+      const job = await s.tools.get("async_bash").execute("c", { command: gatedCommand(`${fx.dir}/gate`), name: "build" });
       await idleTurn(s, "waiting");
       assert.deepEqual(fx.posts(NOTICES), [], "a live run");
-      fx.setRuns([]);
+      await s.tools.get("stop_async_bash").execute("c", { job: job.details.job });
       s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp", pane: { instance: "a".repeat(32), pane: "pane_5" } } });
       s.entries.push({ type: "custom", customType: "ko-pi.work", data: { owner: "self-session", child: "kid-session", at: 1 } });
       fx.setPanes([...fx.panes(), agentPane({ pane: "pane_5", session: "kid-session", name: "kid", parent: "pane_1" })]);

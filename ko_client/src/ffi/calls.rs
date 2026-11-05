@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use ko_server::api::{Route, WindowOnly};
 use ko_server::ids::{ClientId, MessageId, PaneId};
-use ko_server::protocol::{self, Revision, SendPrompt, Show};
+use ko_server::protocol::{self, Revision, SendPrompt};
 use ko_sys::event::Wake;
 
 use super::engine::failure;
@@ -107,36 +107,6 @@ pub unsafe extern "C" fn ko_client_put_layout(
             Ok(Err(newer)) => Err((Code::Conflict, protocol::json(&newer).into_bytes())),
             Err(failure) => Err(rejected(failure)),
         }
-    })
-}
-
-/// # Safety
-///
-/// `client` is a live handle. `out` is writable for one `ko_buffer`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ko_client_runs(
-    client_: *const Client,
-    show: c_int,
-    out: *mut Buffer,
-) -> Code {
-    let Some(client) = client(client_).filter(|_| !out.is_null()) else {
-        return Code::Argument;
-    };
-    let show = match show {
-        1 => Show::Live,
-        2 => Show::Present,
-        3 => Show::All,
-        _ => return Code::Argument,
-    };
-    call(client, out, |socket, id, cancel| {
-        wire::request(
-            socket,
-            (id, None),
-            &Route::ListRuns { show, parent: None },
-            b"",
-            Some(cancel),
-        )
-        .map_err(rejected)
     })
 }
 

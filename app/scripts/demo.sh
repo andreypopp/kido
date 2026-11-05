@@ -5,7 +5,7 @@
 set -e
 D=${KIDO_DEMO_DIR:?}
 export XDG_STATE_HOME=$D/state
-unset KO_STATE_DIR KO_PANE KO_SOCKET KO_PANE_TOKEN KO_RUN_ID KIDO_APP_SERVER
+unset KO_STATE_DIR KO_PANE KO_SOCKET KO_PANE_TOKEN KIDO_APP_SERVER
 APP=${2:-$1}
 KO=$(cd "$(dirname "$APP")/../Resources/ko/bin" && pwd)/ko
 # The app and ko use the private XDG state home.
@@ -78,17 +78,23 @@ print(json.dumps({'revision': 0, 'layout': {'sessions': [
         {'name': 'log-100k', 'tree': log(100000)}]}]}}))
 PY
   k api -X PUT --input "$D/layout.json" /layout >/dev/null
-  k run --session main --name build -- sleep 3600 >/dev/null
+  printf '%s\n' '{"session":"main","name":"build","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","3600"]}}' | k api -X POST --input - /panes >/dev/null
   kido_pane=$(k api /layout | python3 -c 'import json,sys; t=json.load(sys.stdin)["layout"]["sessions"][0]["windows"][0]["tree"]; print(t["children"][0]["pane"])')
   deadline=$((SECONDS + 10))
   until k api "/panes/$kido_pane" 2>/dev/null | python3 -c 'import json,sys; sys.exit(0 if "pi.session" in json.load(sys.stdin)["vars"] else 1)' 2>/dev/null; do
     [ "$SECONDS" -lt "$deadline" ] || break
     sleep 0.1
   done
-  KO=$KO k run-child "$kido_pane" --session main --name review --env KO="$KO" -- \
-    "$D/pi-agent.sh" demo-review '' 'π review' 'state=blocked:app=pi:kind=question' >/dev/null
-  KO=$KO k run-child "$kido_pane" --session main --name tests --env KO="$KO" -- \
-    "$D/pi-agent.sh" demo-tests '' 'π tests' 'state=working:app=pi' >/dev/null
+  for name in review tests; do
+    python3 - "$D" "$KO" "$kido_pane" "$name" <<'PY' | k api -X POST --input - /panes >/dev/null
+import json, sys
+directory, ko, parent, name = sys.argv[1:]
+record = 'state=blocked:app=pi:kind=question' if name == 'review' else 'state=working:app=pi'
+print(json.dumps({'session': 'main', 'name': name, 'parent': parent, 'close': 'on_exit',
+                  'env': [{'name': 'KO', 'value': ko}],
+                  'command': {'type': 'argv', 'argv': [directory + '/pi-agent.sh', 'demo-' + name, '', 'π ' + name, record]}}))
+PY
+  done
 fi
 export KIDO_APP_DEBUG=1
 printf '\n=== %s launch %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$APP" >>"$D/app.log"

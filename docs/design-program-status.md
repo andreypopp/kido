@@ -138,12 +138,6 @@ it unchanged for `SomeAgent`, and for `PiAgent` without a name. A
 `Terminal` row does not use it. Claude Code sets `Claude Code` at
 startup, then a session summary.
 
-### Run records
-
-Every run has one record, `<state>/runs/<run-id>/` (design.md, "Who is
-authoritative for what"). The server ties a run to its pane when it
-creates the pane; the pane's row carries the run.
-
 A local pi that runs ko's harness (`ko-pi`) owns the `pi.*`
 variables (`share/pi/ko-pi.ts`). The server reads only `pi.session`,
 `pi.name` and `pi.activity`, and trusts them only while the pane has
@@ -201,7 +195,7 @@ order. A variable that is not a JSON string counts as absent.
 
 The trust rule is the gate above and nothing else: a stale
 `pi.session` on a shell pane is no agent; a stale `ssh.dest` after ssh
-exits is no `Ssh`. A run pane can have any kind.
+exits is no `Ssh`.
 
 ## The matrix
 
@@ -265,9 +259,9 @@ and the title; Kido.app shows the caption and the child rows too.
 
 ## Precedence
 
-- A run's ending has the highest precedence. If its run has an outcome
-  or the pane is dead, the pane is ended with that outcome. Without a
-  recorded outcome, the dead pane's exit status or signal gives it.
+- A pane's death has the highest precedence: a dead pane is ended
+  with its exit status, signal or start failure, and its status
+  records no longer apply.
 - While present, a terminal report has precedence over its shell phase
   for the indicator and the message. A prompt start clears the
   non-final records.
@@ -282,8 +276,8 @@ and the title; Kido.app shows the caption and the child rows too.
 
 A client makes each row from the title and the status
 (`ko_client/src/status.rs`): a glyph for running, waiting, or an
-unseen success or failure; a caption from the message and progress, or
-the run's elapsed clock; the result of an ended run. A visit
+unseen success or failure; a caption from the message and progress;
+the result of a dead pane. A visit
 acknowledges the shown pane's outcomes, and an exit that ended before
 the client started counts as seen. The seen state is the client's;
 nothing goes to the server.

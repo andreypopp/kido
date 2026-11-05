@@ -38,11 +38,10 @@ import XCTest
             return ran && running && panes.allSatisfy { $0.status != nil }
         }
         let piPane = try XCTUnwrap(try client.model().panes.first { if case .piAgent = $0.status?.kind { true } else { false } }?.id)
-        let first = try output(["run-child", "--session", "session_1", "--name", "first", piPane.description, "--", "/bin/sleep", "60"], dir: dir)
-        let firstRun = try XCTUnwrap(try JSONDecoder().decode([String: String].self, from: Data(first.utf8))["id"])
-        _ = try output(["run-child", "--session", "session_1", "--name", "nested", firstRun, "--", "/bin/sleep", "60"], dir: dir)
-        _ = try output(["run", "--session", "session_1", "--name", "ended", "--", "/bin/sh", "-c", "exit 3"], dir: dir)
-        wait("the runs") { (try? client.model())?.panes.filter { $0.run != nil }.count == 3 }
+        let first = try createPane(#"{"session":"session_1","name":"first","parent":"\#(piPane)","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
+        _ = try createPane(#"{"session":"session_1","name":"nested","parent":"\#(first)","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
+        _ = try createPane(#"{"session":"session_1","name":"ended","command":{"type":"argv","argv":["/bin/sh","-c","exit 3"]}}"#, dir: dir)
+        wait("the child panes") { (try? client.model())?.panes.count == 9 }
         wait("the ended pane") { (try? client.model())?.panes.contains { $0.dead != nil } == true }
         wait("every live pane has its status") { (try? client.model())?.panes.allSatisfy { $0.dead != nil || $0.status != nil } == true }
         try write(client.model(), destination + "/SidebarFeed/Tests/SidebarFeedTests/Fixtures/ko-tree.json")

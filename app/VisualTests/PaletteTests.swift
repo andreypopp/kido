@@ -1181,32 +1181,7 @@ import PaneGeometry
         XCTAssertEqual(noAgentPanel.palette.mode, .root)
         XCTAssertTrue(probe.recorded.isEmpty)
         app.closePalette()
-        let runSnapshot = sidebarFixture { snapshot in
-            var marked = snapshot.sessions[0].nodes[0].item
-            marked.children = []; marked.run = "run-window"
-            var agent = marked
-            agent.id = PaneID(number: 1); agent.run = nil; agent.title = "run-agent"
-            snapshot.sessions = [snapshot.sessions[0]]
-            snapshot.sessions[0].nodes = [.item(marked), .item(agent)]
-        }
-        owner.testReceive(runSnapshot)
-        XCTAssertFalse(owner.canPrompt, "every agent in a run window is outside prompt scope")
-        try commandO()
-        XCTAssertNil(app.palettePanel)
-        app.togglePalette()
-        let runPanel = try XCTUnwrap(app.palettePanel)
-        runPanel.palette.field.stringValue = "run-agent"
-        runPanel.palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
-        XCTAssertTrue(runPanel.palette.selectedEntry?.agent == true)
-        XCTAssertFalse(runPanel.palette.selectedEntry?.promptable == true, "the run-agent row has no Prompt hint")
-        try sendKey(runPanel, "o", code: 31, modifiers: .command)
-        XCTAssertEqual(runPanel.palette.mode, .root)
-        XCTAssertTrue(probe.recorded.isEmpty)
         owner.testReceive(liveSnapshot)
-        runPanel.palette.field.stringValue = ""
-        runPanel.palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
-        XCTAssertTrue(app.palettePanel?.palette.shown.contains { $0.entry.id == .command(16) } == true)
-        app.closePalette()
         pane.endCopy()
         owner.window.makeFirstResponder(pane)
         try commandO()

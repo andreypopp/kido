@@ -11,9 +11,17 @@ use crate::harness::{
     DEADLINE, Dir, Message, PRINT_TOKEN, Server, Ws, base64, poll, quote, run_ko, run_program, sh,
     start_in, start_with, stays, test_env, text_of, wait_gone,
 };
+
 use crate::outer::{Keys, Outer};
 use crate::panes::{as_pane, headers, post, raw, raw_on, refuses, token_pane_in_new_session};
-use crate::runs::{has_pane, ids};
+
+fn ids(rows: &Value) -> Vec<&str> {
+    rows.as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect()
+}
 
 pub(crate) struct Rt {
     pub(crate) server: Server,
@@ -351,66 +359,6 @@ runtimes:
         ),
         "may name only itself",
     );
-    let run = via(
-        &s,
-        "dev",
-        ("POST", "/runs"),
-        who,
-        &json!({"name": "job", "argv": ["/bin/sh", "-c", "exec cat"]}),
-    );
-    assert_eq!(run.0, 200, "{}", run.1);
-    assert_eq!(s.row(run.1["pane"].as_str().unwrap())["runtime"], "dev");
-    let own_run = run.1["id"].as_str().unwrap().to_owned();
-    let host_run = post(
-        &s,
-        None,
-        "/runs",
-        &json!({"name": "hostjob", "argv": ["/bin/sh", "-c", "exec cat"], "session": "test"}),
-    )["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    for id in [&own_run, &host_run] {
-        post(
-            &s,
-            None,
-            &format!("/runs/{id}/stop"),
-            &json!({"result": "stopped"}),
-        );
-    }
-    assert_eq!(
-        via(
-            &s,
-            "dev",
-            ("GET", &format!("/runs/{own_run}")),
-            who,
-            &Value::Null
-        )
-        .0,
-        200,
-        "the runtime's own finished run stays readable"
-    );
-    for path in [
-        format!("/runs/{host_run}"),
-        format!("/runs/{host_run}/screen"),
-    ] {
-        refuses(
-            via(&s, "dev", ("GET", &path), who, &Value::Null),
-            "is not visible to",
-        );
-    }
-    let (_, listed) = via(&s, "dev", ("GET", "/runs?show=all"), who, &Value::Null);
-    let listed: Vec<&str> = listed
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|info| info["id"].as_str().unwrap())
-        .collect();
-    assert!(
-        listed.contains(&own_run.as_str()) && !listed.contains(&host_run.as_str()),
-        "a finished host run is hidden from a runtime caller: {listed:?}"
-    );
-
     let from_user = post(
         &s,
         None,
@@ -551,8 +499,6 @@ runtimes:
     }));
     s.screen_has(&passes, &canon(maps.join("host")));
 
-    // A parent in the host and its child in the runtime exchange messages through their own
-    // sockets, and the child reads the output of its own child only.
     let child_creds = headers(&s, &[("Ko-Pane", &child), ("Ko-Pane-Token", &child_token)]);
     let runtime_socket = s.dir.join("runtimes/dev/io/socket");
     let message =
@@ -621,27 +567,6 @@ runtimes:
         &runtime_socket,
         &format!("/panes/{host}/messages"),
         Some(child_creds.clone()),
-        409,
-    );
-
-    let grandchild = made(via(
-        &s,
-        "dev",
-        ("POST", "/panes"),
-        as_child,
-        &json!({"command": cat, "parent": child}),
-    ));
-    let creds = || Some(child_creds.clone());
-    drop(s.dial_ws_on(
-        &runtime_socket,
-        &format!("/panes/{grandchild}/output"),
-        creds(),
-        101,
-    ));
-    s.dial_ws_on(
-        &runtime_socket,
-        &format!("/panes/{host}/output"),
-        creds(),
         409,
     );
 
@@ -812,7 +737,7 @@ runtimes:
     let after = wait_state(&s, "lead", "down");
     assert_eq!(after["panes"], 2, "the dead rows stay: {after}");
     assert!(
-        !has_pane(&s, &p3) && !has_pane(&s, &p4),
+        !s.has_pane(&p3) && !s.has_pane(&p4),
         "the live panes were removed"
     );
     assert!(!s.dir.join("runtimes/lead/io/socket").exists());
@@ -1884,64 +1809,6 @@ runtimes:
         s.screen(&put).lines().next().unwrap().trim(),
         canon(maps.join("host/sp ace"))
     );
-    let started = post(
-        &s,
-        None,
-        "/runs",
-        &json!({
-            "name": "r", "session": "test", "cwd": {"pane": rt}, "runtime": "dev",
-            "argv": ["/bin/sh", "-c", "pwd -P; echo DONE; exec cat"],
-        }),
-    );
-    let run_pane = started["pane"].as_str().unwrap();
-    s.screen_has(run_pane, "DONE");
-    assert_eq!(
-        s.screen(run_pane).lines().next().unwrap().trim(),
-        canon(maps.join("rt/sp ace"))
-    );
-    let recorded = |started: &Value| {
-        let meta = s
-            .dir
-            .join("runs")
-            .join(started["id"].as_str().unwrap())
-            .join("meta.json");
-        let meta: Value = serde_json::from_slice(&fs::read(meta).unwrap()).unwrap();
-        meta["cwd"].as_str().unwrap().to_owned()
-    };
-    assert_eq!(
-        recorded(&started),
-        text_of(&maps.join("rt/sp ace")),
-        "a runtime run records the path in the runtime"
-    );
-    let to_host = post(
-        &s,
-        None,
-        "/runs",
-        &json!({
-            "name": "h", "session": "test", "cwd": {"pane": rt},
-            "argv": ["/bin/sh", "-c", "exec cat"],
-        }),
-    );
-    assert_eq!(
-        recorded(&to_host),
-        text_of(&maps.join("host/sp ace")),
-        "a host run records the mapped host path"
-    );
-    let by_default = post(
-        &s,
-        None,
-        "/runs",
-        &json!({
-            "name": "d", "session": "test", "cwd": {"pane": rt_unknown},
-            "argv": ["/bin/sh", "-c", "exec cat"],
-        }),
-    );
-    assert_eq!(
-        recorded(&by_default),
-        "",
-        "the default records no directory"
-    );
-
     let elsewhere = token_pane_in_new_session(&s, "elsewhere");
     let caller = rt_token_pane(&s, "dev");
     let token = s.token(&caller).unwrap();
@@ -1968,16 +1835,6 @@ runtimes:
             ("POST", "/panes"),
             who,
             &json!({"command": cat, "cwd": {"pane": elsewhere}}),
-        ),
-        "is not visible to",
-    );
-    refuses(
-        via(
-            &s,
-            "dev",
-            ("POST", "/runs"),
-            who,
-            &json!({"name": "hidden", "argv": ["/bin/true"], "cwd": {"pane": elsewhere}}),
         ),
         "is not visible to",
     );

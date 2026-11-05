@@ -24,7 +24,7 @@ use ko_shell::{bin_dir, shell, ssh};
 use ko_sys::signal::{Signal, Signals};
 use ko_tui::client;
 
-mod runs;
+mod prompt;
 mod runtime;
 
 const USAGE_ERROR: u8 = 124;
@@ -120,20 +120,8 @@ enum Command {
     Panes(PanesArgs),
     /// Print the layout document, the sessions and windows with their splits and floats.
     Layout(LayoutArgs),
-    /// Start a run in its own window.
-    Run(runs::RunArgs),
-    /// Start a run under a parent run or pi pane.
-    RunChild(runs::RunChildArgs),
-    /// List live runs, or show one.
-    Runs(runs::RunsArgs),
-    /// Record a run's own outcome.
-    RunOutcome(runs::RunOutcomeArgs),
-    /// Wait for a run to end and print its outcome.
-    RunWait(runs::RunWaitArgs),
-    /// Record a run's ending, then stop its process and close its pane.
-    RunStop(runs::RunStopArgs),
     /// Send a prompt, read from stdin, to the agent in the caller's window or session.
-    Prompt(runs::PromptArgs),
+    Prompt(prompt::PromptArgs),
 }
 
 #[derive(Debug, Args)]
@@ -664,12 +652,6 @@ fn main() -> ExitCode {
         Command::RuntimeExec(args) => runtime::runtime_exec(args),
         Command::Panes(args) => panes(args),
         Command::Layout(args) => layout(args),
-        Command::Run(args) => runs::run(args),
-        Command::RunChild(args) => runs::run_child(args),
-        Command::Runs(args) => runs::runs(args),
-        Command::RunOutcome(args) => runs::run_outcome(args),
-        Command::RunWait(args) => runs::run_wait(args),
-        Command::RunStop(args) => runs::run_stop(args),
-        Command::Prompt(args) => runs::prompt(args),
+        Command::Prompt(args) => prompt::prompt(args),
     }
 }

@@ -45,9 +45,10 @@ extern "C" {
  * server's stream, so a restore and the bytes after it never overlap and the
  * bytes of an older snapshot never follow a newer restore. The surface may
  * be fed from that thread only; the caller's queue plays no part in it. The
- * calls that return a ko_buffer (ko_client_put_layout, ko_client_runs,
- * ko_client_prompt, ko_client_prompt_resolve, ko_client_delete, ko_client_edit, ko_client_image) and ko_client_launch, ko_client_stop_server and ko_client_probe block
- * until the server answered: call them off the main queue.
+ * calls that return a ko_buffer (ko_client_put_layout, ko_client_prompt,
+ * ko_client_prompt_resolve, ko_client_delete, ko_client_edit, ko_client_image),
+ * ko_client_launch, ko_client_stop_server and ko_client_probe block until the
+ * server answered: call them off the main queue.
  *
  * Close. After ko_client_close or ko_view_close returns, no callback of that
  * handle starts, and a callback on another thread has ended. Events that were
@@ -234,7 +235,7 @@ typedef struct ko_view_closed {
 
 /*
  * `kind` says which member of the union is set. KO_EVENT_MODEL, which says that
- * a pane's state, a title or a run changed, has none: read the model. The core
+ * a pane's state or title changed, has none: read the model. The core
  * posts it again only after the caller's queue took the last one.
  */
 typedef struct ko_event {
@@ -474,7 +475,7 @@ ko_code ko_config_set_theme(const char *path, const char *light, const char *dar
  * The model as one JSON document in a buffer: the client and instance ids, the
  * selection, the layout document and its revision (GET /layout without its panes), every pane with
  * its label (the title to show), its seen mark ("none", "running", "waiting", "done" or "failed"),
- * its row (status, variables of the server, progress, and its run if it has one) and its variables, and the
+ * its row (status, variables of the server and progress) and its variables, and the
  * outline (sessions and panes in tree order with depth). It is a
  * snapshot: a later change needs a later call.
  * share/ko/client-model.json is the schema of the document (ModelJson); its
@@ -627,15 +628,6 @@ ko_code ko_client_edit(const ko_client *client,
                        const uint8_t *edit,
                        size_t len,
                        ko_buffer *out);
-
-enum {
-    KO_RUNS_LIVE = 1,
-    KO_RUNS_PRESENT = 2,
-    KO_RUNS_ALL = 3,
-};
-
-/* The runs as the JSON array of GET /runs. */
-ko_code ko_client_runs(const ko_client *client, int show, ko_buffer *out);
 
 /*
  * The agents that a prompt from the pane `from` can reach: `out` holds the JSON array of

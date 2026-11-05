@@ -3,9 +3,9 @@ use std::thread;
 use serde_json::{Value, json};
 
 use crate::harness::{Server, poll, run_ko, start, start_with, which};
+use crate::harness::{code, ko_command};
 use crate::messages::{ack, answer, open, received};
 use crate::panes::as_pane;
-use crate::runs::{caller, code, ko_as, ko_command, run_of};
 
 const AGENT: &str = "printf '\\033]7501;state=idle:app=pi\\007'; printf 'TOKEN<%s>' \"$KO_PANE_TOKEN\"; while read line; do echo \"got: $line\"; done";
 
@@ -56,7 +56,7 @@ fn prompt(s: &Server, from: &str, text: &str, window: bool) -> (i32, String) {
     if window {
         args.push("--window");
     }
-    let run = ko_as(s, Some(from), &args, text);
+    let run = s.ko_as(Some(from), &args, text);
     (code(&run), run.stderr)
 }
 
@@ -71,7 +71,7 @@ fn silent(s: &Server, pane: &str, text: &str) -> bool {
 #[test]
 fn a_prompt_goes_by_paste_when_the_agent_has_no_stream() {
     let s = start(&[]);
-    let from = caller(&s);
+    let from = s.token_pane("exec cat");
     let pane = agent(&s, "pastee");
 
     assert_eq!(prompt(&s, &from, "hi claude", false), (0, String::new()));
@@ -79,9 +79,9 @@ fn a_prompt_goes_by_paste_when_the_agent_has_no_stream() {
 }
 
 #[test]
-fn the_scope_is_the_callers_window_then_its_session_and_never_a_run() {
+fn the_scope_is_the_callers_window_then_its_session() {
     let s = start(&[]);
-    let from = caller(&s);
+    let from = s.token_pane("exec cat");
     let stale = s.new_pane(json!({
         "command": {"type": "shell", "command": "while read line; do echo \"got: $line\"; done"},
         "vars": {"pi.session": "stale", "pi.name": "stale"}
@@ -122,15 +122,6 @@ fn the_scope_is_the_callers_window_then_its_session_and_never_a_run() {
         (0, String::new())
     );
     arrived(&s, &elsewhere, "session scope");
-
-    let run = run_of(&s, &from, "sub", &["sh", "-c", AGENT]);
-    rooted(&s, run["pane"].as_str().unwrap());
-    assert_eq!(prompt(&s, &from, "not a run", false), (0, String::new()));
-    arrived(&s, &elsewhere, "not a run");
-    assert!(
-        silent(&s, run["pane"].as_str().unwrap(), "not a run"),
-        "a run's window is no candidate"
-    );
 
     let second = agent(&s, "second");
     let (status, stderr) = prompt(&s, &from, "several", false);
@@ -174,11 +165,6 @@ fn the_scope_is_the_callers_window_then_its_session_and_never_a_run() {
     };
     let send = |target: &str, text: &str| send_as(&headers, &from, target, text);
     assert_eq!(send(&from, "x"), 400, "a terminal is no candidate");
-    assert_eq!(
-        send(run["pane"].as_str().unwrap(), "x"),
-        400,
-        "nor is a run"
-    );
     assert_eq!(send(&second, ""), 400);
     assert_eq!(
         s.exchange("GET", "/prompt/resolve", &s.headers(), b"").0,
@@ -211,7 +197,7 @@ fn the_scope_is_the_callers_window_then_its_session_and_never_a_run() {
 #[test]
 fn a_prompt_goes_through_the_message_queue_when_the_agent_has_a_stream() {
     let s = start(&[]);
-    let from = caller(&s);
+    let from = s.token_pane("exec cat");
     let pane = agent(&s, "streamer");
     let mut stream = open(&s, &pane);
     let mut next = || {
@@ -289,7 +275,7 @@ fn a_multi_line_prompt_reaches_the_agent_as_one_paste() {
         return;
     };
     let s = start_with(std::path::Path::new("/bin/sh"), &[], &[]);
-    let from = caller(&s);
+    let from = s.token_pane("exec cat");
     let command = format!(
         "printf '\\033]7501;state=idle:app=pi\\007'; exec {} -f",
         zsh.display()

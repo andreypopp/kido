@@ -136,16 +136,11 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private var feedNote: (String, NSColor)?
     private var failure: String?
     private let fonts = SidebarFonts()
-    private var tick: Timer?
     private var captionTimer: Timer?
     private var captions = SidebarCaptions()
     var captionDelay: TimeInterval = 0.2
 
     override var isFlipped: Bool { true }
-
-    override var isHidden: Bool {
-        didSet { updateTick() }
-    }
 
     init() {
         super.init(frame: .zero)
@@ -322,39 +317,9 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             scroll.contentView.scroll(to: NSPoint(x: origin.x, y: y))
             scroll.reflectScrolledClipView(scroll.contentView)
         }
-        updateTick()
     }
 
     @objc private func captionsChanged() { show(snapshot, captionTick: true) }
-
-    private var startedRows: IndexSet {
-        let visible = table.rows(in: table.visibleRect)
-        guard visible.location != NSNotFound else { return [] }
-        return IndexSet((visible.location..<min(table.numberOfRows, NSMaxRange(visible))).filter {
-            return entry($0)?.started != nil
-        })
-    }
-
-    private func updateTick() {
-        guard !isHidden, items.contains(where: { $0.started != nil }) else {
-            tick?.invalidate()
-            tick = nil
-            return
-        }
-        guard tick == nil else { return }
-        let delay = 1 - Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 1)
-        let timer = Timer(timeInterval: 1, target: self, selector: #selector(ticked), userInfo: nil, repeats: true)
-        RunLoop.main.add(timer, forMode: .common)
-        timer.fireDate = Date(timeIntervalSinceNow: delay)
-        tick = timer
-    }
-
-    @objc private func ticked() {
-        guard !isHiddenOrHasHiddenAncestor else { return }
-        let rows = startedRows
-        guard !rows.isEmpty else { return updateTick() }
-        for row in rows { (table.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCell)?.updateClock() }
-    }
 
     func focus() {
         onIntent()
@@ -586,7 +551,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     #endif
 
     #if KIDO_VISUAL
-    static var visualNow: Date?
     var visualTable: NSTableView { table }
     var visualScroll: NSScrollView { scroll }
     var visualRows: [SidebarRow] { items }

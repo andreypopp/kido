@@ -44,7 +44,7 @@ test("each kind reaches pi as its own kind of message and is acked once handed o
 
     fx.feed({ id: "kind-note-01", kind: "notice", text: "heads up", relation: "sibling", from: peer });
     await acked(fx, "kind-note-01");
-    assert.deepEqual(notices(s), ["notice from peer (a subagent or background run's report, not the user):\nheads up"]);
+    assert.deepEqual(notices(s), ["notice from peer (a subagent or background job's report, not the user):\nheads up"]);
 
     fx.feed({ id: "kind-weird-01", kind: "weird", text: "?", relation: "sibling", from: peer });
     await acked(fx, "kind-weird-01");

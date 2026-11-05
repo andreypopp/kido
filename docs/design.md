@@ -1,8 +1,8 @@
 # Kido's agent features, as built
 
 This document describes how Kido's agent features work and the reasons
-for their design: runs, the pi harness, messages, addressing,
-spawning, outcomes and the sidebar tree. [design-ko.md](design-ko.md)
+for their design: the pi harness, messages, addressing, spawning,
+the window lifecycle and the sidebar tree. [design-ko.md](design-ko.md)
 describes the server that holds them, [protocol.md](protocol.md) its
 protocol, and [design-program-status.md](design-program-status.md)
 the status of a pane. Its companion,
@@ -12,17 +12,15 @@ change and problems that an apparently correct change can cause. This
 document does not repeat them.
 
 Kido has two parts. The `ko` server and CLI manage windows, the panes
-and runs in them, their status, and the messages between panes. A
-**run** is a process that ko starts in a window of its own, such as a
-bash command: the server mints an opaque run id, keeps `runs/<id>/`,
-records the ending and answers queries by id after the window is
-gone. An agent is not a run: a subagent is a pane with a `parent`.
+in them, their status, and the messages between panes. A subagent is
+a pane with a `parent`; an agent's background command is a job of its
+harness, not a pane.
 
 The **harness** is everything that only an agent has: the pi session,
 the tools, the task, the report and the names. It is one pi
 extension, `share/pi/ko-pi.ts`, which the `ko-pi` shim loads. The two
-parts talk only through `ko` commands: `ko api` on ko's routes and
-streams, and the run commands ("Window lifecycle"). ko never reads the
+parts talk only through `ko api` on ko's routes and streams. ko never
+reads the
 harness's files, and the harness reads no ko file. **ko is the
 mediator**: every exchange between two agents goes through ko, so the
 harness never reads another agent's files and never connects to
@@ -30,7 +28,7 @@ another agent's socket.
 
 ## Who is authoritative for what
 
-Four stores each hold information that no other store can hold:
+Three stores each hold information that no other store can hold:
 
 **The layout document, for topology.** The server supplies these
 facts (protocol.md, section 7):
@@ -43,22 +41,14 @@ facts (protocol.md, section 7):
 - whether the pane's message stream is open (the row's `inbox`).
 
 Nothing caches these facts. A pane can move between windows and
-sessions while its process runs. A run record names only a pane, not
-its window or session.
-
-**The pane's row, for which run a pane holds.** The server ties a run
-to its pane when it creates the pane inside the run's window, and the
-row carries the run (protocol.md, section 10). Nothing changes the tie
-later, and no variable names a run. A user's split beside the run's
-pane has no run, so a sweep and the sidebar distinguish the run's pane
-from the user's pane.
+sessions while its process runs.
 
 **Pane variables, for the facts only an agent has.** The extension owns
 three pane variables, written with `ko api` (protocol.md, section 7):
 
 | variable | value | ko reads it for |
 |---|---|---|
-| `pi.session` | the pi session id | `PiAgent`, the status identity, a message's `from`, the session column of `ko runs` |
+| `pi.session` | the pi session id | `PiAgent`, the status identity, a message's `from` |
 | `pi.name` | the session name | the row title of a local pi, a message's `from` |
 | `pi.activity` | the agent's activity text, one line | the caption fallback |
 
@@ -80,43 +70,13 @@ registry of children, their work marks and their reports as custom
 entries in its own pi session (design-subagents.md, "The registry").
 ko keeps no record of an agent after its pane goes.
 
-**The runs directory, for everything else.** The server's state
-directory is `$KO_STATE_DIR`, else `$XDG_STATE_HOME/ko`, else
-`~/.local/state/ko` (design-ko.md, "Lifecycle and the command line").
-Every run has one directory `<state>/runs/<run-id>/`
-(`ko_server/src/runs.rs`). Each write replaces a whole file:
-
-- `meta.json`: written at the start. Its fields are `runs::Meta` in
-  `ko_server/src/runs.rs`. The parent is optional: absent for a
-  top-level run, a run id for a run that owns it, or the pane id
-  `pane_N` of the pane that started it (`ko run-child pane_N`). A run
-  id is 32 lowercase hex characters, so no id looks like `pane_N`.
-- `outcome`: written once by the server, which refuses a second
-  outcome ("Run outcomes").
-- `screen`: the capture of the dead pane before the sweep removes it.
-  The last write wins.
-
-A run's output is its pane's content: `GET
-/panes/pane_N/screen?history=all` or the output stream while the pane
-exists, and `GET /runs/<id>/screen` after the sweep.
-
-A run's status comes from its outcome and its pane, never from a pid.
-A run has **ended** when it has an outcome, or when its pane is dead or
-gone. Without an outcome, the dead pane supplies the ending: exit 0 is
-`completed`, another status is `failed` with the text `exit N`, a
-signal is `failed` with `signal NAME`. A dead pane with neither, or no
-pane, is `died`. `ko runs --all`, `ko runs ID`, `ko run-wait` and the
-`run` event show a derived ending like a recorded one. Only the sweep
-stores it.
-
 Only OSC 7501 root records supply status. OSC 0/2 supplies the pane
 title. design-program-status.md, "Pane kinds", gives the
-classification. A run does not identify a pane as an agent. Prompt
+classification. Prompt
 scope accepts both agent kinds: a pane with an open message stream
 gets a message, any other agent a paste.
 
 There is no locking, because every writer is the server's loop thread.
-Runs are never deleted.
 
 ## The pi extension, ko-pi
 
@@ -137,17 +97,16 @@ The extension uses only these interfaces of ko:
 
 - `ko api`: `GET /layout` and `GET /version`; `POST /panes` for a
   child and a top-level agent; `POST /panes/pane_N/messages` and
-  `POST /panes/pane_N/stop`; `GET /panes/pane_N/screen?history=all`
-  and `GET /runs/<id>/screen`; `PUT` and `DELETE` on
-  `/panes/$KO_PANE/vars`.
+  `POST /panes/pane_N/stop`; `GET /panes/pane_N/screen?history=all`;
+  `PUT` and `DELETE` on `/panes/$KO_PANE/vars`.
 - `ko api --stream` for its own message stream,
-  `/panes/$KO_PANE/messages`, and a run's output stream,
-  `/panes/pane_N/output` (protocol.md, sections 4 and 7).
-- The run commands `run-child`, `runs --json --all --parent P`,
-  `run-wait ID --json` and `run-stop`.
-- In a routed pi, `GET /runtimes/NAME`, `ko api --stream
-  /runtimes/NAME/exec` for its tools and `POST /runs` for its
-  `async_bash` (design-runtimes.md, "Agents in a runtime").
+  `/panes/$KO_PANE/messages` (protocol.md, section 7).
+- In a routed pi, `GET /runtimes/NAME` and `ko api --stream
+  /runtimes/NAME/exec` for its tools and its jobs
+  (design-runtimes.md, "Agents in a runtime").
+
+`async_bash` and a moved `bash` call are jobs, child processes of pi (design-subagents.md, "A
+job").
 
 It never opens ko's socket itself and never reads ko's state
 directory. It has no state directory of its own: its registry is in
@@ -284,9 +243,8 @@ server's queue keeps what arrives until the next stream.
 
 A reload also keeps the pane variables, because the session
 continues: deleting them would make the parent look gone during the
-gap. The run watches survive in `globalThis.__koPiExtensionWatches`
-with their stream state, and the reloaded module starts one waiter
-and reader for each.
+gap. The jobs survive in their registry on `globalThis`
+(design-subagents.md, "Jobs across /reload").
 
 **The sender header.** A `message` from another agent reaches the
 model as a custom message with one header line that names the sender
@@ -313,8 +271,8 @@ work. The rule, one line:
 - **`notice` steers.** The parent needs this information to assign the
   next work.
 - **A stream batch steers.** It is not a message: the harness reads
-  the run's output stream itself (design-subagents.md, "Streaming a
-  run's output").
+  the job's pipes itself (design-subagents.md, "Streaming a job's
+  output").
 
 Escape and the dequeue key restore only queued user text to the
 editor. Custom messages remain in their steering and follow-up queues,
@@ -430,9 +388,9 @@ environment and the request's. A pi that the user starts in a pane
 runs under `ko shell`, which read the user's dotfiles: EDITOR, PATH
 additions, API keys, LANG. So that every agent gets the same
 environment, the extension starts each pi, child or top-level, new or
-restarted, as `<its ko path> shell -- ko-pi ...`. `async_bash` starts
-its command directly, because its command is not an agent. `ko run`
-and `ko run-child` add no wrapper.
+restarted, as `<its ko path> shell -- ko-pi ...`. A job runs its
+command through pi's shell configuration, as pi's `bash` does,
+because its command is not an agent.
 
 `ko shell -- CMD...` resolves the shell as the bare `ko shell` does
 ("Priming a local shell"). For bash, zsh, sh, dash and ksh it execs
@@ -448,135 +406,63 @@ process: the pane's death is pi's. If the exec fails, the shell exits
 127 (126 for permission). Another shell, such as fish, has no `"$@"`
 semantics: ko execs CMD directly, and the user's dotfiles do not run.
 
-### Failure leaves a record
+### Failure leaves no pane
 
-`POST /runs` creates the run directory and its meta before the window.
-If the pane cannot start, the server keeps the old document and the
-run is `failed` with the error. Thus, `ko runs` does not show an
-unexplained run without a window. The pane that a run gets enters the
-document with its run in one layout event, so no reader sees an
-unmarked run window. A `POST /panes` that cannot start its pane keeps
-the old document and answers `io`.
+A `POST /panes` that cannot start its pane keeps the old document and
+answers `io`.
 
 ## Window lifecycle
 
-**Run commands.** ko starts a run without the harness. The commands
-and their arguments are the clap definitions in `ko/src/runs.rs`:
+A child's window is a pane that `POST /panes` creates with the
+spawner's pane as `parent` and `close: on_exit`. ko has no other
+lifecycle object: a pane's row is the whole record, and ko keeps
+nothing after the pane goes.
 
-- `ko run` starts a parentless run and prints the JSON of `Started`
-  (`ko_server/src/protocol.rs`): the id, window and pane.
-- `ko run-child PARENT` does the same under PARENT: a live run id, or
-  a pane `pane_N` that is not dead. A caller in a pane names only its
-  own pane, or a run whose pane is its own pane.
-- `ko runs` lists live runs newest first, with a SESSION column.
-  `--all` also lists ended runs. With a run id, it shows one run in
-  any state with its argv and, without `--json`, its screen (`GET
-  /runs/<id>/screen`).
-- `ko run-outcome` records an ending; a second write exits 5.
-- `ko run-wait` blocks until the run has ended and prints the result,
-  or the outcome object with `--json`.
-- `ko run-stop` records the result, then ends the process and
-  removes its pane.
+**The pane stop.** `POST /panes/pane_N/stop` (protocol.md, section 7)
+waits up to its `wait` for the pane to die and removes it. The
+removal hangs up the program: `ko-pane` sends `SIGHUP`, then
+`SIGKILL` 250 ms later; if the removed pane still lives after
+`KO_STOP_ESCALATION_MS`, the coordinator kills it.
 
-`--name` is required, because a command's first word (`bash`, `pi`)
-says nothing. `--session` takes a session id or name and defaults to
-the caller's session; `--cwd` defaults to the caller's cwd. The argv
-is the pane's command, with no wrapper, so the run's output is its
-pane's content. The pane's environment has `KO_RUN_ID`, plus each
-`--env`. The SESSION column of `ko runs` is the live pane's
-`pi.session` while the pane has a pi root, else empty.
+A dead pane keeps its last screen until the sweep removes it. Thus,
+an immediately failing child keeps its pane and its last screen for
+the parent's ending notice.
 
-Exit codes: 0 success; 1 usage or any other error; 2 a bad or unknown
-PARENT (an unknown or ended run, a gone or dead pane); 3 a bad or
-unknown run id; 4 a refused window name; 5 `run-stop` of a run that
-has ended, or a `run-outcome` write that loses to an earlier outcome.
-A parent that the caller's pane may not name is 1.
-
-`run-wait` is a long poll (protocol.md, section 10): the server
-answers at the run's end, and the waiting connection makes no work for
-the server until then. A pid is never evidence: a killed pane whose
-process survives its hangup has ended, and `run-wait` reports `died`.
-
-**run-stop** records its result first, so that an ending that the pane
-produces later cannot replace it. A run that has already ended exits 5
-at once and records nothing, so the ending that the pane gave stays
-the run's ending. Then it stops the pane as `POST /panes/pane_N/stop`
-does: it waits `--wait` seconds (default 0) for the pane to die and
-removes the pane. The removal hangs up the program:
-`ko-pane` sends `SIGHUP`, then `SIGKILL` 250 ms later; if the removed
-pane still lives after `KO_STOP_ESCALATION_MS`, the coordinator kills
-it. A caller that must act between the record and the stop records
-first with `run-outcome`, then runs `run-stop`. `--result completed`
-is for a caller that knows that the run's work finished. `ko run-stop` sends no notice; the caller's `run-wait` reports
-the ending.
-
-A run's pane stays dead with its last screen until the sweep removes
-it. Thus, an immediately failing child keeps its pane and last screen.
-
-**The sweep.** The server sweeps when one of its inputs changes: a
-pane's death or removal, the focused panes, and the end of a linger
-grace (protocol.md, section 10). It reads the pane rows, not the run
-records, so it acts on any pane by its `close` and `parent`, and a
-plain shell pane, which has neither, stays. The run record matters
-only for what the sweep writes: a pane whose row carries a run, and
-whose run meta names that pane, gets the run's outcome and the screen
-capture first. A pane id is not an identity across servers: each new
-server restarts pane ids at `pane_1`, while run records survive the
-server, so both must agree.
-
-Two rules apply:
+**The sweep** (`ko_server/src/state/sweep.rs`). The server sweeps
+when one of its inputs changes: a pane's death or removal, the
+focused panes, and the end of a linger grace (protocol.md, section
+10). It reads only the pane rows, so it acts on any pane by its
+`close` and `parent`, and a plain shell pane, which has neither,
+stays. Two rules apply:
 
 1. A pane with `close: on_exit` has been dead for the linger grace
    (`server: linger_seconds` of the configuration file, 30 s by
-   default; design-ko.md, "The configuration file"). Every run pane has it. For
-   a run, the sweep records the ending that the dead pane gives
-   (`completed`, `exit N`, `signal NAME` or `died`).
+   default; design-ko.md, "The configuration file"). The sweep
+   removes it.
 2. A pane's `parent` is gone or dead. The sweep removes the pane at
-   once, live or dead. For a run whose pane still lives, it records
-   `failed` with the text "its parent ended". A run parent is its
-   pane: a run whose pane lives keeps its children, whatever its
-   outcome. The rule reads no process and no pi evidence, by design:
-   a child of a pi that quits inside a living shell pane ends through
-   its own parent watch, not the sweep.
+   once, live or dead. The rule reads no process and no pi evidence,
+   by design: a child of a pi that quits inside a living shell pane
+   ends through its own parent watch, not the sweep.
 
-An earlier outcome, from `run-outcome` or `run-stop`, stands in both
-cases: the server refuses the second write. Rule 2 forces a stop
-instead of requesting graceful shutdown like the child's poll. It is
-the only available action outside the child, and it ends a `tail -f`
-that an exited parent started. A pane without a parent is a root that
-the sweep must not cancel.
+Rule 2 forces a stop instead of requesting graceful shutdown like the
+child's poll. It is the only available action outside the child, and
+it ends a `tail -f` that an exited parent started. A pane without a
+parent is a root that the sweep must not cancel.
 
-The sweep never closes a run pane that a client with terminal focus
-shows (protocol.md, section 3); it tries again when the focus changes.
+The sweep never closes a pane that a client with terminal focus shows
+(protocol.md, section 3); it tries again when the focus changes.
 Waiting loses nothing. It does not protect a session's last window: an
 empty session ends.
 
 **A split window is the user's window.** The collection unit is the
-run's pane, not its original window. The sweep removes the run's pane
-with a pane delete; a window that loses its last pane goes with it in
-the same change, and an empty session with it (protocol.md, section
-7). After the removal, the sidebar draws an ordinary window with the
-user's remaining panes. `run-stop` and stop escalation do the same.
+pane, not its window. The sweep removes the pane with a pane delete;
+a window that loses its last pane goes with it in the same change,
+and an empty session with it (protocol.md, section 7). After the
+removal, the sidebar draws an ordinary window with the user's
+remaining panes. The pane stop and its escalation do the same.
 
 No other guard applies: no debounce. Without grace under rule 2, a
-child already shutting down can lose its pane during exit. It can
-receive "its parent ended" before recording its own outcome. The
-server keeps the first written outcome.
-
-**The screen capture.** Before the sweep removes a run's pane, and
-before a `failed` outcome of a run whose pane exists, the server
-captures the pane's screen and its whole scrollback through the pane's
-formatter (`ko_server/src/state/run_ops.rs`) and writes
-`<run-dir>/screen`. This is the only chance to capture crash
-diagnostics. Capture does not depend on the ending: even a clean
-exit's last screen can be useful. Losing a screen is better than
-leaving an uncollected pane: a capture error never prevents the
-removal. The capture holds the whole history, cut to
-`KO_RUN_SCREEN_BYTES` (64 MiB by default); truncation keeps the end,
-because the last output is the most likely crash diagnostic. The
-coordinator keeps at most twice the cap while the chunks arrive and
-cuts at a character boundary. `ko runs <id>` prints the screen when
-present.
+child already shutting down can lose its pane during exit.
 
 **Parent death.** The child's pi belongs to the server, not the
 parent's pi process. Thus, no OS parent-death signal reaches it. Its
@@ -682,31 +568,6 @@ Notices use `"steer"`, not `"followUp"`: a long parent turn would
 otherwise delay the report until that turn ends. The extension sends a
 steer, not an abort. The model decides whether to act now or continue.
 
-## Run outcomes
-
-Code that knows how a run ended writes its outcome. `ko run-outcome`
-records `completed`, `failed` or `stopped` for a run; the harness
-records none, because an agent has no run and a bash run's ending is
-its pane's. `died` is ko's external judgment only.
-
-The sweep writes the ending that the pane gives, or `failed` with "its
-parent ended" under the orphan rule. `ko run-stop` writes `stopped`,
-or `completed` with `--result completed`.
-
-**Written once.** Every writer of an outcome is the server's loop
-thread. The server refuses a second outcome, and the file is a plain
-atomic write (protocol.md, section 10). The first recorded ending
-wins; a later, less precise guess never overwrites it. This rule
-determines the other ordering:
-
-- `run-stop` writes its result before it waits or signals.
-- `ko runs` and `ko run-wait` derive an ending from the pane for a run
-  without an outcome. They never store it.
-
-ko does not prune run records. A listing without `--all` shows only
-live runs. The extension passes `--all`, because `list_async_bash`
-and its name checks need ended runs.
-
 ## The sidebar tree
 
 Both clients build the tree from the layout document and the pane
@@ -715,12 +576,12 @@ rows (`ko_client/src/model.rs`, with the walk of
 spawned it, one level deeper, not after the whole parent window: the
 subagents belong to the coordinating agent, not a shell sharing its
 window. The edge is the row's immutable `parent`, which the server
-sets at create: a run's pane gets its parent's pane. A window nests
+sets at create: a child's pane gets its spawner's pane. A window nests
 under the pane that the `parent` of its first pane with one names, in
 document order, and every pane of the window follows it, so a user's
 split beside a child pane nests under the same parent. A parent that
 is absent, in another session or in the window itself leaves the
-window a root. The run meta's parent is not read for the tree.
+window a root.
 
 The terminal client draws the list as session headers and pane rows,
 indented by depth (`ko_tui/src/sidebar.rs`); its chooser (`C-a s`)
@@ -874,9 +735,7 @@ order.
 Every duration that a test must shorten is an environment variable
 that the process under test reads when it uses it:
 
-- `KO_STOP_ESCALATION_MS`, `KO_RUN_SCREEN_BYTES` (a size, not a
-  duration, so that a test reaches the capture's cap),
-  `KO_CLIPBOARD_TIMEOUT_MS`, `KO_MESSAGE_ACK_MS` (a message's wait
+- `KO_STOP_ESCALATION_MS`, `KO_CLIPBOARD_TIMEOUT_MS`, `KO_MESSAGE_ACK_MS` (a message's wait
   for its ack),
   `KO_VIEW_QUEUE_BYTES`, `KO_VIEW_SPILL_BYTES` and
   `KO_RUNTIME_EXEC_WAIT_MS`, read by `ko server`
@@ -886,9 +745,10 @@ that the process under test reads when it uses it:
   delay between the resends of one message), `KO_RECEIVER_BACKOFF_MS`
   (the first restart delay of the message stream),
   `KO_AGENT_LIST_TTL_MS`, `KO_STREAM_FLUSH_MS`,
-  `KO_STREAM_MAX_WAIT_MS`, `KO_STREAM_DRAIN_MS` (the wait for a run's
-  output stream after its end) and `KO_STREAM_BUDGET_BYTES`, read by
-  the extension.
+  `KO_STREAM_MAX_WAIT_MS`, `KO_STREAM_BUDGET_BYTES`, `KO_JOB_MOVE_MS`
+  (when a `bash` call becomes a job), `KO_JOB_HINT_MS` (when the
+  ctrl+b hint shows) and `KO_JOB_KILL_MS` (a job's `SIGTERM` to
+  `SIGKILL`), read by the extension.
 
 The extension's tests set them in the environment of the process under
 test. The e2e suite sets the server's through its environment. The
@@ -899,18 +759,14 @@ file.
 
 ## Known limits
 
-- A pi that crashes inside a shell pane that stays open leaves its
-  `async_bash` runs alive: their parent is the pane, which lives, and
-  only a pi that shuts down stops its own runs. They end when the pane
-  closes, or the user stops them. A pi child ends through its own
-  parent watch when the parent's session id goes (design-subagents.md,
-  "Watching the parent").
-- A `ko run` without a parent has nobody to collect it while it lives.
-  The user must close its window. The sweep still collects its dead
-  pane.
+- A job of a pi that ends with `SIGKILL`, as a pane's hangup does
+  250 ms after its `SIGHUP`, is an orphan in its own process group:
+  pi's exit handlers do not run (design-subagents.md, "Stopping a
+  job"). The user accepted this limit on 2026-11-05. A pi child ends
+  through its own parent watch when the parent's session id goes
+  (design-subagents.md, "Watching the parent").
 - A subagent whose window moved to another session is outside its
   parent's scope and cannot be messaged.
-- Runs are never pruned.
 - pi asks its startup project trust question before it reports OSC
   7501 status. A pi that ko did not spawn into a trusted repository
   shows no blocked status while it waits for the answer.
@@ -927,6 +783,36 @@ file.
 
 Each decision names its date. The code states the rest.
 
+2026-11-05, jobs in place of async runs:
+
+- `async_bash` is a job of the harness, a child process of pi with
+  pipes and a temp log, not a ko run in a pane. The user never
+  watches an agent's command, so it gets no window and no sidebar
+  row, and a pipe gives the exact exit code, both streams and every
+  byte.
+- A `bash` call that runs past 60 s, or that the user moves with
+  ctrl+b, becomes a job instead of a blocked turn. An explicit
+  timeout under 60 s keeps its meaning; a longer one becomes the
+  job's deadline, because the model asked for it.
+- One log holds both streams in arrival order, as a `bash` result
+  and a terminal show them. It has no size cap, because a cap cuts
+  the end, and it is never deleted, as pi's own temp output is not.
+- `async_bash` runs through pi's shell configuration, so the two
+  tools run a command the same way.
+- Jobs survive `/reload` through one process-wide registry, because
+  pi reloads an extension in the same process, its children live on,
+  and only the new instance can call pi.
+- A routed pi's jobs are exec sessions of its runtime, in the same
+  registry.
+- ko-pi signals only its own process groups, through one function,
+  and a pi killed with `SIGKILL` can leave an orphan job: pi's own
+  detached `bash` commands already have that limit.
+- Runs leave ko with `async_bash`: the run commands, the `/runs`
+  routes, the run records, outcomes and screen captures, and the pane
+  output stream. After the jobs, only tests, demos and one tool script
+  started a run, and a pane with `parent` and `close: on_exit` does
+  what they need. The sweep stays, because it acts on pane rows.
+
 2026-11-04, agents without runs:
 
 - ko is the mediator. A subagent is a pane with a `parent`, not a
@@ -935,11 +821,11 @@ Each decision names its date. The code states the rest.
   harness works where `KO_SOCKET` is a runtime's socket and the
   filesystem is not the host's (design-runtimes.md).
 - No new CLI command for agents: `ko api --stream` is the harness's
-  bridge to the message stream and the output stream. `stop_agent`
+  bridge to the message stream. `stop_agent`
   and `stop_async_bash` take one target.
 - The `ended` message on the parent's stream is the only ending
   signal. There is no `GET /panes/{id}/wait`, because nothing else
-  needs one: a human reads the row's `dead`, and a run has `run-wait`.
+  needs one: a human reads the row's `dead`.
 - `ended` carries no count of the messages that died with the child's
   queue: the parent knows what it sent, and a count would not say
   which.
@@ -950,10 +836,6 @@ Each decision names its date. The code states the rest.
 - A report that is not acked is resent with the same id until it is;
   the parent keeps the whole text in its session, and `read_report`
   is the reference of a capped report notice.
-- An output stream that the ring overruns gets a `skip` and loses
-  those bytes: a slow harness must not hold the pane, and the screen
-  keeps them. A view cannot serve a harness, because its backpressure
-  path sends snapshots that only a terminal decoder can apply.
 - The prompt routes take the scope pane as `from`, and the identity
   headers stay identity only: Kido.app holds no pane token, and a
   client identity for it would add a concept for no gain.
@@ -963,8 +845,3 @@ Each decision names its date. The code states the rest.
   holds in a runtime.
 - `close` is `keep` or `on_exit`. There is no `on_success`, which
   would remove only a pane that exited 0.
-- An agent's pane gets no screen capture: the ending notice reads the
-  screen while the pane lingers. The screen capture is for runs.
-- A run has no output file and no `tee` wrapper: a run's output is
-  its pane's content, and a `tee` to a host path cannot run inside a
-  runtime.

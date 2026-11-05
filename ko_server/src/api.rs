@@ -8,17 +8,14 @@ use serde::de::value::Error as ValueError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ids::{ClientId, PaneId, RunId, SessionId, VarName, WindowId};
+use crate::ids::{ClientId, PaneId, SessionId, VarName, WindowId};
 use crate::protocol::{
     Candidate, ClientEvent, ClientRequest, DeleteVars, DownRuntime, Empty, ExecClient, ExecServer,
-    HistoryDef, Images, Info, Input, InputResult, LayoutPanes, LeadReport, Listing, Message,
-    NewWindow, OutputEvent, Placement, Posted, PutLayout, ReportOutcome, RuntimeInfo, RuntimeWait,
-    SearchEvent, SendMessage, SendPrompt, Sent, ServerVersion, Show, Snapshot, StartRun, Started,
-    StopPane, StopRun, StreamRequest, VarValue, ViewEvent, ViewRequest, Waited,
+    HistoryDef, Images, Input, InputResult, LayoutPanes, LeadReport, Listing, Message, NewWindow,
+    Placement, Posted, PutLayout, RuntimeInfo, RuntimeWait, SearchEvent, SendMessage, SendPrompt,
+    Sent, ServerVersion, Snapshot, StopPane, StreamRequest, VarValue, ViewEvent, ViewRequest,
 };
 use crate::route::{Invalid, Param, binary, pixels, routes, text};
-
-use crate::runs::Parent;
 
 const MAX_OFFSET: u64 = (1 << 62) - 1;
 
@@ -267,7 +264,6 @@ id_params! {
     ClientId => "client_1",
     SessionId => "session_1",
     WindowId => "window_1",
-    RunId => "0123456789abcdef0123456789abcdef",
 }
 
 impl Param for PaneId {
@@ -323,40 +319,6 @@ impl Param for RuntimeName {
 
     fn schema(generator: &mut SchemaGenerator) -> Schema {
         generator.subschema_for::<RuntimeName>()
-    }
-}
-
-impl Param for Show {
-    const EXAMPLE: &'static str = "live";
-
-    fn parse(value: &str) -> Result<Show, Invalid> {
-        named(value, "invalid show", Show::deserialize)
-    }
-
-    fn render(&self) -> String {
-        name_of(|serializer| self.serialize(serializer))
-    }
-
-    fn schema(generator: &mut SchemaGenerator) -> Schema {
-        generator.subschema_for::<Show>()
-    }
-}
-
-impl Param for Parent {
-    const EXAMPLE: &'static str = "pane_1";
-
-    fn parse(value: &str) -> Result<Parent, Invalid> {
-        value
-            .parse()
-            .map_err(|_| Invalid::message("invalid parent"))
-    }
-
-    fn render(&self) -> String {
-        self.to_string()
-    }
-
-    fn schema(generator: &mut SchemaGenerator) -> Schema {
-        generator.subschema_for::<Parent>()
     }
 }
 
@@ -582,9 +544,9 @@ impl Param for Images {
 routes! {
     /// The protocol and terminal revisions of this server.
     Version { method: GET, path: /version, reply: ServerVersion }
-    /// Every pane, with its status, variables and run.
+    /// Every pane, with its status and variables.
     ListPanes { method: GET, path: /panes, reply: Vec<Listing> }
-    /// One pane, with its status, variables and run.
+    /// One pane, with its status and variables.
     GetPane { method: GET, path: /panes/{id: PaneId}, reply: Listing }
     /// The layout of every session, with its revision, and every pane that it names.
     GetLayout { method: GET, path: /layout, reply: LayoutPanes }
@@ -670,21 +632,6 @@ routes! {
         send: ViewRequest,
         recv: ViewEvent | binary,
     }
-    /// The raw output of a pane: the bytes of its pty, from the ring, as text messages. Without
-    /// offset the stream starts at the end of the output so far. An offset older than the
-    /// oldest byte of the ring starts the stream with a skip record, and the bytes follow from
-    /// the oldest one. An offset past the end is invalid. When the pane died and the stream sent every
-    /// byte, a dead record ends the stream, and the server closes the socket. The server
-    /// writes only to a connection that has drained: a reader that is too slow gets a skip
-    /// record, never a snapshot. The caller is the user, the pane itself or its parent.
-    Output {
-        method: WS,
-        path: /panes/{id: PaneId}/output,
-        query: { offset: Option<Offset> },
-        caller: optional,
-        send: Empty,
-        recv: OutputEvent,
-    }
     /// One frame of an image of a pane. Frame 1 is the image itself. The reply is the pixels as
     /// an application/octet-stream body, with their format, size and timing in the ko-image-*
     /// headers. With the header Ko-Accept-Shm: 1 the reply is instead a JSON body that names a
@@ -729,47 +676,6 @@ routes! {
         caller: optional,
         reply: Empty,
         errors: { 412 },
-    }
-    /// Starts a run in a new window.
-    StartRun {
-        method: POST,
-        path: /runs,
-        body: StartRun,
-        caller: optional,
-        reply: Started,
-    }
-    /// The runs of the server.
-    ListRuns {
-        method: GET,
-        path: /runs,
-        query: { show: Show = Live, parent: Option<Parent> },
-        reply: Vec<Info>,
-    }
-    /// One run.
-    GetRun { method: GET, path: /runs/{id: RunId}, reply: Info }
-    /// The screen that the sweep captured when the run's pane went: the whole history of the
-    /// pane, cut to its last KO_RUN_SCREEN_BYTES bytes. A run that has none is not_found.
-    RunScreen { method: GET, path: /runs/{id: RunId}/screen, reply: text }
-    /// Waits for the outcome of a run, up to the timeout.
-    WaitRun {
-        method: GET,
-        path: /runs/{id: RunId}/wait,
-        query: { timeout_ms: WaitMs = DEFAULT },
-        reply: Waited,
-    }
-    /// Reports the outcome of a run.
-    RunOutcome {
-        method: POST,
-        path: /runs/{id: RunId}/outcome,
-        body: ReportOutcome,
-        reply: Empty,
-    }
-    /// Stops a run.
-    StopRun {
-        method: POST,
-        path: /runs/{id: RunId}/stop,
-        body: StopRun,
-        reply: Empty,
     }
     /// The runtimes of the configuration file and of the links that are up, with their state.
     ListRuntimes { method: GET, path: /runtimes, reply: Vec<RuntimeInfo> }
@@ -843,8 +749,6 @@ mod tests {
     use super::*;
     use crate::protocol::PasteResult;
     use proptest::prelude::*;
-
-    const RUN: &str = "0123456789abcdef0123456789abcdef";
 
     fn parsed(method: &str, target: &str) -> String {
         match Route::of_request(method, target) {
@@ -921,7 +825,6 @@ mod tests {
     #[test]
     fn a_route_renders_a_request_that_parses_back_to_it() {
         let id = PaneId::new(7);
-        let run: RunId = RUN.parse().unwrap();
         for route in [
             Route::Version {},
             Route::ListPanes {},
@@ -979,26 +882,6 @@ mod tests {
                 format: ScreenFormat::Plain,
                 history: ScreenRows::Full,
             },
-            Route::StartRun {},
-            Route::ListRuns {
-                show: Show::Live,
-                parent: None,
-            },
-            Route::ListRuns {
-                show: Show::All,
-                parent: Some(Parent::Pane(id)),
-            },
-            Route::ListRuns {
-                show: Show::Present,
-                parent: Some(Parent::Run(run.clone())),
-            },
-            Route::GetRun { id: run.clone() },
-            Route::WaitRun {
-                id: run.clone(),
-                timeout_ms: WaitMs::clamped(250),
-            },
-            Route::RunOutcome { id: run.clone() },
-            Route::StopRun { id: run },
             Route::PromptResolve {
                 from: id,
                 window: None,
@@ -1022,10 +905,6 @@ mod tests {
                 images: Images::None,
                 offset: None,
             },
-            Route::Output {
-                id,
-                offset: Offset::new(9),
-            },
         ] {
             let (method, target) = route.to_request();
             assert_eq!(Route::of_request(method, &target), Ok(route));
@@ -1034,17 +913,17 @@ mod tests {
 
     #[test]
     fn a_default_is_not_rendered_and_a_missing_parameter_takes_it() {
-        let wait = format!("/runs/{RUN}/wait");
+        let wait = "/runtimes/dev/wait".to_owned();
         assert_eq!(
             Route::of_request("GET", &wait),
-            Ok(Route::WaitRun {
-                id: RUN.parse().unwrap(),
+            Ok(Route::WaitRuntime {
+                name: "dev".parse().unwrap(),
                 timeout_ms: WaitMs::DEFAULT,
             })
         );
         assert_eq!(
-            Route::WaitRun {
-                id: RUN.parse().unwrap(),
+            Route::WaitRuntime {
+                name: "dev".parse().unwrap(),
                 timeout_ms: WaitMs::DEFAULT
             }
             .to_request(),
@@ -1064,7 +943,7 @@ mod tests {
 
     #[test]
     fn a_bad_target_names_what_is_wrong() {
-        let wait = format!("/runs/{RUN}/wait");
+        let wait = "/runtimes/dev/wait".to_owned();
         let table: Vec<String> = [
             ("GET", "/panes/pane_7/screen?history=4294967296"),
             ("GET", "/panes/pane_7/view?offset=4611686018427387904"),
@@ -1081,14 +960,10 @@ mod tests {
             ("PUT", "/panes"),
             ("POST", "/panes/pane_1/clear_history/x"),
             ("GET", "/panes?x=1"),
-            ("GET", "/runs?show=some"),
             ("GET", "/prompt/resolve?from=pane_1&window=1"),
-            ("GET", "/runs?parent=nope"),
             ("GET", "/version?a=1?b=2"),
             ("GET", &format!("{wait}?timeout_ms=3600001")),
             ("GET", &wait),
-            ("GET", "/runs/abc"),
-            ("PUT", "/runs"),
         ]
         .into_iter()
         .map(|(method, target)| parsed(method, target))
@@ -1111,14 +986,10 @@ mod tests {
                 "no route",
                 "no route",
                 "ListPanes",
-                "invalid show",
                 "invalid window",
-                "invalid parent",
                 "invalid target",
                 "invalid number",
-                &format!("WaitRun {{ id: RunId(\"{RUN}\"), timeout_ms: WaitMs(30000) }}"),
-                "no route",
-                "no route",
+                r#"WaitRuntime { name: RuntimeName("dev"), timeout_ms: WaitMs(30000) }"#,
             ]
         );
     }

@@ -6,11 +6,11 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+use crate::harness::ko_command;
 use crate::harness::{
     Child, DEADLINE, Message, PRINT_TOKEN, Server, Steady, Ws, ko, poll, start, start_with,
 };
 use crate::panes::{Headers, as_pane, post, raw, token_pane_in_new_session};
-use crate::runs::ko_command;
 
 pub(crate) fn path(pane: &str) -> String {
     format!("/panes/{pane}/messages")
@@ -468,6 +468,6 @@ fn ko_api_stream_prints_what_was_queued_at_once_and_refuses_a_line_that_is_too_l
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     let long = "x".repeat(1 << 20) + "y\n";
     let run = crate::harness::run_ko(&s.scratch, &env, &argv, &long);
-    assert_eq!(crate::runs::code(&run), 1);
+    assert_eq!(crate::harness::code(&run), 1);
     assert_eq!(run.stderr, "ko api: a line of standard input is too long\n");
 }

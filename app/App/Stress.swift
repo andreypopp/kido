@@ -38,7 +38,7 @@ typealias AppWindow = StressWindow
     private var step = 0
     private var waiting: DispatchWorkItem?
     private var counts: [String: Int] = [:]
-    private var childWindows = Set<String>()
+    private var childWindows = Set<WindowID>()
 
     init(owner: WindowOwner) {
         self.owner = owner
@@ -90,15 +90,14 @@ typealias AppWindow = StressWindow
             NSApp.terminate(nil)
             return
         }
-        var nodes = owner.stressState.3?.sessions.flatMap(\.nodes) ?? []
-        while let node = nodes.popLast() {
-            nodes += node.children
-            if case .item(let item) = node, item.run != nil, case .live(.terminal) = item.lifecycle {
-                let identity = "\(item.window):\(item.started?.timeIntervalSince1970 ?? 0)"
-                if childWindows.insert(identity).inserted {
-                    counts["child-window-seen", default: 0] += 1
-                    log(["event": "child-window-seen", "window": item.window.description, "pane": item.pane.description])
-                }
+        var nodes = (owner.stressState.3?.sessions.flatMap(\.nodes) ?? []).map { ($0, false) }
+        while let (node, nested) = nodes.popLast() {
+            let childNested = if case .item = node { true } else { nested }
+            nodes += node.children.map { ($0, childNested) }
+            if nested, case .item(let item) = node, case .live(.terminal) = item.lifecycle,
+               childWindows.insert(item.window).inserted {
+                counts["child-window-seen", default: 0] += 1
+                log(["event": "child-window-seen", "window": item.window.description, "pane": item.pane.description])
             }
         }
         guard waiting == nil else {

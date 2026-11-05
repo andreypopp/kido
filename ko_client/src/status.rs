@@ -228,7 +228,6 @@ mod tests {
                     since: 0,
                 }),
                 progress: None,
-                run: None,
                 parent: None,
                 close: Default::default(),
                 inbox: false,

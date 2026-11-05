@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 cd "$(dirname "$0")/.."
-unset KO_STATE_DIR KO_PANE KO_PANE_TOKEN KO_SOCKET KO_RUN_ID "${!KO_AGENT_@}"
+unset KO_STATE_DIR KO_PANE KO_PANE_TOKEN KO_SOCKET "${!KO_AGENT_@}"
 IFS=: read -r -a entries <<< "$PATH"
 PATH=
 for entry in ${entries[@]+"${entries[@]}"}; do

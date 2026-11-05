@@ -69,26 +69,18 @@ private struct Projection {
 
     private func item(_ entry: KoSchema.ItemPane, children: [Node]) -> Item? {
         guard let pane = panes[entry.id] else { return nil }
-        let run = pane.run
         return Item(
             id: entry.id, window: entry.window, title: pane.label,
             lifecycle: lifecycle(pane),
             program_status: programStatus(pane.status?.programStatus),
-            run: run?.id,
-            started: pane.dead == nil && run?.outcome == nil ? run.flatMap { Self.wallClock($0.startedAt) } : nil,
             children: children, mark: pane.mark, recordsSeen: pane.recordsSeen, inbox: pane.inbox == true,
             runtime: marks[entry.id])
     }
 
     private func lifecycle(_ pane: KoSchema.PaneJson) -> Lifecycle {
         guard let dead = pane.dead else { return .live(kind(pane)) }
-        return pane.close == .onExit && pane.run == nil ? .lingering(dead.cause) : .ended(ended(pane))
-    }
-
-    private func ended(_ pane: KoSchema.PaneJson) -> KoSchema.RunResult {
-        if let result = pane.run?.outcome?.result { return result }
-        guard case .exited(let exited) = pane.dead?.cause else { return .failed }
-        return exited.code == 0 ? .completed : .failed
+        if pane.close == .onExit { return .lingering(dead.cause) }
+        return .ended(dead.cause)
     }
 
     private func kind(_ pane: KoSchema.PaneJson) -> PaneKind {
@@ -121,16 +113,6 @@ private struct Projection {
     }
 
     static func date(_ monotonic: Int) -> Date { Date(timeIntervalSince1970: Double(monotonic) / 1e9) }
-
-    // ISO8601DateFormatter is thread safe.
-    nonisolated(unsafe) private static let plain = ISO8601DateFormatter()
-    nonisolated(unsafe) private static let fractional = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-
-    static func wallClock(_ text: String) -> Date? { fractional.date(from: text) ?? plain.date(from: text) }
 
     static func report(_ agent: KoSchema.Agent) -> Report {
         let state: Report.State = switch agent.state {

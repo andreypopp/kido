@@ -1,91 +1,213 @@
 import { test } from "node:test";
-
 import assert from "node:assert/strict";
-
+import { readFileSync, writeFileSync, statSync, existsSync, realpathSync, symlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-
-import { writeFileSync } from "node:fs";
-
-import { makeFixture, selfPane, startSession, customMessages, notices, pollUntil, freshExtension, text, type Fixture } from "./ko-pi-fixture.ts";
-
+import { makeFixture, selfPane, startSession, customMessages, notices, pollUntil, text, gatedCommand, jobRegistry as registry, logHas, processGone, withEnv } from "./ko-pi-fixture.ts";
 import { splitLines, newSplit, streamBatch } from "./ko-pi.ts";
 
-const bytes = (offset: number, data: string) => ({ type: "bytes", offset, data: Buffer.from(data).toString("base64") });
+const list = async (s: Awaited<ReturnType<typeof startSession>>) => JSON.parse(text(await s.tools.get("list_async_bash").execute("l", {})));
 
-function fakeRun(fx: Fixture, id = "run-1"): void {
-  process.env.KO_FAKE_RUN_ID = id;
-  process.env.KO_FAKE_RUN_PANE = "pane_9";
-  fx.setPanes([selfPane()]);
-}
-
-test("async_bash runs the command in a child pane of its own with no wrapper and ends with a notice that carries the screen", async () => {
+test("a local job uses the call cwd and environment, logs both streams, and announces its exact exit", async () => {
   const fx = makeFixture();
   try {
-    fakeRun(fx);
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
     const gate = join(fx.dir, "gate");
-    process.env.KO_FAKE_RUN_WAIT_GATE = gate;
-    process.env.KO_FAKE_RUN_WAIT_OUTCOME = JSON.stringify({ result: "failed", text: "exit 3" });
-    const s = await startSession(fx);
-    const result = await s.tools.get("async_bash").execute("c", { command: "make -j8 && ./run", name: "build" });
-    assert.deepEqual(fx.runCalls(), [["run-child", "pane_1", "--name", "build", "--", "bash", "-o", "pipefail", "-c", "make -j8 && ./run"]]);
-    assert.equal(
-      text(result).split("; ").slice(0, 2).join("; "),
-      "started run run-1 (build) in window window_9, pane pane_9; list_async_bash lists it and stop_async_bash stops it",
-    );
-    assert.match(text(result), /read it with ko api '\/panes\/pane_9\/screen\?history=all'/);
-    assert.deepEqual(notices(s), []);
-
-    fx.setScreen("pane_9", "compiling\nerror: boom\n");
+    const shellUsed = join(fx.dir, "shell-used");
+    const shell = join(fx.binDir, "job-shell");
+    writeFileSync(shell, `#!/bin/sh\nprintf configured > '${shellUsed}'\nexec /bin/sh "$@"\n`, { mode: 0o700 });
+    s.pi.settings.shellPath = shell;
+    const command = `printf '%s\\n' "$PWD" "$KO_PANE"; ${gatedCommand(gate, "stdout\n", "stderr\n", 3)}`;
+    const abort = new AbortController();
+    const result = await s.tools.get("async_bash").execute("c", { command, name: "build" }, abort.signal, undefined, { cwd: fx.dir });
+    const { job, log } = result.details;
+    assert.match(job, /^j[a-z0-9]{7}$/);
+    await pollUntil(() => logHas(log, "stdout\n"));
+    assert.equal(readFileSync(log, "utf8"), `${realpathSync(fx.dir)}\npane_1\nstdout\n`);
+    assert.equal(statSync(log).mode & 0o777, 0o600);
+    assert.equal(readFileSync(shellUsed, "utf8"), "configured");
+    abort.abort();
+    assert.equal((await list(s))[0].state, "running");
     writeFileSync(gate, "");
-    await pollUntil(() => notices(s).length === 1, 2000, "the ending notice");
-    assert.equal(
-      notices(s)[0],
-      'notice from build (a subagent or background run\'s report, not the user):\nasync run "build" failed: exit 3\npane: pane_9\n--- last 4000 bytes of its screen ---\ncompiling\nerror: boom\n',
-    );
-    assert.deepEqual(fx.runWaitCalls(), [["run-wait", "run-1", "--json"]]);
-  } finally {
-    await fx.restore();
-  }
+    await pollUntil(() => notices(s).length === 1);
+    assert.match(notices(s)[0]!, new RegExp(`job "build" \\(${job}\\) exit 3`));
+    assert.ok(notices(s)[0]!.includes("stdout\nstderr"));
+    assert.ok(notices(s)[0]!.endsWith(`log: ${log}`));
+    assert.equal(readFileSync(log, "utf8"), `${realpathSync(fx.dir)}\npane_1\nstdout\nstderr\n`);
+    const [{ startedAt, ...row }] = await list(s);
+    assert.ok(Number.isFinite(Date.parse(startedAt)));
+    assert.deepEqual(row, { job, name: "build", command, state: "ended", end: "exit 3", log });
+  } finally { await fx.restore(); }
 });
 
-test("the ending falls back to the run's captured screen once the pane is gone, and says when there is none", async () => {
+test("async_bash prepends pi's managed bin directory to its default environment", async () => {
   const fx = makeFixture();
   try {
-    fakeRun(fx);
-    const s = await startSession(fx);
-    const start = (name: string, id: string) => {
-      process.env.KO_FAKE_RUN_ID = id;
-      return s.tools.get("async_bash").execute("c", { command: "x", name });
-    };
-    fx.setScreen("run-run-a", "captured");
-    await start("a", "run-a");
-    await pollUntil(() => notices(s).length === 1, 2000, "the first ending");
-    assert.ok(notices(s)[0]!.endsWith("--- last 4000 bytes of its screen ---\ncaptured"));
-    await start("b", "run-b");
-    await pollUntil(() => notices(s).length === 2, 2000, "the second ending");
-    assert.ok(notices(s)[1]!.endsWith("--- its screen is gone ---"));
-    assert.ok(notices(s)[1]!.startsWith('notice from b (a subagent or background run\'s report, not the user):\nasync run "b" completed\npane: pane_9\n'));
-  } finally {
-    await fx.restore();
-  }
+    await withEnv({ PI_CODING_AGENT_DIR: join(fx.dir, "agent") }, async () => {
+      const bin = join(fx.dir, "agent", "bin");
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(join(bin, "ko-job-env-probe"), "#!/bin/sh\nprintf agent-bin\n", { mode: 0o700 });
+      fx.setPanes([selfPane()]);
+      const s = await startSession(fx);
+      await s.tools.get("async_bash").execute("a", { command: "exec ko-job-env-probe", name: "env" });
+      await pollUntil(() => notices(s).length === 1);
+      assert.match(notices(s)[0]!, /exit 0/);
+      assert.match(notices(s)[0]!, /agent-bin/);
+    });
+  } finally { await fx.restore(); }
 });
 
-test("a name that one of the session's runs or children holds is refused, and so is a second start at once", async () => {
+test("running jobs and children reserve names, endings release them, and stop prefers the running match", async () => {
   const fx = makeFixture();
   try {
-    fakeRun(fx);
-    fx.setRuns([{ id: "old", name: "taken", parent: "pane_1", pane: "pane_8", startedAt: "t", outcome: { result: "completed", text: "" } }]);
+    fx.setPanes([selfPane()]);
     const s = await startSession(fx);
     const tool = s.tools.get("async_bash");
-    const taken = `could not start background command: the name "taken" is already taken by one of this session's runs; choose another name`;
-    assert.equal(text(await tool.execute("c", { command: "x", name: "taken" })), taken);
-    const twin = await Promise.all([tool.execute("c", { command: "x", name: "twin" }), tool.execute("c", { command: "x", name: "twin" })]);
-    assert.equal(twin.filter((r) => text(r).startsWith("started run")).length, 1);
-    assert.equal(text(await tool.execute("c", { command: "x", name: "" })), "could not start background command: --name is required");
-  } finally {
-    await fx.restore();
-  }
+    const command = gatedCommand(join(fx.dir, "gate"));
+    const twins = await Promise.all([tool.execute("a", { command, name: "twin" }), tool.execute("b", { command, name: "TWIN" })]);
+    assert.equal(twins.filter((r) => text(r).startsWith("started job")).length, 1);
+    assert.match(text(twins.find((r) => !text(r).startsWith("started job"))), /already taken/);
+    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp", pane: { instance: "a".repeat(32), pane: "pane_5" } } });
+    assert.match(text(await tool.execute("c", { command, name: "KID" })), /already taken/);
+    assert.match(text(await tool.execute("c", { command, name: "" })), /name is required/);
+    writeFileSync(join(fx.dir, "gate"), "");
+    await pollUntil(() => notices(s).length === 1);
+    const again = await tool.execute("again", { command: gatedCommand(join(fx.dir, "again")), name: "TWIN" });
+    assert.match(text(again), /started job/);
+    assert.equal((await list(s)).filter((row: any) => row.name.toLowerCase() === "twin").length, 2);
+    const stop = s.tools.get("stop_async_bash");
+    assert.match(text(await stop.execute("s", { job: "twin" })), new RegExp(`stopped job ${again.details.job}`));
+    await pollUntil(async () => (await list(s)).find((row: any) => row.job === again.details.job).state === "ended");
+    assert.match(text(await stop.execute("s", { job: "twin" })), new RegExp(`job ${again.details.job} .*had already ended: stopped`));
+  } finally { await fx.restore(); }
 });
+
+test("stream batches strip escapes, spend a budget and flush the partial line before the notice", async () => {
+  const fx = makeFixture();
+  try {
+    process.env.KO_STREAM_BUDGET_BYTES = "1";
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    await s.emit("agent_start");
+    const gate = join(fx.dir, "gate");
+    const result = await s.tools.get("async_bash").execute("c", { command: gatedCommand(gate, "\x1b[32mgreen\x1b[0m\n", "partial"), name: "stream", stream: true });
+    await pollUntil(() => logHas(result.details.log, "green"));
+    await s.emit("turn_end", { toolResults: [{}] });
+    assert.ok(customMessages(s, "ko-stream")[0]!.message.content.endsWith("\ngreen"));
+    writeFileSync(gate, "");
+    await pollUntil(() => notices(s).length === 1);
+    const messages = s.messages.map((m) => m.message.content);
+    assert.match(messages.at(-2), /output budget spent; the log has the rest/);
+    assert.match(messages.at(-1), /partial/);
+    assert.ok(readFileSync(result.details.log, "utf8").includes("\x1b[32m"));
+  } finally { await fx.restore(); }
+});
+
+test("idle stream batches arrive and a final partial line precedes the ending notice", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    process.env.KO_STREAM_FLUSH_MS = "5";
+    const gate = join(fx.dir, "gate");
+    await s.tools.get("async_bash").execute("c", { command: gatedCommand(gate, "first\n", "final"), name: "partial", stream: true });
+    await pollUntil(() => customMessages(s, "ko-stream").length === 1);
+    assert.match(customMessages(s, "ko-stream")[0]!.message.content, /\nfirst$/);
+    assert.deepEqual(customMessages(s, "ko-stream")[0]!.opts, { deliverAs: "steer", triggerTurn: true });
+    writeFileSync(gate, "");
+    await pollUntil(() => notices(s).length === 1);
+    assert.match(s.messages.at(-2)!.message.content, /\nfinal$/);
+    assert.equal(s.messages.at(-1)!.message.customType, "ko-notice");
+  } finally { await fx.restore(); }
+});
+
+test("stop by name and id stops owned groups, sends no notice, and handles ended and unknown jobs", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    for (const address of ["name", "id"]) {
+      const marker = `ko-pi-job-${fx.dir.split("/").at(-1)}-${address}`;
+      const ready = join(fx.dir, `ready-${address}`);
+      const sleeper = join(fx.dir, marker);
+      symlinkSync("/bin/sleep", sleeper);
+      const command = `'${sleeper}' 30 & echo ready > '${ready}'; wait`;
+      const result = await s.tools.get("async_bash").execute("c", { command, name: address });
+      await pollUntil(() => existsSync(ready));
+      await s.tools.get("stop_async_bash").execute("s", { job: address === "name" ? "NAME" : result.details.job });
+      assert.equal((await list(s)).find((row: any) => row.job === result.details.job).end, "stopped");
+      await pollUntil(() => processGone(marker));    }
+    assert.deepEqual(notices(s), []);
+    assert.match(text(await s.tools.get("stop_async_bash").execute("s", { job: "name" })), /had already ended: stopped/);
+    assert.equal((await s.tools.get("stop_async_bash").execute("s", { job: "missing" })).isError, true);
+  } finally { await fx.restore(); }
+});
+
+test("stop_async_bash refuses to signal an exited leader", async (t) => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    const result = await s.tools.get("async_bash").execute("c", { command: "true", name: "ended" });
+    await pollUntil(() => notices(s).length === 1);
+    const job = registry().jobs.get(result.details.job);
+    const ended = job.state;
+    const kill = t.mock.method(process, "kill", () => true);
+    try {
+      job.state = { type: "running" };
+      assert.equal(job.where.child.exitCode, 0);
+      const stopped = await s.tools.get("stop_async_bash").execute("s", { job: result.details.job });
+      assert.match(text(stopped), /stopped job/);
+      assert.equal(kill.mock.callCount(), 0);
+    } finally {
+      if (job.stopping) clearTimeout(job.stopping.timer);
+      job.stopping = null;
+      job.state = ended;
+      kill.mock.restore();
+    }
+  } finally { await fx.restore(); }
+});
+
+test("list keeps only the newest 20 ended jobs", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    for (let i = 0; i < 22; i++) {
+      await s.tools.get("async_bash").execute("c", { command: "true", name: `job-${i}` });
+      await pollUntil(() => notices(s).length === i + 1);
+    }
+    const rows = await list(s);
+    assert.equal(rows.length, 20);
+    assert.equal(rows[0].name, "job-21");
+    assert.equal(rows.at(-1).name, "job-2");
+  } finally { await fx.restore(); }
+});
+
+for (const reason of ["quit", "new", "resume", "fork", "reload"]) {
+  test(`${reason} ${reason === "reload" ? "keeps" : "stops"} jobs`, async () => {
+    const fx = makeFixture();
+    try {
+      fx.setPanes([selfPane()]);
+      const s = await startSession(fx);
+      const gate = join(fx.dir, "gate");
+      const result = await s.tools.get("async_bash").execute("c", { command: gatedCommand(gate), name: "live" });
+      const owner = registry();
+      await pollUntil(async () => !(await processGone(gate)));
+      await s.emit("session_shutdown", { reason });
+      if (reason === "reload") {
+        assert.equal(registry(), owner);
+        assert.equal((await list(s)).find((row: any) => row.job === result.details.job).state, "running");
+        assert.equal(owner.owner, null);
+      } else {
+        assert.equal(registry(), undefined);
+        assert.deepEqual(await list(s), []);
+        await pollUntil(() => processGone(gate));
+      }
+      assert.deepEqual(notices(s), []);
+    } finally { await fx.restore(); }
+  });
+}
 
 test("splitLines drops escape sequences and keeps the last state of a progress line", () => {
   const state = newSplit();
@@ -103,157 +225,34 @@ test("splitLines drops escape sequences and keeps the last state of a progress l
   assert.equal(state.line, "");
 });
 
-test("streamBatch keeps the end of a long batch and says what the pane's screen has", () => {
-  assert.equal(streamBatch(["a", "b"]), "a\nb");
-  const many = Array.from({ length: 300 }, (_, i) => `line ${i}`);
-  const batch = streamBatch(many, 5, 1234).split("\n");
-  assert.equal(batch[0], "... 105 lines omitted (the pane's screen has them)");
-  assert.equal(batch[1], "... 1234 bytes omitted (the pane's screen has them)");
+test("streamBatch bounds batches and names the output log", () => {
+  const batch = streamBatch(Array.from({ length: 300 }, (_, i) => `line ${i}`), 5).split("\n");
+  assert.equal(batch[0], "... 105 lines omitted (the log has them)");
   assert.equal(batch.at(-1), "line 299");
-  assert.equal(batch.length, 2 + 200);
 });
 
-test("stream=true reads the pane's output from offset 0, strips escapes, notes a skip, and flushes the partial line at the end", async () => {
+test("held streams bound long complete and partial lines while the log stays complete", async () => {
   const fx = makeFixture();
   try {
-    fakeRun(fx);
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    await s.emit("agent_start");
     const gate = join(fx.dir, "gate");
-    process.env.KO_FAKE_RUN_WAIT_GATE = gate;
-    process.env.KO_STREAM_FLUSH_MS = "10";
-    const s = await startSession(fx);
-    await s.tools.get("async_bash").execute("c", { command: "build", name: "build", stream: true });
-    await pollUntil(() => fx.streamOpens("/panes/pane_9/output?offset=0") === 1, 2000, "the output stream");
-    const first = "\x1b[1mone\x1b[0m\ntw";
-    const second = "o\n3%\r";
-    fx.output(bytes(0, first));
-    fx.output(bytes(first.length, second));
-    await pollUntil(() => customMessages(s, "ko-stream").length >= 1, 2000, "the first batch");
-    const joined = () => customMessages(s, "ko-stream").map((m) => String(m.message.content).split("\n").slice(1).join("\n")).join("\n");
-    await pollUntil(() => joined().includes("two"), 2000, "all lines");
-    assert.equal(joined(), "one\ntwo");
-    assert.equal(String(customMessages(s, "ko-stream")[0]!.message.content).split("\n")[0], 'async run "build" output (run run-1)');
-    assert.deepEqual(customMessages(s, "ko-stream")[0]!.opts, { deliverAs: "steer", triggerTurn: true });
-
-    const end = first.length + second.length;
-    fx.output({ type: "skip", from: end, to: end + 1000 });
-    fx.output(bytes(end + 1000, "after the gap\nlast, no newline"));
-    await pollUntil(() => joined().includes("after the gap"), 2000, "the batch after the skip");
-    assert.ok(joined().includes("... 1000 bytes omitted (the pane's screen has them)"));
+    const size = 1024 * 1024;
+    const fill = `head -c ${size} /dev/zero | tr '\\000' x`;
+    const command = `${fill}; printf '\\n'; ${fill}; ${gatedCommand(gate)}`;
+    const result = await s.tools.get("async_bash").execute("c", { command, name: "large", stream: true });
+    const { job, log } = result.details;
+    await pollUntil(() => existsSync(log) && statSync(log).size === size * 2 + 1);
+    const held = registry().jobs.get(job);
+    const stream = held.mode.stream;
+    const bytes = stream.lines.reduce((total: number, line: string) => total + Buffer.byteLength(line) + 1, 0) + Buffer.byteLength(stream.split.line) + stream.carry.length;
+    assert.ok(bytes <= 65536, `held ${bytes} stream bytes`);
+    assert.equal(stream.held, bytes);
+    assert.ok(held.tail.length <= 65536);
     writeFileSync(gate, "");
-    await pollUntil(() => notices(s).length === 1, 2000, "the ending");
-    assert.ok(joined().endsWith("last, no newline"), "the partial line is flushed before the ending");
-    assert.ok(!joined().includes("3%"), "a carriage return starts the line over, and the skip came before the line ended");
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("a skip inside an escape sequence or in the middle of a character does not swallow what follows", async () => {
-  const fx = makeFixture();
-  try {
-    fakeRun(fx);
-    process.env.KO_STREAM_FLUSH_MS = "10";
-    const s = await startSession(fx);
-    await s.tools.get("async_bash").execute("c", { command: "build", name: "build", stream: true });
-    const title = Buffer.from("\x1b]0;a title that never ends");
-    fx.output({ type: "bytes", offset: 0, data: title.toString("base64") });
-    fx.output({ type: "skip", from: title.length, to: title.length + 100 });
-    const cafe = Buffer.concat([Buffer.from("caf"), Buffer.from([0xc3])]);
-    fx.output({ type: "bytes", offset: title.length + 100, data: cafe.toString("base64") });
-    fx.output({ type: "bytes", offset: title.length + 100 + cafe.length, data: Buffer.from([0xa9, 0x0a]).toString("base64") });
-    const joined = () => customMessages(s, "ko-stream").map((m) => String(m.message.content).split("\n").slice(1).join("\n")).join("\n");
-    await pollUntil(() => joined().includes("caf"), 2000, "the line after the gap");
-    assert.ok(joined().includes("café"), joined());
-    assert.ok(joined().includes("... 100 bytes omitted"));
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("a /reload parks the output stream at its offset and reopens it there", async () => {
-  const fx = makeFixture();
-  try {
-    fakeRun(fx);
-    process.env.KO_STREAM_FLUSH_MS = "10";
-    process.env.KO_FAKE_RUN_WAIT_GATE = join(fx.dir, "never");
-    const first = await startSession(fx, { factory: await freshExtension() });
-    await first.tools.get("async_bash").execute("c", { command: "build", name: "build", stream: true });
-    fx.output(bytes(0, "before\n"));
-    const joined = (s: typeof first) => customMessages(s, "ko-stream").map((m) => String(m.message.content)).join("\n");
-    await pollUntil(() => joined(first).includes("before"), 2000, "the first lines");
-    await first.emit("session_shutdown", { reason: "reload" });
-
-    fx.output(bytes(7, "in the gap\n"));
-    const second = await startSession(fx, { factory: await freshExtension() });
-    await pollUntil(() => fx.streamOpens("/panes/pane_9/output?offset=7") === 1, 2000, "the stream to reopen at offset 7");
-    await pollUntil(() => joined(second).includes("in the gap"), 2000, "the line of the gap");
-    assert.ok(!joined(second).includes("before"), "nothing is read twice");
-    assert.equal(fx.runWaitCalls().length, 2, "the watch for the ending is back too");
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("list_async_bash lists every running job and the newest 20 ended; stop_async_bash stops one by name and silences it", async () => {
-  const fx = makeFixture();
-  try {
-    fakeRun(fx);
-    const rows = [
-      { id: "run-live", name: "server", parent: "pane_1", pane: "pane_20", startedAt: "2023-11-14T22:00:00Z" },
-      ...Array.from({ length: 22 }, (_, i) => ({
-        id: `run-end-${String(i).padStart(2, "0")}`,
-        name: `job${i}`,
-        parent: "pane_1",
-        pane: `pane_${30 + i}`,
-        startedAt: `2023-11-15T00:${String(i).padStart(2, "0")}:00Z`,
-        outcome: { result: "completed", text: "" },
-      })),
-    ];
-    fx.setRuns(rows);
-    process.env.KO_FAKE_RUN_WAIT_GATE = join(fx.dir, "never");
-    const s = await startSession(fx);
-    const listed = JSON.parse(text(await s.tools.get("list_async_bash").execute("c", {}))) as Array<Record<string, any>>;
-    assert.equal(listed.length, 21, "one running and the newest 20 ended");
-    assert.deepEqual(listed.slice(0, 2).map((r) => [r.run, r.state]), [["run-end-21", "ended"], ["run-end-20", "ended"]], "newest first");
-    assert.equal(listed.at(-2)!.run, "run-end-02", "the oldest of the 20 ended");
-    assert.equal(listed.at(-1)!.run, "run-live", "a running job lists wherever it started");
-    assert.deepEqual(listed.find((r) => r.name === "server"), { run: "run-live", name: "server", state: "running", startedAt: "2023-11-14T22:00:00Z", pane: "pane_20", screen: "ko api '/panes/pane_20/screen?history=all'" });
-    assert.deepEqual(fx.runsCalls().at(-1), ["runs", "--json", "--all", "--parent", "pane_1"]);
-
-    await pollUntil(() => fx.runWaitCalls().some((call) => call[1] === "run-live"), 2000, "the watch of the live run");
-    const stopped = await s.tools.get("stop_async_bash").execute("c", { run: "server" });
-    assert.equal(stopped.isError, undefined);
-    assert.match(text(stopped), /^stopped run run-live; killed its pane; pane pane_20; its output: ko api '\/panes\/pane_20\/screen\?history=all'/);
-    assert.deepEqual(fx.runStopCalls(), [["run-stop", "run-live"]]);
-    assert.deepEqual(notices(s), [], "a run that was stopped sends no ending notice");
-
-    const unknown = await s.tools.get("stop_async_bash").execute("c", { run: "nothing" });
-    assert.equal(unknown.isError, true);
-    assert.match(text(unknown), /no async_bash job matches/);
-    const ended = await s.tools.get("stop_async_bash").execute("c", { run: "run-end-05" });
-    assert.match(text(ended), /^run run-end-05 \(job5\) had already ended: completed; its output:/, "an ended run is nothing to stop");
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("quitting stops the live runs of the session, and a reload does not", async () => {
-  const fx = makeFixture();
-  try {
-    fakeRun(fx);
-    fx.setRuns([
-      { id: "run-live", name: "server", parent: "pane_1", pane: "pane_20", startedAt: "t" },
-      { id: "run-done", name: "done", parent: "pane_1", pane: "pane_21", startedAt: "t", outcome: { result: "completed", text: "" } },
-    ]);
-    process.env.KO_FAKE_RUN_WAIT_GATE = join(fx.dir, "never");
-    const s = await startSession(fx);
-    await s.emit("session_shutdown", { reason: "reload" });
-    assert.deepEqual(fx.runStopCalls(), []);
-    const again = await startSession(fx);
-    await again.emit("session_shutdown", { reason: "quit" });
-    assert.deepEqual(fx.runStopCalls(), [["run-stop", "run-live"]]);
-    assert.equal(fx.apiCalls().filter((c) => c.method === "DELETE" && c.path === "/panes/pane_1/vars").length, 1, "and the variables go");
-  } finally {
-    await fx.restore();
-  }
+    await pollUntil(() => notices(s).length === 1);
+    assert.match(customMessages(s, "ko-stream")[0]!.message.content, /truncated.*log has/);
+    assert.equal(readFileSync(log, "utf8"), "x".repeat(size) + "\n" + "x".repeat(size));
+  } finally { await fx.restore(); }
 });

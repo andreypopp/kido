@@ -46,7 +46,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Every pane, with its status, variables and run. */
+        /** @description Every pane, with its status and variables. */
         get: operations["ListPanes"];
         put?: never;
         /** @description Creates a window with one pane, in one change of the layout. No client switches to it. The pane's session is the given one, else the parent's, else the caller's, else a new one. The window goes after the parent's or the caller's window of that session, else at the end. */
@@ -64,7 +64,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description One pane, with its status, variables and run. */
+        /** @description One pane, with its status and variables. */
         get: operations["GetPane"];
         put?: never;
         post?: never;
@@ -138,23 +138,6 @@ export interface paths {
         put?: never;
         /** @description Sends a message to a pane. The server stamps the sender and keeps the message in the pane's queue until the pane's stream gets it. A message that is written at once waits up to two seconds for its ack. An id that the pane has seen is not queued again: the reply is the state of the original, with duplicate set. */
         post: operations["PostMessage"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/panes/{id}/output": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description The raw output of a pane: the bytes of its pty, from the ring, as text messages. Without offset the stream starts at the end of the output so far. An offset older than the oldest byte of the ring starts the stream with a skip record, and the bytes follow from the oldest one. An offset past the end is invalid. When the pane died and the stream sent every byte, a dead record ends the stream, and the server closes the socket. The server writes only to a connection that has drained: a reader that is too slow gets a skip record, never a snapshot. The caller is the user, the pane itself or its parent. */
-        get: operations["Output"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -290,109 +273,6 @@ export interface paths {
         };
         /** @description The agents that a prompt can reach from the pane `from`. A pane identity may name only itself. */
         get: operations["PromptResolve"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/runs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description The runs of the server. */
-        get: operations["ListRuns"];
-        put?: never;
-        /** @description Starts a run in a new window. */
-        post: operations["StartRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/runs/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description One run. */
-        get: operations["GetRun"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/runs/{id}/outcome": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** @description Reports the outcome of a run. */
-        post: operations["RunOutcome"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/runs/{id}/screen": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description The screen that the sweep captured when the run's pane went: the whole history of the pane, cut to its last KO_RUN_SCREEN_BYTES bytes. A run that has none is not_found. */
-        get: operations["RunScreen"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/runs/{id}/stop": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** @description Stops a run. */
-        post: operations["StopRun"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/runs/{id}/wait": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description Waits for the outcome of a run, up to the timeout. */
-        get: operations["WaitRun"];
         put?: never;
         post?: never;
         delete?: never;
@@ -689,10 +569,7 @@ export interface components {
             progress: components["schemas"]["Progress"] | null;
             /** @constant */
             type: "progress";
-        } | ({
-            /** @constant */
-            type: "run";
-        } & components["schemas"]["RunRow"]) | {
+        } | {
             inbox: boolean;
             pane: components["schemas"]["PaneId"];
             /** @constant */
@@ -992,18 +869,6 @@ export interface components {
         };
         /** @enum {string} */
         Images: "none";
-        Info: {
-            argv: string[];
-            cwd: string;
-            id: components["schemas"]["RunId"];
-            name: components["schemas"]["RunName"];
-            outcome?: components["schemas"]["RunOutcome"];
-            pane?: components["schemas"]["PaneId"];
-            parent?: components["schemas"]["Parent"];
-            runtime?: components["schemas"]["RuntimeName"];
-            session?: string;
-            startedAt: components["schemas"]["Timestamp"];
-        };
         Input: ({
             /** @constant */
             type: "key";
@@ -1096,7 +961,6 @@ export interface components {
             parent?: components["schemas"]["PaneId"];
             pid?: number;
             progress?: components["schemas"]["Progress"];
-            run?: components["schemas"]["RunRow"];
             runtime?: components["schemas"]["RuntimeName"];
             status?: components["schemas"]["PaneStatus"];
             title: string;
@@ -1224,24 +1088,6 @@ export interface components {
         };
         /** @enum {string} */
         OutcomeResult: "success" | "failure";
-        /**
-         * @description One message of the raw output stream of a pane. Offsets count the pane's output bytes from the
-         *     start of the pane. Consecutive bytes records have consecutive offsets.
-         */
-        OutputEvent: {
-            data: components["schemas"]["Base64"];
-            offset: number;
-            /** @constant */
-            type: "bytes";
-        } | {
-            from: number;
-            to: number;
-            /** @constant */
-            type: "skip";
-        } | ({
-            /** @constant */
-            type: "dead";
-        } & components["schemas"]["Dead"]);
         /** @enum {string} */
         Over: "session" | "window";
         PaneDead: {
@@ -1261,8 +1107,6 @@ export interface components {
             title: string;
         };
         PaneToken: string;
-        /** @description A pane id, or the id of a run. */
-        Parent: components["schemas"]["PaneId"] | components["schemas"]["RunId"];
         Paste: {
             check_safe: boolean;
             id?: number;
@@ -1370,33 +1214,6 @@ export interface components {
             status: components["schemas"]["Agent"];
             /** @constant */
             type: "agent";
-        };
-        ReportOutcome: {
-            result: components["schemas"]["Reported"];
-            text?: string;
-        };
-        /** @enum {string} */
-        Reported: "completed" | "failed" | "stopped";
-        RunId: string;
-        /** @description At most 64 bytes, without control characters. */
-        RunName: string;
-        RunOutcome: {
-            at?: components["schemas"]["Timestamp"];
-            result: components["schemas"]["RunResult"];
-            text?: string;
-        };
-        /** @enum {string} */
-        RunResult: "completed" | "failed" | "died" | "stopped";
-        RunRow: {
-            argv: string[];
-            cwd: string;
-            id: components["schemas"]["RunId"];
-            name: components["schemas"]["RunName"];
-            outcome?: components["schemas"]["RunOutcome"];
-            pane?: components["schemas"]["PaneId"];
-            parent?: components["schemas"]["Parent"];
-            runtime?: components["schemas"]["RuntimeName"];
-            startedAt: components["schemas"]["Timestamp"];
         };
         /** @description an #rrggbb colour */
         RuntimeColor: string;
@@ -1515,8 +1332,6 @@ export interface components {
             phase: components["schemas"]["Phase"];
             report?: components["schemas"]["Agent"];
         };
-        /** @enum {string} */
-        Show: "live" | "present" | "all";
         Size: {
             cell_px?: components["schemas"]["CellPixels"];
             cols: number;
@@ -1531,21 +1346,6 @@ export interface components {
             layout: components["schemas"]["Layout"];
             revision: number;
         };
-        StartRun: {
-            argv: string[];
-            cwd?: components["schemas"]["Cwd"];
-            /** @default [] */
-            env?: components["schemas"]["Variable"][];
-            name: components["schemas"]["RunName"];
-            parent?: components["schemas"]["Parent"];
-            runtime?: components["schemas"]["RuntimeName"];
-            session?: components["schemas"]["SessionRef"];
-        };
-        Started: {
-            id: components["schemas"]["RunId"];
-            pane: components["schemas"]["PaneId"];
-            window: components["schemas"]["WindowId"];
-        };
         StatusChange: {
             now: number;
             pane: components["schemas"]["PaneId"];
@@ -1556,13 +1356,6 @@ export interface components {
              * @description Milliseconds to wait for the pane to end by itself before ko removes it.
              * @default 0
              */
-            wait_ms?: components["schemas"]["WaitMs"];
-        };
-        /** @enum {string} */
-        StopResult: "stopped" | "completed";
-        StopRun: {
-            result: components["schemas"]["StopResult"];
-            /** @default 0 */
             wait_ms?: components["schemas"]["WaitMs"];
         };
         /**
@@ -1588,8 +1381,6 @@ export interface components {
             kitty_images_max_bytes: number;
             scrollback: components["schemas"]["Scrollback"];
         };
-        /** Format: date-time */
-        Timestamp: string;
         Title: {
             pane: components["schemas"]["PaneId"];
             title: string;
@@ -1642,9 +1433,6 @@ export interface components {
         };
         /** @description Milliseconds. */
         WaitMs: number;
-        Waited: {
-            outcome?: components["schemas"]["RunOutcome"];
-        };
         Welcome: {
             client: components["schemas"]["ClientId"];
             instance: components["schemas"]["Instance"];
@@ -2097,44 +1885,6 @@ export interface operations {
             };
         };
     };
-    Output: {
-        parameters: {
-            query?: {
-                /** @example 0 */
-                offset?: components["schemas"]["Offset"];
-            };
-            header?: {
-                /** @example pane_1 */
-                "Ko-Pane"?: components["schemas"]["PaneId"];
-                /** @example 0123456789abcdef0123456789abcdef */
-                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
-            };
-            path: {
-                /** @example pane_1 */
-                id: components["schemas"]["PaneId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Switching Protocols */
-            101: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The common error body. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
     Screen: {
         parameters: {
             query?: {
@@ -2479,249 +2229,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Candidate"][];
-                };
-            };
-            /** @description The common error body. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    ListRuns: {
-        parameters: {
-            query?: {
-                /** @example live */
-                show?: components["schemas"]["Show"];
-                /** @example pane_1 */
-                parent?: components["schemas"]["Parent"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Info"][];
-                };
-            };
-            /** @description The common error body. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    StartRun: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @example pane_1 */
-                "Ko-Pane"?: components["schemas"]["PaneId"];
-                /** @example 0123456789abcdef0123456789abcdef */
-                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["StartRun"];
-            };
-        };
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Started"];
-                };
-            };
-            /** @description The common error body. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    GetRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @example 0123456789abcdef0123456789abcdef */
-                id: components["schemas"]["RunId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Info"];
-                };
-            };
-            /** @description The common error body. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    RunOutcome: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @example 0123456789abcdef0123456789abcdef */
-                id: components["schemas"]["RunId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ReportOutcome"];
-            };
-        };
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Empty"];
-                };
-            };
-            /** @description The common error body. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    RunScreen: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @example 0123456789abcdef0123456789abcdef */
-                id: components["schemas"]["RunId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "text/plain": string;
-                };
-            };
-            /** @description The common error body. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    StopRun: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @example 0123456789abcdef0123456789abcdef */
-                id: components["schemas"]["RunId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["StopRun"];
-            };
-        };
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Empty"];
-                };
-            };
-            /** @description The common error body. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    WaitRun: {
-        parameters: {
-            query?: {
-                /** @example 250 */
-                timeout_ms?: components["schemas"]["WaitMs"];
-            };
-            header?: never;
-            path: {
-                /** @example 0123456789abcdef0123456789abcdef */
-                id: components["schemas"]["RunId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Waited"];
                 };
             };
             /** @description The common error body. */

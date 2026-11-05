@@ -18,11 +18,6 @@ for c in "$@"; do
 	fi
 	pending+=("$sha")
 done
-peer=$("$(dirname "$0")/watch-peer.sh" main-watch.sh)
-if [ -n "$peer" ]; then
-	echo "main-watch already running (run $peer)"
-	exit 0
-fi
 last=$(git ls-remote origin refs/heads/main | cut -f1)
 echo "watching origin/main from ${last:0:7}"
 

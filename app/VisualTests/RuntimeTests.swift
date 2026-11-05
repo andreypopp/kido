@@ -216,24 +216,22 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
     }
 
     func testRuntimeRows() throws {
-        SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
-        defer { SidebarView.visualNow = nil }
         let buildbox = runtimeMark("buildbox"), py311 = runtimeMark("py311", kind: .container)
         let routed = runtimeMark("buildbox", routed: true)
         let tree: [SidebarFeed.Node] = [
             fixtureNode(1, "Terminal", shellLifecycle()),
-            marked(fixtureNode(2, "make verify", shellLifecycle(.running(.init(command: "make verify", startedAt: fixtureSince), fullscreen: false)), run: "r-2", started: 1791131000, mark: .running), buildbox),
+            marked(fixtureNode(2, "make verify", shellLifecycle(.running(.init(command: "make verify", startedAt: fixtureSince), fullscreen: false)), mark: .running), buildbox),
             marked(fixtureNode(3, "kido-app", piLifecycle(session: "s3"), children: [
-                marked(fixtureNode(4, "make test", shellLifecycle(.running(.init(command: "make test", startedAt: fixtureSince), fullscreen: false)), run: "r-4", started: 1791131100, mark: .running), buildbox),
+                marked(fixtureNode(4, "make test", shellLifecycle(.running(.init(command: "make test", startedAt: fixtureSince), fullscreen: false)), mark: .running), buildbox),
                 marked(fixtureNode(5, "pi-review", piLifecycle(session: "s5"), children: [
                     marked(fixtureNode(11, "pi-review-notes", piLifecycle(session: "s11")), routed),
                 ]), routed),
-                marked(fixtureNode(6, "pytest -x", shellLifecycle(.running(.init(command: "pytest -x", startedAt: fixtureSince), fullscreen: false)), run: "r-6", started: 1791131150, mark: .running), py311),
+                marked(fixtureNode(6, "pytest -x", shellLifecycle(.running(.init(command: "pytest -x", startedAt: fixtureSince), fullscreen: false)), mark: .running), py311),
             ]), routed),
             marked(fixtureNode(7, "trainer", piLifecycle(session: "s7")), runtimeMark("py311", routed: true)),
             marked(fixtureNode(8, "nvidia-smi", shellLifecycle(shellExit(1, command: "nvidia-smi")), mark: .failed), runtimeMark("gpu-1", .failed(.init(message: runtimeGapWithMessage)))),
             marked(fixtureNode(9, "Terminal", shellLifecycle()), runtimeMark("e2e", .starting, kind: .command)),
-            marked(fixtureNode(10, "a very long title that truncates before the suffix does", shellLifecycle(.running(.init(command: "a very long title that truncates before the suffix does", startedAt: fixtureSince), fullscreen: false)), run: "r-10", started: 1791131190, mark: .running), py311),
+            marked(fixtureNode(10, "a very long title that truncates before the suffix does", shellLifecycle(.running(.init(command: "a very long title that truncates before the suffix does", startedAt: fixtureSince), fullscreen: false)), mark: .running), py311),
         ]
         for dark in [false, true] {
             let (list, window) = list(dark: dark)
@@ -244,10 +242,8 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
     }
 
     func testRuntimeRoutedRow() throws {
-        SidebarView.visualNow = Date(timeIntervalSince1970: 1791131198)
-        defer { SidebarView.visualNow = nil }
         let tree: [SidebarFeed.Node] = [
-            marked(fixtureNode(3, "kido-app", piLifecycle(.running(progress: nil), msg: "Running the e2e suite", session: "s3"), run: "r-3", started: 1791131000, mark: .running), runtimeMark("buildbox", routed: true)),
+            marked(fixtureNode(3, "kido-app", piLifecycle(.running(progress: nil), msg: "Running the e2e suite", session: "s3"), mark: .running), runtimeMark("buildbox", routed: true)),
         ]
         for dark in [false, true] {
             let (list, window) = list(dark: dark)
@@ -284,7 +280,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
             owner.window.setFrame(NSRect(origin: owner.window.frame.origin, size: NSSize(width: 1100, height: 740)), display: false)
             defer { app.closePalette(); owner.close() }
             let tree: [SidebarFeed.Node] = [
-                marked(fixtureNode(1, "make verify", shellLifecycle(.running(.init(command: "make verify", startedAt: fixtureSince), fullscreen: false)), run: "r-1", started: 1791131000, mark: .running), RuntimeMark(runtimes[0])),
+                marked(fixtureNode(1, "make verify", shellLifecycle(.running(.init(command: "make verify", startedAt: fixtureSince), fullscreen: false)), mark: .running), RuntimeMark(runtimes[0])),
                 fixtureNode(2, "kido-app", piLifecycle(session: "s2")),
             ]
             var snapshot = fixtureSnapshot(window: 1, pane: 1, [(name: "main", nodes: tree)])

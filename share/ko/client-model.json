@@ -657,9 +657,6 @@
           "records_seen": {
             "type": "boolean"
           },
-          "run": {
-            "$ref": "#/components/schemas/RunRow"
-          },
           "runtime": {
             "$ref": "#/components/schemas/RuntimeName"
           },

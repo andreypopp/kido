@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-import { makeFixture, agentPane, selfPane, startSession, text, entriesOf, customMessages, pollUntil, withEnv, type Fixture, type Started } from "./ko-pi-fixture.ts";
+import { makeFixture, agentPane, selfPane, startSession, text, entriesOf, customMessages, notices, gatedCommand, pollUntil, withEnv, freshExtension, movedId, logHas, type Fixture, type Started } from "./ko-pi-fixture.ts";
 
 import { mapHostPath, senderHeader } from "./ko-pi.ts";
 
@@ -40,6 +40,7 @@ async function routed(fx: Fixture, t: ReturnType<typeof tree>, opts: { runtimes?
   fx.setRuntimes(opts.runtimes ?? { dev: dev(t) });
   return startSession(fx, { flags: { runtime: "dev" }, ctx: { cwd: opts.cwd ?? t.hostCwd } });
 }
+
 
 const run = (s: Started, tool: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<any> => s.tools.get(tool).execute("c", params, signal, () => {});
 
@@ -101,7 +102,7 @@ test("the prompt gets the runtime cwd, the runtime's context files after the glo
     const section = event.systemPromptOptions.sections.runtime!;
     assert.match(section, new RegExp(`^The tools bash, read, write, edit, ls, find, grep, async_bash and the user's ! commands run in runtime dev, at ${join(t.rt, "proj")}\\.`));
     assert.match(section, new RegExp(`Every other tool \\(list_agents, read_report, .*spawn_agent.*\\) runs on the host, at ${t.hostCwd}, not in the runtime\\.$`));
-    assert.doesNotMatch(section, /\(.*\bbash\b.*\)/);
+    assert.doesNotMatch(section, /\(.*\b(?:bash|async_bash)\b.*\)/);
     assert.deepEqual(s.notifications, [{ message: section, type: "info" }]);
   } finally {
     await fx.restore();
@@ -316,13 +317,13 @@ test("a context read that fails with no known cwd is retried by the next call an
   }
 });
 
-test("a host session registers none of the routed tools, a routed one registers all seven, even when it refuses", async () => {
+test("a host session wraps bash alone, and a routed one registers all seven tools even when it refuses", async () => {
   const fx = makeFixture();
   try {
     const t = tree(fx);
     const seven = ["bash", "read", "write", "edit", "ls", "find", "grep"];
     const host = await startSession(fx);
-    assert.deepEqual(seven.filter((name) => host.tools.has(name)), []);
+    assert.deepEqual(seven.filter((name) => host.tools.has(name)), ["bash"]);
     const refusing = await routed(fx, t, { runtimes: {} });
     assert.deepEqual(seven.filter((name) => refusing.tools.has(name)), seven);
     const live = await routed(fx, t);
@@ -428,7 +429,7 @@ test("a failed runtime is no refusal: a tool reaches it and gets the start's err
   }
 });
 
-test("a routed session marks its pane with pi.runtime and ko.runtime and removes them when it quits; async_bash starts a run in the runtime", async () => {
+test("a routed async_bash is an exec session with a host log, a notice, and cancellation by closing its ko child", async () => {
   const fx = makeFixture();
   try {
     const t = tree(fx);
@@ -436,22 +437,175 @@ test("a routed session marks its pane with pi.runtime and ko.runtime and removes
     const s = await routed(fx, t);
     assert.deepEqual(fx.row("pane_1")?.vars?.["pi.runtime"], { name: "dev", cwd: join(t.rt, "proj") });
     assert.equal(fx.row("pane_1")?.vars?.["ko.runtime"], "dev");
-    await pollUntil(() => fx.execLog().length === 1, 5000, "the context read");
-
-    process.env.KO_FAKE_RUN_ID = "run-1";
-    const started = text(await run(s, "async_bash", { command: "make && ./run", name: "build" }));
-    assert.match(started, /^started run run-1 \(build\) in window window_9, pane pane_9;/);
-    assert.deepEqual(fx.posts("/runs"), [{ name: "build", argv: ["bash", "-o", "pipefail", "-c", "make && ./run"], cwd: t.hostCwd, parent: "pane_1", runtime: "dev" }]);
-    assert.deepEqual(fx.runCalls(), [], "ko run-child has no runtime flag");
-
+    await run(s, "bash", { command: "true" });
+    const baseline = fx.running();
+    const gate = join(t.rt, "gate");
+    const command = `env; printf 'before\\n'; ${gatedCommand(gate, "", "after\n", 3)}`;
+    const result = await withEnv({ HOST_SECRET: "host-only" }, () => run(s, "async_bash", { command, name: "build", stream: true }));
+    assert.equal(fx.running(), baseline + 1);
+    await pollUntil(() => fx.execLog().at(-1)?.request.argv?.[2] === command);
+    const exec = fx.execLog().at(-1)!;
+    assert.equal(exec.runtime, "dev");
+    assert.match(exec.request.argv[0], /\/(bash|sh)$/);
+    assert.deepEqual(exec.request.argv.slice(1), ["-lc", command]);
+    assert.equal(exec.request.cwd, join(t.rt, "proj"));
+    assert.equal(exec.request.env, undefined);
+    assert.equal(exec.request.stdin, false);
+    await pollUntil(() => logHas(result.details.log, "before"));
+    assert.match(readFileSync(result.details.log, "utf8"), /KO_RUNTIME=dev/);
+    assert.doesNotMatch(readFileSync(result.details.log, "utf8"), /HOST_SECRET|KO_PANE|KO_SOCKET/);
+    const rows = JSON.parse(text(await run(s, "list_async_bash", {})));
+    assert.equal(rows[0].runtime, "dev");
+    assert.equal(rows[0].log, result.details.log);
+    writeFileSync(gate, "");
+    await pollUntil(() => notices(s).length === 1);
+    assert.match(notices(s)[0]!, /exit 3/);
+    assert.match(notices(s)[0]!, /before\nafter/);
+    await pollUntil(() => fx.running() === baseline);
+    const service = await run(s, "async_bash", { command: `printf 'ready\\n'; ${gatedCommand(join(t.rt, "service"))}`, name: "service" });
+    await pollUntil(() => logHas(service.details.log, "ready"));
+    await run(s, "stop_async_bash", { job: service.details.job });
+    await pollUntil(() => fx.running() === baseline);
+    assert.equal(notices(s).length, 1, "a stopped job sends no notice");
     await s.emit("session_shutdown", { reason: "quit" });
     assert.equal(fx.row("pane_1")?.vars?.["pi.runtime"], undefined);
     assert.equal(fx.row("pane_1")?.vars?.["ko.runtime"], undefined);
     assert.equal(fx.row("pane_1")?.vars?.["pi.session"], undefined);
+  } finally { await fx.restore(); }
+});
+
+test("a routed bash moves to one exec-session job by timer or ctrl+b and stop closes that exec child", async () => {
+  const fx = makeFixture();
+  try {
+    const t = tree(fx);
+    const s = await routed(fx, t);
+    await run(s, "bash", { command: "true" });
+    const baseline = fx.running();
+    for (const move of ["timeout", "key"]) {
+      process.env.KO_JOB_MOVE_MS = move === "timeout" ? "50" : "10000";
+      const ready = join(t.rt, `ready-${move}`);
+      const command = `printf ready > '${ready}'; ${gatedCommand(join(t.rt, `gate-${move}`))}`;
+      const count = fx.execLog().length;
+      const work = run(s, "bash", { command });
+      await pollUntil(() => existsSync(ready));
+      if (move === "key") assert.deepEqual(s.terminalInput("\x02"), [{ consume: true }]);
+      const result = await work;
+      assert.notEqual(result.isError, true);
+      const id = movedId(result);
+      const row = JSON.parse(text(await run(s, "list_async_bash", {})))[0];
+      assert.equal(row.job, id);
+      assert.equal(row.runtime, "dev");
+      assert.equal(row.state, "running");
+      assert.equal(fx.execLog().length, count + 1);
+      assert.equal(fx.execLog().at(-1)?.request.argv[2], command);
+      await run(s, "stop_async_bash", { job: id });
+      await pollUntil(() => fx.running() === baseline);
+    }
+    assert.deepEqual(notices(s), []);
+  } finally { await fx.restore(); }
+});
+
+test("reload during a routed startup moves the eventual child without restoring old hooks", async () => {
+  const fx = makeFixture();
+  try {
+    process.env.KO_JOB_MOVE_MS = "10000";
+    process.env.KO_JOB_HINT_MS = "1";
+    const t = tree(fx);
+    const first = await routed(fx, t);
+    await first.emit("before_agent_start", { systemPromptOptions: { promptGuidelines: [], contextFiles: [], sections: {} } });
+    const startupGate = join(fx.dir, "startup-gate");
+    const jobGate = join(t.rt, "job-gate");
+    process.env.KO_FAKE_EXEC_GATE = startupGate;
+    const count = fx.execLog().length;
+    const abort = new AbortController();
+    const work = run(first, "bash", { command: gatedCommand(jobGate, "running\n", "finished\n") }, abort.signal);
+    await pollUntil(() => fx.execLog().length > count);
+    await first.emit("session_shutdown", { reason: "reload" });
+    abort.abort();
+    delete process.env.KO_FAKE_EXEC_GATE;
+    const second = await startSession(fx, { factory: await freshExtension(), flags: { runtime: "dev" }, ctx: { cwd: t.hostCwd } });
+    writeFileSync(startupGate, "");
+    const id = movedId(await work);
+    const [row] = JSON.parse(text(await run(second, "list_async_bash", {})));
+    assert.equal(row.job, id);
+    assert.equal(row.runtime, "dev");
+    assert.equal(first.terminalListeners.size, 0);
+    assert.equal(first.widgets.get("ko-job-hint")?.content, undefined);
+    await pollUntil(() => logHas(row.log, "running"));
+    writeFileSync(jobGate, "");
+    await pollUntil(() => notices(second).length === 1);
+    assert.match(notices(second)[0]!, /running\nfinished/);
+    assert.deepEqual(first.messages, []);
+    assert.equal(first.widgets.get("ko-job-hint")?.content, undefined);
+  } finally { await fx.restore(); }
+});
+
+test("new cancels a routed call still probing its shell before it can start a job", { timeout: 5000 }, async () => {
+  const fx = makeFixture();
+  const startupGate = join(fx.dir, "startup-gate");
+  const jobGate = join(fx.dir, "job-gate");
+  try {
+    const t = tree(fx);
+    const first = await routed(fx, t);
+    await first.emit("before_agent_start", { systemPromptOptions: { promptGuidelines: [], contextFiles: [], sections: {} } });
+    process.env.KO_FAKE_EXEC_GATE = startupGate;
+    const count = fx.execLog().length;
+    const work = run(first, "bash", { command: gatedCommand(jobGate, "should-not-start") });
+    const rejected = assert.rejects(work, /aborted/);
+    await pollUntil(() => fx.execLog().length > count);
+    await first.emit("session_shutdown", { reason: "new" });
+    await rejected;
+    writeFileSync(startupGate, "");
+    await pollUntil(() => fx.running() === 0);
+    assert.ok(fx.execLog().every((entry) => !JSON.stringify(entry.request.argv).includes("should-not-start")));
+    assert.deepEqual(JSON.parse(text(await run(first, "list_async_bash", {}))), []);
   } finally {
+    writeFileSync(startupGate, "");
+    writeFileSync(jobGate, "");
     await fx.restore();
   }
 });
+
+for (const reason of ["quit", "new", "resume", "fork", "reload"]) {
+  test(`${reason} refuses a routed async_bash start held at its shell probe`, { timeout: 5000 }, async () => {
+    const fx = makeFixture();
+    const factsGate = join(fx.dir, "facts-gate");
+    const jobGate = join(fx.dir, "job-gate");
+    try {
+      const t = tree(fx);
+      const first = await routed(fx, t);
+      await first.emit("before_agent_start", { systemPromptOptions: { promptGuidelines: [], contextFiles: [], sections: {} } });
+      process.env.KO_FAKE_EXEC_GATE = factsGate;
+      const count = fx.execLog().length;
+      const command = gatedCommand(jobGate, `must-not-run-${reason}`);
+      let settled = false;
+      const work = run(first, "async_bash", { command, name: "monitor" }).then((result) => { settled = true; return result; });
+      await pollUntil(() => fx.execLog().length > count);
+      await first.emit("session_shutdown", { reason });
+      delete process.env.KO_FAKE_EXEC_GATE;
+      const second = reason === "reload" ? await startSession(fx, { factory: await freshExtension(), flags: { runtime: "dev" }, ctx: { cwd: t.hostCwd } }) : undefined;
+      if (second) {
+        const result = await run(second, "async_bash", { command: gatedCommand(jobGate), name: "monitor" });
+        assert.match(text(result), /started job/);
+      }
+      await pollUntil(() => settled, 2000, "the pending start to return its refusal before its probe is released");
+      const result = await work;
+      writeFileSync(factsGate, "");
+      await pollUntil(() => fx.running() === (second ? 2 : 0));
+      if (second) {
+        const rows = JSON.parse(text(await run(second, "list_async_bash", {})));
+        assert.equal(rows.filter((row: any) => row.name === "monitor").length, 1, "the old start must not create a second job with the same name");
+      }
+      assert.equal(result.isError, true, "shutdown must refuse a start that has no job yet");
+      assert.match(text(result), new RegExp(`start cancelled.*${reason}`));
+      assert.ok(fx.execLog().every((entry) => !JSON.stringify(entry.request.argv).includes(`must-not-run-${reason}`)));
+    } finally {
+      writeFileSync(factsGate, "");
+      writeFileSync(jobGate, "");
+      await fx.restore();
+    }
+  });
+}
 
 test("spawn_agent with a runtime starts a routed child, or an inside child by the runtime's pi", async () => {
   const fx = makeFixture();
@@ -609,6 +763,12 @@ test("the exec client drives a real ko server with a command-kind runtime the wa
       assert.equal(s.notifications.length, 1);
       assert.equal(text(await run(s, "bash", { command: "pwd; echo \"$KO_RUNTIME\"" })).trim(), `${join(t.rt, "proj")}\ndev`);
       assert.match(text(await run(s, "bash", { command: "exit 5" })), /exited with code 5/);
+      const job = await run(s, "async_bash", { command: "printf real-runtime-job; exit 3", name: "real-job" });
+      assert.match(text(job), /^started job j[a-z0-9]{7}/);
+      await pollUntil(() => notices(s).length === 1, 5000, "the real runtime job notice");
+      assert.match(notices(s)[0]!, /exit 3/);
+      assert.match(notices(s)[0]!, /real-runtime-job/);
+      assert.equal(readFileSync(job.details.log, "utf8"), "real-runtime-job");
       assert.match(text(await run(s, "bash", { command: "kill -9 $$" })), /exited with code 137/);
       const awkward = `it's "a" file.txt`;
       const big = Array.from({ length: 4000 }, (_, line) => `line ${line} é ${"y".repeat(60)}`).join("\n");
@@ -620,7 +780,7 @@ test("the exec client drives a real ko server with a command-kind runtime the wa
     });
   } finally {
     spawnSync(join(bin, "ko"), ["kill-server", "--server", state]);
-    await new Promise((done) => (server.exitCode === null ? server.once("exit", done) : done(undefined)));
+    await pollUntil(() => server.exitCode !== null || server.signalCode !== null, 5000, "the test server to exit");
     rmSync(state, { recursive: true, force: true });
     await fx.restore();
   }

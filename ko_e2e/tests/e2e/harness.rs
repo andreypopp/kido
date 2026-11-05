@@ -281,6 +281,31 @@ impl Run {
     }
 }
 
+pub(crate) fn ko_command(
+    s: &Server,
+    pane: Option<&str>,
+    args: &[&str],
+) -> (Vec<Vec<u8>>, Vec<String>) {
+    let mut env = test_env(&s.dir);
+    if let Some(pane) = pane {
+        env.push(format!("KO_PANE={pane}").into_bytes());
+        env.push(format!("KO_SOCKET={}", s.dir.join("socket").display()).into_bytes());
+        if let Some(token) = s.token(pane) {
+            env.push(format!("KO_PANE_TOKEN={token}").into_bytes());
+        }
+    }
+    let mut argv = args.to_vec();
+    argv.extend(["--server", text_of(&s.dir)]);
+    (env, argv.into_iter().map(str::to_owned).collect())
+}
+
+pub(crate) fn code(run: &Run) -> i32 {
+    match run.exit {
+        Exit::Exited(code) => code,
+        Exit::Signaled(signal) => panic!("killed by signal {signal}: {run:?}"),
+    }
+}
+
 pub(crate) fn run_ko(scratch: &Path, env: &[Vec<u8>], args: &[&str], stdin: &str) -> Run {
     run_program(scratch, &ko(), env, args, stdin, DEADLINE)
 }
@@ -1010,9 +1035,17 @@ impl Server {
     }
 
     pub(crate) fn ko(&self, args: &[&str], stdin: &str) -> Run {
-        let mut argv = args.to_vec();
-        argv.extend(["--server", text_of(&self.dir)]);
-        run_ko(&self.scratch, &test_env(&self.dir), &argv, stdin)
+        self.ko_as(None, args, stdin)
+    }
+
+    pub(crate) fn ko_as(&self, pane: Option<&str>, args: &[&str], stdin: &str) -> Run {
+        let (env, argv) = ko_command(self, pane, args);
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        run_ko(&self.scratch, &env, &argv, stdin)
+    }
+
+    pub(crate) fn has_pane(&self, pane: &str) -> bool {
+        self.rows().iter().any(|row| row["id"] == pane)
     }
 
     pub(crate) fn dial_ws(&self, path: &str, headers: Option<Headers>, status: u16) -> Option<Ws> {
@@ -1265,10 +1298,6 @@ impl Server {
             Some(value),
             200,
         );
-    }
-
-    pub(crate) fn unset_var(&self, pane: &str, name: &str) {
-        self.request("DELETE", &format!("/panes/{pane}/vars/{name}"), None, 200);
     }
 
     pub(crate) fn text(&self, pane: &str, text: &str) {

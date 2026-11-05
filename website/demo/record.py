@@ -98,25 +98,28 @@ class Demo:
         wait_for("agent running", lambda: any(r["status"] == "running" for r in self.status()), 15)
         self.mark("running")
 
-    def runs(self):
-        entries = []
-        for directory in (self.root / "state/runs").glob("*"):
-            if (directory / "meta.json").exists():
-                meta = json.loads((directory / "meta.json").read_text())
-                outcome = directory / "outcome"
-                entries.append((meta, json.loads(outcome.read_text()) if outcome.exists() else None))
-        return entries
-
-    def calls(self):
-        names = []
+    def messages(self):
         for path in (self.root / "state/sessions").rglob("*.jsonl"):
             for line in path.read_text().splitlines():
                 try:
-                    message = json.loads(line).get("message", {})
-                    names.extend(item["name"] for item in message.get("content", [])
-                                 if isinstance(item, dict) and item.get("type") == "toolCall")
-                except (json.JSONDecodeError, TypeError):
+                    yield json.loads(line).get("message", {})
+                except json.JSONDecodeError:
                     pass
+
+    def children(self):
+        return [message["details"] for message in self.messages()
+                if message.get("role") == "toolResult"
+                and message.get("toolName") == "spawn_agent"
+                and message.get("details", {}).get("pane")]
+
+    def calls(self):
+        names = []
+        for message in self.messages():
+            try:
+                names.extend(item["name"] for item in message.get("content", [])
+                             if isinstance(item, dict) and item.get("type") == "toolCall")
+            except TypeError:
+                pass
         return names
 
     def screen(self, pane):

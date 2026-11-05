@@ -115,13 +115,6 @@ impl Queue {
         }
     }
 
-    fn push_reply(&mut self, bytes: Vec<u8>) {
-        if !self.sealed() && !bytes.is_empty() {
-            self.bytes = self.bytes.saturating_add(bytes.len());
-            self.chunks.push_back(Chunk { bytes, tail: false });
-        }
-    }
-
     pub(crate) fn push(&mut self, parts: &[&[u8]], fit: Fit) -> bool {
         let len = parts.iter().map(|part| part.len()).sum();
         if self.sealed() || len == 0 {
@@ -419,13 +412,6 @@ impl Output {
         self.send(head);
         if self.is_open() {
             self.pixels = Some(Pixels { object, sent: 0 });
-            self.flush();
-        }
-    }
-
-    pub(crate) fn send_reply(&mut self, bytes: Vec<u8>) {
-        if self.is_open() {
-            self.queue.push_reply(bytes);
             self.flush();
         }
     }

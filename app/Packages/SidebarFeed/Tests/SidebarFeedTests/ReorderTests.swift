@@ -9,8 +9,8 @@ private func w(_ n: UInt32) -> WindowID { WindowID(number: n) }
 private func tree(instance: Int = 12345, sessions: [Int] = [0, 1]) -> Snapshot {
     makeSnapshot([
         pane(0, records: [record("task", .working, progress: 10, title: "Task", msg: "step")], serial: 1,
-             children: [pane(1, run: "agent", children: [pane(2, run: "bash")])]),
-        group(3, name: "Group", [pane(3, children: [pane(5, run: "agent")]), pane(4, window: 3)]),
+             children: [pane(1, children: [pane(2)])]),
+        group(3, name: "Group", [pane(3, children: [pane(5)]), pane(4, window: 3)]),
         pane(6),
     ], sessions: sessions, instance: "\(instance)/1780000000")
 }

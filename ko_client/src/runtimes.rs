@@ -11,8 +11,7 @@ use ko_server::protocol::{Empty, LeadReport, LinkState, RuntimeWait, STDERR_TAIL
 use ko_sys::fd::{self, Waited, Want};
 use ko_sys::signal::{Signal, Signals};
 
-use crate::api::Failure as Reach;
-use crate::runs::{Failure, call};
+use crate::api::{Failure, ReplyError, call};
 use crate::wire::{self, Caller};
 
 const STILL_STARTING: Duration = Duration::from_secs(120);
@@ -36,7 +35,7 @@ pub fn wait(
     caller: Option<Caller>,
     name: &RuntimeName,
     timeout: Duration,
-) -> Result<RuntimeWait, Failure> {
+) -> Result<RuntimeWait, ReplyError> {
     let milliseconds = u64::try_from(timeout.as_millis()).unwrap_or(WaitMs::MAX.get());
     call(
         dir,
@@ -55,7 +54,7 @@ pub fn report_lead(
     caller: Option<Caller>,
     name: &RuntimeName,
     report: &LeadReport,
-) -> Result<(), Failure> {
+) -> Result<(), ReplyError> {
     call::<Empty>(
         dir,
         &Route::ReportLead { name: name.clone() },
@@ -66,11 +65,11 @@ pub fn report_lead(
     .map(|_| ())
 }
 
-fn describe(dir: &Path, failure: Failure) -> String {
+fn describe(dir: &Path, failure: ReplyError) -> String {
     match failure {
-        Failure::Refused(error) => error.message,
-        Failure::Server(Reach::NoServer) => format!("no server at {}", dir.display()),
-        Failure::Server(Reach::Failed(message)) => message,
+        ReplyError::Refused(error) => error.message,
+        ReplyError::Server(Failure::NoServer) => format!("no server at {}", dir.display()),
+        ReplyError::Server(Failure::Failed(message)) => message,
     }
 }
 

@@ -19,11 +19,6 @@ for c in "$@"; do
 	fi
 	pending+=("$sha")
 done
-peer=$("$(dirname "$0")/watch-peer.sh" ci-website-watch.sh)
-if [ -n "$peer" ]; then
-	echo "ci-website-watch already running (run $peer)"
-	exit 0
-fi
 last=$(git ls-remote origin refs/heads/main | cut -f1)
 echo "watching website deploys on origin/main from ${last:0:7}"
 

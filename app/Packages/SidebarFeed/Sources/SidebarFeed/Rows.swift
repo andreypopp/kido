@@ -30,7 +30,6 @@ public struct SidebarRow: Equatable, Sendable {
     public var runtime: RuntimeMark?
     public let status: Status
     public var indicatorDescription = ""
-    public let started: Date?
     public let focused: Bool
     public var guides: [Guide] = []
     public var quietShell = false
@@ -69,7 +68,7 @@ extension Item {
 
     var label: String {
         switch lifecycle {
-        case .live(.terminal(let status)) where status.report == nil && run == nil:
+        case .live(.terminal(let status)) where status.report == nil:
             if case .running(let command?, fullscreen: false) = status.phase, !command.command.isEmpty { return command.command }
             return title
         case .live(.ssh(let destination, .terminal(let interactive, let status))):
@@ -81,8 +80,22 @@ extension Item {
         }
     }
 
+    var departure: (status: SidebarRow.Status, caption: String)? {
+        let cause: KoSchema.Cause? = switch lifecycle {
+        case .ended(let cause), .lingering(let cause): cause
+        default: nil
+        }
+        guard let cause else { return nil }
+        return switch cause {
+        case .exited(let exited) where exited.code == 0: (.done, "")
+        case .exited(let exited): (.error, "exited with code \(exited.code)")
+        case .signaled(let signaled): (.error, "killed by signal \(signaled.signal)")
+        case .failed: (.error, "failed to start")
+        }
+    }
+
     var caption: String {
-        if case .ended(let result) = lifecycle { return result == .completed ? "" : result.rawValue }
+        if case .ended = lifecycle, let departure { return departure.caption }
         guard let report = agent ?? shell?.report else { return "" }
         let progress: Int? = switch report.state {
         case .running(let progress), .waiting(_, let progress): progress
@@ -93,36 +106,25 @@ extension Item {
 
     // The last command of a plain shell, which neither an agent nor a report covers.
     var lastCommand: ShellStatus.Exit? {
-        guard agent == nil, shell?.report == nil, run == nil, case .idle(let exit?) = shell?.phase else { return nil }
+        guard agent == nil, shell?.report == nil, case .idle(let exit?) = shell?.phase else { return nil }
         return exit
     }
 
     func rowTitle(status: SidebarRow.Status) -> (title: String, quietShell: Bool) {
         let quiet = if case .live(.terminal(let shell)) = lifecycle, case .idle = shell.phase {
-            run == nil && [.quiet, .done, .error].contains(status)
+            [.quiet, .done, .error].contains(status)
         } else { false }
         return (quiet ? "Terminal" : sidebarTitle(label, messageable: isMessageable), quiet)
     }
 
-    // The core's mark of a live pane; a run's shell is busy while its run lasts.
     var indicator: (status: SidebarRow.Status, description: String) {
-        if case .lingering(let cause) = lifecycle {
-            return switch cause {
-            case .exited(let exited) where exited.code == 0: (.endedClean, "gone, exited")
-            case .exited(let exited): (.endedFailed, "gone, exited with code \(exited.code)")
-            case .signaled(let signaled): (.endedFailed, "gone, killed by signal \(signaled.signal)")
-            case .failed: (.endedFailed, "gone, failed to start")
-            }
+        if let departure {
+            if case .ended = lifecycle, departure.status == .done { return (.done, "gone, completed") }
+            let status: SidebarRow.Status = if case .lingering = lifecycle {
+                departure.status == .done ? .endedClean : .endedFailed
+            } else { departure.status }
+            return (status, departure.status == .done ? "gone, exited" : "gone, \(departure.caption)")
         }
-        if case .ended(let result) = lifecycle {
-            let status: SidebarRow.Status = switch result {
-            case .completed: .done
-            case .failed, .died: .error
-            case .stopped: .quiet
-            }
-            return (status, "gone, " + result.rawValue)
-        }
-        if run != nil, agent == nil, let shell, shell.report == nil { return (.running, "running") }
         switch mark {
         case .running: return (.running, "running")
         case .waiting: return (.waiting, "waiting")
@@ -138,7 +140,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
     var rows: [SidebarRow] = []
     for session in snapshot.sessions {
         rows.append(SidebarRow(id: .header(session.id), kind: .header, indent: 0, height: 29,
-                               title: session.name, tail: "", status: .quiet, started: nil, focused: false))
+                               title: session.name, tail: "", status: .quiet, focused: false))
         func guide(_ start: Int, end: Int? = nil, x: Double, topInset: Double = 10) {
             let end = end ?? rows.count
             let height = rows[start..<end].reduce(0) { $0 + $1.height }
@@ -169,7 +171,6 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                                            title: title,
                                            tail: tail, runtime: item.runtime.flatMap { $0.name == above ? nil : $0 },
                                            status: status, indicatorDescription: description,
-                                           started: item.started,
                                            focused: target == snapshot.client,
                                            quietShell: quietShell,
                                            agent: agent, root: root))
@@ -198,7 +199,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                                                title: record.title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
                                                tail: caption, status: [.done, .error].contains(status) && item.recordsSeen ? .quiet : status,
                                                indicatorDescription: record.state.rawValue,
-                                               started: nil, focused: false, agent: true, root: root))
+                                               focused: false, agent: true, root: root))
                     }
                     if !records.isEmpty {
                         for (index, record) in records.enumerated() {
@@ -222,15 +223,9 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
         }
         windows(session.nodes, depth: 0, root: nil)
         rows.append(SidebarRow(id: .gap(session.id), kind: .gap, indent: 0, height: 16,
-                               title: "", tail: "", status: .quiet, started: nil, focused: false))
+                               title: "", tail: "", status: .quiet, focused: false))
     }
     return rows
-}
-
-public func sidebarElapsed(started: Date, now: Date) -> String {
-    let s = max(0, Int(now.timeIntervalSince(started)))
-    return s < 60 ? "\(s)s" : s < 3600 ? String(format: "%dm%02ds", s / 60, s % 60)
-        : String(format: "%dh%02dm", s / 3600, (s / 60) % 60)
 }
 
 public struct SidebarCaptions {

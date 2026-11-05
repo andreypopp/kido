@@ -310,12 +310,6 @@ impl Model {
                     return Applied::Layout;
                 }
             }
-            ClientEvent::Run(run) => {
-                if let Some(pane) = run.meta.pane.and_then(|pane| self.pane_mut(pane)) {
-                    pane.row.run = Some(run);
-                    return Applied::State;
-                }
-            }
             ClientEvent::Pwd(pwd) => {
                 if let Some(pane) = self.pane_mut(pwd.pane) {
                     pane.row.cwd = pwd.pwd;
@@ -510,9 +504,9 @@ pub fn cycle(order: &[PaneId], from: Option<PaneId>, steps: isize) -> Option<Pan
 mod tests {
     use std::collections::BTreeMap;
 
-    use ko_server::ids::{Name, RunId};
+    use ko_server::ids::Name;
     use ko_server::protocol::{
-        Axis, Cause, Cells, Dead, Float, Layout, Leaf, Listing, Node, Revision, RunRow, Session,
+        Axis, Cause, Cells, Dead, Float, Layout, Leaf, Listing, Node, Revision, Session,
     };
     use ko_server::vars::Vars;
     use proptest::prelude::*;
@@ -776,28 +770,8 @@ mod tests {
         assert_eq!(model.locate(pane(9)), None);
     }
 
-    fn run(number: u8, on: u64) -> RunRow {
-        RunRow {
-            meta: ko_server::runs::Meta {
-                id: format!("{number:032x}").parse().unwrap(),
-                name: ko_server::runs::RunName::new("r").unwrap(),
-                parent: None,
-                pane: Some(pane(on)),
-                runtime: None,
-                argv: vec!["cmd".to_owned()],
-                cwd: String::new(),
-                started_at: ko_server::timestamp::Timestamp::from_micros(0),
-            },
-            outcome: None,
-        }
-    }
-
     fn set_parent(model: &mut Model, child: u64, parent: Option<u64>) {
         model.pane_mut(pane(child)).unwrap().row.parent = parent.map(pane);
-    }
-
-    fn run_id(number: u8) -> RunId {
-        format!("{number:032x}").parse().unwrap()
     }
 
     fn outline_of(model: &Model) -> Vec<String> {
@@ -828,9 +802,6 @@ mod tests {
         set_parent(&mut model, 3, Some(1));
         set_parent(&mut model, 4, Some(3));
         set_parent(&mut model, 2, Some(5));
-        for event in [run(1, 3), run(2, 4)] {
-            assert_eq!(model.apply(ClientEvent::Run(event)), Applied::State);
-        }
         assert_eq!(
             outline_of(&model),
             ["0pane_1", "1pane_3", "2pane_4", "0pane_2", "0pane_5"],
@@ -838,50 +809,6 @@ mod tests {
         );
         assert_eq!(model.step(Some(pane(1)), 1), Some(pane(3)));
         assert_eq!(model.step(Some(pane(4)), 1), Some(pane(2)));
-        let mut without_run = model.layout.clone();
-        without_run.layout.sessions[0].windows.remove(2);
-        assert_eq!(
-            model.apply(announced(without_run, Vec::new())),
-            Applied::Layout
-        );
-        let runs = |model: &Model| -> Vec<RunId> {
-            let mut ids: Vec<RunId> = model
-                .panes
-                .iter()
-                .filter_map(|p| Some(p.row.run.as_ref()?.meta.id.clone()))
-                .collect();
-            ids.sort();
-            ids
-        };
-        assert_eq!(
-            runs(&model),
-            [run_id(2)],
-            "the run of a pane that the layout dropped goes with it"
-        );
-        assert_eq!(model.apply(ClientEvent::Run(run(9, 3))), Applied::Nothing);
-        assert_eq!(
-            runs(&model),
-            [run_id(2)],
-            "a run event for a pane the layout lacks changes nothing"
-        );
-        let mut ended = run(2, 4);
-        ended.outcome = Some(ko_server::runs::RunOutcome {
-            result: ko_server::runs::RunResult::Completed,
-            text: String::new(),
-            at: None,
-        });
-        assert_eq!(model.apply(ClientEvent::Run(ended.clone())), Applied::State);
-        assert_eq!(
-            model
-                .panes
-                .iter()
-                .find(|p| p.row.id == pane(4))
-                .unwrap()
-                .row
-                .run,
-            Some(ended),
-            "an outcome lands on the row of the run's pane"
-        );
     }
 
     #[test]

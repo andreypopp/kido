@@ -9,8 +9,8 @@ work in this repository.
 server `ko` and its decisions. [docs/protocol.md](docs/protocol.md)
 describes the protocol's behaviour. [docs/design.md](docs/design.md)
 describes the agent features: the store for each fact, the
-messages and addressing, spawning and the window lifecycle, run
-outcomes, and the boundary between ko and its pi extension.
+messages and addressing, spawning and the window lifecycle, and the
+boundary between ko and its pi extension.
 [docs/design-subagents.md](docs/design-subagents.md) describes
 subagents. [docs/design-program-status.md](docs/design-program-status.md)
 describes pane classification and status. [docs/design-runtimes.md](docs/design-runtimes.md)
@@ -94,7 +94,7 @@ status, as uncut text.
 **State.** Use one source of truth for each fact. Never hold the same
 fact in two stores:
 
-- A run record and a pane variable.
+- A layout row and a pane variable.
 - A Rust record and a TS or Swift copy.
 - A file and an in-memory mirror.
 - A doc and the code.
@@ -269,8 +269,8 @@ These requirements are fixed:
   `share/` and Kido.app. A long option is `--name`. clap's derive
   generates `--help` and the usage errors: the doc comment on each
   command and argument is its help text. A usage error exits 124.
-  The run commands' flags, exit codes and JSON are the contract with
-  the pi extension (docs/design.md, "Window lifecycle").
+  `ko api`'s flags, exit codes and output are the contract with the
+  pi extension (docs/design.md, "The pi extension, ko-pi").
 
 Conventions:
 
@@ -400,7 +400,7 @@ Conventions:
   `fence(SeqCst)` beside each one (its comment has the issue). The
   acquire/release twin of the wakeup model is `#[should_panic]`.
 - **Verus.** `ko_pane_wire::ring`, `ko_pane_wire::frame::Req`,
-  `ko_server::delivery`, `ko_server::view`, `ko_server::tail` and `conn.rs`'s `Batch` are
+  `ko_server::delivery`, `ko_server::view` and `conn.rs`'s `Batch` are
   verified with Verus (`make verus`, `scripts/verus.sh`, the pinned
   release archive in `build/verus/<release>/`). A verified crate has
   `[package.metadata.verus] verify = true` and builds with plain
@@ -411,7 +411,7 @@ Conventions:
   `ring/backend.rs` (the trusted base). `cfg(verus_only)` guards only
   `use` statements. `#[verifier::external_body]` and
   `external_fn_specification` occur only in `ring/backend.rs`,
-  `delivery.rs`, `view.rs`, `tail.rs` and `conn.rs`. In `ring/backend.rs`: the
+  `delivery.rs`, `view.rs` and `conn.rs`. In `ring/backend.rs`: the
   constructor of each role (`Backend::mint_reader`,
   `Backend::mint_writer`), the mapping's creation
   (`create_handle`, with no `ensures`), the capacity getter, the
@@ -428,8 +428,6 @@ Conventions:
   never wrap. In `view.rs`: the
   WebSocket sends (`reject_ws`, `emit_marked`, `emit_dead`,
   `emit_skipped`, `write_slice`) and the marker decode (`resize_marker`). In
-  `tail.rs`: the output stream's sends (`emit_bytes`, `emit_skip`,
-  `emit_dead`) and the opaque type `Death`. In
   `conn.rs`: `Output`'s `waiting`, `available`, `close` and
   `send_batch` over the opaque `closed` and `waits`, and
   `Header::new` (the record header). Each has an `// Assumes:` comment that
@@ -458,13 +456,9 @@ Conventions:
   request's serial and slice count, and a `Mark` of the log. `open`
   and `pump` compare the stamp at run time; `on_slice` and `on_done`
   compare the stamp and the serial. The `View`'s `wf` holds through
-  every `pub(crate)` method, because its fields are private. A `Tail`
-  (the output stream) is the second consumer of the same `Delivery`:
-  it keeps the stamp and a `Mark` as a `View` does, its `wf` keeps its
-  cursor at a boundary of the log with its offset inside the next
-  record, and it never requests a snapshot. Both place a cursor
-  through `Delivery::seek`, and the cursor lemmas are facts of the log
-  in `ring/spec.rs`. `delivery.rs` denies
+  every `pub(crate)` method, because its fields are private. A view
+  places its cursor through `Delivery::seek`, and the cursor lemmas
+  are facts of the log in `ring/spec.rs`. `delivery.rs` denies
   `clippy::arithmetic_side_effects` but not `indexing_slicing`:
   vstd specifies only `VecDeque::len` and its index, and Verus proves
   each index in bounds. The `verus`
@@ -544,9 +538,7 @@ Conventions:
   directory (`ko_server::spill`, over `ko_sys::file::unlinked`),
   drained after the queue, and a spill over its limit closes the view
   with close code 1013 (docs/protocol.md, section 4); every other link
-  closes at the cap, except a run's screen reply, which the capture's
-  cap bounds and which stops the reading of requests until the queue
-  is below the cap. No other code writes a connection's descriptor.
+  closes at the cap. No other code writes a connection's descriptor.
 - **Atomics.** The ring header's loads and stores are `SeqCst`
   ("The ring indices are sequentially consistent" below).
   `scripts/lint.sh` refuses any other `Ordering` in `ko_pane`,
@@ -567,6 +559,10 @@ Conventions:
   no group signal follows the reap. `ESRCH`
   is not an error, and neither is `EPERM` on a group signal.
   In Python, `bench/client.py` signals only through `signal_child`.
+  In TypeScript, `share/pi/ko-pi.ts` signals only the process groups
+  of the jobs that it spawned itself, through `signalJob`, which takes
+  a record of its job registry; `scripts/lint.sh` refuses
+  `process.kill(` anywhere else in `share/pi/` (docs/design-subagents.md, "Stopping a job").
   `ko_e2e` signals a process that it
   spawned through its `Pid`, and any other process only through
   `ko_sys::pid::signal_descendant`, which refuses a pid that does not
@@ -590,9 +586,8 @@ Conventions:
   interest. The owner matches on the ready tokens and the due timers
   and calls its own handlers with `&mut self`; no callback is
   registered with the loop, and no `Rc<RefCell<..>>` exists. A
-  request that waits (`/runs/<id>/wait`, `/runs/<id>/stop` with a
-  wait, a failed outcome's screen capture, a message's wait for its
-  ack)
+  request that waits (a pane stop with a wait, a message's wait for
+  its ack)
   is a connection in `Phase::Handling` with a waiter stored in
   `State` and, for its deadline, a timer of the loop, never a thread
   (docs/design-ko.md, "The loop rule").
@@ -700,9 +695,7 @@ Conventions:
   `Mapping` is heap memory (`ko_sys/src/mapping/heap.rs`), so the
   ring's writer and reader run on it.
 - **Allocation.** The coordinator allocates nothing on the heap for
-  each ring record in steady state. The output stream is the exception:
-  its JSON text records cost one buffer for each record, which becomes
-  the message, written straight from the ring slice. `ko-bench` counts the server
+  each ring record in steady state. `ko-bench` counts the server
   thread's allocations with its global allocator and prints
   `allocations/record`.
 
@@ -740,8 +733,7 @@ maps the coordinator's modules.
                         calls, doc references, schemas and prompt snapshots;
                         test-ts.sh; dump-prompts.ts, every prompt text pi
                         registers; main-watch.sh, CI for each observed main
-                        head; watch-peer.sh, the live peer run of a script
-                        under the same parent; ci-website-watch.sh; ci-like.sh and
+                        head; ci-website-watch.sh; ci-like.sh and
                         ci-like/Dockerfile, the Linux reproduction;
                         install-zig.sh, the zig pin; zig-cc-musl, the musl
                         linker wrapper of .cargo/config.toml, under its
@@ -805,12 +797,13 @@ Every C file of `bench/` starts with `#define _DARWIN_C_SOURCE` and
 `-std=c11`, which hides `clock_gettime` on Linux.
 
 **The harness is one pi extension.** `share/pi/ko-pi.ts` holds every
-agent tool. It calls only ko's run commands (`run-child`, `runs
---json`, `run-wait --json`, `run-stop`) and `ko api`, with
-`--stream` for its message stream and a run's output stream
-(docs/design.md, "The pi extension, ko-pi", lists the routes). It
-never opens ko's socket. These commands, their flags, exit codes and
-JSON are the contract between the two. ko is the mediator: the
+agent tool. It calls only `ko api`, with `--stream` for its message
+stream and a routed pi's exec sessions (docs/design.md, "The pi
+extension, ko-pi", lists the routes), and no run command: its
+background commands are jobs, child processes of pi
+(docs/design-subagents.md, "A job"). It never opens ko's socket.
+That command, its flags, exit codes and JSON are the contract between
+the two. ko is the mediator: the
 extension never reads ko's state directory or another agent's files
 and has no state directory of its own; its registry and reports are
 custom entries in its own pi session (docs/design-subagents.md, "The
@@ -827,7 +820,7 @@ A server is its state directory (`$KO_STATE_DIR`, else
 client sends the pair as the
 `Ko-Pane` and `Ko-Pane-Token` headers to that server only, and a
 request without them is the user (docs/protocol.md, section 1). ko has
-no caller otherwise: `run-child` takes its parent as an argument.
+no caller otherwise: `POST /panes` takes its parent in the body.
 docs/design-ko.md, "Lifecycle and the command line", gives the
 directory rules, the server's options and every variable that a pane
 gets.
@@ -874,16 +867,16 @@ dialog emits idle immediately. Exit clears all records.
 Its OSC 0 title is "Claude Code" at startup and "Reply with ok" for
 the session. Kido ships no Claude Code shim.
 
-**Runs.** docs/design.md, "Who is authoritative for what" and "Window
-lifecycle", gives the rules. The ones a change breaks most easily:
+**Panes and the sweep.** docs/design.md, "Who is authoritative for
+what" and "Window lifecycle", gives the rules. The ones a change breaks
+most easily:
 
-- A run's status comes from its outcome and its pane, never a pid.
-- The server writes an outcome once and refuses a second. Only the
-  sweep, `run-outcome` and `run-stop` write one.
+- ko keeps no record of a pane after it goes; the row is the whole
+  record. ko has no runs.
 - The sweep reads the pane rows, never a process or pi evidence. It
   removes a `close: on_exit` pane dead for the linger grace, and a
-  pane whose immutable `parent` pane is gone or dead. A run's pane
-  gets `close: on_exit` and its parent's pane as `parent`.
+  pane whose immutable `parent` pane is gone or dead. A child's pane
+  gets `close: on_exit` and its spawner's pane as `parent`.
 - `ko prompt` uses the pane's message stream when it is open, else a
   paste. It mints the message id and resends once with the same id
   only when the connection failed and the candidate's stream was
@@ -951,7 +944,7 @@ the e2e stage to the tests whose names contain the text (a cargo test
 filter). Every selected stage runs even after a failure and prints
 PASS/FAIL/SKIP with its time. `scripts/verify.sh` scrubs the
 environment: it unsets `KO_STATE_DIR`, `KO_PANE`, `KO_SOCKET`,
-`KO_PANE_TOKEN`, `KO_RUN_ID` and every `KO_AGENT_*`, and removes installed
+`KO_PANE_TOKEN` and every `KO_AGENT_*`, and removes installed
 `share/ko/bin` entries from PATH, so the developer's own pane does not
 enter the tests. The lint and ts stages need Node 24 or newer;
 `KO_TS_TEST_REQUIRED=1`, which verify sets itself, makes a missing node
@@ -1026,8 +1019,8 @@ the toolchain of `rust-toolchain.toml`, zig through
 overwrites the host's macOS outputs. The container (`ko-ci-like-<pid>`;
 its busy siblings `ko-ci-like-busy-<pid>-N`) gets
 `KO_STATE_DIR=/tmp/ko-state`, and the host's other `KO_*` variables
-pass through, except `KO_AGENT_*`, `KO_PANE`, `KO_PANE_TOKEN`,
-`KO_SOCKET` and `KO_RUN_ID`. In a linked worktree, the script
+pass through, except `KO_AGENT_*`, `KO_PANE`, `KO_PANE_TOKEN` and
+`KO_SOCKET`. In a linked worktree, the script
 also mounts the main repository's git directory read-only, because
 `ko_server/build.rs` runs git. Linux's check is `make ci-like
 ARGS="--cpus 2 --memory 6g -- make verify"`; the Rust and zig builds

@@ -6,7 +6,7 @@ use ko_pane_wire::frame::Size;
 
 use crate::config::Config;
 use crate::delivery::Stamps;
-use crate::ids::{PaneId, PaneToken, RunId};
+use crate::ids::{PaneId, PaneToken};
 use crate::inbox::Inbox;
 use crate::model::PaneModel;
 use crate::pane_proc::{Input, Io, Launch, PaneProc};
@@ -25,7 +25,6 @@ pub(crate) struct Program {
 #[derive(Debug)]
 pub(crate) struct Birth {
     pub(crate) vars: Vars,
-    pub(crate) run: Option<RunId>,
     pub(crate) parent: Option<PaneId>,
     pub(crate) close: Close,
     pub(crate) runtime: Option<RuntimeName>,
@@ -41,7 +40,6 @@ pub(crate) struct Pane {
     focused: bool,
     telemetry: Telemetry,
     vars: Vars,
-    run: Option<RunId>,
     parent: Option<PaneId>,
     close: Close,
     runtime: Option<RuntimeName>,
@@ -70,7 +68,6 @@ impl Pane {
                 ..Telemetry::default()
             },
             vars: birth.vars,
-            run: birth.run,
             parent: birth.parent,
             close: birth.close,
             runtime: birth.runtime,
@@ -102,10 +99,6 @@ impl Pane {
 
     pub(crate) fn vars(&self) -> &Vars {
         &self.vars
-    }
-
-    pub(crate) fn run(&self) -> Option<&RunId> {
-        self.run.as_ref()
     }
 
     pub(crate) fn parent(&self) -> Option<PaneId> {

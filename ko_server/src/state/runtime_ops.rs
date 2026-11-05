@@ -5,7 +5,7 @@ use crate::api::{Route, WaitMs, routes};
 use crate::pane::Birth;
 use crate::panes::{AddError, Start, is_descendant, program, scope};
 use crate::protocol::{
-    ClientRuntime, Empty, Error, ErrorKind, Info, LeadReport, LinkState, RuntimeInfo, RuntimeWait,
+    ClientRuntime, Empty, Error, ErrorKind, LeadReport, LinkState, RuntimeInfo, RuntimeWait,
 };
 use crate::runtime::pane::{self, Dir, Wrap as Entering, socket_path};
 use crate::runtime::{CLEANUP_LIMIT, Due, PASS_HOLD, Wait, Who};
@@ -47,7 +47,7 @@ impl State {
         id: PaneId,
         shell: &Path,
         request: &CreatePane,
-        (vars, run): (Vars, Option<RunId>),
+        vars: Vars,
         (chosen, dir): (&BTreeMap<RuntimeName, Runtime>, &Dir),
     ) -> Result<Birth, AddError> {
         let program = match &request.runtime {
@@ -76,7 +76,6 @@ impl State {
         };
         Ok(Birth {
             vars,
-            run,
             parent: request.parent,
             close: request.close,
             runtime: request.runtime.clone(),
@@ -385,24 +384,6 @@ impl State {
         seen
     }
 
-    pub(crate) fn visible_runs(
-        &self,
-        runtime: &RuntimeName,
-        caller: PaneId,
-        infos: Vec<Info>,
-    ) -> Vec<Info> {
-        let seen = self.visible_to(runtime, caller);
-        infos
-            .into_iter()
-            .filter(
-                |info| match info.run.meta.pane.filter(|p| self.panes.find(*p).is_some()) {
-                    Some(pane) => seen.contains(&pane),
-                    None => info.run.meta.runtime.as_ref() == Some(runtime),
-                },
-            )
-            .collect()
-    }
-
     pub(crate) fn runtime_gate(
         &self,
         runtime: &RuntimeName,
@@ -423,31 +404,15 @@ impl State {
                 id,
             )
         };
-        let of_run = |id: &RunId, check: &dyn Fn(PaneId) -> Result<(), Error>| {
-            let Some(meta) = runs::read_meta(self.runs.root(), id) else {
-                return Ok(());
-            };
-            match meta.pane.filter(|pane| self.panes.find(*pane).is_some()) {
-                Some(pane) => check(pane),
-                None if meta.runtime.as_ref() == Some(runtime) => Ok(()),
-                None => Err(Error::new(
-                    ErrorKind::Refused,
-                    format!("run {id} is not visible to {caller} on runtime {runtime}"),
-                )),
-            }
-        };
         match route {
             Route::Version {}
             | Route::GetLayout {}
             | Route::ListPanes {}
             | Route::NewPane {}
-            | Route::StartRun {}
-            | Route::ListRuns { .. }
             | Route::StopPane { .. }
             | Route::SetVar { .. }
             | Route::DeleteVar { .. }
             | Route::DeleteVars { .. }
-            | Route::Output { .. }
             | Route::Messages { .. }
             | Route::PostMessage { .. }
             | Route::PromptResolve { .. }
@@ -456,11 +421,6 @@ impl State {
             Route::ClearHistory { id } | Route::Input { id } | Route::Screen { id, .. } => {
                 reached(*id)
             }
-            Route::GetRun { id }
-            | Route::WaitRun { id, .. }
-            | Route::RunOutcome { id }
-            | Route::StopRun { id } => of_run(id, &shown),
-            Route::RunScreen { id } => of_run(id, &reached),
             _ => {
                 let (method, target) = route.to_request();
                 Err(Error::new(

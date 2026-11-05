@@ -35,11 +35,11 @@ func record(_ id: String, _ state: ProgramStatus.Record.State, app: String? = ni
     ProgramStatus.Record(id: id, state: state, app: app, kind: kind, progress: progress, title: title, msg: msg)
 }
 
-func pane(_ id: Int, window: Int? = nil, title: String = "", lifecycle: Lifecycle = terminal(), run: String? = nil, started: Double? = nil,
+func pane(_ id: Int, window: Int? = nil, title: String = "", lifecycle: Lifecycle = terminal(),
           records: [ProgramStatus.Record] = [], serial: Int = 0, recordsSeen: Bool = false, mark: KoSchema.Mark = .none_, children: [Node] = []) -> Node {
     let pi = if case .live(.piAgent) = lifecycle { true } else { false }
     return .item(Item(id: PaneID(number: UInt32(id)), window: WindowID(number: UInt32(window ?? id)), title: title, lifecycle: lifecycle,
-                      program_status: ProgramStatus(serial: serial, records: records), run: run, started: started.map(Date.init(timeIntervalSince1970:)),
+                      program_status: ProgramStatus(serial: serial, records: records),
                       children: children, mark: mark, recordsSeen: recordsSeen, inbox: pi))
 }
 

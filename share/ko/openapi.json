@@ -561,23 +561,6 @@
             "type": "object"
           },
           {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/RunRow"
-              }
-            ],
-            "properties": {
-              "type": {
-                "const": "run",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          },
-          {
             "properties": {
               "inbox": {
                 "type": "boolean"
@@ -1670,51 +1653,6 @@
         ],
         "type": "string"
       },
-      "Info": {
-        "properties": {
-          "argv": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "cwd": {
-            "type": "string"
-          },
-          "id": {
-            "$ref": "#/components/schemas/RunId"
-          },
-          "name": {
-            "$ref": "#/components/schemas/RunName"
-          },
-          "outcome": {
-            "$ref": "#/components/schemas/RunOutcome"
-          },
-          "pane": {
-            "$ref": "#/components/schemas/PaneId"
-          },
-          "parent": {
-            "$ref": "#/components/schemas/Parent"
-          },
-          "runtime": {
-            "$ref": "#/components/schemas/RuntimeName"
-          },
-          "session": {
-            "type": "string"
-          },
-          "startedAt": {
-            "$ref": "#/components/schemas/Timestamp"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "argv",
-          "cwd",
-          "startedAt"
-        ],
-        "type": "object"
-      },
       "Input": {
         "oneOf": [
           {
@@ -2070,9 +2008,6 @@
           },
           "progress": {
             "$ref": "#/components/schemas/Progress"
-          },
-          "run": {
-            "$ref": "#/components/schemas/RunRow"
           },
           "runtime": {
             "$ref": "#/components/schemas/RuntimeName"
@@ -2573,74 +2508,6 @@
         ],
         "type": "string"
       },
-      "OutputEvent": {
-        "description": "One message of the raw output stream of a pane. Offsets count the pane's output bytes from the\nstart of the pane. Consecutive bytes records have consecutive offsets.",
-        "oneOf": [
-          {
-            "description": "The bytes that start at the offset.",
-            "properties": {
-              "data": {
-                "$ref": "#/components/schemas/Base64"
-              },
-              "offset": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": {
-                "const": "bytes",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "offset",
-              "data"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "The ring overran the reader: the bytes from `from` up to `to` are lost. The next bytes\nrecord starts at `to`.",
-            "properties": {
-              "from": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "to": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": {
-                "const": "skip",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "from",
-              "to"
-            ],
-            "type": "object"
-          },
-          {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Dead"
-              }
-            ],
-            "description": "The pane died, and the stream sent every byte of it. The close follows.",
-            "properties": {
-              "type": {
-                "const": "dead",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          }
-        ]
-      },
       "Over": {
         "enum": [
           "session",
@@ -2720,17 +2587,6 @@
       "PaneToken": {
         "pattern": "^[0-9a-f]{32}$",
         "type": "string"
-      },
-      "Parent": {
-        "anyOf": [
-          {
-            "$ref": "#/components/schemas/PaneId"
-          },
-          {
-            "$ref": "#/components/schemas/RunId"
-          }
-        ],
-        "description": "A pane id, or the id of a run."
       },
       "Paste": {
         "properties": {
@@ -3132,105 +2988,6 @@
             "type": "object"
           }
         ]
-      },
-      "ReportOutcome": {
-        "properties": {
-          "result": {
-            "$ref": "#/components/schemas/Reported"
-          },
-          "text": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "result"
-        ],
-        "type": "object"
-      },
-      "Reported": {
-        "enum": [
-          "completed",
-          "failed",
-          "stopped"
-        ],
-        "type": "string"
-      },
-      "RunId": {
-        "pattern": "^[0-9a-f]{32}$",
-        "type": "string"
-      },
-      "RunName": {
-        "description": "At most 64 bytes, without control characters.",
-        "maxLength": 64,
-        "type": "string"
-      },
-      "RunOutcome": {
-        "properties": {
-          "at": {
-            "$ref": "#/components/schemas/Timestamp"
-          },
-          "result": {
-            "$ref": "#/components/schemas/RunResult"
-          },
-          "text": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "result"
-        ],
-        "type": "object"
-      },
-      "RunResult": {
-        "enum": [
-          "completed",
-          "failed",
-          "died",
-          "stopped"
-        ],
-        "type": "string"
-      },
-      "RunRow": {
-        "properties": {
-          "argv": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "cwd": {
-            "type": "string"
-          },
-          "id": {
-            "$ref": "#/components/schemas/RunId"
-          },
-          "name": {
-            "$ref": "#/components/schemas/RunName"
-          },
-          "outcome": {
-            "$ref": "#/components/schemas/RunOutcome"
-          },
-          "pane": {
-            "$ref": "#/components/schemas/PaneId"
-          },
-          "parent": {
-            "$ref": "#/components/schemas/Parent"
-          },
-          "runtime": {
-            "$ref": "#/components/schemas/RuntimeName"
-          },
-          "startedAt": {
-            "$ref": "#/components/schemas/Timestamp"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "argv",
-          "cwd",
-          "startedAt"
-        ],
-        "type": "object"
       },
       "RuntimeColor": {
         "description": "an #rrggbb colour",
@@ -3642,14 +3399,6 @@
         ],
         "type": "object"
       },
-      "Show": {
-        "enum": [
-          "live",
-          "present",
-          "all"
-        ],
-        "type": "string"
-      },
       "Size": {
         "properties": {
           "cell_px": {
@@ -3710,62 +3459,6 @@
         ],
         "type": "object"
       },
-      "StartRun": {
-        "properties": {
-          "argv": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "cwd": {
-            "$ref": "#/components/schemas/Cwd"
-          },
-          "env": {
-            "default": [],
-            "items": {
-              "$ref": "#/components/schemas/Variable"
-            },
-            "type": "array"
-          },
-          "name": {
-            "$ref": "#/components/schemas/RunName"
-          },
-          "parent": {
-            "$ref": "#/components/schemas/Parent"
-          },
-          "runtime": {
-            "$ref": "#/components/schemas/RuntimeName"
-          },
-          "session": {
-            "$ref": "#/components/schemas/SessionRef"
-          }
-        },
-        "required": [
-          "name",
-          "argv"
-        ],
-        "type": "object"
-      },
-      "Started": {
-        "properties": {
-          "id": {
-            "$ref": "#/components/schemas/RunId"
-          },
-          "pane": {
-            "$ref": "#/components/schemas/PaneId"
-          },
-          "window": {
-            "$ref": "#/components/schemas/WindowId"
-          }
-        },
-        "required": [
-          "id",
-          "window",
-          "pane"
-        ],
-        "type": "object"
-      },
       "StatusChange": {
         "properties": {
           "now": {
@@ -3798,32 +3491,6 @@
             "description": "Milliseconds to wait for the pane to end by itself before ko removes it."
           }
         },
-        "type": "object"
-      },
-      "StopResult": {
-        "enum": [
-          "stopped",
-          "completed"
-        ],
-        "type": "string"
-      },
-      "StopRun": {
-        "properties": {
-          "result": {
-            "$ref": "#/components/schemas/StopResult"
-          },
-          "wait_ms": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/WaitMs"
-              }
-            ],
-            "default": 0
-          }
-        },
-        "required": [
-          "result"
-        ],
         "type": "object"
       },
       "StreamRequest": {
@@ -3903,10 +3570,6 @@
           "continuation_max_bytes"
         ],
         "type": "object"
-      },
-      "Timestamp": {
-        "format": "date-time",
-        "type": "string"
       },
       "Title": {
         "properties": {
@@ -4127,14 +3790,6 @@
         "maximum": 3600000,
         "minimum": 0,
         "type": "integer"
-      },
-      "Waited": {
-        "properties": {
-          "outcome": {
-            "$ref": "#/components/schemas/RunOutcome"
-          }
-        },
-        "type": "object"
       },
       "Welcome": {
         "properties": {
@@ -4361,7 +4016,7 @@
     },
     "/panes": {
       "get": {
-        "description": "Every pane, with its status, variables and run.",
+        "description": "Every pane, with its status and variables.",
         "operationId": "ListPanes",
         "responses": {
           "200": {
@@ -4485,7 +4140,7 @@
         }
       },
       "get": {
-        "description": "One pane, with its status, variables and run.",
+        "description": "One pane, with its status and variables.",
         "operationId": "GetPane",
         "parameters": [
           {
@@ -4801,73 +4456,6 @@
               }
             },
             "description": "The common error body."
-          }
-        }
-      }
-    },
-    "/panes/{id}/output": {
-      "get": {
-        "description": "The raw output of a pane: the bytes of its pty, from the ring, as text messages. Without offset the stream starts at the end of the output so far. An offset older than the oldest byte of the ring starts the stream with a skip record, and the bytes follow from the oldest one. An offset past the end is invalid. When the pane died and the stream sent every byte, a dead record ends the stream, and the server closes the socket. The server writes only to a connection that has drained: a reader that is too slow gets a skip record, never a snapshot. The caller is the user, the pane itself or its parent.",
-        "operationId": "Output",
-        "parameters": [
-          {
-            "example": "pane_1",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/PaneId"
-            }
-          },
-          {
-            "example": "0",
-            "in": "query",
-            "name": "offset",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/Offset"
-            }
-          },
-          {
-            "example": "pane_1",
-            "in": "header",
-            "name": "Ko-Pane",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/PaneId"
-            }
-          },
-          {
-            "example": "0123456789abcdef0123456789abcdef",
-            "in": "header",
-            "name": "Ko-Pane-Token",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/PaneToken"
-            }
-          }
-        ],
-        "responses": {
-          "101": {
-            "description": "Switching Protocols"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The common error body."
-          }
-        },
-        "x-ko-websocket": {
-          "recv": {
-            "$ref": "#/components/schemas/OutputEvent"
-          },
-          "send": {
-            "$ref": "#/components/schemas/Empty"
           }
         }
       }
@@ -5466,339 +5054,6 @@
                     "$ref": "#/components/schemas/Candidate"
                   },
                   "type": "array"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The common error body."
-          }
-        }
-      }
-    },
-    "/runs": {
-      "get": {
-        "description": "The runs of the server.",
-        "operationId": "ListRuns",
-        "parameters": [
-          {
-            "example": "live",
-            "in": "query",
-            "name": "show",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/Show",
-              "default": "live"
-            }
-          },
-          {
-            "example": "pane_1",
-            "in": "query",
-            "name": "parent",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/Parent"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/Info"
-                  },
-                  "type": "array"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The common error body."
-          }
-        }
-      },
-      "post": {
-        "description": "Starts a run in a new window.",
-        "operationId": "StartRun",
-        "parameters": [
-          {
-            "example": "pane_1",
-            "in": "header",
-            "name": "Ko-Pane",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/PaneId"
-            }
-          },
-          {
-            "example": "0123456789abcdef0123456789abcdef",
-            "in": "header",
-            "name": "Ko-Pane-Token",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/PaneToken"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StartRun"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Started"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The common error body."
-          }
-        }
-      }
-    },
-    "/runs/{id}": {
-      "get": {
-        "description": "One run.",
-        "operationId": "GetRun",
-        "parameters": [
-          {
-            "example": "0123456789abcdef0123456789abcdef",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/RunId"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Info"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The common error body."
-          }
-        }
-      }
-    },
-    "/runs/{id}/outcome": {
-      "post": {
-        "description": "Reports the outcome of a run.",
-        "operationId": "RunOutcome",
-        "parameters": [
-          {
-            "example": "0123456789abcdef0123456789abcdef",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/RunId"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ReportOutcome"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Empty"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The common error body."
-          }
-        }
-      }
-    },
-    "/runs/{id}/screen": {
-      "get": {
-        "description": "The screen that the sweep captured when the run's pane went: the whole history of the pane, cut to its last KO_RUN_SCREEN_BYTES bytes. A run that has none is not_found.",
-        "operationId": "RunScreen",
-        "parameters": [
-          {
-            "example": "0123456789abcdef0123456789abcdef",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/RunId"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "text/plain": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The common error body."
-          }
-        }
-      }
-    },
-    "/runs/{id}/stop": {
-      "post": {
-        "description": "Stops a run.",
-        "operationId": "StopRun",
-        "parameters": [
-          {
-            "example": "0123456789abcdef0123456789abcdef",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/RunId"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StopRun"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Empty"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The common error body."
-          }
-        }
-      }
-    },
-    "/runs/{id}/wait": {
-      "get": {
-        "description": "Waits for the outcome of a run, up to the timeout.",
-        "operationId": "WaitRun",
-        "parameters": [
-          {
-            "example": "0123456789abcdef0123456789abcdef",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/RunId"
-            }
-          },
-          {
-            "example": "250",
-            "in": "query",
-            "name": "timeout_ms",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/WaitMs",
-              "default": "30000"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Waited"
                 }
               }
             },

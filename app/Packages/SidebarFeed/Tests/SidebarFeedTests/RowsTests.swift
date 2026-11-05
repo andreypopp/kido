@@ -4,15 +4,15 @@ import KoModel
 @testable import SidebarFeed
 
 private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = false, descendants: Bool = false, records: [ProgramStatus.Record] = [], serial: Int = 7) -> Snapshot {
-    func item(_ id: Int, _ window: Int, run: String? = nil, started: Double? = nil, tail: String = "", lifecycle: Lifecycle? = nil, children: [Node] = []) -> Node {
+    func item(_ id: Int, _ window: Int, tail: String = "", lifecycle: Lifecycle? = nil, children: [Node] = []) -> Node {
         let lifecycle = lifecycle ?? agent(id == 2 ? waiting() : working(), msg: tail.isEmpty ? nil : tail)
-        return pane(id, window: window, title: "pane-\(id)", lifecycle: lifecycle, run: run, started: started,
+        return pane(id, window: window, title: "pane-\(id)", lifecycle: lifecycle,
                     records: id == 0 ? records : [], serial: serial, children: children)
     }
-    let children = [item(1, 1, run: "r-1", started: 100, tail: "working", lifecycle: piAgent(working(), msg: "working"),
-                         children: [item(2, 2, run: "r-2", started: 100, lifecycle: terminal(running(), report: report(waiting())))]),
-                    item(3, 3, run: "r-3", started: 100, lifecycle: terminal(running())),
-                    item(4, 4, run: "r-4", lifecycle: terminal(running()))]
+    let children = [item(1, 1, tail: "working", lifecycle: piAgent(working(), msg: "working"),
+                         children: [item(2, 2, lifecycle: terminal(running(), report: report(waiting())))]),
+                    item(3, 3, lifecycle: terminal(running())),
+                    item(4, 4, lifecycle: terminal(running()))]
     let nodes: [Node] = grouped
         ? [group(0, descendants
             ? [item(0, 0, children: [item(1, 1, tail: "child", children: [item(2, 2)])]),
@@ -92,34 +92,26 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
     #expect(rows.filter { $0.focused }.count == 1)
 }
 
-@Test func paneTargetsAndTimePolicy() throws {
+@Test func paneTargetsAndCaptions() throws {
     let panes = sidebarRows(fixture()).filter { $0.target != nil }
-    #expect(panes.map(\.started) == [nil, nil, Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), Date(timeIntervalSince1970: 100), nil])
     #expect(panes.allSatisfy { if case .pane = $0.kind { return true }; return false })
     #expect(panes.first { $0.title == "@pane-1" }?.tail == "working")
     #expect(panes.map(\.height) == [32, 32, 48, 32, 32, 32])
 }
 
-@Test(arguments: [(0, "0s"), (59, "59s"), (60, "1m00s"), (3599, "59m59s"), (3600, "1h00m"), (7260, "2h01m"), (-1, "0s")])
-func elapsed(_ seconds: Int, _ expected: String) {
-    #expect(sidebarElapsed(started: Date(timeIntervalSince1970: 100), now: Date(timeIntervalSince1970: Double(100 + seconds))) == expected)
-}
-
 @Test func agentWeightAndDisplayOnlyPrefix() throws {
-    let cases: [(Lifecycle, String?, String, String, String, Bool)] = [
-        (piAgent(idle()), nil, "Ada", "@Ada", "Ada", true),
-        (agent(idle()), nil, "Ada", "Ada", "Ada", true),
-        (agent(), nil, "@Ada", "@Ada", "@Ada", true),
-        (remote(.agent(name: "pi", report(idle()))), nil, "Ada", "Ada", "Ada", true),
-        (terminal(running()), "r-5", "Ada", "Ada", "Ada", false),
-        (.ended(.completed), "r-6", "Ada", "Ada", "Ada", false),
-        (terminal(.unknown), nil, "zsh", "zsh", "zsh", false),
-        (remote(.terminal(interactive: true, shell())), nil, "ssh", "ssh alice@devbox", "ssh alice@devbox", false),
-        (terminal(running()), "r-12", "job", "job", "job", false),
-        (.ended(.failed), "r-13", "monitor", "monitor", "monitor", false)
+    let cases: [(Lifecycle, String, String, String, Bool)] = [
+        (piAgent(idle()), "Ada", "@Ada", "Ada", true),
+        (agent(idle()), "Ada", "Ada", "Ada", true),
+        (agent(), "@Ada", "@Ada", "@Ada", true),
+        (remote(.agent(name: "pi", report(idle()))), "Ada", "Ada", "Ada", true),
+        (.ended(.exited(.init(code: 0))), "Ada", "Ada", "Ada", false),
+        (terminal(.unknown), "zsh", "zsh", "zsh", false),
+        (remote(.terminal(interactive: true, shell())), "ssh", "ssh alice@devbox", "ssh alice@devbox", false),
+        (.ended(.exited(.init(code: 2))), "monitor", "monitor", "monitor", false)
     ]
-    for (lifecycle, run, title, expected, tab, agent) in cases {
-        let snapshot = makeSnapshot([pane(0, title: title, lifecycle: lifecycle, run: run)])
+    for (lifecycle, title, expected, tab, agent) in cases {
+        let snapshot = makeSnapshot([pane(0, title: title, lifecycle: lifecycle)])
         let row = try #require(sidebarRows(snapshot).first { $0.target != nil })
         #expect(row.title == expected)
         #expect(row.agent == agent)
@@ -130,37 +122,36 @@ func elapsed(_ seconds: Int, _ expected: String) {
 
 @Test func composedLabelsCaptionsAndStatuses() throws {
     let failedReport = report(idle(outcome(4, .failure)), msg: "Build failed")
-    let cases: [(Lifecycle, String?, String, Bool, SidebarRow.Status, KoSchema.Mark, String, String)] = [
-        (terminal(), nil, "Terminal", true, .quiet, .none_, "idle", ""),
-        (terminal(exited(0)), nil, "Terminal", true, .done, .done, "done", ""),
-        (terminal(exited(130)), nil, "Terminal", true, .error, .failed, "failed", ""),
-        (terminal(report: report(idle())), nil, "Terminal", true, .quiet, .none_, "idle", ""),
-        (terminal(report: failedReport), nil, "Terminal", true, .error, .failed, "failed", "Build failed"),
-        (terminal(.unknown), nil, "zsh", false, .quiet, .none_, "idle", ""),
-        (terminal(.unknown, report: report(idle(outcome(2, .success)), msg: "Built")), nil, "zsh", false, .done, .done, "done", "Built"),
-        (terminal(running(nil, fullscreen: true)), nil, "zsh", false, .quiet, .none_, "idle", ""),
-        (terminal(running("nvim", fullscreen: true), report: report(waiting(.auth), msg: "Login required")), nil, "zsh", false, .waiting, .waiting, "waiting", "Login required"),
-        (terminal(running()), nil, "make", false, .running, .running, "running", ""),
-        (terminal(running("")), nil, "zsh", false, .running, .running, "running", ""),
-        (terminal(running(), report: report(working(42), msg: "Building")), nil, "zsh", false, .running, .running, "running", "Building 42%"),
-        (terminal(exited(1), report: report(waiting(.auth), msg: "Login required")), nil, "zsh", false, .waiting, .waiting, "waiting", "Login required"),
-        (terminal(report: report(idle())), "bash", "zsh", false, .quiet, .none_, "idle", ""),
-        (terminal(exited(1)), "bash", "zsh", false, .running, .failed, "running", ""),
-        (remote(.terminal(interactive: true, shell(running()))), nil, "ssh alice@devbox: make", false, .running, .running, "running", ""),
-        (remote(.terminal(interactive: false, shell(running()))), nil, "ssh alice@devbox", false, .running, .running, "running", ""),
-        (remote(.terminal(interactive: true, shell(running(), report: report(working())))), nil, "ssh alice@devbox", false, .running, .running, "running", ""),
-        (remote(.terminal(interactive: true, shell(exited(2)))), nil, "ssh alice@devbox", false, .error, .failed, "failed", ""),
-        (agent(working(42), msg: "Thinking"), nil, "zsh", false, .running, .running, "running", "Thinking 42%"),
-        (agent(waiting(.permission), msg: "Approve deployment"), nil, "zsh", false, .waiting, .waiting, "waiting", "Approve deployment"),
-        (agent(idle(outcome(17, .success)), msg: "Finished"), nil, "zsh", false, .done, .done, "done", "Finished"),
-        (agent(idle(outcome(18, .failure)), msg: "Failed"), nil, "zsh", false, .error, .failed, "failed", "Failed"),
-        (.ended(.completed), "r-10", "zsh", false, .done, .none_, "gone, completed", ""),
-        (.ended(.failed), "r-11", "zsh", false, .error, .none_, "gone, failed", "failed"),
-        (.ended(.died), "r-7", "zsh", false, .error, .none_, "gone, died", "died"),
-        (.ended(.stopped), "r-8", "zsh", false, .quiet, .none_, "gone, stopped", "stopped")
+    let cases: [(Lifecycle, String, Bool, SidebarRow.Status, KoSchema.Mark, String, String)] = [
+        (terminal(), "Terminal", true, .quiet, .none_, "idle", ""),
+        (terminal(exited(0)), "Terminal", true, .done, .done, "done", ""),
+        (terminal(exited(130)), "Terminal", true, .error, .failed, "failed", ""),
+        (terminal(report: report(idle())), "Terminal", true, .quiet, .none_, "idle", ""),
+        (terminal(report: failedReport), "Terminal", true, .error, .failed, "failed", "Build failed"),
+        (terminal(.unknown), "zsh", false, .quiet, .none_, "idle", ""),
+        (terminal(.unknown, report: report(idle(outcome(2, .success)), msg: "Built")), "zsh", false, .done, .done, "done", "Built"),
+        (terminal(running(nil, fullscreen: true)), "zsh", false, .quiet, .none_, "idle", ""),
+        (terminal(running("nvim", fullscreen: true), report: report(waiting(.auth), msg: "Login required")), "zsh", false, .waiting, .waiting, "waiting", "Login required"),
+        (terminal(running()), "make", false, .running, .running, "running", ""),
+        (terminal(running("")), "zsh", false, .running, .running, "running", ""),
+        (terminal(running(), report: report(working(42), msg: "Building")), "zsh", false, .running, .running, "running", "Building 42%"),
+        (terminal(exited(1), report: report(waiting(.auth), msg: "Login required")), "zsh", false, .waiting, .waiting, "waiting", "Login required"),
+        (remote(.terminal(interactive: true, shell(running()))), "ssh alice@devbox: make", false, .running, .running, "running", ""),
+        (remote(.terminal(interactive: false, shell(running()))), "ssh alice@devbox", false, .running, .running, "running", ""),
+        (remote(.terminal(interactive: true, shell(running(), report: report(working())))), "ssh alice@devbox", false, .running, .running, "running", ""),
+        (remote(.terminal(interactive: true, shell(exited(2)))), "ssh alice@devbox", false, .error, .failed, "failed", ""),
+        (agent(working(42), msg: "Thinking"), "zsh", false, .running, .running, "running", "Thinking 42%"),
+        (agent(waiting(.permission), msg: "Approve deployment"), "zsh", false, .waiting, .waiting, "waiting", "Approve deployment"),
+        (agent(idle(outcome(17, .success)), msg: "Finished"), "zsh", false, .done, .done, "done", "Finished"),
+        (agent(idle(outcome(18, .failure)), msg: "Failed"), "zsh", false, .error, .failed, "failed", "Failed"),
+        (.ended(.exited(.init(code: 0))), "zsh", false, .done, .none_, "gone, completed", ""),
+        (.ended(.exited(.init(code: 2))), "zsh", false, .error, .none_, "gone, exited with code 2", "exited with code 2"),
+        (.ended(.signaled(.init(signal: 9))), "zsh", false, .error, .none_, "gone, killed by signal 9", "killed by signal 9"),
+        (.lingering(.exited(.init(code: 0))), "zsh", false, .endedClean, .none_, "gone, exited", ""),
+        (.lingering(.exited(.init(code: 2))), "zsh", false, .endedFailed, .none_, "gone, exited with code 2", ""),
     ]
-    for (lifecycle, run, title, quiet, status, mark, description, tail) in cases {
-        let snapshot = makeSnapshot([pane(0, title: "zsh", lifecycle: lifecycle, run: run, mark: mark)])
+    for (lifecycle, title, quiet, status, mark, description, tail) in cases {
+        let snapshot = makeSnapshot([pane(0, title: "zsh", lifecycle: lifecycle, mark: mark)])
         let row = try #require(sidebarRows(snapshot).first { $0.target != nil })
         #expect(row.title == title)
         #expect(row.quietShell == quiet)
@@ -198,7 +189,7 @@ func elapsed(_ seconds: Int, _ expected: String) {
     #expect(programs.map(\.indicatorX) == [35, 50, 65, 35, 35, 35, 35])
     #expect(programs.allSatisfy { $0.kind == .pane(nil) && $0.agent })
     #expect(programs.map(\.height) == [32, 32, 48, 32, 32, 32, 32])
-    #expect(programs.allSatisfy { $0.padding == 7 && $0.tailY == 26 && !$0.focused && $0.target == nil && $0.started == nil })
+    #expect(programs.allSatisfy { $0.padding == 7 && $0.tailY == 26 && !$0.focused && $0.target == nil })
     #expect(programs.map(\.status) == [.running, .done, .waiting, .error, .quiet, .quiet, .quiet])
     #expect(rows[1].guides == [.init(x: 20, top: 22, bottom: 32), .init(x: 5, top: 10, bottom: 32)])
     #expect(programs[0].guides == [.init(x: 35, top: 22, bottom: 32), .init(x: 20, top: 0, bottom: 32), .init(x: 5, top: 0, bottom: 32)])

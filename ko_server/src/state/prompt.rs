@@ -5,9 +5,7 @@ use crate::api::routes;
 use crate::ids::WindowId;
 use crate::pane_kind::{self, Kind, RemoteKind};
 use crate::panes::{acts_as, is_descendant};
-use crate::protocol::{
-    Candidate, Content, Error, ErrorKind, Payload, SendPrompt, Sent, Via, Window,
-};
+use crate::protocol::{Candidate, Content, Error, ErrorKind, Payload, SendPrompt, Sent, Via};
 use crate::server::Origin;
 
 use super::messages::{Posting, Reply};
@@ -36,16 +34,9 @@ impl State {
         let (session, own) = layout
             .locate(from)
             .ok_or_else(|| Error::new(ErrorKind::Invalid, format!("pane {from} not found")))?;
-        let run_window = |window: &Window| {
-            window.panes().iter().any(|pane| {
-                self.panes
-                    .find(*pane)
-                    .is_some_and(|pane| pane.run().is_some())
-            })
-        };
         let ordered = std::iter::once(own).chain(session.windows.iter().filter(|w| w.id != own.id));
         let mut found = Vec::new();
-        for window in ordered.filter(|window| !run_window(window)) {
+        for window in ordered {
             let mut ids = window.panes();
             ids.sort();
             for id in ids {

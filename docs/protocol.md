@@ -35,8 +35,8 @@ documents cite them.
 
 The server listens on `<dir>/socket`. Every connection is HTTP/1.1
 with keep-alive. The long-lived streams upgrade to WebSocket: the
-client connection, a pane's view, a pane's search, a pane's output
-stream (section 4) and its message stream (section 7). Everything
+client connection, a pane's view, a pane's search, its message stream
+(section 7) and a runtime's exec session. Everything
 request-shaped stays plain HTTP. A client opens as many connections as
 it has concurrent streams: one for `/client`, one per open view, one
 for each control request, one per image fetch in flight. There is no
@@ -358,10 +358,7 @@ after the spill is drained, under the backpressure rule above: the
 view resumes from the ring, or it gets a skip and a `screen`
 snapshot. So a snapshot reaches a slow reader whole, and the memory
 of each view stays at the cap. Only views spill; the other links
-close at the cap. A run's screen (section 10) is the exception: its
-reply, which `KO_RUN_SCREEN_BYTES` bounds, enters the queue past the
-cap, and the connection reads no further request until its queue is
-below the cap again. `ko_server/src/config.rs` holds the cap and the
+close at the cap. `ko_server/src/config.rs` holds the cap and the
 spill limit of each view. When the spill limit is exceeded, or a
 spill write or read fails, the server discards the unsent messages
 after the one that the socket has in part and closes the view with
@@ -379,53 +376,6 @@ reconnect (design-ko.md, "Remote").
 `GET /panes/pane_N/screen` returns text from the server's formatter
 (`format` plain or ansi, `history` rows), for the terminal client's
 pager and for tests.
-
-### The output stream
-
-`GET /panes/pane_N/output` upgrades to the raw output stream of a
-pane, for a reader without a terminal decoder (an agent harness that
-reads the output of a command). Server to client, every message is a
-text message with one `OutputEvent` (`ko_server/src/protocol.rs`):
-pty bytes from an offset, a range of lost bytes, or the pane's death.
-The stream has no markers, no snapshots and no images. The client
-sends nothing; a text message from it closes the stream as invalid.
-
-Consecutive bytes records have consecutive offsets, and a skip
-continues them at its end. Without `offset`, the stream begins at the
-pane's current end. With an `offset` inside the ring, it begins at
-that byte exactly, also in the middle of a record of the ring: this is
-the resume path of a reader that reopens with the offset after its
-last byte. An `offset` older than the ring begins with a skip to the
-oldest byte that the ring holds. An `offset` past the end is refused
-before the upgrade (`400`, `invalid`).
-
-Backpressure: the server writes a record only while the connection's
-queue is empty, and a record has a bounded size
-(`ko_server/src/tail.rs`). When a write would block, the stream stops.
-When the connection drains, it continues from the ring at the
-reader's offset, or, when the ring moved past that offset, it sends a
-skip and continues from the oldest byte. Thus, the memory of an
-output stream is the ring and at most one record: it never spills and
-never gets a snapshot. This is the difference from a view, whose
-backpressure path sends snapshots that only a terminal decoder can
-apply.
-
-When the pane is dead and the stream has sent every byte up to the
-end of the ring, it sends the death and closes with code 1000. A
-stream opened on a dead pane sends the bytes from its offset first.
-When the pane is removed before its stream sent the death (a failed
-`ko-pane` whose reader was behind, or a pane closed alive), the stream
-closes with code 1011, so the reader knows that it did not get the
-whole output.
-
-The caller must be the user, the pane itself or the pane's parent
-(section 1); any other pane identity is `refused`. `ko api --stream
-PATH` reads such a stream from the shell and prints each text message
-as one line; it exits 0 only after a close with code 1000. It also
-sends each non-empty line of its stdin as one text message, which is
-how a receiver answers on the message stream (section 7); at the end
-of stdin it sends nothing more and goes on printing. A line of stdin
-over 1 MiB ends it with exit 1.
 
 ## 5. Images
 
@@ -520,7 +470,7 @@ change, with the rows of the panes that the change adds (section 7);
 a window's new `focus` when only the focus changed (section 7); a
 pane's title, pwd, pid, foreground, status, variable, death, bell,
 notification, progress and message stream (`inbox`, section 7); a pane's clipboard write and clipboard
-read (section 9), a run's outcome (section 10), a runtime's entry and
+read (section 9), a runtime's entry and
 its removal (section 15), and this client's
 own state when a `switch` or a removal moved it. The OSC 133 steps
 and the OSC 7501 records reach a client only through `status`.
@@ -533,7 +483,7 @@ views.
 There is no feed and no tree snapshot (decided 2026-10-30). The server
 computes one `status` per pane and announces a change for that pane
 only; a client builds its sidebar tree from the layout document and
-the pane rows, whose `run` field names a run pane's run. `PaneStatus` in `ko_server/src/protocol.rs` is
+the pane rows. `PaneStatus` in `ko_server/src/protocol.rs` is
 the reference for its shape: tagged enums for the pane kind, the
 phase and the agent state, with the rules of
 [design-program-status.md](design-program-status.md).
@@ -543,7 +493,7 @@ Pane state and pane events:
 - A pane's row (`Listing` in `ko_server/src/protocol.rs`) carries
   its title, pwd, foreground process, death, status, variables,
   progress (OSC 9;4), `inbox` while its message stream is open
-  (section 7) and, for a run's pane, its run. The pid is
+  (section 7). The pid is
   absent until the coordinator accepts the `ready` pid (section 14),
   and absent when that pid had no process. The status is
   absent until the model has run once for the pane; the progress is
@@ -592,7 +542,7 @@ invariants.
   once for each published change: a change and the sizes and focus
   moves that it causes are one revision and one layout event. A
   change of a pane's row (its title, pwd, foreground, status, death,
-  variables or run outcome) never moves the revision, so it never
+  variables) never moves the revision, so it never
   makes a concurrent `PUT` stale (decided 2026-11-03); it travels in
   its own event (section 6). A pane whose program exits stays in the
   document, so its death is a row change.
@@ -659,7 +609,7 @@ invariants.
   An existing window without `name` keeps its name; a `name` renames
   it. A session has no default name.
 - `POST /panes` (`NewWindow`) creates one window with one pane as
-  one server-made `PUT`, as `POST /runs` does, and answers with its
+  one server-made `PUT` and answers with its
   session, window and pane. Its session is the body's, else the
   parent's, else the calling pane's, else a new session with no name;
   the window goes after the parent's window, else after the caller's,
@@ -872,81 +822,20 @@ terminal's reply names its clipboard and answers the oldest pending
 read of that clipboard. A reply with no pending read is ignored, and a
 reconnect clears the queue.
 
-## 10. Runs
+## 10. The sweep
 
-`ko_server/src/protocol.rs` and `ko_server/src/runs.rs` define the
-bodies; `ko_server/src/state/run_ops.rs` holds the routes' logic. The
-server keeps each run in `runs/<id>/` of its own state directory: `meta.json`, with the run's argv, written once at
-the start, `outcome` and the captured `screen`. A run has no output file:
-its output is its pane's content. Every writer of a run is on the server's
-loop thread: `State` refuses a second outcome, and the `outcome` file
-is a plain atomic write (a temporary file renamed over it).
-
-A run request acts as the calling pane through the headers of
-section 1.
-
-- `POST /runs` creates the run and its window as one server-made
-  `PUT` of the document, placed as `POST /panes` places its window
-  (section 7), with the run's parent pane as the parent. No client
-  switches to it. The run's pane gets `close: on_exit` and, under a parent, the
-  pane's `parent`: a `pane_N` parent as given, a run parent resolved
-  to that run's pane. A caller that acts as a pane may name only
-  itself or a run whose pane it is. The pane's environment gets `KO_RUN_ID`,
-  and its command is the body's argv with no wrapper, so the run's
-  output is the pane's content. The server ties
-  the run to its pane when it creates the pane, and nothing changes
-  the tie later: no variable names a run. The run's pane enters the
-  document in one layout event whose row carries the `run` field. A
-  parent (a run id or `pane_N`) that is unknown, or a run parent that
-  has no pane, is `not_found`; one that has ended is `gone`.
-- `GET /runs` lists runs, newest first: `live` (no outcome),
-  `present` (the pane still exists and names the run) or `all`, and
-  optionally only the children of one parent. Each entry carries the
-  run's argv. `GET /runs/<id>/screen` is the captured screen as
-  `text/plain`, `not_found` when there is none. A run whose
-  pane is gone stays in this history; an active run is one whose pane
-  is in the layout.
-- `GET /runs/<id>/wait` is a long poll (design-ko.md, "The loop rule"): the
-  server answers at once when the run has ended or the timeout is 0,
-  else when the run ends or at the deadline. A waiting connection
-  makes no work for the server until one of the two. A timeout, and
-  a stop's `wait_ms`, over one hour is `invalid`.
-- `POST /runs/<id>/outcome` records an outcome. A second write is
-  `refused`. A `failed` outcome of a run whose pane exists first
-  captures the pane's screen.
-- `POST /runs/<id>/stop` records `stopped` (or `completed`), then
-  stops the pane as `POST /panes/pane_N/stop` does (section 7). A run
-  that has already ended is `refused`.
-
-The sweep reads the pane rows and runs when one of its inputs
-changes: a pane's death or removal, the focused panes, and the end of
-a linger grace. It removes a pane in two cases: a pane with `close:
-on_exit` that has been dead for longer than the linger grace (`server:
-linger_seconds` of the configuration file, in seconds with an optional
-fraction), and a pane whose
+The sweep (`ko_server/src/state/sweep.rs`) reads the pane rows and
+runs when one of its inputs changes: a pane's death or removal, the
+focused panes, and the end of a linger grace. It removes a pane in
+two cases: a pane with `close: on_exit` that has been dead for longer
+than the linger grace (`server: linger_seconds` of the configuration
+file, in seconds with an optional fraction), and a pane whose
 `parent` is gone or dead, live or dead itself, at once (the orphan
-rule). When the pane carries a run, the sweep first records the run's
-outcome (the pane's exit, else `died`; `failed` "its parent ended"
-for a live orphan) and captures the screen with its whole history,
-keeping the last `KO_RUN_SCREEN_BYTES` (64 MiB by default) into
-`runs/<id>/screen`; a pane without a run gets no record and no
-capture. The sweep never removes a pane that is focused: shown by a
-client whose terminal has focus (section 3); it tries again when the
-focus changes. The removal of a window's last pane removes the window in
-the same change, as a window delete does (section 7). An empty
-session ends.
-
-A pane's row carries its run, if it has one (`RunRow` in
-`ko_server/src/protocol.rs`): each run has exactly one pane, and a
-pane at most one run. The row's `outcome` is the recorded one, else
-the one that a dead pane gives. The `run` event on `/client` carries
-the run's row (which names its pane) when an outcome is recorded, and
-when the run's pane dies with no recorded outcome, with the outcome
-that the death gives; it does not move the revision. A run's start has
-no `run` event: its layout event carries the row. The same `RunRow`
-is a `GET /runs` entry. The CLI maps the error kinds to exit codes: `not_found`
-or `gone` of a parent to 2, an unknown run to 3, a refused name to 4
-(the CLI checks it before the request), `refused` to 5.
+rule). It keeps no record of a removed pane. The sweep never removes
+a pane that is focused: shown by a client whose terminal has focus
+(section 3); it tries again when the focus changes. The removal of a
+window's last pane removes the window in the same change, as a window
+delete does (section 7). An empty session ends.
 
 ## 11. Search and prompting
 
@@ -967,7 +856,7 @@ for a prompt from pane `from`, with the scope rule applied in the
 server:
 the candidates of the caller's window, else, when that window has
 none, those of the other windows of its session. With `window=true`
-it never widens. Run windows and terminal panes are not candidates. A
+it never widens. Terminal panes are not candidates. A
 candidate says whether its message stream is open (`inbox`), which
 decides the path below. `POST /prompt`
 (`SendPrompt`) sends text to one candidate of its `from` and reports
@@ -995,7 +884,7 @@ error, 4 no agent in scope, 5 several); its `--window` sends
 ## 12. Flow of an app window
 
 1. Open `/client` with a hello that carries the window, size and
-   focus. The welcome's layout event, with every pane's row and run,
+   focus. The welcome's layout event, with every pane's row,
    is the tree's input; the later events keep it current.
 2. For each visible pane, open a view with `history=all` and
    `images=none`, and fetch the images with placements on screen in
@@ -1141,8 +1030,8 @@ configuration file. Each runtime has one listener at
 `KO_SOCKET` inside the runtime. Section 1 gives the identity rule on
 it.
 
-**A pane in a runtime.** `POST /panes`, `POST /runs` and a new pane
-of `PUT /layout` take `runtime`. A pane's runtime is the connection's
+**A pane in a runtime.** `POST /panes` and a new pane of `PUT
+/layout` take `runtime`. A pane's runtime is the connection's
 runtime on a runtime connection, else the body's, else the host. A
 runtime caller that names another runtime is `refused`. A name that
 the configuration does not have is `not_found` ("no runtime NAME in
@@ -1174,8 +1063,7 @@ runtime prefix; between two runtimes it maps back to the host and
 then forward. A directory with a `..` component does not map. A
 directory that is unknown or does not map gives the new pane's
 default: in a runtime its `cwd`, else the transport's directory; on
-the host the server's directory. A run records the directory that its
-pane starts in.
+the host the server's directory.
 
 **Reads on a runtime connection** are narrowed to the caller's
 runtime and its agent scope; a hidden pane is `refused`, not
