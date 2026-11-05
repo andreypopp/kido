@@ -28,8 +28,9 @@ before packaging.
 
 `make -C app install` builds and verifies the same Release bundle, then installs
 it in `/Applications` without Homebrew; use `INSTALL_DIR=` for another directory
-and `VERSION=` to override the project's default version. It refuses to replace
-the app while it runs from that path and does not change the ko server.
+and `VERSION=` to override the project's default version. It renames a running
+app's bundle away, so that app runs on until it quits, and it does not change
+the ko server.
 
 The certificate-based designated requirement keeps TCC grants such as Screen
 Recording stable across upgrades. An ad-hoc cdhash requirement changes with

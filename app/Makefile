@@ -32,9 +32,8 @@ release-build:
 	codesign --verify --strict --deep "$(RELEASE_APP)"
 
 install:
-	python3 scripts/install.py check "$(INSTALL_DIR)"
 	$(MAKE) release-build
-	python3 scripts/install.py install "$(INSTALL_DIR)" "$(RELEASE_APP)"
+	python3 scripts/install.py "$(INSTALL_DIR)" "$(RELEASE_APP)"
 
 release:
 	scripts/release.sh $(if $(filter 1,$(DRY)),--dry-run) $(VERSION)
