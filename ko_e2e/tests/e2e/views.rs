@@ -455,7 +455,7 @@ fn view_resume_resize_and_input() {
     );
 }
 
-const SPILL_LINES: usize = 48_000;
+const SPILL_LINES: usize = 80_000;
 
 fn spill_lines() -> Vec<String> {
     let mut x: u64 = 1;
@@ -506,9 +506,10 @@ fn a_snapshot_over_the_queue_cap_spills_and_reaches_a_slow_reader_whole() {
     let mut v = slow_snapshot_view(&s, &mut c);
     let (data, _) = v.snapshot();
     assert!(
-        v.bytes() > 2 * SOCKET_BUFFER + 65536,
-        "the snapshot fits in the server's send buffer and the queue: {} bytes",
-        v.bytes()
+        v.bytes() - v.largest() > 2 * SOCKET_BUFFER + 65536,
+        "the snapshot fits in the server's send buffer, record tail and queue: {} bytes, largest record {} bytes",
+        v.bytes(),
+        v.largest()
     );
     let terminal = decode(&data, true);
     let got: Vec<&str> = terminal

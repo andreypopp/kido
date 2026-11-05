@@ -447,6 +447,7 @@ pub(crate) struct Ws {
     began: Instant,
     received: usize,
     bytes: usize,
+    largest: usize,
     last: String,
     close: Option<(u16, String)>,
 }
@@ -481,6 +482,7 @@ impl Ws {
                 Ok(Msg::Binary(bytes)) => {
                     self.received += 1;
                     self.bytes += bytes.len();
+                    self.largest = self.largest.max(bytes.len());
                     self.last = format!("binary kind {:?}, {} bytes", bytes.first(), bytes.len());
                     return Ok(Message::Binary(bytes.to_vec()));
                 }
@@ -528,6 +530,10 @@ impl Ws {
         self.bytes
     }
 
+    pub(crate) fn largest(&self) -> usize {
+        self.largest
+    }
+
     pub(crate) fn last(&self) -> &str {
         &self.last
     }
@@ -558,8 +564,8 @@ impl Ws {
         loop {
             match self.next() {
                 Err(End::Timeout) => panic!(
-                    "{what}; {} messages, the last: {}",
-                    self.received, self.last
+                    "{what}; {} messages, {} bytes, the last: {}",
+                    self.received, self.bytes, self.last
                 ),
                 Err(End::Closed) => return,
                 Ok(_) => {}
@@ -1102,6 +1108,7 @@ impl Server {
                 began: Instant::now(),
                 received: 0,
                 bytes: 0,
+                largest: 0,
                 last: String::new(),
                 close: None,
             }),
