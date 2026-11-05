@@ -185,10 +185,9 @@ jobs:
 
       - name: Verify
         env:
-          E2E_THREADS: 16
           KO_E2E_PODMAN: ${{ runner.os == 'Linux' && '1' || '0' }}
         timeout-minutes: 35
-        run: KO_VERUS_REQUIRED=1 KO_E2E_HOST_SSH=1 make verify
+        run: KO_VERUS_REQUIRED=1 KO_E2E_HOST_SSH=1 E2E_THREADS=16 make verify
 
       - name: Install
         timeout-minutes: 10

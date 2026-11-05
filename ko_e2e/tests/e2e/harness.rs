@@ -446,6 +446,7 @@ pub(crate) struct Ws {
     deadline: Instant,
     began: Instant,
     received: usize,
+    bytes: usize,
     last: String,
     close: Option<(u16, String)>,
 }
@@ -473,11 +474,13 @@ impl Ws {
             match self.socket.read() {
                 Ok(Msg::Text(text)) => {
                     self.received += 1;
+                    self.bytes += text.len();
                     self.last = format!("text {:.120}", text.as_str());
                     return Ok(Message::Text(text.to_string()));
                 }
                 Ok(Msg::Binary(bytes)) => {
                     self.received += 1;
+                    self.bytes += bytes.len();
                     self.last = format!("binary kind {:?}, {} bytes", bytes.first(), bytes.len());
                     return Ok(Message::Binary(bytes.to_vec()));
                 }
@@ -519,6 +522,10 @@ impl Ws {
         self.socket
             .send(Msg::text(value.to_string()))
             .unwrap_or_else(|error| panic!("send {value}: {error}"));
+    }
+
+    pub(crate) fn bytes(&self) -> usize {
+        self.bytes
     }
 
     pub(crate) fn last(&self) -> &str {
@@ -1091,6 +1098,7 @@ impl Server {
                 deadline: Instant::now() + DEADLINE,
                 began: Instant::now(),
                 received: 0,
+                bytes: 0,
                 last: String::new(),
                 close: None,
             }),

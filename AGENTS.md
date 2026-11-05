@@ -394,8 +394,7 @@ Conventions:
   The default is 64, so on a developer's Mac every test starts at
   once. CI sets 16: its runners have 3 (macOS) and 4 (Ubuntu) cores,
   and at 64 the CPU work of all tests at once exceeds the 5 s
-  deadlines. Most tests wait on I/O, so 16 keeps about four tests on
-  each core. A lower count does not fix a test that fails at 64: that
+  deadlines. A lower count does not fix a test that fails at 64: that
   test has a race or does too much work.
 - **loom.** `ko_pane_wire::ring::model` checks the ring's records
   and the wakeup handshake on the real `Reader` and `Writer` under

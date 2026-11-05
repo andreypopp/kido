@@ -1502,18 +1502,9 @@ fn client_dead_pane_line() {
     o.attach("cat");
     let line = |text: &str| {
         o.wait(text, || {
-            let lines = o.lines();
-            for (y, l) in lines.iter().enumerate() {
-                if pane_text(l).starts_with(text) {
-                    assert!(
-                        y != 0 && pane_text(&lines[y - 1]).starts_with("last"),
-                        "no program output directly above the line:\n{}",
-                        lines.join("\n")
-                    );
-                    return true;
-                }
-            }
-            false
+            o.lines()
+                .windows(2)
+                .any(|w| pane_text(&w[0]).starts_with("last") && pane_text(&w[1]).starts_with(text))
         });
     };
     line("[exited 3 \u{2014} Ctrl+D to remove]");

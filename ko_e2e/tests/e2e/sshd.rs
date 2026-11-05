@@ -86,7 +86,17 @@ impl Remote {
         if let Some(passphrase) = options.passphrase {
             let keygen = first_file(&["/usr/bin/ssh-keygen"], "ssh-keygen");
             let key = dir.join("client_key");
-            let args = ["-q", "-t", "ed25519", "-N", passphrase, "-f", text_of(&key)];
+            let args = [
+                "-q",
+                "-t",
+                "ed25519",
+                "-a",
+                "1",
+                "-N",
+                passphrase,
+                "-f",
+                text_of(&key),
+            ];
             std::fs::remove_file(&key).unwrap();
             run_program(&dir, &keygen, &env, &args, "", DEADLINE).ok();
         }

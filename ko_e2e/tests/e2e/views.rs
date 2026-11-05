@@ -12,7 +12,7 @@ use tungstenite::protocol::frame::{Frame, FrameHeader};
 
 use crate::harness::{
     DEADLINE, Dir, HEAVY, Hello, Message, Record, Server, Ws, contains, decode, history_lines,
-    poll, size, size_request, start, start_in, stays, tagged, wait_gone, write_config,
+    poll, quote, size, size_request, start, start_in, tagged, text_of, wait_gone, write_config,
 };
 
 const SOCKET_BUFFER: usize = 1 << 20;
@@ -454,13 +454,7 @@ fn view_resume_resize_and_input() {
     );
 }
 
-const SPILL_LINES: usize = 80_000;
-
-fn spill_program() -> String {
-    format!(
-        "stty raw -echo; awk 'BEGIN{{x=1; for(i=0;i<{SPILL_LINES};i++){{l=\"\"; for(j=0;j<60;j++){{x=(x*48271)%2147483647; l=l sprintf(\"%c\",33+x%90)}} printf \"%s\\r\\n\", l}}}}'; printf '\\033]2;history-ready\\007'; cat"
-    )
-}
+const SPILL_LINES: usize = 48_000;
 
 fn spill_lines() -> Vec<String> {
     let mut x: u64 = 1;
@@ -477,17 +471,16 @@ fn spill_lines() -> Vec<String> {
 }
 
 fn slow_snapshot_view(s: &Server, c: &mut Ws) -> Ws {
-    let p = s.pane(&spill_program());
+    let history = s.dir.join("history");
+    std::fs::write(&history, spill_lines().join("\r\n") + "\r\n").unwrap();
+    let p = s.pane(&format!(
+        "stty raw -echo; cat {}; printf '\\033]2;history-ready\\007'; cat",
+        quote(text_of(&history))
+    ));
     c.event("title");
     let mut v = s.ws(&format!("/panes/{p}/view?offset=1000000000000&history=all"));
     ko_sys::sock::set_receive_buffer(v.raw().as_fd(), 4096).unwrap();
     s.ko(&["api", &format!("/panes/{p}/screen")], "").ok();
-    // Nothing reports that the server queued the snapshot (the spill file has no name and no
-    // route shows a queue), so the reader waits a fixed time before it reads.
-    stays("the pane stays served", Duration::from_millis(500), || {
-        s.request("GET", "/version", None, 200);
-        true
-    });
     v
 }
 
@@ -495,7 +488,7 @@ fn slow_snapshot_view(s: &Server, c: &mut Ws) -> Ws {
 fn a_snapshot_over_the_queue_cap_spills_and_reaches_a_slow_reader_whole() {
     let _heavy = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
     let dir = Dir::new("ko-");
-    write_config(&dir, "server:\n  scrollback: {bytes: 524288000}\n");
+    write_config(&dir, "server:\n  scrollback: {bytes: 209715200}\n");
     let s = start_in(
         dir,
         Path::new("/bin/sh"),
@@ -505,6 +498,11 @@ fn a_snapshot_over_the_queue_cap_spills_and_reaches_a_slow_reader_whole() {
     let (mut c, _) = s.client(None);
     let mut v = slow_snapshot_view(&s, &mut c);
     let (data, _) = v.snapshot();
+    assert!(
+        v.bytes() > 2 * SOCKET_BUFFER + 65536,
+        "the snapshot fits in the server's send buffer and the queue: {} bytes",
+        v.bytes()
+    );
     let terminal = decode(&data, true);
     let got: Vec<&str> = terminal
         .history
@@ -528,7 +526,7 @@ fn a_snapshot_over_the_queue_cap_spills_and_reaches_a_slow_reader_whole() {
 fn a_snapshot_over_the_spill_limit_closes_the_view_with_1013() {
     let _heavy = HEAVY.lock().unwrap_or_else(|e| e.into_inner());
     let dir = Dir::new("ko-");
-    write_config(&dir, "server:\n  scrollback: {bytes: 524288000}\n");
+    write_config(&dir, "server:\n  scrollback: {bytes: 209715200}\n");
     let s = start_in(
         dir,
         Path::new("/bin/sh"),
