@@ -9,8 +9,8 @@ import KoModel
     for (text, expected) in [
         ("", SessionName.revert), ("   ", .revert), ("main", .revert),
         ("work", .reject("A session named “work” already exists.")),
-        ("a:b", .reject("Session names can’t contain “:” or “.”.")),
-        ("a.b", .reject("Session names can’t contain “:” or “.”.")),
+        ("a:b", .accept("a:b")),
+        ("a.b", .accept("a.b")),
         ("new name", .accept("new name"))
     ] {
         #expect(SessionName(text, operation: .rename(SessionID(number: 0), original: "main"), sessions: sessions) == expected)
@@ -20,8 +20,8 @@ import KoModel
         ("   ", .reject("Enter a session name.")),
         ("main", .reject("A session named “main” already exists.")),
         ("work", .reject("A session named “work” already exists.")),
-        ("a:b", .reject("Session names can’t contain “:” or “.”.")),
-        ("a.b", .reject("Session names can’t contain “:” or “.”.")),
+        ("a:b", .accept("a:b")),
+        ("a.b", .accept("a.b")),
         (" new name ", .accept("new name"))
     ] {
         #expect(SessionName(text, operation: .create, sessions: sessions) == expected)

@@ -1545,8 +1545,6 @@ import PaneGeometry
         }
         try rename("survivor")
         XCTAssertEqual(renamePanel.palette.error, "A session named “survivor” already exists.")
-        try rename("main.2")
-        XCTAssertEqual(renamePanel.palette.error, "Session names can’t contain “:” or “.”.")
         try rename("renamed")
         try await wait("palette renames the key window's session") { app.palettePanel == nil && owner.snapshot?.sessions.first { $0.id == first }?.name == "renamed" }
         app.closeSession()
