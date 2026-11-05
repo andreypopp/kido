@@ -1074,28 +1074,32 @@ pane starts in; the server resolves it when it creates the pane. The
 caller must be able to read the source as `GET /panes/{id}`: an
 unknown pane is `not_found`, and on a runtime connection a pane outside
 the caller's scope is `refused`. A dead source whose row exists gives
-its last directory. The source's directory is its last OSC 7 pwd.
-A host pane that never reported one gives, while it lives, the
-current directory of its foreground process, which the server reads
-from the OS only at this resolution and only while that pid still
-leads its group in the pane's session (a reused pid gives none), else
-its start directory; a
-runtime pane that never reported one has none, because its host
-process is the transport. The row's `cwd` never shows the OS read: it
-is the start directory until a report. After a report, the row's `cwd` is the
-raw `file://` URI; the server decodes its percent escapes. A host
-pane's report counts only when the URI's host is empty, `localhost`
-or the server's hostname, so a shell on the far side of `ssh` gives
-no directory; a runtime pane's host is ignored. Between the source's
-place and the new pane's, the server moves the directory through the
-configured `paths` of the runtimes, whatever their link state: in
-the same place it passes unchanged; from the host into a runtime it
-maps forward; from a runtime to the host it maps back by the longest
-runtime prefix; between two runtimes it maps back to the host and
-then forward. A directory with a `..` component does not map. A
-directory that is unknown or does not map gives the new pane's
-default: in a runtime its `cwd`, else the transport's directory; on
-the host the server's directory.
+its last directory. The server tries the source's directories in
+order and takes the first that it can use. The first is the last OSC
+7 pwd. A host pane's report counts only when the URI's host is
+empty, `localhost` or the server's hostname, so a shell on the far
+side of `ssh` gives no directory; a runtime pane's host is ignored.
+The row's `cwd` is the start directory until a report, then the raw
+`file://` URI; the server decodes its percent escapes. A runtime
+pane has no other step, because its host process is the transport.
+For a host pane, the next step is, while it lives, the current
+directory of its foreground process, which the server reads from the
+OS only at this resolution and only while that pid still leads its
+group in the pane's session (a reused pid gives none); the row's
+`cwd` never shows this read. The last step is its start directory.
+Between the source's place and the new pane's, the server moves the
+directory through the configured `paths` of the runtimes, whatever
+their link state: in the same place it passes unchanged; from the
+host into a runtime it maps forward; from a runtime to the host it
+maps back by the longest runtime prefix; between two runtimes it
+maps back to the host and then forward. A directory with a `..`
+component does not map. A step can be used only when it maps and
+its host directory exists as a directory, so a deleted directory
+does not fail the request. A directory that stays in the source's
+runtime is not checked, because the host cannot see it. When no step
+can be used, the new pane gets its default: in a runtime its `cwd`,
+else the transport's directory; on the host the server's directory.
+A string `cwd` gets no such check: a missing directory is `invalid`.
 
 **Reads on a runtime connection** are narrowed to the caller's
 runtime and its agent scope; a hidden pane is `refused`, not

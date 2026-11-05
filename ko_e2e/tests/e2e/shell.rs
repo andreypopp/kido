@@ -79,6 +79,67 @@ fn panes_inherit_current_directories() {
         row["foreground"]["name"] == "cat"
     });
     inherit(&pane);
+
+    let missing = fs::canonicalize(&*s.dir).unwrap().join("removed");
+    fs::create_dir(&missing).unwrap();
+    let source = s.pane(&format!(
+        "cd {}; printf '\\033]7;file://localhost{}\\007'; printf READY; exec cat",
+        quote(text_of(&missing)),
+        text_of(&missing),
+    ));
+    s.screen_has(&source, "READY");
+    s.wait_row(
+        &source,
+        "the reported directory and foreground process",
+        |row| {
+            row["cwd"]
+                .as_str()
+                .is_some_and(|cwd| cwd.ends_with("/removed"))
+                && row["foreground"]["name"] == "cat"
+        },
+    );
+    let os_source = s.pane(&format!(
+        "cd {}; printf '\\033]7;file://localhost{}\\007'; printf READY; exec cat",
+        quote(work),
+        text_of(&missing),
+    ));
+    s.screen_has(&os_source, "READY");
+    s.wait_row(
+        &os_source,
+        "the unusable report and live foreground",
+        |row| {
+            row["cwd"]
+                .as_str()
+                .is_some_and(|cwd| cwd.ends_with("/removed"))
+                && row["foreground"]["name"] == "cat"
+        },
+    );
+    fs::remove_dir(&missing).unwrap();
+    let mut request = sh("pwd -P; echo DONE; exec cat");
+    request["cwd"] = json!({"pane": os_source});
+    let os_inherited = s.new_pane(request);
+    s.screen_has(&os_inherited, work.trim_end_matches('\t'));
+    s.screen_has(&os_inherited, "DONE");
+    assert_eq!(s.row(&os_inherited)["cwd"], work);
+
+    let mut request = sh("pwd -P; echo DONE; exec cat");
+    request["cwd"] = json!({"pane": source});
+    let inherited = s.new_pane(request);
+    s.screen_has(&inherited, "DONE");
+    assert_eq!(s.row(&inherited)["cwd"], "/tmp");
+
+    let mut request = sh("exec cat");
+    request["cwd"] = json!(text_of(&missing));
+    let error = s
+        .ko(
+            &["api", "-X", "POST", "--input", "-", "/panes"],
+            &request.to_string(),
+        )
+        .http_error(400);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&error).unwrap()["message"],
+        "cwd must be a directory"
+    );
 }
 
 #[test]

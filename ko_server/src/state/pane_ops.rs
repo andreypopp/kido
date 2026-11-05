@@ -157,19 +157,25 @@ impl State {
                     .foreground
                     .as_ref()
                     .and_then(|foreground| Pid::new(i64::from(foreground.pid)));
-                let path = source.proc().directory(place, foreground);
-                let Some(path) = path else {
-                    return Dir::Default;
-                };
-                match own {
-                    None => Dir::Host(path),
-                    Some(own) if Some(&own) == request.runtime.as_ref() => Dir::Runtime(path),
-                    Some(own) => self
-                        .runtimes
-                        .settings_in(&own, read.get())
-                        .ok()
-                        .and_then(|runtime| host_cwd(&runtime.paths(), &path))
-                        .map_or(Dir::Default, Dir::Host),
+                let inside = own.is_some() && own.as_ref() == request.runtime.as_ref();
+                let path = source.proc().directory(place, foreground, |path| {
+                    if inside {
+                        return Some(path);
+                    }
+                    let path = match &own {
+                        None => path,
+                        Some(own) => self
+                            .runtimes
+                            .settings_in(own, read.get())
+                            .ok()
+                            .and_then(|runtime| host_cwd(&runtime.paths(), &path))?,
+                    };
+                    path.is_dir().then_some(path)
+                });
+                match path {
+                    Some(path) if inside => Dir::Runtime(path),
+                    Some(path) => Dir::Host(path),
+                    None => Dir::Default,
                 }
             }
         }

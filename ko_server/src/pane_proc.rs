@@ -278,7 +278,8 @@ pub(crate) struct PaneProc {
     pid: Pid,
     child: Claim,
     title: Vec<u8>,
-    cwd: Directory,
+    reported_dir: Option<Vec<u8>>,
+    start_dir: PathBuf,
     dead: Option<Death>,
     input: Vec<u8>,
     filled: usize,
@@ -287,33 +288,9 @@ pub(crate) struct PaneProc {
     busy: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Directory {
-    Spawned(Vec<u8>),
-    Reported(Vec<u8>),
-}
-
 pub(crate) enum Place<'a> {
     Host(&'a str),
     Runtime,
-}
-
-impl Directory {
-    fn bytes(&self) -> &[u8] {
-        match self {
-            Directory::Spawned(bytes) | Directory::Reported(bytes) => bytes,
-        }
-    }
-
-    fn path(&self, place: Place<'_>) -> Option<PathBuf> {
-        match (self, place) {
-            (Directory::Spawned(bytes), Place::Host(_)) => {
-                Some(PathBuf::from(OsString::from_vec(bytes.clone())))
-            }
-            (Directory::Spawned(_), Place::Runtime) => None,
-            (Directory::Reported(uri), place) => file_uri_path(uri, place),
-        }
-    }
 }
 
 fn file_uri_path(uri: &[u8], place: Place<'_>) -> Option<PathBuf> {
@@ -426,7 +403,8 @@ impl PaneProc {
             pid,
             child: Claim::Awaiting,
             title: Vec::new(),
-            cwd: Directory::Spawned(cwd.as_os_str().as_encoded_bytes().to_vec()),
+            reported_dir: None,
+            start_dir: cwd.to_owned(),
             dead: None,
             input: vec![0; INPUT],
             filled: 0,
@@ -478,19 +456,38 @@ impl PaneProc {
     }
 
     pub(crate) fn cwd(&self) -> &[u8] {
-        self.cwd.bytes()
+        self.reported_dir
+            .as_deref()
+            .unwrap_or_else(|| self.start_dir.as_os_str().as_encoded_bytes())
     }
 
-    pub(crate) fn directory(&self, place: Place<'_>, foreground: Option<Pid>) -> Option<PathBuf> {
-        if matches!((&self.cwd, &place), (Directory::Spawned(_), Place::Host(_)))
-            && self.dead.is_none()
-            && let Some(path) = foreground
-                .zip(self.child_pid())
-                .and_then(|(pid, session)| pid.cwd(session))
+    pub(crate) fn directory(
+        &self,
+        place: Place<'_>,
+        foreground: Option<Pid>,
+        mut resolve: impl FnMut(PathBuf) -> Option<PathBuf>,
+    ) -> Option<PathBuf> {
+        let host = matches!(place, Place::Host(_));
+        if let Some(path) = self
+            .reported_dir
+            .as_deref()
+            .and_then(|uri| file_uri_path(uri, place))
+            .and_then(&mut resolve)
         {
             return Some(path);
         }
-        self.cwd.path(place)
+        if !host {
+            return None;
+        }
+        if self.dead.is_none()
+            && let Some(path) = foreground
+                .zip(self.child_pid())
+                .and_then(|(pid, session)| pid.cwd(session))
+                .and_then(&mut resolve)
+        {
+            return Some(path);
+        }
+        resolve(self.start_dir.clone())
     }
 
     pub(crate) fn dead(&self) -> Option<&Death> {
@@ -826,8 +823,8 @@ impl PaneProc {
                 }
             }
             FromPane::Pwd(cwd) => {
-                if !matches!(&self.cwd, Directory::Reported(old) if old == cwd) {
-                    self.cwd = Directory::Reported(cwd.to_vec());
+                if self.reported_dir.as_deref() != Some(cwd) {
+                    self.reported_dir = Some(cwd.to_vec());
                     io.events.push(Event::Pwd);
                 }
             }
@@ -1033,7 +1030,7 @@ impl PaneProc {
 mod tests {
     #[test]
     fn a_reported_directory_decodes_and_a_host_pane_must_name_this_host() {
-        let at = |uri: &str, place: Place<'_>| Directory::Reported(uri.into()).path(place);
+        let at = |uri: &str, place: Place<'_>| file_uri_path(uri.as_bytes(), place);
         let host = || Place::Host("mac.local");
         assert_eq!(
             at("file://localhost/tmp", host()),
@@ -1055,9 +1052,6 @@ mod tests {
         for bad in ["file://host", "file:///a%2", "file:///a%zz", "/tmp", ""] {
             assert_eq!(at(bad, Place::Runtime), None, "{bad}");
         }
-        let spawned = Directory::Spawned(b"/work".to_vec());
-        assert_eq!(spawned.path(host()), Some(PathBuf::from("/work")));
-        assert_eq!(spawned.path(Place::Runtime), None);
     }
 
     use super::*;
