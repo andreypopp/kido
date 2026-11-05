@@ -1166,7 +1166,13 @@ delegates as its brief says and does not write code.
   it moves a submodule pin. It never runs test suites, builds or other
   long blocking commands itself, so it stays free to answer the user.
   When verification is missing after a demo or a late edit, it sends
-  the work back to the manager. macOS is the platform that counts: a
+  the work back to the manager. A verified unit that rebases onto
+  `main` without conflicts is pushed at once, and CI checks the
+  combination; only a rebase whose conflicts the session resolved
+  goes back to the manager for a check. The session confirms the
+  commit on `origin/main` before it stops the unit's agents and
+  removes the worktree, each a separate step, never in parallel with
+  the commit. macOS is the platform that counts: a
   failure that occurs only on Linux CI gets no unit unless the user
   asks, and a brief asks for no Linux checks.
 - **Models.** Name a model by its fully qualified name:
