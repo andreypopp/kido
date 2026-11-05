@@ -1,6 +1,7 @@
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
 use std::os::fd::AsFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -135,6 +136,7 @@ pub fn bind(dir: &Path, socket: &Path, patience: Patience) -> io::Result<UnixLis
 pub fn attach(
     dir: &Path,
     executable: &Path,
+    path: Option<&str>,
     patience: Patience,
 ) -> Result<(PathBuf, UnixStream), String> {
     let socket = config::socket(Dir::Create, dir)?;
@@ -158,7 +160,17 @@ pub fn attach(
         .open(&log)
         .map_err(message)?;
     let args = ["server", "--server", &dir.to_string_lossy()];
-    let child = ko_sys::spawn::detached(executable, &args, output.as_fd()).map_err(message)?;
+    let environment = path.map(|path| {
+        std::env::vars_os()
+            .filter(|(key, _)| key != "PATH")
+            .map(|(key, value)| [key.as_bytes(), b"=", value.as_bytes()].concat())
+            .chain([[b"PATH=", path.as_bytes()].concat()])
+            .collect::<Vec<Vec<u8>>>()
+    });
+    let env = environment
+        .as_deref()
+        .map_or(ko_sys::spawn::Env::Inherit, ko_sys::spawn::Env::Only);
+    let child = ko_sys::spawn::detached(executable, &args, output.as_fd(), env).map_err(message)?;
     drop(held);
     let ended = reap(child);
     let deadline = Instant::now() + patience.deadline;
@@ -244,7 +256,7 @@ mod tests {
         let dir = scratch("exit");
         std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .unwrap();
-        let error = attach(&dir, Path::new("/usr/bin/false"), PATIENCE).unwrap_err();
+        let error = attach(&dir, Path::new("/usr/bin/false"), None, PATIENCE).unwrap_err();
         assert!(error.starts_with("server exited"), "{error}");
         std::fs::remove_dir_all(dir).unwrap();
     }

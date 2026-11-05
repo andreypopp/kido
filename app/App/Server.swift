@@ -45,10 +45,18 @@ struct BundledTools: Sendable {
         }
     }
     #endif
+    private static let loginPath = Task {
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/sh"
+        let path = await LoginPath.read(shell: shell, deadline: 3)
+        if path == nil { note("could not read the login shell PATH; using the app PATH") }
+        return path
+    }
+
     static func launch(dir: String) async throws(Failure) -> String {
         try tools.validate()
         let executable = tools.ko
-        let launch = Task.detached { try KoClient.launch(dir: dir, executable: executable) }
+        let path = await loginPath.value
+        let launch = Task.detached { try KoClient.launch(dir: dir, executable: executable, path: path) }
         #if KIDO_VISUAL
         let id = UUID()
         launches[dir, default: [:]][id] = launch

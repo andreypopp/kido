@@ -794,12 +794,14 @@ pub unsafe extern "C" fn ko_client_default_dir(out: *mut Buffer) -> Code {
 
 /// # Safety
 ///
-/// `dir` and `executable` are NUL-terminated strings. `socket` is writable for
+/// `dir` and `executable` are NUL-terminated strings. `path` is null or a
+/// NUL-terminated string. `socket` is writable for
 /// one `ko_buffer`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_launch(
     dir: *const c_char,
     executable: *const c_char,
+    path: *const c_char,
     socket: *mut Buffer,
 ) -> Code {
     let (Some(dir), Some(executable)) = (text_of(dir), text_of(executable)) else {
@@ -808,7 +810,11 @@ pub unsafe extern "C" fn ko_client_launch(
     if socket.is_null() {
         return Code::Argument;
     }
-    match launch::attach(Path::new(dir), Path::new(executable), PATIENCE) {
+    let path = match (path.is_null(), text_of(path)) {
+        (false, None) => return Code::Argument,
+        (_, path) => path,
+    };
+    match launch::attach(Path::new(dir), Path::new(executable), path, PATIENCE) {
         Ok((path, _stream)) => {
             hand_over(socket, path.as_os_str().as_bytes().to_vec());
             Code::Ok
@@ -3319,17 +3325,71 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let c_dir = CString::new(dir.as_os_str().as_bytes()).unwrap();
         let mut socket = empty_buffer();
+        // SAFETY: the byte string is NUL-terminated and socket is writable.
+        let code = unsafe {
+            ko_client_launch(
+                c_dir.as_ptr(),
+                c"/nonexistent/ko".as_ptr(),
+                c"\xff".as_ptr(),
+                &mut socket,
+            )
+        };
+        assert_eq!(code, Code::Argument);
         // SAFETY: the strings are valid and socket is writable.
-        let code =
-            unsafe { ko_client_launch(c_dir.as_ptr(), c"/nonexistent/ko".as_ptr(), &mut socket) };
+        let code = unsafe {
+            ko_client_launch(
+                c_dir.as_ptr(),
+                c"/nonexistent/ko".as_ptr(),
+                std::ptr::null(),
+                &mut socket,
+            )
+        };
         assert_eq!(code, Code::Io, "no executable, no server");
         assert!(!contents(&socket).is_empty());
         freed_once(&mut socket);
 
+        let executable = dir.join("fake-ko");
+        let recorded = dir.join("path");
+        std::fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nprintf '%s' \"$PATH\" > '{}'\n",
+                recorded.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            &executable,
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let executable = CString::new(executable.as_os_str().as_bytes()).unwrap();
+        // SAFETY: the strings are valid and socket is writable.
+        let code = unsafe {
+            ko_client_launch(
+                c_dir.as_ptr(),
+                executable.as_ptr(),
+                c"/login/bin:/usr/bin".as_ptr(),
+                &mut socket,
+            )
+        };
+        assert_eq!(code, Code::Io);
+        assert_eq!(
+            std::fs::read_to_string(recorded).unwrap(),
+            "/login/bin:/usr/bin"
+        );
+        freed_once(&mut socket);
+
         let listener = UnixListener::bind(dir.join("socket")).unwrap();
         // SAFETY: as above.
-        let code =
-            unsafe { ko_client_launch(c_dir.as_ptr(), c"/nonexistent/ko".as_ptr(), &mut socket) };
+        let code = unsafe {
+            ko_client_launch(
+                c_dir.as_ptr(),
+                c"/nonexistent/ko".as_ptr(),
+                std::ptr::null(),
+                &mut socket,
+            )
+        };
         assert_eq!(
             (code, contents(&socket)),
             (Code::Ok, dir.join("socket").display().to_string()),

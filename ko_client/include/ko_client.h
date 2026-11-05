@@ -380,9 +380,10 @@ ko_code ko_client_default_dir(ko_buffer *out);
  * (`ko server --server dir`), unless one runs there, and returns the path of its unix
  * socket in `socket`. It waits up to five seconds. On a code other than KO_OK `socket`
  * holds the text of the error. It blocks: call it off the main queue. ko_client_connect
- * never starts a server.
+ * never starts a server. A non-NULL UTF-8 `path` overrides only the new server's PATH;
+ * NULL inherits the process environment. An existing server is not changed.
  */
-ko_code ko_client_launch(const char *dir, const char *executable, ko_buffer *socket);
+ko_code ko_client_launch(const char *dir, const char *executable, const char *path, ko_buffer *socket);
 
 /*
  * Stops the server of the state directory `dir` and waits until it has ended. On a

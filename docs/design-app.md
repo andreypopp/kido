@@ -82,7 +82,21 @@ windows that connect at once end with one server (docs/design-ko.md,
 "Lifecycle and the command line"). `ko_client_launch` starts the server with
 the app's own environment, so `app/App/Server.swift` removes the pane
 identity variables from it and sets a UTF-8 `LANG` when none
-is set. The core reaps the server process that it
+is set. The one exception is `PATH`: launchd's `/usr/bin:/bin:/usr/sbin:/sbin`
+lacks Homebrew's `container`, `podman` and `ssh`, which the server runs for
+runtimes through its `PATH`. At the first local start, `LoginPath.read`
+(`app/App/LoginPath.swift`) runs the user's login shell (`$SHELL`, else
+`/bin/sh`, the server's rule for panes) with `-l -c` and a deadline of 3 s.
+The command execs `/bin/sh` to print `PATH` between two copies of a marker
+that only the probe's environment holds, so it runs under any login shell,
+and noise from dotfiles or an echo of the command line is ignored. `ko_client_launch` gives that value to the new server as its `PATH`
+and changes nothing else; the app's own environment keeps its `PATH`. The
+result, also a failure, holds until the app quits. On a failure (a nonzero
+exit, a timeout, no or an empty value; also a dotfile that leaves
+a background process with the shell's stdout open) the server inherits the app's `PATH`,
+and the app logs one line. A server that already runs keeps its `PATH`, and a
+remote server is not affected. The panes get the server's `PATH` under their
+login shell, with ko's bin directory first. The core reaps the server process that it
 started. Every dial is one stderr line, `dialing SOCKET (cause) [owner]`.
 
 The first welcome must arrive within 20 s (`WindowOwner.welcomeTimeout`),

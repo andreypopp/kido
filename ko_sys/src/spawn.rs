@@ -96,12 +96,17 @@ const POSIX_SPAWN_SETSID: libc::c_int = 0x0400;
 #[cfg(target_os = "linux")]
 const POSIX_SPAWN_SETSID: libc::c_int = libc::POSIX_SPAWN_SETSID as libc::c_int;
 
-pub fn detached(program: &Path, args: &[&str], log: BorrowedFd<'_>) -> io::Result<Pid> {
+pub fn detached(
+    program: &Path,
+    args: &[&str],
+    log: BorrowedFd<'_>,
+    env: Env<'_>,
+) -> io::Result<Pid> {
     start(
         program,
         args,
         &[(log, 0), (log, 1), (log, 2)],
-        (Env::Inherit, None),
+        (env, None),
         Session::New,
     )
 }
