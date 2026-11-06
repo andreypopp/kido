@@ -8,7 +8,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ko_config::values::RuntimeName;
+use ko_config::values::{RuntimeName, RuntimeTag};
 use ko_server::config::{path_with, terminal, terminfo_of};
 use ko_server::ids::{PaneId, PaneToken};
 use ko_server::ssh;
@@ -115,7 +115,7 @@ impl RemoteDir {
 }
 
 pub fn remote_dir(
-    runtime: &RuntimeName,
+    tag: &RuntimeTag,
     chosen: Option<PathBuf>,
     xdg_runtime_dir: Option<&str>,
     uid: u32,
@@ -128,7 +128,7 @@ pub fn remote_dir(
         None => PathBuf::from(format!("/tmp/ko-rt-{uid}")),
     };
     RemoteDir {
-        dir: base.join(runtime.as_str()),
+        dir: base.join(tag.to_string()),
         base: Some(base),
     }
 }
@@ -309,7 +309,13 @@ mod tests {
     fn the_remote_directory_is_the_chosen_one_else_a_private_default() {
         let dev: RuntimeName = "dev".parse().unwrap();
         let at = |chosen: Option<&str>, xdg: Option<&str>| {
-            remote_dir(&dev, chosen.map(PathBuf::from), xdg, 501).dir
+            remote_dir(
+                &RuntimeTag::new(dev.clone(), None),
+                chosen.map(PathBuf::from),
+                xdg,
+                501,
+            )
+            .dir
         };
         assert_eq!(
             at(Some("/srv/ko"), Some("/run/user/501")),
@@ -320,6 +326,10 @@ mod tests {
             Path::new("/run/user/501/ko-rt/dev")
         );
         assert_eq!(at(None, None), Path::new("/tmp/ko-rt-501/dev"));
+        assert_eq!(
+            remote_dir(&"session_3-dev".parse().unwrap(), None, None, 501).dir,
+            Path::new("/tmp/ko-rt-501/session_3-dev")
+        );
         assert_eq!(at(None, Some("relative")), Path::new("/tmp/ko-rt-501/dev"));
     }
 

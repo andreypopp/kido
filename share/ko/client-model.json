@@ -705,6 +705,9 @@
               "name": {
                 "$ref": "#/components/schemas/RuntimeName"
               },
+              "source": {
+                "$ref": "#/components/schemas/RuntimeSource"
+              },
               "type": {
                 "const": "pane",
                 "type": "string"
@@ -712,7 +715,8 @@
             },
             "required": [
               "type",
-              "name"
+              "name",
+              "source"
             ],
             "type": "object"
           },
@@ -722,6 +726,9 @@
               "name": {
                 "$ref": "#/components/schemas/RuntimeName"
               },
+              "source": {
+                "$ref": "#/components/schemas/RuntimeSource"
+              },
               "type": {
                 "const": "routed",
                 "type": "string"
@@ -729,7 +736,8 @@
             },
             "required": [
               "type",
-              "name"
+              "name",
+              "source"
             ],
             "type": "object"
           }

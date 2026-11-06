@@ -851,7 +851,7 @@ most easily:
 - The server signals only an exec helper or a step that it spawned.
 - The `command` kind is test-only, behind `KO_RUNTIME_COMMAND_KIND=1`.
 - The container and podman kinds stop and delete only the container
-  `ko-<name>` that they created from an image, never a
+  `ko-<tag>` that they created from an image, never a
   `from.container`. Their cleanup children never get `SIGTERM`, so a
   stop completes after the link is gone. A runtime's socket is alone
   in `io/`, which the podman kind mounts and ko never removes.

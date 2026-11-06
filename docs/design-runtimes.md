@@ -23,6 +23,24 @@ Thus the ring, the views, the status model and the input path do not
 change: the runtime is a property of how the pane's program started
 and of which socket its processes talk to.
 
+**The key.** The server identifies a runtime by its key
+(`RuntimeKey` in `ko_server/src/runtime/mod.rs`): its name and its
+source (`RuntimeSource` in `ko_server/src/protocol.rs`), an entry of
+the configuration file or a definition of one layout session. The
+registry, the connection's `Origin`, the pane record, the exec
+sessions and the start's waiters hold the key; the wire keeps the
+bare name where the request gives the session. A request's name
+resolves to a key by the request's session: the caller pane's
+session, the session that a new pane lands in, or, for the user,
+the `session` query (protocol.md, section 15). Only configured
+runtimes exist, so every name resolves to its configured entry. The
+key's **tag** (`RuntimeKey::tag`) is its one-word form for a file
+system and a container engine: the name for a configured runtime,
+`<session>-<name>` for a session's. A session id has an underscore and
+a name cannot, so the two forms never collide. The tag names the
+runtime directory, the container `ko-<tag>` and the ssh kind's
+remote directory.
+
 The configuration is the crate `ko_config` ("The configuration
 file"). The coordinator's modules are `ko_server/src/runtime/`: `mod.rs` (the registry, the link states and the
 one dispatch over the kinds), `pane.rs` (the runtime directory's
@@ -113,7 +131,10 @@ pane's status is a pi agent, the `name` of its `pi.runtime`
 ("Agents in a runtime"), which is a routed pi. `ko.runtime` is not
 read: any program can set it, and no rule makes it trusted. A pane
 whose runtime is not in the list still shows the name, without a
-state.
+state. `Model::place` returns the runtime's key: the name and the
+source that the name resolves to in the pane's session, a definition
+of that session, else the configuration. The clients find the entry
+of the list by that key, so two entries with one name stay apart.
 
 **The colour** is the configured `color`, else a hue from the name
 (FNV-1a of the UTF-8 name, mod 360; `app/App/RuntimeTint.swift`).
@@ -195,7 +216,7 @@ connections. At its exit the server takes every link down after the
 panes. Nothing reconnects on its own: the next pane or exec starts
 the link again.
 
-**The runtime directory** is `<state>/runtimes/<name>/`. The
+**The runtime directory** is `<state>/runtimes/<tag>/`. The
 listener's `socket`, mode `0666`, is alone in its subdirectory `io/`,
 mode `0755`, so a process of any
 uid inside a container can connect through a relay, inside the `0700`
@@ -289,7 +310,7 @@ which is the transport's.
 
 **The token** never appears in an argv, because `ps` shows every
 user's arguments. For the `command`, `container` and `podman` kinds, the server
-writes the pane's token file in `<state>/runtimes/<name>/panes/`
+writes the pane's token file in `<state>/runtimes/<tag>/panes/`
 (directory `0700`, file `0600`) before it answers `Up` to that pane's
 wait, and removes it when the pane leaves the document and at down.
 The kind chooses the file's name and text: `pane_N.token` with the
@@ -450,7 +471,7 @@ The `container` kind runs a runtime's panes and exec sessions in one
 Apple container, through the `container` CLI (measured with 1.5.0).
 Each container is one lightweight Linux VM on arm64. The fields are
 `Container` in `ko_config/src/runtime.rs`. `from` names either an
-image, from which ko creates and owns the container `ko-<name>`, or a
+image, from which ko creates and owns the container `ko-<tag>`, or a
 container that the user created and manages. The server finds the
 `container` binary on its own `PATH` at each link start, unless the
 field names a path.
@@ -499,7 +520,7 @@ the image; ko has no measurement of an amd64 image under Rosetta.
    running: run container system start`.
 2. `container inspect <target>`. A missing container (exit 1, `not
    found`) of an image runtime goes to `container run -d --name
-   ko-<name> --init` with the socket relay, each configured volume as
+   ko-<tag> --init` with the socket relay, each configured volume as
    `-v`, the `/opt/ko` mount, `--ssh` for `ssh_agent: forward`,
    `run_args`, the image and `init` (default: `sleep` with the
    argument `infinity`; `--init` reaps the orphans of the panes). A
@@ -572,7 +593,7 @@ enforcing, in Fedora CoreOS). The fields are `Podman` in
 `ssh_agent`, and `podman` for the program; the configuration holds
 both kinds as one `Kind::Container` with an `Engine`, so the server
 dispatches them as one kind. They share `container.rs`: the stages, the target
-`ko-<name>` or the user's container, the inner ko, the env-file
+`ko-<tag>` or the user's container, the inner ko, the env-file
 token, the watch and the cleanup queue are the same, and only the
 argvs and the classification of the CLI's output differ. The podman
 kind runs only on a Linux server: on another OS the first stage
@@ -625,7 +646,7 @@ error:
 
 1. `podman container inspect <target>`. A missing
    container of an image runtime goes to `podman run -d --name
-   ko-<name> --init --security-opt label=disable --http-proxy=false`,
+   ko-<tag> --init --security-opt label=disable --http-proxy=false`,
    the `io/` mount, each volume as `-v`, the `/opt/ko` mount,
    `run_args`, the image and `init`. A stopped container goes to
    `podman start`, a running one to the next stage; for a user's
@@ -683,7 +704,9 @@ of the kind.
    server's only source for its state.
 3. The prepare passenger, `ko enter --prepare` through the master
    (`ko_shell/src/enter.rs`). It resolves the remote directory
-   (`dir`, else a private default of the remote user), refuses a
+   (`dir`, else a private default of the remote user, with the
+   runtime's tag as the last component: `--tag`, which the server
+   passes only for a session's runtime, else the name), refuses a
    directory that is not private and the user's, removes a stale
    socket and every token file, and prints the directory and its
    `ko version`. A missing remote ko fails the start, and so does

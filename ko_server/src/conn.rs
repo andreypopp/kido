@@ -7,7 +7,6 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::Arc;
 
-use ko_config::values::RuntimeName;
 use ko_pane_wire::ring::{Pos, Reader};
 use ko_sys::event::{Interest, Poll, Read, Reads, Timer, Token};
 use ko_sys::mapping::Named;
@@ -15,6 +14,7 @@ use vstd::prelude::*;
 
 use crate::http::{self, Framing, Head, MAX_HEAD, Parsed, Status};
 use crate::link::{Link, Role, Wire};
+use crate::runtime::RuntimeKey;
 use crate::server::{Origin, Verified};
 use crate::spill::Spill;
 use crate::ws::{Header, Record};
@@ -810,7 +810,7 @@ impl Conn {
         }
     }
 
-    pub(crate) fn runs_exec(&self, runtime: &RuntimeName) -> bool {
+    pub(crate) fn runs_exec(&self, runtime: &RuntimeKey) -> bool {
         matches!(self.role(), Some(Role::Exec(session)) if session.runtime == *runtime && session.live())
     }
 

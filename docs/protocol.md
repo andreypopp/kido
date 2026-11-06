@@ -1097,7 +1097,7 @@ active screen changed after a write.
 [design-runtimes.md](design-runtimes.md) gives the design. A runtime
 is a named place where panes and exec sessions run, from the server's
 configuration file. Each runtime has one listener at
-`<dir>/runtimes/<name>/io/socket`, bound while its link is up, which is
+`<dir>/runtimes/<tag>/io/socket`, bound while its link is up, which is
 `KO_SOCKET` inside the runtime. Section 1 gives the identity rule on
 it.
 
@@ -1155,7 +1155,13 @@ views, search, `PUT /layout` and the `/runtimes` routes among them.
 **The `/runtimes` routes** are the host's. `GET /runtimes` lists the
 configured runtimes with their link state, the `color`, the effective `paths`,
 the default `cwd` and `pi`, where an agent's pi runs; `GET
-/runtimes/NAME` one. `GET /runtimes/NAME/wait` is a long poll of the runtime's own
+/runtimes/NAME` one. `GET /runtimes/NAME`, `POST /runtimes/NAME/down`,
+`DELETE /runtimes/NAME` and `GET /runtimes/NAME/exec` take an optional
+query `session`: the session in which NAME resolves
+(design-runtimes.md, "The model"). A pane identity's requests resolve
+in the pane's own session, and a pane identity that names another
+session is `refused`. The user's requests without it resolve to the
+configured runtime. `GET /runtimes/NAME/wait` is a long poll of the runtime's own
 pane wrappers until the link is `Up` or `Failed`; its reply names the
 step to run for the one waiter elected to lead. The leader reports
 the step's end with `POST /runtimes/NAME/lead`. Both accept only a
@@ -1169,12 +1175,14 @@ mount. The server takes an idle runtime down on its own
 
 **Clients** learn the runtimes from `/client`, not from a pane row:
 the row carries only the pane's `runtime` name (decided 2026-11-03).
-The `Welcome` lists every runtime as a `ClientRuntime` (name, kind,
-the configured `color` and the link state), in name order. A `runtime`
-event carries a whole entry when one is added or its kind, colour or
-link state changes, and the client replaces its entry by name or adds
-it; `runtime_deleted` names a runtime that left the configuration and
-has no live link. The server reads the configuration file on each
+The `Welcome` lists every runtime as a `ClientRuntime` (name, source,
+kind, the configured `color` and the link state): the configured
+runtimes first in name order, then those of sessions in session
+order. A `runtime` event carries a whole entry when one is added or
+its kind, colour or link state changes, and the client replaces its
+entry by name and source or adds it; `runtime_deleted` names the name
+and source of a runtime that left the configuration and has no live
+link. The server reads the configuration file on each
 request that needs it, not on a change of the file, so an edit shows
 in these events after the next such request (`GET /runtimes`, or a new
 pane). A runtime that leaves the file while its link is `Starting` or

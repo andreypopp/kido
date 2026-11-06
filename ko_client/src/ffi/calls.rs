@@ -278,16 +278,24 @@ pub unsafe extern "C" fn ko_client_delete(
 
 /// # Safety
 ///
-/// `client_` is live, `name` is NUL-terminated, and `out` is writable.
+/// `client_` is live, `name` is NUL-terminated, `session` is null or NUL-terminated, and `out` is writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_runtime_down(
     client_: *const Client,
     name: *const c_char,
+    session: *const c_char,
     out: *mut Buffer,
 ) -> Code {
     let scope = ();
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
-    let name_text = unsafe { text_of(name, &scope) };
+    let (name_text, session_text) = unsafe { (text_of(name, &scope), text_of(session, &scope)) };
+    if !session.is_null() && session_text.is_none() {
+        return Code::Argument;
+    }
+    let session = match session_text.map(str::parse).transpose() {
+        Ok(session) => session,
+        Err(_) => return Code::Argument,
+    };
 
     let (Some(client), Some(name)) = (client(client_).filter(|_| !out.is_null()), name_text) else {
         return Code::Argument;
@@ -297,7 +305,7 @@ pub unsafe extern "C" fn ko_client_runtime_down(
             wire::request(
                 socket,
                 (id, None),
-                &Route::DownRuntime { name },
+                &Route::DownRuntime { name, session },
                 protocol::json(&protocol::DownRuntime { force: true }).as_bytes(),
                 Some(cancel),
             )

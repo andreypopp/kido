@@ -68,14 +68,26 @@ pub struct Model {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Place {
     /// A pane of the runtime.
-    Pane { name: RuntimeName },
+    Pane {
+        name: RuntimeName,
+        source: protocol::RuntimeSource,
+    },
     /// A host pane of a pi agent whose tools run in the runtime.
-    Routed { name: RuntimeName },
+    Routed {
+        name: RuntimeName,
+        source: protocol::RuntimeSource,
+    },
 }
 
 impl Place {
+    pub fn source(&self) -> protocol::RuntimeSource {
+        match self {
+            Place::Pane { source, .. } | Place::Routed { source, .. } => *source,
+        }
+    }
+
     pub fn name(&self) -> &RuntimeName {
-        let (Place::Pane { name } | Place::Routed { name }) = self;
+        let (Place::Pane { name, .. } | Place::Routed { name, .. }) = self;
         name
     }
 }
@@ -253,8 +265,27 @@ impl Model {
     // A pi agent's `pi.runtime` counts only while ko reads the pane as that agent, as `pi.session`
     // does. `ko.runtime` is a marker that any program may set, so it is never read.
     pub fn place(&self, pane: &Pane) -> Option<Place> {
+        let source = |name: &RuntimeName| {
+            self.runtimes
+                .iter()
+                .find(|entry| {
+                    entry.name == *name
+                        && matches!(entry.source, protocol::RuntimeSource::Session { .. })
+                })
+                .and_then(|_| self.locate(pane.row.id))
+                .and_then(|(id, _)| {
+                    self.runtimes
+                        .iter()
+                        .find(|entry| entry.is(name, protocol::RuntimeSource::Session { id }))
+                        .map(|entry| entry.source)
+                })
+                .unwrap_or(protocol::RuntimeSource::Config)
+        };
         if let Some(name) = &pane.row.runtime {
-            return Some(Place::Pane { name: name.clone() });
+            return Some(Place::Pane {
+                source: source(name),
+                name: name.clone(),
+            });
         }
         if !matches!(
             pane.row.status.as_ref().map(|status| &status.kind),
@@ -264,7 +295,10 @@ impl Model {
         }
         let named = pane.vars.get(&PI_RUNTIME)?["name"].as_str()?;
         let name = RuntimeName::try_from(named.to_owned()).ok()?;
-        Some(Place::Routed { name })
+        Some(Place::Routed {
+            source: source(&name),
+            name,
+        })
     }
 
     pub fn mark(&self, pane: &Pane) -> Mark {
@@ -429,15 +463,15 @@ impl Model {
                 match self
                     .runtimes
                     .iter_mut()
-                    .find(|known| known.name == runtime.name)
+                    .find(|known| known.is(&runtime.name, runtime.source))
                 {
                     Some(known) => *known = runtime,
                     None => self.runtimes.push(runtime),
                 }
                 return Applied::State;
             }
-            ClientEvent::RuntimeDeleted { name } => {
-                self.runtimes.retain(|known| known.name != name);
+            ClientEvent::RuntimeDeleted { name, source } => {
+                self.runtimes.retain(|known| !known.is(&name, source));
                 return Applied::State;
             }
             ClientEvent::Welcome(_) | ClientEvent::Refused { .. } => {}
@@ -990,8 +1024,8 @@ mod tests {
     fn a_pane_shows_its_runtime_or_a_routed_pi_agents_and_a_runtime_event_changes_the_state() {
         let mut model = model(Layout { sessions: vec![] });
         model.runtimes = serde_json::from_value(json!([
-            {"name": "box", "kind": "ssh", "state": {"type": "up"}},
-            {"name": "other", "kind": "command", "state": {"type": "down"}},
+            {"source": {"type": "config"}, "name": "box", "kind": "ssh", "state": {"type": "up"}},
+            {"source": {"type": "config"}, "name": "other", "kind": "command", "state": {"type": "down"}},
         ]))
         .unwrap();
         let routed = |name: &str| (("pi.runtime"), json!({"name": name, "cwd": "/w"}));
@@ -1020,15 +1054,21 @@ mod tests {
             [1, 2, 3, 4, 5, 6].map(place),
             [
                 Some(Place::Pane {
-                    name: "other".parse().unwrap()
+                    name: "other".parse().unwrap(),
+                    source: protocol::RuntimeSource::Config
                 }),
-                Some(Place::Routed { name: box_name() }),
+                Some(Place::Routed {
+                    name: box_name(),
+                    source: protocol::RuntimeSource::Config
+                }),
                 None,
                 Some(Place::Routed {
-                    name: "gone".parse().unwrap()
+                    name: "gone".parse().unwrap(),
+                    source: protocol::RuntimeSource::Config
                 }),
                 Some(Place::Pane {
-                    name: "other".parse().unwrap()
+                    name: "other".parse().unwrap(),
+                    source: protocol::RuntimeSource::Config
                 }),
                 None,
             ],
@@ -1037,10 +1077,51 @@ mod tests {
     }
 
     #[test]
+    fn runtime_sources_keep_equal_names_apart_and_place_uses_the_panes_session() {
+        let mut model = model(Layout { sessions: vec![] });
+        let snapshot = one_pane_layout(&[1, 2]);
+        let id = snapshot.layout.sessions[0].id;
+        let mut entries = vec![entry(1, &[]), entry(2, &[])];
+        for entry in &mut entries {
+            entry.row.runtime = Some("dev".parse().unwrap());
+        }
+        model.apply(announced(snapshot, entries));
+        let config: ClientRuntime = serde_json::from_value(json!({
+            "name": "dev", "source": {"type": "config"}, "kind": "ssh", "state": {"type": "up"}
+        }))
+        .unwrap();
+        let session = ClientRuntime {
+            source: protocol::RuntimeSource::Session { id },
+            state: protocol::LinkState::Down,
+            ..config.clone()
+        };
+        model.apply(ClientEvent::Runtime(config.clone()));
+        model.apply(ClientEvent::Runtime(session.clone()));
+        assert_eq!(model.runtimes, [config.clone(), session.clone()]);
+        assert_eq!(
+            model.place(&model.panes[0]).unwrap().source(),
+            session.source
+        );
+        assert_eq!(
+            model.place(&model.panes[1]).unwrap().source(),
+            config.source
+        );
+        model.apply(ClientEvent::RuntimeDeleted {
+            name: session.name,
+            source: session.source,
+        });
+        assert_eq!(model.runtimes, [config]);
+        assert_eq!(
+            model.place(&model.panes[0]).unwrap().source(),
+            protocol::RuntimeSource::Config
+        );
+    }
+
+    #[test]
     fn a_runtime_event_adds_or_replaces_an_entry_and_a_deleted_event_drops_it() {
         let mut model = model(Layout { sessions: vec![] });
         let entry = |name: &str, color: Option<&str>, state: &str| -> ClientRuntime {
-            let mut value = json!({"name": name, "kind": "ssh", "state": {"type": state}});
+            let mut value = json!({"source": {"type": "config"}, "name": name, "kind": "ssh", "state": {"type": state}});
             if let Some(color) = color {
                 value["color"] = json!(color);
             }
@@ -1065,7 +1146,8 @@ mod tests {
         assert_eq!(model.runtimes[0], entry("a", Some("#d08a2a"), "starting"));
         assert_eq!(
             model.apply(ClientEvent::RuntimeDeleted {
-                name: "a".parse().unwrap()
+                name: "a".parse().unwrap(),
+                source: protocol::RuntimeSource::Config
             }),
             Applied::State
         );
@@ -1076,7 +1158,7 @@ mod tests {
                 "kitty_images_max_bytes": 0, "continuation_max_bytes": 0}, "media": []},
             "instance": "0123456789abcdef0123456789abcdef",
             "now": 1000,
-            "runtimes": [{"name": "c", "kind": "command", "state": {"type": "up"}}]
+            "runtimes": [{"source": {"type": "config"}, "name": "c", "kind": "command", "state": {"type": "up"}}]
         }))
         .unwrap();
         let rejoined = Model::new(

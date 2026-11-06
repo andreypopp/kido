@@ -608,7 +608,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
 
     // The model changed: the step shows the runtime as it is now, keeping the query and the row.
     func refreshRuntime(_ mark: RuntimeMark?) {
-        guard case .runtime(let shownMark) = mode, shownMark?.name == mark?.name, shownMark != mark else { return }
+        guard case .runtime(let shownMark) = mode, shownMark?.key == mark?.key, shownMark != mark else { return }
         let selected = selectedEntry?.id
         mode = .runtime(mark)
         showRuntimeFailure(mark)
@@ -662,7 +662,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         else { empty.isHidden = !shown.isEmpty || (mode == .connect && !field.stringValue.isEmpty) }
         scroll.isHidden = shown.isEmpty
         if case .theme = mode { table.selectRowIndexes([], byExtendingSelection: false) }
-        else if mode == .root, field.stringValue.isEmpty, let host = shown.firstIndex(where: { $0.entry.id == .runtime(nil) }) {
+        else if mode == .root, field.stringValue.isEmpty, let host = shown.firstIndex(where: { $0.entry.id == .hostRuntime }) {
             table.selectRowIndexes([host], byExtendingSelection: false)
             DispatchQueue.main.async { [weak self] in self?.table.scrollRowToVisible(host) }
         }

@@ -584,6 +584,7 @@ export interface components {
             type: "runtime";
         } & components["schemas"]["ClientRuntime"]) | {
             name: components["schemas"]["RuntimeName"];
+            source: components["schemas"]["RuntimeSource"];
             /** @constant */
             type: "runtime_deleted";
         };
@@ -616,6 +617,7 @@ export interface components {
             color?: components["schemas"]["RuntimeColor"];
             kind: components["schemas"]["RuntimeKind"];
             name: components["schemas"]["RuntimeName"];
+            source: components["schemas"]["RuntimeSource"];
             state: components["schemas"]["LinkState"];
         };
         ClipboardContent: {
@@ -1244,6 +1246,7 @@ export interface components {
             pi: components["schemas"]["RuntimePi"];
             /** @description The path of the runtime's listener on the host, bound while the link is up. */
             socket: string;
+            source: components["schemas"]["RuntimeSource"];
             state: components["schemas"]["LinkState"];
         };
         /** @enum {string} */
@@ -1252,6 +1255,14 @@ export interface components {
         RuntimeName: string;
         /** @description Where an agent's pi runs when it works in a runtime. */
         RuntimePi: "host" | "runtime";
+        RuntimeSource: {
+            /** @constant */
+            type: "config";
+        } | {
+            id: components["schemas"]["SessionId"];
+            /** @constant */
+            type: "session";
+        };
         /**
          * @description The reply of a wait on a runtime: its state when the wait ends. Only the one waiter that was
          *     elected to run the interactive step gets lead, with the argv of that step.
@@ -1452,7 +1463,7 @@ export interface components {
             instance: components["schemas"]["Instance"];
             limits: components["schemas"]["Limits"];
             now: number;
-            /** @description The configured runtimes in configuration order, with their link states. */
+            /** @description Runtimes with their link states, configured first by name, then by session. */
             runtimes: components["schemas"]["ClientRuntime"][];
         };
         Window: {
@@ -2328,7 +2339,10 @@ export interface operations {
     };
     GetRuntime: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @example session_1 */
+                session?: components["schemas"]["SessionId"];
+            };
             header?: never;
             path: {
                 /** @example dev */
@@ -2360,7 +2374,10 @@ export interface operations {
     };
     DeleteRuntime: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @example session_1 */
+                session?: components["schemas"]["SessionId"];
+            };
             header?: never;
             path: {
                 /** @example dev */
@@ -2392,7 +2409,10 @@ export interface operations {
     };
     DownRuntime: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @example session_1 */
+                session?: components["schemas"]["SessionId"];
+            };
             header?: never;
             path: {
                 /** @example dev */
@@ -2428,7 +2448,10 @@ export interface operations {
     };
     Exec: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @example session_1 */
+                session?: components["schemas"]["SessionId"];
+            };
             header?: {
                 /** @example pane_1 */
                 "Ko-Pane"?: components["schemas"]["PaneId"];

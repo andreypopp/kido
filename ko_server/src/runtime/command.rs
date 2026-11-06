@@ -57,7 +57,7 @@ pub(crate) fn exec_launch(
     command: &Command,
     (request, cx): (&ExecRequest, &Ctx<'_>),
 ) -> Result<Launch, String> {
-    let env = super::exec_env(runtime, cx.name, request);
+    let env = super::exec_env(runtime, &cx.key.name, request);
     let path = env.get("PATH").copied().unwrap_or(DEFAULT_PATH);
     let mut words = command
         .prefix
@@ -104,7 +104,7 @@ mod tests {
         let socket = PathBuf::from("/s");
         let cx = Ctx {
             root: Path::new("/state/runtimes"),
-            name: &name,
+            key: &crate::runtime::RuntimeKey::config(name.clone()),
             env: &[],
             socket: &socket,
             exe: Path::new("/opt/ko"),

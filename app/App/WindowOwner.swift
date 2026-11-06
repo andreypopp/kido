@@ -110,7 +110,15 @@ private class AlertEscape: NSView {
     }
     private var received = Received()
     private var model: SessionModel { received.model }
-    private var koModel: KoModel? { received.ko }
+    var koModel: KoModel? {
+        #if KIDO_VISUAL
+        if let testRuntimes, var model = received.ko {
+            model.runtimes = testRuntimes.list
+            return model
+        }
+        #endif
+        return received.ko
+    }
     var snapshot: Snapshot? { received.snapshot }
     private var editor: LayoutEditor?
     private var welcomed = false
@@ -1132,12 +1140,7 @@ private class AlertEscape: NSView {
     }
 
     // The runtimes that the server offers, and the runtime of the pane in focus.
-    var runtimes: [KoSchema.ClientRuntime] {
-        #if KIDO_VISUAL
-        if let testRuntimes { return testRuntimes.list }
-        #endif
-        return koModel?.runtimes ?? []
-    }
+    var runtimes: [KoSchema.ClientRuntime] { koModel?.runtimes ?? [] }
 
     // The runtime of the pane that this client selected: the host has none.
     var focusedRuntime: String? {
@@ -1264,27 +1267,33 @@ private class AlertEscape: NSView {
         awaitingSelect = false
     }
 
-    func canShutDownRuntime(_ name: String) -> Bool {
-        guard canNavigate, let runtime = runtimes.first(where: { $0.name == name }) else { return false }
+    func runtimeLabel(_ key: RuntimeKey) -> String {
+        guard case .session(let source) = key.source else { return key.name }
+        let session = koModel?.layout.layout.sessions.first { $0.id == source.id }
+        return key.name + " — " + (session?.name ?? source.id.description)
+    }
+
+    func canShutDownRuntime(_ key: RuntimeKey) -> Bool {
+        guard canNavigate, let runtime = koModel?.runtime(key) else { return false }
         switch runtime.state { case .starting, .up: return true; case .down, .failed: return false }
     }
 
-    func runtimePaneCount(_ name: String) -> Int {
-        koModel?.panes.filter { $0.runtime == name && $0.dead == nil }.count ?? 0
+    func runtimePaneCount(_ key: RuntimeKey) -> Int {
+        koModel?.panes.filter { $0.place == .pane(.init(name: key.name, source: key.source)) && $0.dead == nil }.count ?? 0
     }
 
     @objc func shutDownRuntimeItem(_ sender: NSMenuItem) {
-        guard let name = sender.representedObject as? String else { return }
-        shutDownRuntime(name)
+        guard let mark = sender.representedObject as? RuntimeMark else { return }
+        shutDownRuntime(mark.key)
     }
 
-    func shutDownRuntime(_ name: String) {
-        guard canShutDownRuntime(name) else { return }
-        let count = runtimePaneCount(name)
+    func shutDownRuntime(_ key: RuntimeKey) {
+        guard canShutDownRuntime(key) else { return }
+        let count = runtimePaneCount(key)
         let warning = count == 1 ? "1 pane runs in this runtime. Shutting it down ends the pane."
             : "\(count) panes run in this runtime. Shutting it down ends them."
-        confirmCommand("Shut Down", title: "Shut down “\(name)”?", warning: count > 0 ? warning : nil, failure: "Runtime command failed") {
-            try $0.runtimeDown(name)
+        confirmCommand("Shut Down", title: "Shut down “\(key.name)”?", warning: count > 0 ? warning : nil, failure: "Runtime command failed") {
+            try $0.runtimeDown(key)
         }
     }
 

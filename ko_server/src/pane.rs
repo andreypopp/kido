@@ -1,7 +1,6 @@
 use std::io;
 use std::path::PathBuf;
 
-use ko_config::values::RuntimeName;
 use ko_pane_wire::frame::Size;
 use ko_sys::clock::Mono;
 
@@ -12,6 +11,7 @@ use crate::inbox::Inbox;
 use crate::model::PaneModel;
 use crate::pane_proc::{Input, Io, Launch, PaneProc};
 use crate::protocol::{Close, Variable};
+use crate::runtime::RuntimeKey;
 use crate::telemetry::Telemetry;
 use crate::vars::Vars;
 
@@ -28,7 +28,7 @@ pub(crate) struct Birth {
     pub(crate) vars: Vars,
     pub(crate) parent: Option<PaneId>,
     pub(crate) close: Close,
-    pub(crate) runtime: Option<RuntimeName>,
+    pub(crate) runtime: Option<RuntimeKey>,
     pub(crate) program: Program,
 }
 
@@ -44,7 +44,7 @@ pub(crate) struct Pane {
     vars: Vars,
     parent: Option<PaneId>,
     close: Close,
-    runtime: Option<RuntimeName>,
+    runtime: Option<RuntimeKey>,
     token: PaneToken,
     model: PaneModel,
     inbox: Inbox,
@@ -120,7 +120,7 @@ impl Pane {
         self.close
     }
 
-    pub(crate) fn runtime(&self) -> Option<&RuntimeName> {
+    pub(crate) fn runtime(&self) -> Option<&RuntimeKey> {
         self.runtime.as_ref()
     }
 

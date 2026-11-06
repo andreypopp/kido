@@ -157,7 +157,7 @@ fn pane_listing(pane: &Pane) -> Listing {
             parent: pane.parent(),
             close: pane.close(),
             inbox: pane.inbox().stream().is_some(),
-            runtime: pane.runtime().cloned(),
+            runtime: pane.runtime().map(|key| key.name.clone()),
         },
         vars: pane.vars().clone(),
     }
@@ -425,8 +425,11 @@ impl State {
                 })
             });
         let chosen =
-            admitted.and_then(|()| self.choose_runtimes(created.iter().map(|c| &c.1), read));
-        let chosen = match chosen {
+            admitted.and_then(|()| self.choose_runtimes(created.iter().map(|c| (c.0, &c.1)), read));
+        let runtime_ops::ChosenRuntimes {
+            settings: chosen,
+            keys,
+        } = match chosen {
             Ok(chosen) => chosen,
             Err(error) => {
                 self.document.rollback(before);
@@ -435,7 +438,7 @@ impl State {
         };
         let dirs: Vec<Dir> = created
             .iter()
-            .map(|(_, request, _)| self.start_dir(request, caller, read))
+            .map(|(id, request, _)| self.start_dir(keys.get(id), request, caller, read))
             .collect();
         let added: usize = created.iter().map(|(_, _, vars)| vars.bytes()).sum();
         if self.vars_used().saturating_add(added) > SERVER_MAX_TOTAL {
@@ -453,7 +456,13 @@ impl State {
             let size = sizes.get(&id).copied().unwrap_or(Size::DEFAULT);
             let settings = settings.get_or_init(|| self.config.settings(&read.server()));
             let added = self
-                .birth(id, &settings.shell, &request, vars, (&chosen, &dir))
+                .birth(
+                    id,
+                    &settings.shell,
+                    &request,
+                    vars,
+                    (&chosen, &dir, keys.get(&id)),
+                )
                 .and_then(|birth| self.add_pane(poll, settings, id, size, birth));
             match added {
                 Ok(()) => started.push(id),

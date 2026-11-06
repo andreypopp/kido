@@ -73,6 +73,54 @@ impl From<RuntimeName> for String {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTag {
+    name: RuntimeName,
+    session: Option<u64>,
+}
+
+impl RuntimeTag {
+    pub fn new(name: RuntimeName, session: Option<u64>) -> Self {
+        Self { name, session }
+    }
+}
+
+impl FromStr for RuntimeTag {
+    type Err = &'static str;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let (name, session) = match text.strip_prefix("session_") {
+            None => (text, None),
+            Some(rest) => {
+                let (digits, name) = rest.split_once('-').ok_or("invalid runtime tag")?;
+                let valid = !digits.is_empty()
+                    && digits.bytes().all(|byte| byte.is_ascii_digit())
+                    && (digits.len() == 1 || !digits.starts_with('0'));
+                if !valid {
+                    return Err("invalid runtime tag");
+                }
+                (
+                    name,
+                    Some(digits.parse().map_err(|_| "invalid runtime tag")?),
+                )
+            }
+        };
+        Ok(Self::new(
+            name.parse().map_err(|_| "invalid runtime tag")?,
+            session,
+        ))
+    }
+}
+
+impl fmt::Display for RuntimeTag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(id) = self.session {
+            write!(f, "session_{id}-")?;
+        }
+        self.name.fmt(f)
+    }
+}
+
 struct WordOrMap<T, M> {
     expecting: &'static str,
     word: fn(&str) -> Option<T>,
@@ -564,6 +612,24 @@ impl From<Env> for BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_tags_are_names_or_session_qualified_names() {
+        for text in ["dev", "session_3-dev"] {
+            assert_eq!(text.parse::<RuntimeTag>().unwrap().to_string(), text);
+        }
+        for text in [
+            "",
+            "/x",
+            "..",
+            "a/b",
+            "session_3-",
+            "session_03-dev",
+            "session_x-dev",
+        ] {
+            assert!(text.parse::<RuntimeTag>().is_err(), "{text}");
+        }
+    }
 
     #[test]
     fn a_runtime_color_is_a_hash_and_six_hex_digits() {

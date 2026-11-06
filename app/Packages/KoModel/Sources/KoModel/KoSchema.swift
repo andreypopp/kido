@@ -252,11 +252,13 @@ public enum KoSchema {
         public var color: RuntimeColor?
         public var kind: RuntimeKind
         public var name: RuntimeName
+        public var source: RuntimeSource
         public var state: LinkState
-        public init(color: RuntimeColor? = nil, kind: RuntimeKind, name: RuntimeName, state: LinkState) {
+        public init(color: RuntimeColor? = nil, kind: RuntimeKind, name: RuntimeName, source: RuntimeSource, state: LinkState) {
             self.color = color
             self.kind = kind
             self.name = name
+            self.source = source
             self.state = state
         }
     }
@@ -1508,15 +1510,19 @@ public enum KoSchema {
 
     public struct PlacePane: Codable, Equatable, Sendable {
         public var name: RuntimeName
-        public init(name: RuntimeName) {
+        public var source: RuntimeSource
+        public init(name: RuntimeName, source: RuntimeSource) {
             self.name = name
+            self.source = source
         }
     }
 
     public struct PlaceRouted: Codable, Equatable, Sendable {
         public var name: RuntimeName
-        public init(name: RuntimeName) {
+        public var source: RuntimeSource
+        public init(name: RuntimeName, source: RuntimeSource) {
             self.name = name
+            self.source = source
         }
     }
 
@@ -1851,6 +1857,36 @@ public enum KoSchema {
     }
 
     public typealias RuntimeName = String
+
+    public enum RuntimeSource: Codable, Equatable, Sendable {
+        case config
+        case session(RuntimeSourceSession)
+        private enum Tag: String, CodingKey { case type = "type" }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: Tag.self)
+            switch try container.decode(String.self, forKey: .type) {
+            case "config": self = .config
+            case "session": self = .session(try RuntimeSourceSession(from: decoder))
+            case let other: throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "unknown RuntimeSource \(other)")
+            }
+        }
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: Tag.self)
+            switch self {
+            case .config: try container.encode("config", forKey: .type)
+            case .session(let value):
+                try container.encode("session", forKey: .type)
+                try value.encode(to: encoder)
+            }
+        }
+    }
+
+    public struct RuntimeSourceSession: Codable, Equatable, Sendable {
+        public var id: SessionId
+        public init(id: SessionId) {
+            self.id = id
+        }
+    }
 
     public struct ScrollMultiplier: Codable, Equatable, Sendable {
         public var discrete: DiscreteScroll

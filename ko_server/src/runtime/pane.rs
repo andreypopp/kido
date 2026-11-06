@@ -1,21 +1,21 @@
 use std::path::{Component, Path, PathBuf};
 
 use ko_config::runtime::PathMap;
-use ko_config::values::RuntimeName;
 
 use crate::ids::PaneId;
 use crate::protocol::Variable;
+use crate::runtime::RuntimeKey;
 use crate::runtime::{Ctx, Tokens};
 use crate::ssh::quote_bytes;
 use ko_config::runtime::Runtime;
 
-pub(crate) fn directory(root: &Path, name: &RuntimeName) -> PathBuf {
-    root.join(name.as_str())
+pub(crate) fn directory(root: &Path, key: &RuntimeKey) -> PathBuf {
+    root.join(key.tag().to_string())
 }
 
-pub(crate) fn clear_directory(root: &Path, name: &RuntimeName) -> std::io::Result<()> {
-    let io = io_directory(root, name);
-    for entry in std::fs::read_dir(directory(root, name))? {
+pub(crate) fn clear_directory(root: &Path, key: &RuntimeKey) -> std::io::Result<()> {
+    let io = io_directory(root, key);
+    for entry in std::fs::read_dir(directory(root, key))? {
         let entry = entry?;
         if entry.path() != io {
             if entry.file_type()?.is_dir() {
@@ -28,30 +28,30 @@ pub(crate) fn clear_directory(root: &Path, name: &RuntimeName) -> std::io::Resul
     Ok(())
 }
 
-pub(crate) fn io_directory(root: &Path, name: &RuntimeName) -> PathBuf {
-    directory(root, name).join("io")
+pub(crate) fn io_directory(root: &Path, key: &RuntimeKey) -> PathBuf {
+    directory(root, key).join("io")
 }
 
-pub(crate) fn control_path(root: &Path, name: &RuntimeName) -> PathBuf {
-    directory(root, name).join(crate::ssh::CONTROL)
+pub(crate) fn control_path(root: &Path, key: &RuntimeKey) -> PathBuf {
+    directory(root, key).join(crate::ssh::CONTROL)
 }
 
-pub(crate) fn socket_path(root: &Path, name: &RuntimeName) -> PathBuf {
-    io_directory(root, name).join("socket")
+pub(crate) fn socket_path(root: &Path, key: &RuntimeKey) -> PathBuf {
+    io_directory(root, key).join("socket")
 }
 
-pub(crate) fn token_directory(root: &Path, name: &RuntimeName) -> PathBuf {
-    directory(root, name).join("panes")
+pub(crate) fn token_directory(root: &Path, key: &RuntimeKey) -> PathBuf {
+    directory(root, key).join("panes")
 }
 
 pub(crate) fn token_path(
     root: &Path,
-    name: &RuntimeName,
+    key: &RuntimeKey,
     runtime: &Runtime,
     pane: PaneId,
 ) -> Option<PathBuf> {
     match super::tokens(runtime, pane) {
-        Tokens::File { name: file, .. } => Some(token_directory(root, name).join(file)),
+        Tokens::File { name: file, .. } => Some(token_directory(root, key).join(file)),
         Tokens::Remote => None,
     }
 }
@@ -125,7 +125,7 @@ impl Dir {
 pub(crate) struct Wrap<'a> {
     pub(crate) exe: &'a Path,
     pub(crate) root: &'a Path,
-    pub(crate) name: &'a RuntimeName,
+    pub(crate) key: &'a RuntimeKey,
     pub(crate) runtime: &'a Runtime,
     pub(crate) pane: PaneId,
     pub(crate) cwd: &'a Dir,
@@ -145,7 +145,7 @@ pub(crate) fn wrapper(wrap: &Wrap<'_>, inner: Option<&[Vec<u8>]>) -> Vec<Vec<u8>
     let Wrap {
         exe,
         root,
-        name,
+        key,
         runtime,
         pane,
         cwd,
@@ -153,13 +153,13 @@ pub(crate) fn wrapper(wrap: &Wrap<'_>, inner: Option<&[Vec<u8>]>) -> Vec<Vec<u8>
         server_env,
     } = wrap;
     let cwd = cwd.in_runtime(runtime);
-    let socket = socket_path(root, name);
+    let socket = socket_path(root, key);
     let entry = super::entry(
         runtime,
         *pane,
         &Ctx {
             root,
-            name,
+            key,
             env: server_env,
             socket: &socket,
             exe,
@@ -168,7 +168,7 @@ pub(crate) fn wrapper(wrap: &Wrap<'_>, inner: Option<&[Vec<u8>]>) -> Vec<Vec<u8>
     let mut argv = vec![
         bytes(exe),
         text("runtime-exec"),
-        text(name.as_str()),
+        text(key.name.as_str()),
         text("--"),
     ];
     argv.extend(entry.prefix);
@@ -177,7 +177,10 @@ pub(crate) fn wrapper(wrap: &Wrap<'_>, inner: Option<&[Vec<u8>]>) -> Vec<Vec<u8>
     enter.extend(entry.location);
     enter.extend([text("--pane"), text(&pane.to_string())]);
     enter.extend(entry.token);
-    enter.extend([text("--runtime"), text(name.as_str())]);
+    enter.extend([text("--runtime"), text(key.name.as_str())]);
+    if let Some(tag) = key.tag_arg() {
+        enter.extend([text("--tag"), text(&tag.to_string())]);
+    }
     if let Some(cwd) = cwd {
         enter.extend([text("--cwd"), bytes(&cwd)]);
     }

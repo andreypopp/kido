@@ -82,6 +82,12 @@ id!(pub ClientId, "client_");
 id!(pub SessionId, "session_");
 id!(pub WindowId, "window_");
 
+impl SessionId {
+    pub(crate) fn number(self) -> u64 {
+        self.0
+    }
+}
+
 fn hex32(text: String) -> Result<String, InvalidId> {
     if text.len() == 32
         && text

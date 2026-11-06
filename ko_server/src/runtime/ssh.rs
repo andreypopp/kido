@@ -72,7 +72,7 @@ fn through(ctl: &Path) -> Vec<String> {
 
 fn passenger(ssh: &Ssh, cx: &Ctx<'_>, remote: Vec<String>) -> Result<Launch, String> {
     let mut args = words(&["-T"]);
-    args.extend(through(&pane::control_path(cx.root, cx.name)));
+    args.extend(through(&pane::control_path(cx.root, cx.key)));
     args.extend(["--".to_owned(), ssh.destination.as_str().to_owned()]);
     args.extend(remote);
     launch(cx.env, args)
@@ -82,7 +82,7 @@ fn operation(ssh: &Ssh, cx: &Ctx<'_>, operation: &[&str]) -> Result<Launch, Stri
     launch(
         cx.env,
         control_args(
-            &pane::control_path(cx.root, cx.name),
+            &pane::control_path(cx.root, cx.key),
             operation,
             ssh.destination.as_str(),
         ),
@@ -90,7 +90,7 @@ fn operation(ssh: &Ssh, cx: &Ctx<'_>, operation: &[&str]) -> Result<Launch, Stri
 }
 
 fn check_paths(cx: &Ctx<'_>) -> Result<(), String> {
-    let dir = pane::directory(cx.root, cx.name);
+    let dir = pane::directory(cx.root, cx.key);
     let shown = text(&dir);
     if dir.as_os_str().len() + MASTER_SUFFIX > SUN_PATH_MAX {
         Err(format!(
@@ -119,7 +119,7 @@ fn lead(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Vec<String>, String> {
     argv.extend(words(&["-M", "-N", "-f", "-o"]));
     argv.push(format!(
         "ControlPath={}",
-        text(&pane::control_path(cx.root, cx.name))
+        text(&pane::control_path(cx.root, cx.key))
     ));
     for option in ["ControlMaster=yes", "ControlPersist=yes"]
         .into_iter()
@@ -138,7 +138,11 @@ fn prepare(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Launch, String> {
     if let Some(dir) = &dir {
         words.extend(["--dir", dir]);
     }
-    words.extend(["--runtime", cx.name.as_str()]);
+    words.extend(["--runtime", cx.key.name.as_str()]);
+    let mut words: Vec<String> = words.into_iter().map(str::to_owned).collect();
+    if let Some(tag) = cx.key.tag_arg() {
+        words.extend(["--tag".to_owned(), tag.to_string()]);
+    }
     passenger(ssh, cx, words.iter().map(|word| quote(word)).collect())
 }
 
@@ -203,7 +207,7 @@ pub(crate) fn next(ssh: &Ssh, link: &mut Link, cx: &Ctx<'_>, out: &Outcome<'_>) 
         }
         Stage::Check => {
             link.adopted = false;
-            let _ = fs::remove_file(pane::control_path(cx.root, cx.name));
+            let _ = fs::remove_file(pane::control_path(cx.root, cx.key));
             match lead(ssh, cx) {
                 Ok(argv) => Next::Lead(argv),
                 Err(message) => Next::Fail(message),
@@ -219,7 +223,7 @@ pub(crate) fn next(ssh: &Ssh, link: &mut Link, cx: &Ctx<'_>, out: &Outcome<'_>) 
                 stdout: version,
                 tail: out.tail,
             };
-            if let Next::Fail(message) = version_next(cx.name, &inner) {
+            if let Next::Fail(message) = version_next(&cx.key.name, &inner) {
                 return Next::Fail(message);
             }
             link.dir = Some(dir);
@@ -295,7 +299,7 @@ pub(crate) fn ending(exit: Exit, stderr: &[u8]) -> Ending {
 }
 
 pub(crate) fn entry(ssh: &Ssh, cx: &Ctx<'_>) -> Entry {
-    let ctl = pane::control_path(cx.root, cx.name);
+    let ctl = pane::control_path(cx.root, cx.key);
     let prefix: Vec<Vec<u8>> = words(&["ssh", "-t"])
         .into_iter()
         .chain(through(&ctl))
@@ -318,8 +322,8 @@ pub(crate) fn entry(ssh: &Ssh, cx: &Ctx<'_>) -> Entry {
 
 #[cfg(test)]
 mod tests {
+    use crate::runtime::RuntimeKey;
     use ko_config::runtime::{Kind, Runtime};
-    use ko_config::values::RuntimeName;
 
     use super::*;
     use crate::protocol::{Version, json, version};
@@ -328,10 +332,10 @@ mod tests {
         serde_json::from_str(&format!(r#"{{"ssh":{{"destination":"box"{extra}}}}}"#)).unwrap()
     }
 
-    fn context<'a>(name: &'a RuntimeName, env: &'a [Vec<u8>], socket: &'a Path) -> Ctx<'a> {
+    fn context<'a>(key: &'a RuntimeKey, env: &'a [Vec<u8>], socket: &'a Path) -> Ctx<'a> {
         Ctx {
             root: Path::new("/r"),
-            name,
+            key,
             env,
             socket,
             exe: Path::new("/ko"),
@@ -383,7 +387,7 @@ mod tests {
         let Kind::Ssh(ssh) = &runtime.kind else {
             panic!("not ssh");
         };
-        let name: RuntimeName = "box".parse().unwrap();
+        let key = RuntimeKey::config("box".parse().unwrap());
         let socket = PathBuf::from("/r/box/io/socket");
         let env = [b"PATH=/usr/bin:/bin".to_vec()];
         let own = version();
@@ -401,7 +405,7 @@ mod tests {
                 stdout: stdout.as_bytes(),
                 tail: b"",
             };
-            next(ssh, &mut link, &context(&name, &env, &socket), &out)
+            next(ssh, &mut link, &context(&key, &env, &socket), &out)
         };
         assert!(matches!(prepared("1.7", &own.vt), Next::Run(_)));
         for (protocol, vt) in [("2.0", own.vt.as_str()), ("1.0", "vt-other")] {
@@ -447,10 +451,10 @@ mod tests {
         let Kind::Ssh(ssh) = &runtime.kind else {
             panic!("not ssh");
         };
-        let name: RuntimeName = "box".parse().unwrap();
+        let key = RuntimeKey::config("box".parse().unwrap());
         let env = [b"PATH=/usr/bin:/bin".to_vec()];
         let socket = PathBuf::from("/r/box/io/socket");
-        let cx = context(&name, &env, &socket);
+        let cx = context(&key, &env, &socket);
         let launch = exec_launch(ssh, &cx).unwrap_or_else(|why| panic!("{why}"));
         assert_eq!(launch.args.last().unwrap(), "exec 'ko' 'enter' '--exec'");
         assert!(launch.args.iter().any(|arg| arg == "/r/box/ctl"));
@@ -471,7 +475,7 @@ mod tests {
         let token = token(
             ssh,
             &link,
-            &context(&name, &env, Path::new("/r/box/io/socket")),
+            &context(&key, &env, Path::new("/r/box/io/socket")),
             "pane_3".parse().unwrap(),
         )
         .unwrap();
@@ -487,10 +491,10 @@ mod tests {
         let Kind::Ssh(ssh) = &runtime.kind else {
             panic!("not ssh");
         };
-        let name: RuntimeName = "box".parse().unwrap();
+        let key = RuntimeKey::config("box".parse().unwrap());
         let env = [];
         let socket = PathBuf::from("/r/box/io/socket");
-        let entry = entry(ssh, &context(&name, &env, &socket));
+        let entry = entry(ssh, &context(&key, &env, &socket));
         assert_eq!(entry.prefix.last().unwrap(), b"box");
         assert_eq!(entry.ko, [b"exec".to_vec(), b"ko".to_vec()]);
         assert_eq!(entry.location, [b"--dir".to_vec(), b"/srv/ko".to_vec()]);

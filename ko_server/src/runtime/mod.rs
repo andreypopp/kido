@@ -9,7 +9,7 @@ use std::time::Duration;
 use ko_config::config::{self as settings, LoadError};
 use ko_config::runtime::{Engine, Kind, Runtime};
 use ko_config::server::Idle;
-use ko_config::values::{RuntimeColor, RuntimeName};
+use ko_config::values::{RuntimeColor, RuntimeName, RuntimeTag};
 use ko_sys::event::{Poll, Ready, Timer, Token};
 use ko_sys::pid::{Exit, Pid, Waited};
 
@@ -18,7 +18,7 @@ use crate::exec_wire::Start as ExecStart;
 use crate::ids::{PaneId, PaneToken};
 use crate::protocol::{
     ClientEvent, ClientRuntime, Error, ErrorKind, ExecRequest, LeadReport, LinkState, RuntimeKind,
-    Variable, Version, check_version, version,
+    RuntimeSource, Variable, Version, check_version, version,
 };
 use crate::server::{Listener, Origin, Timing, Verified};
 use crate::ssh::token_name;
@@ -32,6 +32,41 @@ pub(crate) mod ssh;
 
 use exec::{Helper, Launch, Mode, Source};
 use pane::{socket_path, token_directory, token_path};
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct RuntimeKey {
+    pub(crate) source: RuntimeSource,
+    pub(crate) name: RuntimeName,
+}
+
+impl RuntimeKey {
+    pub(crate) fn config(name: RuntimeName) -> Self {
+        Self {
+            name,
+            source: RuntimeSource::Config,
+        }
+    }
+
+    fn tag(&self) -> RuntimeTag {
+        RuntimeTag::new(
+            self.name.clone(),
+            match self.source {
+                RuntimeSource::Config => None,
+                RuntimeSource::Session { id } => Some(id.number()),
+            },
+        )
+    }
+
+    fn tag_arg(&self) -> Option<RuntimeTag> {
+        matches!(self.source, RuntimeSource::Session { .. }).then(|| self.tag())
+    }
+}
+
+impl std::fmt::Display for RuntimeKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.name.fmt(f)
+    }
+}
 
 const UP_LIMIT: Duration = Duration::from_secs(120);
 const QUICK_LIMIT: Duration = Duration::from_secs(15);
@@ -88,7 +123,7 @@ pub(crate) enum Tokens {
 }
 
 pub(crate) struct Ctx<'a> {
-    pub(crate) name: &'a RuntimeName,
+    pub(crate) key: &'a RuntimeKey,
     pub(crate) env: &'a [Vec<u8>],
     pub(crate) socket: &'a Path,
     pub(crate) root: &'a Path,
@@ -156,12 +191,12 @@ pub(crate) fn tokens(runtime: &Runtime, pane: PaneId) -> Tokens {
 pub(crate) fn entry(runtime: &Runtime, pane: PaneId, cx: &Ctx<'_>) -> Entry {
     match &runtime.kind {
         Kind::Command(command) => {
-            let token = token_path(cx.root, cx.name, runtime, pane).unwrap_or_default();
+            let token = token_path(cx.root, cx.key, runtime, pane).unwrap_or_default();
             command::entry(command, (cx.exe, cx.socket.to_path_buf()), &token)
         }
         Kind::Container(engine) => {
-            let token = token_path(cx.root, cx.name, runtime, pane).unwrap_or_default();
-            container::entry(cx.name, engine, (cx.env, &token))
+            let token = token_path(cx.root, cx.key, runtime, pane).unwrap_or_default();
+            container::entry(cx.key, engine, (cx.env, &token))
         }
         Kind::Ssh(remote) => ssh::entry(remote, cx),
     }
@@ -230,7 +265,7 @@ pub(crate) fn ending(runtime: &Runtime, exit: Exit, stderr: &[u8]) -> Ending {
 pub(crate) fn cleanup(runtime: &Runtime, cx: &Ctx<'_>, what: Cleanup) -> Option<Launch> {
     match &runtime.kind {
         Kind::Command(_) => None,
-        Kind::Container(engine) => container::cleanup(engine, (cx.name, cx.env), what),
+        Kind::Container(engine) => container::cleanup(engine, (cx.key, cx.env), what),
         Kind::Ssh(remote) => ssh::cleanup(remote, cx, what),
     }
 }
@@ -368,7 +403,7 @@ enum Job {
 
 #[derive(Debug)]
 struct Child {
-    name: RuntimeName,
+    key: RuntimeKey,
     helper: Helper,
     deadline: Timer,
     job: Job,
@@ -397,10 +432,10 @@ pub(crate) struct Wait {
 pub(crate) enum Due {
     Other,
     Handled,
-    Idle(RuntimeName),
+    Idle(RuntimeKey),
 }
 
-type Configured = BTreeMap<RuntimeName, (RuntimeKind, Option<RuntimeColor>)>;
+type Configured = BTreeMap<RuntimeKey, (RuntimeKind, Option<RuntimeColor>)>;
 
 #[derive(Debug)]
 pub(crate) struct Registry {
@@ -408,16 +443,16 @@ pub(crate) struct Registry {
     command_kind: bool,
     root: PathBuf,
     env: Vec<Vec<u8>>,
-    links: BTreeMap<RuntimeName, Link>,
-    waits: Vec<(RuntimeName, Wait)>,
+    links: BTreeMap<RuntimeKey, Link>,
+    waits: Vec<(RuntimeKey, Wait)>,
     dying: Vec<Pid>,
     cleaning: Vec<Pid>,
-    cleanups: BTreeMap<RuntimeName, Pending>,
-    deleting: BTreeSet<RuntimeName>,
+    cleanups: BTreeMap<RuntimeKey, Pending>,
+    deleting: BTreeSet<RuntimeKey>,
     released: Vec<Pid>,
     children: Vec<Child>,
     passed: Vec<(Token, LinkState)>,
-    announced: BTreeMap<RuntimeName, ClientRuntime>,
+    announced: BTreeMap<RuntimeKey, ClientRuntime>,
     pending: Vec<ClientEvent>,
     configured: Option<Configured>,
     dirty: bool,
@@ -448,8 +483,8 @@ pub(crate) fn exit_text(step: &str, exit: Exit) -> String {
     }
 }
 
-fn bind(root: &Path, name: &RuntimeName, poll: &mut Poll) -> Result<Listener, String> {
-    let socket = socket_path(root, name);
+fn bind(root: &Path, key: &RuntimeKey, poll: &mut Poll) -> Result<Listener, String> {
+    let socket = socket_path(root, key);
     if socket.as_os_str().len() > SUN_PATH_MAX {
         return Err(format!(
             "runtime socket path exceeds {SUN_PATH_MAX} bytes; set KO_STATE_DIR to a shorter path"
@@ -462,7 +497,7 @@ fn bind(root: &Path, name: &RuntimeName, poll: &mut Poll) -> Result<Listener, St
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o755)
-        .create(pane::io_directory(root, name))
+        .create(pane::io_directory(root, key))
         .map_err(failed("runtime directory"))?;
     match fs::remove_file(&socket) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => {
@@ -477,7 +512,7 @@ fn bind(root: &Path, name: &RuntimeName, poll: &mut Poll) -> Result<Listener, St
         socket_listener,
         poll,
         Timing::DEFAULT.accept_retry,
-        Origin::Runtime(name.clone()),
+        Origin::Runtime(key.clone()),
     )
     .map_err(failed("runtime socket"))
 }
@@ -521,20 +556,23 @@ impl Registry {
 
     pub(crate) fn exec_launch(
         &self,
-        name: &RuntimeName,
+        key: &RuntimeKey,
         runtime: &Runtime,
         request: &ExecRequest,
     ) -> Result<(Launch, ExecStart), String> {
-        let socket = socket_path(&self.root, name);
+        let socket = socket_path(&self.root, key);
         let cx = Ctx {
             root: &self.root,
-            name,
+            key,
             env: &self.env,
             socket: &socket,
             exe: &self.exe,
         };
         let launch = exec_launch(runtime, request, &cx)?;
-        Ok((launch, exec_start(runtime, name, request, self.escalation)))
+        Ok((
+            launch,
+            exec_start(runtime, &key.name, request, self.escalation),
+        ))
     }
 
     pub(crate) fn take_dying(&mut self) -> Vec<Pid> {
@@ -574,55 +612,72 @@ impl Registry {
             config
                 .runtimes
                 .iter()
-                .map(|(name, runtime)| (name.clone(), (kind(runtime), runtime.color.clone())))
+                .map(|(name, runtime)| {
+                    (
+                        RuntimeKey::config(name.clone()),
+                        (kind(runtime), runtime.color.clone()),
+                    )
+                })
                 .collect(),
         );
         self.dirty = true;
         Ok(config)
     }
 
-    fn missing(&self, name: &RuntimeName) -> Error {
+    pub(crate) fn resolve(&self, name: &RuntimeName) -> RuntimeKey {
+        RuntimeKey::config(name.clone())
+    }
+
+    fn missing(&self, key: &RuntimeKey) -> Error {
         Error::new(
             ErrorKind::Missing,
-            format!("no runtime {name} in {}", self.file.display()),
+            format!("no runtime {key} in {}", self.file.display()),
         )
     }
 
-    pub(crate) fn settings(&mut self, name: &RuntimeName) -> Result<Runtime, Error> {
+    pub(crate) fn settings(&mut self, key: &RuntimeKey) -> Result<Runtime, Error> {
         let loaded = settings::load(&self.file);
-        self.settings_in(name, &loaded)
+        self.settings_in(key, &loaded)
     }
 
     pub(crate) fn settings_in(
         &mut self,
-        name: &RuntimeName,
+        key: &RuntimeKey,
         loaded: &Result<settings::Config, LoadError>,
     ) -> Result<Runtime, Error> {
-        if let Some(link) = self.links.get(name)
+        if let Some(link) = self.links.get(key)
             && matches!(link.phase, Phase::Starting(_) | Phase::Up)
         {
             return Ok(link.settings.clone());
         }
+        if key.source != RuntimeSource::Config {
+            return Err(self.missing(key));
+        }
         self.adopt(loaded)?
             .runtimes
-            .get(name)
+            .get(&key.name)
             .cloned()
-            .ok_or_else(|| self.missing(name))
+            .ok_or_else(|| self.missing(key))
     }
 
-    pub(crate) fn known(&mut self) -> Result<Vec<(RuntimeName, Runtime)>, Error> {
+    pub(crate) fn known(&mut self) -> Result<Vec<(RuntimeKey, Runtime)>, Error> {
         let loaded = settings::load(&self.file);
-        let mut known = self.adopt(&loaded)?.runtimes.clone();
-        for (name, link) in &self.links {
+        let mut known: BTreeMap<RuntimeKey, Runtime> = self
+            .adopt(&loaded)?
+            .runtimes
+            .iter()
+            .map(|(name, runtime)| (RuntimeKey::config(name.clone()), runtime.clone()))
+            .collect();
+        for (key, link) in &self.links {
             if matches!(link.phase, Phase::Starting(_) | Phase::Up) {
-                known.insert(name.clone(), link.settings.clone());
+                known.insert(key.clone(), link.settings.clone());
             }
         }
         Ok(known.into_iter().collect())
     }
 
-    pub(crate) fn state(&self, name: &RuntimeName) -> LinkState {
-        match self.links.get(name).map(|link| &link.phase) {
+    pub(crate) fn state(&self, key: &RuntimeKey) -> LinkState {
+        match self.links.get(key).map(|link| &link.phase) {
             None => LinkState::Down,
             Some(Phase::Starting(_)) => LinkState::Starting,
             Some(Phase::Up) => LinkState::Up,
@@ -643,33 +698,37 @@ impl Registry {
 
     fn sync(&mut self) {
         let mut desired: Configured = self.configured.clone().unwrap_or_default();
-        for (name, link) in &self.links {
+        for (key, link) in &self.links {
             if matches!(link.phase, Phase::Starting(_) | Phase::Up) {
                 desired.insert(
-                    name.clone(),
+                    key.clone(),
                     (kind(&link.settings), link.settings.color.clone()),
                 );
             }
         }
-        let gone: Vec<RuntimeName> = self
+        let gone: Vec<RuntimeKey> = self
             .announced
             .keys()
-            .filter(|name| !desired.contains_key(*name))
+            .filter(|key| !desired.contains_key(*key))
             .cloned()
             .collect();
-        for name in gone {
-            self.announced.remove(&name);
-            self.pending.push(ClientEvent::RuntimeDeleted { name });
+        for key in gone {
+            self.announced.remove(&key);
+            self.pending.push(ClientEvent::RuntimeDeleted {
+                name: key.name,
+                source: key.source,
+            });
         }
-        for (name, (kind, color)) in desired {
+        for (key, (kind, color)) in desired {
             let entry = ClientRuntime {
-                state: self.state(&name),
-                name: name.clone(),
+                state: self.state(&key),
+                name: key.name.clone(),
+                source: key.source,
                 kind,
                 color,
             };
-            if self.announced.get(&name) != Some(&entry) {
-                self.announced.insert(name, entry.clone());
+            if self.announced.get(&key) != Some(&entry) {
+                self.announced.insert(key, entry.clone());
                 self.pending.push(ClientEvent::Runtime(entry));
             }
         }
@@ -685,42 +744,42 @@ impl Registry {
         self.announced.values().cloned().collect()
     }
 
-    pub(crate) fn is_live(&self, name: &RuntimeName) -> bool {
-        self.links.contains_key(name)
+    pub(crate) fn is_live(&self, key: &RuntimeKey) -> bool {
+        self.links.contains_key(key)
     }
 
-    pub(crate) fn begin(&mut self, poll: &mut Poll, name: &RuntimeName, settings: Runtime) {
+    pub(crate) fn begin(&mut self, poll: &mut Poll, key: &RuntimeKey, settings: Runtime) {
         self.dirty = true;
         if matches!(
-            self.links.get(name).map(|link| &link.phase),
+            self.links.get(key).map(|link| &link.phase),
             Some(Phase::Starting(_) | Phase::Up)
         ) {
             return;
         }
-        if let Some(old) = self.links.remove(name) {
+        if let Some(old) = self.links.remove(key) {
             poll.free(old.idle);
         }
         // A deletion waits for the cleanup, and a start that follows it keeps the directory.
-        self.deleting.remove(name);
+        self.deleting.remove(key);
         let start = Start::new(&settings);
-        let socket = socket_path(&self.root, name);
+        let socket = socket_path(&self.root, key);
         let cx = Ctx {
             root: &self.root,
-            name,
+            key,
             env: &self.env,
             socket: &socket,
             exe: &self.exe,
         };
         let bound = start
             .first(&settings, &cx)
-            .and_then(|_| bind(&self.root, name, poll));
+            .and_then(|_| bind(&self.root, key, poll));
         let (phase, listener) = match bound {
             Ok(listener) => (Phase::Up, Some(listener)),
             Err(message) => (Phase::Failed(message), None),
         };
         let started = listener.is_some();
         self.links.insert(
-            name.clone(),
+            key.clone(),
             Link {
                 settings,
                 start,
@@ -731,24 +790,24 @@ impl Registry {
                 occupied: true,
             },
         );
-        if started && self.cleanups.contains_key(name) {
-            if let Some(link) = self.links.get_mut(name) {
+        if started && self.cleanups.contains_key(key) {
+            if let Some(link) = self.links.get_mut(key) {
                 link.phase = Phase::Starting(Step::Cleaning);
             }
         } else if started {
-            self.start_steps(poll, name, true);
+            self.start_steps(poll, key, true);
         }
     }
 
-    fn start_steps(&mut self, poll: &mut Poll, name: &RuntimeName, from_start: bool) {
+    fn start_steps(&mut self, poll: &mut Poll, key: &RuntimeKey, from_start: bool) {
         self.dirty = true;
-        let socket = socket_path(&self.root, name);
-        let Some(link) = self.links.get_mut(name) else {
+        let socket = socket_path(&self.root, key);
+        let Some(link) = self.links.get_mut(key) else {
             return;
         };
         let cx = Ctx {
             root: &self.root,
-            name,
+            key,
             env: &self.env,
             socket: &socket,
             exe: &self.exe,
@@ -769,18 +828,18 @@ impl Registry {
             }
         };
         let phase = match next {
-            Next::Fail(message) => return self.fail(poll, name, message),
+            Next::Fail(message) => return self.fail(poll, key, message),
             Next::Up => Phase::Up,
             Next::Lead(argv) => Phase::Starting(Step::Lead { argv, leader: None }),
             Next::Run(launch) => match Registry::spawn_up(poll, &launch) {
                 Ok(step) => Phase::Starting(step),
                 Err(error) => {
                     let message = format!("the up step did not start: {error}");
-                    return self.fail(poll, name, message);
+                    return self.fail(poll, key, message);
                 }
             },
         };
-        if let Some(link) = self.links.get_mut(name) {
+        if let Some(link) = self.links.get_mut(key) {
             link.phase = phase;
         }
     }
@@ -792,24 +851,24 @@ impl Registry {
         Ok(Step::Up { helper, deadline })
     }
 
-    fn fail(&mut self, poll: &mut Poll, name: &RuntimeName, message: String) {
+    fn fail(&mut self, poll: &mut Poll, key: &RuntimeKey, message: String) {
         self.dirty = true;
-        let Some(mut link) = self.links.remove(name) else {
+        let Some(mut link) = self.links.remove(key) else {
             return;
         };
         let answer = LinkState::Failed {
             message: message.clone(),
         };
-        self.end(poll, name, &mut link, (false, &answer));
+        self.end(poll, key, &mut link, (false, &answer));
         link.phase = Phase::Failed(message);
-        self.links.insert(name.clone(), link);
+        self.links.insert(key.clone(), link);
     }
 
-    fn schedule(&mut self, name: &RuntimeName, launches: Vec<Launch>, reaping: Vec<Pid>) {
+    fn schedule(&mut self, key: &RuntimeKey, launches: Vec<Launch>, reaping: Vec<Pid>) {
         if launches.is_empty() && reaping.is_empty() {
             return;
         }
-        let pending = self.cleanups.entry(name.clone()).or_default();
+        let pending = self.cleanups.entry(key.clone()).or_default();
         pending.queue.extend(launches);
         pending.reaping.extend(reaping);
     }
@@ -834,27 +893,27 @@ impl Registry {
 
     fn settle(&mut self, poll: &mut Poll) {
         self.drive();
-        let removable: Vec<RuntimeName> = self
+        let removable: Vec<RuntimeKey> = self
             .deleting
             .iter()
-            .filter(|name| !self.cleanups.contains_key(*name))
+            .filter(|key| !self.cleanups.contains_key(*key))
             .cloned()
             .collect();
-        for name in removable {
-            self.deleting.remove(&name);
-            let _ = pane::clear_directory(&self.root, &name);
+        for key in removable {
+            self.deleting.remove(&key);
+            let _ = pane::clear_directory(&self.root, &key);
         }
-        let ready: Vec<RuntimeName> = self
+        let ready: Vec<RuntimeKey> = self
             .links
             .iter()
-            .filter(|(name, link)| {
+            .filter(|(key, link)| {
                 matches!(link.phase, Phase::Starting(Step::Cleaning))
-                    && !self.cleanups.contains_key(*name)
+                    && !self.cleanups.contains_key(*key)
             })
-            .map(|(name, _)| name.clone())
+            .map(|(key, _)| key.clone())
             .collect();
-        for name in ready {
-            self.start_steps(poll, &name, true);
+        for key in ready {
+            self.start_steps(poll, &key, true);
         }
     }
 
@@ -862,14 +921,14 @@ impl Registry {
     fn end(
         &mut self,
         poll: &mut Poll,
-        name: &RuntimeName,
+        key: &RuntimeKey,
         link: &mut Link,
         (detach, answer): (bool, &LinkState),
     ) {
         let mut reaping = Vec::new();
         let (mine, rest): (Vec<Child>, Vec<Child>) = std::mem::take(&mut self.children)
             .into_iter()
-            .partition(|child| child.name == *name);
+            .partition(|child| child.key == *key);
         self.children = rest;
         for mut child in mine {
             poll.free(child.deadline);
@@ -888,10 +947,10 @@ impl Registry {
         if let Some(mut watch) = link.watch.take() {
             reaping.extend(stop_helper(poll, &mut watch, &mut self.dying));
         }
-        let socket = socket_path(&self.root, name);
+        let socket = socket_path(&self.root, key);
         let cx = Ctx {
             root: &self.root,
-            name,
+            key,
             env: &self.env,
             socket: &socket,
             exe: &self.exe,
@@ -904,19 +963,19 @@ impl Registry {
                 let _ = exec::detached(launch);
             }
         } else {
-            self.schedule(name, stop, reaping);
+            self.schedule(key, stop, reaping);
             self.drive();
         }
         if let Some(listener) = link.listener.take() {
             listener.close(poll);
         }
-        let _ = fs::remove_file(socket_path(&self.root, name));
-        let _ = fs::remove_dir_all(token_directory(&self.root, name));
+        let _ = fs::remove_file(socket_path(&self.root, key));
+        let _ = fs::remove_dir_all(token_directory(&self.root, key));
         poll.stop(link.idle);
     }
 
-    pub(crate) fn wait(&mut self, name: &RuntimeName, wait: Wait) {
-        self.waits.push((name.clone(), wait));
+    pub(crate) fn wait(&mut self, key: &RuntimeKey, wait: Wait) {
+        self.waits.push((key.clone(), wait));
     }
 
     pub(crate) fn forget_wait(&mut self, poll: &mut Poll, conn: Token) {
@@ -947,19 +1006,19 @@ impl Registry {
             .waits
             .iter()
             .position(|(_, wait)| wait.conn == conn && matches!(wait.who, Who::Pane(_)))?;
-        let name = self.waits.swap_remove(at).0;
-        Some(self.state(&name))
+        let key = self.waits.swap_remove(at).0;
+        Some(self.state(&key))
     }
 
-    pub(crate) fn needs_pane(&self, name: &RuntimeName) -> bool {
+    pub(crate) fn needs_pane(&self, key: &RuntimeKey) -> bool {
         matches!(
-            self.links.get(name).map(|link| &link.phase),
+            self.links.get(key).map(|link| &link.phase),
             Some(Phase::Starting(Step::Lead { leader: None, .. }))
         )
     }
 
-    pub(crate) fn elect(&mut self, name: &RuntimeName, pane: PaneId) -> Option<Vec<String>> {
-        let link = self.links.get_mut(name)?;
+    pub(crate) fn elect(&mut self, key: &RuntimeKey, pane: PaneId) -> Option<Vec<String>> {
+        let link = self.links.get_mut(key)?;
         let Phase::Starting(Step::Lead {
             argv,
             leader: leader @ None,
@@ -974,91 +1033,91 @@ impl Registry {
     pub(crate) fn report_lead(
         &mut self,
         poll: &mut Poll,
-        name: &RuntimeName,
+        key: &RuntimeKey,
         pane: PaneId,
         report: LeadReport,
     ) -> Result<(), Error> {
         let leading = matches!(
-            self.links.get(name).map(|link| &link.phase),
+            self.links.get(key).map(|link| &link.phase),
             Some(Phase::Starting(Step::Lead { leader: Some(leader), .. })) if *leader == pane
         );
         if !leading {
             return Err(Error::new(
                 ErrorKind::Refused,
-                format!("{pane} is not the pane that leads the start of runtime {name}"),
+                format!("{pane} is not the pane that leads the start of runtime {key}"),
             ));
         }
         if report.exit == 0 {
-            self.start_steps(poll, name, false);
+            self.start_steps(poll, key, false);
         } else {
             let message = last_line(report.stderr.as_bytes())
                 .unwrap_or_else(|| exit_text("lead", Exit::Exited(report.exit)));
-            self.fail(poll, name, message);
+            self.fail(poll, key, message);
         }
         Ok(())
     }
 
     pub(crate) fn pane_ended(&mut self, poll: &mut Poll, pane: PaneId) {
-        let leading: Vec<RuntimeName> = self
+        let leading: Vec<RuntimeKey> = self
             .links
             .iter()
             .filter(|(_, link)| {
                 matches!(&link.phase, Phase::Starting(Step::Lead { leader: Some(leader), .. }) if *leader == pane)
             })
-            .map(|(name, _)| name.clone())
+            .map(|(key, _)| key.clone())
             .collect();
-        for name in leading {
+        for key in leading {
             self.fail(
                 poll,
-                &name,
+                &key,
                 "the leading pane ended before it reported the lead step".to_owned(),
             );
         }
     }
 
-    pub(crate) fn take_settled(&mut self) -> Vec<(RuntimeName, Wait, LinkState)> {
+    pub(crate) fn take_settled(&mut self) -> Vec<(RuntimeKey, Wait, LinkState)> {
         let waits = std::mem::take(&mut self.waits);
-        let (done, pending): (Vec<_>, Vec<_>) = waits.into_iter().partition(|(name, _)| {
-            !matches!(self.state(name), LinkState::Starting) || self.needs_pane(name)
+        let (done, pending): (Vec<_>, Vec<_>) = waits.into_iter().partition(|(key, _)| {
+            !matches!(self.state(key), LinkState::Starting) || self.needs_pane(key)
         });
         self.waits = pending;
         done.into_iter()
-            .map(|(name, wait)| {
-                let state = self.state(&name);
-                (name, wait, state)
+            .map(|(key, wait)| {
+                let state = self.state(&key);
+                (key, wait, state)
             })
             .collect()
     }
 
-    pub(crate) fn down(&mut self, poll: &mut Poll, name: &RuntimeName, detach: bool) {
+    pub(crate) fn down(&mut self, poll: &mut Poll, key: &RuntimeKey, detach: bool) {
         self.dirty = true;
-        let Some(mut link) = self.links.remove(name) else {
+        let Some(mut link) = self.links.remove(key) else {
             return;
         };
-        self.end(poll, name, &mut link, (detach, &LinkState::Down));
+        self.end(poll, key, &mut link, (detach, &LinkState::Down));
         poll.free(link.idle);
     }
 
     // A master that died unseen: the link starts again, and the pane that found out may lead.
-    fn restart(&mut self, poll: &mut Poll, name: &RuntimeName) {
+    fn restart(&mut self, poll: &mut Poll, key: &RuntimeKey) {
         self.dirty = true;
-        let Some(mut link) = self.links.remove(name) else {
+        let Some(mut link) = self.links.remove(key) else {
             return;
         };
         if !matches!(link.phase, Phase::Up) {
-            self.links.insert(name.clone(), link);
+            self.links.insert(key.clone(), link);
             return;
         }
-        self.end(poll, name, &mut link, (false, &LinkState::Starting));
+        self.end(poll, key, &mut link, (false, &LinkState::Starting));
         poll.free(link.idle);
-        self.begin(poll, name, link.settings);
+        self.begin(poll, key, link.settings);
     }
 
-    pub(crate) fn delete(&mut self, name: &RuntimeName, settings: &Runtime) {
-        let socket = socket_path(&self.root, name);
+    pub(crate) fn delete(&mut self, key: &RuntimeKey, settings: &Runtime) {
+        let socket = socket_path(&self.root, key);
         let cx = Ctx {
             root: &self.root,
-            name,
+            key,
             env: &self.env,
             socket: &socket,
             exe: &self.exe,
@@ -1066,7 +1125,7 @@ impl Registry {
         let launches = cleanup(settings, &cx, Cleanup::Delete)
             .into_iter()
             .collect();
-        self.schedule(name, launches, Vec::new());
+        self.schedule(key, launches, Vec::new());
         self.drive();
     }
 
@@ -1074,25 +1133,25 @@ impl Registry {
         std::mem::take(&mut self.passed)
     }
 
-    pub(crate) fn waiters_of(&mut self, name: &RuntimeName) -> Vec<Wait> {
+    pub(crate) fn waiters_of(&mut self, key: &RuntimeKey) -> Vec<Wait> {
         let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.waits)
             .into_iter()
-            .partition(|(waiting, _)| waiting == name);
+            .partition(|(waiting, _)| waiting == key);
         self.waits = rest;
         mine.into_iter().map(|(_, wait)| wait).collect()
     }
 
     // The directory holds the control socket that a cleanup may still use.
-    pub(crate) fn remove_directory(&mut self, name: &RuntimeName) {
-        if self.cleanups.contains_key(name) {
-            self.deleting.insert(name.clone());
+    pub(crate) fn remove_directory(&mut self, key: &RuntimeKey) {
+        if self.cleanups.contains_key(key) {
+            self.deleting.insert(key.clone());
         } else {
-            let _ = pane::clear_directory(&self.root, name);
+            let _ = pane::clear_directory(&self.root, key);
         }
     }
 
-    pub(crate) fn remote_tokens(&self, name: &RuntimeName, pane: PaneId) -> bool {
-        self.links.get(name).is_some_and(|link| {
+    pub(crate) fn remote_tokens(&self, key: &RuntimeKey, pane: PaneId) -> bool {
+        self.links.get(key).is_some_and(|link| {
             matches!(link.phase, Phase::Up)
                 && matches!(tokens(&link.settings, pane), Tokens::Remote)
         })
@@ -1101,7 +1160,7 @@ impl Registry {
     fn spawn_child(
         &mut self,
         poll: &mut Poll,
-        name: &RuntimeName,
+        key: &RuntimeKey,
         (launch, mode): (&Launch, Mode),
         job: Job,
     ) -> io::Result<()> {
@@ -1113,7 +1172,7 @@ impl Registry {
             return Err(error);
         }
         self.children.push(Child {
-            name: name.clone(),
+            key: key.clone(),
             helper,
             deadline,
             job,
@@ -1123,63 +1182,60 @@ impl Registry {
 
     fn step_launch(
         &self,
-        name: &RuntimeName,
+        key: &RuntimeKey,
         pick: impl FnOnce(&Link, &Ctx<'_>) -> Result<Option<Launch>, String>,
     ) -> Result<Launch, String> {
         let link = self
             .links
-            .get(name)
-            .ok_or_else(|| format!("runtime {name} is down"))?;
-        let socket = socket_path(&self.root, name);
+            .get(key)
+            .ok_or_else(|| format!("runtime {key} is down"))?;
+        let socket = socket_path(&self.root, key);
         let cx = Ctx {
             root: &self.root,
-            name,
+            key,
             env: &self.env,
             socket: &socket,
             exe: &self.exe,
         };
-        pick(link, &cx)?.ok_or_else(|| format!("runtime {name} has no such step"))
+        pick(link, &cx)?.ok_or_else(|| format!("runtime {key} has no such step"))
     }
 
     pub(crate) fn pass(
         &mut self,
         poll: &mut Poll,
-        name: &RuntimeName,
+        key: &RuntimeKey,
         (conn, pane): (Token, PaneId),
         token: String,
     ) -> Result<(), String> {
-        let launch = self.step_launch(name, |link, cx| link.start.alive(&link.settings, cx))?;
+        let launch = self.step_launch(key, |link, cx| link.start.alive(&link.settings, cx))?;
         let job = Job::Check(Some(Pass { pane, conn, token }));
         let mode = Mode::Capture { stdin: false };
-        self.spawn_child(poll, name, (&launch, mode), job)
+        self.spawn_child(poll, key, (&launch, mode), job)
             .map_err(|error| format!("cannot check the link: {error}"))
     }
 
     // An exec found the link gone: the next request starts it again.
-    pub(crate) fn suspect(&mut self, poll: &mut Poll, name: &RuntimeName) {
+    pub(crate) fn suspect(&mut self, poll: &mut Poll, key: &RuntimeKey) {
         let alone = !self
             .children
             .iter()
-            .any(|child| child.name == *name && matches!(child.job, Job::Check(None)));
+            .any(|child| child.key == *key && matches!(child.job, Job::Check(None)));
         if !alone {
             return;
         }
-        if let Ok(launch) = self.step_launch(name, |link, cx| link.start.alive(&link.settings, cx))
-        {
+        if let Ok(launch) = self.step_launch(key, |link, cx| link.start.alive(&link.settings, cx)) {
             let mode = Mode::Capture { stdin: false };
-            let _ = self.spawn_child(poll, name, (&launch, mode), Job::Check(None));
+            let _ = self.spawn_child(poll, key, (&launch, mode), Job::Check(None));
         }
     }
 
-    fn deliver(&mut self, poll: &mut Poll, name: &RuntimeName, pass: Pass) {
+    fn deliver(&mut self, poll: &mut Poll, key: &RuntimeKey, pass: Pass) {
         let Pass { pane, conn, token } = pass;
         let started = self
-            .step_launch(name, |link, cx| {
-                link.start.deliver(&link.settings, cx, pane)
-            })
+            .step_launch(key, |link, cx| link.start.deliver(&link.settings, cx, pane))
             .and_then(|launch| {
                 let mode = Mode::Capture { stdin: true };
-                self.spawn_child(poll, name, (&launch, mode), Job::Deliver(conn))
+                self.spawn_child(poll, key, (&launch, mode), Job::Deliver(conn))
                     .map_err(|error| format!("cannot deliver the token: {error}"))
             });
         match started {
@@ -1195,17 +1251,17 @@ impl Registry {
 
     fn finish(&mut self, poll: &mut Poll, child: Child) {
         let Child {
-            name, helper, job, ..
+            key, helper, job, ..
         } = child;
         let exit = helper.exit().unwrap_or(Exit::Exited(1));
         match job {
             Job::Check(pass) if exit == Exit::Exited(0) => {
                 if let Some(pass) = pass {
-                    self.deliver(poll, &name, pass);
+                    self.deliver(poll, &key, pass);
                 }
             }
             Job::Check(pass) => {
-                self.restart(poll, &name);
+                self.restart(poll, &key);
                 if let Some(Pass { conn, .. }) = pass {
                     self.passed.push((conn, LinkState::Starting));
                 }
@@ -1216,7 +1272,7 @@ impl Registry {
                 } else {
                     let why = last_line(helper.tail()).unwrap_or_else(|| exit_text("token", exit));
                     LinkState::Failed {
-                        message: format!("cannot deliver the token to {name}: {why}"),
+                        message: format!("cannot deliver the token to {key}: {why}"),
                     }
                 };
                 self.passed.push((conn, state));
@@ -1226,24 +1282,24 @@ impl Registry {
 
     pub(crate) fn write_token(
         &self,
-        name: &RuntimeName,
+        key: &RuntimeKey,
         pane: PaneId,
         token: &PaneToken,
     ) -> io::Result<()> {
         use std::io::Write;
-        let Some(link) = self.links.get(name) else {
+        let Some(link) = self.links.get(key) else {
             return Ok(());
         };
         let Tokens::File { text, .. } = tokens(&link.settings, pane) else {
             return Ok(());
         };
-        let Some(path) = token_path(&self.root, name, &link.settings, pane) else {
+        let Some(path) = token_path(&self.root, key, &link.settings, pane) else {
             return Ok(());
         };
         fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
-            .create(token_directory(&self.root, name))?;
+            .create(token_directory(&self.root, key))?;
         match fs::remove_file(&path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
             _ => {}
@@ -1257,20 +1313,20 @@ impl Registry {
         file.write_all(text(token).as_bytes())
     }
 
-    pub(crate) fn remove_token(&self, name: &RuntimeName, pane: PaneId) {
+    pub(crate) fn remove_token(&self, key: &RuntimeKey, pane: PaneId) {
         if let Some(path) = self
             .links
-            .get(name)
-            .and_then(|link| token_path(&self.root, name, &link.settings, pane))
+            .get(key)
+            .and_then(|link| token_path(&self.root, key, &link.settings, pane))
         {
             let _ = fs::remove_file(path);
         }
     }
 
-    pub(crate) fn occupy(&mut self, poll: &mut Poll, name: &RuntimeName, occupied: bool) {
+    pub(crate) fn occupy(&mut self, poll: &mut Poll, key: &RuntimeKey, occupied: bool) {
         let Some(link) = self
             .links
-            .get_mut(name)
+            .get_mut(key)
             .filter(|link| link.listener.is_some() && link.occupied != occupied)
         else {
             return;
@@ -1348,13 +1404,13 @@ impl Registry {
             listener.resume(poll);
             return Due::Handled;
         }
-        if let Some(name) = self
+        if let Some(key) = self
             .links
             .iter()
             .find(|(_, link)| link.idle == timer)
-            .map(|(name, _)| name.clone())
+            .map(|(key, _)| key.clone())
         {
-            return Due::Idle(name);
+            return Due::Idle(key);
         }
         if let Some(at) = self
             .children
@@ -1365,33 +1421,28 @@ impl Registry {
             poll.free(child.deadline);
             stop_helper(poll, &mut child.helper, &mut self.dying);
             if let Job::Check(Some(Pass { conn, .. })) | Job::Deliver(conn) = child.job {
-                let message = format!("runtime {} did not answer in time", child.name);
+                let message = format!("runtime {} did not answer in time", child.key);
                 self.passed.push((conn, LinkState::Failed { message }));
             }
             return Due::Handled;
         }
-        let late = self
-            .links
-            .iter()
-            .find_map(|(name, link)| match &link.phase {
-                Phase::Starting(Step::Up { deadline, .. }) if *deadline == timer => {
-                    Some(name.clone())
-                }
-                _ => None,
-            });
+        let late = self.links.iter().find_map(|(key, link)| match &link.phase {
+            Phase::Starting(Step::Up { deadline, .. }) if *deadline == timer => Some(key.clone()),
+            _ => None,
+        });
         match late {
-            Some(name) => {
-                self.fail(poll, &name, "the up step took too long".to_owned());
+            Some(key) => {
+                self.fail(poll, &key, "the up step took too long".to_owned());
                 Due::Handled
             }
             None => Due::Other,
         }
     }
 
-    fn advance(&mut self, poll: &mut Poll, name: &RuntimeName) {
+    fn advance(&mut self, poll: &mut Poll, key: &RuntimeKey) {
         self.dirty = true;
-        let socket = socket_path(&self.root, name);
-        let Some(link) = self.links.get_mut(name) else {
+        let socket = socket_path(&self.root, key);
+        let Some(link) = self.links.get_mut(key) else {
             return;
         };
         let Phase::Starting(Step::Up {
@@ -1408,7 +1459,7 @@ impl Registry {
             Some(exit) => {
                 let cx = Ctx {
                     root: &self.root,
-                    name,
+                    key,
                     env: &self.env,
                     socket: &socket,
                     exe: &self.exe,
@@ -1424,29 +1475,29 @@ impl Registry {
         match next {
             Next::Run(launch) => match Registry::next_step(poll, &launch, deadline) {
                 Ok(step) => {
-                    if let Some(link) = self.links.get_mut(name) {
+                    if let Some(link) = self.links.get_mut(key) {
                         link.phase = Phase::Starting(step);
                     }
                 }
                 Err(error) => {
                     poll.free(deadline);
                     let message = format!("the up step did not start: {error}");
-                    self.fail(poll, name, message);
+                    self.fail(poll, key, message);
                 }
             },
             Next::Lead(argv) => {
                 poll.free(deadline);
-                if let Some(link) = self.links.get_mut(name) {
+                if let Some(link) = self.links.get_mut(key) {
                     link.phase = Phase::Starting(Step::Lead { argv, leader: None });
                 }
             }
             Next::Up => {
                 poll.free(deadline);
-                self.watch(poll, name, &socket);
+                self.watch(poll, key, &socket);
             }
             Next::Fail(message) => {
                 poll.free(deadline);
-                self.fail(poll, name, message);
+                self.fail(poll, key, message);
             }
         }
     }
@@ -1456,13 +1507,13 @@ impl Registry {
         Ok(Step::Up { helper, deadline })
     }
 
-    fn watch(&mut self, poll: &mut Poll, name: &RuntimeName, socket: &Path) {
-        let Some(link) = self.links.get(name) else {
+    fn watch(&mut self, poll: &mut Poll, key: &RuntimeKey, socket: &Path) {
+        let Some(link) = self.links.get(key) else {
             return;
         };
         let cx = Ctx {
             root: &self.root,
-            name,
+            key,
             env: &self.env,
             socket,
             exe: &self.exe,
@@ -1475,28 +1526,28 @@ impl Registry {
         });
         match spawned {
             Ok(helper) => {
-                if let Some(link) = self.links.get_mut(name) {
+                if let Some(link) = self.links.get_mut(key) {
                     link.watch = helper;
                 }
             }
             Err(error) => {
                 let message = format!("the container watch did not start: {error}");
-                self.fail(poll, name, message);
+                self.fail(poll, key, message);
             }
         }
     }
 
-    pub(crate) fn reap(&mut self, poll: &mut Poll) -> Vec<RuntimeName> {
-        let ended: Vec<RuntimeName> = self
+    pub(crate) fn reap(&mut self, poll: &mut Poll) -> Vec<RuntimeKey> {
+        let ended: Vec<RuntimeKey> = self
             .links
             .iter_mut()
-            .filter_map(|(name, link)| match &mut link.phase {
-                Phase::Starting(Step::Up { helper, .. }) => helper.reap().map(|_| name.clone()),
+            .filter_map(|(key, link)| match &mut link.phase {
+                Phase::Starting(Step::Up { helper, .. }) => helper.reap().map(|_| key.clone()),
                 _ => None,
             })
             .collect();
-        for name in ended {
-            self.advance(poll, &name);
+        for key in ended {
+            self.advance(poll, &key);
         }
         let mut done = Vec::new();
         for mut child in std::mem::take(&mut self.children) {
@@ -1515,14 +1566,14 @@ impl Registry {
         self.settle(poll);
         self.links
             .iter_mut()
-            .filter_map(|(name, link)| link.watch.as_mut()?.reap().map(|_| name.clone()))
+            .filter_map(|(key, link)| link.watch.as_mut()?.reap().map(|_| key.clone()))
             .collect()
     }
 
     pub(crate) fn shutdown(&mut self, poll: &mut Poll) {
-        let names: Vec<RuntimeName> = self.links.keys().cloned().collect();
-        for name in names {
-            self.down(poll, &name, true);
+        let keys: Vec<RuntimeKey> = self.links.keys().cloned().collect();
+        for key in keys {
+            self.down(poll, &key, true);
         }
         // What a down or a delete queued earlier still runs after the server.
         for pending in std::mem::take(&mut self.cleanups).into_values() {
@@ -1541,6 +1592,29 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::SessionId;
+
+    #[test]
+    fn runtime_keys_order_by_source_then_session_then_name_and_have_distinct_tags() {
+        let config = RuntimeKey::config("dev".parse().unwrap());
+        let first = RuntimeKey {
+            name: "dev".parse().unwrap(),
+            source: RuntimeSource::Session {
+                id: SessionId::new(3),
+            },
+        };
+        let second = RuntimeKey {
+            name: "abc".parse().unwrap(),
+            source: RuntimeSource::Session {
+                id: SessionId::new(4),
+            },
+        };
+        assert_eq!(config.tag().to_string(), "dev");
+        assert_eq!(first.tag().to_string(), "session_3-dev");
+        let mut keys = vec![second.clone(), first.clone(), config.clone()];
+        keys.sort();
+        assert_eq!(keys, [config, first, second]);
+    }
 
     #[test]
     fn the_message_of_a_failed_step_is_the_last_line_that_says_something() {

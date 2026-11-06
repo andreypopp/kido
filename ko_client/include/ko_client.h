@@ -673,8 +673,9 @@ ko_code ko_client_delete(const ko_client *client, int kind, const char *id, ko_b
  * Ends the runtime's panes and exec sessions and stops its link. It blocks until
  * the server answered: call it off the main queue. On a code other than KO_OK,
  * `out` holds the text of the error.
+ * `session` is null for a configured runtime, else the session id ("session_3").
  */
-ko_code ko_client_runtime_down(const ko_client *client, const char *name, ko_buffer *out);
+ko_code ko_client_runtime_down(const ko_client *client, const char *name, const char *session, ko_buffer *out);
 
 /*
  * Opens a view of the pane named by `pane` ("pane_3") and returns at once. The

@@ -8,7 +8,7 @@ use crate::protocol::{
     ClientRuntime, Empty, Error, ErrorKind, LeadReport, LinkState, RuntimeInfo, RuntimeWait,
 };
 use crate::runtime::pane::{self, Dir, Wrap as Entering, socket_path};
-use crate::runtime::{CLEANUP_LIMIT, Due, PASS_HOLD, Wait, Who};
+use crate::runtime::{CLEANUP_LIMIT, Due, PASS_HOLD, RuntimeKey, Wait, Who};
 use crate::server::Origin;
 use crate::vars::Vars;
 
@@ -18,8 +18,8 @@ pub(super) fn resolve_runtime(
 ) -> Result<Option<RuntimeName>, Error> {
     match (origin, requested) {
         (Origin::Host, requested) => Ok(requested),
-        (Origin::Runtime(own), None) => Ok(Some(own.clone())),
-        (Origin::Runtime(own), Some(named)) if named == *own => Ok(Some(named)),
+        (Origin::Runtime(own), None) => Ok(Some(own.name.clone())),
+        (Origin::Runtime(own), Some(named)) if named == own.name => Ok(Some(own.name.clone())),
         (Origin::Runtime(own), Some(named)) => Err(Error::new(
             ErrorKind::Refused,
             format!("a connection of runtime {own} creates panes in {own}, not in {named}"),
@@ -27,19 +27,54 @@ pub(super) fn resolve_runtime(
     }
 }
 
+#[derive(Debug)]
+pub(super) struct ChosenRuntimes {
+    pub(super) settings: BTreeMap<RuntimeKey, Runtime>,
+    pub(super) keys: BTreeMap<PaneId, RuntimeKey>,
+}
+
 impl State {
+    pub(crate) fn runtime_key(
+        &self,
+        caller: Option<PaneId>,
+        session: Option<SessionId>,
+        name: &RuntimeName,
+    ) -> Result<RuntimeKey, Error> {
+        let own = caller.and_then(|id| {
+            self.document
+                .layout()
+                .locate(id)
+                .map(|(session, _)| session.id)
+        });
+        if caller.is_some() && session.is_some() && session != own {
+            return Err(Error::new(
+                ErrorKind::Refused,
+                "a pane may name only its own session",
+            ));
+        }
+        Ok(self.runtimes.resolve(name))
+    }
+
     pub(super) fn choose_runtimes<'a>(
         &mut self,
-        requests: impl Iterator<Item = &'a CreatePane>,
+        requests: impl Iterator<Item = (PaneId, &'a CreatePane)>,
         read: &Read,
-    ) -> Result<BTreeMap<RuntimeName, Runtime>, Error> {
+    ) -> Result<ChosenRuntimes, Error> {
         let mut chosen = BTreeMap::new();
-        for name in requests.filter_map(|request| request.runtime.as_ref()) {
-            if !chosen.contains_key(name) {
-                chosen.insert(name.clone(), self.runtimes.settings_in(name, read.get())?);
+        let mut keys = BTreeMap::new();
+        for (id, name) in
+            requests.filter_map(|(id, request)| request.runtime.as_ref().map(|name| (id, name)))
+        {
+            let key = self.runtimes.resolve(name);
+            keys.insert(id, key.clone());
+            if !chosen.contains_key(&key) {
+                chosen.insert(key.clone(), self.runtimes.settings_in(&key, read.get())?);
             }
         }
-        Ok(chosen)
+        Ok(ChosenRuntimes {
+            settings: chosen,
+            keys,
+        })
     }
 
     pub(super) fn birth(
@@ -48,18 +83,18 @@ impl State {
         shell: &Path,
         request: &CreatePane,
         vars: Vars,
-        (chosen, dir): (&BTreeMap<RuntimeName, Runtime>, &Dir),
+        (chosen, dir, key): (&BTreeMap<RuntimeKey, Runtime>, &Dir, Option<&RuntimeKey>),
     ) -> Result<Birth, AddError> {
-        let program = match &request.runtime {
+        let program = match key {
             None => program(&self.config, shell, request, Start::Host(dir.host()))?,
-            Some(name) => {
+            Some(key) => {
                 let runtime = chosen
-                    .get(name)
+                    .get(key)
                     .ok_or(AddError::Invalid("no such runtime"))?;
                 let entering = Entering {
                     exe: &self.config.exe,
                     root: self.runtimes.root(),
-                    name,
+                    key,
                     runtime,
                     pane: id,
                     cwd: dir,
@@ -78,14 +113,14 @@ impl State {
             vars,
             parent: request.parent,
             close: request.close,
-            runtime: request.runtime.clone(),
+            runtime: key.cloned(),
             program,
         })
     }
 
     pub(super) fn shown_to(
         &self,
-        runtime: &RuntimeName,
+        runtime: &RuntimeKey,
         caller: PaneId,
         id: PaneId,
     ) -> Result<(), Error> {
@@ -96,13 +131,13 @@ impl State {
         }
     }
 
-    fn occupied(&self, name: &RuntimeName) -> bool {
-        self.panes.any_in(name) || self.conns.iter().any(|conn| conn.runs_exec(name))
+    fn occupied(&self, key: &RuntimeKey) -> bool {
+        self.panes.any_in(key) || self.conns.iter().any(|conn| conn.runs_exec(key))
     }
 
-    pub(super) fn touch_runtime(&mut self, poll: &mut Poll, name: &RuntimeName) {
-        let occupied = self.occupied(name);
-        self.runtimes.occupy(poll, name, occupied);
+    pub(super) fn touch_runtime(&mut self, poll: &mut Poll, key: &RuntimeKey) {
+        let occupied = self.occupied(key);
+        self.runtimes.occupy(poll, key, occupied);
     }
 
     pub(super) fn client_runtimes(&mut self, read: &Read) -> Vec<ClientRuntime> {
@@ -128,8 +163,8 @@ impl State {
         for pid in self.runtimes.take_released() {
             self.leaving.release(pid);
         }
-        for (name, wait, state) in self.runtimes.take_settled() {
-            self.answer_wait(poll, &name, wait, state);
+        for (key, wait, state) in self.runtimes.take_settled() {
+            self.answer_wait(poll, &key, wait, state);
         }
         for (conn, state) in self.runtimes.take_passed() {
             let reply = Ok(RuntimeWait { state, lead: None });
@@ -138,11 +173,11 @@ impl State {
         self.announce_runtimes();
     }
 
-    fn pass_token(&mut self, poll: &mut Poll, name: &RuntimeName, conn: Token, pane: PaneId) {
+    fn pass_token(&mut self, poll: &mut Poll, key: &RuntimeKey, conn: Token, pane: PaneId) {
         let started = match self.panes.find(pane) {
             Some(found) => {
                 let token = found.token().to_string();
-                self.runtimes.pass(poll, name, (conn, pane), token)
+                self.runtimes.pass(poll, key, (conn, pane), token)
             }
             None => Err(format!("{pane} is gone")),
         };
@@ -155,24 +190,22 @@ impl State {
         }
     }
 
-    fn answer_wait(&mut self, poll: &mut Poll, name: &RuntimeName, wait: Wait, state: LinkState) {
+    fn answer_wait(&mut self, poll: &mut Poll, key: &RuntimeKey, wait: Wait, state: LinkState) {
         match wait.who {
-            Who::Pane(pane)
-                if state == LinkState::Up && self.runtimes.remote_tokens(name, pane) =>
-            {
-                self.pass_token(poll, name, wait.conn, pane);
+            Who::Pane(pane) if state == LinkState::Up && self.runtimes.remote_tokens(key, pane) => {
+                self.pass_token(poll, key, wait.conn, pane);
             }
             Who::Pane(pane) => {
-                let reply = self.runtime_reply(name, pane, state);
+                let reply = self.runtime_reply(key, pane, state);
                 router::answer::<routes::WaitRuntime>(self, poll, wait.conn, reply);
             }
-            Who::Exec => self.exec_linked(poll, wait.conn, name, state),
+            Who::Exec => self.exec_linked(poll, wait.conn, key, state),
         }
     }
 
     fn runtime_reply(
         &self,
-        name: &RuntimeName,
+        key: &RuntimeKey,
         pane: PaneId,
         state: LinkState,
     ) -> Result<RuntimeWait, Error> {
@@ -180,7 +213,7 @@ impl State {
             && let Some(found) = self.panes.find(pane)
         {
             self.runtimes
-                .write_token(name, pane, found.token())
+                .write_token(key, pane, found.token())
                 .map_err(|error| Error::new(ErrorKind::Io, format!("token file: {error}")))?;
         }
         Ok(RuntimeWait { state, lead: None })
@@ -221,16 +254,17 @@ impl State {
         }
     }
 
-    fn runtime_info(&self, name: &RuntimeName, runtime: &Runtime) -> RuntimeInfo {
+    fn runtime_info(&self, key: &RuntimeKey, runtime: &Runtime) -> RuntimeInfo {
         RuntimeInfo {
             runtime: ClientRuntime {
-                name: name.clone(),
+                name: key.name.clone(),
+                source: key.source,
                 kind: crate::runtime::kind(runtime),
                 color: runtime.color.clone(),
-                state: self.runtimes.state(name),
+                state: self.runtimes.state(key),
             },
-            panes: u32::try_from(self.panes.in_runtime(name).count()).unwrap_or(u32::MAX),
-            socket: socket_path(self.runtimes.root(), name)
+            panes: u32::try_from(self.panes.in_runtime(key).count()).unwrap_or(u32::MAX),
+            socket: socket_path(self.runtimes.root(), key)
                 .to_string_lossy()
                 .into_owned(),
             paths: runtime.paths(),
@@ -244,22 +278,22 @@ impl State {
             .runtimes
             .known()?
             .iter()
-            .map(|(name, runtime)| self.runtime_info(name, runtime))
+            .map(|(key, runtime)| self.runtime_info(key, runtime))
             .collect())
     }
 
-    pub(crate) fn get_runtime(&mut self, name: &RuntimeName) -> Result<RuntimeInfo, Error> {
-        let settings = self.runtimes.settings(name)?;
-        Ok(self.runtime_info(name, &settings))
+    pub(crate) fn get_runtime(&mut self, key: &RuntimeKey) -> Result<RuntimeInfo, Error> {
+        let settings = self.runtimes.settings(key)?;
+        Ok(self.runtime_info(key, &settings))
     }
 
-    fn runtime_pane(&self, caller: Option<PaneId>, name: &RuntimeName) -> Result<PaneId, Error> {
+    fn runtime_pane(&self, caller: Option<PaneId>, key: &RuntimeKey) -> Result<PaneId, Error> {
         caller
-            .filter(|caller| self.panes.is_in(*caller, name))
+            .filter(|caller| self.panes.is_in(*caller, key))
             .ok_or_else(|| {
                 Error::new(
                     ErrorKind::Refused,
-                    format!("only a pane of runtime {name} may use this route"),
+                    format!("only a pane of runtime {key} may use this route"),
                 )
             })
     }
@@ -272,6 +306,10 @@ impl State {
         name: RuntimeName,
         timeout: WaitMs,
     ) -> Option<Result<RuntimeWait, Error>> {
+        let name = match self.runtime_key(caller, None, &name) {
+            Ok(key) => key,
+            Err(error) => return Some(Err(error)),
+        };
         let pane = match self.runtime_pane(caller, &name) {
             Ok(pane) => pane,
             Err(error) => return Some(Err(error)),
@@ -312,6 +350,7 @@ impl State {
         name: RuntimeName,
         report: LeadReport,
     ) -> Result<Empty, Error> {
+        let name = self.runtime_key(caller, None, &name)?;
         let pane = self.runtime_pane(caller, &name)?;
         self.runtimes.report_lead(poll, &name, pane, report)?;
         self.runtimes_changed(poll);
@@ -321,37 +360,37 @@ impl State {
     pub(crate) fn down_runtime(
         &mut self,
         poll: &mut Poll,
-        name: &RuntimeName,
+        key: &RuntimeKey,
         force: bool,
     ) -> Result<(), Error> {
-        if !self.runtimes.is_live(name) {
-            return self.runtimes.settings(name).map(|_| ());
+        if !self.runtimes.is_live(key) {
+            return self.runtimes.settings(key).map(|_| ());
         }
         let live: Vec<PaneId> = self
             .panes
-            .in_runtime(name)
+            .in_runtime(key)
             .filter(|pane| pane.proc().dead().is_none())
             .map(Pane::id)
             .collect();
-        let sessions = self.conns.iter().any(|conn| conn.runs_exec(name));
+        let sessions = self.conns.iter().any(|conn| conn.runs_exec(key));
         if (!live.is_empty() || sessions) && !force {
             return Err(Error::new(
                 ErrorKind::Refused,
                 format!(
-                    "runtime {name} has live panes or exec sessions; stop them or force the request"
+                    "runtime {key} has live panes or exec sessions; stop them or force the request"
                 ),
             ));
         }
         for id in live {
             self.kill_pane(poll, id);
         }
-        self.exec_down(poll, name);
-        let waiters = self.runtimes.waiters_of(name);
-        self.runtimes.down(poll, name, false);
+        self.exec_down(poll, key);
+        let waiters = self.runtimes.waiters_of(key);
+        self.runtimes.down(poll, key, false);
         for wait in waiters {
-            self.answer_wait(poll, name, wait, LinkState::Down);
+            self.answer_wait(poll, key, wait, LinkState::Down);
         }
-        let own = Origin::Runtime(name.clone());
+        let own = Origin::Runtime(key.clone());
         for conn in self.conns.iter_mut().filter(|conn| conn.origin == own) {
             conn.out.close();
         }
@@ -362,23 +401,23 @@ impl State {
     pub(crate) fn delete_runtime(
         &mut self,
         poll: &mut Poll,
-        name: &RuntimeName,
+        key: &RuntimeKey,
     ) -> Result<Empty, Error> {
-        let settings = self.runtimes.settings(name)?;
-        self.down_runtime(poll, name, false)?;
-        self.runtimes.delete(name, &settings);
-        self.runtimes.remove_directory(name);
+        let settings = self.runtimes.settings(key)?;
+        self.down_runtime(poll, key, false)?;
+        self.runtimes.delete(key, &settings);
+        self.runtimes.remove_directory(key);
         Ok(Empty {})
     }
 
-    fn hidden(caller: PaneId, target: PaneId, runtime: &RuntimeName) -> Error {
+    fn hidden(caller: PaneId, target: PaneId, runtime: &RuntimeKey) -> Error {
         Error::new(
             ErrorKind::Refused,
             format!("{target} is not visible to {caller} on runtime {runtime}"),
         )
     }
 
-    pub(crate) fn visible_to(&self, runtime: &RuntimeName, caller: PaneId) -> BTreeSet<PaneId> {
+    pub(crate) fn visible_to(&self, runtime: &RuntimeKey, caller: PaneId) -> BTreeSet<PaneId> {
         let mut seen = scope(&self.edges(), caller);
         seen.extend(self.panes.in_runtime(runtime).map(Pane::id));
         seen
@@ -386,7 +425,7 @@ impl State {
 
     pub(crate) fn runtime_gate(
         &self,
-        runtime: &RuntimeName,
+        runtime: &RuntimeKey,
         caller: PaneId,
         route: &Route,
     ) -> Result<(), Error> {
@@ -441,7 +480,7 @@ mod tests {
     fn a_pane_goes_in_the_runtime_of_its_connection_and_a_host_connection_names_any() {
         let dev: RuntimeName = "dev".parse().unwrap();
         let other: RuntimeName = "other".parse().unwrap();
-        let on_dev = Origin::Runtime(dev.clone());
+        let on_dev = Origin::Runtime(RuntimeKey::config(dev.clone()));
         assert_eq!(resolve_runtime(&Origin::Host, None), Ok(None));
         assert_eq!(
             resolve_runtime(&Origin::Host, Some(other.clone())),

@@ -199,7 +199,7 @@ private func marked(_ node: SidebarFeed.Node, _ runtime: RuntimeMark?) -> Sideba
 }
 
 private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind: KoSchema.RuntimeKind = .ssh, routed: Bool = false) -> RuntimeMark {
-    RuntimeMark(KoSchema.ClientRuntime(kind: kind, name: name, state: state), routed: routed)
+    RuntimeMark(KoSchema.ClientRuntime(kind: kind, name: name, source: .config, state: state), routed: routed)
 }
 
 // rows and routed: the sidebar's suffix in every case, and a routed pi agent's row.
@@ -262,10 +262,10 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
         let previous = NSApp.mainMenu
         defer { NSApp.mainMenu = previous }
         let runtimes = [
-            KoSchema.ClientRuntime(kind: .ssh, name: "buildbox", state: .up),
-            KoSchema.ClientRuntime(kind: .container, name: "py311", state: .up),
-            KoSchema.ClientRuntime(kind: .ssh, name: "gpu-1", state: .failed(.init(message: runtimeGapWithMessage))),
-            KoSchema.ClientRuntime(kind: .command, name: "e2e", state: .starting),
+            KoSchema.ClientRuntime(kind: .ssh, name: "buildbox", source: .config, state: .up),
+            KoSchema.ClientRuntime(kind: .container, name: "py311", source: .config, state: .up),
+            KoSchema.ClientRuntime(kind: .ssh, name: "gpu-1", source: .config, state: .failed(.init(message: runtimeGapWithMessage))),
+            KoSchema.ClientRuntime(kind: .command, name: "e2e", source: .config, state: .starting),
         ]
         for (theme, background, foreground) in [("light", "fff9ec", "424242"), ("dark", "171717", "c9c9c9")] {
             try configYAML(at: config, background: background, foreground: foreground).write(to: config, atomically: true, encoding: .utf8)
@@ -298,14 +298,14 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
                 checkSnapshot { verifySnapshot(of: palette, as: .image, named: "\(theme)-\(name)", record: $0, testName: "runtime") }
             }
             XCTAssertEqual(palette.shown.prefix(3).map(\.entry.title), ["make verify", "@kido-app", "Host"], "the panes come first, then the runtimes")
-            XCTAssertEqual(palette.selectedEntry?.id, .runtime(nil), "the host comes first and is selected while the pane in focus runs in a runtime")
+            XCTAssertEqual(palette.selectedEntry?.id, .hostRuntime, "the host comes first and is selected while the pane in focus runs in a runtime")
             XCTAssertEqual(palette.shown.compactMap { entry -> String? in if case .runtime = entry.entry.id { entry.entry.title } else { nil } },
                            ["Host", "Runtime: buildbox", "Runtime: py311", "Runtime: gpu-1", "Runtime: e2e"])
             XCTAssertEqual(palette.shown.compactMap { entry -> String? in if case .runtime = entry.entry.id { entry.entry.detail } else { nil } },
                            ["this Mac", "ssh · up", "container · up", "ssh · failed · \(runtimeGapWithMessage)", "command · starting"])
             image("palette-root")
             func step(_ name: String?, _ state: KoSchema.LinkState = .up) -> RuntimeMark? {
-                name.map { RuntimeMark(KoSchema.ClientRuntime(kind: .ssh, name: $0, state: state)) }
+                name.map { RuntimeMark(KoSchema.ClientRuntime(kind: .ssh, name: $0, source: .config, state: state)) }
             }
             palette.enter(.runtime(step("buildbox")))
             XCTAssertEqual(palette.shown.map(\.entry.title), ["New Window", "Split Right", "Split Down", "Shut Down Runtime"])
@@ -340,17 +340,17 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
             XCTAssertNil(palette.error)
             let before = palette.selectedEntry?.id
             func change(_ state: KoSchema.LinkState) {
-                owner.testRuntimes = (runtimes.map { $0.name == "e2e" ? KoSchema.ClientRuntime(kind: .command, name: "e2e", state: state) : $0 }, "buildbox")
+                owner.testRuntimes = (runtimes.map { $0.name == "e2e" ? KoSchema.ClientRuntime(kind: .command, name: "e2e", source: .config, state: state) : $0 }, "buildbox")
                 app.paletteStateChanged()
             }
             change(.failed(.init(message: "boom")))
             XCTAssertEqual(palette.error, "e2e failed: boom. The new pane starts it again.")
-            XCTAssertEqual(palette.mode, .runtime(RuntimeMark(KoSchema.ClientRuntime(kind: .command, name: "e2e", state: .failed(.init(message: "boom"))))))
+            XCTAssertEqual(palette.mode, .runtime(RuntimeMark(KoSchema.ClientRuntime(kind: .command, name: "e2e", source: .config, state: .failed(.init(message: "boom"))))))
             XCTAssertEqual(palette.field.stringValue, "split")
             XCTAssertEqual(palette.selectedEntry?.id, before)
             change(.up)
             XCTAssertNil(palette.error)
-            XCTAssertEqual(palette.mode, .runtime(RuntimeMark(KoSchema.ClientRuntime(kind: .command, name: "e2e", state: .up))))
+            XCTAssertEqual(palette.mode, .runtime(RuntimeMark(KoSchema.ClientRuntime(kind: .command, name: "e2e", source: .config, state: .up))))
         }
     }
 }
@@ -370,10 +370,10 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
         owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         owner.window.orderFront(nil)
         owner.start()
-        try await wait("runtime up") { owner.runtimes.first?.state == .up && owner.runtimePaneCount("deb") == 1 }
+        try await wait("runtime up") { owner.runtimes.first?.state == .up && owner.runtimePaneCount(.init(name: "deb", source: .config)) == 1 }
         for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             owner.window.appearance = NSAppearance(named: appearance)
-            owner.shutDownRuntime("deb")
+            owner.shutDownRuntime(.init(name: "deb", source: .config))
             let alert = try XCTUnwrap(owner.preparedAlert?.alert)
             alert.window.appearance = NSAppearance(named: appearance)
             try await wait("the confirmation sheet") { owner.window.attachedSheet === alert.window }

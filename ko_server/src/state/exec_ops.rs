@@ -10,14 +10,14 @@ use crate::runtime::exec::{
     Admit, Chunk, Limiter, MAX_SESSIONS, Mode, Retry, Running, Session, Source, Stage, Stream,
     spawn,
 };
-use crate::runtime::{Ending, Wait, Who};
+use crate::runtime::{Ending, RuntimeKey, Wait, Who};
 
 const FRAMING: usize = 80;
 const READS_PER_TURN: usize = 16;
 
 #[derive(Debug)]
 pub(super) struct Execs {
-    limiters: BTreeMap<RuntimeName, Limiter>,
+    limiters: BTreeMap<RuntimeKey, Limiter>,
     scratch: Vec<u8>,
 }
 
@@ -29,9 +29,9 @@ impl Execs {
         }
     }
 
-    fn limiter(&mut self, name: &RuntimeName) -> &mut Limiter {
+    fn limiter(&mut self, key: &RuntimeKey) -> &mut Limiter {
         self.limiters
-            .entry(name.clone())
+            .entry(key.clone())
             .or_insert_with(|| Limiter::new(MAX_SESSIONS))
     }
 }
@@ -61,7 +61,7 @@ impl State {
         }
     }
 
-    fn exec_name(&mut self, index: usize) -> Option<RuntimeName> {
+    fn exec_key(&mut self, index: usize) -> Option<RuntimeKey> {
         self.exec_session(index)
             .map(|(session, _)| session.runtime.clone())
     }
@@ -95,16 +95,16 @@ impl State {
         let Some((session, _)) = self.exec_session(index) else {
             return;
         };
-        let name = session.runtime.clone();
+        let key = session.runtime.clone();
         let stage = std::mem::replace(&mut session.stage, Stage::Ended);
-        self.exec_release_stage(poll, token, &name, stage);
+        self.exec_release_stage(poll, token, &key, stage);
     }
 
     fn exec_release_stage(
         &mut self,
         poll: &mut Poll,
         token: Token,
-        name: &RuntimeName,
+        key: &RuntimeKey,
         stage: Stage,
     ) {
         match stage {
@@ -113,21 +113,22 @@ impl State {
                 if let Some(timer) = timer {
                     poll.free(timer);
                 }
-                self.execs.limiter(name).forget(token);
+                self.execs.limiter(key).forget(token);
                 self.runtimes.forget_wait(poll, token);
             }
-            Stage::Running(Running { mut helper, .. }) => {
+            Stage::Running(running) => {
+                let Running { mut helper, .. } = *running;
                 helper.release(poll);
                 if helper.reap().is_none() {
                     self.leaving
                         .hand_over(poll, helper.pid(), self.config.stop_escalation);
                 }
-                for ticket in self.execs.limiter(name).leave() {
+                for ticket in self.execs.limiter(key).leave() {
                     self.exec_start(poll, ticket);
                 }
             }
         }
-        self.touch_runtime(poll, name);
+        self.touch_runtime(poll, key);
         self.runtimes_changed(poll);
     }
 
@@ -194,15 +195,15 @@ impl State {
     }
 
     fn exec_begin(&mut self, poll: &mut Poll, index: usize, request: ExecRequest) {
-        let Some(name) = self.exec_name(index) else {
+        let Some(key) = self.exec_key(index) else {
             return;
         };
         if matches!(
-            self.runtimes.state(&name),
+            self.runtimes.state(&key),
             LinkState::Down | LinkState::Failed { .. }
         ) {
-            match self.runtimes.settings(&name) {
-                Ok(settings) => self.runtimes.begin(poll, &name, settings),
+            match self.runtimes.settings(&key) {
+                Ok(settings) => self.runtimes.begin(poll, &key, settings),
                 Err(error) => return self.exec_fail(poll, index, error.message),
             }
         }
@@ -213,26 +214,26 @@ impl State {
                 retried: false,
             };
         }
-        self.touch_runtime(poll, &name);
-        self.exec_proceed(poll, index, &name);
+        self.touch_runtime(poll, &key);
+        self.exec_proceed(poll, index, &key);
         self.runtimes_changed(poll);
     }
 
-    fn exec_proceed(&mut self, poll: &mut Poll, index: usize, name: &RuntimeName) {
-        match self.runtimes.state(name) {
-            LinkState::Up => self.exec_join(poll, index, name),
+    fn exec_proceed(&mut self, poll: &mut Poll, index: usize, key: &RuntimeKey) {
+        match self.runtimes.state(key) {
+            LinkState::Up => self.exec_join(poll, index, key),
             LinkState::Failed { message } => self.exec_fail(poll, index, message),
             LinkState::Down => {
-                self.exec_fail(poll, index, format!("runtime {name} is down"));
+                self.exec_fail(poll, index, format!("runtime {key} is down"));
             }
-            LinkState::Starting if self.runtimes.needs_pane(name) => {
-                let message = format!("runtime {name} needs a pane to log in");
+            LinkState::Starting if self.runtimes.needs_pane(key) => {
+                let message = format!("runtime {key} needs a pane to log in");
                 self.exec_fail(poll, index, message);
             }
             LinkState::Starting => {
                 if let Some(conn) = self.token(index) {
                     self.runtimes.wait(
-                        name,
+                        key,
                         Wait {
                             conn,
                             who: Who::Exec,
@@ -247,24 +248,20 @@ impl State {
         &mut self,
         poll: &mut Poll,
         conn: Token,
-        name: &RuntimeName,
+        key: &RuntimeKey,
         state: LinkState,
     ) {
         let Some(index) = self.index(conn) else {
             return;
         };
         match state {
-            LinkState::Up => self.exec_join(poll, index, name),
+            LinkState::Up => self.exec_join(poll, index, key),
             LinkState::Failed { message } => self.exec_fail(poll, index, message),
             LinkState::Down => {
-                self.exec_fail(poll, index, format!("runtime {name} went down"));
+                self.exec_fail(poll, index, format!("runtime {key} went down"));
             }
             LinkState::Starting => {
-                self.exec_fail(
-                    poll,
-                    index,
-                    format!("runtime {name} needs a pane to log in"),
-                );
+                self.exec_fail(poll, index, format!("runtime {key} needs a pane to log in"));
             }
         }
     }
@@ -279,11 +276,11 @@ impl State {
         }
     }
 
-    fn exec_join(&mut self, poll: &mut Poll, index: usize, name: &RuntimeName) {
+    fn exec_join(&mut self, poll: &mut Poll, index: usize, key: &RuntimeKey) {
         let Some(token) = self.token(index) else {
             return;
         };
-        match self.execs.limiter(name).join(token) {
+        match self.execs.limiter(key).join(token) {
             Admit::Run => self.exec_spawn(poll, index),
             Admit::Wait => self.exec_wait_timer(poll, index),
         }
@@ -303,7 +300,7 @@ impl State {
     }
 
     fn exec_spawn(&mut self, poll: &mut Poll, index: usize) {
-        let Some(name) = self.exec_name(index) else {
+        let Some(key) = self.exec_key(index) else {
             return;
         };
         let queued = self
@@ -317,12 +314,12 @@ impl State {
         let Some((request, retried)) = queued else {
             return;
         };
-        let started = self.execs.limiter(&name).ends();
+        let started = self.execs.limiter(&key).ends();
         let helper = self
             .runtimes
-            .settings(&name)
+            .settings(&key)
             .map_err(|error| error.message)
-            .and_then(|runtime| self.runtimes.exec_launch(&name, &runtime, &request))
+            .and_then(|runtime| self.runtimes.exec_launch(&key, &runtime, &request))
             .and_then(|(launch, start)| {
                 let mut helper =
                     spawn(poll, &launch, Mode::Session).map_err(|error| error.to_string())?;
@@ -336,14 +333,14 @@ impl State {
                 }
                 let backlog = match self.exec_session(index) {
                     Some((session, _)) => {
-                        session.stage = Stage::Running(Running {
+                        session.stage = Stage::Running(Box::new(Running {
                             helper,
                             request,
                             retried,
                             output: false,
                             fed: false,
                             started,
-                        });
+                        }));
                         std::mem::take(&mut session.backlog)
                     }
                     None => return,
@@ -356,7 +353,7 @@ impl State {
             }
             Err(message) => {
                 self.exec_fail(poll, index, message);
-                for ticket in self.execs.limiter(&name).leave() {
+                for ticket in self.execs.limiter(&key).leave() {
                     self.exec_start(poll, ticket);
                 }
             }
@@ -405,8 +402,8 @@ impl State {
         };
         match ended {
             Err(invalid) => {
-                let message = match self.exec_name(index) {
-                    Some(name) => format!("ko in runtime {name} sent invalid output: {invalid}"),
+                let message = match self.exec_key(index) {
+                    Some(key) => format!("ko in runtime {key} sent invalid output: {invalid}"),
                     None => format!("ko sent invalid output: {invalid}"),
                 };
                 self.exec_fail(poll, index, message);
@@ -420,7 +417,7 @@ impl State {
         let Some(token) = self.token(index) else {
             return;
         };
-        let Some(name) = self.exec_name(index) else {
+        let Some(key) = self.exec_key(index) else {
             return;
         };
         let framed = match self.exec_session(index) {
@@ -436,7 +433,7 @@ impl State {
         if let Some(ended) = framed {
             return self.exec_exit(poll, index, ended);
         }
-        let runtime = self.runtimes.settings(&name).ok();
+        let runtime = self.runtimes.settings(&key).ok();
         let ending = match self.exec_session(index) {
             Some((session, _)) => match (&session.stage, &runtime) {
                 (Stage::Running(running), Some(runtime)) => {
@@ -459,7 +456,7 @@ impl State {
         let request = match ending {
             Ok(Ending::Exit) => return self.exec_exit(poll, index, Ended::from(exit)),
             Ok(Ending::Error(message) | Ending::Refused(message)) => {
-                self.runtimes.suspect(poll, &name);
+                self.runtimes.suspect(poll, &key);
                 return self.exec_fail(poll, index, message);
             }
             Err(retry) => retry,
@@ -477,7 +474,7 @@ impl State {
         {
             running.helper.release(poll);
         }
-        let (when, admitted) = self.execs.limiter(&name).retry(token, started);
+        let (when, admitted) = self.execs.limiter(&key).retry(token, started);
         if when == Retry::Later {
             self.exec_wait_timer(poll, index);
         }
@@ -539,14 +536,14 @@ impl State {
                 })) if *due == timer => Some((index, runtime.clone())),
                 _ => None,
             });
-        let Some((index, name)) = waiting else {
+        let Some((index, key)) = waiting else {
             return false;
         };
         let wait = self.config.runtimes.exec_wait.as_millis();
         self.exec_fail(
             poll,
             index,
-            format!("no exec slot of runtime {name} within {wait} ms"),
+            format!("no exec slot of runtime {key} within {wait} ms"),
         );
         true
     }
@@ -592,12 +589,12 @@ impl State {
         self.leaving.kill_all();
     }
 
-    pub(super) fn exec_down(&mut self, poll: &mut Poll, name: &RuntimeName) {
+    pub(super) fn exec_down(&mut self, poll: &mut Poll, key: &RuntimeKey) {
         let (queued, running): (Vec<usize>, Vec<usize>) = self
             .conns
             .iter()
             .enumerate()
-            .filter(|(_, conn)| conn.runs_exec(name))
+            .filter(|(_, conn)| conn.runs_exec(key))
             .map(|(index, _)| index)
             .partition(|index| {
                 matches!(
@@ -609,7 +606,7 @@ impl State {
                 )
             });
         for index in queued.into_iter().chain(running) {
-            self.exec_fail(poll, index, format!("runtime {name} went down"));
+            self.exec_fail(poll, index, format!("runtime {key} went down"));
         }
     }
 }

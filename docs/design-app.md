@@ -960,11 +960,13 @@ name and the hashed colour and shows no state.
 
 File → **Runtimes**, after the connect items, is built when it opens
 from the key window's runtimes, one item for each runtime of its
-`Welcome`. The palette's runtime step has the same action as its last
+`Welcome`; the item of a session's runtime names the session after
+the runtime. The palette's runtime step has the same action as its last
 row ([Command palette](#command-palette)). Both call
 `WindowOwner.shutDownRuntime`, which `canShutDownRuntime` gates: the
 action exists only while the runtime is starting or up. It sends
-`ko_client_runtime_down`, `POST /runtimes/NAME/down` with `force`, so
+`ko_client_runtime_down`, `POST /runtimes/NAME/down` with `force` and,
+for a session's runtime, its `session` query, so
 the server ends the runtime's live panes and exec sessions first
 (design-runtimes.md, "Down"). A remote window can do it too: its
 forward reaches the remote server's host socket, not a runtime
@@ -1778,7 +1780,7 @@ the field and the list; an edit clears it.
   the kind and state and where the new pane runs. For a failed runtime
   a red line above the foot repeats the message and says "The new pane
   starts it again."; an edit of the query does not clear it. Each
-  model change resolves the runtime again by name, so the chip, the
+  model change resolves the runtime again by its name and source, so the chip, the
   foot and the red line follow its state while the step is open, and
   the query and the selection stay. There is
   no New Session row: a session holds host and runtime windows

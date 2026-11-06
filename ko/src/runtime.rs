@@ -35,6 +35,9 @@ pub(crate) struct EnterArgs {
     /// The runtime of the pane.
     #[arg(long, value_name = "NAME", required_unless_present_any = ["exec", "watch"], conflicts_with_all = ["exec", "watch"])]
     runtime: Option<RuntimeName>,
+    /// The runtime directory tag. Default: the runtime name.
+    #[arg(long, value_name = "TAG", conflicts_with_all = ["exec", "watch"])]
+    tag: Option<ko_config::values::RuntimeTag>,
     /// The runtime's directory, when the socket is not given. Default: a private directory
     /// of this user for the runtime.
     #[arg(long, value_name = "DIR", conflicts_with_all = ["socket", "token_file"])]
@@ -78,6 +81,7 @@ pub(crate) fn enter(args: EnterArgs) -> ExitCode {
         pane,
         token_file,
         runtime,
+        tag,
         dir,
         prepare,
         exec,
@@ -106,9 +110,10 @@ pub(crate) fn enter(args: EnterArgs) -> ExitCode {
     let Some(runtime) = runtime else {
         return crate::fail("enter", "--runtime is required");
     };
+    let tag = tag.unwrap_or_else(|| ko_config::values::RuntimeTag::new(runtime.clone(), None));
     let remote = |dir| {
         enter::remote_dir(
-            &runtime,
+            &tag,
             dir,
             std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
             ko_sys::sock::uid(),

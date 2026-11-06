@@ -266,7 +266,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
 
 @Test func aNestedRowOmitsItsRuntimeWhenItIsTheOneOfThePaneRowAboveAndTheTopLevelAlwaysShowsIt() {
     func mark(_ name: String, routed: Bool = false, state: KoSchema.LinkState = .up) -> RuntimeMark {
-        RuntimeMark(name: name, kind: .ssh, color: nil, state: state, routed: routed)
+        RuntimeMark(key: .init(name: name, source: .config), kind: .ssh, color: nil, state: state, routed: routed)
     }
     func item(_ id: Int, _ runtime: RuntimeMark?, _ children: [Node] = []) -> Node {
         guard case .item(var item) = pane(id, title: "pane-\(id)", children: children) else { preconditionFailure() }

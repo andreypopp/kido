@@ -390,8 +390,10 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             let result = state.list_runtimes();
             reply::<routes::ListRuntimes>(&mut state.conns[index], result);
         }
-        Request::GetRuntime { name } => {
-            let result = state.get_runtime(&name);
+        Request::GetRuntime { name, session } => {
+            let result = state
+                .runtime_key(caller, session, &name)
+                .and_then(|key| state.get_runtime(&key));
             reply::<routes::GetRuntime>(&mut state.conns[index], result);
         }
         Request::WaitRuntime { name, timeout_ms } => {
@@ -403,23 +405,36 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             let result = state.report_lead(poll, caller, name, body);
             reply::<routes::ReportLead>(&mut state.conns[index], result);
         }
-        Request::DownRuntime { name, body } => {
+        Request::DownRuntime {
+            name,
+            session,
+            body,
+        } => {
             let result = state
-                .down_runtime(poll, &name, body.force)
+                .runtime_key(caller, session, &name)
+                .and_then(|key| state.down_runtime(poll, &key, body.force))
                 .map(|()| Empty {});
             reply::<routes::DownRuntime>(&mut state.conns[index], result);
         }
-        Request::DeleteRuntime { name } => {
-            let result = state.delete_runtime(poll, &name);
+        Request::DeleteRuntime { name, session } => {
+            let result = state
+                .runtime_key(caller, session, &name)
+                .and_then(|key| state.delete_runtime(poll, &key));
             reply::<routes::DeleteRuntime>(&mut state.conns[index], result);
         }
-        Request::Exec { name } => {
+        Request::Exec { name, session } => {
             let Some(response) = ws::handshake(&head) else {
                 return error(
                     &mut state.conns[index],
                     ErrorKind::Invalid,
                     "Didn't pass scrutiny",
                 );
+            };
+            let name = match state.runtime_key(caller, session, &name) {
+                Ok(key) => key,
+                Err(Error { kind, message }) => {
+                    return error(&mut state.conns[index], kind, message);
+                }
             };
             if let Err(Error { kind, message }) = state.get_runtime(&name) {
                 return error(&mut state.conns[index], kind, message);

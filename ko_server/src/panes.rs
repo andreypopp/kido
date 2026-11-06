@@ -5,7 +5,7 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-use ko_config::values::{RuntimeName, env_valid};
+use ko_config::values::env_valid;
 use ko_pane_wire::frame::Size;
 use ko_sys::clock::Mono;
 use ko_sys::event::Token;
@@ -16,6 +16,7 @@ use crate::ids::{PaneId, PaneToken, SessionId};
 use crate::pane::{Birth, Pane, Program};
 use crate::pane_proc::{Io, Launch, Life};
 use crate::protocol::{Close, Command, CreatePane, Error, ErrorKind, Relation, Variable};
+use crate::runtime::RuntimeKey;
 
 #[derive(Debug)]
 pub(crate) enum AddError {
@@ -243,19 +244,19 @@ impl Panes {
 
     pub(crate) fn in_runtime<'a>(
         &'a self,
-        runtime: &'a RuntimeName,
+        runtime: &'a RuntimeKey,
     ) -> impl Iterator<Item = &'a Pane> {
         self.panes
             .iter()
             .filter(move |pane| pane.runtime() == Some(runtime))
     }
 
-    pub(crate) fn is_in(&self, id: PaneId, runtime: &RuntimeName) -> bool {
+    pub(crate) fn is_in(&self, id: PaneId, runtime: &RuntimeKey) -> bool {
         self.find(id)
             .is_some_and(|pane| pane.runtime() == Some(runtime))
     }
 
-    pub(crate) fn any_in(&self, runtime: &RuntimeName) -> bool {
+    pub(crate) fn any_in(&self, runtime: &RuntimeKey) -> bool {
         self.in_runtime(runtime).next().is_some()
     }
 

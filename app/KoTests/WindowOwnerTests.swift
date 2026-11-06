@@ -189,14 +189,14 @@ import KoModel
         _ = try server(at: dir, environment: ["KO_RUNTIME_COMMAND_KIND": "1"])
         let owner = try owner(dir)
         wait("the runtime model") { owner.canNavigate && owner.runtimes.count == 1 }
-        XCTAssertFalse(owner.canShutDownRuntime("deb"))
+        XCTAssertFalse(owner.canShutDownRuntime(.init(name: "deb", source: .config)))
         let delegate = AppDelegate()
         let runtimeMenu = NSMenu()
         owner.testRuntimes = ([
-            KoSchema.ClientRuntime(kind: .command, name: "down", state: .down),
-            KoSchema.ClientRuntime(kind: .command, name: "starting", state: .starting),
-            KoSchema.ClientRuntime(kind: .command, name: "up", state: .up),
-            KoSchema.ClientRuntime(kind: .command, name: "failed", state: .failed(.init(message: "failed"))),
+            KoSchema.ClientRuntime(kind: .command, name: "down", source: .config, state: .down),
+            KoSchema.ClientRuntime(kind: .command, name: "starting", source: .config, state: .starting),
+            KoSchema.ClientRuntime(kind: .command, name: "up", source: .config, state: .up),
+            KoSchema.ClientRuntime(kind: .command, name: "failed", source: .config, state: .failed(.init(message: "failed"))),
         ], nil)
         delegate.updateRuntimesMenu(runtimeMenu, owner: owner)
         XCTAssertEqual(runtimeMenu.items.map(\.isEnabled), [false, true, true, false])
@@ -205,30 +205,30 @@ import KoModel
         let deadID = try XCTUnwrap(PaneID(ko: dead))
         wait("the dead runtime pane") { owner.testModel?.pane(deadID)?.dead != nil }
         let pane = try createPane(#"{"runtime":"deb","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
-        wait("the starting runtime") { owner.canShutDownRuntime("deb") && owner.runtimePaneCount("deb") == 1 }
+        wait("the starting runtime") { owner.canShutDownRuntime(.init(name: "deb", source: .config)) && owner.runtimePaneCount(.init(name: "deb", source: .config)) == 1 }
         let menu = NSMenuItem(title: "Shut Down", action: nil, keyEquivalent: "")
-        menu.representedObject = "deb"
+        menu.representedObject = RuntimeMark(try XCTUnwrap(owner.runtimes.first))
         owner.shutDownRuntimeItem(menu)
         let pending = try XCTUnwrap(owner.preparedAlert)
         XCTAssertEqual(pending.alert.messageText, "Shut down “deb”?")
         XCTAssertEqual(pending.alert.informativeText, "1 pane runs in this runtime. Shutting it down ends the pane.")
         XCTAssertTrue(try output(["api", "/panes"], dir: dir).contains(pane))
         owner.respondToAlert(.alertFirstButtonReturn)
-        wait("the runtime stopped") { owner.runtimes.first?.state == .down && owner.runtimePaneCount("deb") == 0 }
-        XCTAssertFalse(owner.canShutDownRuntime("deb"))
+        wait("the runtime stopped") { owner.runtimes.first?.state == .down && owner.runtimePaneCount(.init(name: "deb", source: .config)) == 0 }
+        XCTAssertFalse(owner.canShutDownRuntime(.init(name: "deb", source: .config)))
         _ = try createPane(#"{"runtime":"deb","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
-        wait("the runtime starts again") { owner.canShutDownRuntime("deb") && owner.runtimePaneCount("deb") == 1 }
+        wait("the runtime starts again") { owner.canShutDownRuntime(.init(name: "deb", source: .config)) && owner.runtimePaneCount(.init(name: "deb", source: .config)) == 1 }
         let row = try XCTUnwrap(PaletteEntry.runtimeStep(owner.runtimes.first.map { RuntimeMark($0) }, owner: owner, responder: nil).first { $0.id == .runtimeDown })
         if case .run(let run) = row.operation { run() } else { XCTFail("Not an action") }
         let sheet = try XCTUnwrap(owner.preparedAlert)
         XCTAssertEqual(sheet.alert.buttons.first?.title, "Shut Down")
         owner.respondToAlert(.alertFirstButtonReturn)
-        wait("the palette stops the runtime") { owner.runtimes.first?.state == .down && owner.runtimePaneCount("deb") == 0 }
+        wait("the palette stops the runtime") { owner.runtimes.first?.state == .down && owner.runtimePaneCount(.init(name: "deb", source: .config)) == 0 }
         let empty = try createPane(#"{"runtime":"deb","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
         wait("the runtime is up") { owner.runtimes.first?.state == .up }
         try run(["api", "-X", "DELETE", "/panes/" + empty], dir: dir)
-        wait("no runtime panes") { owner.runtimePaneCount("deb") == 0 }
-        owner.shutDownRuntime("deb")
+        wait("no runtime panes") { owner.runtimePaneCount(.init(name: "deb", source: .config)) == 0 }
+        owner.shutDownRuntime(.init(name: "deb", source: .config))
         XCTAssertNil(owner.preparedAlert)
         wait("the empty runtime stopped") { owner.runtimes.first?.state == .down }
     }
@@ -247,7 +247,7 @@ import KoModel
             wait("the running runtime pane") { owner.runtimes.first?.state == .up && owner.testModel?.pane(paneID)?.mark == .running }
             let instance = try XCTUnwrap(owner.snapshot?.serverInstance)
             switch command {
-            case .runtime: owner.shutDownRuntime("deb")
+            case .runtime: owner.shutDownRuntime(.init(name: "deb", source: .config))
             case .pane: owner.confirmClose(.pane(paneID), name: "old pane")
             }
             XCTAssertNotNil(owner.preparedAlert)

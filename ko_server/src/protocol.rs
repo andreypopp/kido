@@ -1531,18 +1531,36 @@ pub struct Welcome {
     pub limits: Limits,
     pub instance: Instance,
     pub now: u64,
-    /// The configured runtimes in configuration order, with their link states.
+    /// Runtimes with their link states, configured first by name, then by session.
     pub runtimes: Vec<ClientRuntime>,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RuntimeSource {
+    /// An entry of the configuration file. Its name is global.
+    Config,
+    /// A definition that a pane of the session registered; it goes with the session.
+    Session { id: SessionId },
 }
 
 /// What a client needs of a runtime to mark its panes and offer it for a new pane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ClientRuntime {
     pub name: RuntimeName,
+    pub source: RuntimeSource,
     pub kind: RuntimeKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<RuntimeColor>,
     pub state: LinkState,
+}
+
+impl ClientRuntime {
+    pub fn is(&self, name: &RuntimeName, source: RuntimeSource) -> bool {
+        self.name == *name && self.source == source
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1640,6 +1658,7 @@ pub enum ClientEvent {
     /// A runtime left the configuration and has no live link.
     RuntimeDeleted {
         name: RuntimeName,
+        source: RuntimeSource,
     },
 }
 
@@ -2163,11 +2182,13 @@ mod tests {
         same::<StreamRequest>(r#"{"type":"refuse","id":"abcdefgh"}"#);
         same::<ClientEvent>(r#"{"type":"inbox","pane":"pane_3","inbox":true}"#);
         same::<ClientEvent>(
-            r#"{"type":"runtime","name":"gpu-1","kind":"ssh","state":{"type":"failed","message":"refused"}}"#,
+            r#"{"type":"runtime","name":"gpu-1","source":{"type":"config"},"kind":"ssh","state":{"type":"failed","message":"refused"}}"#,
         );
-        same::<ClientEvent>(r#"{"type":"runtime_deleted","name":"gpu-1"}"#);
         same::<ClientEvent>(
-            r##"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":1,"kitty_images_max_bytes":1,"continuation_max_bytes":1},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":1,"runtimes":[{"name":"buildbox","kind":"ssh","color":"#d08a2a","state":{"type":"up"}},{"name":"e2e","kind":"command","state":{"type":"starting"}}]}"##,
+            r#"{"type":"runtime_deleted","name":"gpu-1","source":{"type":"session","id":"session_3"}}"#,
+        );
+        same::<ClientEvent>(
+            r##"{"type":"welcome","client":"client_2","limits":{"terminal":{"scrollback":{"type":"disabled"},"apc_max_bytes":1,"kitty_images_max_bytes":1,"continuation_max_bytes":1},"media":[]},"instance":"0123456789abcdef0123456789abcdef","now":1,"runtimes":[{"name":"buildbox","source":{"type":"config"},"kind":"ssh","color":"#d08a2a","state":{"type":"up"}},{"name":"e2e","source":{"type":"session","id":"session_3"},"kind":"command","state":{"type":"starting"}}]}"##,
         );
         for bad in [
             r#"{"id":"abcdefg","kind":"message","text":"x"}"#,

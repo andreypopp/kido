@@ -620,6 +620,9 @@
               "name": {
                 "$ref": "#/components/schemas/RuntimeName"
               },
+              "source": {
+                "$ref": "#/components/schemas/RuntimeSource"
+              },
               "type": {
                 "const": "runtime_deleted",
                 "type": "string"
@@ -627,7 +630,8 @@
             },
             "required": [
               "type",
-              "name"
+              "name",
+              "source"
             ],
             "type": "object"
           }
@@ -766,12 +770,16 @@
           "name": {
             "$ref": "#/components/schemas/RuntimeName"
           },
+          "source": {
+            "$ref": "#/components/schemas/RuntimeSource"
+          },
           "state": {
             "$ref": "#/components/schemas/LinkState"
           }
         },
         "required": [
           "name",
+          "source",
           "kind",
           "state"
         ],
@@ -3064,12 +3072,16 @@
             "description": "The path of the runtime's listener on the host, bound while the link is up.",
             "type": "string"
           },
+          "source": {
+            "$ref": "#/components/schemas/RuntimeSource"
+          },
           "state": {
             "$ref": "#/components/schemas/LinkState"
           }
         },
         "required": [
           "name",
+          "source",
           "kind",
           "state",
           "panes",
@@ -3105,6 +3117,40 @@
             "const": "runtime",
             "description": "Inside the runtime, in a pane of the runtime.",
             "type": "string"
+          }
+        ]
+      },
+      "RuntimeSource": {
+        "oneOf": [
+          {
+            "description": "An entry of the configuration file. Its name is global.",
+            "properties": {
+              "type": {
+                "const": "config",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A definition that a pane of the session registered; it goes with the session.",
+            "properties": {
+              "id": {
+                "$ref": "#/components/schemas/SessionId"
+              },
+              "type": {
+                "const": "session",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -3843,7 +3889,7 @@
             "type": "integer"
           },
           "runtimes": {
-            "description": "The configured runtimes in configuration order, with their link states.",
+            "description": "Runtimes with their link states, configured first by name, then by session.",
             "items": {
               "$ref": "#/components/schemas/ClientRuntime"
             },
@@ -5217,6 +5263,15 @@
             "schema": {
               "$ref": "#/components/schemas/RuntimeName"
             }
+          },
+          {
+            "example": "session_1",
+            "in": "query",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SessionId"
+            }
           }
         ],
         "responses": {
@@ -5253,6 +5308,15 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/RuntimeName"
+            }
+          },
+          {
+            "example": "session_1",
+            "in": "query",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SessionId"
             }
           }
         ],
@@ -5292,6 +5356,15 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/RuntimeName"
+            }
+          },
+          {
+            "example": "session_1",
+            "in": "query",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SessionId"
             }
           }
         ],
@@ -5341,6 +5414,15 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/RuntimeName"
+            }
+          },
+          {
+            "example": "session_1",
+            "in": "query",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SessionId"
             }
           },
           {

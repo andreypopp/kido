@@ -4,7 +4,6 @@ use std::io;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::PathBuf;
 
-use ko_config::values::RuntimeName;
 use ko_sys::event::{Interest, Poll, Timer, Token};
 use ko_sys::pid::{Exit, Pid, Waited};
 use ko_sys::signal::Signal;
@@ -12,6 +11,7 @@ use ko_sys::spawn;
 
 use crate::exec_wire::{Frames, FromKo, Invalid, ToKo};
 use crate::protocol::{Ended, ExecClient, ExecRequest, STDERR_TAIL};
+use crate::runtime::RuntimeKey;
 
 pub(crate) const MAX_SESSIONS: usize = 32;
 const MAX_BACKLOG: usize = 16;
@@ -588,19 +588,19 @@ pub(crate) enum Stage {
         timer: Option<Timer>,
         retried: bool,
     },
-    Running(Running),
+    Running(Box<Running>),
     Ended,
 }
 
 #[derive(Debug)]
 pub(crate) struct Session {
-    pub(crate) runtime: RuntimeName,
+    pub(crate) runtime: RuntimeKey,
     pub(crate) stage: Stage,
     pub(crate) backlog: VecDeque<ExecClient>,
 }
 
 impl Session {
-    pub(crate) fn new(runtime: RuntimeName) -> Session {
+    pub(crate) fn new(runtime: RuntimeKey) -> Session {
         Session {
             runtime,
             stage: Stage::Open,

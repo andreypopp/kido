@@ -148,6 +148,7 @@ impl State {
 
     pub(super) fn start_dir(
         &mut self,
+        target: Option<&crate::runtime::RuntimeKey>,
         request: &CreatePane,
         caller: Option<PaneId>,
         read: &Read,
@@ -156,8 +157,7 @@ impl State {
             None => Dir::Default,
             Some(Cwd::Path(path)) => {
                 let path = std::path::PathBuf::from(path.as_str());
-                let inside = request
-                    .runtime
+                let inside = target
                     .as_ref()
                     .zip(caller)
                     .is_some_and(|(name, caller)| self.panes.is_in(caller, name));
@@ -181,7 +181,7 @@ impl State {
                     .foreground
                     .as_ref()
                     .and_then(|foreground| Pid::new(i64::from(foreground.pid)));
-                let inside = own.is_some() && own.as_ref() == request.runtime.as_ref();
+                let inside = own.is_some() && own.as_ref() == target;
                 let path = source.proc().directory(place, foreground, |path| {
                     if inside {
                         return Some(path);

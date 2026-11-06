@@ -307,12 +307,12 @@ import SidebarFeed
         menu.removeAllItems()
         if let owner {
             for runtime in owner.runtimes {
-                let count = owner.runtimePaneCount(runtime.name)
-                let title = "Shut Down “\(runtime.name)” — \(RuntimeMark(runtime).stateWord), \(count) \(count == 1 ? "pane" : "panes")"
+                let count = owner.runtimePaneCount(runtime.key)
+                let title = "Shut Down “\(owner.runtimeLabel(runtime.key))” — \(RuntimeMark(runtime).stateWord), \(count) \(count == 1 ? "pane" : "panes")"
                 let entry = NSMenuItem(title: title, action: #selector(WindowOwner.shutDownRuntimeItem(_:)), keyEquivalent: "")
                 entry.target = owner
-                entry.representedObject = runtime.name
-                entry.isEnabled = owner.canShutDownRuntime(runtime.name)
+                entry.representedObject = RuntimeMark(runtime)
+                entry.isEnabled = owner.canShutDownRuntime(runtime.key)
                 menu.addItem(entry)
             }
         }
@@ -396,7 +396,7 @@ import SidebarFeed
             return
         }
         if case .runtime(let shown) = panel.palette.mode {
-            if let shown, let runtime = paletteFocus?.owner.runtimes.first(where: { $0.name == shown.name }) {
+            if let shown, let runtime = paletteFocus?.owner.koModel?.runtime(shown.key) {
                 panel.palette.refreshRuntime(RuntimeMark(runtime))
             }
             return

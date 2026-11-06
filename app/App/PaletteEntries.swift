@@ -6,7 +6,7 @@ import PaneGeometry
 struct PaletteEntry {
     enum ID: Equatable {
         case pane(Snapshot.Position), host(String), command(Int), connectTyped, clearRecent, theme(String), themeUse(Int)
-        case runtime(String?), runtimeOpen(Int), runtimeDown
+        case runtime(RuntimeKey), hostRuntime, runtimeOpen(Int), runtimeDown
     }
     let id: ID
     var order = 0
@@ -54,12 +54,12 @@ struct PaletteEntry {
     @MainActor static func runtimes(_ owner: WindowOwner) -> [PaletteEntry] {
         guard owner.canNavigate else { return [] }
         let host: [PaletteEntry] = owner.focusedRuntime == nil ? [] : [
-            PaletteEntry(id: .runtime(nil), title: "Host", detail: "this Mac", symbol: "desktopcomputer", operation: .enter(.runtime(nil)))
+            PaletteEntry(id: .hostRuntime, title: "Host", detail: "this Mac", symbol: "desktopcomputer", operation: .enter(.runtime(nil)))
         ]
         return host + owner.runtimes.map { runtime in
             let mark = RuntimeMark(runtime)
             let detail = ["\(runtime.kind.rawValue)", mark.stateWord, mark.failure].compactMap { $0 }.joined(separator: " · ")
-            return PaletteEntry(id: .runtime(runtime.name), title: "Runtime: " + runtime.name, detail: detail, swatch: mark, operation: .enter(.runtime(mark)))
+            return PaletteEntry(id: .runtime(runtime.key), title: "Runtime: " + owner.runtimeLabel(runtime.key), detail: detail, swatch: mark, operation: .enter(.runtime(mark)))
         }
     }
 
@@ -80,10 +80,10 @@ struct PaletteEntry {
                 }))
             }
         }
-        if let name = mark?.name, owner.canShutDownRuntime(name) {
-            rows.append(PaletteEntry(id: .runtimeDown, title: "Shut Down Runtime", detail: name,
-                                     check: { [weak owner] in owner?.canShutDownRuntime(name) == true ? nil : "Not available now" },
-                                     operation: .run { [weak owner] in owner?.shutDownRuntime(name) }))
+        if let mark, owner.canShutDownRuntime(mark.key) {
+            rows.append(PaletteEntry(id: .runtimeDown, title: "Shut Down Runtime", detail: mark.name,
+                                     check: { [weak owner] in owner?.canShutDownRuntime(mark.key) == true ? nil : "Not available now" },
+                                     operation: .run { [weak owner] in owner?.shutDownRuntime(mark.key) }))
         }
         return rows
     }

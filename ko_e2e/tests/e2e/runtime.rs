@@ -260,6 +260,27 @@ runtimes:
     assert_eq!((&other["pi"], other.get("cwd")), (&json!("runtime"), None));
     let host = s.token_pane("exec cat");
     let elsewhere = token_pane_in_new_session(&s, "elsewhere");
+    let doc = s.doc();
+    let sessions = doc["layout"]["sessions"].as_array().unwrap();
+    let own = sessions.first().unwrap()["id"].as_str().unwrap();
+    let other_session = sessions.last().unwrap()["id"].as_str().unwrap();
+    let own_path = format!("/runtimes/dev?session={own}");
+    refuses(
+        raw(
+            &s,
+            "GET",
+            &format!("/runtimes/dev?session={other_session}"),
+            &as_pane(&s, &host),
+            &Value::Null,
+        ),
+        "a pane may name only its own session",
+    );
+    for identity in [as_pane(&s, &host), s.headers()] {
+        let (status, runtime) = raw(&s, "GET", &own_path, &identity, &Value::Null);
+        assert_eq!(status, 200, "{runtime}");
+        assert_eq!(runtime["source"], json!({"type": "config"}));
+        assert_eq!(runtime["name"], "dev");
+    }
     let r1 = rt_token_pane(&s, "dev");
     let r2 = rt_token_pane(&s, "other");
     let t1 = s.token(&r1).unwrap();
@@ -644,8 +665,8 @@ runtimes:
     assert_eq!(
         welcome["runtimes"],
         json!([
-            {"name": "gate", "kind": "command", "color": "#d08a2a", "state": {"type": "down"}},
-            {"name": "lead", "kind": "command", "state": {"type": "down"}},
+            {"name": "gate", "source": {"type": "config"}, "kind": "command", "color": "#d08a2a", "state": {"type": "down"}},
+            {"name": "lead", "source": {"type": "config"}, "kind": "command", "state": {"type": "down"}},
         ])
     );
     let mut announced = |name: &str| {

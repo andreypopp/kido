@@ -66,7 +66,7 @@ fn runtime_suffix(place: Option<Place>, runtimes: &[ClientRuntime]) -> String {
     let name = place.name();
     let state = runtimes
         .iter()
-        .find(|runtime| runtime.name == *name)
+        .find(|runtime| runtime.is(name, place.source()))
         .map(|runtime| &runtime.state);
     match state {
         Some(LinkState::Starting) => format!(" {name} \u{2026}"),
@@ -223,6 +223,7 @@ mod tests {
     #[test]
     fn a_runtime_follows_the_title_with_a_mark_for_a_link_that_is_starting_or_failed() {
         let runtime = |state| ClientRuntime {
+            source: ko_server::protocol::RuntimeSource::Config,
             name: "buildbox".parse().unwrap(),
             kind: ko_server::protocol::RuntimeKind::Ssh,
             color: None,
@@ -230,6 +231,7 @@ mod tests {
         };
         let place = || {
             Some(Place::Routed {
+                source: ko_server::protocol::RuntimeSource::Config,
                 name: "buildbox".parse().unwrap(),
             })
         };

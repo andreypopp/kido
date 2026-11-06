@@ -14,8 +14,8 @@ import KoModel
 }
 
 @Test func aRuntimeMarkKeepsTheConfiguredColourAndNamesItsStateAndItsFailureOnOneLine() {
-    let configured = KoSchema.ClientRuntime(color: "#d08a2a", kind: .ssh, name: "gpu-1", state: .failed(.init(message: "ssh: refused\nport 22")))
-    let hashed = KoSchema.ClientRuntime(kind: .command, name: "e2e", state: .starting)
+    let configured = KoSchema.ClientRuntime(color: "#d08a2a", kind: .ssh, name: "gpu-1", source: .config, state: .failed(.init(message: "ssh: refused\nport 22")))
+    let hashed = KoSchema.ClientRuntime(kind: .command, name: "e2e", source: .config, state: .starting)
     #expect(RuntimeMark(configured).color == "#d08a2a" && RuntimeMark(hashed).color == nil)
     #expect(RuntimeMark(configured).failure == "ssh: refused port 22" && RuntimeMark(hashed).failure == nil)
     #expect([RuntimeMark(configured), RuntimeMark(hashed)].map(\.stateWord) == ["failed", "starting"])

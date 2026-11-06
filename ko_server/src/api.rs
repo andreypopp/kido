@@ -690,7 +690,7 @@ routes! {
     /// The runtimes of the configuration file and of the links that are up, with their state.
     ListRuntimes { method: GET, path: /runtimes, reply: Vec<RuntimeInfo> }
     /// One runtime.
-    GetRuntime { method: GET, path: /runtimes/{name: RuntimeName}, reply: RuntimeInfo }
+    GetRuntime { method: GET, path: /runtimes/{name: RuntimeName}, query: { session: Option<SessionId> }, reply: RuntimeInfo }
     /// Waits up to the timeout for the link of the runtime to be up or failed. Only a pane of the
     /// runtime may wait. The first waiter while the start has an interactive step gets that
     /// step's argv in lead, and an Up reply for a pane comes after the server wrote its token
@@ -715,6 +715,7 @@ routes! {
     DownRuntime {
         method: POST,
         path: /runtimes/{name: RuntimeName}/down,
+        query: { session: Option<SessionId> },
         body: DownRuntime,
         reply: Empty,
     }
@@ -730,12 +731,13 @@ routes! {
     Exec {
         method: WS,
         path: /runtimes/{name: RuntimeName}/exec,
+        query: { session: Option<SessionId> },
         caller: optional,
         send: ExecClient,
         recv: ExecServer,
     }
     /// Takes the runtime down, as down without force does, and removes its files except the empty io directory.
-    DeleteRuntime { method: DELETE, path: /runtimes/{name: RuntimeName}, reply: Empty }
+    DeleteRuntime { method: DELETE, path: /runtimes/{name: RuntimeName}, query: { session: Option<SessionId> }, reply: Empty }
     /// The agents that a prompt can reach from the pane `from`. A pane identity may name only itself.
     PromptResolve {
         method: GET,
@@ -844,6 +846,7 @@ mod tests {
             Route::ListRuntimes {},
             Route::GetRuntime {
                 name: "dev".parse().unwrap(),
+                session: None,
             },
             Route::WaitRuntime {
                 name: "dev".parse().unwrap(),
@@ -854,12 +857,15 @@ mod tests {
             },
             Route::DownRuntime {
                 name: "dev".parse().unwrap(),
+                session: None,
             },
             Route::DeleteRuntime {
                 name: "dev".parse().unwrap(),
+                session: None,
             },
             Route::Exec {
                 name: "dev".parse().unwrap(),
+                session: None,
             },
             Route::ClearHistory { id },
             Route::Client {},

@@ -338,9 +338,15 @@ private final class ClientHandle: @unchecked Sendable {
         _ = try handle.call { try take(ko_client_delete($0, Int32(kind), id.description, &buffer), &buffer) }
     }
 
-    nonisolated func runtimeDown(_ name: String) throws {
+    nonisolated func runtimeDown(_ key: RuntimeKey) throws {
         var buffer = ko_buffer()
-        _ = try handle.call { try take(ko_client_runtime_down($0, name, &buffer), &buffer) }
+        let session: String? = if case .session(let session) = key.source { session.id.description } else { nil }
+        _ = try handle.call { client in
+            if let session {
+                return try session.withCString { try take(ko_client_runtime_down(client, key.name, $0, &buffer), &buffer) }
+            }
+            return try take(ko_client_runtime_down(client, key.name, nil, &buffer), &buffer)
+        }
     }
 
     func focus(_ focused: Bool) throws {

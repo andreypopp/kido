@@ -3,12 +3,12 @@ use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
 
-use ko_config::values::RuntimeName;
 use ko_sys::event::{Events, Interest, Mode, Poll, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
 
 use crate::config::Config;
 use crate::ids::Instance;
+use crate::runtime::RuntimeKey;
 use crate::state::{State, Wake};
 
 const ACCEPT_BURST: usize = 16;
@@ -32,7 +32,7 @@ impl Timing {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Origin {
     Host,
-    Runtime(RuntimeName),
+    Runtime(RuntimeKey),
 }
 
 #[derive(Debug)]

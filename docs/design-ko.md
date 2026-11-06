@@ -778,7 +778,7 @@ which a pane's `env` can replace. `--bin-dir` is the shim directory put
 first on every pane's PATH (design.md, "The bin directory"); the
 `server: shell` of the configuration file reaches every new pane as
 `KO_SHELL`. `--config FILE` names the configuration file (4.14). A runtime's listener is
-in `DIR/runtimes/<name>/`; a socket path there that is too long fails
+in `DIR/runtimes/<tag>/` (design-runtimes.md, "The model"); a socket path there that is too long fails
 that runtime's start, not the server.
 At start the server links `agent.sock` to its own inherited agent only
 when the path is absent or a link to no socket file

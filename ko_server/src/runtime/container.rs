@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 
 use ko_config::runtime::{Access, Engine, Ko, Source, SshAgent};
-use ko_config::values::RuntimeName;
 use ko_sys::pid::Exit;
 use serde::Deserialize;
 
 use crate::config::{env_path, installed, program_path};
 use crate::ids::PaneToken;
+use crate::runtime::RuntimeKey;
 use crate::runtime::exec::Launch;
 use crate::runtime::{Cleanup, Ctx, Entry, Next, Outcome, pane, text, version_next, words};
 
@@ -104,9 +104,9 @@ impl Facts {
         }
     }
 
-    fn inspect_args(&self, name: &RuntimeName, settings: &Engine) -> Vec<String> {
+    fn inspect_args(&self, key: &RuntimeKey, settings: &Engine) -> Vec<String> {
         let mut args = words(self.inspect);
-        args.push(target(name, settings));
+        args.push(target(key, settings));
         args
     }
 
@@ -118,7 +118,7 @@ impl Facts {
     fn socket_mount(&self, cx: &Ctx<'_>) -> (PathBuf, &'static str) {
         match self.platform {
             Platform::AppleVm => (cx.socket.to_path_buf(), SOCKET),
-            Platform::Linux => (pane::io_directory(cx.root, cx.name), RUN_DIR),
+            Platform::Linux => (pane::io_directory(cx.root, cx.key), RUN_DIR),
         }
     }
 
@@ -204,9 +204,9 @@ fn launch(settings: &Engine, env: &[Vec<u8>], args: Vec<String>) -> Result<Launc
     Ok(Launch::new(binary(settings, env)?, args, env))
 }
 
-fn target(name: &RuntimeName, settings: &Engine) -> String {
+fn target(key: &RuntimeKey, settings: &Engine) -> String {
     match settings.options().from {
-        Source::Image(_) => format!("ko-{name}"),
+        Source::Image(_) => format!("ko-{}", key.tag()),
         Source::Container(container) => container.as_str().to_owned(),
     }
 }
@@ -246,7 +246,7 @@ pub(crate) fn token_text(token: &PaneToken) -> String {
 }
 
 pub(crate) fn entry(
-    name: &RuntimeName,
+    key: &RuntimeKey,
     settings: &Engine,
     (env, env_file): (&[Vec<u8>], &Path),
 ) -> Entry {
@@ -263,7 +263,7 @@ pub(crate) fn entry(
     prefix.extend([
         "--env-file".to_owned(),
         text(env_file),
-        target(name, settings),
+        target(key, settings),
     ]);
     Entry {
         prefix: prefix.into_iter().map(String::into_bytes).collect(),
@@ -280,7 +280,7 @@ pub(crate) fn exec_launch(settings: &Engine, cx: &Ctx<'_>) -> Result<Launch, Str
         args.extend(["-u".to_owned(), user.as_str().to_owned()]);
     }
     args.extend([
-        target(cx.name, settings),
+        target(cx.key, settings),
         inner_ko(settings).to_owned(),
         "enter".to_owned(),
         "--exec".to_owned(),
@@ -293,7 +293,7 @@ pub(crate) fn first(settings: &Engine, cx: &Ctx<'_>) -> Result<Launch, String> {
     facts.supported()?;
     let args = match facts.platform {
         Platform::AppleVm => words(&["system", "status"]),
-        Platform::Linux => facts.inspect_args(cx.name, settings),
+        Platform::Linux => facts.inspect_args(cx.key, settings),
     };
     launch(settings, cx.env, args)
 }
@@ -305,7 +305,7 @@ pub(crate) fn watch(settings: &Engine, cx: &Ctx<'_>) -> Result<Launch, String> {
         words(&[
             "exec",
             "-i",
-            &target(cx.name, settings),
+            &target(cx.key, settings),
             inner_ko(settings),
             "enter",
             "--watch",
@@ -315,7 +315,7 @@ pub(crate) fn watch(settings: &Engine, cx: &Ctx<'_>) -> Result<Launch, String> {
 
 pub(crate) fn cleanup(
     settings: &Engine,
-    (name, env): (&RuntimeName, &[Vec<u8>]),
+    (key, env): (&RuntimeKey, &[Vec<u8>]),
     what: Cleanup,
 ) -> Option<Launch> {
     let facts = facts(settings);
@@ -323,7 +323,7 @@ pub(crate) fn cleanup(
     let Source::Image(_) = settings.options().from else {
         return None;
     };
-    let target = target(name, settings);
+    let target = target(key, settings);
     let args = match what {
         Cleanup::Stop => words(&["stop", &target]),
         Cleanup::Delete => words(&[facts.delete, "--force", &target]),
@@ -336,7 +336,7 @@ fn run(settings: &Engine, image: &str, cx: &Ctx<'_>) -> Next {
         Ok(mount) => mount,
         Err(message) => return Next::Fail(message),
     };
-    let mut args = words(&["run", "-d", "--name", &target(cx.name, settings), "--init"]);
+    let mut args = words(&["run", "-d", "--name", &target(cx.key, settings), "--init"]);
     let facts = facts(settings);
     if facts.platform == Platform::Linux {
         args.extend(words(&[
@@ -398,7 +398,7 @@ fn inspected(settings: &Engine, stage: &mut Stage, cx: &Ctx<'_>, out: &Outcome<'
     let Some(found) = found.first() else {
         return Next::Fail(format!("{} inspect printed no container", facts.program));
     };
-    let target = target(cx.name, settings);
+    let target = target(cx.key, settings);
     if let Source::Container(_) = settings.options().from {
         let (source, destination) = facts.socket_mount(cx);
         let real = source.canonicalize().unwrap_or_default();
@@ -411,7 +411,7 @@ fn inspected(settings: &Engine, stage: &mut Stage, cx: &Ctx<'_>, out: &Outcome<'
         if !shared {
             return Next::Fail(format!(
                 "container {target} does not mount the socket of runtime {}: create it with -v {}:{destination}",
-                cx.name,
+                cx.key,
                 text(&source)
             ));
         }
@@ -434,7 +434,7 @@ pub(crate) fn next(settings: &Engine, stage: &mut Stage, cx: &Ctx<'_>, out: &Out
     match *stage {
         Stage::System if out.ok() => {
             *stage = Stage::Inspect;
-            step(settings, cx, facts.inspect_args(cx.name, settings))
+            step(settings, cx, facts.inspect_args(cx.key, settings))
         }
         Stage::System => {
             Next::Fail("container system is not running: run container system start".to_owned())
@@ -445,12 +445,12 @@ pub(crate) fn next(settings: &Engine, stage: &mut Stage, cx: &Ctx<'_>, out: &Out
             step(
                 settings,
                 cx,
-                version_args(settings, &target(cx.name, settings)),
+                version_args(settings, &target(cx.key, settings)),
             )
         }
         Stage::Start => facts.failure(out, "start"),
         Stage::Run => facts.failure(out, "run"),
-        Stage::Version => version_next(cx.name, out),
+        Stage::Version => version_next(&cx.key.name, out),
     }
 }
 
@@ -471,7 +471,7 @@ mod tests {
         "ko":{"mount":"/ko/share/ko/linux/aarch64"},"run_args":["--cpus","2"],"ssh_agent":"forward"}"#;
 
     struct Rig {
-        name: RuntimeName,
+        key: RuntimeKey,
         socket: PathBuf,
         exe: PathBuf,
     }
@@ -479,7 +479,7 @@ mod tests {
     impl Rig {
         fn new() -> Rig {
             Rig {
-                name: "dev".parse().unwrap(),
+                key: RuntimeKey::config("dev".parse().unwrap()),
                 socket: PathBuf::from("/state/runtimes/dev/io/socket"),
                 exe: PathBuf::from("/nonexistent/bin/ko"),
             }
@@ -488,7 +488,7 @@ mod tests {
         fn ctx(&self) -> Ctx<'_> {
             Ctx {
                 root: Path::new("/state/runtimes"),
-                name: &self.name,
+                key: &self.key,
                 env: &[],
                 socket: &self.socket,
                 exe: &self.exe,
@@ -653,7 +653,7 @@ mod tests {
         assert!(
             cleanup(
                 &Engine::Podman(mine.clone()),
-                (&rig.name, &[]),
+                (&rig.key, &[]),
                 Cleanup::Stop
             )
             .is_none()
@@ -661,7 +661,7 @@ mod tests {
         assert!(
             cleanup(
                 &Engine::Podman(mine.clone()),
-                (&rig.name, &[]),
+                (&rig.key, &[]),
                 Cleanup::Delete
             )
             .is_none()
@@ -670,7 +670,7 @@ mod tests {
             (Cleanup::Stop, words(&["stop", "ko-dev"])),
             (Cleanup::Delete, words(&["rm", "--force", "ko-dev"])),
         ] {
-            let launch = cleanup(engine, (&rig.name, &[]), what);
+            let launch = cleanup(engine, (&rig.key, &[]), what);
             if cfg!(target_os = "linux") {
                 assert_eq!(launch.unwrap().args, want);
             } else {
@@ -695,7 +695,7 @@ mod tests {
             ])
         );
         let file = Path::new("/state/runtimes/dev/panes/pane_7.env");
-        let entry = entry(&rig.name, engine, (&[], file));
+        let entry = entry(&rig.key, engine, (&[], file));
         assert_eq!(
             entry.prefix,
             words(&[
@@ -848,9 +848,9 @@ mod tests {
             failure(advance(&mine, &mut stage, absent)),
             "Error: container not found: mine"
         );
-        let name: RuntimeName = "dev".parse().unwrap();
-        assert!(cleanup(&Engine::Apple(mine.clone()), (&name, &[]), Cleanup::Stop).is_none());
-        assert!(cleanup(&Engine::Apple(mine.clone()), (&name, &[]), Cleanup::Delete).is_none());
+        let key = RuntimeKey::config("dev".parse().unwrap());
+        assert!(cleanup(&Engine::Apple(mine.clone()), (&key, &[]), Cleanup::Stop).is_none());
+        assert!(cleanup(&Engine::Apple(mine.clone()), (&key, &[]), Cleanup::Delete).is_none());
     }
 
     #[test]
@@ -896,7 +896,7 @@ mod tests {
                 .args,
             words(&["exec", "-i", "ko-dev", "/opt/ko/bin/ko", "enter", "--watch"])
         );
-        let target = (&rig.name, &[][..]);
+        let target = (&rig.key, &[][..]);
         let stop = cleanup(&Engine::Apple(image.clone()), target, Cleanup::Stop).unwrap();
         assert_eq!(stop.program, PathBuf::from("/usr/local/bin/container"));
         assert_eq!(stop.args, words(&["stop", "ko-dev"]));
@@ -906,12 +906,12 @@ mod tests {
 
     #[test]
     fn a_pane_enters_through_exec_with_the_token_in_an_env_file_and_never_in_an_argv() {
-        let name: RuntimeName = "dev".parse().unwrap();
+        let key = RuntimeKey::config("dev".parse().unwrap());
         let found = settings(
             r#"{"from":{"image":"debian:trixie"},"user":"1000:1000","container":"/usr/local/bin/container"}"#,
         );
         let file = Path::new("/state/runtimes/dev/panes/pane_7.env");
-        let entry = entry(&name, &Engine::Apple(found.clone()), (&[], file));
+        let entry = entry(&key, &Engine::Apple(found.clone()), (&[], file));
         let prefix: Vec<String> = entry
             .prefix
             .into_iter()
@@ -949,7 +949,7 @@ mod tests {
         let env = [b"HOME=/home/me".to_vec()];
         let cx = Ctx {
             root: Path::new("/state/runtimes"),
-            name: &rig.name,
+            key: &rig.key,
             env: &env,
             socket: &rig.socket,
             exe: &rig.exe,
