@@ -2557,6 +2557,14 @@
         "pattern": "^pane_(0|[1-9][0-9]*)$",
         "type": "string"
       },
+      "PanePatch": {
+        "properties": {
+          "close": {
+            "$ref": "#/components/schemas/Close"
+          }
+        },
+        "type": "object"
+      },
       "PaneRef": {
         "anyOf": [
           {
@@ -3487,22 +3495,6 @@
         ],
         "type": "object"
       },
-      "StartFailed": {
-        "properties": {
-          "message": {
-            "$ref": "#/components/schemas/StartFailure"
-          }
-        },
-        "required": [
-          "message"
-        ],
-        "type": "object"
-      },
-      "StartFailure": {
-        "maxLength": 4096,
-        "minLength": 1,
-        "type": "string"
-      },
       "StatusChange": {
         "properties": {
           "now": {
@@ -4219,6 +4211,71 @@
             "description": "The common error body."
           }
         }
+      },
+      "patch": {
+        "description": "Changes pane properties. Only the user or the pane itself may change them. The close policy applies when the program next dies. A dead pane cannot be changed.",
+        "operationId": "PatchPane",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PanePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
       }
     },
     "/panes/{id}/clear_history": {
@@ -4626,73 +4683,6 @@
           },
           "send": {
             "$ref": "#/components/schemas/Empty"
-          }
-        }
-      }
-    },
-    "/panes/{id}/start_failed": {
-      "post": {
-        "description": "Reports that this pane could not start its program. Only the pane itself may report it. Its next program death is a start failure and keeps its error screen.",
-        "operationId": "StartFailed",
-        "parameters": [
-          {
-            "example": "pane_1",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/PaneId"
-            }
-          },
-          {
-            "example": "pane_1",
-            "in": "header",
-            "name": "Ko-Pane",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/PaneId"
-            }
-          },
-          {
-            "example": "0123456789abcdef0123456789abcdef",
-            "in": "header",
-            "name": "Ko-Pane-Token",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/PaneToken"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StartFailed"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Empty"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The common error body."
           }
         }
       }

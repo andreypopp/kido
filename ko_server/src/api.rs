@@ -12,8 +12,9 @@ use crate::ids::{ClientId, PaneId, SessionId, VarName, WindowId};
 use crate::protocol::{
     Candidate, ClientEvent, ClientRequest, DeleteVars, DownRuntime, Empty, ExecClient, ExecServer,
     HistoryDef, Images, Input, InputResult, LayoutPanes, LeadReport, Listing, Message, NewWindow,
-    Placement, Posted, PutLayout, RuntimeInfo, RuntimeWait, SearchEvent, SendMessage, SendPrompt,
-    Sent, ServerVersion, Snapshot, StopPane, StreamRequest, VarValue, ViewEvent, ViewRequest,
+    PanePatch, Placement, Posted, PutLayout, RuntimeInfo, RuntimeWait, SearchEvent, SendMessage,
+    SendPrompt, Sent, ServerVersion, Snapshot, StopPane, StreamRequest, VarValue, ViewEvent,
+    ViewRequest,
 };
 use crate::route::{Invalid, Param, binary, pixels, routes, text};
 
@@ -571,12 +572,12 @@ routes! {
         caller: optional,
         reply: Placement,
     }
-    /// Reports that this pane could not start its program. Only the pane itself may report it.
-    /// Its next program death is a start failure and keeps its error screen.
-    StartFailed {
-        method: POST,
-        path: /panes/{id: PaneId}/start_failed,
-        body: crate::protocol::StartFailed,
+    /// Changes pane properties. Only the user or the pane itself may change them.
+    /// The close policy applies when the program next dies. A dead pane cannot be changed.
+    PatchPane {
+        method: PATCH,
+        path: /panes/{id: PaneId},
+        body: PanePatch,
         caller: optional,
         reply: Empty,
     }

@@ -159,7 +159,7 @@ pub(crate) fn enter(args: EnterArgs) -> ExitCode {
         agent: std::env::var_os("SSH_AUTH_SOCK").is_some(),
     };
     let failure = enter::exec(&enter, &invoked());
-    crate::fail_start("enter", failure, &socket, Some(&caller))
+    crate::fail_before_program("enter", failure, &socket, Some(&caller))
 }
 
 pub(crate) fn runtime_exec(args: RuntimeExecArgs) -> ExitCode {
@@ -172,7 +172,7 @@ pub(crate) fn runtime_exec(args: RuntimeExecArgs) -> ExitCode {
         } else {
             complain(&message);
         }
-        crate::report_start_failure(&message, &dir.join("socket"), caller.as_ref());
+        crate::keep_failed_pane(&dir.join("socket"), caller.as_ref());
         ExitCode::FAILURE
     };
     let mut shown = |event: Shown<'_>| match event {

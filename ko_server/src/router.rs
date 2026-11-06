@@ -318,11 +318,9 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             state.open_stream(id, token);
             state.read_ws(poll, index);
         }
-        Request::StartFailed { id, body } => {
-            let result = state
-                .start_failed(caller, id, String::from(body.message).into())
-                .map(|()| Empty {});
-            reply::<routes::StartFailed>(&mut state.conns[index], result);
+        Request::PatchPane { id, body } => {
+            let result = state.patch_pane(caller, id, body).map(|()| Empty {});
+            reply::<routes::PatchPane>(&mut state.conns[index], result);
         }
         Request::DeletePane { id } => {
             state.delete_pane(poll, id);

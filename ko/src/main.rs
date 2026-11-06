@@ -250,25 +250,25 @@ pub(crate) fn say(text: &str) {
     let _ = writeln!(io::stdout().lock(), "{text}");
 }
 
-pub(crate) fn fail_start(
+pub(crate) fn fail_before_program(
     name: &str,
     message: impl std::fmt::Display,
     socket: &std::path::Path,
     caller: Option<&Caller>,
 ) -> ExitCode {
-    report_start_failure(&message.to_string(), socket, caller);
+    keep_failed_pane(socket, caller);
     fail(name, message)
 }
 
-pub(crate) fn report_start_failure(
-    message: &str,
-    socket: &std::path::Path,
-    caller: Option<&Caller>,
-) {
-    if let Some(caller) = caller
-        && let Ok(message) = protocol::StartFailure::try_from(message.to_owned())
-    {
-        let _ = api::start_failed(socket, caller.clone(), &protocol::StartFailed { message });
+pub(crate) fn keep_failed_pane(socket: &std::path::Path, caller: Option<&Caller>) {
+    if let Some(caller) = caller {
+        let _ = api::patch_pane(
+            socket,
+            caller.clone(),
+            &protocol::PanePatch {
+                close: Some(protocol::Close::Keep),
+            },
+        );
     }
 }
 
@@ -671,7 +671,7 @@ fn main() -> ExitCode {
         Command::Shell { command } => {
             let error = shell::exec(&command, &invoked());
             let target = target(None);
-            fail_start(
+            fail_before_program(
                 "shell",
                 error,
                 &target.dir.join("socket"),

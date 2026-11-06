@@ -173,12 +173,12 @@ pub fn stream(
         .map_err(|error| Error::Server(failure(error)))
 }
 
-pub fn start_failed(
+pub fn patch_pane(
     socket: &Path,
     caller: Caller,
-    body: &protocol::StartFailed,
+    body: &protocol::PanePatch,
 ) -> Result<(), Failure> {
-    let route = Route::StartFailed { id: caller.pane };
+    let route = Route::PatchPane { id: caller.pane };
     wire::request_within(
         socket,
         (None, Some(caller)),

@@ -240,7 +240,7 @@ impl From<&Death> for Dead {
                 pane_proc::Cause::Exit(exit) => Cause::from(*exit),
                 pane_proc::Cause::StartFailed(message) | pane_proc::Cause::Failed(message) => {
                     Cause::Failed {
-                        message: message.to_string(),
+                        message: message.clone(),
                     }
                 }
             },
@@ -709,39 +709,10 @@ impl Close {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct StartFailure(String);
-
-impl TryFrom<String> for StartFailure {
-    type Error = &'static str;
-
-    fn try_from(message: String) -> Result<Self, Self::Error> {
-        if message.is_empty() || message.chars().count() > 4096 {
-            return Err("start failure message must have 1 to 4096 characters");
-        }
-        Ok(Self(message))
-    }
-}
-
-impl From<StartFailure> for String {
-    fn from(message: StartFailure) -> Self {
-        message.0
-    }
-}
-
-impl JsonSchema for StartFailure {
-    fn schema_name() -> Cow<'static, str> {
-        "StartFailure".into()
-    }
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type": "string", "minLength": 1, "maxLength": 4096})
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct StartFailed {
-    pub message: StartFailure,
+pub struct PanePatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close: Option<Close>,
 }
 
 /// Where a new pane starts: an absolute path of the host, or the directory of another pane. The
@@ -2102,27 +2073,6 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use serde::de::DeserializeOwned;
-
-    #[test]
-    fn start_failure_messages_have_a_character_limit() {
-        assert_eq!(
-            StartFailure::try_from(String::new()).unwrap_err(),
-            "start failure message must have 1 to 4096 characters"
-        );
-        assert!(StartFailure::try_from("界".repeat(4096)).is_ok());
-        assert_eq!(
-            StartFailure::try_from("界".repeat(4097)).unwrap_err(),
-            "start failure message must have 1 to 4096 characters"
-        );
-        assert!(
-            decode::<StartFailed>(
-                serde_json::to_string(&serde_json::json!({"message": "x".repeat(4097)}))
-                    .unwrap()
-                    .as_bytes()
-            )
-            .is_err()
-        );
-    }
 
     #[test]
     fn every_wire_type_round_trips_its_json() {

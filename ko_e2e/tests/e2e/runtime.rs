@@ -662,24 +662,27 @@ runtimes:
     crate::panes::refused(
         crate::panes::api(
             &s,
-            Some(&retained),
-            "POST",
-            &format!("/panes/{retained}/start_failed"),
-            &json!({"message": "too late"}),
+            None,
+            "PATCH",
+            &format!("/panes/{retained}"),
+            &json!({"close": "exit"}),
+        ),
+        410,
+        "gone",
+        "is dead",
+    );
+    crate::panes::refused(
+        crate::panes::api(
+            &s,
+            Some(&other),
+            "PATCH",
+            &format!("/panes/{first}"),
+            &json!({"close": "keep"}),
         ),
         409,
         "refused",
-        "does not match",
+        "change only itself",
     );
-    let report = format!("/panes/{first}/start_failed");
-    for caller in [None, Some(other.as_str())] {
-        crate::panes::refused(
-            crate::panes::api(&s, caller, "POST", &report, &json!({"message": "not mine"})),
-            409,
-            "refused",
-            "only the pane itself",
-        );
-    }
     s.screen_has(&first, "starting runtime gate");
     assert_eq!(state(&s, "gate"), "starting");
     assert_eq!(announced("gate"), json!({"type": "starting"}));
@@ -690,7 +693,7 @@ runtimes:
     let row = dead(&s, &first);
     assert_eq!(
         row["dead"]["cause"],
-        json!({"type": "failed", "message": "runtime gate: boom"}),
+        json!({"type": "exited", "code": 1}),
         "{row}"
     );
     loop {

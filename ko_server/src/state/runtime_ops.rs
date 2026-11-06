@@ -410,7 +410,7 @@ impl State {
             | Route::ListPanes {}
             | Route::NewPane {}
             | Route::StopPane { .. }
-            | Route::StartFailed { .. }
+            | Route::PatchPane { .. }
             | Route::SetVar { .. }
             | Route::DeleteVar { .. }
             | Route::DeleteVars { .. }

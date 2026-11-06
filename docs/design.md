@@ -437,13 +437,15 @@ focused panes, and the end of a linger grace (protocol.md, section
 1. A pane with `close: exit`, the default, has died by an exit or a
    signal. The sweep removes it at once, also while a focused client
    shows it: a shell that ends with Ctrl-D closes its pane, as in a
-   terminal. A program that failed to start keeps its dead pane, so
-   the user reads the error on its screen: an exec or `cwd` failure
-   of `ko-pane`, or a failure of ko's own wrapper before the user's
-   program runs (a runtime that does not come up), which the wrapper
-   reports through `start_failed` (protocol.md, section 7). Both give
-   the cause `failed`. A shell's Ctrl-D returns the status of its last command,
-   so the exit code does not select the rule.
+   terminal. An exec or `cwd` failure of `ko-pane` (the cause
+   `failed`) keeps its dead pane, so the user reads the error on its
+   screen. ko's own wrappers (`ko shell`, `ko enter`, `ko
+   runtime-exec`) that fail before the user's program runs, for
+   example when a runtime does not come up, first set their own
+   pane's `close` to `keep` with `PATCH /panes/{id}` (protocol.md,
+   section 7), then print the error and exit 1: a normal exit that
+   the sweep does not remove. A shell's Ctrl-D returns the status of
+   its last command, so the exit code does not select the rule.
 2. A pane with `close: on_exit` has been dead for the linger grace
    (`server: linger_seconds` of the configuration file, 30 s by
    default; design-ko.md, "The configuration file"). The sweep
@@ -878,8 +880,10 @@ Each decision names its date. The code states the rest.
   and no focus guard. Children keep `on_exit`, because their parent
   reads the lingering screen for the ending notice.
 - A start failure keeps its pane, because the error is the one thing
-  that the user must read. ko's wrappers report their own start
-  failures, because their exit is an ordinary exit to `ko-pane`; a
-  shell's failure to run a command is the shell's exit and closes the
+  that the user must read. ko's wrappers set their own pane to
+  `keep` before they exit with an error, because their exit is an
+  ordinary exit to `ko-pane`. The route is the generic `PATCH
+  /panes/{id}`, not a report of its own, so one route changes a
+  pane's properties; a shell's failure to run a command is the shell's exit and closes the
   pane. The exit code does not decide: a shell's
   Ctrl-D returns the last command's status.

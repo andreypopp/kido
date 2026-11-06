@@ -540,7 +540,9 @@ Pane state and pane events:
 - Variables always travel with their pane (decided 2026-11-03): the
   welcome's layout event carries every pane's row, and a later
   `layout` event the rows of the panes that its revision adds, so a
-  client never reads `/panes` to follow the server. A pane that a
+  client never reads `/panes` to follow the server. A `PATCH` that
+  changes a pane's `close` sends a `layout` event with the same
+  revision and that pane's row alone (section 7). A pane that a
   `layout` event no longer names is removed, and the client drops its
   row. An event for a pane without a row changes nothing.
 - The layout event that adds a pane comes before every other event
@@ -671,19 +673,21 @@ invariants.
   hangup; a client that half-closes its socket while a request waits
   gets no answer, and one that sends more than the 16 KiB read buffer
   behind a waiting request is closed.
-- `POST /panes/pane_N/start_failed` (`StartFailed`) records that
-  the pane's program could not start, with a message. ko's own
-  wrappers (`ko shell`, `ko enter`, `ko runtime-exec`) send it when
-  they fail before the user's program runs, for example when a
-  runtime does not come up or the cwd is missing, and then exit with
-  the error on the pane's screen. Only the pane itself, by its
-  identity headers, may send it; the user, other panes and a dead
-  pane, whose identity ended with its death, are `refused`. It is in the runtime gate, because
-  `ko enter` runs inside the runtime. The next exit of the pane's
-  program is then a death with the cause `failed` and that message,
-  so the sweep keeps an `exit` pane (section 10). The report signals
-  and removes nothing. A shell that fails to run a command exits
-  normally, because the wrapper does not see that failure.
+- `PATCH /panes/pane_N` (`PanePatch`) sets each field that the body
+  has on a live pane; `{}` changes nothing. The user and the pane itself, by its identity
+  headers, may send it; another pane is `refused`. An unknown or
+  removed pane is `not_found`, and a dead pane is `gone`, so a pane
+  that is already dead is never swept again by a new `close`. A new
+  `close` takes effect at the next death of the program; it changes
+  no revision, and every `/client` gets the pane's row in a `layout`
+  event. It is in
+  the runtime gate for the pane itself, because `ko enter` runs
+  inside the runtime. ko's own wrappers (`ko shell`, `ko enter`, `ko
+  runtime-exec`) set their pane to `keep` when they fail before the
+  user's program runs, for example when a runtime does not come up
+  or the cwd is missing, and then exit 1 with the error on the pane's
+  screen. A shell that fails to run a command exits normally, because
+  the wrapper does not see that failure.
 - `POST /panes/pane_N/clear_history` clears the pane's scrollback.
   `ko-pane` puts the clear into the ring at its position in the
   stream, so every mirror, live or resumed,
@@ -883,8 +887,8 @@ that has been dead for longer than the linger grace (`server:
 linger_seconds` of the configuration file, in seconds with an
 optional fraction); and a pane whose `parent` is gone or dead, live
 or dead itself, at once (the orphan rule). An `exit` pane whose
-program failed to start (cause `failed`: an exec or `cwd` failure, or
-a `start_failed` report of section 7) stays dead, so its error stays
+program failed to start (cause `failed`: an exec or `cwd` failure of
+`ko-pane`) stays dead, so its error stays
 readable on its screen; `keep` keeps every dead pane. It keeps no record of a
 removed pane. The sweep never removes an `on_exit` or orphaned pane
 that is focused: shown by a client whose terminal has focus (section

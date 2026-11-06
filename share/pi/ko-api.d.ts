@@ -72,7 +72,8 @@ export interface paths {
         delete: operations["DeletePane"];
         options?: never;
         head?: never;
-        patch?: never;
+        /** @description Changes pane properties. Only the user or the pane itself may change them. The close policy applies when the program next dies. A dead pane cannot be changed. */
+        patch: operations["PatchPane"];
         trace?: never;
     };
     "/panes/{id}/clear_history": {
@@ -172,23 +173,6 @@ export interface paths {
         get: operations["Search"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/panes/{id}/start_failed": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** @description Reports that this pane could not start its program. Only the pane itself may report it. Its next program death is a start failure and keeps its error screen. */
-        post: operations["StartFailed"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1120,6 +1104,9 @@ export interface components {
             pane: components["schemas"]["PaneId"];
         };
         PaneId: string;
+        PanePatch: {
+            close?: components["schemas"]["Close"];
+        };
         PaneRef: components["schemas"]["PaneId"] | {
             new: components["schemas"]["CreatePane"];
         };
@@ -1373,10 +1360,6 @@ export interface components {
             layout: components["schemas"]["Layout"];
             revision: number;
         };
-        StartFailed: {
-            message: components["schemas"]["StartFailure"];
-        };
-        StartFailure: string;
         StatusChange: {
             now: number;
             pane: components["schemas"]["PaneId"];
@@ -1732,6 +1715,47 @@ export interface operations {
             };
         };
     };
+    PatchPane: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PanePatch"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Empty"];
+                };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     ClearHistory: {
         parameters: {
             query?: never;
@@ -1974,47 +1998,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-            /** @description The common error body. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    StartFailed: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @example pane_1 */
-                "Ko-Pane"?: components["schemas"]["PaneId"];
-                /** @example 0123456789abcdef0123456789abcdef */
-                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
-            };
-            path: {
-                /** @example pane_1 */
-                id: components["schemas"]["PaneId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["StartFailed"];
-            };
-        };
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Empty"];
-                };
             };
             /** @description The common error body. */
             default: {

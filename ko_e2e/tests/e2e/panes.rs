@@ -18,6 +18,78 @@ fn wait_pane_gone(s: &Server, pane: &str) {
     poll(&format!("{pane} to be removed"), || !s.has_pane(pane));
 }
 
+#[test]
+fn patch_close_applies_at_the_next_exit() {
+    let s = tuned();
+    let other = s.token_pane("exec cat");
+    for own in [false, true] {
+        let pane = s.token_pane("read line; exit 7");
+        let path = format!("/panes/{pane}");
+        let (mut client, _) = s.client(Some(&pane));
+        let revision = s.doc()["revision"].clone();
+        refused(
+            api(&s, Some(&other), "PATCH", &path, &json!({"close": "keep"})),
+            409,
+            "refused",
+            "change only itself",
+        );
+        refused(
+            api(&s, None, "PATCH", &path, &json!({"close": "bad"})),
+            400,
+            "invalid",
+            "",
+        );
+        api(
+            &s,
+            own.then_some(pane.as_str()),
+            "PATCH",
+            &path,
+            &json!({"close": "keep"}),
+        )
+        .json();
+        assert_eq!(s.row(&pane)["close"], "keep");
+        let mut updated = false;
+        for _ in 0..100 {
+            let event = client.event("layout");
+            if let Some(row) = event["panes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["id"] == pane)
+            {
+                assert_eq!(event["revision"], revision);
+                assert_eq!(row["close"], "keep");
+                updated = true;
+                break;
+            }
+        }
+        assert!(updated, "no patched row in client layout events");
+        api(&s, own.then_some(pane.as_str()), "PATCH", &path, &json!({})).json();
+        assert_eq!(s.row(&pane)["close"], "keep");
+        s.text(&pane, "\n");
+        poll("the patched pane to die", || {
+            s.row(&pane)["dead"].is_object()
+        });
+        refused(
+            api(&s, None, "PATCH", &path, &json!({"close": "exit"})),
+            410,
+            "gone",
+            "is dead",
+        );
+    }
+    let pane = s.token_pane_with(json!({"close": "keep"}), "read line");
+    let path = format!("/panes/{pane}");
+    api(&s, Some(&pane), "PATCH", &path, &json!({"close": "exit"})).json();
+    s.text(&pane, "\n");
+    wait_pane_gone(&s, &pane);
+    refused(
+        api(&s, None, "PATCH", &path, &json!({"close": "keep"})),
+        404,
+        "not_found",
+        "pane not found",
+    );
+}
+
 fn tuned() -> Server {
     let dir = Dir::new("ko-");
     write_config(&dir, "server:\n  linger_seconds: 0.2\n");

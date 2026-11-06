@@ -112,6 +112,10 @@ impl Pane {
         self.parent
     }
 
+    pub(crate) fn set_close(&mut self, close: Close) {
+        self.close = close;
+    }
+
     pub(crate) fn close(&self) -> Close {
         self.close
     }

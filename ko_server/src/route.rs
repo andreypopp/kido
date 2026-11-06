@@ -36,6 +36,7 @@ pub(crate) enum Method {
     Get,
     Put,
     Post,
+    Patch,
     Delete,
 }
 
@@ -43,6 +44,7 @@ impl Method {
     pub(crate) const GET: Method = Method::Get;
     pub(crate) const PUT: Method = Method::Put;
     pub(crate) const POST: Method = Method::Post;
+    pub(crate) const PATCH: Method = Method::Patch;
     pub(crate) const DELETE: Method = Method::Delete;
     pub(crate) const WS: Method = Method::Get;
 
@@ -51,6 +53,7 @@ impl Method {
             Method::Get => "GET",
             Method::Put => "PUT",
             Method::Post => "POST",
+            Method::Patch => "PATCH",
             Method::Delete => "DELETE",
         }
     }

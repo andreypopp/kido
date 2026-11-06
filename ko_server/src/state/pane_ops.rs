@@ -9,7 +9,7 @@ use crate::pane_proc::Place;
 use crate::panes::{self, Edge, Standing, acts_as, scope};
 use crate::protocol::{
     CreatePane, Cwd, DraftLayout, DraftSession, DraftWindow, Empty, Error, ErrorKind, NewWindow,
-    Placement, SessionRef,
+    PanePatch, Placement, SessionRef,
 };
 use crate::runtime::pane::{Dir, host_cwd};
 use crate::server::Origin;
@@ -53,23 +53,27 @@ impl Stops {
 }
 
 impl State {
-    pub(crate) fn start_failed(
+    pub(crate) fn patch_pane(
         &mut self,
         caller: Option<PaneId>,
         id: PaneId,
-        message: crate::pane_proc::Failure,
+        patch: PanePatch,
     ) -> Result<(), Error> {
-        if caller != Some(id) {
-            return Err(Error::new(
-                ErrorKind::Refused,
-                "only the pane itself may report a start failure",
-            ));
-        }
+        acts_as(caller, id, "change only itself")?;
         let pane = self
             .panes
             .find_mut(id)
             .ok_or_else(|| Error::new(ErrorKind::Missing, "pane not found"))?;
-        pane.proc_mut().start_failed(message);
+        if pane.proc().dead().is_some() {
+            return Err(Error::new(ErrorKind::Gone, format!("{id} is dead")));
+        }
+        if let Some(close) = patch.close
+            && pane.close() != close
+        {
+            pane.set_close(close);
+            let announced = layout_panes(&self.document, &self.panes, |pane| pane == id);
+            self.broadcast(&ClientEvent::Layout(announced));
+        }
         Ok(())
     }
 
