@@ -78,6 +78,7 @@ private func ghosttyResult(_ result: ko_restore_result) -> ghostty_snapshot_rest
 enum KoViewEvent: Equatable {
     case restored(generation: UInt64, result: ghostty_snapshot_restore_result_e)
     case closed(code: ko_code, message: String)
+    case link(code: ko_code, message: String)
 }
 
 // The text of the failing call when the core gave one: for KO_ERR_CONFLICT the newer layout document.
@@ -243,6 +244,9 @@ private final class ClientHandle: @unchecked Sendable {
         case KO_EVENT_VIEW_CLOSED:
             let closed = event.view_closed
             KoView.of(closed.view).sink(.closed(code: closed.code, message: String(cString: closed.message)))
+        case KO_EVENT_VIEW_LINK:
+            let link = event.view_closed
+            KoView.of(link.view).sink(.link(code: link.code, message: String(cString: link.message)))
         default:
             sink(.failed(code: event.failure.code, message: String(cString: event.failure.message)))
         }
@@ -321,6 +325,7 @@ private final class ClientHandle: @unchecked Sendable {
 
     func select<Kind>(_ kind: Int, _ id: ID<Kind>) throws {
         try handle.call { try check(ko_client_select($0, Int32(kind), id.description)) }
+        note("selection sent kind=\(kind) id=\(id)")
     }
 
     // The cell's pixel size answers a program's size queries; the C call takes 0 and 0 for unknown.
@@ -330,6 +335,7 @@ private final class ClientHandle: @unchecked Sendable {
 
     func switchOver(_ over: Int, _ direction: Int) throws {
         try handle.call { try check(ko_client_switch($0, Int32(over), Int32(direction))) }
+        note("selection switch sent over=\(over) direction=\(direction)")
     }
 
     // Blocks until the server answered: run it off the main queue.

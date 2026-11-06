@@ -801,7 +801,10 @@ that the process under test reads when it uses it:
   `KO_VIEW_QUEUE_BYTES`, `KO_VIEW_SPILL_BYTES` and
   `KO_RUNTIME_EXEC_WAIT_MS`, read by `ko server`
   (`ko_server/src/config.rs`), beside `KO_RUNTIME_COMMAND_KIND=1`,
-  which admits the test-only runtime kind (design-runtimes.md);
+  which admits the test-only runtime kind (design-runtimes.md),
+  `KO_LOG_BYTES`, the cap of `DIR/log` before its rotation, and
+  `KO_DEBUG_INPUT=1`, which adds a line for each input to the log
+  (design-ko.md, "Lifecycle and the command line");
 - `KO_PARENT_POLL_MS`, `KO_SPAWN_TIMEOUT_MS`, `KO_RESEND_MS` (the
   delay between the resends of one message), `KO_RECEIVER_BACKOFF_MS`
   (the first restart delay of the message stream),

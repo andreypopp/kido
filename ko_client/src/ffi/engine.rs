@@ -10,17 +10,18 @@ use ko_pane_wire::ring::Slice as Header;
 use ko_server::api::{Offset, Route};
 use ko_server::ids::ClientId;
 use ko_server::protocol::{
-    self, ClientEvent, ClientRequest, Version, ViewEvent as Wire, ViewRequest, json,
+    self, ClientEvent, ClientRequest, Hello, Version, ViewEvent as Wire, ViewRequest, json,
 };
 use ko_server::ws::{Parsed, parse_record};
 use ko_sys::event::{Events, Interest, Mode, Poll, Ready, Timer, Token};
 use tungstenite::Bytes;
 
+use super::upgrade::{Connecting, UpgradeStep};
 use super::view::{Feed, Slice, View};
 use super::{Code, Command, Posted, Shared, ViewEvent, layout_of, locked, post, string};
 use crate::launch::{self, BACKOFF_FIRST, backoff_after};
 use crate::model::{Applied, JoinError, Model, Rejoin};
-use crate::wire::{Link, Next, READ_TIMEOUT, WATCHDOG, buffered, silent, text};
+use crate::wire::{Link, Next, READ_TIMEOUT, buffered, silent, text};
 
 const WATCH: Duration = Duration::from_secs(2);
 
@@ -32,14 +33,20 @@ struct Session {
 }
 
 struct Conn {
-    link: Link,
     token: Token,
-    paused: bool,
+    state: ViewLink,
+}
+
+#[derive(Debug)]
+enum ViewLink {
+    Connecting { link: Connecting },
+    Open { link: Box<Link>, paused: bool },
 }
 
 struct Open {
     view: Arc<View>,
     conn: Option<Conn>,
+    deadline: Timer,
 }
 
 struct Engine<'a> {
@@ -122,8 +129,10 @@ impl Engine<'_> {
                 }
                 if due.timer == self.retry {
                     self.connect();
-                } else {
+                } else if due.timer == self.watch {
                     self.watchdog();
+                } else if self.views.iter().any(|open| open.deadline == due.timer) {
+                    self.lose(Code::Io, "the pane view upgrade timed out");
                 }
             }
         }
@@ -185,7 +194,19 @@ impl Engine<'_> {
                 message,
             )
         })?;
-        let hello = locked(&shared.hello).clone();
+        let hello = {
+            let greeting = locked(&shared.hello);
+            Hello {
+                name: greeting.name.clone(),
+                focused: greeting.focused,
+                size: greeting.size,
+                ignore_size: greeting.ignore_size,
+                selection: locked(&shared.model)
+                    .as_ref()
+                    .map(|model| model.selection)
+                    .unwrap_or_default(),
+            }
+        };
         let joined = Model::join(&mut link, hello).map_err(|error| match error {
             JoinError::Refused(message) => (Code::Refused, message),
             JoinError::Protocol(message) => protocol_error(message),
@@ -222,7 +243,8 @@ impl Engine<'_> {
         shared.up.store(true, Ordering::SeqCst);
         self.backoff = BACKOFF_FIRST;
         self.reported = None;
-        let _ = self.poll.start(self.watch, WATCH, Some(WATCH));
+        let watch = WATCH.min(shared.watchdog);
+        let _ = self.poll.start(self.watch, watch, Some(watch));
         if fresh {
             for open in std::mem::take(&mut self.views) {
                 self.close_view(open, Code::Closed, "the server restarted");
@@ -230,7 +252,20 @@ impl Engine<'_> {
         } else {
             let ids: Vec<u64> = self.views.iter().map(|open| open.view.id).collect();
             for id in ids {
-                self.open_link(id);
+                let present = self
+                    .views
+                    .iter()
+                    .find(|open| open.view.id == id)
+                    .is_some_and(|open| {
+                        locked(&shared.model)
+                            .as_ref()
+                            .is_some_and(|model| model.locate(open.view.pane).is_some())
+                    });
+                if present {
+                    self.open_link(id);
+                } else {
+                    self.end_view(id, Code::Closed, "the pane is gone");
+                }
             }
         }
         self.client_ready(buffered(token))
@@ -249,6 +284,9 @@ impl Engine<'_> {
         self.shared.up.store(false, Ordering::SeqCst);
         self.poll.stop(self.watch);
         for open in &mut self.views {
+            if open.conn.is_some() {
+                post_link(self.shared, &open.view, code, message);
+            }
             open.drop_conn(&mut self.poll);
         }
         let _ = self.poll.start(self.retry, self.backoff, None);
@@ -260,9 +298,23 @@ impl Engine<'_> {
         let silent_client = self
             .session
             .as_ref()
-            .is_some_and(|session| silent(session.link.received(), now, WATCHDOG));
+            .is_some_and(|session| silent(session.link.received(), now, self.shared.watchdog));
         if silent_client {
             self.lose(Code::Closed, "the server went silent");
+            return;
+        }
+        let ids: Vec<u64> = self
+            .views
+            .iter()
+            .filter(|open| {
+                open.unpaused().is_some_and(|(link, paused)| {
+                    !paused && silent(link.received(), now, self.shared.watchdog)
+                })
+            })
+            .map(|open| open.view.id)
+            .collect();
+        for id in ids {
+            self.reopen_view(id, Code::Closed, "the pane view went silent");
         }
     }
 
@@ -282,17 +334,12 @@ impl Engine<'_> {
             if let Err((code, message)) = self.client_ready(ready) {
                 self.lose(code, &message);
             }
-        } else if let Some(id) = self
-            .views
-            .iter()
-            .find(|open| {
-                open.conn
-                    .as_ref()
-                    .is_some_and(|conn| conn.token == ready.token)
-            })
-            .map(|open| open.view.id)
-        {
-            self.view_ready(id, ready);
+        } else if let Some(at) = self.views.iter().position(|open| {
+            open.conn
+                .as_ref()
+                .is_some_and(|conn| conn.token == ready.token)
+        }) {
+            self.view_ready(at, ready);
         }
     }
 
@@ -368,7 +415,11 @@ impl Engine<'_> {
                 Command::Request(request) => self.request(&request),
                 Command::Open(view) => {
                     let id = view.id;
-                    self.views.push(Open { view, conn: None });
+                    self.views.push(Open {
+                        view,
+                        conn: None,
+                        deadline: self.poll.timer(),
+                    });
                     if self.session.is_some() {
                         self.open_link(id);
                     }
@@ -377,6 +428,7 @@ impl Engine<'_> {
                     if let Some(at) = self.views.iter().position(|open| open.view.id == id) {
                         let mut open = self.views.remove(at);
                         open.drop_conn(&mut self.poll);
+                        self.poll.free(open.deadline);
                     }
                 }
                 Command::Resync(id, options) => {
@@ -408,16 +460,18 @@ impl Engine<'_> {
         let Some(conn) = open.conn.as_mut() else {
             return;
         };
-        let sent = conn
-            .link
+        let ViewLink::Open { link, paused } = &mut conn.state else {
+            return;
+        };
+        let sent = link
             .send(json(request))
-            .and_then(|()| conn.link.settle(&mut self.poll));
+            .and_then(|()| link.settle(&mut self.poll));
         match sent {
             Err(error) => {
                 let (code, message) = failure(&error);
-                self.end_view(id, code, &message);
+                self.reopen_view(id, code, &message);
             }
-            Ok(()) if conn.paused => self.poll.interest(conn.token, Interest::Idle),
+            Ok(()) if *paused => self.poll.interest(conn.token, Interest::Idle),
             Ok(()) => {}
         }
     }
@@ -430,6 +484,9 @@ impl Engine<'_> {
         let Some(open) = self.views.iter_mut().find(|open| open.view.id == id) else {
             return;
         };
+        if open.conn.is_some() {
+            return;
+        }
         let options = *locked(&open.view.options);
         let route = Route::View {
             id: open.view.pane,
@@ -437,36 +494,41 @@ impl Engine<'_> {
             images: options.images,
             offset: open.view.resume_offset().and_then(Offset::new),
         };
-        let linked = Link::connect(
+        let linked = Connecting::start(
             shared.socket.as_path(),
-            Some(client),
+            client,
             &route,
-            Some(Arc::clone(&shared.cancel)),
-        )
-        .and_then(|mut link| {
-            let token = link.watch(&mut self.poll)?;
-            Ok(Conn {
-                link,
-                token,
-                paused: false,
-            })
-        });
+            Arc::clone(&shared.cancel),
+        );
         match linked {
-            Ok(conn) => {
-                let token = conn.token;
-                open.conn = Some(conn);
-                open.view.up.store(true, Ordering::SeqCst);
-                self.view_ready(id, buffered(token));
+            Ok(link) => {
+                let token = link.watch(&mut self.poll);
+                let _ = self.poll.start(open.deadline, READ_TIMEOUT, None);
+                open.conn = Some(Conn {
+                    token,
+                    state: ViewLink::Connecting { link },
+                });
             }
             Err(error) => {
                 let (code, message) = failure(&error);
-                self.end_view(id, code, &message);
+                self.lose(code, &message);
             }
         }
     }
 
+    fn reopen_view(&mut self, id: u64, code: Code, message: &str) {
+        if let Some(open) = self.views.iter_mut().find(|open| open.view.id == id) {
+            if open.conn.is_some() {
+                post_link(self.shared, &open.view, code, message);
+            }
+            open.drop_conn(&mut self.poll);
+        }
+        self.open_link(id);
+    }
+
     fn close_view(&mut self, mut open: Open, code: Code, message: &str) {
         open.drop_conn(&mut self.poll);
+        self.poll.free(open.deadline);
         post(
             self.shared,
             Posted::View(open.view, ViewEvent::Closed(code, string(message))),
@@ -484,76 +546,131 @@ impl Engine<'_> {
         let ids: Vec<u64> = self
             .views
             .iter()
-            .filter(|open| {
-                open.conn.as_ref().is_some_and(|conn| conn.paused)
-                    && !open.view.pause.load(Ordering::SeqCst)
-            })
+            .filter(|open| open.unpaused().is_some_and(|(_, paused)| paused))
             .map(|open| open.view.id)
             .collect();
         for id in ids {
-            let Some(conn) = self
-                .views
-                .iter_mut()
-                .find(|open| open.view.id == id)
-                .and_then(|open| open.conn.as_mut())
-            else {
+            let Some(at) = self.views.iter().position(|open| open.view.id == id) else {
                 continue;
             };
-            conn.paused = false;
+            let Some(conn) = self.views.get_mut(at).and_then(|open| open.conn.as_mut()) else {
+                continue;
+            };
+            let ViewLink::Open { link, paused } = &mut conn.state else {
+                continue;
+            };
+            *paused = false;
             let token = conn.token;
-            if conn.link.settle(&mut self.poll).is_ok() {
-                self.view_ready(id, buffered(token));
+            match link.settle(&mut self.poll) {
+                Ok(()) => self.view_ready(at, buffered(token)),
+                Err(error) => {
+                    let (code, message) = failure(&error);
+                    self.reopen_view(id, code, &message);
+                }
             }
         }
     }
 
-    fn view_ready(&mut self, id: u64, ready: Ready) {
+    fn view_ready(&mut self, at: usize, mut ready: Ready) {
         let continuation = self
             .session
             .as_ref()
             .map_or(0, |session| session.limits.continuation_max_bytes);
-        let Some(open) = self.views.iter_mut().find(|open| open.view.id == id) else {
+        let Some(open) = self.views.get_mut(at) else {
             return;
         };
+        let id = open.view.id;
+        let Some(conn) = open.conn.take() else {
+            return;
+        };
+        match conn.state {
+            ViewLink::Connecting { link } => match link.advance(&mut self.poll, ready) {
+                Ok(UpgradeStep::Pending(link)) => {
+                    open.conn = Some(Conn {
+                        token: conn.token,
+                        state: ViewLink::Connecting { link },
+                    });
+                    return;
+                }
+                Ok(UpgradeStep::Open(link)) => {
+                    self.poll.stop(open.deadline);
+                    open.conn = Some(Conn {
+                        token: conn.token,
+                        state: ViewLink::Open {
+                            link,
+                            paused: false,
+                        },
+                    });
+                    open.view.up.store(true, Ordering::SeqCst);
+                    post_link(self.shared, &open.view, Code::Ok, "view link up");
+                    ready = buffered(conn.token);
+                }
+                Err(error) => {
+                    self.poll.stop(open.deadline);
+                    self.poll.unwatch(conn.token);
+                    let (code, message) = failure(&error);
+                    self.lose(code, &message);
+                    return;
+                }
+            },
+            ViewLink::Open { .. } => open.conn = Some(conn),
+        }
         let Some(conn) = open.conn.as_mut() else {
             return;
         };
+        let ViewLink::Open { link, paused } = &mut conn.state else {
+            return;
+        };
+        #[derive(Debug)]
+        enum End {
+            Gone,
+            Outage(Failed),
+        }
+
         let pause = &open.view.pause;
         let mut outcome = Ok(());
         if ready.write {
-            outcome = conn
-                .link
+            outcome = link
                 .settle(&mut self.poll)
-                .map_err(|error| failure(&error));
+                .map_err(|error| End::Outage(failure(&error)));
         }
         if outcome.is_ok() && ready.read {
-            conn.link.begin_turn();
+            link.begin_turn();
             let now = Instant::now();
             while !pause.load(Ordering::SeqCst) {
-                match conn.link.next(&mut self.poll, now) {
+                match link.next(&mut self.poll, now) {
                     Ok(Next::Wait) => break,
-                    Ok(Next::Closed | Next::Gone) => {
-                        outcome = Err((Code::Closed, "pane view closed".to_owned()));
+                    Ok(Next::Gone) => {
+                        outcome = Err(End::Gone);
+                        break;
+                    }
+                    Ok(Next::Closed) => {
+                        let message = link.close_frame().map_or_else(
+                            || "pane view closed".to_owned(),
+                            |(code, reason)| format!("close {code}: {reason}"),
+                        );
+                        outcome = Err(End::Outage((Code::Closed, message)));
                         break;
                     }
                     Ok(Next::Text(event)) => feed_text(&open.view, &event),
                     Ok(Next::Binary(record)) => {
                         if let Err(message) = feed_record(&open.view, continuation, &record) {
-                            outcome = Err(protocol_error(message.to_owned()));
+                            outcome = Err(End::Outage(protocol_error(message.to_owned())));
                             break;
                         }
                     }
                     Err(error) => {
-                        outcome = Err(failure(&error));
+                        outcome = Err(End::Outage(failure(&error)));
                         break;
                     }
                 }
             }
         }
         match outcome {
-            Err((code, message)) => self.end_view(id, code, &message),
+            Err(End::Gone) => self.end_view(id, Code::Closed, "pane view closed"),
+            Err(End::Outage((code, message))) => self.reopen_view(id, code, &message),
             Ok(()) if pause.load(Ordering::SeqCst) => {
-                conn.paused = true;
+                *paused = true;
                 self.poll.interest(conn.token, Interest::Idle);
             }
             Ok(()) => {}
@@ -561,10 +678,28 @@ impl Engine<'_> {
     }
 }
 
+fn post_link(shared: &Arc<Shared>, view: &Arc<View>, code: Code, message: &str) {
+    post(
+        shared,
+        Posted::View(Arc::clone(view), ViewEvent::Link(code, string(message))),
+    );
+}
+
 impl Open {
+    fn unpaused(&self) -> Option<(&Link, bool)> {
+        if self.view.pause.load(Ordering::SeqCst) {
+            return None;
+        }
+        match &self.conn.as_ref()?.state {
+            ViewLink::Open { link, paused } => Some((link, *paused)),
+            ViewLink::Connecting { .. } => None,
+        }
+    }
+
     fn drop_conn(&mut self, poll: &mut Poll) {
-        if let Some(mut conn) = self.conn.take() {
-            conn.link.unwatch(poll);
+        poll.stop(self.deadline);
+        if let Some(conn) = self.conn.take() {
+            poll.unwatch(conn.token);
         }
         self.view.up.store(false, Ordering::SeqCst);
         self.view.abandon();

@@ -1,5 +1,6 @@
 #![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
+use crate::diagnostics::Cause;
 use std::io::{self, Cursor, Read, Write};
 use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
@@ -290,13 +291,31 @@ impl Ws {
                         Message::Text(text) => break Next::Text(text.as_str().to_owned()),
                         Message::Pong(_) => self.ping = None,
                         Message::Ping(_) | Message::Frame(_) => {}
-                        Message::Binary(_) | Message::Close(_) => break Next::Close,
+                        Message::Binary(_) => {
+                            out.closing(Cause::Refused);
+                            break Next::Close;
+                        }
+                        Message::Close(_) => {
+                            out.closing(Cause::PeerClosed);
+                            break Next::Close;
+                        }
                     }
                 }
                 Err(Error::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
                     break Next::Wait;
                 }
-                Err(_) => break Next::Close,
+                Err(error) => {
+                    let cause = match error {
+                        Error::ConnectionClosed
+                        | Error::AlreadyClosed
+                        | Error::Protocol(
+                            tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+                        ) => Cause::Eof,
+                        _ => Cause::Io,
+                    };
+                    out.closing(cause);
+                    break Next::Close;
+                }
             }
         };
         out.flush();
@@ -311,12 +330,17 @@ impl Ws {
         if !out.is_open() {
             return;
         }
-        if text.as_str().len() > MAX_SENT
-            || self
-                .ctx
-                .write(&mut writer(out), Message::Text(text))
-                .is_err()
+        if text.as_str().len() > MAX_SENT {
+            out.closing(Cause::MessageTooLarge);
+            out.close();
+            return;
+        }
+        if self
+            .ctx
+            .write(&mut writer(out), Message::Text(text))
+            .is_err()
         {
+            out.closing(Cause::Io);
             out.close();
             return;
         }
@@ -324,6 +348,11 @@ impl Ws {
     }
 
     pub(crate) fn reject(&mut self, out: &mut Output, kind: Rejection) {
+        out.closing(match kind {
+            Rejection::Invalid => Cause::Refused,
+            Rejection::Io => Cause::Io,
+            Rejection::Gone => Cause::Gone,
+        });
         let reason = match kind {
             Rejection::Invalid => "invalid",
             Rejection::Io => "io",
@@ -343,6 +372,7 @@ impl Ws {
     }
 
     pub(crate) fn finish(&mut self, out: &mut Output) {
+        out.closing(Cause::Finished);
         self.close_with(out, CloseCode::Normal, "done");
     }
 
@@ -381,6 +411,7 @@ impl Ws {
     pub(crate) fn ping(&mut self, out: &mut Output, now: Instant) -> Ping {
         let stall = self.stall(out, now);
         if stall.is_some_and(|left| left.is_zero()) {
+            out.closing(Cause::Stalled);
             out.shut();
             return Ping::Expired;
         }
@@ -400,6 +431,7 @@ impl Ws {
             return Ping::After(stall.map_or(left, |stall| left.min(stall)));
         }
         if self.ping.is_some() {
+            out.closing(Cause::PingTimeout);
             self.close_with(out, CloseCode::Policy, "io");
             out.shut();
             return Ping::Expired;

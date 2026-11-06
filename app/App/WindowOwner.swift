@@ -952,9 +952,7 @@ private class AlertEscape: NSView {
         guard case .connected = link else { return }
         switch event {
         case .welcome(let id, let fresh):
-            #if KIDO_STRESS
-            note("stress client \(id)")
-            #endif
+            note("client \(id) joined \(fresh ? "fresh" : "resume") host=\(host.label) owner=\(ownerID)")
             initial?.cancel()
             initial = nil
             layoutSeen = .none
@@ -977,6 +975,7 @@ private class AlertEscape: NSView {
         case .model:
             receiveSoon()
         case .selected(let session, let window, let pane):
+            note("selection received session=\(session?.description ?? "none") window=\(window?.description ?? "none") pane=\(pane?.description ?? "none") owner=\(ownerID)")
             receiveSoon()
             guard awaitingSelect else { return }
             awaitingSelect = false
@@ -986,6 +985,7 @@ private class AlertEscape: NSView {
                 sidebar.list.leave()
             }
         case .failed(let code, let message):
+            note("client lost host=\(host.label) owner=\(ownerID) code=\(code.rawValue): \(message)")
             if code == KO_ERR_REFUSED { return refused(message) }
             welcomed = false
             guard recovering == nil else { return }

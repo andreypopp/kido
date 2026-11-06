@@ -1,3 +1,4 @@
+use crate::diagnostics::Cause;
 use std::collections::VecDeque;
 use std::fmt;
 use std::io::{self, IoSlice, Write};
@@ -75,6 +76,7 @@ pub(crate) struct Queue {
     bytes: usize,
     cap: usize,
     policy: Policy,
+    cause: Option<Cause>,
 }
 
 impl Queue {
@@ -85,6 +87,7 @@ impl Queue {
             bytes: 0,
             cap,
             policy: Policy::Plain,
+            cause: None,
         }
     }
 
@@ -153,8 +156,15 @@ impl Queue {
     // and ends with the farewell, which no limit refuses. Any other queue drops everything.
     fn overflow(&mut self) {
         let farewell = match std::mem::replace(&mut self.policy, Policy::Sealed) {
-            Policy::View(overflow) => Some(overflow.farewell),
-            Policy::Plain | Policy::Sealed | Policy::Draining { .. } => None,
+            Policy::View(overflow) => {
+                self.cause.get_or_insert(Cause::Overflow);
+                Some(overflow.farewell)
+            }
+            Policy::Plain => {
+                self.cause.get_or_insert(Cause::Cap);
+                None
+            }
+            Policy::Sealed | Policy::Draining { .. } => None,
         };
         let keep = farewell.is_some()
             && self
@@ -374,6 +384,14 @@ impl Output {
         (&self.stream, &mut self.queue)
     }
 
+    pub(crate) fn closing(&mut self, cause: Cause) {
+        self.queue.cause.get_or_insert(cause);
+    }
+
+    pub(crate) fn cause(&self) -> Option<Cause> {
+        self.queue.cause
+    }
+
     pub(crate) fn finish(&mut self, tail: Vec<u8>) {
         if self.is_open() {
             self.queue.finish(tail);
@@ -406,7 +424,10 @@ impl Output {
             self.accepted = self.accepted.saturating_add(count as u64);
             self.pull()
         });
-        if sent.is_err() || (self.queue.sealed() && self.queue.is_empty()) {
+        if sent.is_err() {
+            self.closing(Cause::Io);
+            self.shut();
+        } else if self.queue.sealed() && self.queue.is_empty() {
             self.shut();
         }
     }
@@ -494,6 +515,7 @@ impl Output {
                     count
                 }
                 Err(_) => {
+                    self.closing(Cause::Io);
                     self.shut();
                     return Written::Closed;
                 }
@@ -550,6 +572,7 @@ impl Output {
                     written
                 }
                 Err(_) => {
+                    self.closing(Cause::Io);
                     self.shut();
                     return None;
                 }

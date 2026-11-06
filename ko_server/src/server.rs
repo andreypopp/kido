@@ -171,6 +171,10 @@ impl Server {
         })
     }
 
+    pub fn take_diagnostics(&mut self) -> Vec<crate::diagnostics::Event> {
+        self.state.take_diagnostics()
+    }
+
     pub fn turn(&mut self) -> io::Result<Status> {
         let Server {
             poll,
@@ -484,6 +488,7 @@ pub(crate) mod tests {
                 command_kind: false,
             },
             file: dir.join("config.yaml"),
+            diagnostics: crate::config::Diagnostics::Disabled,
         };
         let timing = Timing {
             shutdown_grace: Duration::from_millis(100),

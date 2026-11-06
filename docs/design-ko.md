@@ -753,7 +753,30 @@ the server that the launcher started does not wait for its launcher.
 Only the bind removes a stale socket, under `bind.lock`, so a launcher
 never removes the socket of a server that an explicit `ko server`
 bound meanwhile. A failed start reports the text that the server
-wrote to `DIR/log`. The server runs until `ko kill-server`, which sends
+wrote to `DIR/log`.
+
+`DIR/log` is also the server's diagnostic log, whether the launcher or
+the user started `ko server`: once its configuration is read, the
+server opens `DIR/log` and puts it on its stderr. The coordinator
+records the lifecycle of its connections (`ko_server/src/diagnostics.rs`):
+a client's hello and close, a view's open and close with its pane,
+its client and its cause, and each selection of a client. `ko server`
+formats each record as one line, with a UTC timestamp in milliseconds,
+and writes it between the coordinator's turns
+(`ko/src/server_log.rs`). A line that would take the file over its cap
+(8 MiB, `KO_LOG_BYTES`) first renames `log` to `log.1`, which replaces
+the older one, opens a new `log` and puts it on the server's stderr,
+so every later stderr line of the server, a panic too, goes to the new
+file. The rotation runs only on the coordinator's thread, between turns.
+The `ko-pane` processes keep the stderr that they inherited until they
+end, so their rare lines go to `log.1`, or to an unlinked file after a
+second rotation. With `KO_DEBUG_INPUT=1`, each input to a pane also gets
+a line with its pane, its source (a view or `POST /panes/{id}/input`)
+and its byte count. No line holds input bytes or pane text. Rationale:
+an outage that the user saw a while ago is otherwise invisible
+(2026-11-06).
+
+The server runs until `ko kill-server`, which sends
 no HTTP request: it reads the server's pid and uid from the socket's
 peer credentials, refuses another user's server, sends `SIGTERM` and
 waits up to 5 s for that pid to end. `SIGTERM`, `SIGINT` and `SIGHUP` stop the server: it removes

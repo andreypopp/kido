@@ -26,6 +26,71 @@ fn wait_doc(what: &str, s: &Server, mut check: impl FnMut(&Value) -> bool) {
 }
 
 #[test]
+fn lifecycle_logs_rotate_and_input_logs_contain_only_counts() {
+    let mut s = crate::harness::start_with(
+        std::path::Path::new("/bin/sh"),
+        &[("KO_LOG_BYTES", "1024"), ("KO_DEBUG_INPUT", "1")],
+        &[],
+    );
+    one_window(&s, split("h", vec![new(), new()]));
+    for _ in 0..12 {
+        let (client, welcome) = s.app_client(json!({}), false, (80, 24));
+        let id = welcome["client"].as_str().unwrap().to_owned();
+        drop(client);
+        poll("the client close in the log", || {
+            std::fs::read_to_string(s.dir.join("log"))
+                .unwrap_or_default()
+                .contains(&format!("client {id} closed:"))
+        });
+    }
+    assert!(s.dir.join("log.1").is_file());
+    let (_client, welcome) = s.app_client(json!({"pane":"pane_2"}), false, (80, 24));
+    let id = welcome["client"].as_str().unwrap();
+    s.text("pane_2", "PRIVATE-INPUT\n");
+    let marker = format!("client {id} selected session=session_1 window=window_1 pane=pane_2");
+    poll(
+        "the later lifecycle and input records in the new log",
+        || {
+            let log = std::fs::read_to_string(s.dir.join("log")).unwrap_or_default();
+            log.contains(&marker) && log.contains("input to pane_2 source=http bytes=14")
+        },
+    );
+    for path in [s.dir.join("log"), s.dir.join("log.1")] {
+        let log = std::fs::read_to_string(path).unwrap();
+        assert!(!log.contains("PRIVATE-INPUT"), "{log}");
+        for line in log.lines() {
+            assert_eq!(line.get(23..25), Some("Z "), "{line}");
+        }
+    }
+    std::fs::remove_file(s.dir.join("log")).unwrap();
+    let (_replacement, welcome) = s.app_client(json!({}), false, (80, 24));
+    let marker = format!("client {} hello", welcome["client"].as_str().unwrap());
+    poll("a lifecycle line after the log was removed", || {
+        std::fs::read_to_string(s.dir.join("log"))
+            .unwrap_or_default()
+            .contains(&marker)
+    });
+    s.restart(&[]);
+    let (_client, _) = s.app_client(json!({}), false, (80, 24));
+    let before = std::fs::read_to_string(s.dir.join("log")).unwrap();
+    let pane = s.pane("stty raw -echo; exec cat");
+    s.text(&pane, "DEFAULT-PRIVATE-INPUT");
+    let (_barrier, welcome) = s.app_client(json!({}), false, (80, 24));
+    let marker = format!("client {} hello", welcome["client"].as_str().unwrap());
+    poll("a lifecycle record after input with debug disabled", || {
+        std::fs::read_to_string(s.dir.join("log"))
+            .unwrap_or_default()
+            .contains(&marker)
+    });
+    let after = std::fs::read_to_string(s.dir.join("log")).unwrap();
+    assert_eq!(
+        after.matches("input to ").count(),
+        before.matches("input to ").count()
+    );
+    assert!(!after.contains("DEFAULT-PRIVATE-INPUT"));
+}
+
+#[test]
 fn a_bad_client_hello_reports_the_decode_error_before_closing() {
     let s = start(&[]);
     let mut client = s.ws("/client");

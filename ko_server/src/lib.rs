@@ -6,6 +6,7 @@ pub mod config;
 mod conn;
 mod deflate;
 mod delivery;
+pub mod diagnostics;
 pub mod exec_wire;
 #[cfg(any(test, feature = "fuzz"))]
 pub mod fuzz;

@@ -575,7 +575,7 @@ impl Ws {
 
     pub(crate) fn welcome(&mut self) -> Value {
         let mut identity = Value::Null;
-        for key in ["welcome", "layout"] {
+        for key in ["welcome", "layout", "selected"] {
             let Message::Text(text) = self.read() else {
                 panic!("expected {key}, got a binary message");
             };

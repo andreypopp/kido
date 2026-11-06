@@ -199,6 +199,30 @@ on that directory dials again, which starts a fresh server through
 dials again as after a remote mismatch: the app never stops a remote
 server.
 
+### The log
+
+Each `note` line goes to stderr and to `~/Library/Logs/Kido/app.log`,
+with a UTC timestamp in milliseconds and the app's pid, because a demo
+build and the installed app share the file (`app/App/AppLog.swift`). A line
+that would take the file over 8 MiB first renames it to `app.log.1`,
+which replaces the older one. The test, visual and stress builds write
+only to stderr, so they never write into the user's log. Rationale: an
+app that Finder or the Dock started has no stderr that anyone reads, and
+an outage that the user saw a while ago left no trace (2026-11-06).
+
+The lines that are always written record changes, never each key: a
+`/client` welcome (fresh or resume) and loss, each view's restore,
+link up, link loss and close with its message, each selection sent and
+received, each first-responder change of a pane, each change of a
+pane's alternate screen, the system's sleep and wake, the screens'
+sleep and wake, the session's resign and activation, and the screen
+lock and unlock (the distributed notifications
+`com.apple.screenIsLocked` and `com.apple.screenIsUnlocked`). A key
+that a pane cannot send logs `input to PANE dropped: REASON` once for
+each pane and reason, until a key is sent again or the link is up.
+Under `KIDO_APP_DEBUG=1`, each key also logs its key code, its pane and
+the window's first responder. No line holds key content or pane text.
+
 ### Window frame
 
 The app keeps one window frame for each server, in its UserDefaults: it is
@@ -613,7 +637,11 @@ the views. The `/client` link and the view links have no order on the
 server, so a view can still take its snapshot at the old size; the
 adoption and the resize markers that follow handle either case. A window
 is ready for a visual test only when every shown surface grid is its
-pane's size in the layout. A closed view logs `view of PANE closed: …`. `PaneView.detach` runs `ko_view_close`
+pane's size in the layout. A view closes only when its pane is gone or
+the server restarted, and the pane then detaches. A lost view link
+(`KO_EVENT_VIEW_LINK`, `ko_client/include/ko_client.h`) keeps the view
+and its surface, and the core opens the link again by itself.
+`PaneView.detach` runs `ko_view_close`
 on a utility queue, because the close waits for a running restore or feed;
 the pane, and its surface, stay alive until the close returns.
 

@@ -5,6 +5,7 @@ mod config;
 mod engine;
 mod images;
 mod remote;
+mod upgrade;
 mod view;
 
 pub use calls::*;
@@ -21,12 +22,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use ko_pane_wire::frame::{self, History, ServedBuf};
 use ko_server::ids::{ClientId, PaneId, WindowId};
 use ko_server::protocol::{
-    self, ClientRequest, ClipboardContent, ClipboardLocation, Direction, ErrorKind, Hello, Input,
-    Over, Selection, Switch, Text, Version,
+    self, ClientRequest, ClipboardContent, ClipboardLocation, Direction, ErrorKind, Input, Over,
+    Selection, Switch, Text, Version,
 };
 use ko_sys::event::Wake;
 
@@ -191,6 +193,7 @@ const EVENT_SELECTED: c_int = 5;
 const EVENT_ALERT: c_int = 6;
 const EVENT_VIEW_RESTORED: c_int = 7;
 const EVENT_VIEW_CLOSED: c_int = 8;
+const EVENT_VIEW_LINK: c_int = 12;
 const EVENT_MISMATCH: c_int = 9;
 const EVENT_CLIPBOARD_WRITE: c_int = 10;
 const EVENT_CLIPBOARD_READ: c_int = 11;
@@ -259,6 +262,7 @@ pub struct Buffer {
 enum ViewEvent {
     Restored { generation: u64, result: Restored },
     Closed(Code, CString),
+    Link(Code, CString),
 }
 
 #[derive(Debug)]
@@ -311,15 +315,24 @@ enum Command {
 }
 
 #[derive(Debug)]
+struct Greeting {
+    name: String,
+    focused: bool,
+    size: protocol::Size,
+    ignore_size: bool,
+}
+
+#[derive(Debug)]
 struct Shared {
-    queue: Queue,
+    queue: Arc<Queue>,
     callback: Callback,
     user: User,
     socket: PathBuf,
     cancel: Arc<Wake>,
     wake: Wake,
     commands: Mutex<VecDeque<Command>>,
-    hello: Mutex<Hello>,
+    hello: Mutex<Greeting>,
+    watchdog: Duration,
     client: Mutex<Option<ClientId>>,
     model: Mutex<Option<Model>>,
     up: AtomicBool,
@@ -606,6 +619,16 @@ extern "C" fn deliver(context: *mut c_void) {
                         },
                     },
                 }),
+                ViewEvent::Link(code, message) => call(Event {
+                    kind: EVENT_VIEW_LINK,
+                    body: Body {
+                        view_closed: ViewClosed {
+                            view: user,
+                            code: *code,
+                            message: message.as_ptr(),
+                        },
+                    },
+                }),
             }
         }
     }
@@ -767,33 +790,59 @@ pub unsafe extern "C" fn ko_client_connect(
         Some(None) => return Code::Argument,
     }
     .to_owned();
-    let Some(handle_id) = next_handle() else {
-        return Code::Io;
-    };
-    let (Ok(cancel), Ok(wake)) = (Wake::new(), Wake::new()) else {
-        return Code::Io;
-    };
     // SAFETY: queue is a live dispatch queue by contract; Queue releases this retain.
     unsafe { dispatch_retain(queue) };
-    let shared = Arc::new(Shared {
-        queue: Queue(queue),
+    let hello = Greeting {
+        name,
+        focused: hello.focused,
+        size: protocol::Size(frame::Size {
+            cols,
+            rows,
+            cell_px: None,
+        }),
+        ignore_size: !hello.sizes_windows,
+    };
+    match start(
+        socket,
+        hello,
+        Arc::new(Queue(queue)),
         callback,
-        user: User(user),
+        User(user),
+        crate::wire::WATCHDOG,
+    ) {
+        Ok(handle) => {
+            // SAFETY: out is non-null and writable by contract.
+            unsafe { out.write(handle) };
+            Code::Ok
+        }
+        Err(code) => code,
+    }
+}
+
+fn start(
+    socket: PathBuf,
+    hello: Greeting,
+    queue: Arc<Queue>,
+    callback: Callback,
+    user: User,
+    watchdog: Duration,
+) -> Result<*mut Client, Code> {
+    let Some(handle_id) = next_handle() else {
+        return Err(Code::Io);
+    };
+    let (Ok(cancel), Ok(wake)) = (Wake::new(), Wake::new()) else {
+        return Err(Code::Io);
+    };
+    let shared = Arc::new(Shared {
+        queue,
+        callback,
+        user,
         socket,
         cancel: Arc::new(cancel),
         wake,
         commands: Mutex::new(VecDeque::new()),
-        hello: Mutex::new(Hello {
-            name,
-            selection: Selection::default(),
-            focused: hello.focused,
-            size: protocol::Size(frame::Size {
-                cols,
-                rows,
-                cell_px: None,
-            }),
-            ignore_size: !hello.sizes_windows,
-        }),
+        hello: Mutex::new(hello),
+        watchdog,
         client: Mutex::new(None),
         model: Mutex::new(None),
         up: AtomicBool::new(false),
@@ -809,7 +858,7 @@ pub unsafe extern "C" fn ko_client_connect(
         .name("ko-client".to_owned())
         .spawn(move || engine::run(&worker))
     else {
-        return Code::Io;
+        return Err(Code::Io);
     };
     let client = Arc::new(Client {
         shared,
@@ -817,9 +866,7 @@ pub unsafe extern "C" fn ko_client_connect(
     });
     let handle = std::ptr::without_provenance_mut(handle_id);
     locked(&CLIENTS).insert(handle_id, client);
-    // SAFETY: out is non-null and writable by contract.
-    unsafe { out.write(handle) };
-    Code::Ok
+    Ok(handle)
 }
 
 /// # Safety
@@ -1048,7 +1095,6 @@ pub unsafe extern "C" fn ko_client_select(
             return Code::NotFound;
         }
     }
-    locked(&client.shared.hello).selection = selection;
     request(&client, ClientRequest::Select(selection))
 }
 
@@ -1517,6 +1563,7 @@ mod tests {
         Mismatch(Code, String, String),
         Restored(u64, Restored),
         Closed(Code, String),
+        Link(Code, String),
     }
 
     struct Delivered {
@@ -1526,6 +1573,7 @@ mod tests {
 
     struct Probe {
         events: Sender<Delivered>,
+        links: Sender<Seen>,
         client: AtomicPtr<Client>,
         on_welcome: Box<dyn Fn(&Probe) + Send + Sync>,
     }
@@ -1617,11 +1665,14 @@ mod tests {
             EVENT_VIEW_CLOSED => {
                 // SAFETY: this arm matches the event kind for this union member.
                 let closed = unsafe { event.body.view_closed };
-                Seen::Closed(
-                    closed.code,
-                    // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
-                    unsafe { owned(closed.message) },
-                )
+                // SAFETY: the message is readable and NUL-terminated during the callback.
+                Seen::Closed(closed.code, unsafe { owned(closed.message) })
+            }
+            EVENT_VIEW_LINK => {
+                // SAFETY: this arm matches the event kind for this union member.
+                let link = unsafe { event.body.view_closed };
+                // SAFETY: the message is readable and NUL-terminated during the callback.
+                Seen::Link(link.code, unsafe { owned(link.message) })
             }
             EVENT_CLIPBOARD_WRITE => {
                 // SAFETY: this arm matches the event kind for this union member.
@@ -1673,6 +1724,10 @@ mod tests {
                 )
             }
         };
+        if matches!(seen, Seen::Link(..)) {
+            let _ = probe.links.send(seen);
+            return;
+        }
         let thread = std::thread::current();
         let _ = probe.events.send(Delivered {
             seen,
@@ -1694,9 +1749,10 @@ mod tests {
     }
 
     struct Fixture {
-        queue: *mut c_void,
+        queue: Arc<Queue>,
         probe: &'static Probe,
         events: Receiver<Delivered>,
+        links: Receiver<Seen>,
     }
 
     impl Fixture {
@@ -1706,43 +1762,54 @@ mod tests {
 
         fn on_welcome(on_welcome: impl Fn(&Probe) + Send + Sync + 'static) -> Fixture {
             let (events, receiver) = channel();
+            let (links, link_events) = channel();
             Fixture {
                 // SAFETY: a null attribute makes a serial queue; the label is NUL-terminated.
-                queue: unsafe { dispatch_queue_create(c"ko.test".as_ptr(), std::ptr::null()) },
+                queue: Arc::new(Queue(unsafe {
+                    dispatch_queue_create(c"ko.test".as_ptr(), std::ptr::null())
+                })),
                 probe: Box::leak(Box::new(Probe {
                     events,
+                    links,
                     client: AtomicPtr::new(std::ptr::null_mut()),
                     on_welcome: Box::new(on_welcome),
                 })),
                 events: receiver,
+                links: link_events,
             }
         }
 
         fn connect(&self, socket: &Server) -> *mut Client {
-            self.connect_as(socket, None)
+            self.connect_as(socket, None, crate::wire::WATCHDOG)
         }
 
-        fn connect_as(&self, socket: &Server, hello: Option<HelloIn>) -> *mut Client {
-            let mut path = socket.socket();
-            path.push(0);
-            let mut out = std::ptr::null_mut();
-            let user = std::ptr::from_ref(self.probe).cast_mut().cast();
-            // SAFETY: path is NUL-terminated, the queue is live, out is writable, and
-            // the probe outlives the queue's last callback.
-            let code = unsafe {
-                ko_client_connect(
-                    path.as_ptr().cast(),
-                    self.queue,
-                    Some(record),
-                    user,
-                    hello.as_ref().map_or(std::ptr::null(), std::ptr::from_ref),
-                    &mut out,
-                )
-            };
-            path.fill(b'X');
-            assert_eq!(code, Code::Ok);
-            self.probe.client.store(out, Ordering::SeqCst);
-            out
+        fn connect_as(
+            &self,
+            socket: &Server,
+            hello: Option<Greeting>,
+            watchdog: Duration,
+        ) -> *mut Client {
+            let hello = hello.unwrap_or(Greeting {
+                name: "app".to_owned(),
+                focused: false,
+                ignore_size: true,
+                size: protocol::Size(frame::Size {
+                    cols: frame::Dim::new(80).unwrap(),
+                    rows: frame::Dim::new(24).unwrap(),
+                    cell_px: None,
+                }),
+            });
+            let handle = start(
+                socket.dir.join("socket"),
+                hello,
+                Arc::clone(&self.queue),
+                record,
+                User(std::ptr::from_ref(self.probe).cast_mut().cast()),
+                watchdog,
+            )
+            .unwrap();
+            self.probe.client.store(handle, Ordering::SeqCst);
+            handle
         }
 
         fn delivered(&self) -> Delivered {
@@ -1765,7 +1832,7 @@ mod tests {
         fn flush(&self) {
             extern "C" fn nothing(_: *mut c_void) {}
             // SAFETY: the queue is live and not suspended by the caller.
-            unsafe { dispatch_sync_f(self.queue, std::ptr::null_mut(), nothing) }
+            unsafe { dispatch_sync_f(self.queue.0, std::ptr::null_mut(), nothing) }
         }
 
         fn quiet(&self) -> Vec<Seen> {
@@ -1776,13 +1843,6 @@ mod tests {
         fn quiet_for(&self, window: Duration) -> Vec<Seen> {
             std::thread::sleep(window);
             self.quiet()
-        }
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            // SAFETY: the queue was created here and nothing uses it after the flush.
-            unsafe { dispatch_release(self.queue) }
         }
     }
 
@@ -2066,6 +2126,7 @@ mod tests {
     fn welcomed(socket: &mut Ws) {
         send(socket, &welcome(INSTANCE, 1));
         send(socket, &layout(0));
+        send(socket, r#"{"type":"selected"}"#);
     }
 
     fn text_messages(socket: &mut Ws, count: usize) -> Vec<String> {
@@ -2236,6 +2297,15 @@ mod tests {
     }
 
     fn open_view(client: *mut Client, decoder: &'static Decoder, history: bool) -> *mut ViewHandle {
+        open_view_of(c"pane_1", client, decoder, history)
+    }
+
+    fn open_view_of(
+        pane: &CStr,
+        client: *mut Client,
+        decoder: &'static Decoder,
+        history: bool,
+    ) -> *mut ViewHandle {
         let mut out = std::ptr::null_mut();
         let user = std::ptr::from_ref::<Decoder>(decoder).cast_mut().cast();
         // SAFETY: the client is live, the pane is NUL-terminated, out is writable, and the
@@ -2243,7 +2313,7 @@ mod tests {
         let code = unsafe {
             ko_view_open(
                 client,
-                c"pane_1".as_ptr(),
+                pane.as_ptr(),
                 history,
                 Some(restore),
                 Some(feed),
@@ -2338,6 +2408,7 @@ mod tests {
                 let _ = greeted.send(hello);
                 send(socket, &welcome(INSTANCE, 1));
                 send(socket, &layout(3));
+                send(socket, r#"{"type":"selected"}"#);
                 send(socket, &layout(4));
                 wait_for_hangup(socket);
             }),
@@ -2377,6 +2448,9 @@ mod tests {
                 send(socket, &welcome(INSTANCE, 1));
                 for revision in 0..50 {
                     send(socket, &layout(revision));
+                    if revision == 0 {
+                        send(socket, r#"{"type":"selected"}"#);
+                    }
                 }
                 let _ = socket.close(None);
                 let _ = socket.flush();
@@ -2392,11 +2466,11 @@ mod tests {
         let (server, hangup) = flood("inside");
         let fixture = Fixture::on_welcome(|probe| close(probe.client.load(Ordering::SeqCst)));
         // SAFETY: the queue is live; it resumes below.
-        unsafe { dispatch_suspend(fixture.queue) };
+        unsafe { dispatch_suspend(fixture.queue.0) };
         fixture.connect(&server);
         hangup.recv_timeout(WAIT).unwrap();
         // SAFETY: the queue was suspended once above.
-        unsafe { dispatch_resume(fixture.queue) };
+        unsafe { dispatch_resume(fixture.queue.0) };
         let rest = fixture.quiet();
         assert_eq!(rest.len(), 1, "the welcome only: {rest:?}");
         assert!(matches!(rest[0], Seen::Welcome(..)));
@@ -2555,12 +2629,12 @@ mod tests {
         let (server, hangup) = flood("outside");
         let fixture = Fixture::new();
         // SAFETY: the queue is live; it resumes below.
-        unsafe { dispatch_suspend(fixture.queue) };
+        unsafe { dispatch_suspend(fixture.queue.0) };
         let client = fixture.connect(&server);
         hangup.recv_timeout(WAIT).unwrap();
         close(client);
         // SAFETY: the queue was suspended once above.
-        unsafe { dispatch_resume(fixture.queue) };
+        unsafe { dispatch_resume(fixture.queue.0) };
         assert_eq!(fixture.quiet(), []);
     }
 
@@ -2806,6 +2880,7 @@ mod tests {
             client_script(|socket, _| {
                 send(socket, &welcome(INSTANCE, 1));
                 send(socket, &layout(1));
+                send(socket, r#"{"type":"selected"}"#);
                 let _ = socket.close(None);
                 let _ = socket.flush();
             }),
@@ -2835,6 +2910,7 @@ mod tests {
         .client(move |socket, _| {
             send(socket, &welcome(second_instance, 1));
             send(socket, &layout(2));
+            send(socket, r#"{"type":"selected"}"#);
             wait_for_hangup(socket);
         })
         .view(|socket, _| {
@@ -2978,6 +3054,7 @@ mod tests {
             client_script(move |socket, _| {
                 send(socket, &welcome(INSTANCE, 1));
                 send(socket, &layout_with(0, &rows));
+                send(socket, r#"{"type":"selected"}"#);
                 wait_for_hangup(socket);
             }),
         );
@@ -3067,6 +3144,7 @@ mod tests {
             client_script(move |socket, _| {
                 send(socket, &welcome(INSTANCE, 1));
                 send(socket, &layout(4));
+                send(socket, r#"{"type":"selected"}"#);
                 let _ = moved.recv_timeout(WAIT);
                 send(
                     socket,
@@ -3098,6 +3176,10 @@ mod tests {
             for message in text_messages(socket, 6) {
                 let _ = sent.send(message);
             }
+            send(
+                socket,
+                r#"{"type":"selected","pane":"pane_2","window":"window_1","session":"session_1"}"#,
+            );
             let _ = dropped.recv_timeout(WAIT);
             let _ = socket.close(None);
             let _ = socket.flush();
@@ -3111,13 +3193,17 @@ mod tests {
         let fixture = Fixture::new();
         let client = fixture.connect_as(
             &server,
-            Some(HelloIn {
-                cols: 90,
-                rows: 28,
+            Some(Greeting {
+                size: protocol::Size(frame::Size {
+                    cols: frame::Dim::new(90).unwrap(),
+                    rows: frame::Dim::new(28).unwrap(),
+                    cell_px: None,
+                }),
                 focused: false,
-                sizes_windows: true,
-                name: c"window_7".as_ptr(),
+                ignore_size: false,
+                name: "window_7".to_owned(),
             }),
+            crate::wire::WATCHDOG,
         );
         let hello: Value = serde_json::from_str(&hellos.recv_timeout(WAIT).unwrap()).unwrap();
         assert_eq!(
@@ -3185,6 +3271,7 @@ mod tests {
                 r#"{"type":"focused","focused":true}"#,
             ]
         );
+        assert!(matches!(fixture.next(), Seen::Selected(..)));
         drop_first.send(()).unwrap();
         let hello: Value = serde_json::from_str(&hellos.recv_timeout(WAIT).unwrap()).unwrap();
         assert_eq!(
@@ -4144,17 +4231,17 @@ mod tests {
         };
         let mut out = std::ptr::dangling_mut::<Client>();
         let cases = [
-            connect(std::ptr::null(), fixture.queue, Some(record), &mut out),
-            connect(c"".as_ptr(), fixture.queue, Some(record), &mut out),
+            connect(std::ptr::null(), fixture.queue.0, Some(record), &mut out),
+            connect(c"".as_ptr(), fixture.queue.0, Some(record), &mut out),
             connect(path.as_ptr(), std::ptr::null_mut(), Some(record), &mut out),
-            connect(path.as_ptr(), fixture.queue, None, &mut out),
+            connect(path.as_ptr(), fixture.queue.0, None, &mut out),
         ];
         assert_eq!(cases, [Code::Argument; 4]);
         assert!(out.is_null());
         assert_eq!(
             connect(
                 path.as_ptr(),
-                fixture.queue,
+                fixture.queue.0,
                 Some(record),
                 std::ptr::null_mut()
             ),
@@ -4171,7 +4258,7 @@ mod tests {
         let code = unsafe {
             ko_client_connect(
                 path.as_ptr(),
-                fixture.queue,
+                fixture.queue.0,
                 Some(record),
                 user,
                 &empty_window,
@@ -4621,7 +4708,7 @@ mod tests {
             Restored::Ok
         });
         // SAFETY: the queue is live; it resumes below.
-        unsafe { dispatch_suspend(fixture.queue) };
+        unsafe { dispatch_suspend(fixture.queue.0) };
         let view = open_view(client, decoder, true);
         assert_eq!(
             has_read.recv_timeout(WAIT).unwrap(),
@@ -4645,7 +4732,7 @@ mod tests {
             "the bytes of the old snapshot never reach the surface after the newer restore began"
         );
         // SAFETY: the queue was suspended once above.
-        unsafe { dispatch_resume(fixture.queue) };
+        unsafe { dispatch_resume(fixture.queue.0) };
         assert_eq!(fixture.next(), Seen::Restored(2, Restored::Ok));
         assert_eq!(
             fixture.quiet(),
@@ -4859,6 +4946,7 @@ mod tests {
                 clients: vec![Box::new(move |socket, _| {
                     send(socket, &welcome(INSTANCE, limit));
                     send(socket, &layout(0));
+                    send(socket, r#"{"type":"selected"}"#);
                     wait_for_hangup(socket);
                 })],
                 views: Vec::new(),
@@ -4905,7 +4993,7 @@ mod tests {
         assert!(matches!(fixture.next(), Seen::Welcome(..)));
         assert!(matches!(fixture.next(), Seen::Layout(0, ..)));
         // SAFETY: the queue is live; it resumes below.
-        unsafe { dispatch_suspend(fixture.queue) };
+        unsafe { dispatch_suspend(fixture.queue.0) };
         let decoder = Decoder::new(|snapshot| {
             pull(snapshot, usize::MAX, 64).unwrap();
             Restored::Ok
@@ -4918,7 +5006,7 @@ mod tests {
         );
         close_view(view);
         // SAFETY: the queue was suspended once above.
-        unsafe { dispatch_resume(fixture.queue) };
+        unsafe { dispatch_resume(fixture.queue.0) };
         assert_eq!(fixture.quiet(), []);
         close(client);
     }
@@ -5094,15 +5182,6 @@ mod tests {
             });
             let _ = release.send(());
         }
-        let closed = fixture.next();
-        if close_frame {
-            assert!(
-                matches!(closed, Seen::Closed(Code::Closed, _)),
-                "{closed:?}"
-            );
-        } else {
-            assert!(matches!(closed, Seen::Closed(Code::Io, _)), "{closed:?}");
-        }
         assert!(
             was_cancelled.recv_timeout(WAIT).unwrap(),
             "the restore read on after the view closed"
@@ -5112,18 +5191,18 @@ mod tests {
     }
 
     #[test]
-    fn a_server_close_during_a_restore_closes_the_view_and_fails_the_decoders_read() {
+    fn a_server_close_during_a_restore_fails_the_decoders_read() {
         a_server_close_during_a_restore("close-restore", false, true);
         a_server_close_during_a_restore("hangup-restore", false, false);
     }
 
     #[test]
-    fn a_server_hangup_closes_a_paused_view_once_its_decoder_takes_what_waits() {
+    fn a_server_hangup_replaces_a_paused_view_once_its_decoder_takes_what_waits() {
         a_server_close_during_a_restore("close-paused", true, false);
     }
 
     #[test]
-    fn a_close_frame_closes_a_paused_view_once_its_decoder_takes_what_waits() {
+    fn a_close_frame_replaces_a_paused_view_once_its_decoder_takes_what_waits() {
         a_server_close_during_a_restore("close-frame-paused", true, true);
     }
 
@@ -5177,7 +5256,263 @@ mod tests {
     }
 
     #[test]
-    fn a_reconnect_reopens_the_next_view_when_the_first_one_cannot_be_opened_again() {
+    fn a_server_selection_survives_a_resumed_join() {
+        let (drop_client, dropped) = channel::<()>();
+        let (hello_sent, hello_received) = channel();
+        let routes = client_script(move |socket, _| {
+            welcomed(socket);
+            send(
+                socket,
+                r#"{"type":"selected","pane":"pane_2","window":"window_1","session":"session_1"}"#,
+            );
+            dropped.recv_timeout(WAIT).unwrap();
+        })
+        .client(move |socket, hello| {
+            hello_sent.send(hello).unwrap();
+            send(socket, &welcome(INSTANCE, 1));
+            send(socket, &layout(0));
+            send(
+                socket,
+                r#"{"type":"selected","pane":"pane_2","window":"window_1","session":"session_1"}"#,
+            );
+            wait_for_hangup(socket);
+        });
+        let server = serve("selected-rejoin", routes);
+        let fixture = Fixture::new();
+        let client = fixture.connect(&server);
+        assert!(matches!(fixture.next(), Seen::Welcome(..)));
+        assert!(matches!(fixture.next(), Seen::Layout(..)));
+        assert!(matches!(fixture.next(), Seen::Selected(..)));
+        drop_client.send(()).unwrap();
+        let hello: Value =
+            serde_json::from_str(&hello_received.recv_timeout(WAIT).unwrap()).unwrap();
+        assert_eq!(hello["pane"], json!("pane_2"));
+        assert!(matches!(fixture.next(), Seen::Failed(..)));
+        assert!(matches!(fixture.next(), Seen::Welcome(_, _, false)));
+        assert!(matches!(fixture.next(), Seen::Layout(..)));
+        assert_eq!(
+            model_of(client)["selection"],
+            json!({"pane":"pane_2","window":"window_1","session":"session_1"})
+        );
+        close(client);
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum ViewOutage {
+        Close,
+        Client,
+        Silent,
+        Refused,
+    }
+
+    fn replaced_view(name: &str, outage: ViewOutage) {
+        let lose_client = matches!(outage, ViewOutage::Client | ViewOutage::Refused);
+        let silent_view = matches!(outage, ViewOutage::Silent);
+        let (drop_client, dropped) = channel::<()>();
+        let routes = client_script(move |socket, _| {
+            welcomed(socket);
+            if matches!(outage, ViewOutage::Client) {
+                dropped.recv_timeout(WAIT).unwrap();
+            } else if silent_view {
+                socket
+                    .get_ref()
+                    .set_read_timeout(Some(Duration::from_millis(20)))
+                    .unwrap();
+                loop {
+                    match socket.read() {
+                        Err(tungstenite::Error::Io(error))
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                            ) =>
+                        {
+                            if socket.send(Message::Ping(Default::default())).is_err() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+            } else {
+                wait_for_hangup(socket);
+            }
+        });
+        let routes = if lose_client {
+            routes.client(|socket, _| {
+                welcomed(socket);
+                wait_for_hangup(socket);
+            })
+        } else {
+            routes
+        };
+        let (reopened, reopened_rx) = channel();
+        let (first_restore, first_restored) = channel();
+        let (input_sent, input_rx) = channel();
+        let routes = routes.view(move |socket, _| {
+            send_binary(socket, slice_record(10, true, true, true, b"old"));
+            first_restored.recv_timeout(WAIT).unwrap();
+            if silent_view {
+                socket.get_ref().set_read_timeout(Some(WAIT)).unwrap();
+                wait_for_hangup(socket);
+            } else {
+                socket
+                    .close(Some(tungstenite::protocol::CloseFrame {
+                        code: tungstenite::protocol::frame::coding::CloseCode::Again,
+                        reason: "view queue overflow".into(),
+                    }))
+                    .unwrap();
+                let _ = socket.flush();
+            }
+        });
+        let routes = match outage {
+            ViewOutage::Client => routes.view(move |socket, _| {
+                drop_client.send(()).unwrap();
+                wait_for_hangup(socket);
+            }),
+            ViewOutage::Refused => routes.refused_view(),
+            ViewOutage::Close | ViewOutage::Silent => routes,
+        };
+        let routes = routes.view(move |socket, _| {
+            send_binary(socket, slice_record(20, true, true, true, b"new"));
+            reopened.send(()).unwrap();
+            input_sent.send(text_messages(socket, 1)).unwrap();
+            wait_for_hangup(socket);
+        });
+        let server = serve(name, routes);
+        let fixture = Fixture::new();
+        let client = fixture.connect_as(
+            &server,
+            None,
+            if silent_view {
+                Duration::from_millis(100)
+            } else {
+                crate::wire::WATCHDOG
+            },
+        );
+        assert!(matches!(fixture.next(), Seen::Welcome(..)));
+        assert!(matches!(fixture.next(), Seen::Layout(..)));
+        let (restored, restored_rx) = channel();
+        let decoder = Decoder::new(move |snapshot| {
+            let bytes = pull(snapshot, usize::MAX, 64).unwrap();
+            restored.send(bytes).unwrap();
+            let _ = first_restore.send(());
+            Restored::Ok
+        });
+        let view = open_view(client, decoder, true);
+        let reopened = reopened_rx.recv_timeout(WAIT);
+        if reopened.is_err() {
+            close_view(view);
+            close(client);
+        }
+        reopened.expect("view did not reopen");
+        assert_eq!(restored_rx.recv_timeout(WAIT).unwrap().0, b"old");
+        assert_eq!(restored_rx.recv_timeout(WAIT).unwrap().0, b"new");
+        until("the reopened view takes input", || {
+            handle_of(view).view.up.load(Ordering::SeqCst)
+        });
+        // SAFETY: the view is live and the input bytes remain readable for this call.
+        assert_eq!(unsafe { ko_view_input(view, b"hi".as_ptr(), 2) }, Code::Ok);
+        let input = input_rx.recv_timeout(WAIT).unwrap();
+        let events = fixture.quiet();
+        let links: Vec<_> = fixture.links.try_iter().collect();
+        close_view(view);
+        close(client);
+        assert!(
+            links
+                .iter()
+                .any(|event| matches!(event, Seen::Link(code, _) if *code != Code::Ok)),
+            "{links:?}"
+        );
+        assert!(
+            matches!(links.last(), Some(Seen::Link(Code::Ok, _))),
+            "{links:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, Seen::Closed(..))),
+            "{events:?}"
+        );
+        if !lose_client {
+            assert!(
+                events
+                    .iter()
+                    .all(|event| !matches!(event, Seen::Welcome(..) | Seen::Failed(..))),
+                "{events:?}"
+            );
+        }
+        assert_eq!(
+            input,
+            [r#"{"type":"input","input":{"type":"text","data":"aGk="}}"#]
+        );
+    }
+
+    #[test]
+    fn view_outages_reopen_with_a_snapshot_and_accept_input() {
+        for (name, outage) in [
+            ("view-reopen", ViewOutage::Close),
+            ("view-before-client", ViewOutage::Client),
+            ("refused-reopen", ViewOutage::Refused),
+        ] {
+            replaced_view(name, outage);
+        }
+    }
+
+    #[test]
+    fn a_stalled_view_upgrade_does_not_block_client_pongs() {
+        let (stalled, upgrading) = channel();
+        let (pong_sent, pong_received) = channel();
+        let routes = client_script(move |socket, _| {
+            welcomed(socket);
+            upgrading.recv_timeout(WAIT).unwrap();
+            socket
+                .send(Message::Ping(b"watch".to_vec().into()))
+                .unwrap();
+            let pong =
+                matches!(socket.read(), Ok(Message::Pong(bytes)) if bytes.as_ref() == b"watch");
+            let _ = pong_sent.send(pong);
+            wait_for_hangup(socket);
+        })
+        .stall("/panes/pane_1/view?history=all", stalled)
+        .view(|socket, _| {
+            send_binary(socket, slice_record(10, true, true, true, b"other"));
+            wait_for_hangup(socket);
+        });
+        let server = serve("stalled-upgrade-pong", routes);
+        let fixture = Fixture::new();
+        let client = fixture.connect(&server);
+        assert!(matches!(fixture.next(), Seen::Welcome(..)));
+        assert!(matches!(fixture.next(), Seen::Layout(..)));
+        let decoder = Decoder::new(|_| Restored::Rejected);
+        let view = open_view(client, decoder, true);
+        let (restored, restored_rx) = channel();
+        let other_decoder = Decoder::new(move |snapshot| {
+            let bytes = pull(snapshot, usize::MAX, 64).unwrap();
+            restored.send(bytes.0).unwrap();
+            Restored::Ok
+        });
+        let other = open_view_of(c"pane_2", client, other_decoder, true);
+        let bytes = restored_rx.recv_timeout(WAIT);
+        let pong = pong_received.recv_timeout(WAIT + Duration::from_secs(1));
+        assert!(!handle_of(view).view.up.load(Ordering::SeqCst));
+        close(client);
+        close_view(view);
+        close_view(other);
+        assert_eq!(bytes.unwrap(), b"other");
+        assert!(
+            pong.unwrap(),
+            "the engine did not answer the client ping during a view upgrade"
+        );
+    }
+
+    #[test]
+    fn a_silent_view_is_replaced() {
+        replaced_view("silent-view", ViewOutage::Silent);
+    }
+
+    #[test]
+    fn a_reconnect_ends_a_removed_pane_and_reopens_the_other_view() {
         let (drop_first, dropped) = channel::<()>();
         let routes = client_script(move |socket, _| {
             welcomed(socket);
@@ -5186,7 +5521,13 @@ mod tests {
             let _ = socket.flush();
         })
         .client(|socket, _| {
-            welcomed(socket);
+            send(socket, &welcome(INSTANCE, 1));
+            let mut layout: Value = serde_json::from_str(&layout(0)).unwrap();
+            layout["layout"]["sessions"][0]["windows"][0]["tree"] =
+                json!({"pane":"pane_2","cols":80,"rows":24});
+            layout["layout"]["sessions"][0]["windows"][0]["focus"] = json!("pane_2");
+            send(socket, &layout.to_string());
+            send(socket, r#"{"type":"selected"}"#);
             wait_for_hangup(socket);
         })
         .view(|socket, _| {
@@ -5199,7 +5540,6 @@ mod tests {
             send_binary(socket, output_record(10, b"B"));
             wait_for_hangup(socket);
         })
-        .refused_view()
         .view(|socket, _| {
             send_binary(socket, output_record(11, b"B2"));
             wait_for_hangup(socket);
@@ -5219,7 +5559,7 @@ mod tests {
         let a = open_view(client, first, true);
         assert_eq!(first.next_feed(), Fed::Bytes(10, b"A".to_vec()));
         assert_eq!(fixture.next(), Seen::Restored(1, Restored::Ok));
-        let b = open_view(client, second, true);
+        let b = open_view_of(c"pane_2", client, second, true);
         assert_eq!(second.next_feed(), Fed::Bytes(10, b"B".to_vec()));
         assert_eq!(fixture.next(), Seen::Restored(1, Restored::Ok));
         drop_first.send(()).unwrap();
@@ -5227,7 +5567,7 @@ mod tests {
         assert!(matches!(seen[0], Seen::Failed(Code::Closed, _)), "{seen:?}");
         assert!(matches!(seen[1], Seen::Welcome(_, _, false)), "{seen:?}");
         assert!(matches!(seen[2], Seen::Layout(0, ..)), "{seen:?}");
-        assert!(matches!(seen[3], Seen::Closed(Code::Io, _)), "{seen:?}");
+        assert!(matches!(seen[3], Seen::Closed(Code::Closed, _)), "{seen:?}");
         assert_eq!(second.next_feed(), Fed::Bytes(11, b"B2".to_vec()));
         let views: Vec<String> = server
             .targets("GET")
@@ -5235,7 +5575,7 @@ mod tests {
             .filter(|target| target.contains("/view"))
             .collect();
         assert!(
-            views.len() == 4 && views[2].ends_with("offset=11") && views[3].ends_with("offset=11"),
+            views.len() == 3 && views[2].ends_with("offset=11"),
             "{views:?}"
         );
         close_view(a);
@@ -5251,6 +5591,7 @@ mod tests {
             client_script(move |socket, _| {
                 send(socket, &welcome(INSTANCE, 1));
                 send(socket, &layout_with(0, &rows));
+                send(socket, r#"{"type":"selected"}"#);
                 for title in ["a", "b"] {
                     send(
                         socket,
@@ -5265,7 +5606,7 @@ mod tests {
         );
         let fixture = Fixture::new();
         // SAFETY: the queue is live; it resumes below.
-        unsafe { dispatch_suspend(fixture.queue) };
+        unsafe { dispatch_suspend(fixture.queue.0) };
         let client = fixture.connect(&server);
         until("the last event is applied", || {
             let mut buffer = empty_buffer();
@@ -5283,7 +5624,7 @@ mod tests {
             model["layout"]["revision"] == json!(7) && model["panes"][0]["title"] == json!("b")
         });
         // SAFETY: the queue was suspended once above.
-        unsafe { dispatch_resume(fixture.queue) };
+        unsafe { dispatch_resume(fixture.queue.0) };
         let seen = fixture.quiet();
         let models = seen.iter().filter(|seen| **seen == Seen::Model).count();
         assert_eq!(models, 1, "{seen:?}");

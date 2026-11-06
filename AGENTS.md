@@ -1259,7 +1259,8 @@ delegates as its brief says and does not write code.
 - **Demos.** The user closes a demo that exits. Never start it again
   on your own, attached or detached. A crash is a new crash report for
   the demo's pid in `~/Library/Logs/DiagnosticReports` or a crash or
-  panic in the demo's `app.log`. Report a crash. Start a demo again
+  panic in the lines of the demo's pid in `~/Library/Logs/Kido/app.log`
+  (docs/design-app.md, "The log"). Report a crash. Start a demo again
   only when asked.
 - **No git writes.** Do not commit, push, reset, add, checkout or stash.
   Leave work uncommitted. Never use `git stash`. If

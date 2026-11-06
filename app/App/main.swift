@@ -5,6 +5,7 @@ import SidebarFeed
 
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
     private var runtime: GhosttyRuntime?
+    private var lifecycleObservers: [NSObjectProtocol] = []
     private(set) var owners: [WindowOwner] = []
     private weak var lastKeyOwner: WindowOwner?
     var reopenOwner: WindowOwner? {
@@ -63,6 +64,20 @@ import SidebarFeed
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        let workspace = NSWorkspace.shared.notificationCenter
+        for (name, label) in [
+            (NSWorkspace.willSleepNotification, "system will sleep"),
+            (NSWorkspace.didWakeNotification, "system did wake"),
+            (NSWorkspace.screensDidSleepNotification, "screens did sleep"),
+            (NSWorkspace.screensDidWakeNotification, "screens did wake"),
+            (NSWorkspace.sessionDidBecomeActiveNotification, "session became active"),
+            (NSWorkspace.sessionDidResignActiveNotification, "session resigned active"),
+        ] {
+            lifecycleObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { _ in note(label) })
+        }
+        for (name, label) in [("com.apple.screenIsLocked", "screen locked"), ("com.apple.screenIsUnlocked", "screen unlocked")] {
+            lifecycleObservers.append(DistributedNotificationCenter.default().addObserver(forName: Notification.Name(name), object: nil, queue: .main) { _ in note(label) })
+        }
         Upload.sweepPromises(launch: true)
         if let notifications = Notifier.shared.poster as? SystemNotifications {
             notifications.click = { [weak self] in self?.route($0) }
@@ -663,8 +678,14 @@ let background = false
 #endif
 let debugging = ProcessInfo.processInfo.environment["KIDO_APP_DEBUG"] == "1"
 
+#if KIDO_VISUAL || KIDO_STRESS
+let appLog = AppLog(destination: .stderr, cap: 8 << 20)
+#else
+let appLog = AppLog(destination: ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil ? .stderr : .directory(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Kido")), cap: 8 << 20)
+#endif
+
 func note(_ line: String) {
-    FileHandle.standardError.write(Data("kido-app \(line)\n".utf8))
+    appLog.write(line)
 }
 
 func debug(_ line: @autoclosure () -> String) {

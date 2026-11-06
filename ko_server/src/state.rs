@@ -19,6 +19,7 @@ use crate::config::{Config, Read, Settings};
 use crate::conn::{Conn, Phase};
 use crate::deflate::Deflate;
 use crate::delivery::{Delivery, Handle};
+use crate::diagnostics::{self, Cause, InputSource};
 use crate::http::lossy;
 use crate::ids::{ClientId, Instance, Name, PaneId, SessionId, VarName, WindowId};
 use crate::layout::{self, Document, PutError, Removal, Resized};
@@ -118,6 +119,7 @@ pub(crate) struct State {
     ticked: Vec<(PaneId, Event)>,
     withheld: BTreeSet<PaneId>,
     held: Vec<(PaneId, Event)>,
+    diagnostics: Vec<diagnostics::Event>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -240,6 +242,39 @@ impl State {
             ticked: Vec::new(),
             withheld: BTreeSet::new(),
             held: Vec::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    pub(crate) fn take_diagnostics(&mut self) -> Vec<diagnostics::Event> {
+        std::mem::take(&mut self.diagnostics)
+    }
+
+    fn record(&mut self, event: diagnostics::Event) {
+        if !matches!(
+            self.config.diagnostics,
+            crate::config::Diagnostics::Disabled
+        ) {
+            self.diagnostics.push(event);
+        }
+    }
+
+    pub(crate) fn record_input(&mut self, pane: PaneId, source: InputSource, input: &Input) {
+        if matches!(
+            self.config.diagnostics,
+            crate::config::Diagnostics::EventsAndInput { .. }
+        ) {
+            let bytes = match pane_proc::Input::from(input) {
+                pane_proc::Input::Text(bytes) => bytes.len(),
+                pane_proc::Input::Paste { text, .. } => text.len(),
+                pane_proc::Input::Key(key) => key.text.len(),
+                pane_proc::Input::Mouse(_) | pane_proc::Input::Focus(_) => 0,
+            };
+            self.record(diagnostics::Event::Input {
+                pane,
+                source,
+                bytes,
+            });
         }
     }
 
@@ -620,10 +655,17 @@ impl State {
     }
 
     fn selected(&mut self, index: usize, current: Option<Current>) {
-        if let Some((_, wire)) = self.conns.get_mut(index).and_then(Conn::role_mut) {
+        if let Some((Role::Client(client), wire)) =
+            self.conns.get_mut(index).and_then(Conn::role_mut)
+        {
             let selection = current.map(Selection::from).unwrap_or_default();
+            let id = client.id;
             wire.ws
                 .send(wire.out, protocol::json(&ClientEvent::Selected(selection)));
+            self.record(diagnostics::Event::Selected {
+                client: id,
+                selection,
+            });
         }
     }
 
@@ -744,15 +786,13 @@ impl State {
         self.broadcast(&ClientEvent::Layout(announced));
     }
 
-    fn enter(&mut self, poll: &mut Poll, index: usize, current: Option<Current>, notify: bool) {
+    fn enter(&mut self, poll: &mut Poll, index: usize, current: Option<Current>) {
         if let Some((Role::Client(client), _)) = self.conns.get_mut(index).and_then(Conn::role_mut)
         {
             client.set_current(current);
         }
+        self.selected(index, current);
         self.arrive(poll, index);
-        if notify {
-            self.selected(index, current);
-        }
         self.refocus(poll);
     }
 
@@ -1225,6 +1265,12 @@ impl State {
     }
 
     pub(crate) fn open_view(&mut self, poll: &mut Poll, index: usize, offset: Option<u64>) {
+        if let Some(view) = self.conns.get(index).and_then(view_of) {
+            self.record(diagnostics::Event::ViewOpened {
+                pane: view.pane,
+                client: view.client,
+            });
+        }
         self.drive(poll, index, |view, wire, delivery| {
             view.open(wire, delivery, offset)
         });
@@ -1453,6 +1499,11 @@ impl State {
         } else {
             Vec::new()
         };
+        if matches!(request, Ok(ClientRequest::Hello(_)))
+            && let Some(client) = self.conns.get(index).and_then(client_of)
+        {
+            self.record(diagnostics::Event::Hello { client: client.id });
+        }
         let State {
             document,
             conns,
@@ -1476,7 +1527,7 @@ impl State {
                 return wire.ws.reject(wire.out, crate::ws::Rejection::Invalid);
             }
         };
-        let (current, notify) = match change {
+        let current = match change {
             Change::Hello(selection) => {
                 let current = client.select(layout, selection).or_else(|| {
                     client.select(
@@ -1500,15 +1551,14 @@ impl State {
                 wire.ws.send(wire.out, protocol::json(&welcome));
                 let announced = ClientEvent::Layout(layout_panes(document, panes, |_| true));
                 wire.ws.send(wire.out, protocol::json(&announced));
-                let notify = current.is_some_and(|current| selection.pane != Some(current.pane));
-                (current, notify)
+                current
             }
             Change::Select(selection) => match client.select(layout, selection) {
-                Some(current) => (Some(current), true),
+                Some(current) => Some(current),
                 None => return wire.ws.reject(wire.out, crate::ws::Rejection::Invalid),
             },
             Change::Switch(switch) => match client.switch(layout, switch) {
-                Some(current) => (Some(current), true),
+                Some(current) => Some(current),
                 None => return,
             },
             Change::Claim => {
@@ -1532,7 +1582,7 @@ impl State {
                 return self.clipboard_answered(poll, id, read, served);
             }
         };
-        self.enter(poll, index, current, notify);
+        self.enter(poll, index, current);
     }
 
     fn claim(&mut self, poll: &mut Poll, index: usize) -> bool {
@@ -1578,6 +1628,7 @@ impl State {
                 }
             }
             Ok(ViewRequest::Input { input }) => {
+                self.record_input(pane, InputSource::View, &input);
                 let (sent, events) =
                     self.input(poll, pane, &input, |paste| Owner::ViewPaste(token, paste));
                 if let Some((Role::View(view), mut wire)) = self.conns[index].role_mut() {
@@ -1651,14 +1702,20 @@ impl State {
             self.forget_stops(poll, conn.token);
             self.messages.forget(conn.token);
             if let Phase::Ws(link) = conn.phase {
+                let cause = conn.out.cause();
                 match link.role {
                     Role::Client(client) => {
+                        self.record(diagnostics::Event::ClientClosed {
+                            client: client.id,
+                            cause,
+                        });
                         client_closed = true;
                         self.sizers.retain(|_, sizer| *sizer != client.id);
                         for conn in &mut self.conns {
                             if let Some((Role::View(view), wire)) = conn.role_mut()
                                 && view.client == Some(client.id)
                             {
+                                wire.out.closing(Cause::ClientClosed);
                                 view.close(wire.out);
                             }
                         }
@@ -1675,7 +1732,11 @@ impl State {
                             self.runtimes_changed(poll);
                         }
                     }
-                    Role::View(_) => {}
+                    Role::View(view) => self.record(diagnostics::Event::ViewClosed {
+                        pane: view.pane,
+                        client: view.client,
+                        cause,
+                    }),
                 }
             }
         }

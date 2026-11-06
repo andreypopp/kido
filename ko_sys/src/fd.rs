@@ -4,6 +4,14 @@ use std::time::{Duration, Instant};
 
 use crate::retry::{check, check_size, retry};
 
+pub fn onto_stderr(fd: BorrowedFd<'_>) -> io::Result<()> {
+    retry(|| {
+        // SAFETY: fd is open for the borrow; dup2 replaces fd 2 atomically,
+        // and no OwnedFd owns fd 2 in a caller that uses this.
+        check(unsafe { libc::dup2(fd.as_raw_fd(), 2) }).map(drop)
+    })
+}
+
 pub fn read(fd: BorrowedFd<'_>, buffer: &mut [u8]) -> io::Result<usize> {
     let read = retry(|| {
         // SAFETY: buffer is writable for its length, and fd is open for the borrow.

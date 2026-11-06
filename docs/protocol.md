@@ -273,9 +273,10 @@ a dead pane that lingers stays current, so its last
 screen stays readable until the removal. When a `switch` or a removal
 moves a client, the client gets a `selected` event. A client gets
 `selected` for each of its own `select` requests, also for one that
-names its current pane, and for a hello that names only a session or
-a window, because the server chose the pane; a hello that names the
-pane gets none.
+names its current pane, and for each hello, as the third message after
+`welcome` and `layout`, so a client never derives its selection itself.
+A reconnecting client names its last selection in its hello, so the
+reconnect does not move it.
 
 A client's selection names a session, a window or a pane; a pane
 implies its window and session, a window implies its session, and a
@@ -512,7 +513,7 @@ own state when a `switch` or a removal moved it. The OSC 133 steps
 and the OSC 7501 records reach a client only through `status`.
 
 The first message after the welcome is the full layout with every
-pane's row. There is no event replay; a client that reconnects gets
+pane's row, and the second is the client's `selected`. There is no event replay; a client that reconnects gets
 the state again from its new welcome's layout event and reopens its
 views.
 
@@ -971,8 +972,9 @@ error, 4 no agent in scope, 5 several); its `--window` sends
 5. On a split, close, drag, zoom or rename, edit the last layout
    received and `PUT` it with its revision; on `409` reapply the edit
    to the body and `PUT` again.
-6. On reconnect, send a new hello, take the state from the new
-   welcome's layout event, and reopen the views with the last offset seen:
+6. On reconnect, send a new hello with the last selection, take the
+   state from the new welcome's layout and `selected` events, and reopen
+   the views with the last offset seen:
    bytes and markers resume if inside the ring, else a snapshot. An
    offset is reused only when the `Welcome`'s instance equals the one
    the client saw before; a new server restarts pane ids at

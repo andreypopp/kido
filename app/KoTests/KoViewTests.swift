@@ -82,6 +82,7 @@ final class Decoded: @unchecked Sendable {
         let connection = try connect(dir, recorder)
         let pane = try leaf(connection)
         let (restored, view, decoded) = try settledView(connection, pane, minOffset: UInt64(printed.utf8.count), sink: recorder)
+        XCTAssertEqual(recorder.view.first, .link(code: KO_OK, message: "view link up"))
         let live = KoSurface(cols: pane.cols, rows: pane.rows)
         live.feed(printed)
 
@@ -162,12 +163,14 @@ final class Decoded: @unchecked Sendable {
         }
         let view = try connection.openView(pane: pane.pane, surface: surface.surface, hooks: hooks) { recorder.view.append($0) }
         wait("the restore began") { started.isSet }
+        mainQueueDrained()
+        let eventsBeforeClose = recorder.view
         DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + 0.1) { closing.signal() }
         view.close()
         XCTAssertEqual(decoded.returned, [Int32(GHOSTTY_SNAPSHOT_RESTORE_REJECTED.rawValue)], "close returned before the restore ended")
         XCTAssertEqual(surface.text, "")
         mainQueueDrained()
-        XCTAssertEqual(recorder.view, [], "no event of a closed view")
+        XCTAssertEqual(recorder.view, eventsBeforeClose, "no event of a closed view")
     }
 
     func testTheModelAndTheCallsReachTheServer() throws {

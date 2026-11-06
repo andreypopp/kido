@@ -452,6 +452,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         guard self.alternate != alternate else { return }
         if case .entering = copyMode {} else { endCopy() }
         self.alternate = alternate
+        note("pane \(pane) alternate screen=\(alternate)")
         onAlternateChange()
         resetScroll()
         find?.search()
@@ -491,6 +492,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     // The pane's view on the server: its decoder thread is the only writer of the surface's terminal.
     private(set) var koView: KoView?
+    private var inputFailure: ko_code?
     private(set) var restoring = false
     // Copy mode freezes the surface: the feed that arrives meanwhile is dropped and asks for a
     // new snapshot when copy mode ends. `parsing` counts the feeds that run.
@@ -659,12 +661,18 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             guard let bytes, count > 0 else { return }
             let data = Data(bytes: bytes, count: Int(count))
             PaneView.onMain(userdata) { pane in
-                guard pane.acceptingInput else { return }
+                guard pane.acceptingInput else { return pane.inputFailed(KO_ERR_REFUSED) }
                 #if KIDO_VISUAL
                 if let input = pane.visualInput { return input(data) }
                 pane.visualSent.append(data)
                 #endif
-                try? pane.koView?.text(data)
+                guard let view = pane.koView else { return pane.inputFailed(KO_ERR_CLOSED) }
+                do {
+                    try view.text(data)
+                    pane.inputFailure = nil
+                } catch {
+                    pane.inputFailed((error as? KoError)?.code ?? KO_ERR_IO)
+                }
             }
         }
         guard let surface = ghostty_surface_new(runtime.app, &config) else { return nil }
@@ -796,9 +804,17 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         }
     }
 
+    private func inputFailed(_ code: ko_code) {
+        guard inputFailure != code else { return }
+        inputFailure = code
+        let reason = code == KO_ERR_CLOSED ? "view closed" : String(cString: ko_code_message(Int32(code.rawValue)))
+        note("input to \(pane) dropped: \(reason)")
+    }
+
     private func viewEvent(_ event: KoViewEvent) {
         switch event {
-        case .restored(_, let result):
+        case .restored(let generation, let result):
+            note("view of \(pane) restored generation=\(generation) result=\(result.rawValue)")
             #if KIDO_VISUAL
             visualRestores += 1
             #endif
@@ -808,9 +824,16 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             queueScroll()
             completeEntry()
             needsLayout = true
-        case .closed(let code, let message):
+        case .closed(_, let message):
+            note("view of \(pane) closed: \(message)")
             detach()
-            if code != KO_OK { note("view of \(pane) closed: \(message)") }
+        case .link(let code, let message):
+            if code == KO_OK {
+                inputFailure = nil
+                note("view of \(pane) up")
+            } else {
+                note("view of \(pane) lost: \(message)")
+            }
         }
     }
 
@@ -1356,14 +1379,20 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
-        if result { syncFocus() }
+        if result {
+            note("pane \(pane) became first responder")
+            syncFocus()
+        }
         return result
     }
 
     override func resignFirstResponder() -> Bool {
         snapScroll()
         let result = super.resignFirstResponder()
-        if result { setSurfaceFocus(false) }
+        if result {
+            note("pane \(pane) resigned first responder")
+            setSurfaceFocus(false)
+        }
         return result
     }
 
@@ -2043,6 +2072,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     override func keyDown(with event: NSEvent) {
+        debug("key route code=\(event.keyCode) pane=\(pane) firstResponder=\(PaneView.owner(window?.firstResponder)?.pane.description ?? (window?.firstResponder).map { String(describing: type(of: $0)) } ?? "none")")
         #if KIDO_VISUAL
         visualKeyEvents += 1
         #endif

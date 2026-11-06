@@ -27,6 +27,7 @@ use ko_tui::client;
 mod prompt;
 mod run;
 mod runtime;
+mod server_log;
 
 const USAGE_ERROR: u8 = 124;
 
@@ -323,10 +324,31 @@ fn server(args: ServerArgs) -> ExitCode {
     if let Err(error) = agent::publish(&config.dir, std::env::var_os("SSH_AUTH_SOCK").as_deref()) {
         complain(format_args!("ko server: SSH_AUTH_SOCK: {error}"));
     }
+    let mut log = match config.diagnostics {
+        config::Diagnostics::Events { cap } | config::Diagnostics::EventsAndInput { cap } => {
+            match server_log::Log::open(&config.dir, cap) {
+                Ok(log) => Some(log),
+                Err(error) => return fail("server", error),
+            }
+        }
+        config::Diagnostics::Disabled => None,
+    };
     let served = launch::bind(&config.dir, &config.socket, PATIENCE)
         .and_then(|listener| Server::new(config, listener, Timing::DEFAULT))
         .and_then(|mut server| {
-            while server.turn()? == Status::Running {}
+            loop {
+                let status = server.turn()?;
+                let events = server.take_diagnostics();
+                if log
+                    .as_ref()
+                    .is_some_and(|writer| writer.between_turns(events).is_err())
+                {
+                    log = None;
+                }
+                if status != Status::Running {
+                    break;
+                }
+            }
             Ok(())
         });
     match served {

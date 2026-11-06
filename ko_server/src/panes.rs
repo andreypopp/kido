@@ -596,6 +596,7 @@ mod tests {
                 command_kind: false,
             },
             file: PathBuf::from("/tmp/config.yaml"),
+            diagnostics: crate::config::Diagnostics::Disabled,
         }
     }
 

@@ -415,22 +415,34 @@ impl Link {
         within: Duration,
     ) -> io::Result<Result<Link, Response>> {
         stream.set_read_timeout(Some(within))?;
-        ko_sys::sock::set_receive_buffer(stream.as_fd(), RECEIVE_BUFFER)?;
         let (method, target) = route.to_request();
         let identity = identity(caller.as_ref());
         let (request, key) = upgrade_request(method, &target, client, &borrowed(&identity));
         write_until(&mut stream, &request, cancel.as_deref(), within)?;
-        let (response, rest) = match http::read_upgrade(&mut Interruptible {
+        let upgrade = http::read_upgrade(&mut Interruptible {
             stream: &stream,
             cancel: cancel.as_deref(),
             within,
-        })? {
+        })?;
+        Link::upgraded(stream, upgrade, &key, cancel, None)
+    }
+
+    pub(crate) fn upgraded(
+        stream: UnixStream,
+        upgrade: Upgrade,
+        key: &str,
+        cancel: Option<Arc<Wake>>,
+        token: Option<Token>,
+    ) -> io::Result<Result<Link, Response>> {
+        let (response, rest) = match upgrade {
             Upgrade::Accepted(response, rest) => (response, rest),
             Upgrade::Refused(response) => return Ok(Err(response)),
         };
-        accepted(&response, &key)?;
+        accepted(&response, key)?;
+        ko_sys::sock::set_receive_buffer(stream.as_fd(), RECEIVE_BUFFER)?;
         let mut link = Link::of(stream, rest);
         link.cancel = cancel;
+        link.token = token;
         Ok(Ok(link))
     }
 

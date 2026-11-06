@@ -74,7 +74,22 @@ extern "C" {
  * (another `instance`): every view is then closed with KO_EVENT_VIEW_CLOSED,
  * and the caller reads the model and opens the views again. Otherwise the
  * views open again by themselves at the offset of the last bytes that were
- * delivered, and the caller's surfaces stay valid.
+ * delivered, and the caller's surfaces stay valid. The hello of a reconnect
+ * names the selection that the model had, and the server answers each hello
+ * with its `selected`, so a reconnect does not move the selection.
+ *
+ * A view's link ends without its view only when the pane is gone or the
+ * server restarted (KO_EVENT_VIEW_CLOSED). Any other end of the link (a close
+ * frame other than `gone`, an I/O error, or 40 s with no byte while the view
+ * reads) is an outage of that link: KO_EVENT_VIEW_LINK reports it with its
+ * code and message, and the core opens the link again with the current
+ * client, at the offset of the last bytes that were delivered. A view's
+ * upgrade runs in the I/O thread's loop, so the `/client` link and the other
+ * views keep their pongs while it waits. An upgrade that fails is a loss of
+ * the `/client` connection: the core connects again and then opens every
+ * view whose pane is in the new layout. KO_EVENT_VIEW_LINK with KO_OK reports
+ * each link that is up. While a view's link is not up, ko_view_input returns
+ * KO_ERR_CLOSED and sends nothing.
  *
  * Errors. A function returns a ko_code: KO_OK, or the reason that it did
  * nothing. A call that returns a ko_buffer and fails fills the buffer with
@@ -122,6 +137,8 @@ enum {
     KO_EVENT_MISMATCH = 9,
     KO_EVENT_CLIPBOARD_WRITE = 10,
     KO_EVENT_CLIPBOARD_READ = 11,
+    /* Uses view_closed: KO_OK means up; another code means lost, with an automatic reopen. */
+    KO_EVENT_VIEW_LINK = 12,
 };
 
 typedef struct ko_welcome {
@@ -230,7 +247,7 @@ typedef struct ko_view_restored {
     ko_restore_result result;
 } ko_view_restored;
 
-/* The view is over: its connection failed, or the server restarted. */
+/* The view is over: its pane is gone, or the server restarted. */
 typedef struct ko_view_closed {
     void *view;
     ko_code code;
@@ -684,7 +701,8 @@ ko_code ko_client_runtime_down(const ko_client *client, const char *name, const 
  * view begins with a snapshot (full if `history`), which the core streams to
  * `restore`, and goes on with the bytes and resizes that it gives to `feed`.
  * KO_EVENT_VIEW_RESTORED reports each restore on the caller's queue. A failure
- * arrives later as KO_EVENT_VIEW_CLOSED.
+ * ends the view with KO_EVENT_VIEW_CLOSED only when its pane is gone or the server restarted.
+ * KO_EVENT_VIEW_LINK reports a link outage and its automatic reopen.
  */
 ko_code ko_view_open(const ko_client *client,
                      const char *pane,

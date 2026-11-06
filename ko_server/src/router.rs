@@ -343,6 +343,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             ok_or_missing::<routes::DeleteSession>(&mut state.conns[index], deleted, "session");
         }
         Request::Input { id, body } => {
+            state.record_input(id, crate::diagnostics::InputSource::Http, &body);
             let (sent, events) =
                 state.input(poll, id, &body, |paste| Owner::HttpPaste(token, paste));
             let conn = &mut state.conns[index];
@@ -1204,7 +1205,9 @@ mod tests {
     fn a_client_gets_the_layout_after_its_welcome_and_every_change_after_that() {
         let mut server = harness("layout-events");
         let mut peer = server.peer(&hello("", false, 80, 24));
-        assert_eq!(kinds(&peer.events(&mut server)), ["welcome", "layout"]);
+        let joined = peer.events(&mut server);
+        assert_eq!(kinds(&joined), ["welcome", "layout", "selected"]);
+        assert_eq!(joined[2], json!({"type": "selected"}));
         let reply = server.put(|layout| {
             layout["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
                 {"pane": "pane_1"}, {"pane": {"new": cat()}}]});
@@ -1270,8 +1273,16 @@ mod tests {
         assert_eq!(windows(&server).len(), 3);
         let mut a = server.peer(&hello(r#""pane":"pane_1","#, false, 80, 24));
         let mut b = server.peer(&hello("", false, 80, 24));
-        assert_eq!(kinds(&a.events(&mut server)), ["welcome", "layout"]);
-        assert_eq!(kinds(&b.events(&mut server)), ["welcome", "layout"]);
+        let joined = a.events(&mut server);
+        assert_eq!(kinds(&joined), ["welcome", "layout", "selected pane_1"]);
+        assert_eq!(
+            joined[2],
+            json!({"type": "selected", "session": "session_1", "window": "window_1", "pane": "pane_1"})
+        );
+        assert_eq!(
+            kinds(&b.events(&mut server)),
+            ["welcome", "layout", "selected"]
+        );
         assert_eq!(server.current(2), None);
         let window_of = |server: &Harness, client| {
             server

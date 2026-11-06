@@ -176,7 +176,12 @@ impl Model {
         let ClientEvent::Layout(layout) = next()? else {
             return Err(JoinError::Protocol("layout missing".to_owned()));
         };
-        Ok(Model::new(welcome, layout))
+        let ClientEvent::Selected(selection) = next()? else {
+            return Err(JoinError::Protocol("selection missing".to_owned()));
+        };
+        let mut model = Model::new(welcome, layout);
+        model.selection = selection;
+        Ok(model)
     }
 
     fn new(welcome: protocol::Welcome, announced: LayoutPanes) -> Model {

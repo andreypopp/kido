@@ -34,6 +34,14 @@ pub struct Config {
     pub view_queue: ViewQueue,
     pub runtimes: RuntimesConfig,
     pub file: PathBuf,
+    pub diagnostics: Diagnostics,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Diagnostics {
+    Disabled,
+    Events { cap: u64 },
+    EventsAndInput { cap: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +152,7 @@ pub fn scratch(dir: &Path, pane_exe: PathBuf) -> Config {
             command_kind: false,
         },
         file: dir.join("config.yaml"),
+        diagnostics: Diagnostics::Disabled,
     }
 }
 
@@ -374,6 +383,7 @@ impl Config {
         let dir = dir(chosen);
         let socket = socket(Dir::Create, &dir)?;
         let cwd = env::current_dir().map_err(|error: io::Error| error.to_string())?;
+        let cap = positive("KO_LOG_BYTES").unwrap_or(8 << 20);
         Ok(Config {
             dir,
             socket,
@@ -404,6 +414,11 @@ impl Config {
                 command_kind: set("KO_RUNTIME_COMMAND_KIND").is_some_and(|value| value == "1"),
             },
             file,
+            diagnostics: if set("KO_DEBUG_INPUT").is_some_and(|value| value == "1") {
+                Diagnostics::EventsAndInput { cap }
+            } else {
+                Diagnostics::Events { cap }
+            },
         })
     }
 }
