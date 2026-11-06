@@ -112,7 +112,7 @@ runtime dev in session_3 or in FILE"). The request's session is:
   the caller's; a new session of a `PUT` has no ad-hoc runtimes);
 - for the user, who has no session: the configured runtimes alone,
   unless the request names a session (section 3.3, "The user
-  caller", an open question).
+  caller").
 
 An ad-hoc runtime shadows a configured runtime that gains the same
 name later, while it lives; a new definition under a configured
