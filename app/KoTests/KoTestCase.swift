@@ -77,6 +77,7 @@ final class Recorder {
                 if process.isRunning { process.terminate() }
                 process.waitUntilExit()
             }
+            self.wait("the server socket has no listener") { !serverHasListener(dir) }
             try? FileManager.default.removeItem(atPath: dir)
         }
         return dir
@@ -153,6 +154,22 @@ final class Recorder {
     }
 
 
+}
+
+func serverHasListener(_ dir: String) -> Bool {
+    let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+    guard descriptor >= 0 else { return true }
+    defer { close(descriptor) }
+    guard fcntl(descriptor, F_SETFL, O_NONBLOCK) == 0 else { return true }
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let path = (dir + "/socket").utf8CString
+    guard path.count <= MemoryLayout.size(ofValue: address.sun_path) else { return true }
+    withUnsafeMutableBytes(of: &address.sun_path) { target in
+        path.withUnsafeBytes { target.copyMemory(from: $0) }
+    }
+    let result = withUnsafePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) } }
+    return result == 0 || (errno != ECONNREFUSED && errno != ENOENT)
 }
 
 // Runs a program to its end within `deadline` seconds and returns its status and standard output.

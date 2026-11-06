@@ -104,6 +104,17 @@ import XCTest
     }
 
     func stop() {
+        for index in 0..<scopes {
+            let dir = root + "/s\(index + 1)/state/ko"
+            do {
+                _ = try runTool(tools.ko, ["kill-server", "--server", dir], env: ["PATH": "/usr/bin:/bin"])
+            } catch { XCTFail("Stop \(dir): \(error)") }
+            let deadline = Date(timeIntervalSinceNow: 5)
+            while serverHasListener(dir) && Date() < deadline {
+                RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.01))
+            }
+            XCTAssertFalse(serverHasListener(dir), dir)
+        }
         sshd.stop()
         _ = sshd.ended.wait(timeout: .now() + 10)
         for session in sessions { _ = session.ended.wait(timeout: .now() + 10) }
