@@ -176,6 +176,10 @@ fn positive(name: &str) -> Option<u64> {
     count(set(name))
 }
 
+pub fn stop_escalation() -> Duration {
+    positive("KO_STOP_ESCALATION_MS").map_or(STOP_ESCALATION, Duration::from_millis)
+}
+
 pub fn dir(chosen: Option<PathBuf>) -> PathBuf {
     if let Some(dir) = chosen.or_else(|| set("KO_STATE_DIR").map(PathBuf::from)) {
         return dir;
@@ -384,8 +388,7 @@ impl Config {
                 .collect(),
             cwd,
             hostname: ko_sys::host::name().unwrap_or_default(),
-            stop_escalation: positive("KO_STOP_ESCALATION_MS")
-                .map_or(STOP_ESCALATION, Duration::from_millis),
+            stop_escalation: stop_escalation(),
             clipboard_wait: positive("KO_CLIPBOARD_TIMEOUT_MS")
                 .map_or(CLIPBOARD_WAIT, Duration::from_millis),
             message_ack: positive("KO_MESSAGE_ACK_MS").map_or(MESSAGE_ACK, Duration::from_millis),

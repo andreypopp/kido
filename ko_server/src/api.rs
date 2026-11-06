@@ -14,7 +14,7 @@ use crate::protocol::{
     HistoryDef, Images, Input, InputResult, LayoutPanes, LeadReport, Listing, Message, NewWindow,
     PanePatch, Placement, Posted, PutLayout, RuntimeInfo, RuntimeWait, SearchEvent, SendMessage,
     SendPrompt, Sent, ServerVersion, Snapshot, StopPane, StreamRequest, VarValue, ViewEvent,
-    ViewRequest,
+    ViewRequest, VisitClient, VisitServer,
 };
 use crate::route::{Invalid, Param, binary, pixels, routes, text};
 
@@ -704,6 +704,14 @@ routes! {
         query: { timeout_ms: WaitMs = DEFAULT },
         caller: optional,
         reply: RuntimeWait,
+    }
+    /// Enters a runtime in the caller's existing pane until the WebSocket closes.
+    VisitRuntime {
+        method: WS,
+        path: /runtimes/{name: RuntimeName}/visit,
+        caller: optional,
+        send: VisitClient,
+        recv: VisitServer,
     }
     /// The pane that was elected to run the interactive step of a start reports how it ended.
     ReportLead {

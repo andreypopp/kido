@@ -1,7 +1,7 @@
 use crate::ids::VarName;
+use crate::pane::Pane;
 use crate::program_status::{app, root};
-use crate::protocol::ProgramRecord;
-use crate::telemetry::Telemetry;
+use crate::protocol::{Foreground, ProgramRecord};
 use crate::vars::Vars;
 
 const SSH_DEST: VarName = VarName::known("ssh.dest");
@@ -38,10 +38,13 @@ fn destination(vars: &Vars) -> Option<String> {
         .map(str::to_owned)
 }
 
-pub(crate) fn classify(telemetry: &Telemetry, vars: &Vars, records: &[ProgramRecord]) -> Kind {
+pub(crate) fn classify(
+    foreground: Option<&Foreground>,
+    vars: &Vars,
+    records: &[ProgramRecord],
+) -> Kind {
     let root_app = root(records).and_then(|record| app(records, record));
-    let ssh = telemetry
-        .status_foreground()
+    let ssh = foreground
         .is_some_and(|foreground| foreground.name == "ssh")
         .then(|| destination(vars))
         .flatten();
@@ -73,8 +76,12 @@ pub(crate) fn classify(telemetry: &Telemetry, vars: &Vars, records: &[ProgramRec
     }
 }
 
-pub(crate) fn of_pane(telemetry: &Telemetry, vars: &Vars) -> Kind {
-    classify(telemetry, vars, &telemetry.records.published().records)
+pub(crate) fn of_pane(pane: &Pane) -> Kind {
+    classify(
+        pane.status_foreground(),
+        pane.vars(),
+        &pane.telemetry().records.published().records,
+    )
 }
 
 pub(crate) fn title(kind: &Kind, pane_title: &str) -> Option<String> {
@@ -109,7 +116,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::protocol::{Foreground, ProgramState};
+    use crate::protocol::ProgramState;
+    use crate::telemetry::Telemetry;
 
     struct Fixture {
         telemetry: Telemetry,
@@ -118,7 +126,7 @@ mod tests {
 
     impl Fixture {
         fn kind(&self, records: &[ProgramRecord]) -> Kind {
-            classify(&self.telemetry, &self.vars, records)
+            classify(self.telemetry.foreground.as_ref(), &self.vars, records)
         }
     }
 

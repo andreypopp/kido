@@ -44,7 +44,7 @@ impl Waits {
 }
 
 fn stamp(id: PaneId, pane: Option<&Pane>) -> Sender {
-    match pane.map(|pane| pane_kind::of_pane(pane.telemetry(), pane.vars())) {
+    match pane.map(pane_kind::of_pane) {
         Some(Kind::PiAgent { session, name, .. }) => Sender::Pane {
             pane: id,
             session: Some(session),

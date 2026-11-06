@@ -13,6 +13,7 @@ use ko_sys::mapping::Named;
 use vstd::prelude::*;
 
 use crate::http::{self, Framing, Head, MAX_HEAD, Parsed, Status};
+use crate::ids::PaneId;
 use crate::link::{Link, Role, Wire};
 use crate::runtime::RuntimeKey;
 use crate::server::{Origin, Verified};
@@ -783,6 +784,7 @@ pub(crate) struct Conn {
     eof: bool,
     pub(crate) phase: Phase,
     pub(crate) origin: Origin,
+    pub(crate) caller: Option<PaneId>,
 }
 
 impl Conn {
@@ -800,6 +802,7 @@ impl Conn {
             eof: false,
             phase: Phase::Head,
             origin,
+            caller: None,
         }
     }
 

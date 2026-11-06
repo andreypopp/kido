@@ -111,8 +111,8 @@ enum Command {
         )]
         args: Vec<OsString>,
     },
-    /// Define a runtime of the current session. Panes and agents use it by name.
-    Run(run::RunArgsCli),
+    /// Enter a runtime in place in the current pane.
+    Run(Box<run::RunArgsCli>),
     /// Start a pane's program inside its runtime.
     #[command(hide = true)]
     Enter(runtime::EnterArgs),
@@ -609,6 +609,20 @@ fn layout_edit(server: Option<PathBuf>, edit: &str) -> ExitCode {
     }
 }
 
+pub(crate) fn transport_env() -> Vec<Vec<u8>> {
+    std::env::vars_os()
+        .filter(|(name, _)| {
+            !matches!(
+                name.to_str(),
+                Some("KO_SOCKET" | "KO_PANE" | "KO_PANE_TOKEN")
+            )
+        })
+        .map(|(name, value)| {
+            ko_server::config::variable(name.as_encoded_bytes(), value.as_encoded_bytes())
+        })
+        .collect()
+}
+
 pub(crate) fn inside_runtime() -> Option<OsString> {
     std::env::var_os("KO_RUNTIME").filter(|runtime| !runtime.is_empty())
 }
@@ -698,7 +712,7 @@ fn main() -> ExitCode {
         Command::Ssh { args } => ssh(&args),
         Command::Enter(args) => runtime::enter(args),
         Command::RuntimeExec(args) => runtime::runtime_exec(args),
-        Command::Run(args) => run::run(args),
+        Command::Run(args) => run::run(*args),
         Command::Panes(args) => panes(args),
         Command::Layout(args) => layout(args),
         Command::Prompt(args) => prompt::prompt(args),

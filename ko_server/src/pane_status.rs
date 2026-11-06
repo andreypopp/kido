@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use crate::pane_kind::{self, Kind, RemoteKind};
 use crate::program_status::app;
 use crate::protocol::{
-    Agent, AgentState, CommandExit, Live, Origin, Outcome, OutcomeResult, Phase, ProgramKind,
-    ProgramRecord, ProgramState, ProgramStatus, Remote, Shell,
+    Agent, AgentState, CommandExit, Foreground, Live, Origin, Outcome, OutcomeResult, Phase,
+    ProgramKind, ProgramRecord, ProgramState, ProgramStatus, Remote, Shell,
 };
 use crate::telemetry::Telemetry;
 
@@ -446,8 +446,12 @@ pub(crate) fn pending(t: &Track) -> Option<u64> {
         .map(|command| command.observed)
 }
 
-pub(crate) fn label(t: &Track, telemetry: &Telemetry, records: &[ProgramRecord]) -> String {
-    let foreground = telemetry.foreground_name();
+pub(crate) fn label(
+    t: &Track,
+    foreground: Option<&Foreground>,
+    records: &[ProgramRecord],
+) -> String {
+    let foreground = foreground.map_or("", |foreground| foreground.name.as_str());
     match representative(&t.episode, records) {
         Some(ProgramRecord {
             title: Some(title), ..
@@ -464,7 +468,6 @@ mod tests {
     use super::*;
     use crate::ids::VarName;
     use crate::pane_kind::classify;
-    use crate::protocol::Foreground;
     use crate::telemetry::{CommandRun, LastExit};
     use crate::vars::Vars;
 
@@ -608,7 +611,7 @@ mod tests {
             records: &ProgramStatus,
         ) -> String {
             self.now += ms * MS;
-            let kind = classify(telemetry, vars, &records.records);
+            let kind = classify(telemetry.foreground.as_ref(), vars, &records.records);
             self.observe(label, 22, telemetry, &kind, records)
         }
 

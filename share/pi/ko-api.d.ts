@@ -369,6 +369,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runtimes/{name}/visit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Enters a runtime in the caller's existing pane until the WebSocket closes. */
+        get: operations["VisitRuntime"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runtimes/{name}/wait": {
         parameters: {
             query?: never;
@@ -584,6 +601,11 @@ export interface components {
             pane: components["schemas"]["PaneId"];
             /** @constant */
             type: "inbox";
+        } | {
+            pane: components["schemas"]["PaneId"];
+            runtime?: components["schemas"]["RuntimeName"];
+            /** @constant */
+            type: "pane_runtime";
         } | ({
             /** @constant */
             type: "runtime";
@@ -1599,6 +1621,51 @@ export interface components {
             input: components["schemas"]["Input"];
             /** @constant */
             type: "input";
+        };
+        /** @description The first message must be visit. Only the elected leader sends a lead report. */
+        VisitClient: ({
+            /** @constant */
+            type: "visit";
+        } & components["schemas"]["VisitRequest"]) | ({
+            /** @constant */
+            type: "lead";
+        } & components["schemas"]["LeadReport"]);
+        /** @description Enters the runtime in the caller's pane until the visit connection closes. */
+        VisitRequest: {
+            /** @description The command to run without a shell. Without a command, starts the runtime's shell. */
+            command?: string[];
+            /** @description The host directory, mapped through the runtime's paths. */
+            cwd: components["schemas"]["AbsPath"];
+            /**
+             * @description Variables applied after the runtime's variables.
+             * @default []
+             */
+            env?: components["schemas"]["Variable"][];
+        };
+        /** @description The runtime's visit updates. Failed and ended are followed by a normal WebSocket close. */
+        VisitServer: {
+            /** @constant */
+            type: "starting";
+        } | {
+            /** @description The command of the interactive step. */
+            argv: string[];
+            /** @constant */
+            type: "lead";
+        } | {
+            /** @description The transport command, without the runtime-exec wrapper. */
+            argv: string[];
+            /** @constant */
+            type: "up";
+        } | {
+            /** @description The reason that the visit failed. */
+            message: string;
+            /** @constant */
+            type: "failed";
+        } | {
+            /** @description The reason that the visit ended. */
+            message: string;
+            /** @constant */
+            type: "ended";
         };
         /** @description A directory of the host that the container mounts, files only: never a socket. */
         Volume: {
@@ -2701,6 +2768,41 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Empty"];
                 };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    VisitRuntime: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
+            path: {
+                /** @example dev */
+                name: components["schemas"]["RuntimeName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Switching Protocols */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description The common error body. */
             default: {

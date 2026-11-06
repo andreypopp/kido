@@ -1,9 +1,9 @@
 # Ad-hoc runtimes
 
-A plan. Units 1 and 2 (section 5) are built, and
-`docs/design-runtimes.md` ("The model" and "Ad-hoc runtimes") and
-`docs/protocol.md` (section 15) describe them; the in-place visit and
-later are not built. When the work is complete, the agreed
+A plan. Units 1, 2 and 3 (section 5) are built, and
+`docs/design-runtimes.md` ("The model", "Ad-hoc runtimes" and "A
+visit") and `docs/protocol.md` (section 15) describe them; unit 4 is
+not built. When the work is complete, the agreed
 design moves into `docs/design-runtimes.md`, `docs/protocol.md`
 (sections 1, 7 and 15), `docs/design.md` and AGENTS.md ("Runtimes"),
 and this file is deleted.

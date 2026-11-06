@@ -156,7 +156,8 @@ shared-memory leak record and the `agent.sock` link; `config.rs` the
 state directory, the options and the knobs. `runtime/` holds the
 runtimes' registry, links and exec helpers over the configuration of
 `ko_config`, with
-`state/runtime_ops.rs` and `state/exec_ops.rs` over them
+`state/runtime_ops.rs`, `state/exec_ops.rs` and `state/visit_ops.rs`
+over them
 ([design-runtimes.md](design-runtimes.md)).
 
 `ko_vt` is the safe binding of libghostty-vt for both processes: the

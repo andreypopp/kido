@@ -459,6 +459,12 @@ impl Model {
                     list,
                 });
             }
+            ClientEvent::PaneRuntime { pane, runtime } => {
+                if let Some(pane) = self.pane_mut(pane) {
+                    pane.row.runtime = runtime;
+                    return Applied::State;
+                }
+            }
             ClientEvent::Runtime(runtime) => {
                 match self
                     .runtimes

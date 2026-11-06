@@ -32,7 +32,6 @@ pub(crate) struct Telemetry {
     pub(crate) foreground: Option<Foreground>,
     pub(crate) alternate: bool,
     pub(crate) progress: Option<Progress>,
-    pub(crate) in_runtime: bool,
 }
 
 impl Telemetry {
@@ -81,14 +80,5 @@ impl Telemetry {
         let changed = self.progress != progress;
         self.progress = progress;
         changed
-    }
-
-    pub(crate) fn status_foreground(&self) -> Option<&Foreground> {
-        self.foreground.as_ref().filter(|_| !self.in_runtime)
-    }
-
-    pub(crate) fn foreground_name(&self) -> &str {
-        self.status_foreground()
-            .map_or("", |foreground| foreground.name.as_str())
     }
 }

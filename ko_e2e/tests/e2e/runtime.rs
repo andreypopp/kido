@@ -339,10 +339,9 @@ fn adhoc_containers_delete_stale_owned_state_once_and_delete_at_server_exit() {
         .error(1),
         "ko run: needs a pane\n"
     );
-    assert!(
-        s.ko(&["run", "--name", "dev"], "")
-            .error(124)
-            .contains("unexpected argument")
+    assert_eq!(
+        s.ko(&["run", "--name", "dev"], "").error(1),
+        "ko run: needs a pane\n"
     );
     let mut nested = test_env(&files);
     nested.push(b"KO_RUNTIME=dev".to_vec());
@@ -359,19 +358,14 @@ fn adhoc_containers_delete_stale_owned_state_once_and_delete_at_server_exit() {
     let host = token_pane_in_new_session(&s, "adhoc");
     s.ko_as(
         Some(&host),
-        &[
-            "run",
-            kind,
-            "--name",
-            "dev",
-            "--from-image",
-            "image",
-            "--ko",
-            "path",
-        ],
-        "",
+        &["api", "--method", "PUT", "--input", "-", "/runtimes/dev"],
+        &json!({kind: {"from": {"image": "image"}, "ko": "path"}}).to_string(),
     )
     .ok();
+    assert_eq!(
+        s.ko_as(Some(&host), &["run", "--name", "dev"], "").error(1),
+        "ko run: needs the pane's terminal\n"
+    );
     assert!(!log.exists());
     let definition: Value =
         serde_json::from_str(&s.ko_as(Some(&host), &["api", "/runtimes/dev"], "").ok()).unwrap();
@@ -1376,6 +1370,339 @@ runtimes:
             .count(),
         0
     );
+}
+
+#[test]
+fn runtime_visit_resolves_its_runtime_in_the_pane_session_at_the_visit_message() {
+    let s = serve("", &[]);
+    let pane = token_pane_in_new_session(&s, "before");
+    let other = token_pane_in_new_session(&s, "after");
+    define_command(&s, &pane, "dev");
+    define_command(&s, &other, "dev");
+    let destination = session_named(&s, "after");
+    let mut visit = s
+        .dial_ws("/runtimes/dev/visit", Some(as_pane(&s, &pane)), 101)
+        .unwrap();
+    s.edit(|layout| {
+        let sessions = layout["sessions"].as_array_mut().unwrap();
+        let source = sessions
+            .iter_mut()
+            .find(|session| session["name"] == "before")
+            .unwrap();
+        let window = source["windows"].as_array_mut().unwrap().remove(0);
+        sessions.retain(|session| session["name"] != "before");
+        sessions
+            .iter_mut()
+            .find(|session| session["id"] == destination)
+            .unwrap()["windows"]
+            .as_array_mut()
+            .unwrap()
+            .push(window);
+    });
+    visit.send(&json!({"type":"visit", "cwd":"/tmp"}));
+    visit.event("up");
+    let found: Value = serde_json::from_str(&s.request(
+        "GET",
+        &format!("/runtimes/dev?session={destination}"),
+        None,
+        200,
+    ))
+    .unwrap();
+    assert_eq!(found["panes"], 1);
+}
+
+#[test]
+fn runtime_visit_ends_on_an_interrupt_before_a_child_runs() {
+    let files = Dir::new("ko-visit-int-");
+    let gate = fifo(&files, "up");
+    let step = format!("read answer < {}", quote(text_of(&gate)));
+    let s = serve(
+        &format!("runtimes:\n  dev: {{command: {{up: [/bin/sh, -c, {step:?}]}}}}\n"),
+        &[],
+    );
+    let pane = s.new_pane(json!({"command":{"type":"argv", "argv":["/bin/sh"]}, "env":[{"name":"PS1", "value":"HOST> "}]}));
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.attach("cat");
+    o.contains("HOST>");
+    o.line("ko run --name dev; printf 'RETURN-%s\\n' $?");
+    s.wait_row(&pane, "waiting visit", |row| row["runtime"] == "dev");
+    o.ctrl('c');
+    s.wait_row(
+        &pane,
+        "interrupted visit releases membership before up",
+        |row| row["runtime"].is_null(),
+    );
+    o.contains("RETURN-130");
+    o.line("printf 'HOST-%s\\n' READY");
+    o.contains("HOST-READY");
+    release(&files, &gate, "go");
+    o.detach();
+}
+
+#[test]
+fn runtime_visit_waiters_lead_fail_and_end_with_their_pane_or_session() {
+    let s = serve(
+        "server:\n  runtime_idle_seconds: none\nruntimes:\n  login: {command: {lead: [/usr/bin/true]}}\n  bad: {command: {up: [/bin/sh, -c, 'printf broken >&2; exit 1']}}\n",
+        &[],
+    );
+    let pane = s.token_pane("exec cat");
+    let follower = s.token_pane("exec cat");
+    let revision = s.doc()["revision"].clone();
+    let (mut client, _) = s.client(None);
+    let mut visit = s
+        .dial_ws("/runtimes/login/visit", Some(as_pane(&s, &pane)), 101)
+        .unwrap();
+    visit.send(&json!({"type":"visit", "cwd":"/tmp", "env":[]}));
+    assert_eq!(client.event("pane_runtime")["runtime"], "login");
+    visit.event("starting");
+    assert_eq!(visit.event("lead")["argv"], json!(["/usr/bin/true"]));
+    let mut waiter = s
+        .dial_ws("/runtimes/login/visit", Some(as_pane(&s, &follower)), 101)
+        .unwrap();
+    waiter.send(&json!({"type":"visit", "cwd":"/tmp"}));
+    waiter.event("starting");
+    drop(visit);
+    assert!(
+        waiter.event("failed")["message"]
+            .as_str()
+            .unwrap()
+            .contains("leading pane")
+    );
+    s.wait_row(&pane, "leader visit released", |row| {
+        row["runtime"].is_null()
+    });
+    assert_eq!(s.doc()["revision"], revision);
+    let mut visit = s
+        .dial_ws("/runtimes/login/visit", Some(as_pane(&s, &pane)), 101)
+        .unwrap();
+    visit.send(&json!({"type":"visit", "cwd":"/tmp"}));
+    visit.event("lead");
+    visit.send(&json!({"type":"lead", "exit":0, "stderr":""}));
+    let up = visit.event("up");
+    let argv = up["argv"].as_array().unwrap();
+    assert!(!argv.contains(&json!("runtime-exec")));
+    assert!(argv.contains(&json!("enter")));
+    let token_file = s
+        .dir
+        .join("runtimes/login/panes")
+        .join(format!("{pane}.token"));
+    assert_ne!(
+        fs::read_to_string(&token_file).unwrap(),
+        s.token(&pane).unwrap()
+    );
+    s.request("DELETE", &format!("/panes/{pane}"), None, 200);
+    visit.event("ended");
+    visit.closed("removed pane ends the visit");
+    assert_eq!(visit.close_frame().map(|frame| frame.0), Some(1000));
+    assert!(!token_file.exists());
+    let pane = token_pane_in_new_session(&s, "visiting");
+    define_command(&s, &pane, "dev");
+    let session = session_named(&s, "visiting");
+    let mut visit = s
+        .dial_ws("/runtimes/dev/visit", Some(as_pane(&s, &pane)), 101)
+        .unwrap();
+    visit.send(&json!({"type":"visit", "cwd":"/tmp"}));
+    visit.event("up");
+    s.request("DELETE", &format!("/sessions/{session}"), None, 200);
+    visit.event("ended");
+    visit.closed("session deletion ends the visit");
+    let pane = s.token_pane("exec cat");
+    let mut failed = s
+        .dial_ws("/runtimes/bad/visit", Some(as_pane(&s, &pane)), 101)
+        .unwrap();
+    failed.send(&json!({"type":"visit", "cwd":"/tmp"}));
+    assert!(
+        failed.event("failed")["message"]
+            .as_str()
+            .unwrap()
+            .contains("broken")
+    );
+    failed.closed("failed runtime closes the visit");
+    assert_eq!(failed.close_frame().map(|frame| frame.0), Some(1000));
+    let row = s.wait_row(&pane, "failed visit released", |row| {
+        row["runtime"].is_null()
+    });
+    assert!(row["dead"].is_null());
+}
+
+#[test]
+fn runtime_visit_keeps_the_host_pane_and_scopes_its_temporary_identity() {
+    let files = Dir::new("ko-visit-");
+    let host_dir = files.join("host");
+    let inner_dir = files.join("inner");
+    fs::create_dir_all(host_dir.join("sub")).unwrap();
+    fs::create_dir_all(inner_dir.join("sub")).unwrap();
+    let s = serve(
+        &format!(
+            "server:\n  runtime_idle_seconds: 0.05\nruntimes:\n  dev:\n    command: {{}}\n    paths: [{{host: {}, runtime: {}}}]\n  sentinel: {{command: {{}}}}\n",
+            host_dir.display(),
+            inner_dir.display()
+        ),
+        &[("KO_STOP_ESCALATION_MS", "100")],
+    );
+    let pane = s.new_pane(json!({"cwd": host_dir, "command": {"type": "argv", "argv": ["/bin/sh"]}, "env": [{"name": "PS1", "value": "HOST> "}]}));
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.attach("cat");
+    o.contains("HOST>");
+    o.line(PRINT_TOKEN);
+    o.contains("TOKEN<");
+    let host = s.token(&pane).unwrap();
+    let first = files.join("first");
+    let background = fifo(&files, "background");
+    o.line(&format!(
+        "(read gate < {}; ko run --name dev </dev/tty)& ko run --name dev -- /bin/sh",
+        quote(text_of(&background))
+    ));
+    s.wait_row(&pane, "visit membership", |row| row["runtime"] == "dev");
+    o.wait("visit sidebar mark", || {
+        o.lines().iter().any(|line| {
+            line.chars()
+                .take(24)
+                .collect::<String>()
+                .trim_end()
+                .ends_with(" dev")
+        })
+    });
+    o.line(&format!(
+        "printf '%s' \"$KO_PANE_TOKEN\" > {}; ko api /version && printf 'VISIT-%s\\n' ONE",
+        quote(text_of(&first))
+    ));
+    o.contains("VISIT-ONE");
+    release(&files, &background, "go");
+    o.contains(&format!("{pane} is already in runtime dev"));
+    let token = fs::read_to_string(&first).unwrap();
+    assert_ne!(token, host);
+    assert_eq!(
+        via(
+            &s,
+            "dev",
+            ("GET", "/version"),
+            Some((&pane, &token)),
+            &Value::Null
+        )
+        .0,
+        200
+    );
+    assert_eq!(
+        via(
+            &s,
+            "dev",
+            ("GET", "/version"),
+            Some((&pane, &host)),
+            &Value::Null
+        )
+        .0,
+        409
+    );
+    assert_eq!(
+        raw(
+            &s,
+            "GET",
+            "/version",
+            &headers(&s, &[("Ko-Pane", &pane), ("Ko-Pane-Token", &token)]),
+            &Value::Null
+        )
+        .0,
+        409
+    );
+    o.line("ko run --name dev");
+    o.contains("inside runtime dev; run it from a host pane");
+    let duplicate = s.dial_ws(
+        "/runtimes/dev/visit",
+        Some(headers(&s, &[("Ko-Pane", &pane), ("Ko-Pane-Token", &host)])),
+        409,
+    );
+    assert!(duplicate.is_none());
+    let down = raw(&s, "POST", "/runtimes/dev/down", &s.headers(), &json!({}));
+    assert_eq!(down.0, 409);
+    let mut sentinel = s.ws("/runtimes/sentinel/exec");
+    sentinel.send(&json!({"type":"exec", "argv":["/usr/bin/true"], "stdin":false}));
+    sentinel.event("exit");
+    wait_state(&s, "sentinel", "down");
+    assert_eq!(state(&s, "dev"), "up");
+    o.line(&format!(
+        "cd {}; printf '\\033]7;file://runtime{}\\007'; printf 'CWD-%s\\n' READY",
+        quote(text_of(&inner_dir.join("sub"))),
+        inner_dir.join("sub").display()
+    ));
+    o.contains("CWD-READY");
+    s.wait_row(&pane, "runtime cwd", |row| {
+        row["cwd"]
+            .as_str()
+            .is_some_and(|cwd| cwd.ends_with("/inner/sub"))
+    });
+    let mapped =
+        s.new_pane(json!({"cwd": {"pane": pane}, "command": {"type":"argv", "argv":["/bin/cat"]}}));
+    assert_eq!(
+        s.row(&mapped)["cwd"],
+        host_dir.join("sub").to_string_lossy().as_ref()
+    );
+    s.request("DELETE", &format!("/panes/{mapped}"), None, 200);
+    o.prefix("c");
+    poll("split of the visited pane", || s.rows().len() == 2);
+    let split = s.rows().into_iter().find(|row| row["id"] != pane).unwrap();
+    assert_eq!(split["runtime"], "dev");
+    let split_id = split["id"].as_str().unwrap();
+    s.request("DELETE", &format!("/panes/{split_id}"), None, 200);
+    let mut hold = s.ws("/runtimes/dev/exec");
+    hold.send(&json!({"type":"exec", "argv":["/bin/sh", "-c", "printf ready; cat"], "stdin":true}));
+    hold.event("stdout");
+    o.line("exit");
+    s.wait_row(&pane, "visit ended", |row| row["runtime"].is_null());
+    assert!(s.row(&pane)["dead"].is_null());
+    assert_eq!(
+        via(
+            &s,
+            "dev",
+            ("GET", "/version"),
+            Some((&pane, &token)),
+            &Value::Null
+        )
+        .0,
+        409
+    );
+    drop(hold);
+    wait_state(&s, "dev", "down");
+    let second = files.join("second");
+    o.line("ko run --name dev --env VISIT=joined -- /bin/sh");
+    s.wait_row(&pane, "second visit", |row| row["runtime"] == "dev");
+    o.line(&format!(
+        "trap '' HUP; printf '%s' \"$KO_PANE_TOKEN\" > {}; test \"$VISIT\" = joined && printf 'VISIT-%s\\n' TWO",
+        quote(text_of(&second))
+    ));
+    o.contains("VISIT-TWO");
+    assert_ne!(fs::read_to_string(second).unwrap(), token);
+    s.request(
+        "POST",
+        "/runtimes/dev/down",
+        Some(&json!({"force":true})),
+        200,
+    );
+    o.contains("runtime dev: runtime taken down");
+    s.wait_row(&pane, "forced visit ended", |row| row["runtime"].is_null());
+    assert!(s.row(&pane)["dead"].is_null());
+    o.line("printf 'HOST-%s\\n' BACK");
+    o.contains("HOST-BACK");
+    o.line("ko run command --name scratch --env VISIT=defined -- /bin/sh -c 'test \"$VISIT\" = defined && printf \"DEFINE-%s\\n\" OK; exit 7'; printf 'STATUS-%s\\n' $?");
+    o.contains("DEFINE-OK");
+    o.contains("STATUS-7");
+    let visitor_pid = files.join("visitor-pid");
+    let script = format!(
+        "printf '%s' \"$PPID\" > {}; printf 'KILL-%s\\n' READY; exec cat",
+        quote(text_of(&visitor_pid))
+    );
+    o.line(&format!(
+        "ko run --name dev -- /bin/sh -c {}",
+        quote(&script)
+    ));
+    o.contains("KILL-READY");
+    let pid = Pid::new(fs::read_to_string(visitor_pid).unwrap().parse().unwrap()).unwrap();
+    ko_sys::pid::signal_descendant(s.child.pid(), pid, ko_sys::signal::Signal::Kill).unwrap();
+    s.wait_row(&pane, "killed visitor releases membership", |row| {
+        row["runtime"].is_null()
+    });
+    assert!(s.row(&pane)["dead"].is_null());
+    o.detach();
 }
 
 #[test]

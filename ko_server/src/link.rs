@@ -4,6 +4,7 @@ use crate::client::Client;
 use crate::conn::Output;
 use crate::ids::PaneId;
 use crate::runtime::exec::Session;
+use crate::state::visit_ops::Visit;
 use crate::view::View;
 use crate::ws::Ws;
 use vstd::prelude::*;
@@ -15,6 +16,7 @@ pub(crate) enum Role {
     Search(Searching),
     Messages(PaneId),
     Exec(Session),
+    Visit(Visit),
 }
 
 impl Role {
@@ -25,7 +27,11 @@ impl Role {
     pub(crate) fn reads(&self) -> bool {
         match self {
             Role::Exec(session) => session.reads(),
-            Role::Client(_) | Role::View(_) | Role::Search(_) | Role::Messages(_) => true,
+            Role::Client(_)
+            | Role::View(_)
+            | Role::Search(_)
+            | Role::Messages(_)
+            | Role::Visit(_) => true,
         }
     }
 }

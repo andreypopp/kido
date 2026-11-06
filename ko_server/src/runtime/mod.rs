@@ -407,8 +407,7 @@ impl Link {
 
 #[derive(Debug)]
 struct Pass {
-    pane: PaneId,
-    conn: Token,
+    wait: Wait,
     token: String,
 }
 
@@ -417,7 +416,7 @@ struct Pass {
 #[derive(Debug)]
 enum Job {
     Check(Option<Pass>),
-    Deliver(Token),
+    Deliver(Wait),
 }
 
 #[derive(Debug)]
@@ -438,6 +437,7 @@ struct Pending {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Who {
     Pane(PaneId),
+    Visit(PaneId),
     Exec,
 }
 
@@ -477,7 +477,8 @@ pub(crate) struct Registry {
     deleting: BTreeSet<RuntimeKey>,
     released: Vec<Pid>,
     children: Vec<Child>,
-    passed: Vec<(Token, LinkState)>,
+    passed: Vec<(Wait, LinkState)>,
+    departed: Vec<RuntimeKey>,
     announced: BTreeMap<RuntimeKey, ClientRuntime>,
     pending: Vec<ClientEvent>,
     configured: Option<Configured>,
@@ -568,6 +569,7 @@ impl Registry {
             released: Vec::new(),
             children: Vec::new(),
             passed: Vec::new(),
+            departed: Vec::new(),
             announced: BTreeMap::new(),
             pending: Vec::new(),
             configured: None,
@@ -1041,6 +1043,9 @@ impl Registry {
         link: &mut Link,
         (detach, answer): (bool, &LinkState),
     ) {
+        if matches!(link.phase, Phase::Up) {
+            self.departed.push(key.clone());
+        }
         let mut reaping = Vec::new();
         let (mine, rest): (Vec<Child>, Vec<Child>) = std::mem::take(&mut self.children)
             .into_iter()
@@ -1050,8 +1055,8 @@ impl Registry {
             poll.free(child.deadline);
             reaping.extend(stop_helper(poll, &mut child.helper, &mut self.dying));
             match child.job {
-                Job::Check(Some(Pass { conn, .. })) | Job::Deliver(conn) => {
-                    self.passed.push((conn, answer.clone()));
+                Job::Check(Some(Pass { wait, .. })) | Job::Deliver(wait) => {
+                    self.passed.push((wait, answer.clone()));
                 }
                 Job::Check(None) => {}
             }
@@ -1101,8 +1106,8 @@ impl Registry {
 
     fn end_pass(&mut self, poll: &mut Poll, conn: Token) -> bool {
         let Some(at) = self.children.iter().position(|child| match &child.job {
-            Job::Check(Some(pass)) => pass.conn == conn,
-            Job::Deliver(waiting) => *waiting == conn,
+            Job::Check(Some(pass)) => pass.wait.conn == conn,
+            Job::Deliver(waiting) => waiting.conn == conn,
             Job::Check(None) => false,
         }) else {
             return false;
@@ -1247,8 +1252,12 @@ impl Registry {
         self.drive();
     }
 
-    pub(crate) fn take_passed(&mut self) -> Vec<(Token, LinkState)> {
+    pub(crate) fn take_passed(&mut self) -> Vec<(Wait, LinkState)> {
         std::mem::take(&mut self.passed)
+    }
+
+    pub(crate) fn take_departed(&mut self) -> Vec<RuntimeKey> {
+        std::mem::take(&mut self.departed)
     }
 
     pub(crate) fn waiters_of(&mut self, key: &RuntimeKey) -> Vec<Wait> {
@@ -1322,11 +1331,11 @@ impl Registry {
         &mut self,
         poll: &mut Poll,
         key: &RuntimeKey,
-        (conn, pane): (Token, PaneId),
+        wait: Wait,
         token: String,
     ) -> Result<(), String> {
         let launch = self.step_launch(key, |link, cx| link.start.alive(&link.settings, cx))?;
-        let job = Job::Check(Some(Pass { pane, conn, token }));
+        let job = Job::Check(Some(Pass { wait, token }));
         let mode = Mode::Capture { stdin: false };
         self.spawn_child(poll, key, (&launch, mode), job)
             .map_err(|error| format!("cannot check the link: {error}"))
@@ -1348,12 +1357,16 @@ impl Registry {
     }
 
     fn deliver(&mut self, poll: &mut Poll, key: &RuntimeKey, pass: Pass) {
-        let Pass { pane, conn, token } = pass;
+        let Pass { wait, token } = pass;
+        let pane = match wait.who {
+            Who::Pane(pane) | Who::Visit(pane) => pane,
+            Who::Exec => return,
+        };
         let started = self
             .step_launch(key, |link, cx| link.start.deliver(&link.settings, cx, pane))
             .and_then(|launch| {
                 let mode = Mode::Capture { stdin: true };
-                self.spawn_child(poll, key, (&launch, mode), Job::Deliver(conn))
+                self.spawn_child(poll, key, (&launch, mode), Job::Deliver(wait))
                     .map_err(|error| format!("cannot deliver the token: {error}"))
             });
         match started {
@@ -1363,7 +1376,7 @@ impl Registry {
                     child.helper.close_stdin(poll);
                 }
             }
-            Err(message) => self.passed.push((conn, LinkState::Failed { message })),
+            Err(message) => self.passed.push((wait, LinkState::Failed { message })),
         }
     }
 
@@ -1380,11 +1393,11 @@ impl Registry {
             }
             Job::Check(pass) => {
                 self.restart(poll, &key);
-                if let Some(Pass { conn, .. }) = pass {
-                    self.passed.push((conn, LinkState::Starting));
+                if let Some(Pass { wait, .. }) = pass {
+                    self.passed.push((wait, LinkState::Starting));
                 }
             }
-            Job::Deliver(conn) => {
+            Job::Deliver(wait) => {
                 let state = if exit == Exit::Exited(0) {
                     LinkState::Up
                 } else {
@@ -1393,7 +1406,7 @@ impl Registry {
                         message: format!("cannot deliver the token to {key}: {why}"),
                     }
                 };
-                self.passed.push((conn, state));
+                self.passed.push((wait, state));
             }
         }
     }
@@ -1538,9 +1551,9 @@ impl Registry {
             let mut child = self.children.swap_remove(at);
             poll.free(child.deadline);
             stop_helper(poll, &mut child.helper, &mut self.dying);
-            if let Job::Check(Some(Pass { conn, .. })) | Job::Deliver(conn) = child.job {
+            if let Job::Check(Some(Pass { wait, .. })) | Job::Deliver(wait) = child.job {
                 let message = format!("runtime {} did not answer in time", child.key);
-                self.passed.push((conn, LinkState::Failed { message }));
+                self.passed.push((wait, LinkState::Failed { message }));
             }
             return Due::Handled;
         }
@@ -1566,7 +1579,7 @@ impl Registry {
         let Phase::Starting(Step::Up {
             mut helper,
             deadline,
-        }) = std::mem::replace(&mut link.phase, Phase::Up)
+        }) = std::mem::replace(&mut link.phase, Phase::Starting(Step::Cleaning))
         else {
             return;
         };
@@ -1649,6 +1662,7 @@ impl Registry {
             Ok(helper) => {
                 if let Some(link) = self.links.get_mut(key) {
                     link.watch = helper;
+                    link.phase = Phase::Up;
                 }
             }
             Err(error) => {

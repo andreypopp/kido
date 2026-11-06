@@ -99,13 +99,12 @@ fn upgrade(state: &mut State, poll: &mut Poll, index: usize, response: Vec<u8>, 
     let _ = poll.start(conn.timer, ws::FIRST_PING, None);
 }
 
-// The pane that a request acts as: both headers must carry the token of a live pane.
 fn acting(
     state: &State,
     (pane, token): (Option<&str>, Option<&str>),
     origin: &Origin,
 ) -> Result<Option<PaneId>, Error> {
-    let acted = acting_pane(state, (pane, token));
+    let acted = acting_pane(state, (pane, token), origin);
     let Origin::Runtime(runtime) = origin else {
         return acted;
     };
@@ -121,6 +120,7 @@ fn acting(
 fn acting_pane(
     state: &State,
     (pane, token): (Option<&str>, Option<&str>),
+    origin: &Origin,
 ) -> Result<Option<PaneId>, Error> {
     let refuse = |message: &str| Err(Error::new(ErrorKind::Refused, message));
     let Some(pane) = pane else {
@@ -141,7 +141,14 @@ fn acting_pane(
         .ok()
         .zip(state.panes.find(pane))
         .is_some_and(|(given, found)| {
-            found.proc().dead().is_none() && found.token().matches(&given)
+            found.proc().dead().is_none()
+                && match origin {
+                    Origin::Host => found.token().matches(&given),
+                    Origin::Runtime(_) => found
+                        .runtime_token()
+                        .unwrap_or(found.token())
+                        .matches(&given),
+                }
         });
     if matches {
         Ok(Some(pane))
@@ -201,6 +208,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             return error(&mut state.conns[index], kind, message);
         }
     };
+    state.conns[index].caller = caller;
     let Some(route) = route else {
         return error(
             &mut state.conns[index],
@@ -425,6 +433,23 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                 .runtime_key(caller, session, &name)
                 .and_then(|(key, settings)| state.delete_runtime(poll, &key, &settings));
             reply::<routes::DeleteRuntime>(&mut state.conns[index], result);
+        }
+        Request::VisitRuntime { name } => {
+            let visit = match state.prepare_visit(caller, &name) {
+                Ok(visit) => visit,
+                Err(Error { kind, message }) => {
+                    return error(&mut state.conns[index], kind, message);
+                }
+            };
+            let Some(response) = ws::handshake(&head) else {
+                return error(
+                    &mut state.conns[index],
+                    ErrorKind::Invalid,
+                    "Didn't pass scrutiny",
+                );
+            };
+            upgrade(state, poll, index, response, Role::Visit(visit));
+            state.read_ws(poll, index);
         }
         Request::Exec { name, session } => {
             let Some(response) = ws::handshake(&head) else {
@@ -684,6 +709,49 @@ mod tests {
             headers.push_str(&format!("{name}: {value}\r\n"));
         }
         headers
+    }
+
+    #[test]
+    fn acting_uses_the_memberships_token_only_on_its_runtime_connection() {
+        use crate::runtime::RuntimeKey;
+        let mut server = harness("visit-identity");
+        let id = server.pane;
+        let host = server.state.panes.find(id).unwrap().token().to_string();
+        let visit = PaneToken::mint().unwrap();
+        let visiting = visit.to_string();
+        let key = RuntimeKey::config("dev".parse().unwrap());
+        let (socket, _peer) = UnixStream::pair().unwrap();
+        let conn = server.poll.watch(
+            std::os::fd::AsFd::as_fd(&socket),
+            ko_sys::event::Interest::Read,
+        );
+        server
+            .state
+            .panes
+            .find_mut(id)
+            .unwrap()
+            .begin_visit(key.clone(), visit, conn);
+        let pane = id.to_string();
+        for (origin, token, accepted) in [
+            (Origin::Host, host.as_str(), true),
+            (Origin::Host, visiting.as_str(), false),
+            (Origin::Runtime(key.clone()), host.as_str(), false),
+            (Origin::Runtime(key.clone()), visiting.as_str(), true),
+        ] {
+            assert_eq!(
+                acting(&server.state, (Some(&pane), Some(token)), &origin).is_ok(),
+                accepted
+            );
+        }
+        server.state.panes.find_mut(id).unwrap().end_visit();
+        assert!(
+            acting(
+                &server.state,
+                (Some(&pane), Some(&visiting)),
+                &Origin::Runtime(key.clone())
+            )
+            .is_err()
+        );
     }
 
     #[test]

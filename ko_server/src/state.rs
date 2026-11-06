@@ -49,6 +49,7 @@ mod pane_ops;
 mod prompt;
 mod runtime_ops;
 mod sweep;
+pub(crate) mod visit_ops;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Owner {
@@ -128,14 +129,18 @@ pub(crate) enum Wake {
 pub(crate) fn client_of(conn: &Conn) -> Option<&Client> {
     match conn.role()? {
         Role::Client(client) => Some(client),
-        Role::View(_) | Role::Search(_) | Role::Messages(_) | Role::Exec(_) => None,
+        Role::View(_) | Role::Search(_) | Role::Messages(_) | Role::Exec(_) | Role::Visit(_) => {
+            None
+        }
     }
 }
 
 fn view_of(conn: &Conn) -> Option<&View> {
     match conn.role()? {
         Role::View(view) => Some(view),
-        Role::Client(_) | Role::Search(_) | Role::Messages(_) | Role::Exec(_) => None,
+        Role::Client(_) | Role::Search(_) | Role::Messages(_) | Role::Exec(_) | Role::Visit(_) => {
+            None
+        }
     }
 }
 
@@ -758,6 +763,7 @@ impl State {
     }
 
     fn stop_pane(&mut self, poll: &mut Poll, id: PaneId) {
+        self.end_visit(poll, id, Some("pane removed".to_owned()));
         let runtime = self.panes.find(id).and_then(|pane| pane.runtime().cloned());
         self.pane_ended(poll, id);
         self.clipboard.drop_where(poll, |read| read.pane == id);
@@ -809,6 +815,10 @@ impl State {
     }
 
     pub(crate) fn shutdown(&mut self, poll: &mut Poll) {
+        let panes: Vec<_> = self.panes.iter().map(Pane::id).collect();
+        for id in panes {
+            self.end_visit(poll, id, Some("server ended".to_owned()));
+        }
         for conn in &mut self.conns {
             conn.out.shut();
         }
@@ -934,6 +944,7 @@ impl State {
                 }
             }
             Event::Dead(death) => {
+                self.end_visit(poll, id, Some("pane ended".to_owned()));
                 self.pump_views(poll, id);
                 self.tell_parent(id, End::Dead((&death).into()));
                 self.pane_ended(poll, id);
@@ -1426,6 +1437,10 @@ impl State {
                 Role::Search(_) => link.ws.reject(out, crate::ws::Rejection::Invalid),
                 Role::Messages(pane) => self.stream_text(poll, index, pane, text.as_bytes()),
                 Role::Exec(_) => self.exec_text(poll, index, text.as_bytes()),
+                Role::Visit(_) => {
+                    self.visit_text(poll, index, text.as_bytes());
+                    self.runtimes_changed(poll);
+                }
             }
         }
     }
@@ -1652,6 +1667,14 @@ impl State {
                     Role::Search(search) => self.cancel_search(poll, search),
                     Role::Messages(pane) => self.stream_closed(poll, pane, conn.token),
                     Role::Exec(session) => self.exec_gone(poll, conn.token, session),
+                    Role::Visit(visit) => {
+                        if self.panes.find(visit.pane).and_then(Pane::visit_conn)
+                            == Some(conn.token)
+                        {
+                            self.end_visit(poll, visit.pane, None);
+                            self.runtimes_changed(poll);
+                        }
+                    }
                     Role::View(_) => {}
                 }
             }

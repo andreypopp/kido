@@ -223,6 +223,9 @@ impl State {
     }
 
     pub(super) fn runtimes_changed(&mut self, poll: &mut Poll) {
+        for key in self.runtimes.take_departed() {
+            self.end_runtime_visits(poll, &key, "runtime link ended");
+        }
         for pid in self.runtimes.take_dying() {
             self.leaving
                 .hand_over(poll, pid, self.config.stop_escalation);
@@ -236,41 +239,84 @@ impl State {
         for (key, wait, state) in self.runtimes.take_settled() {
             self.answer_wait(poll, &key, wait, state);
         }
-        for (conn, state) in self.runtimes.take_passed() {
-            let reply = Ok(RuntimeWait { state, lead: None });
-            router::answer::<routes::WaitRuntime>(self, poll, conn, reply);
+        for (wait, state) in self.runtimes.take_passed() {
+            self.answer_passed(poll, wait, state);
         }
         self.announce_runtimes();
     }
 
-    fn pass_token(&mut self, poll: &mut Poll, key: &RuntimeKey, conn: Token, pane: PaneId) {
-        let started = match self.panes.find(pane) {
-            Some(found) => {
-                let token = found.token().to_string();
-                self.runtimes.pass(poll, key, (conn, pane), token)
-            }
-            None => Err(format!("{pane} is gone")),
+    fn pass_token(&mut self, poll: &mut Poll, key: &RuntimeKey, wait: Wait) {
+        let pane = match wait.who {
+            Who::Pane(pane) | Who::Visit(pane) => pane,
+            Who::Exec => return,
         };
+        let started = self
+            .panes
+            .find(pane)
+            .and_then(Pane::runtime_token)
+            .ok_or_else(|| format!("{pane} has left runtime {key}"))
+            .and_then(|token| self.runtimes.pass(poll, key, wait, token.to_string()));
         if let Err(message) = started {
-            let reply = Ok(RuntimeWait {
-                state: LinkState::Failed { message },
-                lead: None,
-            });
-            router::answer::<routes::WaitRuntime>(self, poll, conn, reply);
+            self.answer_passed(poll, wait, LinkState::Failed { message });
         }
     }
 
-    fn answer_wait(&mut self, poll: &mut Poll, key: &RuntimeKey, wait: Wait, state: LinkState) {
+    fn answer_passed(&mut self, poll: &mut Poll, wait: Wait, state: LinkState) {
         match wait.who {
-            Who::Pane(pane) if state == LinkState::Up && self.runtimes.remote_tokens(key, pane) => {
-                self.pass_token(poll, key, wait.conn, pane);
+            Who::Pane(_) => router::answer::<routes::WaitRuntime>(
+                self,
+                poll,
+                wait.conn,
+                Ok(RuntimeWait { state, lead: None }),
+            ),
+            Who::Visit(_) => self.visit_passed(poll, wait.conn, state),
+            Who::Exec => {}
+        }
+    }
+
+    pub(super) fn answer_wait(
+        &mut self,
+        poll: &mut Poll,
+        key: &RuntimeKey,
+        wait: Wait,
+        state: LinkState,
+    ) {
+        match wait.who {
+            Who::Pane(pane) | Who::Visit(pane)
+                if state == LinkState::Up && self.runtimes.remote_tokens(key, pane) =>
+            {
+                self.pass_token(poll, key, wait)
             }
             Who::Pane(pane) => {
                 let reply = self.runtime_reply(key, pane, state);
                 router::answer::<routes::WaitRuntime>(self, poll, wait.conn, reply);
             }
+            Who::Visit(_) => self.visit_passed(poll, wait.conn, state),
             Who::Exec => self.exec_linked(poll, wait.conn, key, state),
         }
+    }
+
+    pub(super) fn start_runtime(&mut self, poll: &mut Poll, key: &RuntimeKey) -> Result<(), Error> {
+        if matches!(
+            self.runtimes.state(key),
+            LinkState::Down | LinkState::Failed { .. }
+        ) {
+            let settings = self.runtimes.settings(key)?;
+            self.runtimes.begin(poll, key, settings);
+        }
+        self.touch_runtime(poll, key);
+        Ok(())
+    }
+
+    pub(super) fn write_runtime_token(&self, key: &RuntimeKey, pane: PaneId) -> Result<(), Error> {
+        let token = self
+            .panes
+            .find(pane)
+            .and_then(Pane::runtime_token)
+            .ok_or_else(|| Error::new(ErrorKind::Refused, "runtime membership has ended"))?;
+        self.runtimes
+            .write_token(key, pane, token)
+            .map_err(|error| Error::new(ErrorKind::Io, format!("token file: {error}")))
     }
 
     fn runtime_reply(
@@ -279,12 +325,8 @@ impl State {
         pane: PaneId,
         state: LinkState,
     ) -> Result<RuntimeWait, Error> {
-        if state == LinkState::Up
-            && let Some(found) = self.panes.find(pane)
-        {
-            self.runtimes
-                .write_token(key, pane, found.token())
-                .map_err(|error| Error::new(ErrorKind::Io, format!("token file: {error}")))?;
+        if state == LinkState::Up {
+            self.write_runtime_token(key, pane)?;
         }
         Ok(RuntimeWait { state, lead: None })
     }
@@ -390,7 +432,14 @@ impl State {
         let state = self.runtimes.state(&name);
         if state == LinkState::Up && self.runtimes.remote_tokens(&name, pane) {
             let conn = self.hold(poll, index, PASS_HOLD);
-            self.pass_token(poll, &name, conn, pane);
+            self.pass_token(
+                poll,
+                &name,
+                Wait {
+                    conn,
+                    who: Who::Pane(pane),
+                },
+            );
             return None;
         }
         if state != LinkState::Starting {
@@ -454,6 +503,7 @@ impl State {
     }
 
     fn force_down_runtime(&mut self, poll: &mut Poll, key: &RuntimeKey) {
+        self.end_runtime_visits(poll, key, "runtime taken down");
         let live: Vec<_> = self
             .panes
             .in_runtime(key)

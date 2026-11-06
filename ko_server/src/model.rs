@@ -109,10 +109,12 @@ impl Model {
 pub(crate) fn observe(pane: &mut Pane, poll: &mut Poll) -> Option<PaneStatus> {
     let now = Mono::now().nanos();
     let pane_title = lossy(pane.proc().title());
+    let has_foreground = pane.status_foreground().is_some();
     let (telemetry, vars, model) = pane.parts_mut();
     model.dirty = false;
     let published = telemetry.records.published();
-    let kind = pane_kind::classify(telemetry, vars, &published.records);
+    let foreground = telemetry.foreground.as_ref().filter(|_| has_foreground);
+    let kind = pane_kind::classify(foreground, vars, &published.records);
     let (track, live) = pane_status::observe(
         now,
         telemetry,
@@ -121,7 +123,7 @@ pub(crate) fn observe(pane: &mut Pane, poll: &mut Poll) -> Option<PaneStatus> {
         &published,
         model.track.take(),
     );
-    let label = pane_status::label(&track, telemetry, &published.records);
+    let label = pane_status::label(&track, foreground, &published.records);
     let pending = pane_status::pending(&track);
     model.track = Some(track);
     let (message, progress) = caption(&live);

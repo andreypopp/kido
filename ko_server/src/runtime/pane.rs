@@ -142,6 +142,17 @@ fn text(text: &str) -> Vec<u8> {
 }
 
 pub(crate) fn wrapper(wrap: &Wrap<'_>, inner: Option<&[Vec<u8>]>) -> Vec<Vec<u8>> {
+    let mut argv = vec![
+        bytes(wrap.exe),
+        text("runtime-exec"),
+        text(wrap.key.name.as_str()),
+        text("--"),
+    ];
+    argv.extend(transport(wrap, inner));
+    argv
+}
+
+pub(crate) fn transport(wrap: &Wrap<'_>, inner: Option<&[Vec<u8>]>) -> Vec<Vec<u8>> {
     let Wrap {
         exe,
         root,
@@ -165,13 +176,7 @@ pub(crate) fn wrapper(wrap: &Wrap<'_>, inner: Option<&[Vec<u8>]>) -> Vec<Vec<u8>
             exe,
         },
     );
-    let mut argv = vec![
-        bytes(exe),
-        text("runtime-exec"),
-        text(key.name.as_str()),
-        text("--"),
-    ];
-    argv.extend(entry.prefix);
+    let mut argv = entry.prefix;
     let mut enter = entry.ko;
     enter.push(text("enter"));
     enter.extend(entry.location);

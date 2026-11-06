@@ -488,7 +488,7 @@ pub struct Row {
     /// True while the pane has its message stream open.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub inbox: bool,
-    /// The runtime that runs the pane's program, for the pane's life. The host has none.
+    /// The runtime that runs the pane's program now. The host has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<RuntimeName>,
 }
@@ -1653,6 +1653,11 @@ pub enum ClientEvent {
         pane: PaneId,
         inbox: bool,
     },
+    PaneRuntime {
+        pane: PaneId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime: Option<RuntimeName>,
+    },
     /// A runtime was added to the list, or its kind, colour or link state changed.
     Runtime(ClientRuntime),
     /// A runtime left the configuration and has no live link.
@@ -2657,6 +2662,57 @@ pub struct DownRuntime {
     pub force: bool,
 }
 
+/// Enters the runtime in the caller's pane until the visit connection closes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct VisitRequest {
+    /// The host directory, mapped through the runtime's paths.
+    pub cwd: AbsPath,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The command to run without a shell. Without a command, starts the runtime's shell.
+    pub command: Option<Vec<String>>,
+    #[serde(default)]
+    /// Variables applied after the runtime's variables.
+    pub env: Vec<Variable>,
+}
+
+/// The first message must be visit. Only the elected leader sends a lead report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum VisitClient {
+    /// Starts the visit with the caller's host directory and command.
+    Visit(VisitRequest),
+    /// Reports the end of the interactive start step.
+    Lead(LeadReport),
+}
+
+/// The runtime's visit updates. Failed and ended are followed by a normal WebSocket close.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum VisitServer {
+    /// The runtime's link is starting.
+    Starting {},
+    /// Runs the interactive start step on the pane's terminal.
+    Lead {
+        /// The command of the interactive step.
+        argv: Vec<String>,
+    },
+    /// The token is ready. Runs the transport on the pane's terminal.
+    Up {
+        /// The transport command, without the runtime-exec wrapper.
+        argv: Vec<String>,
+    },
+    /// The visit could not start.
+    Failed {
+        /// The reason that the visit failed.
+        message: String,
+    },
+    /// The server ended the visit.
+    Ended {
+        /// The reason that the visit ended.
+        message: String,
+    },
+}
+
 pub const EXEC_CHUNK: usize = 64 << 10;
 
 /// The signals that a client can send to the command of an exec session.
@@ -2682,17 +2738,35 @@ pub struct ExecRequest {
     pub stdin: bool,
 }
 
+fn invalid_argv(argv: &[String]) -> Option<&'static str> {
+    if argv.first().is_none_or(String::is_empty) {
+        Some("argv needs a program")
+    } else if argv.iter().any(|arg| arg.contains('\0')) {
+        Some("invalid argv or env")
+    } else {
+        None
+    }
+}
+
+impl VisitRequest {
+    pub(crate) fn invalid(&self) -> Option<&'static str> {
+        self.command.as_deref().and_then(invalid_argv).or_else(|| {
+            self.env
+                .iter()
+                .any(|variable| !env_valid(&variable.name, &variable.value))
+                .then_some("invalid argv or env")
+        })
+    }
+}
+
 impl ExecRequest {
     pub(crate) fn invalid(&self) -> Option<&'static str> {
-        if self.argv.first().is_none_or(String::is_empty) {
-            Some("argv needs a program")
-        } else if self.argv.iter().any(|arg| arg.contains('\0'))
-            || self.env.iter().any(|(name, value)| !env_valid(name, value))
-        {
-            Some("invalid argv or env")
-        } else {
-            None
-        }
+        invalid_argv(&self.argv).or_else(|| {
+            self.env
+                .iter()
+                .any(|(name, value)| !env_valid(name, value))
+                .then_some("invalid argv or env")
+        })
     }
 }
 

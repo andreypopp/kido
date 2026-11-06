@@ -1,20 +1,24 @@
 use std::io;
 use std::os::fd::AsFd;
-use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+
 use std::time::{Duration, Instant};
 
 use ko_config::values::RuntimeName;
 use ko_server::api::{Route, WaitMs};
+
 use ko_server::protocol::{Empty, LeadReport, LinkState, RuntimeWait, STDERR_TAIL};
+
+use ko_server::config::{env_path, program_path};
 use ko_sys::fd::{self, Waited, Want};
+use ko_sys::pid::{Exit, Pid};
 use ko_sys::signal::{Signal, Signals};
+use ko_sys::spawn::{self, Env};
 
 use crate::api::{ReplyError, call, describe};
 use crate::wire::{self, Caller};
 
-const STILL_STARTING: Duration = Duration::from_secs(120);
+pub(crate) const STILL_STARTING: Duration = Duration::from_secs(120);
 const POLL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,13 +76,13 @@ fn failed(message: impl Into<String>) -> LeadReport {
     }
 }
 
-fn drain(
-    stderr: &std::process::ChildStderr,
+pub(crate) fn drain(
+    stderr: &io::PipeReader,
     tail: &mut Vec<u8>,
     shown: &mut impl FnMut(Shown<'_>),
 ) -> bool {
     let mut buffer = [0u8; 1024];
-    loop {
+    for _ in 0..16 {
         match fd::read(stderr.as_fd(), &mut buffer) {
             Ok(count) if count > 0 => {
                 let chunk = buffer.get(..count).unwrap_or_default();
@@ -91,9 +95,46 @@ fn drain(
             _ => return false,
         }
     }
+    true
 }
 
-fn lead(argv: &[String], deadline: Instant, shown: &mut impl FnMut(Shown<'_>)) -> LeadReport {
+pub(crate) fn exit_code(exit: Exit) -> i32 {
+    match exit {
+        Exit::Exited(code) => code,
+        Exit::Signaled(signal) => 128 + signal,
+    }
+}
+
+pub(crate) fn lead_step(
+    program: &str,
+    rest: &[String],
+    env: &[Vec<u8>],
+) -> io::Result<(Pid, io::PipeReader)> {
+    let (reader, writer) = io::pipe()?;
+    fd::set_nonblocking(reader.as_fd())?;
+    let path = program_path(&String::from_utf8_lossy(env_path(env)), program)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+    let args: Vec<_> = rest.iter().map(String::as_str).collect();
+    let pid = spawn::program(
+        &path,
+        &args,
+        &[
+            (io::stdin().as_fd(), 0),
+            (io::stdout().as_fd(), 1),
+            (writer.as_fd(), 2),
+        ],
+        Env::Only(env),
+        None,
+    )?;
+    Ok((pid, reader))
+}
+
+fn lead(
+    argv: &[String],
+    deadline: Instant,
+    env: &[Vec<u8>],
+    shown: &mut impl FnMut(Shown<'_>),
+) -> LeadReport {
     let Some((program, rest)) = argv.split_first() else {
         return failed("no lead command");
     };
@@ -101,22 +142,17 @@ fn lead(argv: &[String], deadline: Instant, shown: &mut impl FnMut(Shown<'_>)) -
         Ok(signals) => signals,
         Err(error) => return failed(error.to_string()),
     };
-    let mut child = match Command::new(program)
-        .args(rest)
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+    let (child, stderr) = match lead_step(program, rest, env) {
         Ok(child) => child,
         Err(error) => return failed(format!("{program}: {error}")),
     };
-    let Some(stderr) = child.stderr.take() else {
-        return failed("no error output");
-    };
-    let _ = fd::set_nonblocking(stderr.as_fd());
     let (mut tail, mut open) = (Vec::new(), true);
     let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
+        match child.peek_exit() {
+            Ok(Some(status)) => {
+                let _ = child.wait();
+                break status;
+            }
             Ok(None) => {}
             Err(error) => return failed(error.to_string()),
         }
@@ -124,7 +160,7 @@ fn lead(argv: &[String], deadline: Instant, shown: &mut impl FnMut(Shown<'_>)) -
             .checked_duration_since(Instant::now())
             .filter(|left| !left.is_zero())
         else {
-            let _ = child.kill();
+            let _ = child.signal(Signal::Kill);
             let _ = child.wait();
             return failed("the lead step took too long");
         };
@@ -147,10 +183,7 @@ fn lead(argv: &[String], deadline: Instant, shown: &mut impl FnMut(Shown<'_>)) -
     };
     drain(&stderr, &mut tail, shown);
     LeadReport {
-        exit: status
-            .code()
-            .or_else(|| status.signal().map(|signal| 128 + signal))
-            .unwrap_or(1),
+        exit: exit_code(status),
         stderr: String::from_utf8_lossy(&tail).into_owned(),
     }
 }
@@ -159,6 +192,7 @@ pub fn bring_up(
     dir: &Path,
     caller: Option<Caller>,
     name: &RuntimeName,
+    env: &[Vec<u8>],
     shown: &mut impl FnMut(Shown<'_>),
 ) -> Up {
     let started = Instant::now();
@@ -180,7 +214,7 @@ pub fn bring_up(
             announced = true;
         }
         if let Some(argv) = reply.lead {
-            let report = lead(&argv, started + STILL_STARTING, shown);
+            let report = lead(&argv, started + STILL_STARTING, env, shown);
             if let Err(failure) = report_lead(dir, caller.clone(), name, &report) {
                 return Up::Failed(describe(dir, failure));
             }

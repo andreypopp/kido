@@ -846,6 +846,10 @@ most easily:
   acts as a live pane of that runtime, with its token; the user does
   not exist there, and a route that the runtime gate does not name is
   refused.
+- A visit (`ko run`) is a connection: its end is the end of that
+  connection, never a message or a process name. Inside, the pane
+  acts only with the visit's own token, which dies with the visit;
+  the pane's own token acts only on the host socket.
 - A pane token never appears in an argv: the server writes it to a
   `0600` file or an environment, and `ko enter` reads it from there.
 - An exec session's command gets no caller or server environment:

@@ -186,7 +186,13 @@ pub(crate) fn runtime_exec(args: RuntimeExecArgs) -> ExitCode {
             let _ = io::stderr().write_all(bytes);
         }
     };
-    match runtimes::bring_up(&dir, caller.clone(), &name, &mut shown) {
+    match runtimes::bring_up(
+        &dir,
+        caller.clone(),
+        &name,
+        &crate::transport_env(),
+        &mut shown,
+    ) {
         Up::Up => {}
         Up::Failed(message) => return stop(message),
         Up::StillStarting => return stop("still starting".to_owned()),

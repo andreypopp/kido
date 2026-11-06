@@ -610,6 +610,25 @@
             "type": "object"
           },
           {
+            "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "runtime": {
+                "$ref": "#/components/schemas/RuntimeName"
+              },
+              "type": {
+                "const": "pane_runtime",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane"
+            ],
+            "type": "object"
+          },
+          {
             "allOf": [
               {
                 "$ref": "#/components/schemas/ClientRuntime"
@@ -4276,6 +4295,175 @@
           }
         ]
       },
+      "VisitClient": {
+        "description": "The first message must be visit. Only the elected leader sends a lead report.",
+        "oneOf": [
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/VisitRequest"
+              }
+            ],
+            "description": "Starts the visit with the caller's host directory and command.",
+            "properties": {
+              "type": {
+                "const": "visit",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LeadReport"
+              }
+            ],
+            "description": "Reports the end of the interactive start step.",
+            "properties": {
+              "type": {
+                "const": "lead",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "VisitRequest": {
+        "description": "Enters the runtime in the caller's pane until the visit connection closes.",
+        "properties": {
+          "command": {
+            "description": "The command to run without a shell. Without a command, starts the runtime's shell.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cwd": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AbsPath"
+              }
+            ],
+            "description": "The host directory, mapped through the runtime's paths."
+          },
+          "env": {
+            "default": [],
+            "description": "Variables applied after the runtime's variables.",
+            "items": {
+              "$ref": "#/components/schemas/Variable"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "cwd"
+        ],
+        "type": "object"
+      },
+      "VisitServer": {
+        "description": "The runtime's visit updates. Failed and ended are followed by a normal WebSocket close.",
+        "oneOf": [
+          {
+            "description": "The runtime's link is starting.",
+            "properties": {
+              "type": {
+                "const": "starting",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Runs the interactive start step on the pane's terminal.",
+            "properties": {
+              "argv": {
+                "description": "The command of the interactive step.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "lead",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "argv"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The token is ready. Runs the transport on the pane's terminal.",
+            "properties": {
+              "argv": {
+                "description": "The transport command, without the runtime-exec wrapper.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "up",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "argv"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The visit could not start.",
+            "properties": {
+              "message": {
+                "description": "The reason that the visit failed.",
+                "type": "string"
+              },
+              "type": {
+                "const": "failed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "message"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The server ended the visit.",
+            "properties": {
+              "message": {
+                "description": "The reason that the visit ended.",
+                "type": "string"
+              },
+              "type": {
+                "const": "ended",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "message"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "Volume": {
         "additionalProperties": false,
         "description": "A directory of the host that the container mounts, files only: never a socket.",
@@ -6013,6 +6201,64 @@
               }
             },
             "description": "The common error body."
+          }
+        }
+      }
+    },
+    "/runtimes/{name}/visit": {
+      "get": {
+        "description": "Enters a runtime in the caller's existing pane until the WebSocket closes.",
+        "operationId": "VisitRuntime",
+        "parameters": [
+          {
+            "example": "dev",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RuntimeName"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        },
+        "x-ko-websocket": {
+          "recv": {
+            "$ref": "#/components/schemas/VisitServer"
+          },
+          "send": {
+            "$ref": "#/components/schemas/VisitClient"
           }
         }
       }

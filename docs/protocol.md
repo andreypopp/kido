@@ -116,7 +116,9 @@ A runtime's listener (section 15) is a second way in. A connection
 that it accepts belongs to that runtime for its life, whatever its
 peer uid. Each request on it must carry the identity of a live pane
 of that runtime, else it is `refused`: the user does not exist there,
-and a host pane's token is refused there.
+and a host pane's token is refused there. A pane that visits a
+runtime acts there only with its visit token, and on the host socket
+only with its own token (section 15).
 
 A request that carries an `Origin` header is refused (`refused`). A
 unix-socket server has no origin of its own. No native client sends
@@ -502,7 +504,8 @@ in the order the server produced them. The kinds, as `ClientEvent` in
 change, with the rows of the panes that the change adds (section 7);
 a window's new `focus` when only the focus changed (section 7); a
 pane's title, pwd, pid, foreground, status, variable, death, bell,
-notification, progress and message stream (`inbox`, section 7); a pane's clipboard write and clipboard
+notification, progress, message stream (`inbox`, section 7) and
+runtime (`pane_runtime`, section 15); a pane's clipboard write and clipboard
 read (section 9), a runtime's entry and
 its removal (section 15), and this client's
 own state when a `switch` or a removal moved it. The OSC 133 steps
@@ -592,8 +595,10 @@ invariants.
   must name a pane that is not dead: an unknown one is `not_found`, a
   dead one `gone`; a caller that acts as a pane may name only itself.
   No cycle can form, because the parent exists before the child.
-  `runtime` names the runtime that runs the pane, for its life, and
-  the row carries it (section 15); absent is the host. `cwd` is an
+  `runtime` names the runtime that the pane is born in, for its
+  life; absent is the host. The row's `runtime` is the runtime that
+  runs the pane's program now, which a visit changes without a
+  revision (section 15). `cwd` is an
   absolute host path or `{pane}`, the directory of that pane
   (section 15, "The cwd of a new pane").
   `close` is `exit` (the default), `keep` or `on_exit`; all three,
@@ -1172,8 +1177,9 @@ pane wrappers until the link is `Up` or `Failed`; its reply names the
 step to run for the one waiter elected to lead. The leader reports
 the step's end with `POST /runtimes/NAME/lead`. Both accept only a
 host-connection pane whose `runtime` is NAME. `POST /runtimes/NAME/down`
-takes the link down; it refuses while the runtime has live panes or
-exec sessions unless `force`, which removes the panes first.
+takes the link down; it refuses while the runtime has live panes,
+visits or exec sessions unless `force`, which ends the visits and
+removes the born panes first.
 `DELETE /runtimes/NAME` refuses in the same way and also removes the
 runtime's directory, except its empty `io/`, which a container may
 mount; for an ad-hoc runtime it also drops the definition. The
@@ -1197,6 +1203,31 @@ exit (design-runtimes.md, "Ad-hoc runtimes"). `PUT /layout` refuses,
 as `invalid`, a document that moves a runtime pane into a session
 where its runtime's name resolves to another runtime ("pane_N runs in
 runtime NAME of SESSION" for a pane of an ad-hoc runtime).
+
+**`GET /runtimes/NAME/visit`** is a WebSocket of JSON text messages
+(`VisitClient` and `VisitServer` in `ko_server/src/protocol.rs`)
+that holds a host pane in a runtime while the connection lives
+(design-runtimes.md, "A visit"). Only a host-connection pane identity
+of a live host pane may open it; a pane that is already in a runtime
+or visits one is `refused` ("pane_N is already in runtime NAME"), and
+a name that does not resolve is `not_found`. The first client message
+is `visit`, with the pane's host `cwd`, mapped as a host `cwd` of
+`POST /panes`, an optional `command` and the `env` after the
+runtime's; nothing else is read before it. The server then sends
+`starting` while the link starts, `lead` with the step's argv to the
+one waiter that it elects, as a wait's reply does, `up` with the
+transport's argv to run on the pane's tty, `failed` when the start
+fails or the request is wrong, and `ended` when the server ends the
+visit: a down, the end of the session, the pane's death or removal.
+The client answers `lead` with its `lead` report, the `LeadReport`
+of `POST /runtimes/NAME/lead`. After `failed` or `ended` the server
+closes with 1000. The end of the connection from either side ends
+the visit. While the visit lasts the pane is in the runtime: the
+row's `runtime` is NAME, and inside, `KO_PANE_TOKEN` is a visit token
+that the server mints for each visit and that acts as the pane only
+on that runtime's connections, until the visit ends. Every client
+gets a `pane_runtime` event with the pane and NAME at the start, and
+without `runtime` at the end; the revision does not change.
 
 **Clients** learn the runtimes from `/client`, not from a pane row:
 the row carries only the pane's `runtime` name (decided 2026-11-03).

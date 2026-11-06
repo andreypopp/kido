@@ -198,15 +198,7 @@ impl State {
         let Some(key) = self.exec_key(index) else {
             return;
         };
-        if matches!(
-            self.runtimes.state(&key),
-            LinkState::Down | LinkState::Failed { .. }
-        ) {
-            match self.runtimes.settings(&key) {
-                Ok(settings) => self.runtimes.begin(poll, &key, settings),
-                Err(error) => return self.exec_fail(poll, index, error.message),
-            }
-        }
+
         if let Some((session, _)) = self.exec_session(index) {
             session.stage = Stage::Queued {
                 request,
@@ -214,7 +206,9 @@ impl State {
                 retried: false,
             };
         }
-        self.touch_runtime(poll, &key);
+        if let Err(error) = self.start_runtime(poll, &key) {
+            return self.exec_fail(poll, index, error.message);
+        }
         self.exec_proceed(poll, index, &key);
         self.runtimes_changed(poll);
     }

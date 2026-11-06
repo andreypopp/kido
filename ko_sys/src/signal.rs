@@ -23,7 +23,7 @@ pub enum Signal {
 }
 
 impl Signal {
-    pub(crate) fn number(self) -> libc::c_int {
+    pub fn number(self) -> libc::c_int {
         match self {
             Signal::Child => libc::SIGCHLD,
             Signal::Hup => libc::SIGHUP,

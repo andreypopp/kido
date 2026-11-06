@@ -15,8 +15,12 @@ repeat them.
 ## The model
 
 A runtime has a name (`RuntimeName` in `ko_config/src/values.rs`), a
-kind, a link and a listener. The pane record and its row carry
-`runtime`, immutable, absent for the host. A runtime pane's `ko-pane`
+kind, a link and a listener. The pane record holds its membership
+(`Membership` in `ko_server/src/pane.rs`): `Born`, a pane that
+started in the runtime and stays there for its life, or `Visit`, a
+host pane that `ko run` holds in the runtime ("A visit"). The row
+carries the runtime's name while either lasts, absent for the host.
+A runtime pane's `ko-pane`
 runs on the host with a host pty, as every pane's does. Its program
 is the transport's client, which carries the pty into the runtime.
 Thus the ring, the views, the status model and the input path do not
@@ -58,8 +62,8 @@ classification of ssh's exits), `exec.rs` (the helper process,
 the session's stages and the session limiter) and `leaving.rs` (the
 children that the server ended, until they are reaped).
 `state/runtime_ops.rs` holds the routes, the identity gate and the
-idle rule, and `state/exec_ops.rs` drives the exec sessions through
-their stages; `exec.rs` holds the helper's types and its spawn, and
+idle rule, `state/exec_ops.rs` drives the exec sessions through
+their stages, and `state/visit_ops.rs` drives the visits ("A visit"); `exec.rs` holds the helper's types and its spawn, and
 no session logic. A new kind adds one arm
 to each method of the dispatch in `mod.rs` and its bodies in a module
 of its own.
@@ -156,6 +160,93 @@ delete cleanup of every ad-hoc runtime, because nothing would remove
 its container later; the cleanup runs after the server as the stops
 do.
 
+## A visit
+
+`ko run` (`ko/src/run.rs`, over `visit` in
+`ko_client/src/visit.rs`) enters a runtime in place: the current
+host pane runs the runtime's transport until the transport exits,
+and then it is a host pane again. `ko run <kind>` first defines the
+runtime ("Ad-hoc runtimes"); `ko run --name NAME` visits a defined
+or a configured runtime. The visit is the WebSocket `GET
+/runtimes/NAME/visit` (protocol.md, section 15) with the pane's
+identity on the host socket.
+
+**The lease is a connection.** Membership gates identity, so its
+start and its end are facts that the server owns. Only a process of
+the pane has the pane's token, which starts the visit. The kernel
+closes the socket when `ko run` exits for any reason, `SIGKILL`
+included, and the end of the connection ends the visit; no message
+and no process name ends it. Thus `ko run` does not exec the
+transport as `ko ssh` does. It keeps the connection and runs the
+transport as its child on the pane's tty, in the shell's foreground
+process group. Its loop (`ko_sys::event`, one thread) watches the
+connection and the signals. `SIGHUP` and `SIGTERM` go to the child;
+`SIGINT` reaches the child's group from the tty itself. Before a
+child runs (the link starts, or another pane leads), each of the
+three signals ends the visit, and `ko run` exits with 128 plus the
+signal. The child's
+exit closes the connection and is `ko run`'s exit status. When the
+server ends the visit or the connection closes, `ko run` sends the
+child `SIGHUP`, then `SIGKILL` after half of `KO_STOP_ESCALATION_MS`,
+prints `runtime NAME: <message>` and exits 1. A `lead` message runs
+the lead step as the pane wrapper's leader does ("Leader election"),
+and the visit reports it on its own connection.
+
+**The server at a visit** (`ko_server/src/state/visit_ops.rs`) sets
+the pane's membership to `Visit` with a fresh visit token, sends the
+pane's `pane_runtime` event, counts the pane as an occupant (the idle
+timer stops), and starts a link that is `Down` or `Failed`, as a
+first pane does. The visit then waits for the link as a pane wrapper
+does (`Who::Visit`). On `Up` the server writes the token file, or
+passes the token to the remote as for a pane ("The ssh kind"), and
+sends the transport's argv: the argv of a pane in the runtime
+(`runtime::pane::transport`, "How a pane starts in a runtime")
+without the `ko runtime-exec` head, because the visit did the wait.
+Its cwd is the host directory that `ko run` read, mapped forward as
+a host `cwd` is, else the runtime's `cwd`. On `Failed` the visit gets
+the message and `ko run` exits 1 at the host prompt.
+
+**The visit token.** Inside the runtime, `KO_PANE` is the pane and
+`KO_PANE_TOKEN` is the visit token, not the pane's own token. On a
+runtime connection a request acts as a pane when the pane is in that
+runtime and the token is its membership's token: the pane's own for
+`Born`, the visit token for `Visit`. On the host connection only the
+pane's own token counts. The host shell's token cannot be rotated,
+because it is in that shell's environment; a visit is short and
+repeats. A process that a visit leaves inside the runtime holds a
+token that dies with the visit, and the next visit mints another, so
+nothing inside acts as the pane between or across visits.
+
+**The end of a visit** (`State::end_visit`): the membership goes,
+the `pane_runtime` event follows without `runtime`, the token file
+goes, the idle rule counts the runtime again, and the runtime
+connections whose last request acted as the pane close (the
+`caller` of `Conn` in `ko_server/src/conn.rs`). A visit ends when its
+connection closes or hangs up, when its link leaves `Up` (a down of
+any cause, a `DELETE`, the end of its session, a failed restart, the
+server's exit), and when the pane dies or leaves the document. A
+forced down ends a visit with `ended` and keeps the pane, which is
+back at its host prompt; a down without `force` refuses while a visit
+lasts, as it refuses while panes live.
+
+**Refusals.** A pane that is in a runtime or visits one is refused
+("pane_N is already in runtime NAME"), so a `ko run &` beside a
+visit is refused, and the shell of a visiting pane waits for its
+`ko run`. Inside a runtime, every `/runtimes` route is refused by the
+gate, so a nested `ko run` is refused by the server; `ko run` says
+`inside runtime NAME; run it from a host pane` when `KO_RUNTIME` is
+set, before it asks. A runtime inside a runtime would run the inner
+kind's start stages inside the outer runtime, which the server cannot
+reach. `ko run` also refuses without a pane identity ("needs a
+pane") and without a terminal on stdin ("needs the pane's
+terminal").
+
+**Status and cwd.** While a visit lasts, the pane is read as a
+runtime pane ("Status", "The cwd"): its OSC records alone, no
+foreground title, `ssh.dest` ignored, no OS cwd read, and its OSC 7
+report is a runtime path that maps back through `paths`. After the
+visit, the host shell's next prompt reports the host directory.
+
 **A fresh definition** has not yet reached `Up`. An image runtime of
 the container kinds finds its container `ko-<tag>` by name, and a
 container of that name can remain from an earlier server that ended
@@ -206,7 +297,10 @@ explicitly. Both clients name the source pane as the new pane's
 pane's place ("The cwd"), so a split of a runtime pane starts in the
 same runtime directory. Without a source pane, Kido.app sends the home
 directory and the terminal client its own host cwd (none when it is
-remote).
+remote). A visited pane is a runtime pane while its visit lasts: the
+`pane_runtime` event updates the row's `runtime`, so the mark comes
+and goes with it, and a split of a visited pane is born in that
+runtime.
 
 ## The link
 
@@ -259,9 +353,9 @@ report is the only event: the server watches no file.
 no live exec session goes down after the `server: runtime_idle_seconds`
 of the configuration file (600; a fraction is permitted; `none` disables
 the rule; read when the timer starts), on a loop timer.
-`POST /runtimes/NAME/down` refuses while the runtime has live panes or
-exec sessions, unless `force`, which removes them first as a stop
-does. `DELETE /runtimes/NAME` refuses in the same way, takes the link
+`POST /runtimes/NAME/down` refuses while the runtime has live panes,
+visits or exec sessions, unless `force`, which ends the visits and
+removes the born panes first as a stop does. `DELETE /runtimes/NAME` refuses in the same way, takes the link
 down and removes the runtime directory but its empty `io/` ("The
 runtime directory"); for an ad-hoc runtime it also drops the
 definition ("Ad-hoc runtimes"). Down unbinds the listener,
@@ -296,7 +390,8 @@ which socket delivered a connection, so a kind can hand a
 socketpair end to it with the same tag.
 
 On a runtime connection every request must carry the identity
-(`Ko-Pane` and `Ko-Pane-Token`) of a live pane of that runtime, else
+(`Ko-Pane` and `Ko-Pane-Token`) of a live pane of that runtime, with
+the token of its membership ("A visit", "The visit token"), else
 it is `refused`, "a runtime connection must act as one of its panes".
 A host pane's token is refused there, so a token that leaks into a
 runtime buys nothing; so is a pane of another runtime. The user does

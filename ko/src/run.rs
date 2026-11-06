@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -14,9 +15,28 @@ use ko_config::values::{
 use crate::{Target, assignment, fail, inside_runtime, target};
 
 #[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
 pub(crate) struct RunArgsCli {
     #[command(subcommand)]
-    kind: RunKind,
+    kind: Option<RunKind>,
+    #[command(flatten)]
+    entry: Entry,
+}
+
+#[derive(Debug, Args)]
+struct Entry {
+    /// The runtime's name in the current session.
+    #[arg(verbatim_doc_comment, long, required = true, value_parser = |s: &str| RuntimeName::try_from(s.to_owned()))]
+    name: Option<RuntimeName>,
+    /// The server's state directory.
+    #[arg(verbatim_doc_comment, long)]
+    server: Option<PathBuf>,
+    /// Variables for every pane of the runtime, applied before the variables of the request.
+    #[arg(verbatim_doc_comment, long, value_parser = assignment)]
+    env: Vec<(String, String)>,
+    /// The command to run inside the runtime.
+    #[arg(last = true)]
+    command: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -82,15 +102,8 @@ enum RunKind {
 
 #[derive(Debug, Args)]
 struct Shared {
-    /// The runtime's name in the current session.
-    #[arg(verbatim_doc_comment, long, value_parser = |s: &str| RuntimeName::try_from(s.to_owned()))]
-    name: RuntimeName,
-    /// The server's state directory.
-    #[arg(verbatim_doc_comment, long)]
-    server: Option<PathBuf>,
-    /// Variables for every pane of the runtime, applied before the variables of the request.
-    #[arg(verbatim_doc_comment, long, value_parser = assignment)]
-    env: Vec<(String, String)>,
+    #[command(flatten)]
+    entry: Entry,
     /// The directory inside the runtime for a pane whose request names none that maps.
     #[arg(verbatim_doc_comment, long, value_parser = |s: &str| AbsPath::try_from(s.to_owned()))]
     cwd: Option<AbsPath>,
@@ -207,8 +220,11 @@ impl ContainerArgs {
 }
 
 impl RunArgsCli {
-    fn definition(self) -> Result<(RuntimeName, Option<PathBuf>, Runtime), String> {
-        let (shared, kind) = match self.kind {
+    fn definition(self) -> Result<(Entry, Option<Runtime>), String> {
+        let Some(kind) = self.kind else {
+            return Ok((self.entry, None));
+        };
+        let (shared, kind) = match kind {
             RunKind::Ssh {
                 shared,
                 destination,
@@ -252,15 +268,20 @@ impl RunArgsCli {
                 program,
             } => (shared, options.definition(program, ContainerKind::Podman)?),
         };
+        let mut entry = shared.entry;
         let runtime = Runtime {
-            env: Env::try_from(shared.env.into_iter().collect::<BTreeMap<_, _>>())?,
+            env: Env::try_from(
+                std::mem::take(&mut entry.env)
+                    .into_iter()
+                    .collect::<BTreeMap<_, _>>(),
+            )?,
             cwd: shared.cwd,
             paths: shared.paths,
             pi: shared.pi,
             color: shared.color,
             kind,
         };
-        Ok((shared.name, shared.server, runtime))
+        Ok((entry, Some(runtime)))
     }
 }
 
@@ -274,17 +295,76 @@ pub(crate) fn run(args: RunArgsCli) -> ExitCode {
             ),
         );
     }
-    let (name, server, runtime) = match args.definition() {
+    let (
+        Entry {
+            name,
+            server,
+            command,
+            env,
+        },
+        runtime,
+    ) = match args.definition() {
         Ok(definition) => definition,
         Err(error) => return fail("run", error),
     };
+    let Some(name) = name else {
+        return fail("run", "give --name");
+    };
+    let requested_env = env
+        .into_iter()
+        .map(|(name, value)| ko_server::protocol::Variable { name, value })
+        .collect();
     let Target { dir, caller } = target(server);
-    if caller.is_none() {
+    let Some(caller) = caller else {
         return fail("run", "needs a pane");
+    };
+    if !io::stdin().is_terminal() {
+        return fail("run", "needs the pane's terminal");
     }
-    match ko_client::api::put_runtime(&dir, caller, name, &runtime) {
-        Ok(_) => ExitCode::SUCCESS,
-        Err(error) => fail("run", ko_client::api::describe(&dir, error)),
+    if let Some(runtime) = runtime
+        && let Err(error) =
+            ko_client::api::put_runtime(&dir, Some(caller.clone()), name.clone(), &runtime)
+    {
+        return fail("run", ko_client::api::describe(&dir, error));
+    }
+    let cwd = match std::env::current_dir()
+        .map_err(|error| error.to_string())
+        .and_then(|path| AbsPath::try_from(path.to_string_lossy().into_owned()))
+    {
+        Ok(cwd) => cwd,
+        Err(error) => return fail("run", error),
+    };
+    let escalation = ko_server::config::stop_escalation() / 2;
+    let request = ko_server::protocol::VisitRequest {
+        cwd,
+        command: (!command.is_empty()).then_some(command),
+        env: requested_env,
+    };
+    let mut shown = |shown: ko_client::runtimes::Shown<'_>| {
+        let mut stderr = io::stderr().lock();
+        match shown {
+            ko_client::runtimes::Shown::Starting => {
+                let _ = writeln!(stderr, "starting runtime {name}");
+            }
+            ko_client::runtimes::Shown::Stderr(bytes) => {
+                let _ = stderr.write_all(bytes);
+            }
+        }
+    };
+    match ko_client::visit::visit(
+        &dir,
+        caller,
+        &name,
+        request,
+        escalation,
+        &crate::transport_env(),
+        &mut shown,
+    ) {
+        Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+        Err(message) => {
+            let _ = writeln!(io::stderr().lock(), "runtime {name}: {message}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -313,7 +393,7 @@ mod tests {
             for arg in run.find_subcommand(kind).unwrap().get_arguments() {
                 let id = arg.get_id().as_str();
                 let field = match id {
-                    "name" | "server" | "help" => continue,
+                    "name" | "server" | "help" | "command" => continue,
                     "env" | "cwd" | "paths" | "pi" | "color" => &defs["Runtime"]["properties"][id],
                     "from_image" => &defs["Source"]["oneOf"][0],
                     "from_container" => &defs["Source"]["oneOf"][1],
@@ -349,14 +429,28 @@ mod tests {
         let Some(crate::Command::Run(args)) = cli.command else {
             panic!("not run")
         };
-        let (_, _, actual) = args.definition().unwrap();
+        assert!(
+            crate::Cli::try_parse_from(["ko", "run", "--name", "a", "command", "--name", "b"])
+                .is_err()
+        );
+        let join =
+            crate::Cli::try_parse_from(["ko", "run", "--name", "dev", "--env", "A=B", "--", "sh"])
+                .unwrap();
+        let Some(crate::Command::Run(join)) = join.command else {
+            panic!("not run")
+        };
+        let (entry, definition) = join.definition().unwrap();
+        assert!(definition.is_none());
+        assert_eq!(entry.command, ["sh"]);
+        assert_eq!(entry.env, [("A".to_owned(), "B".to_owned())]);
+        let (_, actual) = args.definition().unwrap();
         let file =
             std::env::temp_dir().join(format!("ko-run-definition-{}.yaml", std::process::id()));
         std::fs::write(&file, "runtimes:\n  dev:\n    container:\n      from: {image: I}\n      volumes: [{host: /a, runtime: /b, options: ro}]\n").unwrap();
         let config = ko_config::config::load(&file).unwrap();
         std::fs::remove_file(file).unwrap();
         assert_eq!(
-            actual,
+            actual.unwrap(),
             config.runtimes[&RuntimeName::try_from("dev".to_owned()).unwrap()]
         );
     }

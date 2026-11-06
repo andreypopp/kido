@@ -58,15 +58,19 @@ pub(crate) fn call<T: Serialize + DeserializeOwned>(
     let response = exchange(dir, caller, (method, &path), body.as_bytes(), within)
         .map_err(ReplyError::Server)?;
     if response.status / 100 != 2 {
-        return Err(match protocol::decode::<protocol::Error>(&response.body) {
-            Ok(error) => ReplyError::Refused(error),
-            Err(_) => ReplyError::Server(Failure::Failed(
-                String::from_utf8_lossy(&response.body).into_owned(),
-            )),
-        });
+        return Err(response_error(&response));
     }
     protocol::decode(&response.body)
         .map_err(|error| ReplyError::Server(Failure::Failed(error.to_string())))
+}
+
+pub(crate) fn response_error(response: &Response) -> ReplyError {
+    match protocol::decode::<protocol::Error>(&response.body) {
+        Ok(error) => ReplyError::Refused(error),
+        Err(_) => ReplyError::Server(Failure::Failed(
+            String::from_utf8_lossy(&response.body).into_owned(),
+        )),
+    }
 }
 
 pub fn version(

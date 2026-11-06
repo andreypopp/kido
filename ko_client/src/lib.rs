@@ -11,4 +11,5 @@ pub mod runtimes;
 pub mod schema;
 pub mod status;
 mod tree;
+pub mod visit;
 pub mod wire;

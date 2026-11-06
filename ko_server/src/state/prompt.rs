@@ -43,7 +43,7 @@ impl State {
                 let Some(pane) = self.panes.find(id) else {
                     continue;
                 };
-                let kind = pane_kind::of_pane(pane.telemetry(), pane.vars());
+                let kind = pane_kind::of_pane(pane);
                 let title = lossy(pane.proc().title());
                 if matches!(
                     kind,
