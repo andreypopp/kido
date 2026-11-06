@@ -145,8 +145,8 @@ import XCTest
         return host
     }
 
-    private func owner(_ host: PrivateHost, _ scope: PrivateHost.Scope, alias: String = "h", path: String? = nil) throws -> WindowOwner {
-        let board = NSPasteboard(name: .init("ko-remote-" + UUID().uuidString))
+    private func owner(_ host: PrivateHost, _ scope: PrivateHost.Scope, alias: String = "h", path: String? = nil, pasteboard: NSPasteboard? = nil) throws -> WindowOwner {
+        let board = pasteboard ?? NSPasteboard(name: .init("ko-remote-" + UUID().uuidString))
         let owner = WindowOwner(host: .remote(alias), runtime: try XCTUnwrap(GhosttyRuntime(pasteboard: board)), start: false)
         owner.testSSH = { [unowned host] ssh in
             ssh.testConfiguration = host.root + "/ssh_config"
@@ -298,6 +298,53 @@ import XCTest
     }
 
     // MARK: with a private sshd (KO_E2E_HOST_SSH=1)
+
+    func testNestedSSHClipboardConsentAndUnattendedRefusal() throws {
+        let host = try host(), scope = try host.scope()
+        let fifo = scope.home + "/output", replies = scope.home + "/replies"
+        XCTAssertEqual(mkfifo(fifo, 0o600), 0)
+        let output = try XCTUnwrap(FileHandle(forUpdatingAtPath: fifo))
+        defer { try? output.close() }
+        let program = "stty raw -echo; : > \(SSH.quote(scope.home + "/ready")); cat \(SSH.quote(fifo)) & exec cat > \(SSH.quote(replies))"
+        let command = "exec /usr/bin/ssh -F \(SSH.quote(host.root + "/ssh_config")) -tt h \(SSH.quote("/bin/sh -c " + SSH.quote(program)))"
+        _ = try serverWithPane(command, at: scope.dir)
+        let board = NSPasteboard(name: .init("ko-nested-" + UUID().uuidString))
+        let owner = try owner(host, scope, pasteboard: board)
+        connected(owner)
+        owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        owner.window.orderFront(nil)
+        try owner.testClient?.focus(true)
+        defer { WindowOwner.resetClipboardPermissions([owner]) }
+        wait("the nested ssh program") { FileManager.default.fileExists(atPath: scope.home + "/ready") }
+        func send(_ text: String) throws { try output.write(contentsOf: Data(text.utf8)) }
+        func received() -> String { (try? String(contentsOfFile: replies, encoding: .utf8)) ?? "" }
+        let query = "\u{1b}]52;c;?\u{7}"
+        let answer = "\u{1b}]52;c;bmVzdGVkIOKckw==\u{7}"
+        try send(answer)
+        wait("the nested ssh write reaches the Mac") { board.string(forType: .string) == "nested ✓" }
+        try send(query)
+        wait("the remote clipboard sheet") { owner.preparedAlert != nil }
+        let alert = try XCTUnwrap(owner.preparedAlert)
+        XCTAssertEqual(alert.alert.messageText, "Allow applications on “h” to read your Mac clipboard?")
+        owner.respondToAlert(.alertFirstButtonReturn)
+        wait("Allow for this connection answers the far host") { received() == answer }
+        try send(query)
+        wait("the connection grant answers without a sheet") { received() == answer + answer }
+        XCTAssertNil(owner.preparedAlert)
+        owner.clipboardPermission = [:]
+        try send(query)
+        wait("the second consent sheet") { owner.preparedAlert != nil }
+        owner.respondToAlert(.alertSecondButtonReturn)
+        wait("Always allow answers the far host") { received() == answer + answer + answer }
+        XCTAssertTrue(WindowOwner.clipboardConsent.allows(.remote("h")))
+        WindowOwner.resetClipboardPermissions([owner])
+        owner.window.orderOut(nil)
+        try send(query)
+        wait("an unattended remote window refuses before the server's eight second timer", within: 2) {
+            received() == answer + answer + answer + "\u{1b}]52;c;\u{7}"
+        }
+        XCTAssertNil(owner.preparedAlert)
+    }
 
     func testARemoteOwnerRestoresAViewClosesOnEmptyAndCreatesASessionOnReopen() throws {
         let host = try host(), scope = try host.scope()

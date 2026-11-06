@@ -870,6 +870,17 @@ that is still open when the pane exits is refused. An OSC 5522 read's
 password and name are not forwarded: ko makes no paste events, and the
 answerer applies its own consent to every read.
 
+Programs detect the clipboard from the pane's terminal, also through
+ssh: its DA1 reply names feature 52 (the Ghostty fork adds it when
+`ko-pane` installs its clipboard callback), its XTGETTCAP reply
+gives `Ms`, and DECRQM reports mode 5522. The terminfo that an
+interactive `ko ssh` (no remote command) installs on the far host has
+`Ms`; a remote command or a plain `ssh` installs none, so
+the far host's own `xterm-ghostty` entry, if any, applies. A
+program's own provider choice is outside ko: nvim's
+`clipboard=unnamedplus` on a macOS host picks `pbcopy` before OSC 52,
+and tmux forwards OSC 52 only with its `set-clipboard` option on.
+
 The terminal client (`ko_tui/src/clipboard.rs`) forwards a write to
 the outer terminal as OSC 52, and answers a read that asks for
 `text/plain` with an OSC 52 query to the outer terminal. It refuses a

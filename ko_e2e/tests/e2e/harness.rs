@@ -538,6 +538,16 @@ impl Ws {
         &self.last
     }
 
+    pub(crate) fn close(&mut self) {
+        self.socket
+            .close(Some(tungstenite::protocol::CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: "".into(),
+            }))
+            .unwrap();
+        self.closed("the server closes the view transport");
+    }
+
     pub(crate) fn close_frame(&self) -> Option<&(u16, String)> {
         self.close.as_ref()
     }

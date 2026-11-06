@@ -6,6 +6,7 @@ use crate::harness::{
     Message, Server, Ws, base64, poll, quote, start, start_with, tagged, text_of,
 };
 use crate::outer::{Keys, Outer};
+use crate::sshd::{HOST, Remote};
 
 const EMPTY: &str = "\x1b]52;c;\x1b\\";
 
@@ -61,6 +62,132 @@ fn tags_until(ws: &mut Ws, last: &str) -> Vec<String> {
 }
 
 #[test]
+fn clipboard_through_nested_ssh() {
+    if !crate::harness::enabled("KO_E2E_HOST_SSH") {
+        return;
+    }
+    let s = start(&[]);
+    let remote = Remote::with_ko(&s.dir);
+    let ko = crate::harness::ko();
+    let bin = ko.parent().unwrap();
+    let ssh_pane = |transport: &str, program: &str| {
+        s.pane(&format!(
+            "export PATH={}:\"$PATH\"; exec {transport} -F {} -tt {HOST} {}",
+            quote(text_of(bin)),
+            quote(text_of(&remote.dir.join("ssh_config"))),
+            quote(&format!("/bin/sh -c {}", quote(program)))
+        ))
+    };
+    let record = s.dir.join("forwarded-answers");
+    let program = format!(
+        "stty raw -echo; printf READY; read line; \
+         printf '\\033]52;c;b3V0ZXItd3JpdGU=\\033\\\\\\033]52;c;?\\033\\\\'; \
+         dd bs=1 count={} > {} 2>/dev/null; \
+         printf '\\033]52;c;'; head -c 524000 /dev/zero | base64 | tr -d '\\n'; printf '\\033\\\\'; exec cat",
+        reply_of("outer-write").len(),
+        quote(text_of(&record))
+    );
+    let pane = ssh_pane("/usr/bin/ssh", &program);
+    let outer = Outer::new(&s.dir, Keys::Extended);
+    outer.attach_host(HOST, &remote.bin);
+    outer.contains("READY");
+    s.text(&pane, "\n");
+    poll(
+        "the nested ssh read through the forwarded terminal client",
+        || recorded(&record) == reply_of("outer-write"),
+    );
+    outer.wait("the near-limit nested ssh write", || {
+        outer.clipboard() == vec![0; 524000]
+    });
+    let write = reply_of("outer-write");
+    assert!(
+        outer
+            .output()
+            .windows(write.len())
+            .any(|bytes| bytes == write.as_bytes())
+    );
+    outer.detach();
+    s.delete(&format!("/panes/{pane}"));
+
+    for (index, transport) in [
+        "/usr/bin/ssh".to_owned(),
+        format!("{} ssh", quote(text_of(&ko))),
+        quote(text_of(&bin.join("../share/ko/bin/ssh"))),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let record = s.dir.join(format!("kitty-answers-{index}"));
+        let program = format!(
+            "stty raw -echo; printf READY; read line; \
+             printf '\\033]5522;type=write:id=w\\033\\\\\\033]5522;type=wdata:mime=dGV4dC9wbGFpbg==;aGk=\\033\\\\\\033]5522;type=wdata\\033\\\\'; \
+             printf '\\033]5522;type=read:id=r;LiB0ZXh0L3BsYWlu\\007'; exec cat > {}",
+            quote(text_of(&record))
+        );
+        let pane = ssh_pane(transport, &program);
+        s.screen_has(&pane, "READY");
+        let (mut client, _) = s.app_client(json!({"pane": pane}), true, (80, 24));
+        s.text(&pane, "\n");
+        let write = client.event("clipboard_write");
+        assert_eq!(write["contents"][0]["data"], "aGk=");
+        let read = client.event("clipboard_read");
+        assert_eq!(read["list"], true);
+        assert_eq!(read["mimes"], json!(["text/plain"]));
+        client.send(&served(
+            &read["id"],
+            &[("text/plain", "héllo\n世界")],
+            &["text/plain"],
+        ));
+        poll("the kitty clipboard read reaches the far host", || {
+            recorded(&record).contains("status=DONE:id=r")
+        });
+        let got = recorded(&record);
+        assert!(got.contains("\x1b]5522;type=write:status=DONE:id=w\x1b\\"));
+        assert!(got.contains("mime=Lg==;dGV4dC9wbGFpbgo=\x07"));
+        assert!(got.contains(&format!(
+            "mime=dGV4dC9wbGFpbg==;{}\x07",
+            base64("héllo\n世界".as_bytes())
+        )));
+        s.delete(&format!("/panes/{pane}"));
+    }
+}
+
+#[test]
+fn clipboard_capabilities_and_selection() {
+    let s = start(&[]);
+    let record = s.dir.join("capabilities");
+    let pane = reading_pane(
+        &s,
+        &record,
+        "\\033[c\\033P+q4d73\\033\\\\\\033[?5522$p\\033]52;s;aGk=\\007\\033]52;s;?\\007",
+    );
+    let (mut client, _) = s.app_client(json!({"pane": pane}), true, (80, 24));
+    s.text(&pane, "\n");
+    let write = client.event("clipboard_write");
+    assert_eq!(write["location"], "selection");
+    assert_eq!(write["contents"][0]["data"], "aGk=");
+    let read = client.event("clipboard_read");
+    assert_eq!(read["location"], "selection");
+    client.send(&answer(&read["id"], "selection"));
+    poll("the capability and selection replies", || {
+        recorded(&record).ends_with("\x1b]52;s;c2VsZWN0aW9u\x07")
+    });
+    let got = recorded(&record);
+    assert!(
+        got.contains(";52c"),
+        "DA1 advertises clipboard support: {got:?}"
+    );
+    assert!(
+        got.contains("\x1bP1+r4D73=5C455D35323B25703125733B25703225735C303037\x1b\\"),
+        "XTGETTCAP Ms encodes OSC 52: {got:?}"
+    );
+    assert!(
+        got.contains("\x1b[?5522;2$y"),
+        "kitty clipboard mode is supported: {got:?}"
+    );
+}
+
+#[test]
 fn one_clipboard_read_gets_exactly_one_answer_with_two_clients() {
     let s = start(&[]);
     let record = s.dir.join("answers");
@@ -94,6 +221,38 @@ fn one_clipboard_read_gets_exactly_one_answer_with_two_clients() {
         recorded(&record),
         format!("{}BARRIER", reply_of("from-the-focus"))
     );
+}
+
+#[test]
+fn clipboard_read_survives_a_view_reconnect_but_not_an_unattended_session() {
+    let s = start(&[]);
+    let record = s.dir.join("reconnected-answer");
+    let pane = reading_pane(&s, &record, OSC_52_ST);
+    let (mut client, _) = s.app_client(json!({"pane": pane}), true, (80, 24));
+    let mut view = s.ws(&format!("/panes/{pane}/view"));
+    s.text(&pane, "\n");
+    let read = client.event("clipboard_read");
+    view.close();
+    let _reconnected = s.ws(&format!("/panes/{pane}/view"));
+    client.send(&answer(&read["id"], "after reconnect"));
+    poll("the pending read is independent of its view", || {
+        recorded(&record) == reply_of("after reconnect")
+    });
+
+    let record = s.dir.join("unattended-answer");
+    let unattended = reading_pane(&s, &record, OSC_52_ST);
+    let created = s
+        .ko(
+            &["api", "-X", "POST", "--input", "-", "/panes"],
+            "{\"command\":{\"type\":\"argv\",\"argv\":[\"/bin/cat\"]}}",
+        )
+        .json();
+    client.send(&json!({"type": "select", "pane": created["pane"]}));
+    tags_until(&mut client, "selected");
+    s.text(&unattended, "\n");
+    poll("a different session is not attended", || {
+        recorded(&record) == EMPTY
+    });
 }
 
 #[test]

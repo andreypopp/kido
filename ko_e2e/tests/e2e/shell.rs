@@ -89,7 +89,7 @@ fn ko_ssh_installs_remote_terminfo() {
         request["close"] = json!("keep");
         let pane = s.new_pane(request);
         s.screen_has(&pane, "REMOTE_READY");
-        s.text(&pane, "printf 'TERM_RESULT=%s\\n' \"$TERM\"; infocmp xterm-ghostty >/dev/null 2>&1 && printf 'ENTRY_%s\\n' OK\r");
+        s.text(&pane, "printf 'TERM_RESULT=%s\\n' \"$TERM\"; infocmp -x xterm-ghostty | grep -qF 'Ms=\\E]52;%p1%s;%p2%s\\007' && printf 'ENTRY_%s\\n' OK\r");
         s.screen_has(
             &pane,
             if case == "readonly" {
