@@ -352,6 +352,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runtimes/{name}/up": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Starts the link of a runtime without a pane and returns without waiting for the link. */
+        post: operations["UpRuntime"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runtimes/{name}/visit": {
         parameters: {
             query?: never;
@@ -593,6 +610,10 @@ export interface components {
             /** @constant */
             type: "runtime";
         } & components["schemas"]["ClientRuntime"]) | {
+            message?: string;
+            /** @constant */
+            type: "runtimes_error";
+        } | {
             name: components["schemas"]["RuntimeName"];
             source: components["schemas"]["RuntimeSource"];
             /** @constant */
@@ -1645,6 +1666,8 @@ export interface components {
             now: number;
             /** @description Runtimes with their link states, configured first by name, then by session. */
             runtimes: components["schemas"]["ClientRuntime"][];
+            /** @description The latest runtime configuration error; absent after a successful read. */
+            runtimes_error?: string;
         };
         Window: {
             cell_px?: components["schemas"]["CellPixels"];
@@ -2688,6 +2711,41 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    UpRuntime: {
+        parameters: {
+            query?: {
+                /** @example session_1 */
+                session?: components["schemas"]["SessionId"];
+            };
+            header?: never;
+            path: {
+                /** @example dev */
+                name: components["schemas"]["RuntimeName"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Empty"];
+                };
             };
             /** @description The common error body. */
             default: {

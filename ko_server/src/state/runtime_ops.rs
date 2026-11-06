@@ -221,7 +221,7 @@ impl State {
         }
     }
 
-    pub(super) fn runtimes_changed(&mut self, poll: &mut Poll) {
+    pub(crate) fn runtimes_changed(&mut self, poll: &mut Poll) {
         for key in self.runtimes.take_departed() {
             self.end_runtime_visits(poll, &key, "runtime link ended");
         }
@@ -295,7 +295,7 @@ impl State {
         }
     }
 
-    pub(super) fn start_runtime(&mut self, poll: &mut Poll, key: &RuntimeKey) -> Result<(), Error> {
+    pub(crate) fn start_runtime(&mut self, poll: &mut Poll, key: &RuntimeKey) -> Result<(), Error> {
         if matches!(
             self.runtimes.state(key),
             LinkState::Down | LinkState::Failed { .. }

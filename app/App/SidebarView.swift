@@ -51,10 +51,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     var onIntent: () -> Void = {}
     var commandTarget: () -> PaneView? = { nil }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        item.action == #selector(runCommand(_:)) && window?.firstResponder === table && commandTarget()?.validateMenuItem(item) == true
+        item.action == #selector(runCommand(_:)) && (window?.firstResponder === table || window?.firstResponder === runtimeSection) && commandTarget()?.validateMenuItem(item) == true
     }
     @objc func runCommand(_ sender: NSMenuItem) {
-        guard window?.firstResponder === table, let pane = commandTarget() else { return }
+        guard window?.firstResponder === table || window?.firstResponder === runtimeSection, let pane = commandTarget() else { return }
         leave()
         pane.runCommand(sender)
     }
@@ -138,6 +138,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
             }
         }
     }
+    let runtimeSection = RuntimeSection()
     private let table = Table()
     private let scroll = DropScroll()
     private let statusLine = NSTextField(labelWithString: "")
@@ -166,6 +167,11 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     var captionDelay: TimeInterval = 0.2
 
     override var isFlipped: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        runtimeSection.selection = nil
+        super.mouseDown(with: event)
+    }
 
     init() {
         super.init(frame: .zero)
@@ -202,7 +208,18 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         statusLine.isSelectable = true
         statusLine.lineBreakMode = .byTruncatingTail
         statusLine.maximumNumberOfLines = 1
-        for view in [scroll, statusLine] { addSubview(view) }
+        for view in [scroll, statusLine, runtimeSection] { addSubview(view) }
+        runtimeSection.changed = { [weak self] in self?.needsLayout = true }
+        runtimeSection.selected = { [weak self] in self?.table.deselectAll(nil) }
+        runtimeSection.previous = { [weak self] in
+            guard let self else { return }
+            focus()
+            if let last = items.lastIndex(where: { $0.target != nil }) {
+                table.selectRowIndexes([last], byExtendingSelection: false)
+                table.scrollRowToVisible(last)
+            }
+        }
+        runtimeSection.leave = { [weak self] in self?.leave() }
         wantsLayer = true
     }
 
@@ -232,7 +249,11 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         let note: CGFloat = statusLine.isHidden ? 0 : 16
         statusLine.frame = CGRect(x: 8, y: safeAreaInsets.top + 2, width: inner, height: note)
         let top = safeAreaInsets.top + 2 + note
-        scroll.frame = CGRect(x: 8, y: top, width: inner, height: max(0, bounds.height - top - 10))
+        let footer = runtimeSection.height
+        runtimeSection.isHidden = footer == 0
+        runtimeSection.frame = CGRect(x: 0, y: max(top, bounds.height - footer - 10), width: bounds.width, height: footer)
+        runtimeSection.dark = terminalDark
+        scroll.frame = CGRect(x: 8, y: top, width: inner, height: max(0, bounds.height - top - 10 - footer))
         table.setFrameSize(NSSize(width: scroll.contentSize.width, height: table.frame.height))
     }
 
@@ -398,6 +419,12 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     private func move(_ delta: Int) {
         var i = table.selectedRow
         repeat { i += delta } while i >= 0 && i < table.numberOfRows && entry(i)?.target == nil
+        if i >= table.numberOfRows, runtimeSection.height > 0 {
+            table.deselectAll(nil)
+            runtimeSection.selection = .header
+            window?.makeFirstResponder(runtimeSection)
+            return
+        }
         guard i >= 0, i < table.numberOfRows else { return }
         table.selectRowIndexes([i], byExtendingSelection: false)
         table.scrollRowToVisible(i)
@@ -432,7 +459,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        if !rendering { onIntent() }
+        if !rendering { runtimeSection.selection = nil; onIntent() }
     }
 
     private func source(_ row: SidebarRow) -> Source? {

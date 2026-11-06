@@ -3,7 +3,7 @@ use std::fmt::Write;
 use crate::copy;
 use ko_client::status::Mark;
 use ko_server::ids::{PaneId, WindowId};
-use ko_server::protocol::{Session, Window};
+use ko_server::protocol::{LinkState, Session, Window};
 use ko_vt::render::{Attribute, Attributes, Cell, Colour, CursorShape, Frame, Style};
 use ko_vt::unicode::{clusters, width};
 
@@ -11,7 +11,7 @@ use crate::differ::Differ;
 use crate::geometry::{Connections, Geometry, Rect};
 use crate::keys::{HELP, Kill, Mode, Rename, State};
 use crate::modes::Modes;
-use crate::sidebar::Line;
+use crate::sidebar::{Line, RuntimeLine};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Status {
@@ -81,7 +81,27 @@ pub(crate) struct Layout {
     pub(crate) geometry: std::rc::Rc<Geometry>,
     pub(crate) active: Option<PaneId>,
     pub(crate) sidebar: Vec<Line>,
+    pub(crate) runtimes: Vec<RuntimeLine>,
     pub(crate) choosing: Option<usize>,
+}
+
+impl Layout {
+    fn runtime_rows(&self) -> &[RuntimeLine] {
+        if self.sidebar.len() + 1 + self.runtimes.len() <= self.pane_rows {
+            &self.runtimes
+        } else {
+            &[]
+        }
+    }
+
+    pub(crate) fn tree_rows(&self) -> usize {
+        let footer = self.runtime_rows();
+        if footer.is_empty() {
+            self.pane_rows
+        } else {
+            self.pane_rows.saturating_sub(footer.len() + 1)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,7 +296,13 @@ fn draw_ui(l: &Layout) -> Vec<Cell> {
             put(&mut grid, l.cols, l.pane_x - 1, y, &bar);
         }
     }
-    for (y, line) in l.sidebar.iter().enumerate().take(l.pane_rows) {
+    let footer = l.runtime_rows();
+    let footer_top = l.pane_rows.saturating_sub(footer.len());
+    let dim = Style {
+        attrs: Attributes::default().with(Attribute::Dim),
+        ..Style::default()
+    };
+    for (y, line) in l.sidebar.iter().enumerate().take(l.tree_rows()) {
         let inverse = l.choosing.map_or(line.selected, |chosen| chosen == y);
         let (mark, style) = glyph(line.mark);
         let base = if inverse {
@@ -285,10 +311,6 @@ fn draw_ui(l: &Layout) -> Vec<Cell> {
             Style::default()
         };
         let part = |text, own| (text, if inverse { base } else { own });
-        let dim = Style {
-            attrs: Attributes::default().with(Attribute::Dim),
-            ..Style::default()
-        };
         draw_row(
             &mut grid,
             l.cols,
@@ -301,6 +323,54 @@ fn draw_ui(l: &Layout) -> Vec<Cell> {
                 part(line.title.as_str(), Style::default()),
                 part(line.runtime.as_str(), dim),
             ],
+        );
+    }
+    for (i, line) in footer.iter().enumerate() {
+        let (name, state, style, name_style) = match line {
+            RuntimeLine::Header { up } => ("runtimes", format!("{up} up"), dim, dim),
+            RuntimeLine::Runtime { name, state, panes } => {
+                let (text, style) = match state {
+                    LinkState::Up => (
+                        if *panes > 0 {
+                            format!("up {panes}")
+                        } else {
+                            "up".to_owned()
+                        },
+                        dim,
+                    ),
+                    LinkState::Down => ("down".to_owned(), dim),
+                    LinkState::Starting => (
+                        format!("starting {}", crate::sidebar::state_glyph(state)),
+                        dim,
+                    ),
+                    LinkState::Failed { .. } => (
+                        format!("failed {}", crate::sidebar::state_glyph(state)),
+                        Style {
+                            fg: Colour::Indexed(1),
+                            ..Style::default()
+                        },
+                    ),
+                };
+                (name.as_str(), text, style, Style::default())
+            }
+        };
+        let cols = l.pane_x.saturating_sub(1);
+        let right = width(&state).min(cols);
+        draw_line(
+            &mut grid,
+            l.cols,
+            (0, footer_top + i),
+            cols.saturating_sub(right + 1),
+            name_style,
+            name,
+        );
+        draw_line(
+            &mut grid,
+            l.cols,
+            (cols - right, footer_top + i),
+            right,
+            style,
+            &state,
         );
     }
     if l.help {
@@ -698,6 +768,7 @@ mod tests {
             copy: Some((pane_id(), copy)),
             geometry: std::rc::Rc::new(geometry(20, 3)),
             active: Some(pane_id()),
+            runtimes: Vec::new(),
             sidebar: Vec::new(),
             choosing: None,
         };
@@ -769,6 +840,7 @@ mod tests {
             copy: None,
             geometry: Default::default(),
             active: Some(pane_id()),
+            runtimes: Vec::new(),
             sidebar: vec![line(1, "\u{754c}", true), line(2, "/tmp", false)],
             choosing: Some(1),
         };
@@ -793,6 +865,93 @@ mod tests {
     }
 
     #[test]
+    fn runtime_rows_are_pinned_below_the_tree_with_a_blank_row_and_a_red_failure() {
+        use ko_server::protocol::LinkState;
+        let layout = Layout {
+            cols: 30,
+            rows: 10,
+            pane_x: 25,
+            pane_rows: 9,
+            status: quiet(),
+            help: false,
+            resizing: None,
+            copy: None,
+            geometry: Default::default(),
+            active: None,
+            choosing: None,
+            sidebar: vec![line(1, "shell", true); 3],
+            runtimes: vec![
+                RuntimeLine::Header { up: 1 },
+                RuntimeLine::Runtime {
+                    name: "buildbox".parse().unwrap(),
+                    state: LinkState::Up,
+                    panes: 3,
+                },
+                RuntimeLine::Runtime {
+                    name: "py311".parse().unwrap(),
+                    state: LinkState::Down,
+                    panes: 0,
+                },
+                RuntimeLine::Runtime {
+                    name: "gpu-1".parse().unwrap(),
+                    state: LinkState::Failed {
+                        message: "refused".into(),
+                    },
+                    panes: 0,
+                },
+                RuntimeLine::Runtime {
+                    name: "e2e".parse().unwrap(),
+                    state: LinkState::Starting,
+                    panes: 0,
+                },
+            ],
+        };
+        let grid = draw_ui(&layout);
+        let rows: Vec<String> = (3..9)
+            .map(|y| {
+                grid[y * 30..y * 30 + 24]
+                    .iter()
+                    .map(|cell| cell.text.as_str())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "                        ",
+                "runtimes            1 up",
+                "buildbox            up 3",
+                "py311               down",
+                "gpu-1           failed ✗",
+                "e2e           starting …",
+            ]
+        );
+        assert_eq!(grid[7 * 30 + 16].style.fg, Colour::Indexed(1));
+        assert_eq!(layout.runtime_rows().len(), 5);
+        assert_eq!(layout.tree_rows(), 3);
+        let cramped = Layout {
+            pane_rows: 8,
+            ..layout
+        };
+        assert_eq!(cramped.runtime_rows(), []);
+        assert_eq!(cramped.tree_rows(), 8);
+        let grid = draw_ui(&cramped);
+        let bottom: String = grid[7 * 30..7 * 30 + 24]
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect();
+        assert_eq!(bottom, "                        ");
+        let crowded = Layout {
+            sidebar: vec![line(1, "shell", false); 8],
+            choosing: Some(7),
+            ..cramped
+        };
+        assert_eq!(crowded.tree_rows(), 8);
+        let grid = draw_ui(&crowded);
+        assert!(grid[7 * 30].style.attrs.has(Attribute::Inverse));
+    }
+
+    #[test]
     fn a_mark_has_its_own_colour_except_on_the_reversed_row_and_titles_stay_aligned() {
         let marked = |number: u64, mark: Mark, selected: bool| Line {
             mark,
@@ -809,6 +968,7 @@ mod tests {
             copy: None,
             geometry: Default::default(),
             active: Some(pane_id()),
+            runtimes: Vec::new(),
             sidebar: vec![
                 marked(1, Mark::Running, false),
                 marked(2, Mark::Waiting, true),
@@ -856,6 +1016,7 @@ mod tests {
             copy: None,
             geometry: Default::default(),
             active: Some(pane_id()),
+            runtimes: Vec::new(),
             sidebar: vec![line(1, "sh", true)],
             choosing: None,
         };
@@ -875,6 +1036,7 @@ mod tests {
             copy: None,
             geometry: std::rc::Rc::new(geometry(4, 2)),
             active: Some(pane_id()),
+            runtimes: Vec::new(),
             sidebar: Vec::new(),
             choosing: None,
         };
@@ -927,6 +1089,7 @@ mod tests {
             copy: None,
             geometry: std::rc::Rc::new(geometry(6, 3)),
             active: Some(pane_id()),
+            runtimes: Vec::new(),
             sidebar: Vec::new(),
             choosing: None,
         };
@@ -975,6 +1138,7 @@ mod tests {
             copy: None,
             geometry: Default::default(),
             active: Some(pane_id()),
+            runtimes: Vec::new(),
             sidebar: Vec::new(),
             choosing: None,
         };
@@ -1007,6 +1171,7 @@ mod tests {
             copy: None,
             geometry: std::rc::Rc::new(geometry(40, 19)),
             active: Some(pane_id()),
+            runtimes: Vec::new(),
             sidebar: Vec::new(),
             choosing: None,
         };
@@ -1061,6 +1226,7 @@ mod tests {
             copy: None,
             geometry: std::rc::Rc::new(geometry(8, 2)),
             active: Some(pane_id()),
+            runtimes: Vec::new(),
             sidebar: Vec::new(),
             choosing: None,
         };
@@ -1103,6 +1269,7 @@ mod tests {
             copy: None,
             geometry: std::rc::Rc::new(crate::geometry::window(&window)),
             active: Some(pane_id()),
+            runtimes: Vec::new(),
             sidebar: Vec::new(),
             choosing: None,
         };
@@ -1230,6 +1397,7 @@ mod tests {
             copy: None,
             geometry: std::rc::Rc::new(geometry),
             active: Some(floating),
+            runtimes: Vec::new(),
             sidebar: Vec::new(),
             choosing: None,
         };
@@ -1403,6 +1571,7 @@ mod tests {
             copy: None,
             geometry: Default::default(),
             active: Some(pane_id()),
+            runtimes: Vec::new(),
             sidebar: Vec::new(),
             choosing: None,
         };

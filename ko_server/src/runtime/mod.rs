@@ -464,6 +464,7 @@ pub(crate) struct Registry {
     announced: BTreeMap<RuntimeKey, ClientRuntime>,
     pending: Vec<ClientEvent>,
     configured: Option<Configured>,
+    config_error: Option<String>,
     dirty: bool,
     exe: PathBuf,
     escalation: Duration,
@@ -555,6 +556,7 @@ impl Registry {
             announced: BTreeMap::new(),
             pending: Vec::new(),
             configured: None,
+            config_error: None,
             dirty: false,
             exe: config.exe.clone(),
             escalation: config.stop_escalation / 2,
@@ -598,40 +600,49 @@ impl Registry {
         &mut self,
         loaded: &'a Result<settings::Config, LoadError>,
     ) -> Result<&'a settings::Config, Error> {
-        let config = loaded.as_ref().map_err(|error| match error {
-            LoadError::Invalid(problem) => Error::new(
-                ErrorKind::Invalid,
-                format!("{}: {problem}", self.file.display()),
-            ),
-            LoadError::Io(message) => Error::new(ErrorKind::Io, message.clone()),
-        })?;
-        if let Some((name, message)) = config
-            .runtimes
-            .iter()
-            .find_map(|(name, runtime)| self.command_error(runtime).map(|message| (name, message)))
-        {
-            return Err(Error::new(
-                ErrorKind::Invalid,
-                format!(
-                    "{}: runtimes: {name}: command: {message}",
-                    self.file.display()
+        let result = (|| {
+            let config = loaded.as_ref().map_err(|error| match error {
+                LoadError::Invalid(problem) => Error::new(
+                    ErrorKind::Invalid,
+                    format!("{}: {problem}", self.file.display()),
                 ),
-            ));
+                LoadError::Io(message) => Error::new(ErrorKind::Io, message.clone()),
+            })?;
+            if let Some((name, message)) = config.runtimes.iter().find_map(|(name, runtime)| {
+                self.command_error(runtime).map(|message| (name, message))
+            }) {
+                return Err(Error::new(
+                    ErrorKind::Invalid,
+                    format!(
+                        "{}: runtimes: {name}: command: {message}",
+                        self.file.display()
+                    ),
+                ));
+            }
+            self.configured = Some(
+                config
+                    .runtimes
+                    .iter()
+                    .map(|(name, runtime)| {
+                        (
+                            RuntimeKey::config(name.clone()),
+                            (kind(runtime), runtime.color.clone()),
+                        )
+                    })
+                    .collect(),
+            );
+            self.dirty = true;
+            Ok(config)
+        })();
+        let message = result
+            .as_ref()
+            .err()
+            .map(|error: &Error| error.message.clone());
+        if self.config_error != message {
+            self.config_error = message.clone();
+            self.pending.push(ClientEvent::RuntimesError { message });
         }
-        self.configured = Some(
-            config
-                .runtimes
-                .iter()
-                .map(|(name, runtime)| {
-                    (
-                        RuntimeKey::config(name.clone()),
-                        (kind(runtime), runtime.color.clone()),
-                    )
-                })
-                .collect(),
-        );
-        self.dirty = true;
-        Ok(config)
+        result
     }
 
     pub(crate) fn resolve(
@@ -838,6 +849,10 @@ impl Registry {
                 self.pending.push(ClientEvent::Runtime(entry));
             }
         }
+    }
+
+    pub(crate) fn config_error(&self) -> Option<&str> {
+        self.config_error.as_deref()
     }
 
     pub(crate) fn listed(

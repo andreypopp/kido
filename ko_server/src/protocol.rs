@@ -1533,6 +1533,9 @@ pub struct Welcome {
     pub now: u64,
     /// Runtimes with their link states, configured first by name, then by session.
     pub runtimes: Vec<ClientRuntime>,
+    /// The latest runtime configuration error; absent after a successful read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtimes_error: Option<String>,
 }
 
 #[derive(
@@ -1660,6 +1663,11 @@ pub enum ClientEvent {
     },
     /// A runtime was added to the list, or its kind, colour or link state changed.
     Runtime(ClientRuntime),
+    /// The runtime configuration error changed. An absent message clears the error.
+    RuntimesError {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
     /// A runtime left the configuration and has no live link.
     RuntimeDeleted {
         name: RuntimeName,

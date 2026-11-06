@@ -1019,7 +1019,8 @@ File → **Runtimes**, after the connect items, is built when it opens
 from the key window's runtimes, one item for each runtime of its
 `Welcome`; the item of a session's runtime names the session after
 the runtime. The palette's runtime step has the same action as its last
-row ([Command palette](#command-palette)). Both call
+row ([Command palette](#command-palette)), and the sidebar's
+[Runtimes section](#runtimes-section) has it on each row. All call
 `WindowOwner.shutDownRuntime`, which `canShutDownRuntime` gates: the
 action exists only while the runtime is starting or up. It sends
 `ko_client_runtime_down`, `POST /runtimes/NAME/down` with `force` and,
@@ -1699,8 +1700,9 @@ without a connection. While the table is first responder, docked or
 floating, a pane menu command (Command-W, Command-T, the splits, pane
 selection, zoom) first leaves the sidebar as Escape does and then acts on
 the active pane, as it would without sidebar focus; the menu's
-nil-target action otherwise finds no responder there. Left/Right do nothing; headers do not activate or
-fold. Only the first selected event after a request installs deferred
+nil-target action otherwise finds no responder there. Left/Right do nothing; session headers do not activate or
+fold. Down from the last pane row goes to the Runtimes header when the
+section exists ([Runtimes section](#runtimes-section)). Only the first selected event after a request installs deferred
 focus; failures preserve focus. One monotonic UI-intent revision advances
 on selection/focus changes and navigation. Each request captures it; only
 a still-current completion leaves the sidebar or installs deferred focus.
@@ -1725,6 +1727,56 @@ success draws a checkmark and an unseen failure red. A program record's
 done or error outcome becomes quiet when its pane's outcome is seen
 (the core's `records_seen`). Seen is not persisted across launches. The sidebar is visible by
 default; it does not automatically collapse at narrow widths.
+
+### Runtimes section
+
+`RuntimeSection` (`app/App/RuntimeSection.swift`) is a footer of
+`SidebarView` below the table, not rows of the table: the sessions
+scroll above it and it never scrolls, so the state of the runtimes and
+the start and stop actions stay one click away in a long tree. The
+approved design, with its geometry and strings, is
+`app/design/runtimes-section/NOTES.md`; the snapshots of
+`RuntimeSectionTests` pin each of its states in both themes.
+
+The rows are the model JSON's runtimes whose `section` is true, in
+the `Welcome`'s order. The core sets it (`Model::runtime_section` in
+`ko_client/src/model.rs`, which the terminal client calls too) for the
+configured runtimes and those of the current session, the session of
+`KoModel.current`; another session's runtimes do not appear, and the
+list follows a session switch. The core also counts each runtime's
+live panes in one pass (`live_panes`); the rows read it, and so does
+`runtimePaneCount` for the Shut Down sheet and File → Runtimes. A session's row has no suffix, because every row
+belongs to this session or to the configuration. With no row and no
+configuration error the section does not exist. A row shows the swatch
+([Runtime marks](#runtime-marks)), the name and `kind · state`, plus
+`· N panes` while the runtime is up and `live_panes` is not
+zero; a failed row shows the message in red, truncated, whole in the
+tooltip. The model's `runtimes_error` (docs/protocol.md, section 15,
+"Clients") is one red row above the rows, which stay the last list
+that decoded, and the header's aggregate then reads `config error`.
+The aggregate otherwise counts the listed rows; when it does not fit,
+it shows only its most urgent count.
+
+The header is the one selectable header of the sidebar, because
+collapse needs a key target. Its collapsed state is the app's
+`runtimesCollapsed` default, not a fact of ko. A click selects a row
+and nothing else: the user rejected a highlight of the runtime's panes.
+Return or a double-click opens the palette's runtime step for it
+([Command palette](#command-palette)). The hover button, Space and the
+context menu run Start for a down or failed runtime and Shut Down for
+a starting or up one. Start is `ko_client_runtime_up`, `POST
+/runtimes/NAME/up` with the `session` query for a session's runtime;
+the row then follows the `runtime` events. Every runtime can start this
+way, because no start reads user input (docs/design-runtimes.md, "No
+user input"). Shut Down is the one flow of [Shutting down a
+runtime](#shutting-down-a-runtime). The wire has no stopping state:
+from the send of a Shut Down until the request completes, the runtime
+is neither starting nor up, it leaves the list or the window
+reconnects, the row shows `stopping` with a spinner and both actions
+are disabled. The model's events coalesce, so the row cannot wait for a
+`Down` that it may never see: another client can start the runtime
+again before the next model read. The section is disabled while the window
+has no connection.
 ## Command palette
 
 Command-P (View → Command Palette…) opens the palette and closes it.

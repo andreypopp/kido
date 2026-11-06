@@ -1609,6 +1609,105 @@ fn the_terminal_client_marks_a_runtime_pane_in_the_sidebar_and_a_new_window_runs
 }
 
 #[test]
+fn runtime_up_starts_without_a_pane_resolves_a_session_and_expires_when_idle() {
+    let s = serve(
+        "server:\n  runtime_idle_seconds: 0.3\nruntimes:\n  box: {command: {}}\n",
+        &[],
+    );
+    let before = s.rows();
+    s.request("POST", "/runtimes/box/up", None, 200);
+    wait_state(&s, "box", "up");
+    assert_eq!(s.rows(), before);
+    wait_state(&s, "box", "down");
+    assert!(!s.dir.join("runtimes/box/io/socket").exists());
+    let missing: Value =
+        serde_json::from_str(&s.request("POST", "/runtimes/missing/up", None, 404)).unwrap();
+    assert_eq!(missing["kind"], "not_found");
+    let files = Dir::new("ko-rtf-");
+    let gate = fifo(&files, "up");
+    s.rewrite(&format!(
+        "runtimes:\n  held:\n    command:\n      up: [/bin/sh, -c, \"read x < {}\"]\n",
+        gate.display()
+    ));
+    s.request("POST", "/runtimes/held/up", None, 200);
+    wait_state(&s, "held", "starting");
+    s.rewrite("runtimes:\n  held: {command: {up: [/usr/bin/false]}}\n");
+    s.request("POST", "/runtimes/held/up", None, 200);
+    assert_eq!(state(&s, "held"), "starting");
+    release(&s.scratch, &gate, "up");
+    wait_state(&s, "held", "up");
+    s.request("POST", "/runtimes/held/up", None, 200);
+    assert_eq!(state(&s, "held"), "up");
+    let pane = token_pane_in_new_session(&s, "adhoc");
+    let doc = s.doc();
+    let session = doc["layout"]["sessions"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    s.ko_as(
+        Some(&pane),
+        &["api", "--method", "PUT", "--input", "-", "/runtimes/dev"],
+        "{\"command\":{}}",
+    )
+    .ok();
+    s.request(
+        "POST",
+        &format!("/runtimes/dev/up?session={session}"),
+        None,
+        200,
+    );
+    let path = format!("/runtimes/dev?session={session}");
+    poll("ad-hoc runtime up", || {
+        let info: Value = serde_json::from_str(&s.request("GET", &path, None, 200)).unwrap();
+        info["state"]["type"] == "up"
+    });
+    assert_eq!(s.rows().len(), before.len() + 1);
+}
+
+#[test]
+fn runtime_configuration_errors_reach_welcome_and_events_and_keep_the_last_good_list() {
+    let s = serve("runtimes:\n  box: {command: {}}\n", &[]);
+    let (mut client, welcome) = s.client(None);
+    assert!(welcome.get("runtimes_error").is_none());
+    s.rewrite("runtimes:\n  box: {prot: bad}\n");
+    s.request("GET", "/runtimes", None, 400);
+    client.within(DEADLINE);
+    let message = loop {
+        let Message::Text(text) = client.read() else {
+            continue;
+        };
+        if let Some((tag, event)) = crate::harness::tagged(&text)
+            && tag == "runtimes_error"
+        {
+            break event["message"].as_str().unwrap().to_owned();
+        }
+    };
+    assert!(message.contains("config.yaml"), "{message}");
+    assert!(message.contains("prot"), "{message}");
+    let (_, welcome) = s.client(None);
+    assert_eq!(welcome["runtimes_error"], message);
+    assert_eq!(welcome["runtimes"].as_array().unwrap().len(), 1);
+    assert_eq!(welcome["runtimes"][0]["name"], "box");
+    s.rewrite("runtimes:\n  box: {command: {}}\n");
+    s.request("GET", "/runtimes", None, 200);
+    client.within(DEADLINE);
+    loop {
+        let Message::Text(text) = client.read() else {
+            continue;
+        };
+        if let Some((tag, event)) = crate::harness::tagged(&text)
+            && tag == "runtimes_error"
+        {
+            assert!(event.get("message").is_none());
+            break;
+        }
+    }
+}
+
+#[test]
 fn a_client_link_hears_of_a_runtime_that_the_configuration_gains_changes_or_loses() {
     let s = serve("runtimes:\n  a: {command: {}}\n  b: {command: {}}\n", &[]);
     let (mut client, welcome) = s.client(None);

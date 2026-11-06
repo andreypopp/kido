@@ -555,6 +555,11 @@ impl Client {
                     .iter()
                     .position(|item| matches!(item, Item::Pane { id, .. } if *id == chosen))
             }),
+            runtimes: if matches!(self.panel, Panel::Hidden) {
+                Vec::new()
+            } else {
+                sidebar::runtime_lines(&self.model)
+            },
             sidebar: sidebar::lines(
                 self.pane(),
                 &outline,
@@ -1382,6 +1387,7 @@ impl Client {
                     return Ok(());
                 }
                 if matches!(event.kind, MouseKind::Down(_))
+                    && event.y < layout.tree_rows()
                     && event.x + 1 < layout.pane_x
                     && let Some(pane) = layout.sidebar.get(event.y).and_then(|line| line.pane)
                 {

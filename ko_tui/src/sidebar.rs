@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use ko_client::model::{Item, Pane, Place};
 use ko_client::status::{self, Mark};
+use ko_config::values::RuntimeName;
 use ko_server::ids::PaneId;
 use ko_server::protocol::{Cause, ClientRuntime, Dead, LinkState};
 
@@ -15,6 +16,45 @@ pub(crate) struct Line {
     pub(crate) title: String,
     pub(crate) runtime: String,
     pub(crate) selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RuntimeLine {
+    Header {
+        up: usize,
+    },
+    Runtime {
+        name: RuntimeName,
+        state: LinkState,
+        panes: usize,
+    },
+}
+
+pub(crate) fn runtime_lines(model: &ko_client::model::Model) -> Vec<RuntimeLine> {
+    let runtimes = model.runtime_section(model.current_session());
+    if runtimes.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![RuntimeLine::Header {
+        up: runtimes
+            .iter()
+            .filter(|entry| entry.runtime.state == LinkState::Up)
+            .count(),
+    }];
+    lines.extend(runtimes.into_iter().map(|entry| RuntimeLine::Runtime {
+        name: entry.runtime.name.clone(),
+        state: entry.runtime.state.clone(),
+        panes: entry.live_panes,
+    }));
+    lines
+}
+
+pub(crate) fn state_glyph(state: &LinkState) -> &'static str {
+    match state {
+        LinkState::Starting => "…",
+        LinkState::Failed { .. } => "✗",
+        LinkState::Up | LinkState::Down => "",
+    }
 }
 
 pub(crate) fn visible(cols: usize) -> bool {
@@ -68,10 +108,11 @@ fn runtime_suffix(place: Option<Place>, runtimes: &[ClientRuntime]) -> String {
         .iter()
         .find(|runtime| runtime.is(name, place.source()))
         .map(|runtime| &runtime.state);
-    match state {
-        Some(LinkState::Starting) => format!(" {name} \u{2026}"),
-        Some(LinkState::Failed { .. }) => format!(" {name} \u{2717}"),
-        _ => format!(" {name}"),
+    let glyph = state.map_or("", state_glyph);
+    if glyph.is_empty() {
+        format!(" {name}")
+    } else {
+        format!(" {name} {glyph}")
     }
 }
 

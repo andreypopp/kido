@@ -276,6 +276,58 @@ pub unsafe extern "C" fn ko_client_delete(
     code
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeCommand {
+    Up,
+    Down,
+}
+
+fn runtime_command(
+    client: &Client,
+    name: &str,
+    session: Option<&str>,
+    command: RuntimeCommand,
+) -> (Code, Vec<u8>) {
+    let (Ok(name), Ok(session)) = (name.parse(), session.map(str::parse).transpose()) else {
+        return (Code::Argument, Vec::new());
+    };
+    let (route, body) = match command {
+        RuntimeCommand::Up => (Route::UpRuntime { name, session }, String::new()),
+        RuntimeCommand::Down => (
+            Route::DownRuntime { name, session },
+            protocol::json(&protocol::DownRuntime { force: true }),
+        ),
+    };
+    call(client, |socket, id, cancel| {
+        wire::request(socket, (id, None), &route, body.as_bytes(), Some(cancel)).map_err(rejected)
+    })
+}
+
+/// # Safety
+///
+/// `client_` is live, `name` is NUL-terminated, `session` is null or NUL-terminated, and `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ko_client_runtime_up(
+    client_: *const Client,
+    name: *const c_char,
+    session: *const c_char,
+    out: *mut Buffer,
+) -> Code {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let (name_text, session_text) = unsafe { (text_of(name, &scope), text_of(session, &scope)) };
+    if !session.is_null() && session_text.is_none() {
+        return Code::Argument;
+    }
+    let (Some(client), Some(name)) = (client(client_).filter(|_| !out.is_null()), name_text) else {
+        return Code::Argument;
+    };
+    let (code, bytes) = runtime_command(&client, name, session_text, RuntimeCommand::Up);
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, bytes) };
+    code
+}
+
 /// # Safety
 ///
 /// `client_` is live, `name` is NUL-terminated, `session` is null or NUL-terminated, and `out` is writable.
@@ -292,27 +344,10 @@ pub unsafe extern "C" fn ko_client_runtime_down(
     if !session.is_null() && session_text.is_none() {
         return Code::Argument;
     }
-    let session = match session_text.map(str::parse).transpose() {
-        Ok(session) => session,
-        Err(_) => return Code::Argument,
-    };
-
     let (Some(client), Some(name)) = (client(client_).filter(|_| !out.is_null()), name_text) else {
         return Code::Argument;
     };
-    let (code, bytes) = match name.parse() {
-        Ok(name) => call(&client, |socket, id, cancel| {
-            wire::request(
-                socket,
-                (id, None),
-                &Route::DownRuntime { name, session },
-                protocol::json(&protocol::DownRuntime { force: true }).as_bytes(),
-                Some(cancel),
-            )
-            .map_err(rejected)
-        }),
-        Err(_) => (Code::Argument, Vec::new()),
-    };
+    let (code, bytes) = runtime_command(&client, name, session_text, RuntimeCommand::Down);
     // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
     unsafe { put(out, bytes) };
     code

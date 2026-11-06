@@ -1502,6 +1502,7 @@ impl State {
         {
             self.record(diagnostics::Event::Hello { client: client.id });
         }
+        let runtimes_error = self.runtimes.config_error().map(str::to_owned);
         let State {
             document,
             conns,
@@ -1545,6 +1546,7 @@ impl State {
                     instance: self.instance.clone(),
                     now: ko_sys::clock::Mono::now().nanos(),
                     runtimes,
+                    runtimes_error,
                 });
                 wire.ws.send(wire.out, protocol::json(&welcome));
                 let announced = ClientEvent::Layout(layout_panes(document, panes, |_| true));

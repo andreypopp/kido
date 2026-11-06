@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Kido.app · Runtimes section of the sidebar</title>
+<style>
+:root{color-scheme:light dark}
+*{box-sizing:border-box}
+body{margin:0;padding:18px 24px 24px;background:#8d8a84;font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;color:#111}
+.controls{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin:0 auto 12px;max-width:1100px;color:#fff}
+.controls label{display:flex;align-items:center;gap:6px}.controls select{font:inherit;max-width:560px}
+.controls p{margin:0;flex-basis:100%;color:#fffc;font-size:12px}
+.stage{position:relative;width:1100px;height:740px;margin:auto;border-radius:18px;overflow:hidden;box-shadow:0 18px 60px #0003,0 0 0 .5px #0002}
+/* kido-dark #171717: the sidebar shade is the background mixed 5% toward white; kido-light #FFF9EC mixes 5% toward black (sidebar/NOTES.md) */
+.stage{--bg:#171717;--fg:#c9c9c9;--muted:#8f8f8f;--accent:#2466b5;--green:#05ab69;--shade:color-mix(in srgb,var(--bg) 95%,#fff);--text:#dddddd;--dimtext:#9a9a9a;--line:color-mix(in srgb,var(--bg) 82%,var(--fg));--sbline:var(--line);--edge:color-mix(in srgb,var(--fg) 14%,transparent);--sel:#ffffff1a;--running:#30d158;--attention:#ff9f0a;--error:#ff453a;--shadow:#0006;--guide:#4f555c;--sep:#ffffff1a;--menu:color-mix(in srgb,#2a2a2a 92%,transparent);--menuedge:#ffffff26;background:var(--bg);color:var(--text)}
+.stage.light{--bg:#fff9ec;--fg:#424242;--muted:#848484;--accent:#014ca6;--green:#008550;--shade:color-mix(in srgb,var(--bg) 95%,#000);--text:#000000d9;--dimtext:#00000080;--sbline:color-mix(in srgb,var(--bg) 72%,var(--fg));--sel:#0000001a;--running:#34c759;--attention:#ff9500;--error:#ff3b30;--shadow:#0000002e;--guide:#bfbab1;--sep:#0000001a;--menu:color-mix(in srgb,#f4f1ea 94%,transparent);--menuedge:#00000022}
+.app{position:absolute;inset:0;display:flex}
+.header{position:absolute;top:0;left:0;right:0;height:52px;display:flex;align-items:center;padding:0 16px 0 19px;z-index:3}
+.lights{display:flex;gap:9px;margin-right:18px}.lights i{width:14px;height:14px;border-radius:50%;background:linear-gradient(#ff5f57,#ff817a);box-shadow:inset 0 0 0 .5px #e64b43,0 1px 2px #0002}.lights i:nth-child(2){background:linear-gradient(#ffb51b,#ffdb55);box-shadow:inset 0 0 0 .5px #dfa009,0 1px 2px #0002}.lights i:nth-child(3){background:linear-gradient(#49c827,#99e477);box-shadow:inset 0 0 0 .5px #49ae25,0 1px 2px #0002}
+.tabs{position:absolute;left:calc(var(--sw) + 24px);right:40px;top:12px;display:flex;gap:4px;font-size:11px}
+.tab{height:28px;line-height:28px;padding:0 10px 0 26px;position:relative;border-radius:7px;color:var(--text);min-width:85px;max-width:220px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tab.active{background:color-mix(in srgb,var(--text) 7.5%,transparent)}.tab i{position:absolute;left:12px;top:11px;width:6px;height:6px;border-radius:50%;background:var(--running)}.tab.agent{font-weight:600}
+/* the sidebar: sidebar/NOTES.md's redesign draft. 32pt pane rows, a 6pt dot centred 20pt in, the title at 36pt, 15pt nesting */
+.sidebar{width:var(--sw);flex-shrink:0;padding:54px 0 0;background:var(--shade);font-size:13px;border-right:1px solid var(--sbline);position:relative;z-index:2;box-shadow:4px 0 14px -2px var(--shadow);display:flex;flex-direction:column;height:740px}
+.list{flex:1;min-height:0;overflow:hidden;padding:0 8px 10px;position:relative}
+.list.scrolled{display:flex;flex-direction:column;justify-content:flex-end}
+.sh{font-size:11px;font-weight:600;color:var(--dimtext);height:29px;line-height:18px;padding:6.5px 12px 0;display:flex}
+.sh .plus{margin-left:auto;margin-right:-5px;width:11px;color:var(--dimtext);font-size:17px;font-weight:300;line-height:18px;text-align:center}
+.session{margin-bottom:16px}
+.win{border-radius:7px;position:relative}
+.row{display:flex;align-items:center;height:32px;padding:0 12px;position:relative;border-radius:7px;white-space:nowrap}
+.row .ic{width:16px;height:16px;display:grid;place-items:center;flex-shrink:0;margin-right:8px}
+.row .ic i{width:6px;height:6px;border-radius:50%;background:var(--running);display:block}
+.row .ic i.idle{background:var(--dimtext);opacity:.45}.row .ic i.attn{background:var(--attention)}.row .ic i.err{background:var(--error)}
+.row .ic svg{width:6px;height:6px;overflow:visible;fill:none;stroke:var(--running);stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.row .t{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto}.row .t.agent{font-weight:600}.row .t.quiet{color:var(--dimtext)}
+.row.sel{background:color-mix(in srgb,var(--text) 10%,transparent)}
+.row .clock{margin-left:auto;padding-left:9px;font-size:10px;color:var(--dimtext);font-variant-numeric:tabular-nums;flex-shrink:0}
+.rt{display:inline-flex;align-items:center;gap:4px;margin-left:6px;color:var(--dimtext);flex:0 1 auto;min-width:0;overflow:hidden;white-space:nowrap}
+.rt i{width:6px;height:6px;border-radius:50%;background:var(--rc);flex-shrink:0;display:block}
+.rt .st{color:var(--dimtext)}.rt.failed .st{color:var(--error)}.rt .st::before{content:" · "}
+.children{margin-left:15px;position:relative}.children::before{content:"";position:absolute;left:5px;top:-3px;bottom:10px;width:1px;background:var(--guide)}
+.win.multi::before{content:"";position:absolute;left:5px;top:10px;bottom:10px;width:1px;background:var(--guide)}
+/* the Runtimes section */
+.runtimes{flex-shrink:0;padding:0 8px 10px;position:relative}
+.runtimes.pinned::before{content:"";position:absolute;left:8px;right:8px;top:0;height:.5px;background:var(--sep)}
+.runtimes.pinned{padding-top:6px}
+.runtimes.inline{padding:0;margin-top:-6px}
+.rh{height:29px;display:flex;align-items:center;padding:0 12px;font-size:11px;font-weight:600;color:var(--dimtext);border-radius:7px;position:relative}
+.rh .agg{margin-left:auto;padding-left:8px;overflow:hidden;text-overflow:ellipsis;font-weight:400;font-variant-numeric:tabular-nums;white-space:nowrap}.rh .agg b{font-weight:400;color:var(--error)}
+.rh .chev{width:16px;height:16px;display:grid;place-items:center;margin-right:-5px;margin-left:6px;color:var(--dimtext)}.rh .chev svg{width:11px;height:11px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.rh.sel{background:color-mix(in srgb,var(--text) 10%,transparent)}
+.rr{display:flex;align-items:center;height:28px;padding:0 12px;border-radius:7px;white-space:nowrap;position:relative}
+.rr.h32{height:32px}
+.rr .ic{width:16px;height:16px;display:grid;place-items:center;flex-shrink:0;margin-right:8px}
+.rr .ic i{width:6px;height:6px;border-radius:50%;background:var(--rc);display:block}
+.rr .ic i.warn{width:0;height:0;border-radius:0;border-left:5.5px solid transparent;border-right:5.5px solid transparent;border-bottom:9.5px solid var(--error);background:none}
+.rr .n{flex-shrink:0;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.rr .own{color:var(--dimtext);flex-shrink:0}.rr .own+.d{margin-left:12px}
+.rr .d{color:var(--dimtext);margin-left:6px;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:0 1 auto}
+.rr .d .m{color:var(--error)}
+.rr.err .n{color:var(--error);flex:1 1 auto;overflow:hidden;text-overflow:ellipsis}
+.rr.sel{background:color-mix(in srgb,var(--text) 10%,transparent)}
+.rr.hover{background:color-mix(in srgb,var(--text) 5%,transparent)}
+.rr .act{margin-left:auto;padding-left:8px;flex-shrink:0;width:24px;height:16px;display:flex;justify-content:flex-end;align-items:center;color:var(--dimtext)}
+.rr .act .btn{width:16px;height:16px;border-radius:4px;display:grid;place-items:center}.rr .act .btn.on{background:color-mix(in srgb,var(--text) 10%,transparent);color:var(--text)}
+.rr .act svg{width:10px;height:10px;fill:currentColor}
+.rr .sp{width:9px;height:9px;border:1.5px solid var(--dimtext);border-top-color:transparent;border-radius:50%;flex-shrink:0;margin-left:5px}
+.rr.narrow .d{flex:1 1 auto}
+.sub{height:22px;display:flex;align-items:center;padding:0 12px 0 36px;font-size:11px;color:var(--dimtext)}
+.empty{height:28px;display:flex;align-items:center;padding:0 36px;color:var(--dimtext)}
+/* context menu, macOS style */
+.menu{position:absolute;z-index:9;width:196px;padding:5px;border-radius:7px;background:var(--menu);backdrop-filter:blur(20px);box-shadow:0 0 0 .5px var(--menuedge),0 10px 30px #0005;font-size:13px;color:var(--text)}
+.menu .mi{height:22px;line-height:22px;padding:0 10px 0 22px;border-radius:4px;white-space:nowrap}.menu .mi.on{background:var(--accent);color:#fff}.light .menu .mi.on{background:#0a60ff}
+.menu .mi.dis{color:var(--dimtext);opacity:.6}.menu .msep{height:1px;background:color-mix(in srgb,var(--text) 12%,transparent);margin:5px 10px}
+.menu .mi .k{float:right;color:inherit;opacity:.7}
+/* terminal area */
+.area{position:relative;flex:1;margin-top:52px;border-top:1px solid var(--line)}
+.pane{position:absolute;background:var(--shade);color:var(--fg);font:12px/16px ui-monospace,SFMono-Regular,Menlo,monospace;padding:7px 14px 12px;overflow:hidden}.pane:has(.stripe){padding-top:10px}
+.pane.focused{background:var(--bg)}.multi .pane.focused::after{content:"";position:absolute;inset:0;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 50%,transparent);pointer-events:none}
+.pane pre{margin:0;font:inherit;white-space:pre-wrap;position:relative}.pane .m{color:var(--muted)}.pane .b{color:var(--accent)}.pane .g{color:var(--green)}.pane .r{color:var(--error)}
+.pane .cur{display:inline-block;width:7px;height:14px;background:var(--fg);vertical-align:-2px}.pane:not(.focused) .cur{background:none;box-shadow:inset 0 0 0 1px var(--muted)}
+.div{position:absolute;background:var(--line)}.p1{left:0;top:0;width:470px;bottom:0}.p2{left:471px;top:0;right:0;height:360px}.p3{left:471px;top:361px;right:0;bottom:0}.dv{left:470px;top:0;width:1px;bottom:0}.dh{left:471px;top:360px;right:0;height:1px}
+.stripe{position:absolute;left:0;right:0;top:0;height:3px;background:var(--rc);z-index:2}.pane:not(.focused) .stripe{opacity:.55}.pane:not(.focused) .rpill{opacity:.7}
+.rpill{position:absolute;right:8px;top:8px;height:22px;display:flex;align-items:center;gap:6px;padding:0 9px 0 8px;border-radius:8px;background:color-mix(in srgb,var(--bg) 92%,var(--fg) 8%);box-shadow:0 0 0 .5px color-mix(in srgb,var(--fg) 12%,transparent),0 6px 18px #0003,inset 0 .5px 0 #ffffff1f;font:500 11px -apple-system,system-ui,sans-serif;color:var(--text);white-space:nowrap;z-index:3;max-width:300px;overflow:hidden}
+.rpill i{width:6px;height:6px;border-radius:50%;background:var(--rc);flex-shrink:0}.rpill .st{color:var(--dimtext);font-weight:400}.rpill .st::before{content:" · "}
+/* the note card over the terminal: what the state shows */
+.note{position:absolute;right:24px;bottom:24px;width:360px;padding:12px 14px;border-radius:10px;background:color-mix(in srgb,var(--bg) 90%,var(--fg) 10%);box-shadow:0 0 0 .5px var(--edge);font-size:12px;line-height:1.5;color:var(--text);z-index:6}
+.note b{display:block;font-weight:600;margin-bottom:3px}.note .k{font:11px ui-monospace,Menlo,monospace;color:var(--dimtext)}
+/* the terminal client as a cell grid: 7.2×16 cells */
+.tui{position:absolute;inset:0;background:#000;color:#d0d0d0;font:12px/16px ui-monospace,SFMono-Regular,Menlo,monospace;padding:16px 12px;white-space:pre}
+.tui .inv{background:#d0d0d0;color:#000}.tui .dim{color:#777}.tui .g{color:#2aa52a}.tui .y{color:#c9a400;font-weight:700}.tui .r{color:#d33}.tui .bl{color:#4a7fd8}
+.gallery{max-width:1100px;margin:36px auto 0;display:grid;grid-template-columns:1fr 1fr;gap:22px}
+.gallery h3{grid-column:1/-1;margin:0;color:#fff;font-weight:600}
+.thumb{position:relative;width:100%;aspect-ratio:1100/740;overflow:hidden;border-radius:9px;box-shadow:0 8px 24px #0003}
+.thumb .stage{position:absolute;left:0;top:0;transform-origin:0 0;transform:scale(var(--k));margin:0;border-radius:0}
+.cap{color:#fff;font-size:12px;margin-top:6px}
+</style></head><body>
+<div class="controls"><strong>Runtimes section · sidebar bottom</strong>
+<label>State <select id="state">
+<option value="collapsed">Collapsed · header with the aggregate only</option>
+<option value="expanded">Expanded · pinned at the bottom (recommended): down, starting, up with 3 panes, failed</option>
+<option value="pinned-long">Pinned · a long session list scrolls above the section</option>
+<option value="scrolling">Scrolling · the section is the last block of the list (rejected), scrolled to the end</option>
+<option value="rows-32">Rows · 32pt like pane rows (rejected)</option>
+<option value="none-hidden">None configured · section hidden (recommended)</option>
+<option value="none-header">None configured · header with "No runtimes" (rejected)</option>
+<option value="config-error">Config error · the file does not decode; the last good list stays</option>
+<option value="hover">Hover · the action button at the trailing end (play on py311)</option>
+<option value="hover-stop">Hover · stop on buildbox (up)</option>
+<option value="selected">Selected · buildbox selected</option>
+<option value="menu">Context menu · on buildbox</option>
+<option value="narrow">Narrow · 200pt sidebar</option>
+<option value="adhoc">Ad-hoc · the current session's runtime "dev" listed after the configured ones (decided)</option>
+<option value="adhoc-grouped">Ad-hoc · grouped under a session sub-header (rejected)</option>
+<option value="stopping">Stopping · after Shut Down, before the server's Down event</option>
+<option value="tui">ko_tui · the same section in the cell grid (proposal)</option>
+</select></label>
+<label>Theme <select id="theme"><option>Light</option><option>Dark</option></select></label>
+<p>Proposal, nothing decided. A collapsible section at the bottom of Kido.app's sidebar lists the runtimes of the Welcome with their kind, link state and live pane count, so the user sees which are configured and running, and can start or shut one down. NOTES.md has the geometry, the strings, the rules and the open questions.</p>
+</div>
+<div class="stage light" id="stage"></div>
+<div class="gallery" id="gallery"><h3>Every state, light and dark</h3></div>
+<script>
+const fnv=s=>{let h=0x811c9dc5;for(const b of new TextEncoder().encode(s)){h^=b;h=Math.imul(h,0x01000193)>>>0}return h};
+// the runtime fixture of runtime/mockup.html, with py311 down and e2e as podman starting; gpu-1 keeps the configured amber
+const BASE={buildbox:{kind:'ssh',state:'up',panes:3},py311:{kind:'container',state:'down',panes:0},'gpu-1':{kind:'ssh',state:'failed',message:'ssh: connect to host gpu-1 port 22: Connection refused',panes:0,color:'#d08a2a'},e2e:{kind:'podman',state:'starting',panes:1}};
+let RT={};
+function colour(name,light){const r=RT[name]||BASE[name];if(r&&r.color)return r.color;const h=fnv(name)%360;return light?`hsl(${h} 58% 42%)`:`hsl(${h} 55% 64%)`}
+const rc=(name,light)=>`--rc:${colour(name,light)}`;
+const ico={check:'<svg viewBox="0 0 6 6"><path d="M0.2 3.2 2.1 5.1 5.8 1.1"/></svg>',
+right:'<svg viewBox="0 0 12 12"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>',down:'<svg viewBox="0 0 12 12"><path d="M2.5 4.5 6 8l3.5-3.5"/></svg>',
+play:'<svg viewBox="0 0 10 10"><path d="M2 1.2v7.6L8.6 5z"/></svg>',stop:'<svg viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" rx="1.2"/></svg>'};
+function suffix(name,light){const r=RT[name]||BASE[name];const st=r.state==='up'||r.state==='down'?'':`<span class="st">${r.state}</span>`;return `<span class="rt${r.state==='failed'?' failed':''}" style="${rc(name,light)}"><i></i>${name}${st}</span>`}
+function row(o,light){const ic=o.mark==='done'?`<span class="ic">${ico.check}</span>`:`<span class="ic"><i class="${o.mark||''}"></i></span>`;
+  return `<div class="row${o.sel?' sel':''}">${ic}<span class="t${o.agent?' agent':''}${o.quiet?' quiet':''}">${o.title}</span>${o.rt?suffix(o.rt,light):''}${o.clock?`<span class="clock">${o.clock}</span>`:''}</div>`}
+// the tree: buildbox has three live panes with row.runtime (make verify, make e2e, @pi-review); @kido-app is a routed pi, a host pane with the mark
+function tree(light,o={}){
+  const main=`<div class="session"><div class="sh">main<span class="plus">+</span></div><div class="win multi">${row({mark:'',title:'make verify',rt:'buildbox',sel:!o.noFocus,clock:'3m05s'},light)}${row({mark:'idle',title:'Terminal',quiet:true},light)}${row({mark:'',title:'@kido-app',agent:true,rt:'buildbox'},light)}<div class="children">${row({mark:'',title:'make e2e',clock:'1m12s'},light)}${row({mark:'attn',title:'@pi-review',agent:true},light)}</div></div><div class="win">${row({mark:'err',title:'nvidia-smi',rt:'gpu-1'},light)}</div><div class="win">${row({mark:'idle',title:'Terminal',quiet:true,rt:'e2e'},light)}</div>${o.adhoc?`<div class="win">${row({mark:'',title:'pytest -x',rt:'dev',clock:'0m41s'},light)}</div>`:''}<div class="win">${row({mark:'idle',title:'Terminal',quiet:true},light)}</div></div>`;
+  const visa=`<div class="session"><div class="sh">visa<span class="plus">+</span></div><div class="win">${row({mark:'idle',title:'Terminal',quiet:true},light)}</div></div>`;
+  let extra='';if(o.long){for(const s of ['website','tap','bench','notes']){extra+=`<div class="session"><div class="sh">${s}<span class="plus">+</span></div><div class="win">${row({mark:'',title:s==='bench'?'bench/run.sh':'@'+s,agent:s!=='bench',clock:s==='bench'?'12m08s':''},light)}</div><div class="win">${row({mark:'idle',title:'Terminal',quiet:true},light)}</div></div>`}}
+  return main+visa+extra}
+// strings: "kind · state", then " · N panes" only while up with live panes; a failed state carries its message in red
+function detail(r){let s=`${r.kind} · ${r.state}`;if(r.state==='failed')s=`${r.kind} · <span class="m">failed: ${r.message}</span>`;if(r.state==='up'&&r.panes)s+=` · ${r.panes} pane${r.panes===1?'':'s'}`;return s}
+function aggregate(list){const c={};for(const r of list)c[r.state]=(c[r.state]||0)+1;const parts=[];for(const k of ['up','starting','stopping'])if(c[k])parts.push(`${c[k]} ${k}`);if(c.failed)parts.push(`<b>${c.failed} failed</b>`);if(!parts.length)return `${list.length} down`;return parts.join(' · ')}
+function rrow(name,r,light,o={}){const cls=['rr'];if(o.h32)cls.push('h32');if(o.sel)cls.push('sel');if(o.hover)cls.push('hover');if(o.narrow)cls.push('narrow');
+  const act=o.hover?`<span class="act"><span class="btn${o.btnOn?' on':''}">${r.state==='down'||r.state==='failed'?ico.play:ico.stop}</span></span>`:'';
+  const sp=r.state==='starting'||r.state==='stopping'?'<span class="sp"></span>':'';
+  const own=r.owner?`<span class="own">&nbsp;· ${r.owner}</span>`:'';
+  return `<div class="${cls.join(' ')}" style="${rc(name,light)}"><span class="ic"><i></i></span><span class="n">${name}</span>${own}<span class="d">${detail(r)}</span>${sp}${act}</div>`}
+function fixture(s){RT=JSON.parse(JSON.stringify(BASE));
+  if(s==='stopping'){RT.buildbox.state='stopping';RT.buildbox.panes=0}
+  if(s==='adhoc'){RT.dev={kind:'container',state:'up',panes:1}}
+  if(s==='adhoc-grouped'){RT.dev={kind:'container',state:'up',panes:1,owner:'main'}}}
+// the aggregate: every non-zero count, joined with " · "; when the header cannot hold it (200pt), the first of failed, stopping, starting, up alone
+function section(state,light){const s=state;
+  const list=Object.values(RT);
+  const pinned=s!=='scrolling';
+  if(s==='none-hidden')return '';
+  const expanded=s!=='collapsed';
+  const h32=s==='rows-32';
+  const head=`<div class="rh${s==='header-sel'?' sel':''}">Runtimes<span class="agg">${s==='none-header'?'No runtimes':s==='config-error'?'<b>config error</b>':s==='narrow'?'<b>1 failed</b>':aggregate(list)}</span><span class="chev">${expanded?ico.down:ico.right}</span></div>`;
+  let rows='';
+  if(expanded&&s!=='none-header'){
+    if(s==='config-error')rows+=`<div class="rr err" style="--rc:var(--error)" title="/Users/me/.config/ko/config.yaml: runtimes: gpu-1: unknown field &quot;prot&quot;"><span class="ic"><i class="warn"></i></span><span class="n">runtimes: gpu-1: unknown field "prot"</span></div>`;
+    const order=['buildbox','py311','gpu-1','e2e'];
+    for(const n of order){const o={h32,narrow:s==='narrow'};
+      if(n==='py311'&&s==='hover'){o.hover=true;o.btnOn=true}
+      if(n==='buildbox'&&(s==='hover-stop'||s==='menu'))o.hover=true;
+      if(n==='buildbox'&&s==='hover-stop')o.btnOn=true;
+      if(n==='buildbox'&&(s==='selected'||s==='menu'))o.sel=true;
+      rows+=rrow(n,RT[n],light,o)}
+    if(s==='adhoc')rows+=rrow('dev',RT.dev,light,{});
+    if(s==='adhoc-grouped'){RT.dev.owner=null;rows+=`<div class="sub">in session main</div>`+rrow('dev',RT.dev,light,{})}
+  }
+  return `<div class="runtimes ${pinned?'pinned':'inline'}">${head}${rows}</div>`}
+function menu(light){return `<div class="menu" style="left:150px;bottom:92px"><div class="mi dis">Start</div><div class="mi on">Shut Down…</div><div class="msep"></div><div class="mi">Copy Name</div></div>`}
+function sidebar(state,light){const s=state;const sw=s==='narrow'?200:292;
+  const long=s==='pinned-long'||s==='scrolling';
+  const treeHtml=tree(light,{long,adhoc:s.startsWith('adhoc'),noFocus:false});
+  if(s==='scrolling')return `<aside class="sidebar" style="--sw:${sw}px"><div class="list scrolled">${treeHtml}${section(s,light)}</div></aside>`;
+  return `<aside class="sidebar" style="--sw:${sw}px"><div class="list${long?' scrolled':''}">${treeHtml}</div>${section(s,light)}${s==='menu'?menu(light):''}</aside>`}
+const P1=`<pre><span class="m">buildbox ~/src/kido</span>
+<span class="b">$</span> make verify
+cargo build --locked ............ ok  (2.1s)
+cargo clippy --all-targets ...... ok  (6.4s)
+cargo test -p ko_server ......... running
+test delivery::tests::a_slice_reaches_one_view ... ok
+test view::tests::a_stalled_reader_is_skipped ... ok
+<span class="cur"></span></pre>`;
+const P2=`<pre><span class="m">~/Workspace/kido</span>
+<span class="b">$</span> git status --short
+ M ko_server/src/runtime/pane.rs
+<span class="b">$</span> <span class="cur"></span></pre>`;
+const P3=`<pre><span class="m">pi · kido-app</span>
+<span class="m">tools in buildbox at ~/src/kido</span>
+
+<span class="g">›</span> Run the e2e suite and report the failures.
+
+<span class="m">bash: make e2e E2E=runtime   (buildbox)</span>
+
+Three tests fail, all in runtime.rs.
+
+<span class="g">›</span> <span class="cur"></span></pre>`;
+function panes(light){return `<div class="area multi"><section class="pane p1 focused"><div class="stripe" style="${rc('buildbox',light)}"></div><div class="rpill" style="${rc('buildbox',light)}"><i></i>buildbox</div>${P1}</section><section class="pane p2">${P2}</section><section class="pane p3"><div class="stripe" style="${rc('buildbox',light)}"></div><div class="rpill" style="${rc('buildbox',light)}"><i></i>buildbox<span class="st">tools</span></div>${P3}</section><div class="div dv"></div><div class="div dh"></div></div>`}
+const NOTES={
+collapsed:'<b>Collapsed</b>The header keeps the aggregate: <span class="k">1 up · 1 starting · 1 failed</span>, failed in systemRed. A click on the header, Right or Return expands it. The state persists in the app\'s defaults.',
+expanded:'<b>Expanded, pinned</b>A 0.5pt separatorColor hairline above a 29pt header, then one 28pt row for each runtime of the Welcome, in its order. Swatch at x=20, name at x=36, then <span class="k">kind · state</span> and <span class="k">· N panes</span> while up. The session list scrolls above; the section never scrolls.',
+'pinned-long':'<b>Pinned, long list</b>The list is cut above the section and scrolls on its own. The section costs 29pt collapsed or 29 + 28·N pt expanded, so a user with many runtimes collapses it.',
+scrolling:'<b>Scrolling (rejected: pinned is decided)</b>The section is the last block of the list, after the sessions, 16pt below them as a session gap, with no hairline. It is out of view until the user scrolls to the end, so "which runtimes are running" needs a scroll in a long tree.',
+'rows-32':'<b>32pt rows (rejected: 28pt is decided)</b>Runtime rows at the pane rows\' height. The section grows 4pt for each runtime; four runtimes take 157pt instead of 141pt.',
+'none-hidden':'<b>None configured, hidden (recommended)</b>With an empty <span class="k">runtimes</span> list in the Welcome the section is absent; the tree keeps its 10pt bottom inset. It appears with the first <span class="k">runtime</span> event.',
+'none-header':'<b>None configured, header (rejected: hidden is decided)</b>The header stays with "No runtimes" at the right and no chevron action. It tells a new user that runtimes exist, at 29pt for everyone.',
+'config-error':'<b>Config error (proposal)</b>Today a bad <span class="k">config.yaml</span> reaches a client only as the error of a runtime request; the registry keeps announcing the last good list. The proposal adds the message to the Welcome and a <span class="k">runtimes_error</span> event, drawn as a red row above the rows with the file path as its tooltip; the aggregate says "config error".',
+hover:'<b>Hover</b>The whole row gets a 5% labelColor fill and a 16pt button at the trailing inset: play.fill for a down or failed runtime. The detail text does not move; a long detail truncates 24pt earlier. Hovering the button brightens it with a 10% fill at a 4pt radius, as the row ×.',
+'hover-stop':'<b>Hover, stop</b>stop.fill for a starting or up runtime. A click runs Shut Down with the existing sheet when live panes exist: <span class="k">Shut down “buildbox”?</span> — "3 panes run in this runtime. Shutting it down ends them."',
+selected:'<b>Selected</b>One click selects the row (10% labelColor, 7pt corners). The tree above does not change (decided: no pane highlight). Double-click or Return opens the palette\'s runtime step. Escape or a click elsewhere clears it.',
+menu:'<b>Context menu</b>Start (enabled when down or failed), Shut Down… (enabled when starting or up), Copy Name. The same four items for a keyboard-selected row through the Action menu key.',
+narrow:'<b>200pt sidebar</b>The detail truncates with an ellipsis from its end; the name never truncates below 96pt; the aggregate keeps its place. The hover button still fits at the trailing inset.',
+adhoc:'<b>Ad-hoc, the current session\'s (decided)</b>The section lists the configured runtimes and the runtimes of the window\'s current session only; another session\'s do not appear, and the list follows a session switch. A session-owned row (<span class="k">source: session</span>) looks like a configured one: <span class="k">dev</span>, no suffix. Configured ones come first, as the Welcome orders them.',
+'adhoc-grouped':'<b>Ad-hoc, grouped (rejected)</b>Configured runtimes first, then a 22pt 11pt-caption "in session main" above the session\'s runtimes. Clearer ownership, taller section, and a session with one ad-hoc runtime costs two rows.',
+stopping:'<b>Stopping</b>The wire has four states. After Shut Down the app shows <span class="k">ssh · stopping</span> with the spinner until the server\'s <span class="k">runtime</span> event with <span class="k">down</span> or the request fails; the panes already left the tree. A client-local state, like a pending close.',
+};
+function tui(){const W=24;const sb=l=>{const plain=l.replace(/<[^>]+>/g,'');return l+' '.repeat(Math.max(0,W-plain.length))};
+  const lines=[
+    sb('<span class="dim">main</span>'),
+    `<span class="inv">1 ◼make verify buildbox </span>`,
+    sb('2  Terminal'),
+    sb('3 <span class="g">◼</span>@kido-app <span class="dim">buildbox</span>'),
+    sb('4  <span class="g">◼</span>make e2e'),
+    sb('5  <span class="y">◆</span>@pi-review'),
+    sb('6 <span class="r">◼</span>nvidia-smi <span class="dim">gpu-1 ✗</span>'),
+    sb('7  Terminal <span class="dim">e2e …</span>'),
+    sb('8  Terminal'),
+    sb(''),
+    sb('<span class="dim">visa</span>'),
+    sb('9  Terminal')];
+  const tail=[
+    sb('<span class="dim">runtimes</span>      <span class="dim">1 up</span>'),
+    sb('buildbox          <span class="dim">up 3</span>'),
+    sb('py311             <span class="dim">down</span>'),
+    sb('gpu-1         <span class="r">failed ✗</span>'),
+    sb('e2e          <span class="dim">starting …</span>')];
+  const pane=['<span class="dim">buildbox ~/src/kido</span>','<span class="bl">$</span> make verify','cargo build --locked ............ ok  (2.1s)','cargo clippy --all-targets ...... ok  (6.4s)','cargo test -p ko_server ......... running','test delivery::tests::a_slice_reaches_one_view ... ok','test view::tests::a_stalled_reader_is_skipped ... ok','<span class="inv"> </span>'];
+  const H=36;const rows=[];for(let y=0;y<H;y++){let l=lines[y]??null;const t=y-(H-tail.length);if(t>=0)l=tail[t];if(l===null)l=' '.repeat(W);rows.push(l+'<span class="dim">│</span>'+(pane[y]??''))}
+  rows[1]=`<span class="inv">1 ◼make verify buildbox </span><span class="dim">│</span>`+pane[1];
+  return `<div class="tui">${rows.join('\n')}</div>`}
+function stage(state,light){let body;fixture(state);
+  if(state==='tui')body=tui();
+  else{const sw=state==='narrow'?292:292;body=`<div class="app" style="--sw:${state==='narrow'?200:292}px"><div class="header"><div class="lights"><i></i><i></i><i></i></div><div class="tabs"><div class="tab active">make verify</div><div class="tab agent">@kido-app</div><div class="tab">zsh</div></div></div>${sidebar(state,light)}${panes(light)}${NOTES[state]?`<div class="note">${NOTES[state]}</div>`:''}</div>`}
+  return `<div class="stage ${light?'light':''}">${body}</div>`}
+function apply(){const s=document.getElementById('state').value,light=document.getElementById('theme').value==='Light';const st=document.getElementById('stage');st.outerHTML=stage(s,light).replace('class="stage','id="stage" class="stage');gallery()}
+function gallery(){const g=document.getElementById('gallery');g.querySelectorAll('.cell').forEach(c=>c.remove());
+  for(const o of document.getElementById('state').options)for(const light of [true,false]){const cell=document.createElement('div');cell.className='cell';const th=document.createElement('div');th.className='thumb';th.innerHTML=stage(o.value,light);cell.appendChild(th);const cap=document.createElement('div');cap.className='cap';cap.textContent=o.textContent+' · '+(light?'light':'dark');cell.appendChild(cap);g.appendChild(cell)}
+  const w=g.querySelector('.thumb').clientWidth;g.querySelectorAll('.thumb').forEach(t=>t.style.setProperty('--k',w/1100))}
+const qs=new URLSearchParams(location.search);if(qs.get('state'))document.getElementById('state').value=qs.get('state');if(qs.get('theme'))document.getElementById('theme').value=qs.get('theme');
+['state','theme'].forEach(id=>document.getElementById(id).onchange=apply);addEventListener('resize',gallery);apply();
+</script></body></html>

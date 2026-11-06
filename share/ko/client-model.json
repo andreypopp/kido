@@ -1,6 +1,26 @@
 {
   "components": {
     "schemas": {
+      "CountedRuntime": {
+        "properties": {
+          "live_panes": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/ClientRuntime"
+          },
+          "section": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "runtime",
+          "live_panes",
+          "section"
+        ],
+        "type": "object"
+      },
       "Created": {
         "oneOf": [
           {
@@ -589,9 +609,12 @@
           },
           "runtimes": {
             "items": {
-              "$ref": "#/components/schemas/ClientRuntime"
+              "$ref": "#/components/schemas/CountedRuntime"
             },
             "type": "array"
+          },
+          "runtimes_error": {
+            "type": "string"
           },
           "selection": {
             "$ref": "#/components/schemas/Selection"

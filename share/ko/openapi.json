@@ -647,6 +647,22 @@
             "type": "object"
           },
           {
+            "description": "The runtime configuration error changed. An absent message clears the error.",
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "type": {
+                "const": "runtimes_error",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
             "description": "A runtime left the configuration and has no live link.",
             "properties": {
               "name": {
@@ -4451,6 +4467,10 @@
               "$ref": "#/components/schemas/ClientRuntime"
             },
             "type": "array"
+          },
+          "runtimes_error": {
+            "description": "The latest runtime configuration error; absent after a successful read.",
+            "type": "string"
           }
         },
         "required": [
@@ -6069,6 +6089,54 @@
           },
           "send": {
             "$ref": "#/components/schemas/ExecClient"
+          }
+        }
+      }
+    },
+    "/runtimes/{name}/up": {
+      "post": {
+        "description": "Starts the link of a runtime without a pane and returns without waiting for the link.",
+        "operationId": "UpRuntime",
+        "parameters": [
+          {
+            "example": "dev",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RuntimeName"
+            }
+          },
+          {
+            "example": "session_1",
+            "in": "query",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/SessionId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
           }
         }
       }

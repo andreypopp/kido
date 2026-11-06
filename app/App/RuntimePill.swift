@@ -1,6 +1,15 @@
 import AppKit
 import KoModel
 
+func miniSpinner() -> NSProgressIndicator {
+    let spinner = NSProgressIndicator()
+    spinner.style = .spinning
+    spinner.controlSize = .mini
+    spinner.isIndeterminate = true
+    spinner.isDisplayedWhenStopped = true
+    return spinner
+}
+
 // Where a pane runs, at the pane's top-right: the runtime's swatch and name, then the state.
 final class RuntimePill: PaneCapsule {
     #if KIDO_VISUAL
@@ -13,7 +22,7 @@ final class RuntimePill: PaneCapsule {
     private let swatch = CALayer()
     private let name = NSTextField(labelWithString: "")
     private let state = NSTextField(labelWithString: "")
-    private let spinner = NSProgressIndicator()
+    private let spinner = miniSpinner()
     private(set) var mark: RuntimeMark?
 
     init(runtime: GhosttyRuntime) {
@@ -26,10 +35,6 @@ final class RuntimePill: PaneCapsule {
         name.textColor = Chrome.ink
         state.font = .systemFont(ofSize: 11)
         state.lineBreakMode = .byTruncatingTail
-        spinner.style = .spinning
-        spinner.controlSize = .mini
-        spinner.isIndeterminate = true
-        spinner.isDisplayedWhenStopped = true
         for view in [name, state, spinner] { addSubview(view) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }

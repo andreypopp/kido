@@ -57,6 +57,7 @@ pub struct Model {
     pub selection: Selection,
     pub panes: Vec<Pane>,
     pub runtimes: Vec<ClientRuntime>,
+    pub runtimes_error: Option<String>,
     anchor: (u64, Instant),
     seen: Seen,
     // What the caller shows, and whether the user looks: the panes that each change acknowledges.
@@ -118,6 +119,13 @@ pub(crate) struct PaneJson<'a> {
     vars: &'a BTreeMap<VarName, Value>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct CountedRuntime<'a> {
+    pub runtime: &'a ClientRuntime,
+    pub live_panes: usize,
+    section: bool,
+}
+
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ModelJson<'a> {
     /// The server's estimated monotonic time in nanoseconds when this model was read.
@@ -126,7 +134,9 @@ pub(crate) struct ModelJson<'a> {
     selection: &'a Selection,
     layout: &'a Snapshot,
     panes: Vec<PaneJson<'a>>,
-    runtimes: &'a [ClientRuntime],
+    runtimes: Vec<CountedRuntime<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtimes_error: &'a Option<String>,
     outline: Vec<Item>,
 }
 
@@ -194,6 +204,7 @@ impl Model {
             selection: Selection::default(),
             panes: Vec::new(),
             runtimes: welcome.runtimes,
+            runtimes_error: welcome.runtimes_error,
             anchor: (welcome.now, Instant::now()),
             seen: Seen::new(welcome.now),
             watched: (Vec::new(), false),
@@ -236,7 +247,8 @@ impl Model {
                     vars: &pane.vars,
                 })
                 .collect(),
-            runtimes: &self.runtimes,
+            runtimes: self.counted_runtimes(self.current_session()),
+            runtimes_error: &self.runtimes_error,
             outline: self.outline(),
         }
     }
@@ -481,6 +493,10 @@ impl Model {
                 }
                 return Applied::State;
             }
+            ClientEvent::RuntimesError { message } => {
+                self.runtimes_error = message;
+                return Applied::State;
+            }
             ClientEvent::RuntimeDeleted { name, source } => {
                 self.runtimes.retain(|known| !known.is(&name, source));
                 return Applied::State;
@@ -488,6 +504,56 @@ impl Model {
             ClientEvent::Welcome(_) | ClientEvent::Refused { .. } => {}
         }
         Applied::Nothing
+    }
+
+    pub fn current_session(&self) -> Option<SessionId> {
+        self.selection
+            .pane
+            .and_then(|pane| self.locate(pane).map(|(session, _)| session))
+            .or_else(|| {
+                self.selection
+                    .session
+                    .filter(|id| self.layout.layout.session(*id).is_some())
+            })
+            .or_else(|| {
+                self.layout
+                    .layout
+                    .sessions
+                    .first()
+                    .map(|session| session.id)
+            })
+    }
+
+    fn counted_runtimes(&self, session: Option<SessionId>) -> Vec<CountedRuntime<'_>> {
+        let mut runtimes: Vec<_> = self
+            .runtimes
+            .iter()
+            .map(|runtime| CountedRuntime {
+                runtime,
+                live_panes: 0,
+                section: match runtime.source {
+                    protocol::RuntimeSource::Config => true,
+                    protocol::RuntimeSource::Session { id } => Some(id) == session,
+                },
+            })
+            .collect();
+        for pane in self.panes.iter().filter(|pane| pane.row.dead.is_none()) {
+            if let Some(Place::Pane { name, source }) = self.place(pane)
+                && let Some(entry) = runtimes
+                    .iter_mut()
+                    .find(|entry| entry.runtime.is(&name, source))
+            {
+                entry.live_panes += 1;
+            }
+        }
+        runtimes
+    }
+
+    pub fn runtime_section(&self, session: Option<SessionId>) -> Vec<CountedRuntime<'_>> {
+        self.counted_runtimes(session)
+            .into_iter()
+            .filter(|entry| entry.section)
+            .collect()
     }
 
     pub fn outline(&self) -> Vec<Item> {
@@ -1116,6 +1182,34 @@ mod tests {
         assert_eq!(
             model.place(&model.panes[1]).unwrap().source(),
             config.source
+        );
+        let counted = model.counted_runtimes(Some(id));
+        assert_eq!(
+            counted
+                .iter()
+                .map(|entry| (entry.runtime.source, entry.live_panes, entry.section))
+                .collect::<Vec<_>>(),
+            [(config.source, 1, true), (session.source, 1, true)]
+        );
+        assert_eq!(
+            model
+                .runtime_section(Some("session_999".parse().unwrap()))
+                .iter()
+                .map(|entry| entry.runtime.source)
+                .collect::<Vec<_>>(),
+            [config.source]
+        );
+        model.panes[0].row.dead = Some(protocol::Dead {
+            at: 0,
+            cause: protocol::Cause::Exited { code: 0 },
+        });
+        assert_eq!(
+            model
+                .runtime_section(Some(id))
+                .iter()
+                .map(|entry| entry.live_panes)
+                .collect::<Vec<_>>(),
+            [1, 0]
         );
         model.apply(ClientEvent::RuntimeDeleted {
             name: session.name,

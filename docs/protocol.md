@@ -1167,8 +1167,9 @@ configured runtimes and, for a pane identity, the ad-hoc runtimes of
 its session, for the user those of every session, each with its
 `source`, its link state, the `color`, the effective `paths`,
 the default `cwd` and `pi`, where an agent's pi runs; `GET
-/runtimes/NAME` one. `GET /runtimes/NAME`, `POST /runtimes/NAME/down`,
-`DELETE /runtimes/NAME` and `GET /runtimes/NAME/exec` take an optional
+/runtimes/NAME` one. `GET /runtimes/NAME`, `POST /runtimes/NAME/up`,
+`POST /runtimes/NAME/down`, `DELETE /runtimes/NAME` and `GET
+/runtimes/NAME/exec` take an optional
 query `session`: the session in which NAME resolves, its ad-hoc
 runtime before the configured one
 (design-runtimes.md, "The model"). A pane identity's requests resolve
@@ -1178,7 +1179,12 @@ configured runtime. `GET /runtimes/NAME/wait` is a long poll of the runtime's ow
 pane wrappers until the link is `Up` or `Failed`. It accepts only a
 host-connection pane whose `runtime` is NAME. No pane takes part in a
 start: every waiter waits in the same way (design-runtimes.md,
-"No user input"). `POST /runtimes/NAME/down`
+"No user input"). `POST /runtimes/NAME/up` starts a `Down` or
+`Failed` link with no pane and replies `{}` at once, before the link
+is `Up`; a link that is `Starting` or `Up` stays as it is. A start
+that fails later is a `runtime` event with `Failed`, not an error of
+the request. The idle rule takes the link down when no pane or exec
+session uses it (design-runtimes.md, "Down"). `POST /runtimes/NAME/down`
 takes the link down; it refuses while the runtime has live panes,
 visits or exec sessions unless `force`, which ends the visits and
 removes the born panes first.
@@ -1246,7 +1252,13 @@ pane). A runtime that leaves the file while its link is `Starting` or
 that it last announced and compares each read and each state change
 with it, so every client hears each change once, in order with the
 other events. The colour is for display only: `ko panes`, the
-rows and `list_agents` do not carry it.
+rows and `list_agents` do not carry it. When the file does not
+decode, the list stays the last that decoded, and the `Welcome`'s
+`runtimes_error` carries the message that a runtime request would
+get. Each read of the file sets the error or clears it, and a change
+is a `runtimes_error` event, whose `message` is absent when the file
+decodes again. One error covers the whole file, because the file
+decodes as a whole.
 
 **The exec session**, `GET /runtimes/NAME/exec`, is a WebSocket of
 JSON text messages that runs one command in the runtime without a

@@ -369,6 +369,29 @@ public enum KoSchema {
         }
     }
 
+    public struct CountedRuntime: Codable, Equatable, Sendable {
+        public var livePanes: Int
+        public var runtime: ClientRuntime
+        public var section: Bool
+        public init(livePanes: Int, runtime: ClientRuntime, section: Bool) {
+            self.livePanes = livePanes
+            self.runtime = runtime
+            self.section = section
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.livePanes = try container.decode(Int.self, forKey: .livePanes)
+            self.runtime = try container.decode(ClientRuntime.self, forKey: .runtime)
+            self.section = try container.decode(Bool.self, forKey: .section)
+            guard 0 <= self.livePanes else { throw DecodingError.dataCorruptedError(forKey: .livePanes, in: container, debugDescription: "live_panes is at least 0, not \(self.livePanes)") }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case livePanes = "live_panes"
+            case runtime
+            case section
+        }
+    }
+
     public struct CreatePane: Codable, Equatable, Sendable {
         public var close: Close?
         public var command: Command?
@@ -1191,15 +1214,17 @@ public enum KoSchema {
         public var now: Int
         public var outline: [Item]
         public var panes: [PaneJson]
-        public var runtimes: [ClientRuntime]
+        public var runtimes: [CountedRuntime]
+        public var runtimesError: String?
         public var selection: Selection
-        public init(instance: String, layout: Snapshot, now: Int, outline: [Item], panes: [PaneJson], runtimes: [ClientRuntime], selection: Selection) {
+        public init(instance: String, layout: Snapshot, now: Int, outline: [Item], panes: [PaneJson], runtimes: [CountedRuntime], runtimesError: String? = nil, selection: Selection) {
             self.instance = instance
             self.layout = layout
             self.now = now
             self.outline = outline
             self.panes = panes
             self.runtimes = runtimes
+            self.runtimesError = runtimesError
             self.selection = selection
         }
         public init(from decoder: Decoder) throws {
@@ -1209,7 +1234,8 @@ public enum KoSchema {
             self.now = try container.decode(Int.self, forKey: .now)
             self.outline = try container.decode([Item].self, forKey: .outline)
             self.panes = try container.decode([PaneJson].self, forKey: .panes)
-            self.runtimes = try container.decode([ClientRuntime].self, forKey: .runtimes)
+            self.runtimes = try container.decode([CountedRuntime].self, forKey: .runtimes)
+            self.runtimesError = try container.decodeIfPresent(String.self, forKey: .runtimesError)
             self.selection = try container.decode(Selection.self, forKey: .selection)
             guard 0 <= self.now else { throw DecodingError.dataCorruptedError(forKey: .now, in: container, debugDescription: "now is at least 0, not \(self.now)") }
         }
@@ -1220,6 +1246,7 @@ public enum KoSchema {
             case outline
             case panes
             case runtimes
+            case runtimesError = "runtimes_error"
             case selection
         }
     }

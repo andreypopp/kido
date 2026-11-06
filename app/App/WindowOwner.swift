@@ -100,7 +100,9 @@ private class AlertEscape: NSView {
     private(set) var window: NSWindow!
     private var banner: Banner!
     private var session: SessionView?
-    private var link = Link.down { didSet { sidebar.tabs.needsDisplay = true } }
+    private var link = Link.down { didSet {
+        sidebar.tabs.needsDisplay = true
+    } }
     let sidebar = Sidebar()
     let reorder = Reorder()
     // What `receive` makes of the core's model, set in one place.
@@ -264,6 +266,13 @@ private class AlertEscape: NSView {
         sidebar.list.navigate = { [weak self] in self?.perform($0) }
         sidebar.list.onIntent = { [weak self] in self?.supersedeIntent() }
         sidebar.list.commandTarget = { [weak self] in self?.session?.activePane }
+        sidebar.list.runtimeSection.start = { [weak self] in self?.startRuntime($0) }
+        sidebar.list.runtimeSection.stop = { [weak self] in self?.shutDownRuntime($0) }
+        sidebar.list.runtimeSection.open = { [weak self] key in
+            guard let self, let runtime = self.runtime(key) else { return }
+            sidebar.list.leave()
+            (NSApp.delegate as? AppDelegate)?.showRuntimePalette(RuntimeMark(runtime))
+        }
         sidebar.list.newSession = { [weak self] in self?.newSession() }
         sidebar.list.newWindow = { [weak self] session in self?.newWindow(in: session) }
         sidebar.list.renameSession = { [weak self] id, name, done in
@@ -952,6 +961,8 @@ private class AlertEscape: NSView {
         guard case .connected = link else { return }
         switch event {
         case .welcome(let id, let fresh):
+            stoppingRuntimes = []
+            updateRuntimeSection()
             note("client \(id) joined \(fresh ? "fresh" : "resume") host=\(host.label) owner=\(ownerID)")
             initial?.cancel()
             initial = nil
@@ -1092,6 +1103,7 @@ private class AlertEscape: NSView {
         }
         let projected = reorder.state.project(snapshot)
         sidebar.list.update(projected)
+        updateRuntimeSection()
         if let session { present(session, projected: projected) } else { updateTabs(projected) }
         menuChanged()
         snapshotReceived()
@@ -1158,7 +1170,7 @@ private class AlertEscape: NSView {
         #if KIDO_VISUAL
         if let testRuntimes { return testRuntimes.list }
         #endif
-        return koModel?.runtimes ?? []
+        return koModel?.runtimes.map(\.runtime) ?? []
     }
 
     // The runtime of the pane that this client selected: the host has none.
@@ -1314,13 +1326,43 @@ private class AlertEscape: NSView {
         return key.name + " — " + (session?.name ?? source.id.description)
     }
 
+    private var stoppingRuntimes: [RuntimeKey] = []
+
+    private func runtime(_ key: RuntimeKey) -> KoSchema.ClientRuntime? {
+        runtimes.first { $0.key == key }
+    }
+
+    func updateRuntimeSection() {
+        stoppingRuntimes.removeAll { key in
+            guard let runtime = runtime(key) else { return true }
+            switch runtime.state {
+            case .starting, .up: return false
+            case .down, .failed: return true
+            }
+        }
+        let section = sidebar.list.runtimeSection
+        section.enabled = canNavigate
+        section.configError = koModel?.runtimesError
+        section.rows = (koModel?.runtimes ?? []).filter(\.section).map { entry in
+            let runtime = runtime(entry.runtime.key) ?? entry.runtime
+            return .init(runtime: runtime, panes: entry.livePanes, stopping: stoppingRuntimes.contains(runtime.key))
+        }
+    }
+
+    private func startRuntime(_ key: RuntimeKey) {
+        guard canNavigate, !stoppingRuntimes.contains(key),
+              let runtime = runtime(key) else { return }
+        switch runtime.state { case .down, .failed: break; case .up, .starting: return }
+        confirmCommand("Start", title: "Start “\(key.name)”", warning: nil, failure: "Runtime command failed") { try $0.runtimeUp(key) }
+    }
+
     func canShutDownRuntime(_ key: RuntimeKey) -> Bool {
-        guard canNavigate, let runtime = runtimes.first(where: { $0.key == key }) else { return false }
+        guard canNavigate, !stoppingRuntimes.contains(key), let runtime = runtime(key) else { return false }
         switch runtime.state { case .starting, .up: return true; case .down, .failed: return false }
     }
 
     func runtimePaneCount(_ key: RuntimeKey) -> Int {
-        koModel?.panes.filter { $0.place == .pane(.init(name: key.name, source: key.source)) && $0.dead == nil }.count ?? 0
+        koModel?.runtimes.first { $0.runtime.key == key }?.livePanes ?? 0
     }
 
     @objc func shutDownRuntimeItem(_ sender: NSMenuItem) {
@@ -1333,9 +1375,13 @@ private class AlertEscape: NSView {
         let count = runtimePaneCount(key)
         let warning = count == 1 ? "1 pane runs in this runtime. Shutting it down ends the pane."
             : "\(count) panes run in this runtime. Shutting it down ends them."
-        confirmCommand("Shut Down", title: "Shut down “\(key.name)”?", warning: count > 0 ? warning : nil, failure: "Runtime command failed") {
-            try $0.runtimeDown(key)
-        }
+        confirmCommand("Shut Down", title: "Shut down “\(key.name)”?", warning: count > 0 ? warning : nil, failure: "Runtime command failed", sending: { [weak self] in
+            self?.stoppingRuntimes.append(key)
+            self?.updateRuntimeSection()
+        }, completed: { [weak self] in
+            self?.stoppingRuntimes.removeAll { $0 == key }
+            self?.updateRuntimeSection()
+        }) { try $0.runtimeDown(key) }
     }
 
     func confirmClose(_ target: CloseTarget, name: String) {
@@ -1353,16 +1399,20 @@ private class AlertEscape: NSView {
         }
     }
 
-    private func confirmCommand(_ verb: String, title: String, warning: String?, failure: String, send: @escaping @Sendable (KoClient) throws -> Void) {
+    private func confirmCommand(_ verb: String, title: String, warning: String?, failure: String, sending: @escaping () -> Void = {}, completed: @escaping () -> Void = {}, send: @escaping @Sendable (KoClient) throws -> Void) {
         guard preparedAlert == nil, window.attachedSheet == nil, let instance = snapshot?.serverInstance else { return }
         supersedeIntent()
         let generation = generation
         let perform = { [weak self] in
             guard let self, accepts(generation), welcomed, snapshot?.serverInstance == instance, case .connected(let client) = link else { return }
+            sending()
             Task { [weak self] in
-                do { try await Task.detached { try send(client) }.value } catch {
-                    self?.notice(failure, failureText(error))
+                do {
+                    try await Task.detached { try send(client) }.value
+                } catch {
+                    if self?.accepts(generation) == true { self?.notice(failure, failureText(error)) }
                 }
+                if self?.accepts(generation) == true { completed() }
             }
         }
         guard let warning else { perform(); return }
@@ -1482,6 +1532,8 @@ private class AlertEscape: NSView {
         focusTarget = nil
         awaitingSelect = false
         generation += 1
+        stoppingRuntimes = []
+        updateRuntimeSection()
         clipboardPermission = [:]
         uploadPermission = .ask
         uploads.values.forEach { $0.task.cancel() }

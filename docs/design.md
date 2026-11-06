@@ -620,6 +620,17 @@ indented by depth (`ko_tui/src/sidebar.rs`); its chooser (`C-a s`)
 visits every row in that order. Kido.app draws its tree with
 brackets and group glyphs (design-app.md, "Sidebar").
 
+Below the tree, pinned to the bottom of the sidebar, both clients
+list the runtimes of the configuration and of the current session
+(design-runtimes.md, "Clients"). In the terminal client they are the
+last rows of the column, after one empty row, and they are read-only: a faint header with the count of up
+runtimes, then each name with its state at the right, a failed state
+in red. They have no colour, actions or selection, so the client stays
+a mirror; `ko api` is its start and stop. It does not show the
+configuration error. The tree does not scroll, so the rows appear only
+when the whole tree fits above them; a longer tree takes the column,
+and the chooser never selects a row that the footer hides.
+
 The walk uses parent-first ordering and emits every item exactly once,
 with or without a tree. Parent edges across windows can create a
 cycle; the walk emits missed items afterward as roots, so an invalid

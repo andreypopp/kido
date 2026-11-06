@@ -78,7 +78,10 @@ a retry after `Failed` included, so an edit needs no reload. A link
 that is up keeps the configuration that it started with. A missing
 file, an empty file and a file without `runtimes` have no runtimes. A
 file that does not decode fails every runtime request with the error,
-and the server runs regardless. A runtime is a thing of the host that
+and the server runs regardless. The registry keeps the last list that
+decoded, and it gives the clients the error as well (protocol.md,
+section 15, "Clients"), so a client shows that list under the error
+and not an empty one. A runtime is a thing of the host that
 runs it, so a remote host's runtimes are in that host's file.
 
 ```yaml
@@ -261,7 +264,12 @@ container.
 
 A client shows where a pane runs: Kido.app with a stripe and a label
 on the pane and a suffix on its sidebar row (design-app.md, "Panes"
-and "Sidebar"), the terminal client with the suffix only. The
+and "Sidebar"), the terminal client with the suffix only. Both
+clients also list the runtimes at the bottom of the sidebar: the
+configured runtimes and those of the current session, never another
+session's. Kido.app's section has the start and stop actions
+(design-app.md, "Runtimes section"); the terminal client's rows are
+read-only (design.md, "The sidebar tree"). The
 protocol is protocol.md, section 15: the `Welcome` lists the
 runtimes, and the `runtime` and `runtime_deleted` events follow
 them, because the pane row carries no link state.
@@ -310,12 +318,16 @@ and `Failed` with a message (`LinkState` in
 optional: a runtime that has not started, or that is down, has
 none, and a kind can have panes without a link.
 
-**The first pane starts the runtime.** No request brings a runtime
-up. A request that creates a pane in a runtime that is `Down` or
-`Failed` (`POST /panes`, a new pane of `PUT /layout`)
-starts the link and returns at once with the pane, as for a host
-pane; an exec session starts it too. A `Failed` runtime starts again
-at the next request. The start binds the listener, then runs the
+**The first use starts the runtime.** A request that creates a pane
+in a runtime that is `Down` or `Failed` (`POST /panes`, a new pane of
+`PUT /layout`) starts the link and returns at once with the pane, as
+for a host pane; an exec session starts it too. `POST
+/runtimes/NAME/up` starts the link with no pane and returns at once;
+the caller follows the `runtime` events. It exists for a client's
+Start action (design-app.md, "Runtimes section"): a pane that only
+brings the link up is a pane that the user must then close. A live
+link is unchanged by it. A `Failed` runtime starts again at the next
+request. The start binds the listener, then runs the
 kind's stages, then sets `Up`. A stage is one
 helper child of the server, reaped on `SIGCHLD`, whose exit, stdout
 and stderr decide the next stage, `Up` or a failure; the `command`
@@ -358,7 +370,9 @@ waits for it up to its deadline of 120 s.
 **Down.** A runtime with no pane in the document, live or dead, and
 no live exec session goes down after the `server: runtime_idle_seconds`
 of the configuration file (600; a fraction is permitted; `none` disables
-the rule; read when the timer starts), on a loop timer.
+the rule; read when the timer starts), on a loop timer. A link that
+`up` started with no pane arms the timer at once, so an unused start
+goes down on its own.
 `POST /runtimes/NAME/down` refuses while the runtime has live panes,
 visits or exec sessions, unless `force`, which ends the visits and
 removes the born panes first as a stop does. `DELETE /runtimes/NAME` refuses in the same way, takes the link
@@ -367,8 +381,8 @@ runtime directory"); for an ad-hoc runtime it also drops the
 definition ("Ad-hoc runtimes"). Down unbinds the listener,
 removes the socket and the token files and closes the runtime's
 connections. At its exit the server takes every link down after the
-panes. Nothing reconnects on its own: the next pane or exec starts
-the link again.
+panes. Nothing reconnects on its own: the next pane, exec or `up`
+starts the link again.
 
 **The runtime directory** is `<state>/runtimes/<tag>/`. The
 listener's `socket`, mode `0666`, is alone in its subdirectory `io/`,

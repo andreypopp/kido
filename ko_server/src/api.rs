@@ -711,6 +711,13 @@ routes! {
         send: VisitClient,
         recv: VisitServer,
     }
+    /// Starts the link of a runtime without a pane and returns without waiting for the link.
+    UpRuntime {
+        method: POST,
+        path: /runtimes/{name: RuntimeName}/up,
+        query: { session: Option<SessionId> },
+        reply: Empty,
+    }
     /// Takes the link of a runtime down. With live panes it is refused, unless force removes the
     /// panes first, as a stop does.
     DownRuntime {

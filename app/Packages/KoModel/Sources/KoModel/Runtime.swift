@@ -57,7 +57,7 @@ public struct RuntimeMark: Equatable, Sendable {
 }
 
 extension KoSchema.ModelJson {
-    public func runtime(_ key: RuntimeKey) -> KoSchema.ClientRuntime? { runtimes.first { $0.key == key } }
+    public func runtime(_ key: RuntimeKey) -> KoSchema.ClientRuntime? { runtimes.first { $0.runtime.key == key }?.runtime }
 
     public func runtimeMark(_ pane: KoSchema.PaneJson) -> RuntimeMark? {
         guard let place = pane.place else { return nil }

@@ -414,6 +414,14 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                 reply::<routes::WaitRuntime>(&mut state.conns[index], result);
             }
         }
+        Request::UpRuntime { name, session } => {
+            let result = state
+                .runtime_key(caller, session, &name)
+                .and_then(|(key, _)| state.start_runtime(poll, &key))
+                .map(|()| Empty {});
+            state.runtimes_changed(poll);
+            reply::<routes::UpRuntime>(&mut state.conns[index], result);
+        }
         Request::DownRuntime {
             name,
             session,

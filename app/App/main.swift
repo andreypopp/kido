@@ -454,6 +454,11 @@ import SidebarFeed
         showPalette()
     }
 
+    func showRuntimePalette(_ mark: RuntimeMark) {
+        if palettePanel == nil { showPalette() }
+        palettePanel?.palette.enter(.runtime(mark))
+    }
+
     private func showPalette(_ prepared: PalettePrompt? = nil) {
         updateMenu(current, responder: current?.window.firstResponder)
         let entries = paletteEntries(owner: current, responder: current?.window.firstResponder)
