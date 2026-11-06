@@ -126,6 +126,51 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         }
     }
 
+    func testSidebarShadowResize() async throws {
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            let sidebar = Sidebar()
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 500), styleMask: [.titled, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: appearance)
+            window.backgroundColor = appearance == .aqua ? .white : NSColor(srgbRed: 0.12, green: 0.12, blue: 0.12, alpha: 1)
+            sidebar.terminalHost.wantsLayer = true
+            sidebar.terminalHost.layer?.backgroundColor = window.backgroundColor.cgColor
+            window.contentViewController = sidebar
+            defer { window.close() }
+            sidebar.isCollapsed = false
+            let root = try XCTUnwrap(window.contentView?.superview)
+            root.layoutSubtreeIfNeeded()
+            sidebar.viewDidLayout()
+            for mode in ["static", "grown", "shrunk", "expanded", "wide"] {
+                if mode == "grown" { window.setContentSize(NSSize(width: 900, height: 900)) }
+                if mode == "shrunk" { window.setContentSize(NSSize(width: 900, height: 600)) }
+                if mode == "expanded" { sidebar.isCollapsed = true; sidebar.isCollapsed = false }
+                if mode == "wide" { sidebar.splitView.setPosition(320, ofDividerAt: 0) }
+                root.layoutSubtreeIfNeeded()
+                let shadow = try XCTUnwrap(root.subviews.compactMap { $0 as? SidebarShadow }.first)
+                let separator = sidebar.visualSeparator
+                XCTAssertEqual(shadow.frame.minY, separator.frame.minY, accuracy: 0.5)
+                XCTAssertEqual(shadow.frame.height, root.bounds.height, accuracy: 0.5, "docked shadow spans the grown window")
+                XCTAssertEqual(separator.frame.height, root.bounds.height, accuracy: 0.5)
+                XCTAssertEqual(sidebar.visualFocusEdge.frame.height, root.bounds.height, accuracy: 0.5)
+                let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: shadow.frame))
+                root.cacheDisplay(in: shadow.frame, to: bitmap)
+                let pixels = try XCTUnwrap(bitmap.converting(to: .sRGB, renderingIntent: .default))
+                let scale = CGFloat(pixels.pixelsHigh) / shadow.frame.height
+                for y in [40, pixels.pixelsHigh / 2, pixels.pixelsHigh - 40] {
+                    let edge = try XCTUnwrap(pixels.colorAt(x: Int(2 * scale), y: y))
+                    let paper = try XCTUnwrap(pixels.colorAt(x: Int(40 * scale), y: y))
+                    XCTAssertLessThan(edge.redComponent, paper.redComponent - 2 / 255, "docked shadow covers the full edge in \(mode) at y=\(y)")
+                }
+                let image = NSImage(size: shadow.frame.size)
+                image.addRepresentation(bitmap)
+                let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+                if let failure = verifySnapshot(of: image, as: .image, named: "\(appearance.rawValue)-\(mode)", record: record),
+                   !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+            }
+        }
+    }
+
     func testHeaderBackground() async throws {
         final class NativeHeader: NSView {
             override func draw(_ rect: NSRect) { NSColor.white.setFill(); bounds.fill() }

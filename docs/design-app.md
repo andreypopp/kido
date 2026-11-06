@@ -886,9 +886,13 @@ one-device-pixel line covers AppKit's divider, through the toolbar band.
 The docked sidebar casts a shadow onto the terminal area from its right
 edge: offset 4pt to the right, 14pt blur, spread −2pt, black at 40% on
 a dark background and 18% on a light one. It falls over the paper and the
-toolbar band and never over the sidebar. The floating sidebar card has an
-ambient shadow with the same blur and alpha, offset 4pt down, around its
-18pt corners. AppKit's glass shadow is cleared, so each mode has one
+toolbar band and never over the sidebar. The shadow, the separator and the
+focus edge are views of the theme frame. With the docked sidebar, their
+horizontal extent comes from the sidebar glass and their vertical extent
+from the theme frame: after a change of the window's height, the glass can
+still have its old height when the sidebar lays out. The floating sidebar
+card has an ambient shadow with the same blur and alpha, offset 4pt
+down, around its 18pt corners. AppKit's glass shadow is cleared, so each mode has one
 shadow. When the floating card's list is first responder, its edge is
 the same stroke inset 1pt inside its hairline border, with a 17pt radius.
 The panes then behave as under docked sidebar focus. Accent and

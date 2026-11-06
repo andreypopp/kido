@@ -213,7 +213,12 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         tabs.refreshHeader()
         if let root = view.window?.contentView?.superview, let glass = dockedGlass {
             if focusEdge.superview !== root { root.addSubview(focusEdge, positioned: .above, relativeTo: nil) }
-            focusEdge.frame = glass.convert(glass.bounds, to: root)
+            var edge = glass.convert(glass.bounds, to: root)
+            if !isFloating {
+                edge.origin.y = root.bounds.minY
+                edge.size.height = root.bounds.height
+            }
+            focusEdge.frame = edge
             if separator.superview !== root {
                 root.addSubview(separator, positioned: .above, relativeTo: nil)
             }
