@@ -675,6 +675,9 @@ mod tests {
 
     #[test]
     fn a_wake_makes_a_watched_pipe_readable_from_another_thread_until_it_is_drained() {
+        let _serial = crate::signal::SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let wake = std::sync::Arc::new(Wake::new().unwrap());
         let mut poll = Poll::new();
         let mut events = Events::default();
@@ -799,6 +802,9 @@ mod tests {
 
     #[test]
     fn a_deadline_wakes_and_a_sub_millisecond_one_wakes_once() {
+        let _serial = crate::signal::SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut poll = Poll::new();
         let mut events = Events::default();
         let timer = poll.timer();
@@ -818,6 +824,9 @@ mod tests {
 
     #[test]
     fn a_peer_reset_is_the_end_of_the_source() {
+        let _serial = crate::signal::SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (mut a, b) = UnixStream::pair().unwrap();
         a.set_nonblocking(true).unwrap();
         a.write_all(b"unread").unwrap();
