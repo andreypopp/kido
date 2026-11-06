@@ -5,8 +5,7 @@ use crate::api::{Route, WaitMs, routes};
 use crate::pane::Birth;
 use crate::panes::{AddError, Start, is_descendant, program, scope};
 use crate::protocol::{
-    ClientRuntime, Empty, Error, ErrorKind, LeadReport, LinkState, RuntimeInfo, RuntimeSource,
-    RuntimeWait,
+    ClientRuntime, Empty, Error, ErrorKind, LinkState, RuntimeInfo, RuntimeSource, RuntimeWait,
 };
 use crate::runtime::pane::{self, Dir, Wrap as Entering, socket_path};
 use crate::runtime::{CLEANUP_LIMIT, Due, PASS_HOLD, RuntimeKey, Wait, Who};
@@ -267,7 +266,7 @@ impl State {
                 self,
                 poll,
                 wait.conn,
-                Ok(RuntimeWait { state, lead: None }),
+                Ok(RuntimeWait { state }),
             ),
             Who::Visit(_) => self.visit_passed(poll, wait.conn, state),
             Who::Exec => {}
@@ -328,7 +327,7 @@ impl State {
         if state == LinkState::Up {
             self.write_runtime_token(key, pane)?;
         }
-        Ok(RuntimeWait { state, lead: None })
+        Ok(RuntimeWait { state })
     }
 
     pub(super) fn runtime_ready(&mut self, poll: &mut Poll, ready: Ready) -> bool {
@@ -359,7 +358,7 @@ impl State {
                 let Some(state) = self.runtimes.expire_pane_wait(poll, token) else {
                     return false;
                 };
-                let reply = Ok(RuntimeWait { state, lead: None });
+                let reply = Ok(RuntimeWait { state });
                 router::answer::<routes::WaitRuntime>(self, poll, token, reply);
                 true
             }
@@ -402,17 +401,6 @@ impl State {
             .collect())
     }
 
-    fn runtime_pane(&self, caller: Option<PaneId>, key: &RuntimeKey) -> Result<PaneId, Error> {
-        caller
-            .filter(|caller| self.panes.is_in(*caller, key))
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorKind::Refused,
-                    format!("only a pane of runtime {key} may use this route"),
-                )
-            })
-    }
-
     pub(crate) fn wait_runtime(
         &mut self,
         poll: &mut Poll,
@@ -425,9 +413,11 @@ impl State {
             Ok((key, _)) => key,
             Err(error) => return Some(Err(error)),
         };
-        let pane = match self.runtime_pane(caller, &name) {
-            Ok(pane) => pane,
-            Err(error) => return Some(Err(error)),
+        let Some(pane) = caller.filter(|caller| self.panes.is_in(*caller, &name)) else {
+            return Some(Err(Error::new(
+                ErrorKind::Refused,
+                format!("only a pane of runtime {name} may use this route"),
+            )));
         };
         let state = self.runtimes.state(&name);
         if state == LinkState::Up && self.runtimes.remote_tokens(&name, pane) {
@@ -445,14 +435,8 @@ impl State {
         if state != LinkState::Starting {
             return Some(self.runtime_reply(&name, pane, state));
         }
-        if let Some(lead) = self.runtimes.elect(&name, pane) {
-            return Some(Ok(RuntimeWait {
-                state,
-                lead: Some(lead),
-            }));
-        }
         if timeout == WaitMs::NONE {
-            return Some(Ok(RuntimeWait { state, lead: None }));
+            return Some(Ok(RuntimeWait { state }));
         }
         let conn = self.hold(poll, index, Duration::from_millis(timeout.get()));
         self.runtimes.wait(
@@ -463,20 +447,6 @@ impl State {
             },
         );
         None
-    }
-
-    pub(crate) fn report_lead(
-        &mut self,
-        poll: &mut Poll,
-        caller: Option<PaneId>,
-        name: RuntimeName,
-        report: LeadReport,
-    ) -> Result<Empty, Error> {
-        let (name, _) = self.runtime_key(caller, None, &name)?;
-        let pane = self.runtime_pane(caller, &name)?;
-        self.runtimes.report_lead(poll, &name, pane, report)?;
-        self.runtimes_changed(poll);
-        Ok(Empty {})
     }
 
     pub(crate) fn down_runtime(

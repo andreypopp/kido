@@ -17,7 +17,7 @@ use crate::config::{Config, SUN_PATH_MAX, server_settings};
 use crate::exec_wire::Start as ExecStart;
 use crate::ids::{PaneId, PaneToken, SessionId};
 use crate::protocol::{
-    ClientEvent, ClientRuntime, Error, ErrorKind, ExecRequest, LeadReport, LinkState, RuntimeKind,
+    ClientEvent, ClientRuntime, Error, ErrorKind, ExecRequest, LinkState, RuntimeKind,
     RuntimeSource, Variable, Version, check_version, version,
 };
 use crate::server::{Listener, Origin, Timing, Verified};
@@ -100,8 +100,6 @@ impl Outcome<'_> {
 #[derive(Debug)]
 pub(crate) enum Next {
     Run(Launch),
-    /// An interactive step that one waiting pane runs on its terminal, as the argv.
-    Lead(Vec<String>),
     Up,
     Fail(String),
 }
@@ -315,15 +313,6 @@ impl Start {
         }
     }
 
-    // The step after the interactive one.
-    fn resume(&mut self, settings: &Runtime, cx: &Ctx<'_>) -> Result<Option<Launch>, String> {
-        match (&settings.kind, self) {
-            (Kind::Ssh(remote), Start::Ssh(link)) => ssh::resume(remote, link, cx).map(Some),
-            (Kind::Command(command), Start::Command) => Ok(command::first(command, cx.env)),
-            _ => Err(MISMATCH.to_owned()),
-        }
-    }
-
     fn next(&mut self, settings: &Runtime, cx: &Ctx<'_>, out: &Outcome<'_>) -> Next {
         match (&settings.kind, self) {
             (Kind::Command(_), Start::Command) => command::next(out),
@@ -370,15 +359,8 @@ impl Start {
 
 #[derive(Debug)]
 enum Step {
-    Lead {
-        argv: Vec<String>,
-        leader: Option<PaneId>,
-    },
     Cleaning,
-    Up {
-        helper: Helper,
-        deadline: Timer,
-    },
+    Up { helper: Helper, deadline: Timer },
 }
 
 #[derive(Debug)]
@@ -913,11 +895,11 @@ impl Registry {
                 link.phase = Phase::Starting(Step::Cleaning);
             }
         } else if started {
-            self.start_steps(poll, key, true);
+            self.start_steps(poll, key);
         }
     }
 
-    fn start_steps(&mut self, poll: &mut Poll, key: &RuntimeKey, from_start: bool) {
+    fn start_steps(&mut self, poll: &mut Poll, key: &RuntimeKey) {
         self.dirty = true;
         let socket = socket_path(&self.root, key);
         let Some(link) = self.links.get_mut(key) else {
@@ -930,25 +912,14 @@ impl Registry {
             socket: &socket,
             exe: &self.exe,
         };
-        let lead = link.settings.lead().filter(|_| from_start);
-        let next = if let Some(argv) = lead {
-            Next::Lead(argv.to_vec())
-        } else {
-            let launched = if from_start {
-                link.start.first(&link.settings, &cx)
-            } else {
-                link.start.resume(&link.settings, &cx)
-            };
-            match launched {
-                Err(message) => Next::Fail(message),
-                Ok(None) => Next::Up,
-                Ok(Some(launch)) => Next::Run(launch),
-            }
+        let next = match link.start.first(&link.settings, &cx) {
+            Err(message) => Next::Fail(message),
+            Ok(None) => Next::Up,
+            Ok(Some(launch)) => Next::Run(launch),
         };
         let phase = match next {
             Next::Fail(message) => return self.fail(poll, key, message),
             Next::Up => Phase::Up,
-            Next::Lead(argv) => Phase::Starting(Step::Lead { argv, leader: None }),
             Next::Run(launch) => match Registry::spawn_up(poll, &launch) {
                 Ok(step) => Phase::Starting(step),
                 Err(error) => {
@@ -1031,7 +1002,7 @@ impl Registry {
             .map(|(key, _)| key.clone())
             .collect();
         for key in ready {
-            self.start_steps(poll, &key, true);
+            self.start_steps(poll, &key);
         }
     }
 
@@ -1131,76 +1102,11 @@ impl Registry {
         Some(self.state(&key))
     }
 
-    pub(crate) fn needs_pane(&self, key: &RuntimeKey) -> bool {
-        matches!(
-            self.links.get(key).map(|link| &link.phase),
-            Some(Phase::Starting(Step::Lead { leader: None, .. }))
-        )
-    }
-
-    pub(crate) fn elect(&mut self, key: &RuntimeKey, pane: PaneId) -> Option<Vec<String>> {
-        let link = self.links.get_mut(key)?;
-        let Phase::Starting(Step::Lead {
-            argv,
-            leader: leader @ None,
-        }) = &mut link.phase
-        else {
-            return None;
-        };
-        *leader = Some(pane);
-        Some(argv.clone())
-    }
-
-    pub(crate) fn report_lead(
-        &mut self,
-        poll: &mut Poll,
-        key: &RuntimeKey,
-        pane: PaneId,
-        report: LeadReport,
-    ) -> Result<(), Error> {
-        let leading = matches!(
-            self.links.get(key).map(|link| &link.phase),
-            Some(Phase::Starting(Step::Lead { leader: Some(leader), .. })) if *leader == pane
-        );
-        if !leading {
-            return Err(Error::new(
-                ErrorKind::Refused,
-                format!("{pane} is not the pane that leads the start of runtime {key}"),
-            ));
-        }
-        if report.exit == 0 {
-            self.start_steps(poll, key, false);
-        } else {
-            let message = last_line(report.stderr.as_bytes())
-                .unwrap_or_else(|| exit_text("lead", Exit::Exited(report.exit)));
-            self.fail(poll, key, message);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn pane_ended(&mut self, poll: &mut Poll, pane: PaneId) {
-        let leading: Vec<RuntimeKey> = self
-            .links
-            .iter()
-            .filter(|(_, link)| {
-                matches!(&link.phase, Phase::Starting(Step::Lead { leader: Some(leader), .. }) if *leader == pane)
-            })
-            .map(|(key, _)| key.clone())
-            .collect();
-        for key in leading {
-            self.fail(
-                poll,
-                &key,
-                "the leading pane ended before it reported the lead step".to_owned(),
-            );
-        }
-    }
-
     pub(crate) fn take_settled(&mut self) -> Vec<(RuntimeKey, Wait, LinkState)> {
         let waits = std::mem::take(&mut self.waits);
-        let (done, pending): (Vec<_>, Vec<_>) = waits.into_iter().partition(|(key, _)| {
-            !matches!(self.state(key), LinkState::Starting) || self.needs_pane(key)
-        });
+        let (done, pending): (Vec<_>, Vec<_>) = waits
+            .into_iter()
+            .partition(|(key, _)| !matches!(self.state(key), LinkState::Starting));
         self.waits = pending;
         done.into_iter()
             .map(|(key, wait)| {
@@ -1219,7 +1125,6 @@ impl Registry {
         poll.free(link.idle);
     }
 
-    // A master that died unseen: the link starts again, and the pane that found out may lead.
     fn restart(&mut self, poll: &mut Poll, key: &RuntimeKey) {
         self.dirty = true;
         let Some(mut link) = self.links.remove(key) else {
@@ -1616,12 +1521,6 @@ impl Registry {
                     self.fail(poll, key, message);
                 }
             },
-            Next::Lead(argv) => {
-                poll.free(deadline);
-                if let Some(link) = self.links.get_mut(key) {
-                    link.phase = Phase::Starting(Step::Lead { argv, leader: None });
-                }
-            }
             Next::Up => {
                 poll.free(deadline);
                 if let Some(entry) = self.adhoc.get_mut(key) {

@@ -1167,16 +1167,9 @@ runtimes:
 fn the_first_pane_starts_a_runtime_and_a_failed_start_ends_it_with_its_message_and_retries() {
     let files = Dir::new("ko-rtf-");
     let up = fifo(&files, "up");
-    let lead = fifo(&files, "lead");
-    let log = files.join("lead.log");
     let gate = format!(
         "read code < {}; echo boom >&2; exit $code",
         quote(text_of(&up))
-    );
-    let led = format!(
-        "echo led >> {}; read code < {}; [ $code = 0 ] || echo denied >&2; exit $code",
-        quote(text_of(&log)),
-        quote(text_of(&lead)),
     );
     let s = serve(
         &format!(
@@ -1186,22 +1179,16 @@ runtimes:
     color: "#d08a2a"
     command:
       up: ["/bin/sh", "-c", {gate:?}]
-  lead:
-    command:
-      lead: ["/bin/sh", "-c", {led:?}]
 "##
         ),
         &[],
     );
-    let lines = || fs::read_to_string(&log).map_or(0, |text| text.lines().count());
     assert_eq!(info(&s, "gate")["color"], "#d08a2a");
-    assert_eq!(info(&s, "lead").get("color"), None);
     let (mut client, welcome) = s.client(None);
     assert_eq!(
         welcome["runtimes"],
         json!([
             {"name": "gate", "source": {"type": "config"}, "kind": "command", "color": "#d08a2a", "state": {"type": "down"}},
-            {"name": "lead", "source": {"type": "config"}, "kind": "command", "state": {"type": "down"}},
         ])
     );
     let mut announced = |name: &str| {
@@ -1287,89 +1274,6 @@ runtimes:
     s.screen_has(&retry, "ran");
     wait_state(&s, "gate", "up");
     assert_eq!(announced("gate"), json!({"type": "up"}));
-
-    let (p1, p2) = (
-        rt_pane(&s, "lead", "echo up-$KO_RUNTIME; exec cat"),
-        rt_pane(&s, "lead", "echo up-$KO_RUNTIME; exec cat"),
-    );
-    poll("the lead step to start", || lines() == 1);
-    s.screen_has(&p1, "starting runtime lead");
-    s.screen_has(&p2, "starting runtime lead");
-    release(&s.scratch, &lead, "7");
-    for pane in [&p1, &p2] {
-        s.screen_has(pane, "runtime lead: denied");
-        dead(&s, pane);
-    }
-    assert_eq!(
-        wait_state(&s, "lead", "failed")["state"]["message"],
-        "denied"
-    );
-    assert_eq!(lines(), 1, "one leader for two first panes");
-
-    let (p3, p4) = (
-        rt_pane(&s, "lead", "echo up-$KO_RUNTIME; exec cat"),
-        rt_pane(&s, "lead", "echo up-$KO_RUNTIME; exec cat"),
-    );
-    poll("the new leader", || lines() == 2);
-    release(&s.scratch, &lead, "0");
-    s.screen_has(&p3, "up-lead");
-    s.screen_has(&p4, "up-lead");
-    assert_eq!(lines(), 2, "the retry elected one leader again");
-    assert_eq!(info(&s, "lead")["panes"], 4);
-
-    refuses(
-        raw(
-            &s,
-            "POST",
-            "/runtimes/lead/down",
-            &headers(&s, &[]),
-            &json!({}),
-        ),
-        "has live panes",
-    );
-    assert_eq!(state(&s, "lead"), "up");
-    let forced = raw(
-        &s,
-        "POST",
-        "/runtimes/lead/down",
-        &headers(&s, &[]),
-        &json!({"force": true}),
-    );
-    assert_eq!(forced.0, 200, "{}", forced.1);
-    let after = wait_state(&s, "lead", "down");
-    assert_eq!(after["panes"], 2, "the dead rows stay: {after}");
-    assert!(
-        !s.has_pane(&p3) && !s.has_pane(&p4),
-        "the live panes were removed"
-    );
-    assert!(!s.dir.join("runtimes/lead/io/socket").exists());
-
-    let leader = rt_pane(&s, "lead", "exec cat");
-    poll("a third leader", || lines() == 3);
-    stop_pane(&s, &leader);
-    let ended = wait_state(&s, "lead", "failed");
-    assert!(
-        ended["state"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("the leading pane ended before"),
-        "{ended}"
-    );
-
-    let deleted = raw(
-        &s,
-        "DELETE",
-        "/runtimes/lead",
-        &headers(&s, &[]),
-        &Value::Null,
-    );
-    assert_eq!(deleted.0, 200, "{}", deleted.1);
-    assert_eq!(
-        fs::read_dir(s.dir.join("runtimes/lead/io"))
-            .unwrap()
-            .count(),
-        0
-    );
 }
 
 #[test]
@@ -1440,44 +1344,18 @@ fn runtime_visit_ends_on_an_interrupt_before_a_child_runs() {
 }
 
 #[test]
-fn runtime_visit_waiters_lead_fail_and_end_with_their_pane_or_session() {
+fn runtime_visits_fail_and_end_with_their_pane_or_session() {
     let s = serve(
-        "server:\n  runtime_idle_seconds: none\nruntimes:\n  login: {command: {lead: [/usr/bin/true]}}\n  bad: {command: {up: [/bin/sh, -c, 'printf broken >&2; exit 1']}}\n",
+        "server:\n  runtime_idle_seconds: none\nruntimes:\n  login: {command: {}}\n  bad: {command: {up: [/bin/sh, -c, 'printf broken >&2; exit 1']}}\n",
         &[],
     );
     let pane = s.token_pane("exec cat");
-    let follower = s.token_pane("exec cat");
-    let revision = s.doc()["revision"].clone();
     let (mut client, _) = s.client(None);
     let mut visit = s
         .dial_ws("/runtimes/login/visit", Some(as_pane(&s, &pane)), 101)
         .unwrap();
     visit.send(&json!({"type":"visit", "cwd":"/tmp", "env":[]}));
     assert_eq!(client.event("pane_runtime")["runtime"], "login");
-    visit.event("starting");
-    assert_eq!(visit.event("lead")["argv"], json!(["/usr/bin/true"]));
-    let mut waiter = s
-        .dial_ws("/runtimes/login/visit", Some(as_pane(&s, &follower)), 101)
-        .unwrap();
-    waiter.send(&json!({"type":"visit", "cwd":"/tmp"}));
-    waiter.event("starting");
-    drop(visit);
-    assert!(
-        waiter.event("failed")["message"]
-            .as_str()
-            .unwrap()
-            .contains("leading pane")
-    );
-    s.wait_row(&pane, "leader visit released", |row| {
-        row["runtime"].is_null()
-    });
-    assert_eq!(s.doc()["revision"], revision);
-    let mut visit = s
-        .dial_ws("/runtimes/login/visit", Some(as_pane(&s, &pane)), 101)
-        .unwrap();
-    visit.send(&json!({"type":"visit", "cwd":"/tmp"}));
-    visit.event("lead");
-    visit.send(&json!({"type":"lead", "exit":0, "stderr":""}));
     let up = visit.event("up");
     let argv = up["argv"].as_array().unwrap();
     assert!(!argv.contains(&json!("runtime-exec")));
@@ -2096,9 +1974,6 @@ runtimes:
       BOTH: runtime
       PATH: /usr/bin:/bin
     cwd: {work}
-  login:
-    command:
-      lead: [/bin/sh, -c, exit 0]
   broken:
     command:
       up: [/bin/sh, -c, "echo nope >&2; exit 4"]
@@ -2243,13 +2118,6 @@ runtimes:
         "a signal exit keeps its name"
     );
 
-    let mut ws = start_exec(&s, "login", script("true"));
-    let end = read_exec(&mut ws).end;
-    assert_eq!(
-        end,
-        json!({"type": "error", "message": "runtime login needs a pane to log in"})
-    );
-    closed_with(&mut ws, 1011);
     let mut ws = start_exec(&s, "broken", script("true"));
     assert_eq!(
         read_exec(&mut ws).end,

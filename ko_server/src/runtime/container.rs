@@ -550,7 +550,7 @@ mod tests {
     fn args(next: Next) -> Vec<String> {
         match next {
             Next::Run(launch) => launch.args,
-            Next::Up | Next::Lead(_) => panic!("up"),
+            Next::Up => panic!("up"),
             Next::Fail(message) => panic!("{message}"),
         }
     }
@@ -559,7 +559,7 @@ mod tests {
         match next {
             Next::Fail(message) => message,
             Next::Run(launch) => panic!("run {:?}", launch.args),
-            Next::Up | Next::Lead(_) => panic!("up"),
+            Next::Up => panic!("up"),
         }
     }
 

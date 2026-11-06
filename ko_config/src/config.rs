@@ -114,7 +114,6 @@ runtimes:
     command:
       prefix: [/usr/bin/env]
       socket: /run/ko
-      lead: [/bin/true]
       up: [/bin/true]
 ",
         )
@@ -133,7 +132,7 @@ runtimes:
         };
         assert_eq!(command.prefix.as_slice(), ["/usr/bin/env"]);
         assert_eq!(
-            command.lead.as_ref().map(|lead| lead.as_slice()),
+            command.up.as_ref().map(|up| up.as_slice()),
             Some(&["/bin/true".to_owned()][..])
         );
     }
@@ -187,7 +186,7 @@ runtimes:
             ),
             (
                 "runtimes:\n  dev:\n    command: {cwd: rel}\n",
-                "runtimes: dev: command: unknown field `cwd`, expected one of `prefix`, `socket`, `lead`, `up` at line 3 column 15",
+                "runtimes: dev: command: unknown field `cwd`, expected one of `prefix`, `socket`, `up` at line 3 column 15",
             ),
             (
                 "runtimes:\n  dev:\n    cwd: rel\n    command: {}\n",
@@ -204,10 +203,6 @@ runtimes:
             (
                 "runtimes:\n  dev:\n    command: {up: []}\n",
                 "runtimes: dev: command: up: must start with an absolute program path at line 3 column 19",
-            ),
-            (
-                "runtimes:\n  dev:\n    command: {lead: [sh]}\n",
-                "runtimes: dev: command: lead: must start with an absolute program path at line 3 column 21",
             ),
             (
                 "runtimes:\n  dev:\n    pi: [x]\n    command: {}\n",

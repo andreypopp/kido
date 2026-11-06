@@ -891,9 +891,6 @@
       "Command2": {
         "additionalProperties": false,
         "properties": {
-          "lead": {
-            "$ref": "#/components/schemas/Argv"
-          },
           "prefix": {
             "allOf": [
               {
@@ -2025,23 +2022,6 @@
           "revision",
           "layout",
           "panes"
-        ],
-        "type": "object"
-      },
-      "LeadReport": {
-        "description": "How the interactive step of a start ended, as the elected pane reports it.",
-        "properties": {
-          "exit": {
-            "type": "integer"
-          },
-          "stderr": {
-            "default": "",
-            "description": "The tail of the error output of the step. Its last line is the message of a failed start.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "exit"
         ],
         "type": "object"
       },
@@ -3509,14 +3489,8 @@
         ]
       },
       "RuntimeWait": {
-        "description": "The reply of a wait on a runtime: its state when the wait ends. Only the one waiter that was\nelected to run the interactive step gets lead, with the argv of that step.",
+        "description": "The state of a runtime when its wait ends.",
         "properties": {
-          "lead": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
           "state": {
             "$ref": "#/components/schemas/LinkState"
           }
@@ -4296,7 +4270,7 @@
         ]
       },
       "VisitClient": {
-        "description": "The first message must be visit. Only the elected leader sends a lead report.",
+        "description": "The first message must be visit.",
         "oneOf": [
           {
             "allOf": [
@@ -4308,24 +4282,6 @@
             "properties": {
               "type": {
                 "const": "visit",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          },
-          {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/LeadReport"
-              }
-            ],
-            "description": "Reports the end of the interactive start step.",
-            "properties": {
-              "type": {
-                "const": "lead",
                 "type": "string"
               }
             },
@@ -4381,27 +4337,6 @@
             },
             "required": [
               "type"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "Runs the interactive start step on the pane's terminal.",
-            "properties": {
-              "argv": {
-                "description": "The command of the interactive step.",
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "type": {
-                "const": "lead",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "argv"
             ],
             "type": "object"
           },
@@ -6073,7 +6008,7 @@
     },
     "/runtimes/{name}/exec": {
       "get": {
-        "description": "Runs one command inside a runtime, without a terminal: separate stdout and stderr, an exit status or signal, and stdin from the client. Each message is JSON text, and the first client message must be exec. The server reads the socket only while the command takes its stdin, and it sends output only while the connection's queue has room, so nothing is dropped. After exit the server closes with 1000, and after error with 1011. A runtime that is down starts as for a first pane. If its start needs a pane to log in, the session ends with an error. At most 32 sessions of one runtime run at once, and the others wait in order for KO_RUNTIME_EXEC_WAIT_MS. A closed socket stops the command. The route is for the host: a runtime connection is refused.",
+        "description": "Runs one command inside a runtime, without a terminal: separate stdout and stderr, an exit status or signal, and stdin from the client. Each message is JSON text, and the first client message must be exec. The server reads the socket only while the command takes its stdin, and it sends output only while the connection's queue has room, so nothing is dropped. After exit the server closes with 1000, and after error with 1011. A runtime that is down starts as for a first pane. A failed start ends the session with an error. At most 32 sessions of one runtime run at once, and the others wait in order for KO_RUNTIME_EXEC_WAIT_MS. A closed socket stops the command. The route is for the host: a runtime connection is refused.",
         "operationId": "Exec",
         "parameters": [
           {
@@ -6138,73 +6073,6 @@
         }
       }
     },
-    "/runtimes/{name}/lead": {
-      "post": {
-        "description": "The pane that was elected to run the interactive step of a start reports how it ended.",
-        "operationId": "ReportLead",
-        "parameters": [
-          {
-            "example": "dev",
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/RuntimeName"
-            }
-          },
-          {
-            "example": "pane_1",
-            "in": "header",
-            "name": "Ko-Pane",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/PaneId"
-            }
-          },
-          {
-            "example": "0123456789abcdef0123456789abcdef",
-            "in": "header",
-            "name": "Ko-Pane-Token",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/PaneToken"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LeadReport"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Empty"
-                }
-              }
-            },
-            "description": "OK"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The common error body."
-          }
-        }
-      }
-    },
     "/runtimes/{name}/visit": {
       "get": {
         "description": "Enters a runtime in the caller's existing pane until the WebSocket closes.",
@@ -6265,7 +6133,7 @@
     },
     "/runtimes/{name}/wait": {
       "get": {
-        "description": "Waits up to the timeout for the link of the runtime to be up or failed. Only a pane of the runtime may wait. The first waiter while the start has an interactive step gets that step's argv in lead, and an Up reply for a pane comes after the server wrote its token file.",
+        "description": "Waits up to the timeout for the link of the runtime to be up or failed. Only a pane of the runtime may wait. An Up reply follows the write of the pane's token file.",
         "operationId": "WaitRuntime",
         "parameters": [
           {

@@ -342,27 +342,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Runs one command inside a runtime, without a terminal: separate stdout and stderr, an exit status or signal, and stdin from the client. Each message is JSON text, and the first client message must be exec. The server reads the socket only while the command takes its stdin, and it sends output only while the connection's queue has room, so nothing is dropped. After exit the server closes with 1000, and after error with 1011. A runtime that is down starts as for a first pane. If its start needs a pane to log in, the session ends with an error. At most 32 sessions of one runtime run at once, and the others wait in order for KO_RUNTIME_EXEC_WAIT_MS. A closed socket stops the command. The route is for the host: a runtime connection is refused. */
+        /** @description Runs one command inside a runtime, without a terminal: separate stdout and stderr, an exit status or signal, and stdin from the client. Each message is JSON text, and the first client message must be exec. The server reads the socket only while the command takes its stdin, and it sends output only while the connection's queue has room, so nothing is dropped. After exit the server closes with 1000, and after error with 1011. A runtime that is down starts as for a first pane. A failed start ends the session with an error. At most 32 sessions of one runtime run at once, and the others wait in order for KO_RUNTIME_EXEC_WAIT_MS. A closed socket stops the command. The route is for the host: a runtime connection is refused. */
         get: operations["Exec"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/runtimes/{name}/lead": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** @description The pane that was elected to run the interactive step of a start reports how it ended. */
-        post: operations["ReportLead"];
         delete?: never;
         options?: never;
         head?: never;
@@ -393,7 +376,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description Waits up to the timeout for the link of the runtime to be up or failed. Only a pane of the runtime may wait. The first waiter while the start has an interactive step gets that step's argv in lead, and an Up reply for a pane comes after the server wrote its token file. */
+        /** @description Waits up to the timeout for the link of the runtime to be up or failed. Only a pane of the runtime may wait. An Up reply follows the write of the pane's token file. */
         get: operations["WaitRuntime"];
         put?: never;
         post?: never;
@@ -669,7 +652,6 @@ export interface components {
             type: "shell";
         };
         Command2: {
-            lead?: components["schemas"]["Argv"];
             /**
              * @description The argv that goes before `ko enter` in a pane's program.
              * @default []
@@ -996,15 +978,6 @@ export interface components {
             layout: components["schemas"]["Layout"];
             panes: components["schemas"]["Listing"][];
             revision: number;
-        };
-        /** @description How the interactive step of a start ended, as the elected pane reports it. */
-        LeadReport: {
-            exit: number;
-            /**
-             * @description The tail of the error output of the step. Its last line is the message of a failed start.
-             * @default
-             */
-            stderr?: string;
         };
         Leaf: {
             cols: components["schemas"]["Cells"];
@@ -1412,12 +1385,8 @@ export interface components {
             /** @constant */
             type: "session";
         };
-        /**
-         * @description The reply of a wait on a runtime: its state when the wait ends. Only the one waiter that was
-         *     elected to run the interactive step gets lead, with the argv of that step.
-         */
+        /** @description The state of a runtime when its wait ends. */
         RuntimeWait: {
-            lead?: string[];
             state: components["schemas"]["LinkState"];
         };
         Scrollback: {
@@ -1622,14 +1591,11 @@ export interface components {
             /** @constant */
             type: "input";
         };
-        /** @description The first message must be visit. Only the elected leader sends a lead report. */
-        VisitClient: ({
+        /** @description The first message must be visit. */
+        VisitClient: {
             /** @constant */
             type: "visit";
-        } & components["schemas"]["VisitRequest"]) | ({
-            /** @constant */
-            type: "lead";
-        } & components["schemas"]["LeadReport"]);
+        } & components["schemas"]["VisitRequest"];
         /** @description Enters the runtime in the caller's pane until the visit connection closes. */
         VisitRequest: {
             /** @description The command to run without a shell. Without a command, starts the runtime's shell. */
@@ -1646,11 +1612,6 @@ export interface components {
         VisitServer: {
             /** @constant */
             type: "starting";
-        } | {
-            /** @description The command of the interactive step. */
-            argv: string[];
-            /** @constant */
-            type: "lead";
         } | {
             /** @description The transport command, without the runtime-exec wrapper. */
             argv: string[];
@@ -2727,47 +2688,6 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-            /** @description The common error body. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    ReportLead: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @example pane_1 */
-                "Ko-Pane"?: components["schemas"]["PaneId"];
-                /** @example 0123456789abcdef0123456789abcdef */
-                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
-            };
-            path: {
-                /** @example dev */
-                name: components["schemas"]["RuntimeName"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LeadReport"];
-            };
-        };
-        responses: {
-            /** @description OK */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Empty"];
-                };
             };
             /** @description The common error body. */
             default: {

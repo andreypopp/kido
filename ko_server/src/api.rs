@@ -11,10 +11,10 @@ use serde_json::Value;
 use crate::ids::{ClientId, PaneId, SessionId, VarName, WindowId};
 use crate::protocol::{
     Candidate, ClientEvent, ClientRequest, DeleteVars, DownRuntime, Empty, ExecClient, ExecServer,
-    HistoryDef, Images, Input, InputResult, LayoutPanes, LeadReport, Listing, Message, NewWindow,
-    PanePatch, Placement, Posted, PutLayout, RuntimeInfo, RuntimeWait, SearchEvent, SendMessage,
-    SendPrompt, Sent, ServerVersion, Snapshot, StopPane, StreamRequest, VarValue, ViewEvent,
-    ViewRequest, VisitClient, VisitServer,
+    HistoryDef, Images, Input, InputResult, LayoutPanes, Listing, Message, NewWindow, PanePatch,
+    Placement, Posted, PutLayout, RuntimeInfo, RuntimeWait, SearchEvent, SendMessage, SendPrompt,
+    Sent, ServerVersion, Snapshot, StopPane, StreamRequest, VarValue, ViewEvent, ViewRequest,
+    VisitClient, VisitServer,
 };
 use crate::route::{Invalid, Param, binary, pixels, routes, text};
 
@@ -695,9 +695,7 @@ routes! {
     /// One runtime.
     GetRuntime { method: GET, path: /runtimes/{name: RuntimeName}, query: { session: Option<SessionId> }, reply: RuntimeInfo }
     /// Waits up to the timeout for the link of the runtime to be up or failed. Only a pane of the
-    /// runtime may wait. The first waiter while the start has an interactive step gets that
-    /// step's argv in lead, and an Up reply for a pane comes after the server wrote its token
-    /// file.
+    /// runtime may wait. An Up reply follows the write of the pane's token file.
     WaitRuntime {
         method: GET,
         path: /runtimes/{name: RuntimeName}/wait,
@@ -713,14 +711,6 @@ routes! {
         send: VisitClient,
         recv: VisitServer,
     }
-    /// The pane that was elected to run the interactive step of a start reports how it ended.
-    ReportLead {
-        method: POST,
-        path: /runtimes/{name: RuntimeName}/lead,
-        body: LeadReport,
-        caller: optional,
-        reply: Empty,
-    }
     /// Takes the link of a runtime down. With live panes it is refused, unless force removes the
     /// panes first, as a stop does.
     DownRuntime {
@@ -735,8 +725,8 @@ routes! {
     /// client message must be exec. The server reads the socket only while the command takes
     /// its stdin, and it sends output only while the connection's queue has room, so nothing is
     /// dropped. After exit the server closes with 1000, and after error with 1011. A runtime that
-    /// is down starts as for a first pane. If its start needs a pane to log in, the session
-    /// ends with an error. At most 32 sessions of one runtime run at once, and the others wait in
+    /// is down starts as for a first pane. A failed start ends the session with an error.
+    /// At most 32 sessions of one runtime run at once, and the others wait in
     /// order for KO_RUNTIME_EXEC_WAIT_MS. A closed socket stops the command. The route is for
     /// the host: a runtime connection is refused.
     Exec {
@@ -862,9 +852,6 @@ mod tests {
             Route::WaitRuntime {
                 name: "dev".parse().unwrap(),
                 timeout_ms: WaitMs::clamped(250),
-            },
-            Route::ReportLead {
-                name: "dev".parse().unwrap(),
             },
             Route::DownRuntime {
                 name: "dev".parse().unwrap(),

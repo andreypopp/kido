@@ -414,10 +414,6 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                 reply::<routes::WaitRuntime>(&mut state.conns[index], result);
             }
         }
-        Request::ReportLead { name, body } => {
-            let result = state.report_lead(poll, caller, name, body);
-            reply::<routes::ReportLead>(&mut state.conns[index], result);
-        }
         Request::DownRuntime {
             name,
             session,

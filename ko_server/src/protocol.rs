@@ -2636,22 +2636,10 @@ pub struct RuntimeInfo {
     pub pi: RuntimePi,
 }
 
-/// The reply of a wait on a runtime: its state when the wait ends. Only the one waiter that was
-/// elected to run the interactive step gets lead, with the argv of that step.
+/// The state of a runtime when its wait ends.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeWait {
     pub state: LinkState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lead: Option<Vec<String>>,
-}
-
-/// How the interactive step of a start ended, as the elected pane reports it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct LeadReport {
-    pub exit: i32,
-    /// The tail of the error output of the step. Its last line is the message of a failed start.
-    #[serde(default)]
-    pub stderr: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -2675,14 +2663,12 @@ pub struct VisitRequest {
     pub env: Vec<Variable>,
 }
 
-/// The first message must be visit. Only the elected leader sends a lead report.
+/// The first message must be visit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum VisitClient {
     /// Starts the visit with the caller's host directory and command.
     Visit(VisitRequest),
-    /// Reports the end of the interactive start step.
-    Lead(LeadReport),
 }
 
 /// The runtime's visit updates. Failed and ended are followed by a normal WebSocket close.
@@ -2691,11 +2677,6 @@ pub enum VisitClient {
 pub enum VisitServer {
     /// The runtime's link is starting.
     Starting {},
-    /// Runs the interactive start step on the pane's terminal.
-    Lead {
-        /// The command of the interactive step.
-        argv: Vec<String>,
-    },
     /// The token is ready. Runs the transport on the pane's terminal.
     Up {
         /// The transport command, without the runtime-exec wrapper.
@@ -2723,8 +2704,6 @@ pub enum KillSignal {
     Kill,
     Int,
 }
-
-pub const STDERR_TAIL: usize = 4096;
 
 /// Runs argv inside the runtime without a shell. The cwd is a path of the runtime. The env
 /// applies after the env of the runtime. Without stdin the command reads an empty input.

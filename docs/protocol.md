@@ -1175,10 +1175,10 @@ runtime before the configured one
 in the pane's own session, and a pane identity that names another
 session is `refused`. The user's requests without it resolve to the
 configured runtime. `GET /runtimes/NAME/wait` is a long poll of the runtime's own
-pane wrappers until the link is `Up` or `Failed`; its reply names the
-step to run for the one waiter elected to lead. The leader reports
-the step's end with `POST /runtimes/NAME/lead`. Both accept only a
-host-connection pane whose `runtime` is NAME. `POST /runtimes/NAME/down`
+pane wrappers until the link is `Up` or `Failed`. It accepts only a
+host-connection pane whose `runtime` is NAME. No pane takes part in a
+start: every waiter waits in the same way (design-runtimes.md,
+"No user input"). `POST /runtimes/NAME/down`
 takes the link down; it refuses while the runtime has live panes,
 visits or exec sessions unless `force`, which ends the visits and
 removes the born panes first.
@@ -1216,13 +1216,11 @@ a name that does not resolve is `not_found`. The first client message
 is `visit`, with the pane's host `cwd`, mapped as a host `cwd` of
 `POST /panes`, an optional `command` and the `env` after the
 runtime's; nothing else is read before it. The server then sends
-`starting` while the link starts, `lead` with the step's argv to the
-one waiter that it elects, as a wait's reply does, `up` with the
+`starting` while the link starts, `up` with the
 transport's argv to run on the pane's tty, `failed` when the start
 fails or the request is wrong, and `ended` when the server ends the
 visit: a down, the end of the session, the pane's death or removal.
-The client answers `lead` with its `lead` report, the `LeadReport`
-of `POST /runtimes/NAME/lead`. After `failed` or `ended` the server
+After `failed` or `ended` the server
 closes with 1000. The end of the connection from either side ends
 the visit. While the visit lasts the pane is in the runtime: the
 row's `runtime` is NAME, and inside, `KO_PANE_TOKEN` is a visit token
@@ -1256,7 +1254,7 @@ pane. The first client message is `exec`; nothing else is read before
 it. The server sends `stdout` and `stderr` records, then `exit` with a
 status or a signal and closes with 1000; `error` closes with 1011 and
 is the one way a session ends without `exit`: the runtime failed to
-start, it needs a pane to log in, the command could not start, the
+start, the command could not start, the
 transport failed (ssh's own exit 255), no session slot came free in
 time, or a message did not parse. A missing program or cwd is `exit`
 127 or 1, with the reason on stderr. A `data`

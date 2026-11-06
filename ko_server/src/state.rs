@@ -829,7 +829,6 @@ impl State {
             self.runtimes.remove_token(runtime, id);
             self.touch_runtime(poll, runtime);
         }
-        self.runtimes.pane_ended(poll, id);
         self.runtimes_changed(poll);
     }
 
@@ -999,7 +998,6 @@ impl State {
                 if let pane_proc::Cause::Failed(_) = death.cause {
                     self.delete_pane(poll, id);
                 }
-                self.runtimes.pane_ended(poll, id);
                 self.runtimes_changed(poll);
                 self.sweep_soon(poll);
                 self.settle_stops(poll);

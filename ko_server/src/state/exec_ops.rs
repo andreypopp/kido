@@ -220,10 +220,6 @@ impl State {
             LinkState::Down => {
                 self.exec_fail(poll, index, format!("runtime {key} is down"));
             }
-            LinkState::Starting if self.runtimes.needs_pane(key) => {
-                let message = format!("runtime {key} needs a pane to log in");
-                self.exec_fail(poll, index, message);
-            }
             LinkState::Starting => {
                 if let Some(conn) = self.token(index) {
                     self.runtimes.wait(
@@ -254,9 +250,7 @@ impl State {
             LinkState::Down => {
                 self.exec_fail(poll, index, format!("runtime {key} went down"));
             }
-            LinkState::Starting => {
-                self.exec_fail(poll, index, format!("runtime {key} needs a pane to log in"));
-            }
+            LinkState::Starting => self.exec_proceed(poll, index, key),
         }
     }
 

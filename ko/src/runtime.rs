@@ -1,11 +1,11 @@
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
 use clap::Args;
-use ko_client::runtimes::{self, Shown, Up};
+use ko_client::runtimes::{self, Up};
 use ko_client::wire::Caller;
 use ko_config::values::RuntimeName;
 use ko_server::config::variable;
@@ -180,19 +180,8 @@ pub(crate) fn runtime_exec(args: RuntimeExecArgs) -> ExitCode {
         crate::keep_failed_pane(&dir.join("socket"), caller.as_ref());
         ExitCode::FAILURE
     };
-    let mut shown = |event: Shown<'_>| match event {
-        Shown::Starting => say(&format!("starting runtime {name}")),
-        Shown::Stderr(bytes) => {
-            let _ = io::stderr().write_all(bytes);
-        }
-    };
-    match runtimes::bring_up(
-        &dir,
-        caller.clone(),
-        &name,
-        &crate::transport_env(),
-        &mut shown,
-    ) {
+    let mut shown = || say(&format!("starting runtime {name}"));
+    match runtimes::bring_up(&dir, caller.clone(), &name, &mut shown) {
         Up::Up => {}
         Up::Failed(message) => return stop(message),
         Up::StillStarting => return stop("still starting".to_owned()),

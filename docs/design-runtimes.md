@@ -117,11 +117,9 @@ one. `GET /runtimes/NAME` reports the effective `paths`, the `cwd`,
 accepts it only with `KO_RUNTIME_COMMAND_KIND=1` in its environment;
 without the knob, a `command` entry is a configuration error. Its
 transport is a `prefix` argv put in front of `ko enter` and of an
-exec's argv, on the host. Two optional steps model the other kinds,
-so that the link machinery is tested without them: `lead`, an
-interactive step that one waiting pane runs on its own pty (the ssh
-master's login), and `up`, a step that the server runs as its own
-child (the ssh forward). The fields of the other kinds are in their
+exec's argv, on the host. An optional `up` step, which the server
+runs as its own child, models the stages of the other kinds (the ssh
+forward), so that the link machinery is tested without them. The fields of the other kinds are in their
 sections below.
 
 ## Ad-hoc runtimes
@@ -184,15 +182,13 @@ transport as its child on the pane's tty, in the shell's foreground
 process group. Its loop (`ko_sys::event`, one thread) watches the
 connection and the signals. `SIGHUP` and `SIGTERM` go to the child;
 `SIGINT` reaches the child's group from the tty itself. Before a
-child runs (the link starts, or another pane leads), each of the
+child runs (while the link starts), each of the
 three signals ends the visit, and `ko run` exits with 128 plus the
 signal. The child's
 exit closes the connection and is `ko run`'s exit status. When the
 server ends the visit or the connection closes, `ko run` sends the
 child `SIGHUP`, then `SIGKILL` after half of `KO_STOP_ESCALATION_MS`,
-prints `runtime NAME: <message>` and exits 1. A `lead` message runs
-the lead step as the pane wrapper's leader does ("Leader election"),
-and the visit reports it on its own connection.
+prints `runtime NAME: <message>` and exits 1.
 
 **The server at a visit** (`ko_server/src/state/visit_ops.rs`) sets
 the pane's membership to `Visit` with a fresh visit token, sends the
@@ -320,7 +316,7 @@ up. A request that creates a pane in a runtime that is `Down` or
 starts the link and returns at once with the pane, as for a host
 pane; an exec session starts it too. A `Failed` runtime starts again
 at the next request. The start binds the listener, then runs the
-`lead` step, then the kind's stages, then sets `Up`. A stage is one
+kind's stages, then sets `Up`. A stage is one
 helper child of the server, reaped on `SIGCHLD`, whose exit, stdout
 and stderr decide the next stage, `Up` or a failure; the `command`
 kind's `up` step is one stage, and the container kind has several
@@ -347,14 +343,17 @@ death. After 120 s it prints `runtime NAME: still starting` and exits
 (`Wait` in `ko_server/src/runtime/mod.rs`). Concurrent first panes
 wait on one start.
 
-**Leader election.** When the start has a `lead` step, the first
-waiter that asks gets the step's argv in the wait's reply; the others
-keep waiting. The leader runs the step on its pty, passes its stderr
-through and keeps the last line, and reports with `POST
-/runtimes/NAME/lead`. Exit 0 continues the start; another exit fails
-it with the last stderr line. A leader whose pane ends before it
-reports fails the start. The leader then waits like the others. The
-report is the only event: the server watches no file.
+**No user input.** Every stage runs without a tty and reads nothing
+from a pane, so no pane shows a login prompt, and every waiter (a
+pane, a visit or an exec session) starts and waits in the same way.
+A step that would prompt on a terminal (a passphrase, a password)
+fails the start with its stderr. Thus the user supplies a credential
+before the start: for ssh, a key in the agent of the server's
+`SSH_AUTH_SOCK`, a key without a passphrase, or a master that is
+already running ("The ssh kind"). A request that does not use the
+terminal can still wait for the user outside ko: a security key's
+touch, or an agent's confirmation dialog (`ssh-add -c`). The start
+waits for it up to its deadline of 120 s.
 
 **Down.** A runtime with no pane in the document, live or dead, and
 no live exec session goes down after the `server: runtime_idle_seconds`
@@ -526,11 +525,7 @@ may already create a pane there; on a runtime connection the route is
 
 The first client message is `exec`; nothing else is read before it.
 A runtime that is `Down` or `Failed` starts as for a first pane, and
-the session waits for `Up` as a waiter of the loop. A start that
-needs a `lead` step that no pane has taken cannot be led by an exec,
-which has no pty: the session ends with `error` "runtime NAME needs a
-pane to log in". A start whose leader is already elected is waited
-for.
+the session waits for `Up` as a waiter of the loop.
 
 **The helper.** The kind turns the request into a helper process
 (`Runtime::exec_launch` in `ko_server/src/runtime/mod.rs`), which the server runs as its child with
@@ -854,15 +849,23 @@ of the kind.
 **The start.** The steps run in this order:
 
 1. A check of the control socket. When a master answers, the server
-   adopts it and skips the lead step. Thus a server that restarted
-   does not log in again, and an exec session can start a link whose
-   master is alive.
-2. Otherwise the server removes a stale `ctl`, and the lead step is
-   the master, with `ControlPersist=yes`. The leader runs it on its
-   pane's pty, so a passphrase, a password or a security key's touch
-   reaches the user. ssh forks to the background when the master is
-   up. The master is not the server's child: the checks are the
-   server's only source for its state.
+   adopts it and skips the master stage. Thus a server that restarted
+   does not log in again.
+2. Otherwise the server removes a stale `ctl` and runs the master as
+   a stage, with `BatchMode=yes` and `ControlPersist=yes`
+   (`master` in `ko_server/src/runtime/ssh.rs`). `BatchMode` turns
+   off every terminal prompt: ssh authenticates only with the agent of the
+   server's `SSH_AUTH_SOCK`, a key without a passphrase or another
+   non-interactive method, and a failed login exits at once with
+   ssh's error ("Permission denied (publickey)."), the message of the
+   failed start. ssh forks to the background when the master is up
+   (`-f`), and the stage ends with the exit of the foreground ssh;
+   the server reaps it and does not wait for the end of the pipes,
+   which the background master keeps. The master is not the server's
+   child: the checks are the server's only source for its state.
+   A user whose key needs a passphrase loads it into the agent first
+   (`ssh-add`), or starts a master on the control socket `ctl` of
+   the runtime directory, which step 1 adopts.
 3. The prepare passenger, `ko enter --prepare` through the master
    (`ko_shell/src/enter.rs`). It resolves the remote directory
    (`dir`, else a private default of the remote user, with the
@@ -905,8 +908,7 @@ remote user's login shell.
 **A pane.** Before a pane's wait gets `Up`, the server checks the
 master, then writes the pane's token file on the remote through a
 passenger that gets the token on its stdin. A dead master restarts
-the link from `Down`, and the pane waits in the new start and may
-lead it. The pane's program is `ssh -t` through the master, then `ko
+the link from `Down`, and the pane waits in the new start. The pane's program is `ssh -t` through the master, then `ko
 enter` without `--socket`, with the same `--tag` as `--prepare`: it
 resolves the remote directory as `--prepare` does and reads the
 socket and the token file there, because the pane's argv is fixed
@@ -948,7 +950,7 @@ refused attempt reaches the client.
 **Down**, the idle rule, a failed start and the server's exit end
 the master with `-O exit`, a cleanup command of the runtime's queue
 ("Down and cleanup" of the container kind), and the forward ends
-with it. A failed start thus asks for the login again. A link whose
+with it. Thus the next start after a failure logs in again. A link whose
 master died queues the same exit before it starts again. The remote
 socket and token files stay until the next `--prepare`; the tokens
 are dead with their panes. A start that begins while the exit is

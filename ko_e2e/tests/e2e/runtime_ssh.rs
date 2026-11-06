@@ -13,11 +13,9 @@ use crate::outer::{Keys, Outer};
 use crate::panes::{headers, raw};
 use crate::runtime::{
     Rt, closed_with, dead, fifo, read_exec, release, rt_pane, serve_in, start_exec, start_tree,
-    state, stop_pane, tree_pids, wait_state,
+    state, tree_pids, wait_state,
 };
 use crate::sshd::{Forwarding, HOST, Options, Remote};
-
-const PASSPHRASE: &str = "ko-pass";
 
 struct Box {
     rt: Rt,
@@ -76,7 +74,7 @@ impl Box {
         run.exit == ko_sys::pid::Exit::Exited(0)
     }
 
-    fn leads(&self) -> usize {
+    fn masters(&self) -> usize {
         self.remote
             .calls()
             .iter()
@@ -123,20 +121,8 @@ fn up_pane(s: &Server, script: &str) -> String {
     rt_pane(s, "box", &format!("stty raw -echo; {script}; exec cat"))
 }
 
-fn prompting(s: &Server, panes: &[&str]) -> String {
-    let mut found = None;
-    poll("a pane that shows ssh's passphrase prompt", || {
-        found = panes
-            .iter()
-            .find(|pane| s.screen(pane).contains("passphrase"))
-            .map(|pane| (*pane).to_owned());
-        found.is_some()
-    });
-    found.unwrap()
-}
-
 #[test]
-fn an_adhoc_ssh_visit_leads_in_place_and_returns_to_the_host() {
+fn an_adhoc_ssh_visit_starts_in_place_and_returns_to_the_host() {
     if !enabled("KO_E2E_HOST_SSH") {
         return;
     }
@@ -154,7 +140,7 @@ fn an_adhoc_ssh_visit_leads_in_place_and_returns_to_the_host() {
     });
     o.line("ko version && ko api /version && printf 'REMOTE-%s\\n' OK");
     o.contains("REMOTE-OK");
-    assert_eq!(s.leads(), 1);
+    assert_eq!(s.masters(), 1);
     let doc = s.doc();
     let session = doc["layout"]["sessions"][0]["id"].as_str().unwrap();
     let tag = format!("'--tag' '{session}-visit'");
@@ -197,7 +183,7 @@ fn an_ssh_pane_rides_the_master_and_a_dead_master_ends_its_panes_and_never_recon
         "ko api /version >/dev/null && printf 'API<%s,%s>' \"$KO_RUNTIME\" \"$KO_PANE\"; exec cat",
     );
     s.screen_has(&pane, &format!("API<box,{pane}>"));
-    assert_eq!(boxed.leads(), 1, "{:?}", boxed.remote.calls());
+    assert_eq!(boxed.masters(), 1, "{:?}", boxed.remote.calls());
     assert_eq!(state(s, "box"), "up");
     let info: Value = serde_json::from_str(&s.request("GET", "/runtimes/box", None, 200)).unwrap();
     assert_eq!(info["kind"], "ssh");
@@ -229,7 +215,7 @@ fn an_ssh_pane_rides_the_master_and_a_dead_master_ends_its_panes_and_never_recon
         listing.contains("-S "),
         "the panes run through the master: {listing}"
     );
-    assert_eq!(boxed.leads(), 1, "the second pane led nothing");
+    assert_eq!(boxed.masters(), 1, "the second pane started no master");
 
     assert!(boxed.master("check"));
     assert!(boxed.master("exit"));
@@ -253,7 +239,7 @@ fn an_ssh_pane_rides_the_master_and_a_dead_master_ends_its_panes_and_never_recon
         "ko api /version >/dev/null && printf 'AGAIN<%s>' \"$KO_RUNTIME\"; exec cat",
     );
     s.screen_has(&again, "AGAIN<box>");
-    assert_eq!(boxed.leads(), 2, "the new pane led the new start");
+    assert_eq!(boxed.masters(), 2, "the new pane started a new master");
     wait_state(s, "box", "up");
     tokens.push(s.token(&again).unwrap());
     boxed.no_token_in_argv(&tokens);
@@ -289,11 +275,11 @@ fn an_ssh_pane_rides_the_master_and_a_dead_master_ends_its_panes_and_never_recon
     );
     poll("the master to end", || !boxed.master("check"));
 
-    let led = boxed.leads();
+    let masters_before = boxed.masters();
     let before = calls("-O exit");
     let first = up_pane(s, "printf 'FIRST'");
     s.screen_has(&first, "FIRST");
-    assert_eq!(boxed.leads(), led + 1);
+    assert_eq!(boxed.masters(), masters_before + 1);
     boxed.down(true);
     poll("the second farewell to start", || {
         calls("-O exit") == before + 1
@@ -313,7 +299,7 @@ fn an_ssh_pane_rides_the_master_and_a_dead_master_ends_its_panes_and_never_recon
     );
     release(&s.scratch, &hold, "go");
     s.screen_has(&last, "LAST<box>");
-    assert_eq!(boxed.leads(), led + 2);
+    assert_eq!(boxed.masters(), masters_before + 2);
     assert!(
         boxed.ctl().exists(),
         "the delete did not take the new link's directory"
@@ -327,50 +313,37 @@ fn an_ssh_pane_rides_the_master_and_a_dead_master_ends_its_panes_and_never_recon
 }
 
 #[test]
-fn the_leader_pane_shows_the_passphrase_prompt_and_a_closed_leader_fails_the_start() {
+fn a_passphrase_key_fails_without_prompting_in_any_pane() {
     if !enabled("KO_E2E_HOST_SSH") {
         return;
     }
     let boxed = serve(
         Options {
-            passphrase: Some(PASSPHRASE),
+            passphrase: Some("ko-pass"),
             ..Options::default()
         },
         "",
-        &[],
+        &[("SSH_AUTH_SOCK", "/tmp/ko-no-agent")],
     );
     let s: &Server = &boxed;
-    let script = "printf 'UP<%s>' \"$KO_RUNTIME\"";
-    let (p1, p2) = (up_pane(s, script), up_pane(s, script));
-    let leader = prompting(s, &[&p1, &p2]);
-    let other = if leader == p1 { &p2 } else { &p1 };
-    s.screen_has(other, "starting runtime box");
-    assert!(!s.screen(other).contains("passphrase"));
-    s.text(&leader, &format!("{PASSPHRASE}\n"));
-    s.screen_has(&p1, "UP<box>");
-    s.screen_has(&p2, "UP<box>");
-    assert_eq!(boxed.leads(), 1);
-    boxed.down(true);
-    wait_state(s, "box", "down");
-
-    let (q1, q2) = (up_pane(s, script), up_pane(s, script));
-    let leader = prompting(s, &[&q1, &q2]);
-    let other = if leader == q1 { &q2 } else { &q1 };
-    stop_pane(s, &leader);
-    s.screen_has(
-        other,
-        "runtime box: the leading pane ended before it reported",
+    let panes = [
+        up_pane(s, "printf NOT-REACHED"),
+        up_pane(s, "printf NOT-REACHED"),
+    ];
+    let failed = wait_state(s, "box", "failed");
+    assert!(
+        failed["state"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Permission denied"),
+        "{failed}"
     );
-    dead(s, other);
-    wait_state(s, "box", "failed");
-
-    let r = up_pane(s, script);
-    let leader = prompting(s, &[&r]);
-    s.text(&leader, &format!("{PASSPHRASE}\n"));
-    s.screen_has(&r, "UP<box>");
-    assert_eq!(boxed.leads(), 3);
-    boxed.down(true);
-    poll("the master to end", || !boxed.master("check"));
+    for pane in panes {
+        dead(s, &pane);
+        let screen = s.screen(&pane);
+        assert!(!screen.contains("passphrase"), "{screen}");
+        assert!(!screen.contains("NOT-REACHED"), "{screen}");
+    }
 }
 
 #[test]
@@ -433,14 +406,18 @@ fn an_exec_session_runs_through_a_live_master_that_the_server_adopts_and_retries
     let fifos = [fifo(&work, "a"), fifo(&work, "b")];
     let request = |script: &str| json!({"argv": ["/bin/sh", "-c", script], "stdin": false});
 
-    let mut ws = start_exec(s, "box", request("echo nope"));
+    let mut ws = start_exec(s, "box", request("printf READY"));
     let ended = read_exec(&mut ws);
+    assert_eq!(ended.end, json!({"type": "exit", "status": 0}));
+    assert_eq!(ended.stdout, b"READY");
     assert_eq!(
-        ended.end,
-        json!({"type": "error", "message": "runtime box needs a pane to log in"})
+        boxed.masters(),
+        1,
+        "an exec starts the master without a pane"
     );
-    closed_with(&mut ws, 1011);
+    closed_with(&mut ws, 1000);
     boxed.down(false);
+    poll("the first master to end", || !boxed.master("check"));
 
     fs::create_dir_all(s.dir.join("runtimes/box")).unwrap();
     let ctl = boxed.ctl();
@@ -457,7 +434,7 @@ fn an_exec_session_runs_through_a_live_master_that_the_server_adopts_and_retries
         HOST,
     ]);
     assert_eq!(master.exit, ko_sys::pid::Exit::Exited(0), "{master:?}");
-    let leads = boxed.leads();
+    let masters = boxed.masters();
 
     let mut ws = start_exec(
         s,
@@ -494,9 +471,9 @@ fn an_exec_session_runs_through_a_live_master_that_the_server_adopts_and_retries
         "the server's HOME reached the command: {home}"
     );
     assert_eq!(
-        boxed.leads(),
-        leads,
-        "the live master was adopted: no lead step"
+        boxed.masters(),
+        masters,
+        "the live master was adopted: no new master"
     );
     assert_eq!(state(s, "box"), "up");
 
@@ -556,8 +533,8 @@ fn an_exec_session_runs_through_a_live_master_that_the_server_adopts_and_retries
             .iter()
             .filter(|call| call.contains("'enter' '--exec'"))
             .count()
-            == 8,
-        "seven sessions and the refused one tried again make eight exec channels: {:?}",
+            == 9,
+        "eight sessions and the refused one tried again make nine exec channels: {:?}",
         boxed.remote.calls()
     );
     release(&s.scratch, &fifos[1], "go");
@@ -696,9 +673,9 @@ fn a_master_that_still_holds_the_forward_is_adopted_with_the_forward_made_again(
     );
     s.screen_has(&pane, "ADOPTED<box>");
     assert_eq!(
-        boxed.leads(),
+        boxed.masters(),
         1,
-        "only the test led: {:?}",
+        "only the test started a master: {:?}",
         boxed.remote.calls()
     );
     boxed.down(true);

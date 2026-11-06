@@ -80,13 +80,6 @@ pub enum Kind {
 }
 
 impl Runtime {
-    pub fn lead(&self) -> Option<&[String]> {
-        match &self.kind {
-            Kind::Command(command) => command.lead.as_ref().map(Argv::as_slice),
-            Kind::Container(_) | Kind::Ssh(_) => None,
-        }
-    }
-
     pub fn paths(&self) -> Vec<PathMap> {
         let volumes: &[Volume] = match &self.kind {
             Kind::Command(_) | Kind::Ssh(_) => &[],
@@ -277,10 +270,6 @@ pub struct Command {
     /// Where the runtime's socket is reached inside the runtime. Default: the host path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket: Option<AbsPath>,
-    /// An interactive step of the start. One waiting pane runs it on its own terminal and
-    /// reports the result.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lead: Option<Argv>,
     /// A step of the start that the server runs as its own child. Exit 0 continues the start.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub up: Option<Argv>,

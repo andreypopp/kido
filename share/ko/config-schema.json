@@ -224,17 +224,6 @@
     "Command": {
       "type": "object",
       "properties": {
-        "lead": {
-          "description": "An interactive step of the start. One waiting pane runs it on its own terminal and\nreports the result.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Argv"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "prefix": {
           "description": "The argv that goes before `ko enter` in a pane's program.",
           "$ref": "#/$defs/Prefix",

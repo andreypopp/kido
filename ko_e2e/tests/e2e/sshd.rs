@@ -58,8 +58,6 @@ pub(crate) enum Forwarding {
 pub(crate) struct Options {
     pub(crate) forwarding: Forwarding,
     pub(crate) max_sessions: Option<u32>,
-    // The client key has this passphrase, and the client configuration asks for it on the
-    // terminal instead of the batch mode.
     pub(crate) passphrase: Option<&'static str>,
     // sshd accepts PATH and HOME from the client, and the client configuration sends them.
     pub(crate) send_env: bool,
@@ -146,7 +144,7 @@ impl Remote {
                 d = text_of(&dir),
                 env = if options.send_env { " PATH HOME" } else { "" },
                 batch = if options.passphrase.is_some() {
-                    ""
+                    "  BatchMode no\n"
                 } else {
                     "  BatchMode yes\n"
                 },

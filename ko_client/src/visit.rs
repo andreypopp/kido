@@ -6,32 +6,20 @@ use std::time::{Duration, Instant};
 use ko_config::values::RuntimeName;
 use ko_server::api::Route;
 use ko_server::config::{env_path, program_path};
-use ko_server::protocol::{self, LeadReport, VisitClient, VisitRequest, VisitServer};
+use ko_server::protocol::{self, VisitClient, VisitRequest, VisitServer};
 use ko_sys::event::{Events, Interest, Mode, Poll, Timer, Token};
 use ko_sys::pid::{Exit, Pid};
 use ko_sys::signal::{Signal, Signals};
 use ko_sys::spawn::{self, Env};
 
 use crate::api::{self, Failure, ReplyError};
-use crate::runtimes::{STILL_STARTING, Shown, drain, exit_code, lead_step};
+use crate::runtimes::STILL_STARTING;
 use crate::wire::{self, Caller, Link, Next};
 
-#[derive(Debug)]
-enum Child {
-    Lead {
-        pid: Pid,
-        stderr: io::PipeReader,
-        token: Option<Token>,
-        tail: Vec<u8>,
-    },
-    Transport(Pid),
-}
-
-impl Child {
-    fn pid(&self) -> Pid {
-        match self {
-            Self::Lead { pid, .. } | Self::Transport(pid) => *pid,
-        }
+fn exit_code(exit: Exit) -> i32 {
+    match exit {
+        Exit::Exited(code) => code,
+        Exit::Signaled(signal) => 128 + signal,
     }
 }
 
@@ -57,25 +45,18 @@ struct Lease<'a> {
     escalation_timer: Timer,
     escalation: Duration,
     env: &'a [Vec<u8>],
-    child: Option<Child>,
+    child: Option<Pid>,
     phase: Phase,
 }
 
 impl Lease<'_> {
-    fn send(&mut self, message: VisitClient) -> Result<(), String> {
-        self.link
-            .send(protocol::json(&message))
-            .map_err(wire::text)?;
-        self.link.settle(&mut self.poll).map_err(wire::text)
-    }
-
     fn end(&mut self, reason: End, signal: Signal) -> Result<(), String> {
         if !matches!(self.phase, Phase::Ending(_)) {
             self.phase = Phase::Ending(reason);
             self.link.unwatch(&mut self.poll);
             self.poll.stop(self.deadline);
             if let Some(child) = &self.child {
-                let _ = child.pid().signal(signal);
+                let _ = child.signal(signal);
                 self.poll
                     .start(self.escalation_timer, self.escalation, None)
                     .map_err(wire::text)?;
@@ -84,38 +65,11 @@ impl Lease<'_> {
         Ok(())
     }
 
-    fn message(
-        &mut self,
-        message: VisitServer,
-        shown: &mut impl FnMut(Shown<'_>),
-    ) -> Result<(), String> {
+    fn message(&mut self, message: VisitServer, shown: &mut impl FnMut()) -> Result<(), String> {
         match message {
-            VisitServer::Starting {} => shown(Shown::Starting),
-            VisitServer::Lead { argv } => {
-                if self.child.is_some() || !matches!(self.phase, Phase::Waiting) {
-                    return Err("unexpected lead command".to_owned());
-                }
-                let Some((program, rest)) = argv.split_first() else {
-                    return Err("no lead command".to_owned());
-                };
-                match lead_step(program, rest, self.env) {
-                    Ok((pid, stderr)) => {
-                        let token = self.poll.watch(stderr.as_fd(), Interest::Read);
-                        self.child = Some(Child::Lead {
-                            pid,
-                            stderr,
-                            token: Some(token),
-                            tail: Vec::new(),
-                        });
-                    }
-                    Err(error) => self.send(VisitClient::Lead(LeadReport {
-                        exit: 1,
-                        stderr: error.to_string(),
-                    }))?,
-                }
-            }
+            VisitServer::Starting {} => shown(),
             VisitServer::Up { argv } => {
-                if self.child.is_some() || !matches!(self.phase, Phase::Waiting) {
+                if !matches!(self.phase, Phase::Waiting) {
                     return Err("unexpected runtime command".to_owned());
                 }
                 let Some((program, rest)) = argv.split_first() else {
@@ -136,7 +90,7 @@ impl Lease<'_> {
                     None,
                 )
                 .map_err(|error| format!("{program}: {error}"))?;
-                self.child = Some(Child::Transport(pid));
+                self.child = Some(pid);
                 self.phase = Phase::Running;
                 self.poll.stop(self.deadline);
             }
@@ -147,53 +101,20 @@ impl Lease<'_> {
         Ok(())
     }
 
-    fn reaped(&mut self, exit: Exit) -> Result<Option<i32>, String> {
-        let child = self.child.take();
-        if let Some(Child::Lead {
-            token: Some(token), ..
-        }) = &child
-        {
-            self.poll.unwatch(*token);
-        }
-        match &self.phase {
-            Phase::Ending(End::Runtime(message)) => Err(message.clone()),
-            Phase::Ending(End::Signal) | Phase::Running => Ok(Some(exit_code(exit))),
-            Phase::Waiting => {
-                if let Some(Child::Lead { tail, .. }) = child {
-                    self.send(VisitClient::Lead(LeadReport {
-                        exit: exit_code(exit),
-                        stderr: String::from_utf8_lossy(&tail).into_owned(),
-                    }))?;
-                }
-                Ok(None)
-            }
-        }
-    }
-
-    fn run(&mut self, signals: &Signals, shown: &mut impl FnMut(Shown<'_>)) -> Result<i32, String> {
+    fn run(&mut self, signals: &Signals, shown: &mut impl FnMut()) -> Result<i32, String> {
         let signal_token = self.poll.watch(signals.fd(), Interest::Read);
         let mut events = Events::default();
         let mut pending = Vec::new();
         loop {
-            if let Some(child) = &mut self.child {
-                if let Child::Lead {
-                    stderr,
-                    tail,
-                    token,
-                    ..
-                } = child
-                    && token.is_some()
-                    && !drain(stderr, tail, shown)
-                    && let Some(token) = token.take()
-                {
-                    self.poll.unwatch(token);
-                }
-                if let Some(exit) = child.pid().peek_exit().map_err(wire::text)? {
-                    let _ = child.pid().wait();
-                    if let Some(code) = self.reaped(exit)? {
-                        return Ok(code);
-                    }
-                }
+            if let Some(child) = &self.child
+                && let Some(exit) = child.peek_exit().map_err(wire::text)?
+            {
+                let _ = child.wait();
+                self.child = None;
+                return match &self.phase {
+                    Phase::Ending(End::Runtime(message)) => Err(message.clone()),
+                    _ => Ok(exit_code(exit)),
+                };
             }
             if let Phase::Ending(End::Runtime(message)) = &self.phase
                 && self.child.is_none()
@@ -234,7 +155,7 @@ impl Lease<'_> {
                 .any(|due| due.timer == self.escalation_timer)
                 && let Some(child) = &self.child
             {
-                let _ = child.pid().signal(Signal::Kill);
+                let _ = child.signal(Signal::Kill);
             }
             for ready in events.ready() {
                 if ready.token == signal_token {
@@ -267,7 +188,7 @@ pub fn visit(
     request: VisitRequest,
     escalation: Duration,
     env: &[Vec<u8>],
-    shown: &mut impl FnMut(Shown<'_>),
+    shown: &mut impl FnMut(),
 ) -> Result<i32, String> {
     let (_, path) = Route::VisitRuntime { name: name.clone() }.to_request();
     let link = match api::stream(dir, Some(caller), &path) {
@@ -303,11 +224,15 @@ pub fn visit(
         child: None,
         phase: Phase::Waiting,
     };
-    lease.send(VisitClient::Visit(request))?;
+    lease
+        .link
+        .send(protocol::json(&VisitClient::Visit(request)))
+        .map_err(wire::text)?;
+    lease.link.settle(&mut lease.poll).map_err(wire::text)?;
     let result = lease.run(&signals, shown);
     if let Some(child) = lease.child.take() {
-        let _ = child.pid().signal(Signal::Kill);
-        let _ = child.pid().wait();
+        let _ = child.signal(Signal::Kill);
+        let _ = child.wait();
     }
     result
 }

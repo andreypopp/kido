@@ -10,13 +10,14 @@ use ko_sys::signal::Signal;
 use ko_sys::spawn;
 
 use crate::exec_wire::{Frames, FromKo, Invalid, ToKo};
-use crate::protocol::{Ended, ExecClient, ExecRequest, STDERR_TAIL};
+use crate::protocol::{Ended, ExecClient, ExecRequest};
 use crate::runtime::RuntimeKey;
 
 pub(crate) const MAX_SESSIONS: usize = 32;
 const MAX_BACKLOG: usize = 16;
 const READS_PER_TURN: usize = 16;
 const CAPTURE_LIMIT: usize = 1 << 20;
+const STDERR_TAIL: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Admit {

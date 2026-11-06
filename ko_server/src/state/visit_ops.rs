@@ -125,25 +125,6 @@ impl State {
                     state,
                 );
             }
-            VisitClient::Lead(report) => {
-                if !matches!(
-                    self.conns[index].role(),
-                    Some(Role::Visit(Visit {
-                        stage: Stage::Waiting(_),
-                        ..
-                    }))
-                ) {
-                    return self.visit_failed(
-                        poll,
-                        conn,
-                        id,
-                        "the first message must be visit".to_owned(),
-                    );
-                }
-                if let Err(error) = self.runtimes.report_lead(poll, &key, id, report) {
-                    self.visit_failed(poll, conn, id, error.message);
-                }
-            }
         }
     }
 
@@ -172,9 +153,6 @@ impl State {
             LinkState::Failed { message } => self.visit_failed(poll, conn, id, message),
             LinkState::Down => self.visit_failed(poll, conn, id, "runtime is down".to_owned()),
             LinkState::Starting => {
-                if let Some(argv) = self.runtimes.elect(&key, id) {
-                    self.visit_send(conn, &VisitServer::Lead { argv });
-                }
                 self.runtimes.wait(
                     &key,
                     Wait {
@@ -272,6 +250,5 @@ impl State {
             }
         }
         self.touch_runtime(poll, &key);
-        self.runtimes.pane_ended(poll, id);
     }
 }

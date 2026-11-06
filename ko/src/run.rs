@@ -91,10 +91,6 @@ enum RunKind {
         /// Where the runtime's socket is reached inside the runtime. Default: the host path.
         #[arg(verbatim_doc_comment, long, value_parser = |s: &str| AbsPath::try_from(s.to_owned()))]
         socket: Option<AbsPath>,
-        /// An interactive step of the start. One waiting pane runs it on its own terminal and
-        /// reports the result.
-        #[arg(verbatim_doc_comment, long, num_args = 1.., allow_hyphen_values = true)]
-        lead: Option<Vec<String>>,
         /// A step of the start that the server runs as its own child. Exit 0 continues the start.
         #[arg(verbatim_doc_comment, long, num_args = 1.., allow_hyphen_values = true)]
         up: Option<Vec<String>>,
@@ -243,14 +239,12 @@ impl RunArgsCli {
                 shared,
                 prefix,
                 socket,
-                lead,
                 up,
             } => (
                 shared,
                 Kind::Command(runtime::Command {
                     prefix: Prefix::try_from(prefix)?,
                     socket,
-                    lead: lead.map(Argv::try_from).transpose()?,
                     up: up.map(Argv::try_from).transpose()?,
                 }),
             ),
@@ -341,16 +335,8 @@ pub(crate) fn run(args: RunArgsCli) -> ExitCode {
         command: (!command.is_empty()).then_some(command),
         env: requested_env,
     };
-    let mut shown = |shown: ko_client::runtimes::Shown<'_>| {
-        let mut stderr = io::stderr().lock();
-        match shown {
-            ko_client::runtimes::Shown::Starting => {
-                let _ = writeln!(stderr, "starting runtime {name}");
-            }
-            ko_client::runtimes::Shown::Stderr(bytes) => {
-                let _ = stderr.write_all(bytes);
-            }
-        }
+    let mut shown = || {
+        let _ = writeln!(io::stderr().lock(), "starting runtime {name}");
     };
     match ko_client::visit::visit(
         &dir,

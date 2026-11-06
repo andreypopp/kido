@@ -19,6 +19,7 @@ use ko_config::ssh_args::has_syntax;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stage {
     Check,
+    Master,
     Prepare,
     Cancel,
     Forward,
@@ -114,13 +115,12 @@ pub(crate) fn check(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Launch, String> {
     operation(ssh, cx, &["-O", "check"])
 }
 
-fn lead(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Vec<String>, String> {
-    let mut argv = vec![text(&program(cx.env)?)];
-    argv.extend(words(&["-M", "-N", "-f", "-o"]));
-    argv.push(format!(
-        "ControlPath={}",
-        text(&pane::control_path(cx.root, cx.key))
-    ));
+fn master(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Launch, String> {
+    let mut argv = words(&["-M", "-N", "-f", "-n", "-o", "BatchMode=yes"]);
+    argv.extend([
+        "-o".to_owned(),
+        format!("ControlPath={}", text(&pane::control_path(cx.root, cx.key))),
+    ]);
     for option in ["ControlMaster=yes", "ControlPersist=yes"]
         .into_iter()
         .chain(MASTER_OPTIONS)
@@ -129,7 +129,7 @@ fn lead(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Vec<String>, String> {
     }
     argv.extend(ssh.ssh_args.as_slice().iter().cloned());
     argv.push(ssh.destination.as_str().to_owned());
-    Ok(argv)
+    launch(cx.env, argv)
 }
 
 fn prepare(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Launch, String> {
@@ -146,8 +146,7 @@ fn prepare(ssh: &Ssh, cx: &Ctx<'_>) -> Result<Launch, String> {
     passenger(ssh, cx, words.iter().map(|word| quote(word)).collect())
 }
 
-/// The step after the leader's login: the master answers now.
-pub(crate) fn resume(ssh: &Ssh, link: &mut Link, cx: &Ctx<'_>) -> Result<Launch, String> {
+fn to_prepare(ssh: &Ssh, link: &mut Link, cx: &Ctx<'_>) -> Result<Launch, String> {
     link.stage = Stage::Prepare;
     prepare(ssh, cx)
 }
@@ -203,16 +202,16 @@ pub(crate) fn next(ssh: &Ssh, link: &mut Link, cx: &Ctx<'_>, out: &Outcome<'_>) 
     match link.stage {
         Stage::Check if out.ok() => {
             link.adopted = true;
-            launched(resume(ssh, link, cx))
+            launched(to_prepare(ssh, link, cx))
         }
         Stage::Check => {
             link.adopted = false;
             let _ = fs::remove_file(pane::control_path(cx.root, cx.key));
-            match lead(ssh, cx) {
-                Ok(argv) => Next::Lead(argv),
-                Err(message) => Next::Fail(message),
-            }
+            link.stage = Stage::Master;
+            launched(master(ssh, cx))
         }
+        Stage::Master if out.ok() => launched(to_prepare(ssh, link, cx)),
+        Stage::Master => Next::Fail(out.failure("ssh master")),
         Stage::Prepare => {
             let (dir, version) = match prepared(ssh.destination.as_str(), out) {
                 Ok(found) => found,
