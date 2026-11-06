@@ -132,7 +132,8 @@ private class AlertEscape: NSView {
     }
     var canNavigate: Bool { alive && !needsRestart && snapshot != nil }
     private var pendingNewSession = false
-    private var pendingInitialSession = false
+    private enum LayoutSeen { case none, empty, session }
+    private var layoutSeen = LayoutSeen.none
     private var navigationModel = SessionModel()
     private enum Target { case pane(Snapshot.Position), window(SessionID, WindowID) }
     private var focusTarget: Target?
@@ -388,7 +389,6 @@ private class AlertEscape: NSView {
 
     @objc func start() {
         guard case .connected = link else { return begin(.reconnect) }
-        if welcomed, koModel?.layout.layout.sessions.isEmpty == true { return newSession() }
         guard host == .local else {
             invalidate()
             link = .down
@@ -440,7 +440,7 @@ private class AlertEscape: NSView {
         attachStart = .now
         let generation = generation
         link = .starting
-        down("Connecting to \(host.label)…", "", button: nil)
+        connecting()
         if case .remote(let alias) = host { return connectRemote(alias, cause: cause) }
         task = Task { [self] in
             guard accepts(generation) else { return }
@@ -954,8 +954,8 @@ private class AlertEscape: NSView {
             #endif
             initial?.cancel()
             initial = nil
+            layoutSeen = .none
             if fresh {
-                pendingInitialSession = host == .local
                 feedFresh = true
                 selectedFirst = false
                 // The new server's revisions start again, so an edit held for the old one never settles.
@@ -1002,7 +1002,11 @@ private class AlertEscape: NSView {
     }
 
     private func makeEditor(_ perform: @escaping @Sendable (KoSchema.Edit) throws -> KoSchema.Edited) {
+        #if KIDO_VISUAL || KIDO_STRESS
+        let editor = LayoutEditor(perform: testPerform ?? perform)
+        #else
         let editor = LayoutEditor(perform: perform)
+        #endif
         editor.onFailure = { [weak self] in self?.sidebar.list.failed($0) }
         editor.onSettled = { [weak self] in
             self?.session?.editsSettled()
@@ -1045,22 +1049,29 @@ private class AlertEscape: NSView {
         let model = SessionModel(ko)
         let marks = ko.runtimeMarks
         received = Received(ko: ko, model: model, snapshot: Snapshot(model: ko, marks: marks))
-        if pendingInitialSession {
-            pendingInitialSession = false
-            if ko.layout.layout.sessions.isEmpty && !pendingNewSession {
-                create(.ensureSession(.init(name: "session", new: .init())))
+        guard welcomed else { return }
+        if ko.layout.layout.sessions.isEmpty {
+            switch layoutSeen {
+            case .none:
+                layoutSeen = .empty
+                pendingNewSession = false
+                ensureSession()
+            case .empty: break
+            case .session: return window.close()
             }
-        }
-        if pendingNewSession {
-            pendingNewSession = false
-            newSession()
+        } else {
+            layoutSeen = .session
+            if pendingNewSession {
+                pendingNewSession = false
+                newSession()
+            }
         }
         session?.update(model.session.flatMap { ko.layout.layout.session($0) }?.windows ?? [],
                         alive: Set(ko.layout.layout.windows.map(\.id)), selected: ko.selection.pane, marks: marks)
         guard let snapshot else {
-            sidebar.list.offline("No sessions")
             if let session { present(session) } else { updateTabs() }
-            return down("No sessions", "", button: "Start")
+            menuChanged()
+            return
         }
         adopt(snapshot)
         #if KIDO_STRESS
@@ -1155,22 +1166,44 @@ private class AlertEscape: NSView {
     }
 
     private var currentWindow: (id: WindowID, name: String)? {
-        navigation.windows.first { $0.id == navigation.window }.map { ($0.id, $0.name) }
+        guard canNavigate, welcomed, case .connected = link else { return nil }
+        return navigation.windows.first { $0.id == navigation.window }.map { ($0.id, $0.name) }
     }
 
     func closeCurrentWindow() {
-        if let window = currentWindow { confirmClose(.window(window.id), name: window.name) }
+        guard let current = currentWindow else { return window.close() }
+        confirmClose(.window(current.id), name: current.name)
     }
 
     func closeCurrentSession() {
-        if let session = currentSession { confirmClose(.session(session.id), name: session.name) }
+        guard let session = currentSession else { return }
+        confirmClose(.session(session.id), name: session.name)
+    }
+
+    private func connecting() {
+        guard alive else { return }
+        sidebar.list.leave()
+        sidebar.showConfigError(nil)
+        banner.show("Connecting to \(host.label)…", "", button: nil, action: #selector(start))
+        sidebar.list.failed(nil)
+        sidebar.list.offline("Connecting…")
+    }
+
+    @objc func ensureSession() {
+        connecting()
+        create(.ensureSession(.init(name: "session", new: .init()))) { [weak self] error in
+            guard let self, let error else { return }
+            sidebar.list.failed(nil)
+            down("Could not create a session", error, button: "Retry", action: #selector(ensureSession))
+        }
     }
 
     // An edit that makes a session or a window selects it.
     private func create(_ edit: KoSchema.Edit, done: ((String?) -> Void)? = nil) {
-        guard let editor, case .connected(let client) = link else {
+        guard let editor else {
+            sidebar.list.failed("\(host.label) is not connected.")
             done?("\(host.label) is not connected.")
-            return sidebar.list.failed("\(host.label) is not connected.")
+            return
         }
         let generation = generation
         editor.submit(edit) { [weak self] result in
@@ -1178,7 +1211,7 @@ private class AlertEscape: NSView {
             switch result {
             case .success(let edited):
                 done?(nil)
-                try? client.select(made: edited.created)
+                if case .connected(let client) = link { try? client.select(made: edited.created) }
             case .failure(let error): done?("\(error)")
             }
         }
@@ -1509,7 +1542,11 @@ private class AlertEscape: NSView {
     var testModel: KoModel? { koModel }
     var testPrompt: ((PromptRequest, @escaping @MainActor (Result<PromptReply, Error>) -> Void) -> Void)?
     // An editor whose answers the test gives, for an owner without a server.
-    func testEditor(_ perform: @escaping @Sendable (KoSchema.Edit) throws -> KoSchema.Edited) { makeEditor(perform) }
+    private var testPerform: (@Sendable (KoSchema.Edit) throws -> KoSchema.Edited)?
+    func testEditor(_ perform: @escaping @Sendable (KoSchema.Edit) throws -> KoSchema.Edited) {
+        testPerform = perform
+        makeEditor(perform)
+    }
     var testEditing: Bool { editor?.holding == true }
     var testClient: KoClient? { if case .connected(let client) = link { client } else { nil } }
     var testAttended: Bool? { didSet { attend() } }

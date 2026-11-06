@@ -390,6 +390,38 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
     }
 
+    func testEmptySessionConnectionAndRetryBanner() async throws {
+        for side in ["light", "dark"] {
+            let config = directory.appendingPathComponent("empty-\(side).yaml")
+            try "app: {theme: kido-\(side)}\n".write(to: config, atomically: true, encoding: .utf8)
+            try loadRuntime(configFile: config.path)
+            let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+            owner.window.appearance = NSAppearance(named: side == "dark" ? .darkAqua : .aqua)
+            owner.window.colorSpace = .displayP3
+            let gate = DispatchSemaphore(value: 0)
+            defer { gate.signal() }
+            owner.testEditor { _ in
+                guard gate.wait(timeout: .now() + 5) == .success else { throw KoError(code: KO_ERR_INVALID, detail: "edit gate timed out") }
+                throw KoError(code: KO_ERR_INVALID, detail: "creation refused")
+            }
+            owner.ensureSession()
+            XCTAssertTrue(owner.testEditing)
+            owner.window.layoutIfNeeded()
+            owner.sidebar.view.layoutSubtreeIfNeeded()
+            checkSnapshot { verifySnapshot(of: owner.sidebar.view, as: .image, named: "\(side)-connecting", record: $0) }
+            gate.signal()
+            try await wait("the held edit ends") { !owner.testEditing }
+            owner.testEditor { _ in throw KoError(code: KO_ERR_INVALID, detail: "creation refused") }
+            owner.ensureSession()
+            try await wait("creation fails with Retry") { !owner.testEditing && owner.testBanner.testText.title == "Could not create a session" }
+            XCTAssertEqual(owner.testBanner.testText.button, "Retry")
+            owner.window.layoutIfNeeded()
+            owner.sidebar.view.layoutSubtreeIfNeeded()
+            checkSnapshot { verifySnapshot(of: owner.sidebar.view, as: .image, named: "\(side)-failed", record: $0) }
+            owner.close()
+        }
+    }
+
     func testClientRefusalBanner() async throws {
         for side in ["light", "dark"] {
             let config = directory.appendingPathComponent("refusal-\(side).yaml")

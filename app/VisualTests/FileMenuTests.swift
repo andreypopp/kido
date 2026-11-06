@@ -33,6 +33,29 @@ import XCTest
         XCTAssertEqual(opened, [.local, .local])
     }
 
+    func testSessionAndWindowMenusRequireACurrentSessionButCloseWindowDoesNot() throws {
+        let board = NSPasteboard(name: .init("empty-menu-" + UUID().uuidString))
+        defer { board.releaseGlobally() }
+        let app = AppDelegate(runtime: try XCTUnwrap(GhosttyRuntime(pasteboard: board)))
+        let owner = try XCTUnwrap(app.open(.local, start: false))
+        defer { owner.close() }
+        let menu = app.mainMenu()
+        for title in ["Session", "Window"] {
+            let submenu = try XCTUnwrap(menu.items.first { $0.title == title }?.submenu)
+            for item in submenu.items where item.target is SessionMenus {
+                XCTAssertFalse((item.target as! SessionMenus).validateMenuItem(item), item.title)
+            }
+        }
+        let file = try XCTUnwrap(menu.items.first { $0.title == "File" }?.submenu)
+        let close = try XCTUnwrap(file.items.first { $0.title == "Close Window" })
+        XCTAssertTrue(app.validateMenuItem(close))
+        let entries = PaletteEntry.commands(menu, owner: owner, responder: nil)
+        XCTAssertTrue(entries.contains { $0.title == "Close Window" })
+        XCTAssertFalse(entries.contains { ["Rename Session…", "Close Session", "Next Window", "Previous Window"].contains($0.title) })
+        app.closeWindow()
+        XCTAssertFalse(owner.alive)
+    }
+
     func testLocalConnectCreatesNewOwners() throws {
         let board = NSPasteboard(name: .init("local-connect-" + UUID().uuidString))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))

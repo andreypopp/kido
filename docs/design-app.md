@@ -112,16 +112,28 @@ start never loops: a failed start shows "Could not start the ko server",
 and a start that brings no welcome shows "Disconnected", both with Start.
 A launch result that arrives after the welcome changes nothing. A remote
 window's redial only attaches ([Remote hosts](#remote-hosts)). Start also
-remains after a failed dial and the welcome deadline; on "No sessions" it
-creates a session. When the first welcome of a local owner's connection,
-or a `fresh` one, shows no session, the owner sends one `ensure_session`
-edit (one pane with no `cwd`, so it starts in the server's working
-directory). The edit adds the session only to
-a layout without one, and the core applies it again to the newer document
-after a revision conflict, so two windows that connect to an empty server
-at once end with one session. A same-instance reconnect, and a layout
-that another client emptied later, create nothing: the window shows "No
-sessions" with Start. A remote owner creates nothing at connect. A welcome with `fresh`
+remains after a failed dial and the welcome deadline.
+
+**The empty layout.** A window never shows an empty layout. When the
+first model after a welcome, of any connection, local or remote, and
+also after a same-instance reconnect, shows no session, the owner sends
+one `ensure_session` edit (one pane with no `cwd`, so it starts in the
+server's working directory; on a remote host, the host's). While it
+runs, the sidebar shows "Connecting…"; a failed edit shows "Could not
+create a session" with its error and Retry, which sends it again. The
+edit adds the session only to a layout without one, and the core applies
+it again to the newer document after a revision conflict, so two windows
+that connect to an empty server at once end with one session. A window
+whose current connection showed a session closes, as its close button
+does, when a later model of that connection has no session, whoever
+emptied the layout: a close in this window, another window or client, or
+the exit of the last pane's program. Every window of that server closes
+by this rule, and the server keeps running with the empty layout, as a
+tmux server's clients detach when its last session ends. A welcome
+resets the rule, so a window that reconnects to a layout emptied during
+the outage makes a session again. The app keeps running without windows;
+a Dock reopen opens a window, which makes a session. A welcome with `fresh`
+A welcome with `fresh`
 (another server instance) resets the
 session view and the model, because ids mean something only to the server
 that issued them, the owner makes a new `LayoutEditor` (a held edit's
@@ -1487,11 +1499,13 @@ session, and asks with "Programs are still running in this session.
 Closing the session will end them." Every close is one `ko_client_delete`
 of the pane, window or session, on a detached task; the server deletes
 the target with its descendants. A failed delete reports "Pane command
-failed" in another sheet. When no session remains, the window shows the
-"No sessions" banner, and its Start creates one session with no `cwd`,
-in the server's working directory. The native window's close button still only disconnects
-([Remote hosts](#remote-hosts)). With no window, the Window and Session
-menus and Close Window are disabled.
+failed" in another sheet. When the close leaves no session, the window
+closes ("The empty layout" in [One ko client](#one-ko-client)). The native window's close button still only disconnects
+([Remote hosts](#remote-hosts)). Close Window closes the native window
+when the owner has no current ko window or is not connected: a
+connecting, down, mismatch or refused window. The Window and Session
+menus' items are disabled without a current session or while the owner
+cannot navigate.
 Captions use a display-only 200ms debounce per row. New text must remain
 stable for 200ms; empty text must persist for 200ms before the old caption
 is hidden. The first snapshot after launch or reconnect shows captions

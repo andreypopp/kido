@@ -218,7 +218,7 @@ import SidebarFeed
         menus.rename = { [weak self] in self?.renameSession() }
         menus.close = { [weak self] in self?.closeSession() }
         menus.send = { [weak self] in (self?.paletteFocus?.owner ?? self?.current)?.perform($0) }
-        menus.canSend = { [weak self] in (self?.paletteFocus?.owner ?? self?.current) != nil }
+        menus.canSend = { [weak self] in (self?.paletteFocus?.owner ?? self?.current)?.canNavigate == true }
         menus.update(current?.navigation ?? SessionModel())
         let app = NSMenu(title: "Kido")
         app.items = [

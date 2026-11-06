@@ -8,15 +8,16 @@ import XCTest
 
 // Tabs, seen marks, prompts, the empty document and window switching of a WindowOwner on a private server.
 @MainActor final class OwnerModelTests: KoTestCase {
-    private func owner(_ dir: String) throws -> WindowOwner {
+    private func owner(_ dir: String, cause: WindowOwner.DialCause = .launch, edit: (@Sendable (KoSchema.Edit) throws -> KoSchema.Edited)? = nil) throws -> WindowOwner {
         let board = NSPasteboard(name: .init("ko-model-" + UUID().uuidString))
-        let owner = WindowOwner(host: .local, runtime: try XCTUnwrap(GhosttyRuntime(pasteboard: board)), start: false)
+        let owner = WindowOwner(host: .local, runtime: try XCTUnwrap(GhosttyRuntime(pasteboard: board)), start: false, cause: cause)
         owner.testServerDir = dir
         owner.testAttended = false
         addTeardownBlock { @MainActor in
             owner.close()
             board.releaseGlobally()
         }
+        if let edit { owner.testEditor(edit) }
         owner.start()
         return owner
     }
@@ -97,21 +98,52 @@ import XCTest
         XCTAssertThrowsError(try refused?.get()) { XCTAssertEqual(($0 as? KoError)?.code, KO_ERR_INVALID) }
     }
 
-    func testConnectingToAnEmptyServerCreatesOneSessionButDeletingItDoesNotRecreateIt() throws {
+    func testEmptyServerCreatesOneSessionAndDeletingItClosesEveryOwner() throws {
         let cwd = URL(fileURLWithPath: try stateDir()).resolvingSymlinksInPath()
         let dir = try server(cwd: cwd)
         let owner = try owner(dir)
         wait("one session without Start") { owner.navigation.sessions.count == 1 && owner.testBanner.isHidden }
         wait("the pane's directory") { owner.testModel?.panes.first?.cwd.isEmpty == false }
         XCTAssertEqual(URL(fileURLWithPath: owner.testModel?.panes.first?.cwd ?? "").resolvingSymlinksInPath(), cwd)
+        let second = try self.owner(dir)
+        wait("the second owner shows the session") { second.currentSession != nil }
         let id = try XCTUnwrap(owner.testModel?.layout.layout.sessions.first?.id)
         try run(["api", "-X", "DELETE", "/sessions/\(id)"], dir: dir)
-        wait("the deliberate empty layout") { owner.testModel?.layout.layout.sessions.isEmpty == true && owner.testBanner.testText.title == "No sessions" && !owner.testEditing }
-        XCTAssertEqual(owner.testBanner.testText.button, "Start")
-        mainQueueDrained()
-        XCTAssertEqual(owner.testModel?.layout.layout.sessions.count, 0)
-        owner.start()
-        wait("Start still creates a session") { owner.navigation.sessions.count == 1 && owner.testBanner.isHidden }
+        wait("both owners detach") { !owner.alive && !second.alive }
+        let layout = try JSONDecoder().decode(KoSchema.Snapshot.self, from: Data(output(["api", "/layout"], dir: dir).utf8))
+        XCTAssertTrue(layout.layout.sessions.isEmpty)
+        let reopened = try self.owner(dir)
+        wait("a new window creates one session") { reopened.navigation.sessions.count == 1 && reopened.testBanner.isHidden && !reopened.testEditing }
+    }
+
+    func testLastPaneExitClosesTheOwner() throws {
+        let (dir, owner) = try shown(#"[{"name":"w","tree":\#(shell("read line; exit"))}]"#)
+        let pane = try XCTUnwrap(owner.testModel?.panes.first?.id)
+        let input = dir + "/input.json"
+        try #"{"type":"text","data":"ZXhpdAo="}"#.write(toFile: input, atomically: true, encoding: .utf8)
+        try run(["api", "--input", input, "/panes/\(pane)/input"], dir: dir)
+        wait("the last pane exit detaches") { !owner.alive }
+    }
+
+    func testNewSessionOnAnEmptyServerRetriesAFailedEnsure() throws {
+        let dir = try server()
+        let owner = try owner(dir, cause: .newSession) { edit in
+            guard case .ensureSession = edit else { throw KoError(code: KO_ERR_INVALID, detail: "expected ensure_session") }
+            throw KoError(code: KO_ERR_INVALID, detail: "creation refused")
+        }
+        wait("creation fails with Retry") { owner.testBanner.testText.title == "Could not create a session" && !owner.testEditing }
+        XCTAssertTrue(owner.testBanner.testText.detail.contains("creation refused"))
+        XCTAssertEqual(owner.testBanner.testText.button, "Retry")
+        XCTAssertFalse(owner.canNavigate)
+        let client = try XCTUnwrap(owner.testClient)
+        owner.testEditor { try client.edit($0) }
+        let stack = try XCTUnwrap(owner.testBanner.subviews.first as? NSStackView)
+        try XCTUnwrap(stack.arrangedSubviews.compactMap { $0 as? NSButton }.first).performClick(nil)
+        wait("Retry creates one session and restores navigation") {
+            owner.navigation.sessions.count == 1 && owner.canNavigate && owner.currentSession != nil && owner.testBanner.isHidden && !owner.testEditing
+        }
+        let layout = try JSONDecoder().decode(KoSchema.Snapshot.self, from: Data(output(["api", "/layout"], dir: dir).utf8))
+        XCTAssertEqual(layout.layout.sessions.count, 1)
     }
 
     func testTwoOwnersConnectingToAnEmptyServerCreateExactlyOneSession() throws {

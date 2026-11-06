@@ -287,7 +287,7 @@ import XCTest
 
     // MARK: with a private sshd (KO_E2E_HOST_SSH=1)
 
-    func testARemoteOwnerConnectsThroughTheForwardAndRestoresAView() throws {
+    func testARemoteOwnerRestoresAViewClosesOnEmptyAndCreatesASessionOnReopen() throws {
         let host = try host(), scope = try host.scope()
         _ = try serverWithPane("echo remote-ok; exec sleep 60", at: scope.dir)
         let owner = try owner(host, scope)
@@ -306,6 +306,13 @@ import XCTest
         let view = try client.openView(pane: leaf.pane, surface: surface.surface) { recorder.view.append($0) }
         addTeardownBlock { @MainActor in view.close() }
         wait("the restored screen") { surface.text.contains("remote-ok") }
+        let session = try XCTUnwrap(owner.testModel?.layout.layout.sessions.first?.id)
+        try run(["api", "-X", "DELETE", "/sessions/\(session)"], dir: scope.dir)
+        wait("the remote owner detaches") { !owner.alive }
+        let reopened = try self.owner(host, scope)
+        wait("the remote owner creates one session", within: 20) {
+            reopened.navigation.sessions.map(\.name) == ["session"] && reopened.testBanner.isHidden && !reopened.testEditing
+        }
     }
 
     func testEachFailureOfTheConnectSequenceShowsItsBannerAndReconnect() throws {
