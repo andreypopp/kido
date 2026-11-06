@@ -608,8 +608,8 @@ resolve it.
 
 ## A job's row
 
-Each job is an OSC 7501 child record of pi's pane, so both clients
-draw it as a child row under the pane row (design-program-status.md,
+Each job is an OSC 7501 child record of pi's pane, so Kido.app
+draws it as a child row under the pane row (design-program-status.md,
 "The record set"). A foreground `bash` call has no record. It gets
 one when it moves. A routed job has one as a local job does.
 
@@ -626,9 +626,9 @@ one when it moves. A routed job has one as a local job does.
   to one space. The text is cut at a UTF-8 boundary and sent as
   base64.
 - A finished record lingers for `KO_JOB_RECORD_LINGER_MS` (5000).
-  Then ko-pi clears its id. The pane's own mark follows the existing
-  rules. The outcome that a done or error record produces stays after
-  the clear.
+  Then ko-pi clears its id. A job's record never changes the pane's
+  status: an agent's status comes from its root record alone
+  (design-program-status.md, "Reduction").
 
 **The writer.** ko-pi writes each record as one `process.stdout.write`
 of the whole sequence. pi's TUI writes from the same Node process, so

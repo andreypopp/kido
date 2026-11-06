@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::pane_kind::{self, Kind, RemoteKind};
-use crate::program_status::app;
+use crate::program_status::{app, root};
 use crate::protocol::{
     Agent, AgentState, CommandExit, Foreground, Live, Origin, Outcome, OutcomeResult, Phase,
     ProgramKind, ProgramRecord, ProgramState, ProgramStatus, Remote, Shell,
@@ -366,7 +366,7 @@ pub(crate) fn observe(
                 })
                 .or(fallback)
             },
-            records,
+            root(records).map_or(&[], std::slice::from_ref),
             &t.episode,
         );
         t.episode = episode;
@@ -674,13 +674,13 @@ mod tests {
     }
 
     #[test]
-    fn agent_precedence_is_waiting_then_running_then_idle_with_ties_bytewise() {
+    fn agent_children_do_not_change_root_state() {
         let shown = agent_steps(vec![
             (0, "idle", 1, agent("pi", ProgramState::Idle, &[])),
             (1000, "working", 1, agent("pi", working(Some(10)), &[])),
             (
                 1000,
-                "blocked > working",
+                "blocked children",
                 1,
                 agent(
                     "pi",
@@ -693,7 +693,7 @@ mod tests {
             ),
             (
                 1000,
-                "working ties by id",
+                "working children",
                 1,
                 agent(
                     "pi",
@@ -701,14 +701,80 @@ mod tests {
                     &[("z", working(Some(9))), ("y", working(Some(8)))],
                 ),
             ),
+            (
+                1000,
+                "child done",
+                2,
+                agent("pi", ProgramState::Idle, &[("z", ProgramState::Done)]),
+            ),
         ]);
         assert_eq!(
             shown,
             [
                 "idle                   idle since=+0.0",
                 "working                running(10%) since=+1.0",
-                "blocked > working      waiting:auth(3%) since=+2.0",
-                "working ties by id     running(8%) since=+3.0",
+                "blocked children       running since=+1.0",
+                "working children       idle since=+3.0",
+                "child done             idle since=+3.0",
+            ]
+        );
+    }
+
+    #[test]
+    fn terminal_report_reduces_child_records_with_bytewise_ties() {
+        let mut run = Run::new();
+        let telemetry = Telemetry::default();
+        let blocked = status(
+            1,
+            vec![
+                rec("", working(None), None, None),
+                rec("b", blocked(Some(ProgramKind::Question), None), None, None),
+                rec("a", blocked(Some(ProgramKind::Auth), Some(3)), None, None),
+            ],
+        );
+        let shown = run.observe("blocked", 22, &telemetry, &Kind::Terminal, &blocked);
+        assert!(shown.contains("report waiting:auth(3%)"), "{shown}");
+        let working = status(
+            2,
+            vec![
+                rec("", ProgramState::Idle, None, None),
+                rec("z", working(Some(9)), None, None),
+                rec("y", working(Some(8)), None, None),
+            ],
+        );
+        let shown = run.observe("working", 22, &telemetry, &Kind::Terminal, &working);
+        assert!(shown.contains("report running(8%)"), "{shown}");
+    }
+
+    #[test]
+    fn agent_outcome_and_message_come_only_from_root() {
+        let shown = agent_steps(vec![
+            (
+                0,
+                "root done",
+                1,
+                vec![
+                    rec(
+                        "",
+                        ProgramState::Done,
+                        Some("claude-code"),
+                        Some("root result"),
+                    ),
+                    rec("job/1", working(None), None, Some("child work")),
+                ],
+            ),
+            (
+                1000,
+                "root idle",
+                2,
+                agent("claude-code", ProgramState::Idle, &[]),
+            ),
+        ]);
+        assert_eq!(
+            shown,
+            [
+                "root done              idle:success@1 since=+0.0 msg=\"root result\"",
+                "root idle              idle:success@1 since=+0.0",
             ]
         );
     }
@@ -725,12 +791,7 @@ mod tests {
                 2,
                 with_msg(working(Some(2)), "M"),
             ),
-            (
-                1000,
-                "representative",
-                3,
-                claude(ProgramState::Idle, &[("a", working(None))]),
-            ),
+            (1000, "progress cleared", 3, claude(working(None), &[])),
             (
                 1000,
                 "blocked",
@@ -762,7 +823,7 @@ mod tests {
             [
                 "working                running(1%) since=+0.0",
                 "progress, msg, serial  running(2%) since=+0.0 msg=\"M\"",
-                "representative         running since=+0.0",
+                "progress cleared       running since=+0.0",
                 "blocked                waiting:permission since=+3.0",
                 "kind changes           waiting:question since=+3.0",
                 "idle                   idle since=+5.0",
@@ -788,22 +849,6 @@ mod tests {
             (1000, "error -> ", 6, claude(ProgramState::Error, &[])),
             (1000, "-> done", 7, claude(ProgramState::Done, &[])),
             (1000, "turned idle", 8, claude(ProgramState::Idle, &[])),
-            (
-                1000,
-                "simultaneous",
-                9,
-                claude(
-                    ProgramState::Idle,
-                    &[("b", ProgramState::Done), ("a", ProgramState::Error)],
-                ),
-            ),
-            (1000, "removed", 10, claude(ProgramState::Idle, &[])),
-            (
-                1000,
-                "reappears",
-                11,
-                claude(ProgramState::Idle, &[("b", ProgramState::Done)]),
-            ),
         ]);
         assert_eq!(
             shown,
@@ -813,72 +858,58 @@ mod tests {
                 "error ->               idle:failure@6 since=+2.0",
                 "-> done                idle:success@7 since=+3.0",
                 "turned idle            idle:success@7 since=+3.0",
-                "simultaneous           idle:failure@9 since=+5.0",
-                "removed                idle:failure@9 since=+5.0",
-                "reappears              idle:success@11 since=+7.0",
             ]
         );
     }
 
     #[test]
-    fn outcomes_are_cleared_by_new_work_pending_during_other_work_and_never_resurrected() {
-        let claude = |root, children: &[(&str, ProgramState)]| agent("claude-code", root, children);
-        let shown = agent_steps(vec![
+    fn terminal_outcomes_wait_for_idle_survive_removal_and_clear_on_new_work() {
+        let mut run = Run::new();
+        let mut shown = Vec::new();
+        for (label, serial, records) in [
             (
-                0,
-                "done",
+                "pending",
                 1,
-                claude(ProgramState::Idle, &[("a", ProgramState::Done)]),
+                vec![
+                    rec("a", ProgramState::Done, None, None),
+                    rec("b", working(None), None, None),
+                ],
             ),
             (
-                1000,
-                "new work",
+                "idle",
                 2,
-                claude(working(None), &[("a", ProgramState::Done)]),
+                vec![
+                    rec("a", ProgramState::Done, None, None),
+                    rec("b", ProgramState::Idle, None, None),
+                ],
             ),
+            ("removed", 3, vec![]),
+            ("new work", 4, vec![rec("c", working(None), None, None)]),
             (
-                1000,
                 "idle again",
-                3,
-                claude(ProgramState::Idle, &[("a", ProgramState::Done)]),
-            ),
-            (
-                1000,
-                "child ends, root works",
-                4,
-                claude(
-                    working(None),
-                    &[("a", ProgramState::Done), ("b", ProgramState::Error)],
-                ),
-            ),
-            (
-                1000,
-                "blocked meanwhile",
                 5,
-                claude(
-                    blocked(None, None),
-                    &[("a", ProgramState::Done), ("b", ProgramState::Error)],
-                ),
+                vec![rec("c", ProgramState::Idle, None, None)],
             ),
-            (
-                1000,
-                "root idle",
-                6,
-                claude(
-                    ProgramState::Idle,
-                    &[("a", ProgramState::Done), ("b", ProgramState::Error)],
-                ),
-            ),
-        ]);
+            ("empty", 6, vec![]),
+        ] {
+            shown.push(run.observe(
+                label,
+                0,
+                &Telemetry::default(),
+                &Kind::Terminal,
+                &status(serial, records),
+            ));
+            run.now += 1000 * MS;
+        }
         assert_eq!(
             shown,
             [
-                "done                   idle:success@1 since=+0.0",
-                "new work               running since=+1.0",
-                "idle again             idle since=+2.0",
-                "child ends, root works running since=+3.0",
-                "blocked meanwhile      waiting:none since=+4.0",
-                "root idle              idle:failure@4 since=+5.0",
+                "pending unknown | report running since=+0.0",
+                "idle unknown | report idle:success@1 since=+1.0",
+                "removed unknown | report idle:success@1 since=+1.0",
+                "new work unknown | report running since=+3.0",
+                "idle again unknown | report idle since=+4.0",
+                "empty unknown",
             ]
         );
     }

@@ -357,6 +357,10 @@ fn child_records() {
         "published in bytewise order"
     );
     assert_eq!(status["kind"]["name"], "claude-code");
+    let status = probe.osc("state=done:app=claude-code");
+    assert_eq!(record(&status, "a")["state"], "working");
+    assert_eq!(state(&status), "idle");
+    assert_eq!(agent(&status)["state"]["outcome"]["result"], "success");
 }
 
 use std::path::PathBuf;

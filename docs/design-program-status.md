@@ -66,7 +66,7 @@ The records supply:
 - `msg` and `progress`: the message and the progress.
 - `title`: a terminal's title.
 
-A client draws non-root records as child rows under the pane row,
+Kido.app draws non-root records as child rows under the pane row,
 nested by id, in id order: a record nests under each ancestor id that
 is present among the non-root records. Each child row shows the record's title, or
 its id, its raw state and its message. A visit does not acknowledge
@@ -76,8 +76,16 @@ them. Claude Code reports each subagent this way, and ko-pi each job
 ### Reduction
 
 `ko_server/src/pane_status.rs` reduces a pane's records to one status.
-A terminal's report and an agent use this order: blocked > working >
-idle. The smallest bytewise id resolves ties.
+An agent's status comes from its root record alone. Its child records
+show only as child rows: a working job or subagent does not make the
+agent run, and a child's done or error makes no outcome. The reason: an
+agent whose turn ended must show its end, also while a long job, such
+as a server, runs.
+
+A terminal's report reduces all its records in this order: blocked >
+working > idle. The smallest bytewise id resolves ties. The rules below
+apply to the records that the reduction reads: the root alone for an
+agent, all records for a terminal's report.
 
 The **representative** record supplies the message and a terminal's
 title. It is the first available record in this order: blocked,
@@ -89,10 +97,11 @@ reappearance, and a change from done to error and back. The outcome
 has that change's set serial. An unchanged final record never makes
 another outcome, even if its message, title or serial changes.
 
-The outcome shows at aggregate idle. If it arrives while other records
-work, it waits. A new live episode after idle clears it. Removing a
-record keeps its outcome. `since` is when the model first observed the
-current state, or the current outcome at idle.
+The outcome shows at aggregate idle. A new live episode after idle
+clears it. In a terminal's report, an outcome that arrives while other
+records work waits, and removing a record keeps its outcome. `since`
+is when the model first observed the current state, or the current
+outcome at idle.
 
 Tracking resets when an agent's root app changes, appears or clears,
 when its `pi.session` changes, or when the ssh destination changes. A
