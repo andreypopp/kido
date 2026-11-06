@@ -412,7 +412,7 @@ import SidebarFeed
             return
         }
         if case .runtime(let shown) = panel.palette.mode {
-            if let shown, let runtime = paletteFocus?.owner.koModel?.runtime(shown.key) {
+            if let shown, let runtime = paletteFocus?.owner.runtimes.first(where: { $0.key == shown.key }) {
                 panel.palette.refreshRuntime(RuntimeMark(runtime))
             }
             return

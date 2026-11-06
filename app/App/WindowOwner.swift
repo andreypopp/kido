@@ -111,15 +111,7 @@ private class AlertEscape: NSView {
     }
     private var received = Received()
     private var model: SessionModel { received.model }
-    var koModel: KoModel? {
-        #if KIDO_VISUAL
-        if let testRuntimes, var model = received.ko {
-            model.runtimes = testRuntimes.list
-            return model
-        }
-        #endif
-        return received.ko
-    }
+    private var koModel: KoModel? { received.ko }
     var snapshot: Snapshot? { received.snapshot }
     private var editor: LayoutEditor?
     private var welcomed = false
@@ -1162,7 +1154,12 @@ private class AlertEscape: NSView {
     }
 
     // The runtimes that the server offers, and the runtime of the pane in focus.
-    var runtimes: [KoSchema.ClientRuntime] { koModel?.runtimes ?? [] }
+    var runtimes: [KoSchema.ClientRuntime] {
+        #if KIDO_VISUAL
+        if let testRuntimes { return testRuntimes.list }
+        #endif
+        return koModel?.runtimes ?? []
+    }
 
     // The runtime of the pane that this client selected: the host has none.
     var focusedRuntime: String? {
@@ -1318,7 +1315,7 @@ private class AlertEscape: NSView {
     }
 
     func canShutDownRuntime(_ key: RuntimeKey) -> Bool {
-        guard canNavigate, let runtime = koModel?.runtime(key) else { return false }
+        guard canNavigate, let runtime = runtimes.first(where: { $0.key == key }) else { return false }
         switch runtime.state { case .starting, .up: return true; case .down, .failed: return false }
     }
 

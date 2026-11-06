@@ -299,9 +299,9 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
             }
             XCTAssertEqual(palette.shown.prefix(3).map(\.entry.title), ["make verify", "@kido-app", "Host"], "the panes come first, then the runtimes")
             XCTAssertEqual(palette.selectedEntry?.id, .hostRuntime, "the host comes first and is selected while the pane in focus runs in a runtime")
-            XCTAssertEqual(palette.shown.compactMap { entry -> String? in if case .runtime = entry.entry.id { entry.entry.title } else { nil } },
+            XCTAssertEqual(palette.shown.compactMap { entry -> String? in switch entry.entry.id { case .hostRuntime, .runtime: entry.entry.title; default: nil } },
                            ["Host", "Runtime: buildbox", "Runtime: py311", "Runtime: gpu-1", "Runtime: e2e"])
-            XCTAssertEqual(palette.shown.compactMap { entry -> String? in if case .runtime = entry.entry.id { entry.entry.detail } else { nil } },
+            XCTAssertEqual(palette.shown.compactMap { entry -> String? in switch entry.entry.id { case .hostRuntime, .runtime: entry.entry.detail; default: nil } },
                            ["this Mac", "ssh · up", "container · up", "ssh · failed · \(runtimeGapWithMessage)", "command · starting"])
             image("palette-root")
             func step(_ name: String?, _ state: KoSchema.LinkState = .up) -> RuntimeMark? {

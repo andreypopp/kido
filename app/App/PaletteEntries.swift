@@ -20,7 +20,7 @@ struct PaletteEntry {
     // A runtime row has its swatch in the icon slot, its detail at the right, and a failed link's message in red, cut
     // at 300pt. A row of the runtime step has its detail after the title and the return key when selected.
     var swatch: RuntimeMark?
-    var detailAtRight: Bool { if case .runtime = id { true } else { false } }
+    var detailAtRight: Bool { switch id { case .hostRuntime, .runtime: true; default: false } }
     var inline: Bool { switch id { case .runtimeOpen, .runtimeDown: true; default: false } }
     var cutDetail: String? { swatch?.failure }
     var failed: Bool { cutDetail != nil }
