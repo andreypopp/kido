@@ -14,7 +14,7 @@ use ko_sys::clock::Mono;
 use ko_sys::event::{Poll, Token};
 use ko_vt::compress::{Compress, Tick};
 use ko_vt::render::Frame;
-use ko_vt::search::{Progress, Search};
+use ko_vt::search::{Progress, SearchId};
 use ko_vt::{Extent, ReadyScan, Shape as SelectionShape, Span, Terminal};
 use tungstenite::Bytes;
 
@@ -188,7 +188,7 @@ fn apply(vt: &mut Terminal, marker: &Marker) -> Result<(), ko_vt::Error> {
 struct Frozen {
     copy: copy::Mode,
     dirty: bool,
-    search: Option<Search>,
+    search: Option<SearchId>,
 }
 
 fn copy_row(vt: &Terminal, cols: u16, row: u32) -> Result<Row, String> {
@@ -576,23 +576,29 @@ impl Mirror {
         let Some(frozen) = &mut self.frozen else {
             return Ok(false);
         };
-        let Some(mut search) = frozen.search.take() else {
+        let Some(search) = frozen.search else {
             return Ok(false);
         };
-        let state = self.shared.lock();
-        let screen = state.surface.screen().ok_or("copy screen is not ready")?;
+        let mut state = self.shared.lock();
+        let screen = state
+            .surface
+            .screen_mut()
+            .ok_or("copy screen is not ready")?;
         let began = Instant::now();
         let matches = loop {
-            if search.step(64).map_err(text)? == Progress::Complete {
-                break search.matches(&screen.vt).map_err(text)?;
+            match screen.vt.search_step(search, 64) {
+                Ok(Progress::Complete) => break screen.vt.search_matches(search).map_err(text),
+                Ok(_) => {}
+                Err(error) => break Err(text(error)),
             }
             if began.elapsed() >= SEARCH_SLICE {
-                frozen.search = Some(search);
                 return Ok(false);
             }
         };
-        drop(search);
+        screen.vt.search_end(search);
+        frozen.search = None;
         drop(state);
+        let matches = matches?;
         self.copy_change(|copy, vt, _| {
             copy.search_done(matches, |row| vt.row_wraps(row).map_err(text))
         })?;
@@ -644,7 +650,11 @@ impl Mirror {
                 }
             }
             (copy::SearchState::Searching(..), true) => {}
-            (_, true) => frozen.search = None,
+            (_, true) => {
+                if let Some(search) = frozen.search.take() {
+                    screen.vt.search_end(search);
+                }
+            }
             (_, false) => {}
         }
         if frozen.copy.offset() != offset {
@@ -672,8 +682,10 @@ impl Mirror {
     pub(crate) fn thaw(&mut self, poll: &mut Poll) -> Result<(), String> {
         let mut frozen = self.frozen.take();
         let mut state = self.shared.lock();
-        if let Some(frozen) = &mut frozen {
-            frozen.search = None;
+        if let Some(search) = frozen.as_mut().and_then(|frozen| frozen.search.take())
+            && let Some(screen) = state.surface.screen_mut()
+        {
+            screen.vt.search_end(search);
         }
         state.searching = false;
         drop(state);

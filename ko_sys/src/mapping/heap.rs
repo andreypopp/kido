@@ -29,8 +29,11 @@ pub struct Mapping {
 
 impl Mapping {
     pub fn shared(len: usize) -> io::Result<Mapping> {
+        if len == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty mapping"));
+        }
         let layout = Layout::from_size_align(len, 4096).map_err(io::Error::other)?;
-        // SAFETY: len is not zero, because the ring header alone is longer.
+        // SAFETY: the layout is valid and len was checked to be nonzero.
         let base = unsafe { alloc_zeroed(layout) };
         let base = NonNull::new(base).ok_or_else(|| io::Error::other("out of memory"))?;
         Ok(Mapping {

@@ -1,5 +1,6 @@
+use std::fs::File;
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::ptr::{self, NonNull};
 
 #[cfg(target_os = "linux")]
@@ -44,10 +45,11 @@ pub struct Named {
     access: Access,
 }
 
-// SAFETY: the mapping is plain memory that the owner reads or writes through &self or &mut self.
+// SAFETY: moving the mapping does not move its address; access uses raw copies or syscalls,
+// and no Rust reference to its shared bytes is created.
 unsafe impl Send for Named {}
 
-pub(super) fn map_shared(fd: &OwnedFd, len: usize, writable: bool) -> io::Result<NonNull<u8>> {
+pub(super) fn map_shared(fd: &File, len: usize, writable: bool) -> io::Result<NonNull<u8>> {
     let protection = if writable {
         libc::PROT_READ | libc::PROT_WRITE
     } else {
@@ -70,35 +72,18 @@ pub(super) fn map_shared(fd: &OwnedFd, len: usize, writable: bool) -> io::Result
     NonNull::new(base.cast()).ok_or_else(|| io::Error::other("mmap returned NULL"))
 }
 
-pub(super) fn truncate(fd: &OwnedFd, len: usize) -> io::Result<()> {
-    let size = libc::off_t::try_from(len)
-        .ok()
-        .filter(|&size| size > 0)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty or huge object"))?;
-    // SAFETY: fd is a shared memory object.
-    retry(|| check(unsafe { libc::ftruncate(fd.as_raw_fd(), size) })).map(drop)
-}
-
 // A mapped tmpfs object reserves no pages: on a full /dev/shm the first write to a page raises
 // SIGBUS, not an error. posix_fallocate reserves them, and returns the error number.
 #[cfg(target_os = "linux")]
-fn reserve(fd: &OwnedFd, len: usize) -> io::Result<()> {
+fn reserve(fd: &File, len: usize) -> io::Result<()> {
     let size = libc::off_t::try_from(len).map_err(io::Error::other)?;
     // SAFETY: fd is a shared memory object.
     retry(|| check_code(unsafe { libc::posix_fallocate(fd.as_raw_fd(), 0, size) }))
 }
 
 #[cfg(target_os = "macos")]
-fn reserve(_fd: &OwnedFd, _len: usize) -> io::Result<()> {
+fn reserve(_fd: &File, _len: usize) -> io::Result<()> {
     Ok(())
-}
-
-pub(super) fn size_of(fd: &OwnedFd) -> io::Result<usize> {
-    // SAFETY: an all-zero stat is valid, and fstat fills it.
-    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: stat is writable.
-    check(unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) })?;
-    usize::try_from(stat.st_size).map_err(io::Error::other)
 }
 
 pub(super) fn open_fd(name: &Name, flags: libc::c_int, mode: libc::mode_t) -> io::Result<OwnedFd> {
@@ -114,8 +99,14 @@ pub(super) fn open_fd(name: &Name, flags: libc::c_int, mode: libc::mode_t) -> io
 
 impl Named {
     pub fn create(name: &Name, len: usize) -> io::Result<Named> {
-        let fd = open_fd(name, libc::O_CREAT | libc::O_EXCL | libc::O_RDWR, 0o600)?;
-        let mapped = truncate(&fd, len)
+        let fd = File::from(open_fd(
+            name,
+            libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
+            0o600,
+        )?);
+        let mapped = u64::try_from(len)
+            .map_err(io::Error::other)
+            .and_then(|len| fd.set_len(len))
             .and_then(|()| reserve(&fd, len))
             .and_then(|()| map_shared(&fd, len, true));
         match mapped {
@@ -132,8 +123,8 @@ impl Named {
     }
 
     pub fn open(name: &Name, len: usize) -> io::Result<Named> {
-        let fd = open_fd(name, libc::O_RDONLY, 0)?;
-        if len == 0 || size_of(&fd)? < len {
+        let fd = File::from(open_fd(name, libc::O_RDONLY, 0)?);
+        if len == 0 || fd.metadata()?.len() < u64::try_from(len).map_err(io::Error::other)? {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "object shorter than its length",
@@ -146,15 +137,37 @@ impl Named {
         })
     }
 
-    pub fn bytes(&self) -> &[u8] {
-        // SAFETY: base maps len readable bytes until drop.
-        unsafe { std::slice::from_raw_parts(self.base.as_ptr(), self.len) }
+    pub fn size(&self) -> usize {
+        self.len
     }
 
-    pub fn bytes_mut(&mut self) -> Option<&mut [u8]> {
-        // SAFETY: base maps len writable bytes until drop, and &mut self is the only access.
-        (self.access == Access::Writable)
-            .then(|| unsafe { std::slice::from_raw_parts_mut(self.base.as_ptr(), self.len) })
+    pub fn write(&mut self, offset: usize, bytes: &[u8]) -> io::Result<()> {
+        if self.access != Access::Writable {
+            return Err(io::ErrorKind::PermissionDenied.into());
+        }
+        if offset
+            .checked_add(bytes.len())
+            .is_none_or(|end| end > self.len)
+        {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        // SAFETY: only create's O_EXCL handle is writable; &mut self excludes other Rust
+        // access in this process. The checked range is disjoint from bytes. Other accesses
+        // are kernel reads through write_to or accesses in another process.
+        unsafe {
+            ptr::copy_nonoverlapping(bytes.as_ptr(), self.base.as_ptr().add(offset), bytes.len())
+        };
+        Ok(())
+    }
+
+    pub fn write_to(&self, fd: BorrowedFd<'_>, offset: usize, limit: usize) -> io::Result<usize> {
+        let len = self.len.saturating_sub(offset).min(limit);
+        if len == 0 {
+            return Ok(0);
+        }
+        // SAFETY: fd is open and the checked range remains mapped during write. The kernel
+        // reads the mapped pages, which concurrent writers may change; no Rust reference is formed.
+        unsafe { crate::fd::write_raw(fd, self.base.as_ptr().add(offset), len) }
     }
 }
 
@@ -182,6 +195,36 @@ mod tests {
         Name::new(&format!("/ko-t-{}-{suffix}", std::process::id())).unwrap()
     }
 
+    fn read(object: &Named, len: usize) -> Vec<u8> {
+        use std::io::Read;
+        use std::os::fd::AsFd;
+        let (mut reader, writer) = std::io::pipe().unwrap();
+        assert_eq!(object.write_to(writer.as_fd(), 0, len).unwrap(), len);
+        let mut bytes = vec![0; len];
+        reader.read_exact(&mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn kernel_reads_do_not_borrow_the_mapping_and_writes_use_checked_ranges() {
+        use std::io::Read;
+        use std::os::fd::AsFd;
+        let name = name("copy");
+        let mut object = Named::create(&name, 8).unwrap();
+        object.write(0, b"abcdefgh").unwrap();
+        let copy = read(&object, 8);
+        object.write(0, b"X").unwrap();
+        assert_eq!(copy, b"abcdefgh");
+        assert!(object.write(usize::MAX, b"x").is_err());
+        let (mut reader, writer) = std::io::pipe().unwrap();
+        assert_eq!(object.write_to(writer.as_fd(), 2, 3).unwrap(), 3);
+        assert_eq!(object.write_to(writer.as_fd(), usize::MAX, 3).unwrap(), 0);
+        let mut found = [0; 3];
+        reader.read_exact(&mut found).unwrap();
+        assert_eq!(&found, b"cde");
+        unlink(&name).unwrap();
+    }
+
     #[test]
     fn a_name_is_a_short_flat_path() {
         assert!(Name::new("/ko-1234567-12345").is_some());
@@ -201,17 +244,21 @@ mod tests {
     fn a_created_object_is_read_by_name_until_it_is_unlinked() {
         let name = name("read");
         let mut created = Named::create(&name, 5000).unwrap();
-        created.bytes_mut().unwrap()[..3].copy_from_slice(b"abc");
+        created.write(0, b"abc").unwrap();
         let opened = Named::open(&name, 5000).unwrap();
-        assert_eq!(&opened.bytes()[..3], b"abc");
-        assert_eq!(opened.bytes().len(), 5000);
+        assert_eq!(read(&opened, 3), b"abc");
+        assert_eq!(opened.size(), 5000);
         assert!(Named::create(&name, 10).is_err());
         let mut opened = opened;
-        assert!(opened.bytes_mut().is_none());
+        assert_eq!(
+            opened.write(0, b"x").unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(created.write(4999, b"xx").is_err());
         assert!(Named::open(&name, 5000 * 100).is_err());
         unlink(&name).unwrap();
         assert!(Named::open(&name, 5000).is_err());
-        assert_eq!(&created.bytes()[..3], b"abc");
+        assert_eq!(read(&created, 3), b"abc");
         unlink(&name).unwrap();
     }
 }

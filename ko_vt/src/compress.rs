@@ -115,8 +115,7 @@ mod tests {
             size: size_of::<sys::GhosttyTerminalMemoryUsage>(),
             ..Default::default()
         };
-        vt.get(sys::GHOSTTY_TERMINAL_DATA_MEMORY_USAGE, usage)
-            .unwrap()
+        vt.get(crate::data::MEMORY_USAGE, usage).unwrap()
     }
 
     fn at(nanos: u64) -> Mono {

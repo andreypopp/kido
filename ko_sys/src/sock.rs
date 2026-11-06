@@ -86,20 +86,42 @@ pub fn set_receive_buffer(fd: BorrowedFd<'_>, bytes: usize) -> io::Result<()> {
     set(fd, libc::SO_RCVBUF, bytes)
 }
 
-fn get<T>(
-    fd: BorrowedFd<'_>,
+#[derive(Debug, Clone, Copy)]
+struct OptionKey<T> {
     level: libc::c_int,
     option: libc::c_int,
-    value: &mut T,
-) -> io::Result<()> {
+    ty: std::marker::PhantomData<T>,
+}
+
+impl<T> OptionKey<T> {
+    const fn new(level: libc::c_int, option: libc::c_int) -> Self {
+        Self {
+            level,
+            option,
+            ty: std::marker::PhantomData,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+const PEER_CREDENTIALS: OptionKey<libc::xucred> =
+    OptionKey::new(libc::SOL_LOCAL, libc::LOCAL_PEERCRED);
+#[cfg(target_os = "linux")]
+const PEER_CREDENTIALS: OptionKey<libc::ucred> =
+    OptionKey::new(libc::SOL_SOCKET, libc::SO_PEERCRED);
+#[cfg(target_os = "macos")]
+const PEER_PID: OptionKey<libc::pid_t> = OptionKey::new(libc::SOL_LOCAL, libc::LOCAL_PEERPID);
+
+fn get<T>(fd: BorrowedFd<'_>, key: OptionKey<T>, value: &mut T) -> io::Result<()> {
     let mut len = libc::socklen_t::try_from(size_of::<T>())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "socket option too large"))?;
-    // SAFETY: value is writable for len bytes, the size of the option's type.
+    // SAFETY: the private typed constants pair level and option with T;
+    // value is writable for len bytes.
     check(unsafe {
         libc::getsockopt(
             fd.as_raw_fd(),
-            level,
-            option,
+            key.level,
+            key.option,
             std::ptr::from_mut(value).cast(),
             &mut len,
         )
@@ -111,7 +133,7 @@ fn get<T>(
 pub fn peer_uid(fd: BorrowedFd<'_>) -> io::Result<u32> {
     // SAFETY: an all-zero xucred is valid.
     let mut credentials: libc::xucred = unsafe { std::mem::zeroed() };
-    get(fd, libc::SOL_LOCAL, libc::LOCAL_PEERCRED, &mut credentials)?;
+    get(fd, PEER_CREDENTIALS, &mut credentials)?;
     if credentials.cr_version != libc::XUCRED_VERSION {
         return Err(io::Error::from_raw_os_error(libc::EPROTO));
     }
@@ -125,7 +147,7 @@ fn credentials(fd: BorrowedFd<'_>) -> io::Result<libc::ucred> {
         uid: 0,
         gid: 0,
     };
-    get(fd, libc::SOL_SOCKET, libc::SO_PEERCRED, &mut credentials)?;
+    get(fd, PEER_CREDENTIALS, &mut credentials)?;
     Ok(credentials)
 }
 
@@ -142,7 +164,7 @@ pub fn uid() -> u32 {
 #[cfg(target_os = "macos")]
 pub fn peer_pid(fd: BorrowedFd<'_>) -> io::Result<Option<Pid>> {
     let mut pid: libc::pid_t = 0;
-    get(fd, libc::SOL_LOCAL, libc::LOCAL_PEERPID, &mut pid)?;
+    get(fd, PEER_PID, &mut pid)?;
     Ok(Pid::new(i64::from(pid)))
 }
 

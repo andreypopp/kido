@@ -43,9 +43,9 @@ impl std::fmt::Display for Pid {
 impl Pid {
     pub fn new(raw: i64) -> Option<Pid> {
         let pid = libc::pid_t::try_from(raw).ok().filter(|&pid| pid > 1)?;
-        // SAFETY: getpid and getpgrp have no preconditions.
-        let (own, group) = unsafe { (libc::getpid(), libc::getpgrp()) };
-        (pid != own && pid != group).then_some(Pid(pid))
+        // SAFETY: getpgrp has no preconditions.
+        let group = unsafe { libc::getpgrp() };
+        (u32::try_from(pid).ok()? != std::process::id() && pid != group).then_some(Pid(pid))
     }
 
     pub fn get(self) -> i32 {
@@ -61,7 +61,7 @@ impl Pid {
         let path = proc::cwd(self)?;
         #[cfg(target_os = "macos")]
         let path = {
-            let info: libc::proc_vnodepathinfo = pidinfo(self, libc::PROC_PIDVNODEPATHINFO)?;
+            let info = pidinfo(self, VNODE_PATH)?;
             let bytes = info
                 .pvi_cdir
                 .vip_path
@@ -193,8 +193,7 @@ impl Pid {
     #[cfg(target_os = "macos")]
     pub fn has_ended(self) -> bool {
         // SZOMB, <sys/proc.h>
-        pidinfo::<libc::proc_bsdinfo>(self, libc::PROC_PIDTBSDINFO)
-            .is_none_or(|info| info.pbi_status == 5)
+        pidinfo(self, BSD_INFO).is_none_or(|info| info.pbi_status == 5)
     }
 
     #[cfg(target_os = "linux")]
@@ -240,13 +239,36 @@ struct Identity {
 mod proc;
 
 #[cfg(target_os = "macos")]
-fn pidinfo<T>(pid: Pid, flavor: libc::c_int) -> Option<T> {
+#[derive(Debug, Clone, Copy)]
+struct Flavor<T> {
+    raw: libc::c_int,
+    ty: std::marker::PhantomData<T>,
+}
+
+#[cfg(target_os = "macos")]
+impl<T> Flavor<T> {
+    const fn new(raw: libc::c_int) -> Self {
+        Self {
+            raw,
+            ty: std::marker::PhantomData,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+const BSD_INFO: Flavor<libc::proc_bsdinfo> = Flavor::new(libc::PROC_PIDTBSDINFO);
+#[cfg(target_os = "macos")]
+const VNODE_PATH: Flavor<libc::proc_vnodepathinfo> = Flavor::new(libc::PROC_PIDVNODEPATHINFO);
+
+#[cfg(target_os = "macos")]
+fn pidinfo<T>(pid: Pid, flavor: Flavor<T>) -> Option<T> {
     let size = libc::c_int::try_from(size_of::<T>()).ok()?;
-    // SAFETY: callers use zero-valid proc info structs that match flavor, writable for size bytes.
-    let mut info: T = unsafe { std::mem::zeroed() };
+    let mut info = std::mem::MaybeUninit::<T>::uninit();
     retry(|| {
-        // SAFETY: info matches flavor and is writable for size bytes.
-        let filled = unsafe { libc::proc_pidinfo(pid.0, flavor, 0, (&raw mut info).cast(), size) };
+        // SAFETY: the private typed constants pair T with the proc_pidinfo flavor;
+        // info is writable for size bytes.
+        let filled =
+            unsafe { libc::proc_pidinfo(pid.0, flavor.raw, 0, info.as_mut_ptr().cast(), size) };
         if filled == size {
             Ok(())
         } else if filled == 0 {
@@ -256,7 +278,8 @@ fn pidinfo<T>(pid: Pid, flavor: libc::c_int) -> Option<T> {
         }
     })
     .ok()?;
-    Some(info)
+    // SAFETY: proc_pidinfo filled the complete record of the type the flavor specifies.
+    Some(unsafe { info.assume_init() })
 }
 
 #[cfg(target_os = "linux")]
@@ -266,7 +289,7 @@ fn identity(pid: Pid) -> Option<Identity> {
 
 #[cfg(target_os = "macos")]
 fn identity(pid: Pid) -> Option<Identity> {
-    let info: libc::proc_bsdinfo = pidinfo(pid, libc::PROC_PIDTBSDINFO)?;
+    let info = pidinfo(pid, BSD_INFO)?;
     // SAFETY: getsid has no preconditions.
     let sid = unsafe { libc::getsid(pid.0) };
     if sid < 0 {
@@ -572,8 +595,7 @@ mod tests {
         drop(writer);
         let mut up = [0u8; 3];
         reader.read_exact(&mut up).unwrap();
-        // SAFETY: getpid has no preconditions.
-        let parent = Pid(unsafe { libc::getpid() });
+        let parent = Pid(i32::try_from(std::process::id()).unwrap());
         let Verdict::Child(verified) = Group::verify(parent, i64::from(child.0)) else {
             child.signal(Signal::Kill).unwrap();
             panic!("child not verified");

@@ -17,9 +17,21 @@ pub fn read(fd: BorrowedFd<'_>, buffer: &mut [u8]) -> io::Result<usize> {
 }
 
 pub fn write(fd: BorrowedFd<'_>, bytes: &[u8]) -> io::Result<usize> {
+    // SAFETY: bytes remains readable for its length during the call.
+    unsafe { write_raw(fd, bytes.as_ptr(), bytes.len()) }
+}
+
+/// # Safety
+/// The pointer must cover len readable bytes that remain allocated until the call returns.
+/// The kernel reads the bytes; concurrent changes can produce mixed output.
+pub(crate) unsafe fn write_raw(
+    fd: BorrowedFd<'_>,
+    pointer: *const u8,
+    len: usize,
+) -> io::Result<usize> {
     retry(|| {
-        // SAFETY: bytes is readable for its length, and fd is open for the borrow.
-        check_size(unsafe { libc::write(fd.as_raw_fd(), bytes.as_ptr().cast(), bytes.len()) })
+        // SAFETY: the caller keeps len bytes mapped; the kernel reads them without a Rust reference.
+        check_size(unsafe { libc::write(fd.as_raw_fd(), pointer.cast(), len) })
     })
 }
 
@@ -97,8 +109,8 @@ pub fn inherited(number: u8) -> io::Result<OwnedFd> {
     let raw = libc::c_int::from(number);
     // SAFETY: F_GETFD only tests that the descriptor is open.
     check(unsafe { libc::fcntl(raw, libc::F_GETFD) })?;
-    // SAFETY: the parent put this descriptor here (spawn::pane), and nothing else in this
-    // process owns it.
+    // SAFETY: each binary takes each inherited descriptor once, before creating any other
+    // descriptor owner; the parent transferred ownership through the exec boundary.
     let fd = unsafe { OwnedFd::from_raw_fd(raw) };
     set_cloexec(fd.as_fd())?;
     Ok(fd)

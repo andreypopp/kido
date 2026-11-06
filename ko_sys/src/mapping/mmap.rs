@@ -1,3 +1,4 @@
+use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 #[cfg(target_os = "linux")]
@@ -6,9 +7,9 @@ use std::ptr::NonNull;
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use super::named::map_shared;
 #[cfg(target_os = "macos")]
 use super::named::{Name, open_fd, unlink};
-use super::named::{map_shared, size_of, truncate};
 #[cfg(target_os = "linux")]
 use crate::retry::{check, retry};
 
@@ -16,7 +17,7 @@ use crate::retry::{check, retry};
 pub struct Mapping {
     base: NonNull<u8>,
     len: usize,
-    fd: OwnedFd,
+    fd: File,
 }
 
 #[cfg(target_os = "macos")]
@@ -57,15 +58,18 @@ fn create() -> io::Result<OwnedFd> {
     Ok(unsafe { OwnedFd::from_raw_fd(raw) })
 }
 
-fn map(fd: OwnedFd, len: usize) -> io::Result<Mapping> {
+fn map(fd: File, len: usize) -> io::Result<Mapping> {
     let base = map_shared(&fd, len, true)?;
     Ok(Mapping { base, len, fd })
 }
 
 impl Mapping {
     pub fn shared(len: usize) -> io::Result<Mapping> {
-        let fd = create()?;
-        truncate(&fd, len)?;
+        if len == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty mapping"));
+        }
+        let fd = File::from(create()?);
+        fd.set_len(u64::try_from(len).map_err(io::Error::other)?)?;
         #[cfg(target_os = "linux")]
         // SAFETY: fd is open; the seals stop the other process from shrinking the ring under a
         // mapping (SIGBUS) or growing it.
@@ -80,11 +84,12 @@ impl Mapping {
     }
 
     pub fn duplicate(&self) -> io::Result<Mapping> {
-        Mapping::attach(self.fd.try_clone()?)
+        Mapping::attach(self.fd.try_clone()?.into())
     }
 
     pub fn attach(fd: OwnedFd) -> io::Result<Mapping> {
-        let len = Some(size_of(&fd)?)
+        let fd = File::from(fd);
+        let len = Some(usize::try_from(fd.metadata()?.len()).map_err(io::Error::other)?)
             .filter(|&len| len > 0)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "empty mapping"))?;
         map(fd, len)

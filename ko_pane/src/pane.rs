@@ -359,7 +359,14 @@ fn simple(live: &mut Option<Live>, out: &mut Out, request: Request<'_>) -> Resul
             Some(search) => live.searches.push(search),
             None => out.frame(&FromPane::SearchDone(req)),
         },
-        Request::SearchCancel(req) => live.searches.retain(|search| !search.req.same(req)),
+        Request::SearchCancel(req) => live.searches.retain(|search| {
+            if search.req.same(req) {
+                search.cancel(&mut live.vt);
+                false
+            } else {
+                true
+            }
+        }),
         Request::Exit => out.stopping = true,
         Request::Init(_) | Request::Resize(_) | Request::Snapshot { .. } => {
             return Err(Fault::Invalid);

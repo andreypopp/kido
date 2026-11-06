@@ -233,18 +233,6 @@ unsafe fn child(prepared: &Prepared) -> ! {
     }
 }
 
-fn pipe() -> Result<(OwnedFd, OwnedFd), Setup> {
-    let mut ends = [-1; 2];
-    // SAFETY: ends receives two new descriptors.
-    check(unsafe { libc::pipe(ends.as_mut_ptr()) }).map_err(setup("pipe"))?;
-    // SAFETY: pipe returned two new descriptors that nothing else owns.
-    let (read, write) = unsafe { (OwnedFd::from_raw_fd(ends[0]), OwnedFd::from_raw_fd(ends[1])) };
-    for end in [&read, &write] {
-        crate::fd::set_cloexec(end.as_fd()).map_err(setup("fcntl"))?;
-    }
-    Ok((read, write))
-}
-
 fn report(read: &OwnedFd) -> Result<Option<Failed>, Setup> {
     let mut record = [0u8; RECORD];
     let mut have = 0;
@@ -326,7 +314,8 @@ pub fn spawn(size: Winsize, cwd: &Path, argv: &[Vec<u8>], env: &[Vec<u8>]) -> Re
     let mut empty: libc::sigset_t = unsafe { std::mem::zeroed() };
     // SAFETY: empty is a valid sigset_t.
     unsafe { libc::sigemptyset(&mut empty) };
-    let (read, write) = pipe()?;
+    let (read, write) = std::io::pipe().map_err(setup("pipe"))?;
+    let (read, write) = (OwnedFd::from(read), OwnedFd::from(write));
     let prepared = Prepared {
         program: argv
             .first()

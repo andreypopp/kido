@@ -212,7 +212,7 @@ impl Terminal {
 
     pub fn storage_generation(&self) -> Result<u64, Error> {
         let graphics = self.get(
-            sys::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+            crate::data::KITTY_GRAPHICS,
             ptr::null_mut::<c_void>() as sys::GhosttyKittyGraphics,
         )?;
         let mut generation = 0u64;
@@ -229,7 +229,7 @@ impl Terminal {
 
     pub fn placements(&self) -> Result<Vec<(u32, u32)>, Error> {
         let graphics = self.get(
-            sys::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+            crate::data::KITTY_GRAPHICS,
             ptr::null_mut::<c_void>() as sys::GhosttyKittyGraphics,
         )?;
         let mut iterator = ptr::null_mut();
@@ -275,7 +275,7 @@ impl Terminal {
 
     pub fn animation_tick(&mut self, now_ms: u64) -> Result<Option<u64>, Error> {
         let graphics = self.get(
-            sys::GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS,
+            crate::data::KITTY_GRAPHICS,
             ptr::null_mut::<c_void>() as sys::GhosttyKittyGraphics,
         )?;
         let mut next = 0u64;
@@ -289,7 +289,7 @@ impl Terminal {
     /// Grows each time a frame of either screen becomes pending or a pending frame's generation
     /// moves. Read it after a feed batch.
     pub fn pending_generation(&self) -> Result<u64, Error> {
-        self.get(sys::GHOSTTY_TERMINAL_DATA_KITTY_PENDING_GENERATION, 0u64)
+        self.get(crate::data::KITTY_PENDING_GENERATION, 0u64)
     }
 }
 

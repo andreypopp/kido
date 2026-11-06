@@ -418,13 +418,15 @@ impl Output {
             if !self.queue.is_empty() {
                 break;
             }
-            let rest = object.bytes().get(*sent..).unwrap_or_default();
-            if rest.is_empty() {
+            if *sent >= object.size() {
                 self.pixels = None;
                 break;
             }
-            let piece = rest.get(..PIECE).unwrap_or(rest);
-            match write_slices(&self.stream, &[IoSlice::new(piece)])? {
+            let count = match object.write_to(self.stream.as_fd(), *sent, PIECE) {
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => 0,
+                result => result?,
+            };
+            match count {
                 0 => break,
                 count => {
                     *sent = sent.saturating_add(count);
@@ -435,7 +437,7 @@ impl Output {
         if self
             .pixels
             .as_ref()
-            .is_some_and(|pixels| pixels.sent >= pixels.object.bytes().len())
+            .is_some_and(|pixels| pixels.sent >= pixels.object.size())
         {
             self.pixels = None;
         }

@@ -513,7 +513,10 @@ Copy-mode search (`/`, `?`, `n`, `N`) runs on the frozen mirror with
 the mirror holds the whole history and its rows do not move, while the
 server's rows move with output (protocol.md section 11). The prompt and
 the running search are state of `copy::Mode`, the one record of them;
-the mirror starts or drops its ghostty `Search` to agree with it. A
+the mirror starts or ends a search of its terminal to agree with it.
+`ko_vt::Terminal` owns each ghostty search, because a search reads
+the terminal; a caller holds only its `SearchId`, and several searches
+of one terminal can run at once (the server's `/panes/{id}/search`). A
 paste into an open prompt adds its text without control characters; a
 paste into copy mode without a prompt is dropped. A full search of 100k
 lines with a match on each takes about 55 ms (52 ms resident, 57 ms
@@ -712,7 +715,10 @@ section 5). The generation is a serial that the bytes alone decide,
 so the pane and every mirror compute the same value for the same
 frame state. On a local server the client maps a shared-memory
 object by name; remotely it gets the pixels as a body, streamed from
-the coordinator's own mapping. `ko-pane` owns the objects; the
+the coordinator's own mapping with write(2) from the mapped pages
+(`Named::write_to` in `ko_sys/src/mapping/named.rs`). No Rust
+reference to the shared bytes exists, because another process that
+opens the name can write them during the send. `ko-pane` owns the objects; the
 coordinator keeps the leak record (`ko_server/src/shm.rs`) because it
 is the one process that outlives a pane, and macOS cannot enumerate
 POSIX shared memory. Animation has no fallback: the Ghostty fork

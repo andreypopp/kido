@@ -225,10 +225,11 @@ fn start(
         .iter()
         .map(|(fd, target)| Ok((above_targets(*fd)?, libc::c_int::from(*target))))
         .collect::<io::Result<Vec<(OwnedFd, libc::c_int)>>>()?;
-    // SAFETY: an all-zero action list is only a place for posix_spawn_file_actions_init to fill.
-    let mut actions = Actions(unsafe { std::mem::zeroed() });
-    // SAFETY: actions receives an initialized file action list.
-    check_code(unsafe { libc::posix_spawn_file_actions_init(&mut actions.0) })?;
+    let mut actions = std::mem::MaybeUninit::uninit();
+    // SAFETY: actions points to storage for the initializer's output.
+    check_code(unsafe { libc::posix_spawn_file_actions_init(actions.as_mut_ptr()) })?;
+    // SAFETY: the initializer succeeded; only this owner destroys its output.
+    let mut actions = Actions(unsafe { actions.assume_init() });
     let dir = dir
         .map(|dir| CString::new(dir.as_os_str().as_bytes()).map_err(invalid))
         .transpose()?;
@@ -243,10 +244,11 @@ fn start(
         })?;
     }
     let confined = confine(&mut actions, targets)?;
-    // SAFETY: as for the actions.
-    let mut attributes = Attributes(unsafe { std::mem::zeroed() });
-    // SAFETY: attributes receives an initialized attribute object.
-    check_code(unsafe { libc::posix_spawnattr_init(&mut attributes.0) })?;
+    let mut attributes = std::mem::MaybeUninit::uninit();
+    // SAFETY: attributes points to storage for the initializer's output.
+    check_code(unsafe { libc::posix_spawnattr_init(attributes.as_mut_ptr()) })?;
+    // SAFETY: the initializer succeeded; only this owner destroys its output.
+    let mut attributes = Attributes(unsafe { attributes.assume_init() });
     // SAFETY: an empty sigset_t, filled by sigemptyset and sigaddset below.
     let (mut empty, mut defaults): (libc::sigset_t, libc::sigset_t) = unsafe { std::mem::zeroed() };
     // SAFETY: both sets are valid sigset_t values.

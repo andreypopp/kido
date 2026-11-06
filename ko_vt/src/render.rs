@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 
 use ko_vt_sys as sys;
 
-use crate::{Error, Notes, Terminal, check, get};
+use crate::data::{self, Key, cell, render as keys};
+use crate::{Error, Notes, Terminal, check};
 
 const HOLD: Duration = Duration::from_millis(150);
 const LOCAL: usize = 128;
@@ -136,6 +137,26 @@ impl Drop for Render {
 }
 
 impl Render {
+    fn get<T>(&self, key: Key<data::RenderState, T>, mut value: T) -> Result<T, Error> {
+        // SAFETY: the private RenderState keys pair the render.h key with T; state is live.
+        check(unsafe {
+            sys::ghostty_render_state_get(self.state, key.raw(), ptr::from_mut(&mut value).cast())
+        })?;
+        Ok(value)
+    }
+
+    fn get_cells<T>(&self, key: Key<data::Cells, T>, mut value: T) -> Result<T, Error> {
+        // SAFETY: the private Cells keys pair the render.h key with T; cells is live.
+        check(unsafe {
+            sys::ghostty_render_state_row_cells_get(
+                self.cells,
+                key.raw(),
+                ptr::from_mut(&mut value).cast(),
+            )
+        })?;
+        Ok(value)
+    }
+
     fn new() -> Result<Render, Error> {
         let mut render = Render {
             state: ptr::null_mut(),
@@ -233,19 +254,11 @@ impl Terminal {
             // SAFETY: both handles are live.
             check(unsafe { sys::ghostty_render_state_update(state, vt) })?;
         }
-        let state_get = |data| {
-            move |out| {
-                // SAFETY: each caller names the data whose output type render.h documents as T.
-                unsafe { sys::ghostty_render_state_get(state, data, out) }
-            }
-        };
-        let cols = get(state_get(sys::GHOSTTY_RENDER_STATE_DATA_COLS), 0u16)?;
-        let height = get(state_get(sys::GHOSTTY_RENDER_STATE_DATA_ROWS), 0u16)?;
+        let render = self.render_state()?;
+        let cols = render.get(keys::COLS, 0u16)?;
+        let height = render.get(keys::ROWS, 0u16)?;
         let mut count = 0;
-        let mut iterator = rows;
-        check(state_get(sys::GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR)(
-            ptr::from_mut(&mut iterator).cast(),
-        ))?;
+        let rows = render.get(keys::ROW_ITERATOR, rows)?;
         // SAFETY: the iterator is live until the next state update.
         while unsafe { sys::ghostty_render_state_row_iterator_next(rows) } {
             let mut row_cells = cells;
@@ -260,10 +273,10 @@ impl Terminal {
             // SAFETY: the cell cursor is live.
             while unsafe { sys::ghostty_render_state_row_cells_next(cells) } {
                 match frame.cells.get_mut(count) {
-                    Some(slot) => fill(cells, slot)?,
+                    Some(slot) => fill(render, slot)?,
                     None => {
                         let mut slot = Cell::default();
-                        fill(cells, &mut slot)?;
+                        fill(render, &mut slot)?;
                         frame.cells.push(slot);
                     }
                 }
@@ -274,14 +287,14 @@ impl Terminal {
             return Err(Error::CellCount);
         }
         frame.cells.truncate(count);
-        let cursor = get(
-            state_get(sys::GHOSTTY_RENDER_STATE_DATA_CURSOR),
+        let cursor = render.get(
+            keys::CURSOR,
             sys::GhosttyRenderStateCursor {
                 size: size_of::<sys::GhosttyRenderStateCursor>(),
                 ..Default::default()
             },
         )?;
-        let tracking = self.get(sys::GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, false)?;
+        let tracking = self.get(crate::data::MOUSE_TRACKING, false)?;
         let mouse = if !tracking {
             MouseTracking::Off
         } else if self.mode(1003)? {
@@ -291,7 +304,7 @@ impl Terminal {
         } else {
             MouseTracking::Press
         };
-        let keyboard = self.get(sys::GHOSTTY_TERMINAL_DATA_KITTY_KEYBOARD_FLAGS, 0u8)?;
+        let keyboard = self.get(crate::data::KITTY_KEYBOARD_FLAGS, 0u8)?;
         // SAFETY: the render state is live.
         check(unsafe { sys::ghostty_render_state_clean(state) })?;
         frame.cols = cols;
@@ -314,41 +327,31 @@ impl Terminal {
     }
 }
 
-fn of<T>(raw: sys::GhosttyCell, data: sys::GhosttyCellData, value: T) -> Result<T, Error> {
-    get(
-        |out| {
-            // SAFETY: each caller names the data whose output type cell.h documents as T.
-            unsafe { sys::ghostty_cell_get(raw, data, out) }
-        },
-        value,
-    )
+fn of<T>(raw: sys::GhosttyCell, key: Key<data::Cell, T>, mut value: T) -> Result<T, Error> {
+    // SAFETY: the private typed constants pair each screen.h cell key with output type T.
+    check(unsafe { sys::ghostty_cell_get(raw, key.raw(), ptr::from_mut(&mut value).cast()) })?;
+    Ok(value)
 }
 
-fn fill(cells: sys::GhosttyRenderStateRowCells, target: &mut Cell) -> Result<(), Error> {
-    let at = |data| {
-        move |out| {
-            // SAFETY: each caller names the data whose output type render.h documents as T.
-            unsafe { sys::ghostty_render_state_row_cells_get(cells, data, out) }
-        }
-    };
-    let raw: sys::GhosttyCell = get(at(sys::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW), 0)?;
-    let style = get(
-        at(sys::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE),
+fn fill(render: &Render, target: &mut Cell) -> Result<(), Error> {
+    let raw = render.get_cells(keys::RAW, 0)?;
+    let style = render.get_cells(
+        keys::STYLE,
         sys::GhosttyStyle {
             size: size_of::<sys::GhosttyStyle>(),
             ..Default::default()
         },
     )?;
-    let wide: sys::GhosttyCellWide = of(raw, sys::GHOSTTY_CELL_DATA_WIDE, 0)?;
-    let content: sys::GhosttyCellContentTag = of(raw, sys::GHOSTTY_CELL_DATA_CONTENT_TAG, 0)?;
+    let wide = of(raw, cell::WIDE, 0)?;
+    let content = of(raw, cell::CONTENT_TAG, 0)?;
     let bg = match content {
         sys::GHOSTTY_CELL_CONTENT_BG_COLOR_PALETTE => {
-            Colour::Indexed(of(raw, sys::GHOSTTY_CELL_DATA_COLOR_PALETTE, 0u8)?)
+            Colour::Indexed(of(raw, cell::COLOR_PALETTE, 0u8)?)
         }
         sys::GHOSTTY_CELL_CONTENT_BG_COLOR_RGB => {
             let rgb = of(
                 raw,
-                sys::GHOSTTY_CELL_DATA_COLOR_RGB,
+                cell::COLOR_RGB,
                 sys::GhosttyColorRgb { r: 0, g: 0, b: 0 },
             )?;
             Colour::Rgb(rgb.r, rgb.g, rgb.b)
@@ -366,7 +369,7 @@ fn fill(cells: sys::GhosttyRenderStateRowCells, target: &mut Cell) -> Result<(),
         // SAFETY: the cursor is live, and the buffer's cap bytes are writable.
         unsafe {
             sys::ghostty_render_state_row_cells_get(
-                cells,
+                render.cells,
                 sys::GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8,
                 ptr::from_mut(buffer).cast(),
             )

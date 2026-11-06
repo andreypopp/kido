@@ -221,8 +221,8 @@ impl Terminal {
         check(unsafe { sys::ghostty_mouse_event_new(ptr::null(), &mut mice.event) })?;
         let size = sys::GhosttyMouseEncoderSize {
             size: size_of::<sys::GhosttyMouseEncoderSize>(),
-            screen_width: u32::from(self.get::<u16>(sys::GHOSTTY_TERMINAL_DATA_COLS, 0)?),
-            screen_height: u32::from(self.get::<u16>(sys::GHOSTTY_TERMINAL_DATA_ROWS, 0)?),
+            screen_width: u32::from(self.get::<u16>(crate::data::COLS, 0)?),
+            screen_height: u32::from(self.get::<u16>(crate::data::ROWS, 0)?),
             cell_width: 1,
             cell_height: 1,
             ..Default::default()

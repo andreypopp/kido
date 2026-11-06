@@ -14,6 +14,7 @@ use ko_vt_sys as sys;
 
 pub mod compress;
 mod cut;
+mod data;
 pub mod frames;
 pub mod input;
 pub mod render;
@@ -24,6 +25,7 @@ pub mod unicode;
 pub enum Error {
     Ghostty(sys::GhosttyResult),
     NoHandle,
+    NoSearch,
     NoTerminal,
     NotWatched,
     CellCount,
@@ -37,6 +39,7 @@ impl fmt::Display for Error {
         match self {
             Error::Ghostty(code) => write!(f, "libghostty-vt operation failed ({code})"),
             Error::NoHandle => write!(f, "libghostty-vt returned no terminal handle"),
+            Error::NoSearch => write!(f, "the search is not available"),
             Error::NoTerminal => write!(f, "the snapshot decoder returned no terminal"),
             Error::NotWatched => write!(f, "the terminal does not track rendering"),
             Error::CellCount => write!(f, "the render state has the wrong cell count"),
@@ -53,14 +56,6 @@ pub(crate) fn check(result: sys::GhosttyResult) -> Result<(), Error> {
     } else {
         Err(Error::Ghostty(result))
     }
-}
-
-pub(crate) fn get<T>(
-    call: impl FnOnce(*mut c_void) -> sys::GhosttyResult,
-    mut value: T,
-) -> Result<T, Error> {
-    check(call(ptr::from_mut(&mut value).cast()))?;
-    Ok(value)
 }
 
 /// A call that answers NO_VALUE for "nothing there" and succeeds or fails otherwise.
@@ -231,17 +226,16 @@ impl Notes {
     }
 }
 
-// SAFETY: libghostty-vt keeps no thread-local or thread-affine state, and terminal.h requires
-// only that the caller serializes every access to one terminal (ghostty_terminal_compress
-// names writes, rendering, searches and other terminal access). The one thread that owns a
-// terminal at a time is the holder of the mutex that wraps it, and the callbacks run inside
-// the call that triggers them, on the calling thread.
+// SAFETY: libghostty-vt keeps no thread-local or thread-affine state; terminal.h requires
+// serialized access to a terminal. Terminal owns every search, and moving it transfers those
+// handles together. Borrows serialize mutation; callbacks run inside the triggering call.
 unsafe impl Send for Terminal {}
 
 #[derive(Debug)]
 pub struct Terminal {
     vt: NonNull<sys::GhosttyTerminalImpl>,
     notes: Box<Notes>,
+    searches: search::Searches,
 }
 
 unsafe extern "C" fn write_pty(
@@ -296,7 +290,10 @@ unsafe extern "C" fn pwd_changed(_terminal: sys::GhosttyTerminal, userdata: *mut
     unsafe { (*userdata.cast::<Notes>()).changes.pwd = true };
 }
 
-fn text(string: &sys::GhosttyString) -> Vec<u8> {
+/// # Safety
+/// The string's pointer and length must come from a Ghostty callback and remain readable
+/// for this call.
+unsafe fn text(string: &sys::GhosttyString) -> Vec<u8> {
     if string.len == 0 {
         Vec::new()
     } else {
@@ -310,16 +307,13 @@ fn percent(value: i8) -> Option<u8> {
     u8::try_from(value).ok().filter(|&percent| percent <= 100)
 }
 
-fn record(notes: *mut c_void, report: Report) {
-    // SAFETY: as in `write_pty`.
-    unsafe { (*notes.cast::<Notes>()).reports.push(report) };
-}
-
 unsafe extern "C" fn semantic_prompt(
     _terminal: sys::GhosttyTerminal,
     userdata: *mut c_void,
     event: *const sys::GhosttyTerminalSemanticPrompt,
 ) {
+    // SAFETY: userdata is the terminal-owned Notes, exclusive for this callback (terminal.h).
+    let notes = unsafe { &mut *userdata.cast::<Notes>() };
     // SAFETY: event is valid for the call (terminal.h).
     let event = unsafe { &*event };
     let step = match event.kind {
@@ -332,14 +326,14 @@ unsafe extern "C" fn semantic_prompt(
         sys::GHOSTTY_SEMANTIC_PROMPT_COMMAND_END => PromptStep::End,
         _ => return,
     };
-    record(
-        userdata,
-        Report::Prompt {
-            step,
-            exit: event.has_exit_code.then_some(event.exit_code),
-            command: text(&event.command),
+    notes.reports.push(Report::Prompt {
+        step,
+        exit: event.has_exit_code.then_some(event.exit_code),
+        command: {
+            // SAFETY: the callback keeps this GhosttyString readable until it returns (terminal.h).
+            unsafe { text(&event.command) }
         },
-    );
+    });
 }
 
 unsafe extern "C" fn program_status(
@@ -347,6 +341,8 @@ unsafe extern "C" fn program_status(
     userdata: *mut c_void,
     status: *const sys::GhosttyTerminalProgramStatus,
 ) {
+    // SAFETY: userdata is the terminal-owned Notes, exclusive for this callback (terminal.h).
+    let notes = unsafe { &mut *userdata.cast::<Notes>() };
     // SAFETY: status is valid for the call (terminal.h).
     let status = unsafe { &*status };
     let state = match status.state {
@@ -364,22 +360,33 @@ unsafe extern "C" fn program_status(
         sys::GHOSTTY_PROGRAM_STATUS_KIND_AUTH => ProgramKind::Auth,
         _ => ProgramKind::None,
     };
-    record(
-        userdata,
-        Report::Status {
-            state,
-            kind,
-            progress: percent(status.progress),
-            id: text(&status.id),
-            app: text(&status.app),
-            title: text(&status.title),
-            msg: text(&status.message),
+    notes.reports.push(Report::Status {
+        state,
+        kind,
+        progress: percent(status.progress),
+        id: {
+            // SAFETY: the callback keeps this GhosttyString readable until it returns (terminal.h).
+            unsafe { text(&status.id) }
         },
-    );
+        app: {
+            // SAFETY: the callback keeps this GhosttyString readable until it returns (terminal.h).
+            unsafe { text(&status.app) }
+        },
+        title: {
+            // SAFETY: the callback keeps this GhosttyString readable until it returns (terminal.h).
+            unsafe { text(&status.title) }
+        },
+        msg: {
+            // SAFETY: the callback keeps this GhosttyString readable until it returns (terminal.h).
+            unsafe { text(&status.message) }
+        },
+    });
 }
 
 unsafe extern "C" fn bell(_terminal: sys::GhosttyTerminal, userdata: *mut c_void) {
-    record(userdata, Report::Bell);
+    // SAFETY: userdata is the terminal-owned Notes, exclusive for this callback (terminal.h).
+    let notes = unsafe { &mut *userdata.cast::<Notes>() };
+    notes.reports.push(Report::Bell);
 }
 
 unsafe extern "C" fn desktop_notification(
@@ -387,15 +394,20 @@ unsafe extern "C" fn desktop_notification(
     userdata: *mut c_void,
     notification: *const sys::GhosttyTerminalDesktopNotification,
 ) {
+    // SAFETY: userdata is the terminal-owned Notes, exclusive for this callback (terminal.h).
+    let notes = unsafe { &mut *userdata.cast::<Notes>() };
     // SAFETY: notification is valid for the call (terminal.h).
     let notification = unsafe { &*notification };
-    record(
-        userdata,
-        Report::Notify {
-            title: text(&notification.title),
-            body: text(&notification.body),
+    notes.reports.push(Report::Notify {
+        title: {
+            // SAFETY: the callback keeps this GhosttyString readable until it returns (terminal.h).
+            unsafe { text(&notification.title) }
         },
-    );
+        body: {
+            // SAFETY: the callback keeps this GhosttyString readable until it returns (terminal.h).
+            unsafe { text(&notification.body) }
+        },
+    });
 }
 
 unsafe extern "C" fn progress_report(
@@ -403,6 +415,8 @@ unsafe extern "C" fn progress_report(
     userdata: *mut c_void,
     progress: *const sys::GhosttyTerminalProgressReport,
 ) {
+    // SAFETY: userdata is the terminal-owned Notes, exclusive for this callback (terminal.h).
+    let notes = unsafe { &mut *userdata.cast::<Notes>() };
     // SAFETY: progress is valid for the call (terminal.h).
     let progress = unsafe { &*progress };
     let state = match progress.state {
@@ -413,13 +427,12 @@ unsafe extern "C" fn progress_report(
         sys::GHOSTTY_TERMINAL_PROGRESS_STATE_PAUSE => Some(ProgressState::Pause),
         _ => return,
     };
-    record(
-        userdata,
-        Report::Progress(state.map(|state| ProgressReport {
+    notes
+        .reports
+        .push(Report::Progress(state.map(|state| ProgressReport {
             state,
             progress: percent(progress.progress),
-        })),
-    );
+        })));
 }
 
 fn location(raw: sys::GhosttyClipboardLocation) -> ClipboardLocation {
@@ -435,20 +448,30 @@ unsafe extern "C" fn clipboard_write(
     userdata: *mut c_void,
     write: *const sys::GhosttyClipboardWrite,
 ) {
+    // SAFETY: userdata is the terminal-owned Notes, exclusive for this callback (terminal.h).
+    let notes = unsafe { &mut *userdata.cast::<Notes>() };
     // SAFETY: write is valid for the call (terminal.h).
     let write = unsafe { &*write };
     // SAFETY: contents holds contents_len entries for the call (terminal.h).
     let contents = unsafe { entries(write.contents, write.contents_len) }
         .iter()
-        .map(|entry| (text(&entry.mime), text(&entry.data)))
+        .map(|entry| {
+            (
+                {
+                    // SAFETY: the callback keeps this GhosttyString readable until it returns (terminal.h).
+                    unsafe { text(&entry.mime) }
+                },
+                {
+                    // SAFETY: the callback keeps this GhosttyString readable until it returns (terminal.h).
+                    unsafe { text(&entry.data) }
+                },
+            )
+        })
         .collect();
-    record(
-        userdata,
-        Report::ClipboardWrite {
-            location: location(write.location),
-            contents,
-        },
-    );
+    notes.reports.push(Report::ClipboardWrite {
+        location: location(write.location),
+        contents,
+    });
     let reply = sys::GhosttyClipboardWriteReply {
         size: std::mem::size_of::<sys::GhosttyClipboardWriteReply>(),
         result: sys::GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS,
@@ -475,7 +498,13 @@ unsafe extern "C" fn clipboard_read(
     let notes = unsafe { &mut *userdata.cast::<Notes>() };
     // SAFETY: mimes holds mimes_len entries for the call (terminal.h).
     let mimes = unsafe { entries(request.mimes, request.mimes_len) };
-    let names: Vec<Vec<u8>> = mimes.iter().map(text).collect();
+    let names: Vec<Vec<u8>> = mimes
+        .iter()
+        .map(|mime| {
+            // SAFETY: the callback's MIME strings remain readable until it returns (terminal.h).
+            unsafe { text(mime) }
+        })
+        .collect();
     let Ok(mimes) = MimesBuf::new(names.iter().map(Vec::as_slice)) else {
         return;
     };
@@ -499,6 +528,7 @@ unsafe extern "C" fn clipboard_read(
 
 impl Drop for Terminal {
     fn drop(&mut self) {
+        self.searches.clear();
         self.notes.render = None;
         // SAFETY: the terminal owns its handle, and no decoder borrows it after `decode` returns.
         unsafe { sys::ghostty_terminal_free(self.vt.as_ptr()) };
@@ -520,6 +550,9 @@ unsafe extern "C" fn read_into<R: Read>(
     capacity: usize,
     out_read: *mut usize,
 ) -> bool {
+    let capacity = capacity.min(65536);
+    // SAFETY: buffer has capacity writable bytes (io.h); initializing them precedes any slice.
+    unsafe { ptr::write_bytes(buffer, 0, capacity) };
     // SAFETY: userdata is the `Source` that `decode` keeps alive and does not touch while the
     // decoder runs; buffer holds capacity writable bytes and out_read is valid (io.h).
     let (source, buffer) = unsafe {
@@ -633,6 +666,7 @@ impl Terminal {
         let mut terminal = Terminal {
             vt: NonNull::new(vt).ok_or(Error::NoHandle)?,
             notes: Notes::new(cols, rows),
+            searches: search::Searches::default(),
         };
         terminal.configure(limits)?;
         Ok(terminal)
@@ -716,14 +750,15 @@ impl Terminal {
         let terminal = NonNull::new(vt).map(|vt| Terminal {
             vt,
             notes: Notes::new(Size::DEFAULT.cols, Size::DEFAULT.rows),
+            searches: search::Searches::default(),
         });
         if let Some(error) = source.error {
             return Err(Error::Read(error));
         }
         result?;
         let mut terminal = terminal.ok_or(Error::NoTerminal)?;
-        let cols: u16 = terminal.get(sys::GHOSTTY_TERMINAL_DATA_COLS, 0)?;
-        let rows: u16 = terminal.get(sys::GHOSTTY_TERMINAL_DATA_ROWS, 0)?;
+        let cols: u16 = terminal.get(crate::data::COLS, 0)?;
+        let rows: u16 = terminal.get(crate::data::ROWS, 0)?;
         terminal.notes.size = Size {
             cols: Dim::new(cols).ok_or(Error::NoTerminal)?,
             rows: Dim::new(rows).ok_or(Error::NoTerminal)?,
@@ -811,7 +846,7 @@ impl Terminal {
 
     pub fn alternate(&self) -> Result<bool, Error> {
         Ok(self.get(
-            sys::GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
+            crate::data::ACTIVE_SCREEN,
             sys::GHOSTTY_TERMINAL_SCREEN_PRIMARY,
         )? == sys::GHOSTTY_TERMINAL_SCREEN_ALTERNATE)
     }
@@ -831,14 +866,14 @@ impl Terminal {
     }
 
     pub fn title(&self) -> Result<&[u8], Error> {
-        self.string(sys::GHOSTTY_TERMINAL_DATA_TITLE)
+        self.string(crate::data::TITLE)
     }
 
     pub fn pwd(&self) -> Result<&[u8], Error> {
-        self.string(sys::GHOSTTY_TERMINAL_DATA_PWD)
+        self.string(crate::data::PWD)
     }
 
-    fn string(&self, data: sys::GhosttyTerminalData) -> Result<&[u8], Error> {
+    fn string(&self, data: data::Key<data::Terminal, sys::GhosttyString>) -> Result<&[u8], Error> {
         let empty = sys::GhosttyString {
             ptr: ptr::null(),
             len: 0,
@@ -914,7 +949,7 @@ impl Terminal {
             offset: 0,
             len: 0,
         };
-        Ok(self.get(sys::GHOSTTY_TERMINAL_DATA_SCROLLBAR, bar)?.offset)
+        Ok(self.get(crate::data::SCROLLBAR, bar)?.offset)
     }
 
     pub fn bottom(&mut self) -> Result<bool, Error> {
@@ -995,7 +1030,7 @@ impl Terminal {
             size: size_of::<sys::GhosttyTerminalMemoryUsage>(),
             ..Default::default()
         };
-        let usage = self.get(sys::GHOSTTY_TERMINAL_DATA_MEMORY_USAGE, usage)?;
+        let usage = self.get(crate::data::MEMORY_USAGE, usage)?;
         Ok(Memory {
             pages: usage.primary_pages + usage.alternate_pages,
             compressed_pages: usage.primary_compressed_pages + usage.alternate_compressed_pages,
@@ -1064,11 +1099,18 @@ impl Terminal {
         })
     }
 
-    pub(crate) fn get<T>(&self, data: sys::GhosttyTerminalData, mut value: T) -> Result<T, Error> {
-        // SAFETY: each caller names the data whose input and output type terminal.h documents as
-        // T.
+    pub(crate) fn get<T>(
+        &self,
+        key: data::Key<data::Terminal, T>,
+        mut value: T,
+    ) -> Result<T, Error> {
+        // SAFETY: the private typed constants pair each terminal.h key with output type T.
         check(unsafe {
-            sys::ghostty_terminal_get(self.vt.as_ptr(), data, ptr::from_mut(&mut value).cast())
+            sys::ghostty_terminal_get(
+                self.vt.as_ptr(),
+                key.raw(),
+                ptr::from_mut(&mut value).cast(),
+            )
         })?;
         Ok(value)
     }
@@ -1078,7 +1120,7 @@ impl Terminal {
             mode: number,
             value: false,
         };
-        Ok(self.get(sys::GHOSTTY_TERMINAL_DATA_MODE, mode)?.value)
+        Ok(self.get(crate::data::MODE, mode)?.value)
     }
 
     pub fn size(&self) -> Size {
@@ -1087,15 +1129,15 @@ impl Terminal {
 
     pub fn cursor(&self) -> Result<Cursor, Error> {
         Ok(Cursor {
-            x: self.get(sys::GHOSTTY_TERMINAL_DATA_CURSOR_X, 0u16)?,
-            y: self.get(sys::GHOSTTY_TERMINAL_DATA_CURSOR_Y, 0u16)?,
-            visible: self.get(sys::GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE, false)?,
-            pending_wrap: self.get(sys::GHOSTTY_TERMINAL_DATA_CURSOR_PENDING_WRAP, false)?,
+            x: self.get(crate::data::CURSOR_X, 0u16)?,
+            y: self.get(crate::data::CURSOR_Y, 0u16)?,
+            visible: self.get(crate::data::CURSOR_VISIBLE, false)?,
+            pending_wrap: self.get(crate::data::CURSOR_PENDING_WRAP, false)?,
         })
     }
 
     pub fn total_rows(&self) -> Result<usize, Error> {
-        self.get(sys::GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, 0usize)
+        self.get(crate::data::TOTAL_ROWS, 0usize)
     }
 
     pub fn screen(
@@ -1104,8 +1146,8 @@ impl Terminal {
         history: u32,
         mut emit: impl FnMut(&[u8]) -> bool,
     ) -> Result<(), Error> {
-        let cols: u16 = self.get(sys::GHOSTTY_TERMINAL_DATA_COLS, 0)?;
-        let rows: u16 = self.get(sys::GHOSTTY_TERMINAL_DATA_ROWS, 0)?;
+        let cols: u16 = self.get(crate::data::COLS, 0)?;
+        let rows: u16 = self.get(crate::data::ROWS, 0)?;
         let total = self.total_rows()?;
         let last = total.saturating_sub(1);
         let start = total.saturating_sub(usize::from(rows));
@@ -1159,11 +1201,11 @@ impl Terminal {
     }
 
     fn format(&self, format: Format, extent: Extent) -> Result<Vec<u8>, Error> {
-        let cols: u16 = self.get(sys::GHOSTTY_TERMINAL_DATA_COLS, 0)?;
+        let cols: u16 = self.get(crate::data::COLS, 0)?;
         let (tag, rows) = match extent {
             Extent::Screen => (
                 sys::GHOSTTY_POINT_TAG_ACTIVE,
-                usize::from(self.get::<u16>(sys::GHOSTTY_TERMINAL_DATA_ROWS, 0)?),
+                usize::from(self.get::<u16>(crate::data::ROWS, 0)?),
             ),
             Extent::Full => (sys::GHOSTTY_POINT_TAG_SCREEN, self.total_rows()?),
         };
@@ -1298,6 +1340,52 @@ impl Default for ReadyScan {
 mod tests {
     use super::*;
     use ko_pane_wire::frame::{ContentsBuf, Key, MimesBuf};
+
+    #[test]
+    fn a_decoder_reader_receives_initialized_bytes() {
+        #[derive(Debug)]
+        struct Inspect {
+            initialized: bool,
+            capacity: usize,
+        }
+        impl Read for Inspect {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                self.initialized =
+                    buffer.len() == self.capacity && buffer.iter().all(|byte| *byte == 0);
+                buffer[..3].copy_from_slice(b"abc");
+                Ok(3)
+            }
+        }
+        for capacity in [32, 131072] {
+            let mut reader = Inspect {
+                initialized: false,
+                capacity: capacity.min(65536),
+            };
+            let mut source = Source {
+                reader: &mut reader,
+                error: None,
+            };
+            let mut buffer = vec![0xaa; capacity];
+            let mut count = 0;
+            // SAFETY: source, buffer and count remain live and exclusive during the callback.
+            assert!(unsafe {
+                read_into::<Inspect>(
+                    ptr::from_mut(&mut source).cast(),
+                    buffer.as_mut_ptr(),
+                    buffer.len(),
+                    &mut count,
+                )
+            });
+            assert!(reader.initialized);
+            assert_eq!(count, 3);
+            assert_eq!(&buffer[..3], b"abc");
+            assert!(
+                buffer[capacity.min(65536)..]
+                    .iter()
+                    .all(|byte| *byte == 0xaa)
+            );
+        }
+    }
 
     fn dim(value: u16) -> Dim {
         Dim::new(value).unwrap()

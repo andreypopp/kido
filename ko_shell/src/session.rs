@@ -128,12 +128,14 @@ fn link(poll: &mut Poll, fd: OwnedFd, interest: Interest) -> io::Result<Link> {
 /// group, with frames on stdin and stdout. `inherited` is the environment that the command
 /// starts from.
 pub fn run(inherited: Vec<Vec<u8>>) -> Result<End, Failure> {
+    let input = fd::inherited(0)?;
+    let output = fd::inherited(1)?;
     let signals = Signals::install(&[Signal::Term, Signal::Hup, Signal::Int, Signal::Child])?;
     let mut poll = Poll::new();
     let signal_token = poll.watch(signals.fd(), Interest::Read);
     let mut inside = Inside {
-        host_in: link(&mut poll, fd::inherited(0)?, Interest::Read)?,
-        host_out: link(&mut poll, fd::inherited(1)?, Interest::Hangup)?,
+        host_in: link(&mut poll, input, Interest::Read)?,
+        host_out: link(&mut poll, output, Interest::Hangup)?,
         grace: poll.timer(),
         poll,
         inherited,

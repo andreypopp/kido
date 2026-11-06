@@ -24,6 +24,17 @@ fn graphics(control: &str, payload: &[u8]) -> String {
     format!("\x1b_G{control},q=2;{}\x1b\\", base64(payload))
 }
 
+fn read_object(name: &Name, len: usize) -> Vec<u8> {
+    use std::io::Read;
+    use std::os::fd::AsFd;
+    let object = Named::open(name, len).unwrap();
+    let (mut reader, writer) = std::io::pipe().unwrap();
+    assert_eq!(object.write_to(writer.as_fd(), 0, len).unwrap(), len);
+    let mut bytes = vec![0; len];
+    reader.read_exact(&mut bytes).unwrap();
+    bytes
+}
+
 fn unique_name() -> Name {
     let number = OBJECTS.fetch_add(1, Ordering::SeqCst);
     Name::new(&format!("/ko-e2e-{}-{number}", std::process::id())).unwrap()
@@ -33,7 +44,7 @@ fn unique_name() -> Name {
 fn upload(s: &Server, pane: &str, control: &str, pixels: &[u8]) {
     let name = unique_name();
     let mut object = Named::create(&name, pixels.len()).unwrap();
-    object.bytes_mut().unwrap().copy_from_slice(pixels);
+    object.write(0, pixels).unwrap();
     s.text(
         pane,
         &graphics(&format!("{control},t=s"), name.as_str().as_bytes()),
@@ -155,7 +166,7 @@ fn a_t_s_image_is_fetched_by_name_and_as_a_body() {
     assert_eq!(by_name["generation"], generation);
     assert_eq!(by_name["frames"], 1);
     let name = object_name(&by_name);
-    assert_eq!(Named::open(&name, 8).unwrap().bytes(), pixels);
+    assert_eq!(read_object(&name, 8), pixels);
 
     let (reply, body) = fetch(&s, &path(&pane, 5, 1, generation), &[]);
     assert_eq!(reply.status, 200);
@@ -208,7 +219,7 @@ fn a_frame_edit_moves_the_generation_so_the_old_object_is_gone_and_the_new_fetch
     let before = wait_generation(&s, &pane, 7, 1);
     let first = shm(&s, &pane, 7, 1, before);
     let old = object_name(&first);
-    assert_eq!(Named::open(&old, 4).unwrap().bytes(), RED);
+    assert_eq!(read_object(&old, 4), RED);
 
     s.text(&pane, &graphics("a=f,i=7,r=1,f=32,s=1,v=1", &GREEN));
     let mut after = before;
@@ -227,7 +238,7 @@ fn a_frame_edit_moves_the_generation_so_the_old_object_is_gone_and_the_new_fetch
     let second = shm(&s, &pane, 7, 1, after);
     let new = object_name(&second);
     assert_ne!(new, old);
-    assert_eq!(Named::open(&new, 4).unwrap().bytes(), GREEN);
+    assert_eq!(read_object(&new, 4), GREEN);
     let (_, body) = fetch(&s, &path(&pane, 7, 1, after), &[]);
     assert_eq!(body, GREEN);
 }

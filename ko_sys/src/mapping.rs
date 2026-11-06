@@ -10,3 +10,16 @@ pub use heap::Mapping;
 pub use mmap::Mapping;
 
 pub use named::{Name, Named, unlink};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_empty_mapping_is_rejected() {
+        assert_eq!(
+            Mapping::shared(0).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+    }
+}

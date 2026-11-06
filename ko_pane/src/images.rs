@@ -66,7 +66,7 @@ impl Objects {
             Some(made) => made.name.clone(),
             None => {
                 let mut object = Named::create(name, frame.len).ok()?;
-                object.bytes_mut()?.copy_from_slice(frame.pixels?);
+                object.write(0, frame.pixels?).ok()?;
                 self.made.push(Made {
                     key,
                     name: name.clone(),

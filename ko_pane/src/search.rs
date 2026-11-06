@@ -1,6 +1,6 @@
 use ko_pane_wire::frame::{FromPane, Match, MatchesBuf, Req};
 use ko_vt::Terminal;
-use ko_vt::search::{Progress, Search};
+use ko_vt::search::{Progress, SearchId};
 
 use crate::io::Out;
 
@@ -9,7 +9,7 @@ const BATCH: usize = 512;
 
 #[derive(Debug)]
 enum Stage {
-    Scanning(Search),
+    Scanning(SearchId),
     Sending { matches: Vec<Match>, sent: usize },
 }
 
@@ -37,16 +37,19 @@ impl Searching {
         })
     }
 
-    pub(crate) fn step(&mut self, vt: &Terminal, out: &mut Out) -> bool {
+    pub(crate) fn step(&mut self, vt: &mut Terminal, out: &mut Out) -> bool {
         match &mut self.stage {
             Stage::Scanning(search) => {
-                match search.step(TICKS) {
-                    Ok(Progress::Complete) => match search.matches(vt) {
-                        Ok(matches) => self.stage = Stage::Sending { matches, sent: 0 },
-                        Err(_) => return self.finish(out),
+                match vt.search_step(*search, TICKS) {
+                    Ok(Progress::Complete) => match vt.search_matches(*search) {
+                        Ok(matches) => {
+                            vt.search_end(*search);
+                            self.stage = Stage::Sending { matches, sent: 0 };
+                        }
+                        Err(_) => return self.finish(vt, out),
                     },
                     Ok(Progress::Running | Progress::FeedRequired) => {}
-                    Err(_) => return self.finish(out),
+                    Err(_) => return self.finish(vt, out),
                 }
                 false
             }
@@ -54,7 +57,7 @@ impl Searching {
                 let rest = matches.get(*sent..).unwrap_or_default();
                 let batch = rest.get(..BATCH).unwrap_or(rest);
                 if batch.is_empty() {
-                    return self.finish(out);
+                    return self.finish(vt, out);
                 }
                 self.batch.set(batch);
                 out.frame(&FromPane::Matches {
@@ -67,7 +70,14 @@ impl Searching {
         }
     }
 
-    fn finish(&self, out: &mut Out) -> bool {
+    pub(crate) fn cancel(&self, vt: &mut Terminal) {
+        if let Stage::Scanning(search) = self.stage {
+            vt.search_end(search);
+        }
+    }
+
+    fn finish(&self, vt: &mut Terminal, out: &mut Out) -> bool {
+        self.cancel(vt);
         out.frame(&FromPane::SearchDone(self.req));
         true
     }
