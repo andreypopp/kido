@@ -316,8 +316,9 @@ child. One of the caller's own children cannot become top-level.
 
 Every turn's system prompt then contains these standing instructions:
 
-- While an async job of your own is running or a subagent of your own
-  still owes a report, ending your turn sends nothing to your parent.
+- While a non-service async job of your own is running or a subagent
+  of your own still owes a report, ending your turn sends nothing to
+  your parent.
 - You were spawned. Your report is the last message of a turn that
   ends after all of them finish, once for each piece of work from
   your parent. It must stand on its own.
@@ -362,7 +363,8 @@ order:
    message) sends nothing after the report.
 5. Its children are readable. A failed read sends nothing, and the
    next settle reads again.
-6. No own job is running, and no own live child owes a report.
+6. No own job is running, except service jobs ("A job"), and no own
+   live child owes a report.
    When the last one ends or reports, its notice wakes the child for
    a turn whose last message is the report.
 
@@ -548,7 +550,7 @@ of pi, and that tells the caller once it ends. It is not a pane: it
 has no window, and its row in the sidebar is a status record of pi's
 own pane ("A job's row"). Two tools make one:
 
-- `async_bash(command, name, stream?)` starts a job.
+- `async_bash(command, name, stream?, service?)` starts a job.
 - A `bash` call that still runs after `KO_JOB_MOVE_MS` (60 000), or
   that the user moves with ctrl+b, becomes a job ("The bash tool's
   move").
@@ -606,6 +608,14 @@ its own notice; ko-pi groups none.
 A job is not an agent. `message_agent` and `stop_agent` do not
 resolve it.
 
+**A service.** `async_bash` with `service: true` starts a process that
+is meant to keep running, such as a server or a watcher, not a build
+or a test. A service is not the agent's own unfinished work: it does
+not hold a child's report ("Reporting", rule 6), so a child whose
+only running jobs are services reports when its turn settles.
+Everything else is as for any other job. Only `async_bash` sets the
+flag: a `bash` call that moves is never a service.
+
 ## A job's row
 
 Each job is an OSC 7501 child record of pi's pane, so Kido.app
@@ -617,7 +627,8 @@ one when it moves. A routed job has one as a local job does.
   ko-pi writes the namespace `job`, so a clear of `job` removes every
   job record and nothing else.
 - While the job runs, the state is working, the title is the command
-  and the message is the job's name. When it ends, the state is done
+  and the message is the job's name, as `service: <name>` for a
+  service. When it ends, the state is done
   for exit 0. Every other end is error: an exit code, a signal, a
   failure to start, a timeout or a stop. The message is the end text
   of its notice (`exit 3`, `signal SIGTERM`).

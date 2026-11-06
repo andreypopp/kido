@@ -93,7 +93,7 @@ for (const changed of ["shape", "session"]) {
       const owner = registry();
       assert.notEqual(owner, old);
       assert.equal(stops, 1);
-      assert.equal(owner.shape, 2);
+      assert.equal(owner.shape, 3);
       assert.equal(owner.session, "self-session");
       assert.equal(owner.jobs.size, 0);
       await pollUntil(() => job.state.type === "ended" && !process.listeners("exit").includes(old.exit));

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 
-import { gatedCommand, makeFixture, agentPane, selfPane, startSession, entriesOf, asSubagent, withEnv, pollUntil, idleTurn, assistant, exited, type Fixture, type Started } from "./ko-pi-fixture.ts";
+import { gatedCommand, makeFixture, agentPane, selfPane, startSession, entriesOf, asSubagent, withEnv, pollUntil, idleTurn, assistant, exited, notices, text, type Fixture, type Started } from "./ko-pi-fixture.ts";
 
 const TASK = { text: "the work", from: { session: "boss-session", name: "boss", pane: "pane_2" } };
 const NOTICES = "/panes/pane_2/messages";
@@ -145,6 +145,28 @@ test("a refused report ends the retries", async () => {
   } finally {
     await fx.restore();
   }
+});
+
+test("a child reports with a live service, lists it, and receives its ending notice", async () => {
+  const fx = makeFixture();
+  try {
+    asChild(fx);
+    await child(async (s) => {
+      const gate = `${fx.dir}/service-gate`;
+      const job = await s.tools.get("async_bash").execute("c", { command: gatedCommand(gate), name: "server", service: true });
+      const rows = JSON.parse(text(await s.tools.get("list_async_bash").execute("l", {})));
+      assert.equal(rows[0].service, true);
+      await idleTurn(s, "server ready");
+      assert.equal(fx.posts(NOTICES)[0]?.text, "server ready");
+      assert.deepEqual(notices(s), []);
+      writeFileSync(gate, "");
+      await pollUntil(() => notices(s).length === 1);
+      assert.ok(notices(s)[0]!.includes(job.details.job));
+      assert.match(notices(s)[0]!, /exit 0/);
+      await idleTurn(s, "service ended");
+      assert.equal(fx.posts(NOTICES).length, 1);
+    }, fx);
+  } finally { await fx.restore(); }
 });
 
 test("a child reports nothing while a bash run of its own lives or a subagent of its own owes a report", async () => {

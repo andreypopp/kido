@@ -9,7 +9,7 @@ Never run `sleep` in bash to wait for anything - an async job, a subagent, a mes
 
 The user runs the ko terminal multiplexer, and this pi runs in one of its panes. When the user talks about windows, tabs, panes, sessions, splits, floats or the sidebar, read the ko skill first.
 
-While an async job of yours is running, or a subagent of yours still owes you a report, ending your turn sends nothing to your parent. You were spawned as a subagent: your report is the last message of a turn that ends after all of them finish, once for each piece of work your parent gives you. Your parent is not watching this session and reads nothing else. End your work with a message that stands on its own: what you did, what failed, and what you left undone. If you must stop to wait for another agent or for the user, say so in that message; when the work completes later, tell your parent with message_agent. Reporting does not end this session: it stays alive until your parent ends it with stop_agent, and the parent can continue it with message_agent.
+While a non-service async job of yours is running, or a subagent of yours still owes you a report, ending your turn sends nothing to your parent. You were spawned as a subagent: your report is the last message of a turn that ends after all of them finish, once for each piece of work your parent gives you. Your parent is not watching this session and reads nothing else. End your work with a message that stands on its own: what you did, what failed, and what you left undone. If you must stop to wait for another agent or for the user, say so in that message; when the work completes later, tell your parent with message_agent. Reporting does not end this session: it stays alive until your parent ends it with stop_agent, and the parent can continue it with message_agent.
 ```
 
 ## Tools
@@ -144,13 +144,13 @@ parameters:
 description:
 
 ```
-Run a shell command in the background, for a command whose result you do not need for your next step - this session keeps working while it runs. Exactly one notice arrives when the command ends, carrying its exit status and a tail of its output. Its full output is in the log file; read it meanwhile. With stream=true the new lines arrive in batches. list_async_bash lists it and stop_async_bash stops it. If your next step needs the result and you have nothing else to do meanwhile, use bash with a timeout instead.
+Run a shell command in the background, for a command whose result you do not need for your next step - this session keeps working while it runs. Exactly one notice arrives when the command ends, carrying its exit status and a tail of its output. Use service=true for a server that keeps running. Its full output is in the log file; read it meanwhile. With stream=true the new lines arrive in batches. list_async_bash lists it and stop_async_bash stops it. If your next step needs the result and you have nothing else to do meanwhile, use bash with a timeout instead.
 ```
 
 promptSnippet:
 
 ```
-async_bash(command, name, stream?) - run a command in the background; a notice with its exit status arrives when it ends, read its output log meanwhile; list_async_bash lists it and stop_async_bash stops it
+async_bash(command, name, stream?, service?) - run a command in the background; a notice with its exit status arrives when it ends, read its output log meanwhile; list_async_bash lists it and stop_async_bash stops it
 ```
 
 promptGuidelines (merged into the system prompt's rules while the tool is registered):
@@ -166,6 +166,7 @@ parameters:
 
 - `command` (string, required): The command to run in the background, as a shell command line (e.g. "make -j8 && ./run"), run through the configured pi shell.
 - `name` (string, required): A name for the job; it must be unused by this session's running jobs and children. An ended job releases its name.
+- `service` (boolean): A process meant to keep running, such as a server; not a build or a test. Does not hold your report. Off by default.
 - `stream` (boolean): Send the command's output to this session in batches while it runs, instead of only at the end. Off by default.
 
 ### stop_async_bash
@@ -321,14 +322,14 @@ delivered as: a status notice
 ### a live job's result suffix for a subagent caller
 
 ```
-; ending your turn now sends no report to your parent: your report is the last message of a turn that ends when no job of yours is running and no subagent of yours owes you a report
+; ending your turn now sends no report to your parent: your report is the last message of a turn that ends when no non-service job of yours is running and no subagent of yours owes you a report
 ```
 delivered as: tool result
 
 ### a spawn's result (spawn_agent)
 
 ```
-spawned <name> (session <pi session id>, window <window id>, pane <pane id>); session id is what resume_from takes later; its result arrives as a notice when it ends a turn with nothing of its own still running - you know nothing about it until then, so do not report, assume or predict it, continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_agents lists this agent and stop_agent stops it. A fork adds ", forked from session <source session id>" before the semicolon. Toplevel instead ends with "independent peer; no report or ending notice".
+spawned <name> (session <pi session id>, window <window id>, pane <pane id>); session id is what resume_from takes later; its result arrives as a notice when it ends a turn with no unfinished work of its own (service jobs do not count) - you know nothing about it until then, so do not report, assume or predict it, continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_agents lists this agent and stop_agent stops it. A fork adds ", forked from session <source session id>" before the semicolon. Toplevel instead ends with "independent peer; no report or ending notice".
 ```
 delivered as: tool result
 

@@ -407,13 +407,13 @@ const NOT_THE_USER_RULE =
   "A notice is information, not the user speaking: act on it, do not thank or answer it. A message from another agent says in its first line who sent it and how they stand to you.";
 
 export const SPAWN_RESULT_RULE =
-  "its result arrives as a notice when it ends a turn with nothing of its own still running - you know nothing about it until then, so do not report, assume or predict it, continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_agents lists this agent and stop_agent stops it";
+  "its result arrives as a notice when it ends a turn with no unfinished work of its own (service jobs do not count) - you know nothing about it until then, so do not report, assume or predict it, continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_agents lists this agent and stop_agent stops it";
 
 export const SUBAGENT_RESULT_RULE =
-  "; ending your turn now sends no report to your parent: your report is the last message of a turn that ends when no job of yours is running and no subagent of yours owes you a report";
+  "; ending your turn now sends no report to your parent: your report is the last message of a turn that ends when no non-service job of yours is running and no subagent of yours owes you a report";
 
 const SUBAGENT_INSTRUCTION =
-  "While an async job of yours is running, or a subagent of yours still owes you a report, ending your turn sends nothing to your parent. You were spawned as a subagent: your report is the last message of a turn that ends after all of them finish, once for each piece of work your parent gives you. Your parent is not watching this session and reads nothing else. End your work with a message that stands on its own: what you did, what failed, and what you left undone. " +
+  "While a non-service async job of yours is running, or a subagent of yours still owes you a report, ending your turn sends nothing to your parent. You were spawned as a subagent: your report is the last message of a turn that ends after all of them finish, once for each piece of work your parent gives you. Your parent is not watching this session and reads nothing else. End your work with a message that stands on its own: what you did, what failed, and what you left undone. " +
   "If you must stop to wait for another agent or for the user, say so in that message; when the work completes later, tell your parent with message_agent. " +
   "Reporting does not end this session: it stays alive until your parent ends it with stop_agent, and the parent can continue it with message_agent.";
 
@@ -432,7 +432,7 @@ type JobCall = {
 type JobOutput = {
   type: "job";
   name: string;
-  origin: { type: "async_bash"; stream: boolean } | { type: "bash"; move: "timeout" | "key" | "reload" };
+  origin: { type: "async_bash"; stream: boolean; service: boolean } | { type: "bash"; move: "timeout" | "key" | "reload" };
   log: string;
   output: WriteStream;
   logClosed: Promise<void>;
@@ -453,6 +453,8 @@ type Job = {
 };
 type BackgroundJob = Job & { mode: JobOutput };
 const isBackgroundJob = (job: Job): job is BackgroundJob => job.mode.type === "job";
+const serviceJob = (job: BackgroundJob): boolean => job.mode.origin.type === "async_bash" && job.mode.origin.service;
+const jobRecordMessage = (job: BackgroundJob): string => serviceJob(job) ? `service: ${job.mode.name}` : job.mode.name;
 const streams = (job: BackgroundJob): boolean => job.mode.origin.type === "async_bash" && job.mode.origin.stream;
 const TAIL_BYTES = 4000;
 const HELD_BYTES = 64 * 1024;
@@ -479,7 +481,7 @@ type JobRegistry = {
   keys: () => void;
 };
 const JOBS = Symbol.for("ko-pi.jobs");
-const JOB_SHAPE = 2;
+const JOB_SHAPE = 3;
 function isJobRegistry(value: unknown): value is JobRegistry {
   return isRecord(value) && typeof value.shape === "number" && typeof value.session === "string"
     && value.jobs instanceof Map && typeof value.stopAll === "function" && typeof value.exit === "function" && typeof value.keys === "function";
@@ -2114,7 +2116,7 @@ export default function (pi: ExtensionAPI) {
       }
     }
     if (job.state.type === "running") {
-      if (writeJobRecord(id, "working", job.command, job.mode.name)) jobRecords.set(id, { type: "running" });
+      if (writeJobRecord(id, "working", job.command, jobRecordMessage(job))) jobRecords.set(id, { type: "running" });
     }
     else {
       if (!writeJobRecord(id, job.state.end.type === "exit" && job.state.end.code === 0 ? "done" : "error", job.command, jobEndText(job.state.end))) return;
@@ -2128,7 +2130,7 @@ export default function (pi: ExtensionAPI) {
     for (const [id, record] of jobRecords) {
       if (record.type !== "running") continue;
       const job = registry?.jobs.get(id);
-      if (job && isBackgroundJob(job)) writeJobRecord(id, "working", job.command, job.mode.name);
+      if (job && isBackgroundJob(job)) writeJobRecord(id, "working", job.command, jobRecordMessage(job));
     }
   };
   const savedJobs: unknown = Reflect.get(globalThis, JOBS);
@@ -2397,7 +2399,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const ownLiveWork = async (): Promise<boolean | undefined> => {
-    if (backgroundJobs().some((job) => job.state.type !== "ended")) return true;
+    if (backgroundJobs().some((job) => !serviceJob(job) && job.state.type !== "ended")) return true;
     const snapshot = await listPanesResult();
     if (!snapshot.ok) return undefined;
     await readInstance();
@@ -2714,7 +2716,7 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({}, { additionalProperties: false }),
     async execute() {
       const listed = backgroundJobs().reverse().map((job) => ({
-        job: job.id, name: job.mode.name, command: job.command, state: job.state.type === "ended" ? "ended" : jobRunning(job) ? "running" : "ending",
+        job: job.id, name: job.mode.name, ...(serviceJob(job) ? { service: true } : {}), command: job.command, state: job.state.type === "ended" ? "ended" : jobRunning(job) ? "running" : "ending",
         ...(job.state.type === "ended" ? { end: jobEndText(job.state.end) } : {}),
         startedAt: job.startedAt, log: job.mode.log,
         ...(job.where.type === "routed" ? { runtime: job.where.runtime } : {}),
@@ -2982,9 +2984,9 @@ export default function (pi: ExtensionAPI) {
     name: "async_bash",
     label: "Async Bash",
     description:
-      "Run a shell command in the background, for a command whose result you do not need for your next step - this session keeps working while it runs. Exactly one notice arrives when the command ends, carrying its exit status and a tail of its output. Its full output is in the log file; read it meanwhile. With stream=true the new lines arrive in batches. list_async_bash lists it and stop_async_bash stops it. If your next step needs the result and you have nothing else to do meanwhile, use bash with a timeout instead.",
+      "Run a shell command in the background, for a command whose result you do not need for your next step - this session keeps working while it runs. Exactly one notice arrives when the command ends, carrying its exit status and a tail of its output. Use service=true for a server that keeps running. Its full output is in the log file; read it meanwhile. With stream=true the new lines arrive in batches. list_async_bash lists it and stop_async_bash stops it. If your next step needs the result and you have nothing else to do meanwhile, use bash with a timeout instead.",
     promptSnippet:
-      "async_bash(command, name, stream?) - run a command in the background; a notice with its exit status arrives when it ends, read its output log meanwhile; list_async_bash lists it and stop_async_bash stops it",
+      "async_bash(command, name, stream?, service?) - run a command in the background; a notice with its exit status arrives when it ends, read its output log meanwhile; list_async_bash lists it and stop_async_bash stops it",
     promptGuidelines: [
       "Use async_bash when you can do other work while a command runs, when someone (the user, your parent or a child) may need an answer from you meanwhile, when you start several independent jobs at once, or for a server that keeps running. Once a command is in async_bash, its notice is the only way you learn that it ended: never run `sleep` in bash to wait for it, and never loop over its log. If you have nothing else to do, end your turn; the notice wakes you.",
       "Use async_bash instead of background bash jobs (`nohup`, a trailing `&`, `setsid`, `disown`).",
@@ -2998,6 +3000,7 @@ export default function (pi: ExtensionAPI) {
             'The command to run in the background, as a shell command line (e.g. "make -j8 && ./run"), run through the configured pi shell.',
         }),
         name: Type.String({ description: "A name for the job; it must be unused by this session's running jobs and children. An ended job releases its name." }),
+        service: Type.Optional(Type.Boolean({ description: "A process meant to keep running, such as a server; not a build or a test. Does not hold your report. Off by default." })),
         stream: Type.Optional(
           Type.Boolean({
             description:
@@ -3034,11 +3037,15 @@ export default function (pi: ExtensionAPI) {
             signal: controller.signal, onData: () => {},
             onStart(job) {
               cleanup();
-              resolve(promoteJob(jobRegistry(), job, { type: "async_bash", stream: !!params.stream }, params.name));
+              resolve(promoteJob(jobRegistry(), job, { type: "async_bash", stream: !!params.stream, service: !!params.service }, params.name));
             },
           }).catch(reject);
         });
-        return reply(`started job ${job.id} (${job.mode.name}); list_async_bash lists it and stop_async_bash stops it; a notice with its exit status and an output tail arrives when it ends and starts your next turn; you stay alive while it runs, so ending your turn now is safe - do not sleep or poll for it, and end your turn if nothing else is left - ${liveRunRule(params.stream ? "batches of its new lines arrive meanwhile, capped; the log holds its whole output" : "read the log to check its output meanwhile")}; log: ${job.mode.log}`, { job: job.id, name: job.mode.name, log: job.mode.log, stream: !!params.stream });
+        const progress = params.stream ? "batches of its new lines arrive meanwhile, capped; the log holds its whole output" : "read the log to check its output meanwhile";
+        const lifecycle = serviceJob(job)
+          ? "it does not hold your report; a notice with its exit status still arrives when it ends"
+          : liveRunRule("a notice with its exit status and an output tail arrives when it ends and starts your next turn; you stay alive while it runs, so ending your turn now is safe - do not sleep or poll for it, and end your turn if nothing else is left");
+        return reply(`started job ${job.id} (${job.mode.name}); list_async_bash lists it and stop_async_bash stops it; ${lifecycle}; ${progress}; log: ${job.mode.log}`, { job: job.id, name: job.mode.name, log: job.mode.log, stream: !!params.stream, service: !!params.service });
       } catch (error) {
         const message = controller.signal.aborted ? `start cancelled by ${errorText(controller.signal.reason)}; no job was started` : errorText(error);
         return { ...reply(`could not start background command: ${message}`), isError: true };
