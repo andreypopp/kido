@@ -14,11 +14,18 @@ fn main() {
     println!("cargo:rerun-if-env-changed=KO_ZIG_CACHE");
     let cache = PathBuf::from(env::var_os("KO_ZIG_CACHE").expect("KO_ZIG_CACHE"));
     let musl = env::var("CARGO_CFG_TARGET_ENV").is_ok_and(|env| env == "musl");
+    let linux = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "linux");
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("CARGO_CFG_TARGET_ARCH");
     let mut zig = Command::new("zig");
     zig.arg("build");
     if musl {
-        let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("CARGO_CFG_TARGET_ARCH");
         zig.arg(format!("-Dtarget={arch}-linux-musl"));
+    } else if linux {
+        // zig's native glibc detection keeps only the stdlib.h and sys/errno.h
+        // directories of $CC, and Homebrew's gcc has the kernel headers in a
+        // third one. An explicit target uses zig's own glibc headers.
+        zig.arg(format!("-Dtarget={arch}-linux-gnu.2.34"))
+            .arg("-Dcpu=native");
     }
     let status = zig
         .arg("--build-file")
