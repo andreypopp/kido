@@ -44,15 +44,16 @@ enum RunKind {
     /// A runtime on an ssh host, reached through one ssh master that the first pane logs in.
     /// ko must be installed there, on the PATH of ssh commands.
     Ssh {
-        #[command(flatten)]
-        shared: Shared,
         #[arg(value_parser = |s: &str| Destination::try_from(s.to_owned()))]
         destination: Destination,
+        #[command(flatten)]
+        shared: Shared,
         /// Connection options for the master (`-p`, `-J`, `-F`, `-i`, `-l`, `-o`, ...).
         #[arg(verbatim_doc_comment, long = "ssh-arg", allow_hyphen_values = true)]
         ssh_args: Vec<String>,
         /// The directory on the remote for the forwarded socket and the token files. Default:
-        /// `$XDG_RUNTIME_DIR/ko-rt/NAME`, else `/tmp/ko-rt-UID/NAME`.
+        /// `$XDG_RUNTIME_DIR/ko-rt/TAG`, else `/tmp/ko-rt-UID/TAG`.
+        /// TAG is the name, or SESSION-NAME for a runtime that ko run defines.
         #[arg(verbatim_doc_comment, long, value_parser = |s: &str| RemoteDir::try_from(s.to_owned()))]
         dir: Option<RemoteDir>,
     },

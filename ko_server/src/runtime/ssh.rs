@@ -343,6 +343,29 @@ mod tests {
     }
 
     #[test]
+    fn session_tags_reach_prepare() {
+        let runtime = ssh_runtime("");
+        let Kind::Ssh(ssh) = &runtime.kind else {
+            panic!("ssh");
+        };
+        let env = vec![b"PATH=/usr/bin:/bin".to_vec()];
+        for session in ["session_3", "session_4"] {
+            let key = RuntimeKey::session("dev".parse().unwrap(), session.parse().unwrap());
+            let cx = context(&key, &env, Path::new("/socket"));
+            let tag = format!("{session}-dev");
+            assert!(prepare(ssh, &cx).unwrap().args.ends_with(&[
+                "'ko'".to_owned(),
+                "'enter'".to_owned(),
+                "'--prepare'".to_owned(),
+                "'--runtime'".to_owned(),
+                "'dev'".to_owned(),
+                "'--tag'".to_owned(),
+                format!("'{tag}'"),
+            ]));
+        }
+    }
+
+    #[test]
     fn a_refused_channel_is_retryable_and_any_other_255_is_an_error() {
         assert_eq!(ending(Exit::Exited(0), b""), Ending::Exit);
         assert_eq!(ending(Exit::Exited(3), b"open failed"), Ending::Exit);

@@ -896,7 +896,7 @@
           "$ref": "#/$defs/Destination"
         },
         "dir": {
-          "description": "The directory on the remote for the forwarded socket and the token files. Default:\n`$XDG_RUNTIME_DIR/ko-rt/NAME`, else `/tmp/ko-rt-UID/NAME`.",
+          "description": "The directory on the remote for the forwarded socket and the token files. Default:\n`$XDG_RUNTIME_DIR/ko-rt/TAG`, else `/tmp/ko-rt-UID/TAG`.\nTAG is the name, or SESSION-NAME for a runtime that ko run defines.",
           "anyOf": [
             {
               "$ref": "#/$defs/RemoteDir"

@@ -262,7 +262,8 @@ pub struct Ssh {
     #[serde(default)]
     pub ssh_args: ConnectionArgs,
     /// The directory on the remote for the forwarded socket and the token files. Default:
-    /// `$XDG_RUNTIME_DIR/ko-rt/NAME`, else `/tmp/ko-rt-UID/NAME`.
+    /// `$XDG_RUNTIME_DIR/ko-rt/TAG`, else `/tmp/ko-rt-UID/TAG`.
+    /// TAG is the name, or SESSION-NAME for a runtime that ko run defines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir: Option<RemoteDir>,
 }

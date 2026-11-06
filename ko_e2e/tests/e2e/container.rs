@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use crate::harness::{
     Dir, Server, enabled, ko, poll_for, run_ko, run_program, test_env, text_of, which,
 };
+use crate::panes::{api, post, token_pane_in_new_session};
 use crate::runtime::{read_exec, serve_in, start_exec, start_tree};
 
 // Runs only with KO_E2E_CONTAINER=1, on a Mac where `container system status` succeeds, with the
@@ -193,6 +194,60 @@ impl Drop for Showing<'_> {
 
 fn shell_in(name: &str, script: &str) -> Value {
     json!({"runtime": name, "command": {"type": "shell", "command": script}})
+}
+
+#[test]
+fn adhoc_container_sessions_are_separate_and_replace_a_stale_container() {
+    if !enabled("KO_E2E_CONTAINER") {
+        return;
+    }
+    layout(EngineKind::Apple);
+    let program = which("container").expect("KO_E2E_CONTAINER needs the container CLI");
+    let s = serve_in(Dir::new("ko-"), "", &[]);
+    let name = format!("dev-{}", std::process::id());
+    let definition = json!({"container": {"from": {"image": "debian:trixie"}}});
+    let mut engines = Vec::new();
+    for session in ["first", "second"] {
+        let host = token_pane_in_new_session(&s, session);
+        let info = api(
+            &s,
+            Some(&host),
+            "PUT",
+            &format!("/runtimes/{name}"),
+            &definition,
+        )
+        .json();
+        let id = info["source"]["id"].as_str().unwrap();
+        let engine = Engine {
+            kind: EngineKind::Apple,
+            container: program.clone(),
+            scratch: Dir::new("ko-container-"),
+            name: format!("{id}-{name}"),
+        };
+        let target = format!("ko-{}", engine.name);
+        assert_eq!(engine.state(), None);
+        if session == "second" {
+            engine
+                .run(&["create", "--name", &target, "debian:trixie", "/bin/false"])
+                .ok();
+            assert_eq!(engine.state().as_deref(), Some("stopped"));
+        }
+        engines.push(engine);
+        let mut body = shell_in(&name, "ko api /version && printf 'ADHOC-READY'; exec cat");
+        body["parent"] = json!(host);
+        let born = post(&s, Some(&host), "/panes", &body);
+        let pane = born["pane"].as_str().unwrap();
+        poll_for(
+            "ad-hoc container pane reaches its own socket",
+            LINK_POLL,
+            || s.screen(pane).contains("ADHOC-READY"),
+        );
+        for engine in &engines {
+            assert_eq!(engine.state().as_deref(), Some("running"));
+        }
+    }
+    assert_eq!(engines[1].state().as_deref(), Some("running"));
+    assert_ne!(engines[0].name, engines[1].name);
 }
 
 #[test]

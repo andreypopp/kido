@@ -689,6 +689,10 @@ test("a routed spawner's child is routed in the same runtime; an inside spawner'
     assert.deepEqual(body!.command.argv.slice(4, 6), ["--runtime", "dev"]);
     assert.equal(body!.cwd, process.cwd(), "the child starts in the caller's host cwd and maps it itself");
     assert.match(reply, /in runtime dev\);/);
+    await s.tools.get("spawn_agent").execute("c2", { name: "kid2", task: "go", runtime: "dev" });
+    const [, second] = fx.posts("/panes") as Body[];
+    assert.deepEqual(second!.command.argv.slice(4, 6), ["--runtime", "dev"]);
+    assert.ok(fx.apiCalls().some((call) => call.path === "/runtimes/dev"));
   } finally {
     await fx.restore();
   }

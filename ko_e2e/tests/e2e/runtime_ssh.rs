@@ -9,6 +9,7 @@ use crate::harness::{
     text_of, wait_gone, which,
 };
 use crate::harness::{enabled, ko};
+use crate::outer::{Keys, Outer};
 use crate::panes::{headers, raw};
 use crate::runtime::{
     Rt, closed_with, dead, fifo, read_exec, release, rt_pane, serve_in, start_exec, start_tree,
@@ -132,6 +133,49 @@ fn prompting(s: &Server, panes: &[&str]) -> String {
         found.is_some()
     });
     found.unwrap()
+}
+
+#[test]
+fn an_adhoc_ssh_visit_leads_in_place_and_returns_to_the_host() {
+    if !enabled("KO_E2E_HOST_SSH") {
+        return;
+    }
+    let s = serve(Options::default(), "", &[]);
+    let pane = s.new_pane(json!({"command": {"type": "argv", "argv": ["/bin/sh"]}, "env": [{"name": "PS1", "value": "HOST> "}]}));
+    let o = Outer::new(&s.rt.server.dir, Keys::Extended);
+    o.attach("cat");
+    o.contains("HOST>");
+    o.line(&format!(
+        "ko run ssh --name visit --dir {} {HOST} -- /bin/sh; printf 'RETURN-%s\\n' $?",
+        quote(text_of(&s.remote.dir.join("visit")))
+    ));
+    s.wait_row(&pane, "ssh visit membership", |row| {
+        row["runtime"] == "visit"
+    });
+    o.line("ko version && ko api /version && printf 'REMOTE-%s\\n' OK");
+    o.contains("REMOTE-OK");
+    assert_eq!(s.leads(), 1);
+    let doc = s.doc();
+    let session = doc["layout"]["sessions"][0]["id"].as_str().unwrap();
+    let tag = format!("'--tag' '{session}-visit'");
+    let calls = s.remote.calls();
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.contains("'--prepare'") && call.contains(&tag)),
+        "{calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|call| call.contains("'--pane'") && call.contains(&tag)),
+        "{calls:?}"
+    );
+    o.line("exit");
+    o.contains("RETURN-0");
+    s.wait_row(&pane, "host membership", |row| row["runtime"].is_null());
+    o.line("printf 'HOST-%s\\n' BACK");
+    o.contains("HOST-BACK");
 }
 
 #[test]
@@ -559,6 +603,26 @@ fn ko_enter_prepare_makes_a_private_directory_clears_a_stale_link_and_prints_the
     )
     .ok();
     assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+
+    let tagged_dir = |tag: &str| runtime_dir.join("ko-rt").join(tag);
+    let prepare = |tag: &str| {
+        run_ko(
+            &scratch,
+            &env,
+            &["enter", "--prepare", "--runtime", "dev", "--tag", tag],
+            "",
+        )
+        .ok()
+    };
+    for tag in ["session_3-dev", "session_4-dev"] {
+        let out = prepare(tag);
+        let tagged = tagged_dir(tag);
+        assert_eq!(out.lines().next(), Some(text_of(&tagged)));
+        fs::write(tagged.join("pane_1.token"), "abandoned visit").unwrap();
+    }
+    prepare("session_3-dev");
+    assert!(!tagged_dir("session_3-dev").join("pane_1.token").exists());
+    assert!(tagged_dir("session_4-dev").join("pane_1.token").exists());
 
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
     let refused = run_ko(

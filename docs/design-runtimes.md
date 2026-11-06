@@ -177,7 +177,9 @@ the pane has the pane's token, which starts the visit. The kernel
 closes the socket when `ko run` exits for any reason, `SIGKILL`
 included, and the end of the connection ends the visit; no message
 and no process name ends it. Thus `ko run` does not exec the
-transport as `ko ssh` does. It keeps the connection and runs the
+transport as `ko ssh` does. A `ko run` that `SIGSTOP` stopped keeps
+its connection and thus its visit, which is correct: the pane is
+still in the runtime. It keeps the connection and runs the
 transport as its child on the pane's tty, in the shell's foreground
 process group. Its loop (`ko_sys::event`, one thread) watches the
 connection and the signals. `SIGHUP` and `SIGTERM` go to the child;
@@ -218,8 +220,8 @@ token that dies with the visit, and the next visit mints another, so
 nothing inside acts as the pane between or across visits.
 
 **The end of a visit** (`State::end_visit`): the membership goes,
-the `pane_runtime` event follows without `runtime`, the token file
-goes, the idle rule counts the runtime again, and the runtime
+the `pane_runtime` event follows without `runtime`, the local token
+file goes (the ssh kind's remote file stays, "The ssh kind"), the idle rule counts the runtime again, and the runtime
 connections whose last request acted as the pane close (the
 `caller` of `Conn` in `ko_server/src/conn.rs`). A visit ends when its
 connection closes or hangs up, when its link leaves `Up` (a down of
@@ -325,7 +327,12 @@ kind's `up` step is one stage, and the container kind has several
 ("The container kind"). One deadline of 120 s covers every stage of a
 start. A failure sets `Failed`, unbinds the listener, removes the
 socket and the token files, runs the kind's cleanup, and answers every
-waiter with the message.
+waiter with the message. While the server handles a finished stage,
+the link's phase is `Starting` (`Step::Cleaning` in
+`ko_server/src/runtime/mod.rs`), never `Up`, until the outcome sets
+the next step, `Up` or `Failed`: a link that fails there never was
+`Up`, so its end records no departure and ends no waiting visit
+before that visit gets the failure.
 
 The pane's host-side program is `ko runtime-exec NAME -- ARGV`
 (`ko/src/runtime.rs`, over `bring_up` in `ko_client/src/runtimes.rs`).
@@ -620,7 +627,8 @@ The `container` kind runs a runtime's panes and exec sessions in one
 Apple container, through the `container` CLI (measured with 1.5.0).
 Each container is one lightweight Linux VM on arm64. The fields are
 `Container` in `ko_config/src/runtime.rs`. `from` names either an
-image, from which ko creates and owns the container `ko-<tag>`, or a
+image, from which ko creates and owns the container `ko-<tag>` (the
+CLI accepts the underscore of a session's tag), or a
 container that the user created and manages. The server finds the
 `container` binary on its own `PATH` at each link start, unless the
 field names a path.
@@ -899,10 +907,22 @@ master, then writes the pane's token file on the remote through a
 passenger that gets the token on its stdin. A dead master restarts
 the link from `Down`, and the pane waits in the new start and may
 lead it. The pane's program is `ssh -t` through the master, then `ko
-enter` without `--socket`: it resolves the remote directory as
-`--prepare` does and reads the socket and the token file there,
-because the pane's argv is fixed before the link knows the
-directory.
+enter` without `--socket`, with the same `--tag` as `--prepare`: it
+resolves the remote directory as `--prepare` does and reads the
+socket and the token file there, because the pane's argv is fixed
+before the link knows the directory. The default directory is
+`$XDG_RUNTIME_DIR/ko-rt/<tag>`, else `/tmp/ko-rt-<uid>/<tag>`
+(`remote_dir` in `ko_shell/src/enter.rs`), so two sessions' runtimes
+of one name on one host have separate directories; a `dir` is used
+as it is, and two runtimes that name the same `dir` share it.
+
+A visit writes its token file the same way. A visit that ends after its file
+reached the remote but before its transport read it leaves the file
+there; the server does not remove it. The token in the file died with
+the visit, the next visit of the pane writes over the same path, and
+the next `--prepare` removes the file. A remove passenger at the end
+of the visit could run after the next visit's write and remove that
+file.
 
 **A dead master** ends every pane of the runtime, as a lost ssh
 connection does. The link stays `Up` until a check shows the death:
