@@ -4,7 +4,7 @@ use std::ffi::{c_char, c_int};
 
 use ko_sys::pid::Exit;
 
-use super::{Buffer, Code, bytes_of, empty, hand_over, text_of};
+use super::{Buffer, Code, put, slice_of, text_of};
 use crate::remote::{self, Error};
 
 #[repr(C)]
@@ -28,15 +28,20 @@ pub unsafe extern "C" fn ko_remote_socket(
     run: *const SshRun,
     out: *mut Buffer,
 ) -> Code {
-    // SAFETY: run is null or points to a live ko_ssh_run by contract.
-    let run = unsafe { run.as_ref() };
-    let (Some(host), Some(run)) = (text_of(host), run) else {
-        return Code::Argument;
+    let scope = ();
+    // SAFETY: ko_client.h requires host, run and its buffers to remain readable for this call.
+    let (host, run, stdout, stderr) = unsafe {
+        let run = run.as_ref();
+        let (stdout, stderr) = match run {
+            Some(run) => (
+                slice_of(run.stdout_data, run.stdout_len, &scope),
+                slice_of(run.stderr_data, run.stderr_len, &scope),
+            ),
+            None => (None, None),
+        };
+        (text_of(host, &scope), run, stdout, stderr)
     };
-    let (Some(stdout), Some(stderr)) = (
-        bytes_of(run.stdout_data, run.stdout_len),
-        bytes_of(run.stderr_data, run.stderr_len),
-    ) else {
+    let (Some(host), Some(run), Some(stdout), Some(stderr)) = (host, run, stdout, stderr) else {
         return Code::Argument;
     };
     if out.is_null() {
@@ -47,21 +52,20 @@ pub unsafe extern "C" fn ko_remote_socket(
     } else {
         Exit::Exited(run.status)
     };
-    match remote::remote_socket(host, exit, stdout, stderr) {
-        Ok(path) => {
-            hand_over(out, path.into_bytes());
-            Code::Ok
-        }
+    let (code, bytes) = match remote::remote_socket(host, exit, stdout, stderr) {
+        Ok(path) => (Code::Ok, path.into_bytes()),
         Err(error) => {
             let code = match error {
                 Error::NoRemoteKo { .. } => Code::NotFound,
                 Error::Query { .. } => Code::Invalid,
                 _ => Code::Io,
             };
-            hand_over(out, error.to_string().into_bytes());
-            code
+            (code, error.to_string().into_bytes())
         }
-    }
+    };
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, bytes) };
+    code
 }
 
 /// # Safety
@@ -73,12 +77,16 @@ pub unsafe extern "C" fn ko_remote_unreachable(
     remote_answers: bool,
     out: *mut Buffer,
 ) -> Code {
-    let Some(host) = text_of(host).filter(|_| !out.is_null()) else {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let host_text = unsafe { text_of(host, &scope) };
+
+    let Some(host) = host_text.filter(|_| !out.is_null()) else {
         return Code::Argument;
     };
-    empty(out);
     let error = remote::unreachable(host, remote_answers);
-    hand_over(out, error.to_string().into_bytes());
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, error.to_string().into_bytes()) };
     if remote_answers {
         Code::Refused
     } else {

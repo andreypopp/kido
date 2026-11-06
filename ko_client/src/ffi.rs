@@ -13,7 +13,7 @@ pub use images::*;
 pub use remote::*;
 
 use std::cell::Cell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::num::NonZeroU16;
 use std::os::unix::ffi::OsStrExt;
@@ -334,7 +334,7 @@ struct Shared {
 #[derive(Debug)]
 pub struct Client {
     shared: Arc<Shared>,
-    worker: JoinHandle<()>,
+    worker: Mutex<Option<JoinHandle<()>>>,
 }
 
 #[derive(Debug)]
@@ -342,6 +342,31 @@ pub struct ViewHandle {
     view: Arc<View>,
     shared: Arc<Shared>,
 }
+
+#[derive(Debug)]
+struct ClientCall(Arc<Client>);
+
+impl std::ops::Deref for ClientCall {
+    type Target = Client;
+
+    fn deref(&self) -> &Client {
+        &self.0
+    }
+}
+
+impl Drop for ClientCall {
+    fn drop(&mut self) {
+        let mut calls = locked(&self.shared.calls);
+        *calls -= 1;
+        if *calls == 0 && self.shared.cancel.is_set() {
+            self.shared.idle.notify_all();
+        }
+    }
+}
+
+static NEXT_HANDLE: Mutex<usize> = Mutex::new(1);
+static CLIENTS: Mutex<BTreeMap<usize, Arc<Client>>> = Mutex::new(BTreeMap::new());
+static VIEWS: Mutex<BTreeMap<usize, Arc<ViewHandle>>> = Mutex::new(BTreeMap::new());
 
 #[derive(Debug)]
 struct Delivery {
@@ -600,45 +625,56 @@ fn layout_of(model: &Model) -> Layout {
     }
 }
 
-fn hand_over(out: *mut Buffer, bytes: Vec<u8>) {
-    if out.is_null() {
-        return;
+fn hand_over(bytes: Vec<u8>) -> Buffer {
+    if bytes.capacity() == 0 {
+        return Buffer {
+            data: std::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        };
     }
     let mut bytes = std::mem::ManuallyDrop::new(bytes);
     #[cfg(test)]
-    if bytes.capacity() > 0 {
-        locked(&LIVE_BUFFERS).insert(bytes.as_mut_ptr() as usize);
-    }
-    // SAFETY: out is non-null and writable by contract.
-    unsafe {
-        *out = Buffer {
-            data: bytes.as_mut_ptr(),
-            len: bytes.len(),
-            cap: bytes.capacity(),
-        };
+    locked(&LIVE_BUFFERS).insert(bytes.as_mut_ptr() as usize);
+    Buffer {
+        data: bytes.as_mut_ptr(),
+        len: bytes.len(),
+        cap: bytes.capacity(),
     }
 }
 
-fn empty(out: *mut Buffer) {
+// SAFETY: out is null or writable for one possibly uninitialized buffer.
+unsafe fn put(out: *mut Buffer, bytes: Vec<u8>) {
     if !out.is_null() {
-        // SAFETY: out is non-null and writable by contract.
-        unsafe {
-            *out = Buffer {
-                data: std::ptr::null_mut(),
-                len: 0,
-                cap: 0,
-            };
-        }
+        // SAFETY: the caller provides writable storage; hand_over transfers the Vec once.
+        unsafe { out.write(hand_over(bytes)) };
     }
 }
 
-fn client<'a>(client: *const Client) -> Option<&'a Client> {
-    // SAFETY: the caller promises that client is null or a live handle that no
-    // concurrent close consumes.
-    unsafe { client.as_ref() }
+fn next_handle() -> Option<usize> {
+    let mut next = locked(&NEXT_HANDLE);
+    let id = *next;
+    *next = next.checked_add(1)?;
+    Some(id)
 }
 
-fn text_of<'a>(pointer: *const c_char) -> Option<&'a str> {
+fn client(client: *const Client) -> Option<ClientCall> {
+    let client = locked(&CLIENTS).get(&client.addr()).cloned()?;
+    let mut calls = locked(&client.shared.calls);
+    if client.shared.cancel.is_set() {
+        return None;
+    }
+    *calls += 1;
+    drop(calls);
+    Some(ClientCall(client))
+}
+
+fn view_handle(view: *const ViewHandle) -> Option<Arc<ViewHandle>> {
+    locked(&VIEWS).get(&view.addr()).cloned()
+}
+
+// SAFETY: pointer is null or readable and NUL-terminated for the lifetime of scope.
+unsafe fn text_of(pointer: *const c_char, _scope: &()) -> Option<&str> {
     if pointer.is_null() {
         return None;
     }
@@ -646,25 +682,31 @@ fn text_of<'a>(pointer: *const c_char) -> Option<&'a str> {
     unsafe { CStr::from_ptr(pointer) }.to_str().ok()
 }
 
-fn texts_of<'a>(pointers: *const *const c_char, count: usize) -> Option<Vec<&'a str>> {
+// SAFETY: pointers is null or readable for count strings, each NUL-terminated, for the lifetime of scope.
+unsafe fn texts_of(pointers: *const *const c_char, count: usize, scope: &()) -> Option<Vec<&str>> {
     if pointers.is_null() {
         return Some(Vec::new());
     }
     // SAFETY: pointers points to count NUL-terminated strings by contract.
-    let pointers = unsafe { std::slice::from_raw_parts(pointers, count) };
-    pointers.iter().map(|pointer| text_of(*pointer)).collect()
+    let pointers = unsafe { slice_of(pointers, count, scope) }?;
+    pointers
+        .iter()
+        .map(|pointer| {
+            // SAFETY: every array element is null or readable and NUL-terminated for scope.
+            unsafe { text_of(*pointer, scope) }
+        })
+        .collect()
 }
 
-fn bytes_of<'a>(data: *const u8, len: usize) -> Option<&'a [u8]> {
+// SAFETY: data is null or readable as len aligned, initialized values for the lifetime of scope.
+unsafe fn slice_of<T>(data: *const T, len: usize, _scope: &()) -> Option<&[T]> {
     if data.is_null() {
         return (len == 0).then_some(&[]);
     }
-    // SAFETY: data is readable for len bytes by contract.
+    // SAFETY: data points to len aligned, initialized values for scope.
     Some(unsafe { std::slice::from_raw_parts(data, len) })
 }
 
-// Runs a request on the calling thread. Close sets the cancel wake, which ends
-// the request at once, and then waits for the call to leave.
 fn request(client: &Client, request: ClientRequest) -> Code {
     if !client.shared.up.load(Ordering::SeqCst) {
         return Code::Closed;
@@ -695,32 +737,38 @@ pub unsafe extern "C" fn ko_client_connect(
     let (false, Some(callback)) = (socket.is_null() || queue.is_null(), callback) else {
         return Code::Argument;
     };
-    // SAFETY: socket is non-null and NUL-terminated by contract.
-    let socket = PathBuf::from(std::ffi::OsStr::from_bytes(
-        unsafe { CStr::from_ptr(socket) }.to_bytes(),
-    ));
-    if socket.as_os_str().is_empty() {
-        return Code::Argument;
-    }
-    // SAFETY: hello is null or points to a ko_hello by contract.
-    let hello = unsafe { hello.as_ref() }.copied().unwrap_or(HelloIn {
+    let scope = ();
+    // SAFETY: ko_client.h requires socket, hello and its name to remain readable for this call.
+    let (socket, hello, name) = unsafe {
+        let hello = hello.as_ref().copied();
+        let name = hello
+            .filter(|hello| !hello.name.is_null())
+            .map(|hello| text_of(hello.name, &scope));
+        (CStr::from_ptr(socket), hello, name)
+    };
+    let hello = hello.unwrap_or(HelloIn {
         cols: 80,
         rows: 24,
         focused: false,
         sizes_windows: false,
         name: std::ptr::null(),
     });
+    let socket = PathBuf::from(std::ffi::OsStr::from_bytes(socket.to_bytes()));
+    if socket.as_os_str().is_empty() {
+        return Code::Argument;
+    }
     let (Some(cols), Some(rows)) = (frame::Dim::new(hello.cols), frame::Dim::new(hello.rows))
     else {
         return Code::Argument;
     };
-    let name = if hello.name.is_null() {
-        "app".to_owned()
-    } else {
-        let Some(name) = text_of(hello.name) else {
-            return Code::Argument;
-        };
-        name.to_owned()
+    let name = match name {
+        None => "app",
+        Some(Some(name)) => name,
+        Some(None) => return Code::Argument,
+    }
+    .to_owned();
+    let Some(handle_id) = next_handle() else {
+        return Code::Io;
     };
     let (Ok(cancel), Ok(wake)) = (Wake::new(), Wake::new()) else {
         return Code::Io;
@@ -763,8 +811,14 @@ pub unsafe extern "C" fn ko_client_connect(
     else {
         return Code::Io;
     };
+    let client = Arc::new(Client {
+        shared,
+        worker: Mutex::new(Some(worker)),
+    });
+    let handle = std::ptr::without_provenance_mut(handle_id);
+    locked(&CLIENTS).insert(handle_id, client);
     // SAFETY: out is non-null and writable by contract.
-    unsafe { *out = Box::into_raw(Box::new(Client { shared, worker })) };
+    unsafe { out.write(handle) };
     Code::Ok
 }
 
@@ -776,20 +830,16 @@ pub unsafe extern "C" fn ko_client_default_dir(out: *mut Buffer) -> Code {
     if out.is_null() {
         return Code::Argument;
     }
-    match std::path::absolute(ko_server::config::dir(None)) {
-        Ok(path) => {
-            let Some(path) = path.to_str() else {
-                hand_over(out, b"the server directory is not UTF-8".to_vec());
-                return Code::Io;
-            };
-            hand_over(out, path.as_bytes().to_vec());
-            Code::Ok
-        }
-        Err(error) => {
-            hand_over(out, error.to_string().into_bytes());
-            Code::Io
-        }
-    }
+    let (code, bytes) = match std::path::absolute(ko_server::config::dir(None)) {
+        Ok(path) => match path.to_str() {
+            Some(path) => (Code::Ok, path.as_bytes().to_vec()),
+            None => (Code::Io, b"the server directory is not UTF-8".to_vec()),
+        },
+        Err(error) => (Code::Io, error.to_string().into_bytes()),
+    };
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, bytes) };
+    code
 }
 
 /// # Safety
@@ -804,26 +854,34 @@ pub unsafe extern "C" fn ko_client_launch(
     path: *const c_char,
     socket: *mut Buffer,
 ) -> Code {
-    let (Some(dir), Some(executable)) = (text_of(dir), text_of(executable)) else {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let (dir_text, executable_text, path_text) = unsafe {
+        (
+            text_of(dir, &scope),
+            text_of(executable, &scope),
+            text_of(path, &scope),
+        )
+    };
+
+    let (Some(dir), Some(executable)) = (dir_text, executable_text) else {
         return Code::Argument;
     };
     if socket.is_null() {
         return Code::Argument;
     }
-    let path = match (path.is_null(), text_of(path)) {
+    let path = match (path.is_null(), path_text) {
         (false, None) => return Code::Argument,
         (_, path) => path,
     };
-    match launch::attach(Path::new(dir), Path::new(executable), path, PATIENCE) {
-        Ok((path, _stream)) => {
-            hand_over(socket, path.as_os_str().as_bytes().to_vec());
-            Code::Ok
-        }
-        Err(message) => {
-            hand_over(socket, message.into_bytes());
-            Code::Io
-        }
-    }
+    let (code, bytes) = match launch::attach(Path::new(dir), Path::new(executable), path, PATIENCE)
+    {
+        Ok((path, _stream)) => (Code::Ok, path.as_os_str().as_bytes().to_vec()),
+        Err(message) => (Code::Io, message.into_bytes()),
+    };
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(socket, bytes) };
+    code
 }
 
 /// # Safety
@@ -832,17 +890,20 @@ pub unsafe extern "C" fn ko_client_launch(
 /// `ko_buffer`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_stop_server(dir: *const c_char, error: *mut Buffer) -> Code {
-    let Some(dir) = text_of(dir) else {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let dir_text = unsafe { text_of(dir, &scope) };
+
+    let Some(dir) = dir_text else {
         return Code::Argument;
     };
-    empty(error);
-    match launch::stop(Path::new(dir), PATIENCE) {
-        Ok(()) => Code::Ok,
-        Err(message) => {
-            hand_over(error, message.into_bytes());
-            Code::Io
-        }
-    }
+    let (code, bytes) = match launch::stop(Path::new(dir), PATIENCE) {
+        Ok(()) => (Code::Ok, Vec::new()),
+        Err(message) => (Code::Io, message.into_bytes()),
+    };
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(error, bytes) };
+    code
 }
 
 struct VersionTexts {
@@ -881,7 +942,7 @@ pub unsafe extern "C" fn ko_client_version(out: *mut VersionInfo) -> Code {
     }
     let own = OWN.get_or_init(|| VersionTexts::of(&protocol::version()));
     // SAFETY: out is non-null and writable by contract.
-    unsafe { *out = own.info() };
+    unsafe { out.write(own.info()) };
     Code::Ok
 }
 
@@ -894,22 +955,27 @@ pub unsafe extern "C" fn ko_client_close(client: *mut Client) -> Code {
     if client.is_null() {
         return Code::Argument;
     }
-    // SAFETY: client is a live handle that this call consumes, by contract.
-    let Client { shared, worker } = *unsafe { Box::from_raw(client) };
-    shared.cancel.wake();
-    if RUNNING.get() != Arc::as_ptr(&shared) {
-        drop(locked(&shared.running));
-    }
-    let _ = worker.join();
-    for view in std::mem::take(&mut *locked(&shared.decoders)) {
-        view.shut();
-    }
+    let Some(client) = locked(&CLIENTS).remove(&client.addr()) else {
+        return Code::Argument;
+    };
+    let shared = &client.shared;
     let mut calls = locked(&shared.calls);
+    shared.cancel.wake();
     while *calls > 0 {
         calls = shared
             .idle
             .wait(calls)
             .unwrap_or_else(PoisonError::into_inner);
+    }
+    drop(calls);
+    if RUNNING.get() != Arc::as_ptr(shared) {
+        drop(locked(&shared.running));
+    }
+    if let Some(worker) = locked(&client.worker).take() {
+        let _ = worker.join();
+    }
+    for view in std::mem::take(&mut *locked(&shared.decoders)) {
+        view.shut();
     }
     Code::Ok
 }
@@ -922,18 +988,17 @@ pub unsafe extern "C" fn ko_client_model(client_: *const Client, out: *mut Buffe
     let Some(client) = client(client_).filter(|_| !out.is_null()) else {
         return Code::Argument;
     };
-    empty(out);
     let model = locked(&client.shared.model);
-    let Some(model) = model.as_ref() else {
-        return Code::Closed;
+    let (code, bytes) = match model.as_ref() {
+        Some(model) => match serde_json::to_vec(&model.json()) {
+            Ok(json) => (Code::Ok, json),
+            Err(_) => (Code::Protocol, Vec::new()),
+        },
+        None => (Code::Closed, Vec::new()),
     };
-    match serde_json::to_vec(&model.json()) {
-        Ok(json) => {
-            hand_over(out, json);
-            Code::Ok
-        }
-        Err(_) => Code::Protocol,
-    }
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, bytes) };
+    code
 }
 
 const SELECT_SESSION: c_int = 1;
@@ -949,7 +1014,11 @@ pub unsafe extern "C" fn ko_client_select(
     kind: c_int,
     id: *const c_char,
 ) -> Code {
-    let (Some(client), Some(id)) = (client(client_), text_of(id)) else {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let id_text = unsafe { text_of(id, &scope) };
+
+    let (Some(client), Some(id)) = (client(client_), id_text) else {
         return Code::Argument;
     };
     let selection = match kind {
@@ -980,7 +1049,7 @@ pub unsafe extern "C" fn ko_client_select(
         }
     }
     locked(&client.shared.hello).selection = selection;
-    request(client, ClientRequest::Select(selection))
+    request(&client, ClientRequest::Select(selection))
 }
 
 /// # Safety
@@ -1002,7 +1071,7 @@ pub unsafe extern "C" fn ko_client_switch(
         (2, 2) => (Over::Window, Direction::Previous),
         _ => return Code::Argument,
     };
-    request(client, ClientRequest::Switch(Switch { over, direction }))
+    request(&client, ClientRequest::Switch(Switch { over, direction }))
 }
 
 /// # Safety
@@ -1034,7 +1103,7 @@ pub unsafe extern "C" fn ko_client_size(
         cell_px,
     };
     locked(&client.shared.hello).size = protocol::Size(size);
-    request(client, ClientRequest::Size(protocol::Size(size)))
+    request(&client, ClientRequest::Size(protocol::Size(size)))
 }
 
 /// # Safety
@@ -1057,26 +1126,34 @@ pub unsafe extern "C" fn ko_client_clipboard_answer(
     let served = if contents.is_null() {
         None
     } else {
-        let items = if count == 0 {
-            &[]
-        } else {
-            // SAFETY: contents points to count items by contract.
-            unsafe { std::slice::from_raw_parts(contents, count) }
+        let scope = ();
+        // SAFETY: ko_client.h requires the item array, its buffers and available strings to remain readable for this call.
+        let (items, available) = unsafe {
+            (
+                slice_of(contents, count, &scope).and_then(|items| {
+                    items
+                        .iter()
+                        .map(|item| {
+                            Some((
+                                text_of(item.mime, &scope)?,
+                                slice_of(item.data, item.len, &scope)?,
+                            ))
+                        })
+                        .collect::<Option<Vec<_>>>()
+                }),
+                texts_of(available, available_count, &scope),
+            )
         };
-        let (Some(items), Some(available)) = (
-            items
-                .iter()
-                .map(|item| {
-                    Some(ClipboardContent {
-                        mime: text_of(item.mime)?.to_owned(),
-                        data: Text(bytes_of(item.data, item.len)?.to_vec()),
-                    })
-                })
-                .collect::<Option<Vec<_>>>(),
-            texts_of(available, available_count),
-        ) else {
+        let (Some(items), Some(available)) = (items, available) else {
             return Code::Argument;
         };
+        let items: Vec<_> = items
+            .into_iter()
+            .map(|(mime, data)| ClipboardContent {
+                mime: mime.to_owned(),
+                data: Text(data.to_vec()),
+            })
+            .collect();
         let fits = ServedBuf::new(
             items
                 .iter()
@@ -1089,7 +1166,7 @@ pub unsafe extern "C" fn ko_client_clipboard_answer(
             available: available.into_iter().map(str::to_owned).collect(),
         })
     };
-    request(client, ClientRequest::ClipboardAnswer { id, served })
+    request(&client, ClientRequest::ClipboardAnswer { id, served })
 }
 
 #[repr(C)]
@@ -1153,10 +1230,10 @@ pub unsafe extern "C" fn ko_client_limits(client_: *const Client, out: *mut Limi
     };
     // SAFETY: out is non-null and writable by contract.
     unsafe {
-        *out = Limits {
+        out.write(Limits {
             kitty_images_max_bytes: limits.kitty_images_max_bytes,
             scrollback,
-        }
+        })
     };
     Code::Ok
 }
@@ -1170,7 +1247,7 @@ pub unsafe extern "C" fn ko_client_focus(client_: *const Client, focused: bool) 
         return Code::Argument;
     };
     locked(&client.shared.hello).focused = focused;
-    request(client, ClientRequest::Focused { focused })
+    request(&client, ClientRequest::Focused { focused })
 }
 
 /// # Safety
@@ -1184,11 +1261,15 @@ pub unsafe extern "C" fn ko_client_observe(
     count: usize,
     attending: bool,
 ) -> Code {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let panes_texts = unsafe { texts_of(panes, count, &scope) };
+
     let Some(client) = client(client_) else {
         return Code::Argument;
     };
-    let ids: Option<Vec<PaneId>> = texts_of(panes, count)
-        .and_then(|names| names.iter().map(|name| name.parse().ok()).collect());
+    let ids: Option<Vec<PaneId>> =
+        panes_texts.and_then(|names| names.iter().map(|name| name.parse().ok()).collect());
     let Some(ids) = ids else {
         return Code::Argument;
     };
@@ -1212,14 +1293,7 @@ pub unsafe extern "C" fn ko_buffer_free(buffer: *mut Buffer) {
     let Some(buffer) = (unsafe { buffer.as_mut() }) else {
         return;
     };
-    let Buffer { data, len, cap } = std::mem::replace(
-        buffer,
-        Buffer {
-            data: std::ptr::null_mut(),
-            len: 0,
-            cap: 0,
-        },
-    );
+    let Buffer { data, len, cap } = std::mem::replace(buffer, hand_over(Vec::new()));
     if data.is_null() {
         return;
     }
@@ -1244,6 +1318,10 @@ pub unsafe extern "C" fn ko_view_open(
     user: *mut c_void,
     out: *mut *mut ViewHandle,
 ) -> Code {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let pane_text = unsafe { text_of(pane, &scope) };
+
     if out.is_null() {
         return Code::Argument;
     }
@@ -1251,16 +1329,16 @@ pub unsafe extern "C" fn ko_view_open(
     unsafe { *out = std::ptr::null_mut() };
     let (Some(client), Some(pane), Some(restore), Some(feed)) = (
         client(client_),
-        text_of(pane).and_then(|pane| pane.parse().ok()),
+        pane_text.and_then(|pane| pane.parse().ok()),
         restore,
         feed,
     ) else {
         return Code::Argument;
     };
     let shared = &client.shared;
-    if shared.cancel.is_set() {
-        return Code::Closed;
-    }
+    let Some(handle_id) = next_handle() else {
+        return Code::Io;
+    };
     let id = shared.views.fetch_add(1, Ordering::SeqCst);
     let history = if history { History::All } else { History::None };
     let Ok(view) = View::start(shared, id, pane, history, (restore, feed), User(user)) else {
@@ -1268,13 +1346,14 @@ pub unsafe extern "C" fn ko_view_open(
     };
     locked(&shared.decoders).push(Arc::clone(&view));
     shared.command(Command::Open(Arc::clone(&view)));
+    let handle = Arc::new(ViewHandle {
+        view,
+        shared: Arc::clone(shared),
+    });
+    let pointer = std::ptr::without_provenance_mut(handle_id);
+    locked(&VIEWS).insert(handle_id, handle);
     // SAFETY: out is non-null and writable by contract.
-    unsafe {
-        *out = Box::into_raw(Box::new(ViewHandle {
-            view,
-            shared: Arc::clone(shared),
-        }));
-    }
+    unsafe { out.write(pointer) };
     Code::Ok
 }
 
@@ -1287,12 +1366,14 @@ pub unsafe extern "C" fn ko_view_close(view: *mut ViewHandle) -> Code {
     if view.is_null() {
         return Code::Argument;
     }
-    // SAFETY: view is a live handle that this call consumes, by contract.
-    let ViewHandle { view, shared } = *unsafe { Box::from_raw(view) };
+    let Some(handle) = locked(&VIEWS).remove(&view.addr()) else {
+        return Code::Argument;
+    };
+    let ViewHandle { view, shared } = &*handle;
     shared.command(Command::Close(view.id));
     locked(&shared.decoders).retain(|known| known.id != view.id);
     view.shut();
-    if RUNNING.get() != Arc::as_ptr(&shared) {
+    if RUNNING.get() != Arc::as_ptr(shared) {
         drop(locked(&shared.running));
     }
     Code::Ok
@@ -1303,8 +1384,7 @@ pub unsafe extern "C" fn ko_view_close(view: *mut ViewHandle) -> Code {
 /// `view` is a live handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_view_resync(view: *const ViewHandle, history: bool) -> Code {
-    // SAFETY: view is null or a live handle by contract.
-    let Some(handle) = (unsafe { view.as_ref() }) else {
+    let Some(handle) = view_handle(view) else {
         return Code::Argument;
     };
     if !handle.view.up.load(Ordering::SeqCst) {
@@ -1325,8 +1405,11 @@ pub unsafe extern "C" fn ko_view_input(
     data: *const u8,
     len: usize,
 ) -> Code {
-    // SAFETY: view is null or valid by contract.
-    let (Some(handle), Some(data)) = (unsafe { view.as_ref() }, bytes_of(data, len)) else {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let data_bytes = unsafe { slice_of(data, len, &scope) };
+
+    let (Some(handle), Some(data)) = (view_handle(view), data_bytes) else {
         return Code::Argument;
     };
     if !handle.view.up.load(Ordering::SeqCst) {
@@ -1447,108 +1530,147 @@ mod tests {
         on_welcome: Box<dyn Fn(&Probe) + Send + Sync>,
     }
 
-    fn owned(pointer: *const c_char) -> String {
+    // SAFETY: pointer is readable and NUL-terminated through this call.
+    unsafe fn owned(pointer: *const c_char) -> String {
         // SAFETY: the core passes NUL-terminated strings.
         unsafe { CStr::from_ptr(pointer) }
             .to_string_lossy()
             .into_owned()
     }
 
-    fn optional(pointer: *const c_char) -> Option<String> {
-        (!pointer.is_null()).then(|| owned(pointer))
+    // SAFETY: pointer is null or readable and NUL-terminated through this call.
+    unsafe fn optional(pointer: *const c_char) -> Option<String> {
+        (!pointer.is_null()).then(|| {
+            // SAFETY: pointer is non-null here and readable through this call.
+            unsafe { owned(pointer) }
+        })
     }
 
     unsafe extern "C" fn record(user: *mut c_void, event: *const Event) {
         // SAFETY: user is the Probe that the test keeps alive until its queue is flushed,
         // and event is valid during the callback.
         let (probe, event) = unsafe { (&*user.cast::<Probe>(), &*event) };
-        // SAFETY: each arm reads the union member that the kind names.
-        let seen = unsafe {
-            match event.kind {
-                EVENT_WELCOME => {
-                    let welcome = event.body.welcome;
-                    Seen::Welcome(
-                        owned(welcome.client),
-                        owned(welcome.instance),
-                        welcome.fresh,
-                    )
-                }
-                EVENT_LAYOUT => {
-                    let layout = event.body.layout;
-                    Seen::Layout(
-                        layout.revision,
-                        layout.sessions,
-                        layout.windows,
-                        layout.panes,
-                    )
-                }
-                EVENT_MODEL => Seen::Model,
-                EVENT_SELECTED => {
-                    let selected = event.body.selected;
-                    Seen::Selected(
-                        optional(selected.session),
-                        optional(selected.window),
-                        optional(selected.pane),
-                    )
-                }
-                EVENT_ALERT => {
-                    let alert = event.body.alert;
-                    Seen::Alert(
-                        alert.kind,
-                        owned(alert.pane),
-                        optional(alert.title),
-                        optional(alert.body),
-                    )
-                }
-                EVENT_MISMATCH => {
-                    let mismatch = event.body.mismatch;
-                    Seen::Mismatch(
-                        mismatch.code,
-                        owned(mismatch.server.build),
-                        owned(mismatch.own.build),
-                    )
-                }
-                EVENT_VIEW_RESTORED => {
-                    let restored = event.body.view_restored;
-                    Seen::Restored(restored.generation, restored.result)
-                }
-                EVENT_VIEW_CLOSED => {
-                    let closed = event.body.view_closed;
-                    Seen::Closed(closed.code, owned(closed.message))
-                }
-                EVENT_CLIPBOARD_WRITE => {
-                    let write = event.body.clipboard_write;
-                    Seen::ClipboardWrite(
-                        owned(write.pane),
-                        write.location,
-                        std::slice::from_raw_parts(write.contents, write.count)
-                            .iter()
-                            .map(|item| {
-                                (
-                                    owned(item.mime),
-                                    std::slice::from_raw_parts(item.data, item.len).to_vec(),
-                                )
-                            })
-                            .collect(),
-                    )
-                }
-                EVENT_CLIPBOARD_READ => {
-                    let read = event.body.clipboard_read;
-                    Seen::ClipboardRead(
-                        owned(read.pane),
-                        read.id,
-                        read.location,
-                        std::slice::from_raw_parts(read.mimes, read.count)
-                            .iter()
-                            .map(|mime| owned(*mime))
-                            .collect(),
-                        read.list,
-                    )
-                }
-                _ => {
-                    let failure = event.body.failure;
-                    Seen::Failed(failure.code, owned(failure.message))
-                }
+        let seen = match event.kind {
+            EVENT_WELCOME => {
+                // SAFETY: this arm matches the event kind for this union member.
+                let welcome = unsafe { event.body.welcome };
+                Seen::Welcome(
+                    // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                    unsafe { owned(welcome.client) },
+                    // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                    unsafe { owned(welcome.instance) },
+                    welcome.fresh,
+                )
+            }
+            EVENT_LAYOUT => {
+                // SAFETY: this arm matches the event kind for this union member.
+                let layout = unsafe { event.body.layout };
+                Seen::Layout(
+                    layout.revision,
+                    layout.sessions,
+                    layout.windows,
+                    layout.panes,
+                )
+            }
+            EVENT_MODEL => Seen::Model,
+            EVENT_SELECTED => {
+                // SAFETY: this arm matches the event kind for this union member.
+                let selected = unsafe { event.body.selected };
+                Seen::Selected(
+                    // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                    unsafe { optional(selected.session) },
+                    // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                    unsafe { optional(selected.window) },
+                    // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                    unsafe { optional(selected.pane) },
+                )
+            }
+            EVENT_ALERT => {
+                // SAFETY: this arm matches the event kind for this union member.
+                let alert = unsafe { event.body.alert };
+                Seen::Alert(
+                    alert.kind,
+                    // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                    unsafe { owned(alert.pane) },
+                    // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                    unsafe { optional(alert.title) },
+                    // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                    unsafe { optional(alert.body) },
+                )
+            }
+            EVENT_MISMATCH => {
+                // SAFETY: this arm matches the event kind for this union member.
+                let mismatch = unsafe { event.body.mismatch };
+                Seen::Mismatch(
+                    mismatch.code,
+                    // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                    unsafe { owned(mismatch.server.build) },
+                    // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                    unsafe { owned(mismatch.own.build) },
+                )
+            }
+            EVENT_VIEW_RESTORED => {
+                // SAFETY: this arm matches the event kind for this union member.
+                let restored = unsafe { event.body.view_restored };
+                Seen::Restored(restored.generation, restored.result)
+            }
+            EVENT_VIEW_CLOSED => {
+                // SAFETY: this arm matches the event kind for this union member.
+                let closed = unsafe { event.body.view_closed };
+                Seen::Closed(
+                    closed.code,
+                    // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                    unsafe { owned(closed.message) },
+                )
+            }
+            EVENT_CLIPBOARD_WRITE => {
+                // SAFETY: this arm matches the event kind for this union member.
+                let write = unsafe { event.body.clipboard_write };
+                Seen::ClipboardWrite(
+                    // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                    unsafe { owned(write.pane) },
+                    write.location,
+                    // SAFETY: the callback supplies this array for its declared length.
+                    unsafe { std::slice::from_raw_parts(write.contents, write.count) }
+                        .iter()
+                        .map(|item| {
+                            (
+                                // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                                unsafe { owned(item.mime) },
+                                // SAFETY: the callback supplies this array for its declared length.
+                                unsafe { std::slice::from_raw_parts(item.data, item.len) }.to_vec(),
+                            )
+                        })
+                        .collect(),
+                )
+            }
+            EVENT_CLIPBOARD_READ => {
+                // SAFETY: this arm matches the event kind for this union member.
+                let read = unsafe { event.body.clipboard_read };
+                Seen::ClipboardRead(
+                    // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                    unsafe { owned(read.pane) },
+                    read.id,
+                    read.location,
+                    // SAFETY: the callback supplies this array for its declared length.
+                    unsafe { std::slice::from_raw_parts(read.mimes, read.count) }
+                        .iter()
+                        .map(|mime| {
+                            // SAFETY: every MIME string is readable during the callback.
+                            unsafe { owned(*mime) }
+                        })
+                        .collect(),
+                    read.list,
+                )
+            }
+            _ => {
+                // SAFETY: this arm matches the event kind for this union member.
+                let failure = unsafe { event.body.failure };
+                Seen::Failed(
+                    failure.code,
+                    // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                    unsafe { owned(failure.message) },
+                )
             }
         };
         let thread = std::thread::current();
@@ -2113,7 +2235,7 @@ mod tests {
         Ok((all, false))
     }
 
-    fn open_view(client: *mut Client, decoder: &Decoder, history: bool) -> *mut ViewHandle {
+    fn open_view(client: *mut Client, decoder: &'static Decoder, history: bool) -> *mut ViewHandle {
         let mut out = std::ptr::null_mut();
         let user = std::ptr::from_ref::<Decoder>(decoder).cast_mut().cast();
         // SAFETY: the client is live, the pane is NUL-terminated, out is writable, and the
@@ -2133,9 +2255,8 @@ mod tests {
         out
     }
 
-    fn handle_of<'a>(view: *mut ViewHandle) -> &'a ViewHandle {
-        // SAFETY: the test keeps the handle live while it reads it.
-        unsafe { &*view }
+    fn handle_of(view: *mut ViewHandle) -> Arc<ViewHandle> {
+        view_handle(view).unwrap()
     }
 
     fn ready_session(name: &str) -> (Server, Fixture, *mut Client) {
@@ -2154,22 +2275,20 @@ mod tests {
     }
 
     fn model_of(client: *mut Client) -> Value {
-        let mut buffer = Buffer {
-            data: std::ptr::null_mut(),
-            len: 0,
-            cap: 0,
-        };
+        let mut buffer = empty_buffer();
         // SAFETY: the client is live and the buffer is writable.
         assert_eq!(unsafe { ko_client_model(client, &mut buffer) }, Code::Ok);
         // SAFETY: the buffer holds len bytes that the call filled.
         let model =
             serde_json::from_slice(unsafe { std::slice::from_raw_parts(buffer.data, buffer.len) })
                 .unwrap();
-        freed_once(&mut buffer);
+        // SAFETY: buffer owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut buffer) };
         model
     }
 
-    fn freed_once(buffer: &mut Buffer) {
+    // SAFETY: buffer owns a core allocation that has not been freed.
+    unsafe fn freed_once(buffer: &mut Buffer) {
         let pointer = buffer.data as usize;
         assert!(
             locked(&LIVE_BUFFERS).contains(&pointer),
@@ -2188,21 +2307,23 @@ mod tests {
         unsafe { ko_buffer_free(std::ptr::null_mut()) };
     }
 
-    fn freed_once_if_any(buffer: &mut Buffer) {
+    // SAFETY: buffer is empty or owns a core allocation that has not been freed.
+    unsafe fn freed_once_if_any(buffer: &mut Buffer) {
         if !buffer.data.is_null() {
-            freed_once(buffer);
+            // SAFETY: buffer owns a core allocation that is not freed yet.
+            unsafe { freed_once(buffer) };
         }
     }
 
     fn empty_buffer() -> Buffer {
-        Buffer {
-            data: std::ptr::null_mut(),
-            len: 0,
-            cap: 0,
-        }
+        hand_over(Vec::new())
     }
 
-    fn contents(buffer: &Buffer) -> String {
+    // SAFETY: buffer owns core bytes that remain live through this call.
+    unsafe fn contents(buffer: &Buffer) -> String {
+        if buffer.len == 0 {
+            return String::new();
+        }
         // SAFETY: the buffer was filled by a call and not freed.
         String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(buffer.data, buffer.len) })
             .into_owned()
@@ -2282,6 +2403,154 @@ mod tests {
     }
 
     #[test]
+    fn an_entered_view_open_finishes_before_client_close_returns() {
+        let (_server, fixture, handle) = ready_session("entry-close");
+        let shared = Arc::clone(&client(handle).unwrap().shared);
+        let decoders = locked(&shared.decoders);
+        let handle = Handle(handle);
+        let calling = std::thread::spawn(move || {
+            let handle = handle;
+            open_view(handle.0, Decoder::new(|_| Restored::Ok), true).addr()
+        });
+        until("the view open has entered", || {
+            shared.views.load(Ordering::SeqCst) == 1
+        });
+        let closing_handle = Handle(fixture.probe.client.load(Ordering::SeqCst));
+        let (done, closed) = channel();
+        let closing = std::thread::spawn(move || {
+            let handle = closing_handle;
+            close(handle.0);
+            done.send(()).unwrap();
+        });
+        until("close cancels the entered view open", || {
+            shared.cancel.is_set()
+        });
+        let returned_early = closed.recv_timeout(Duration::from_millis(100)).is_ok();
+        let closing_id = fixture.probe.client.load(Ordering::SeqCst);
+        // SAFETY: closing_id is an opaque id that the entry only looks up; all scalar arguments are valid.
+        let during_close = unsafe { ko_client_size(closing_id, 80, 24, 0, 0) };
+        drop(decoders);
+        let view = std::ptr::without_provenance_mut(calling.join().unwrap());
+        closing.join().unwrap();
+        assert!(
+            !returned_early,
+            "close returned before the entered view open left"
+        );
+        assert_eq!(during_close, Code::Argument);
+        assert!(!handle_of(view).view.up.load(Ordering::SeqCst));
+        close_view(view);
+    }
+
+    #[test]
+    fn stale_handles_do_not_send_requests_to_new_clients_or_views() {
+        let first_server = serve(
+            "first-handle",
+            client_script(|socket, _| {
+                welcomed(socket);
+                wait_for_hangup(socket);
+            })
+            .view(|socket, _| wait_for_hangup(socket)),
+        );
+        let first_fixture = Fixture::new();
+        let first = first_fixture.connect(&first_server);
+        assert!(matches!(first_fixture.next(), Seen::Welcome(..)));
+        assert!(matches!(first_fixture.next(), Seen::Layout(..)));
+        let first_view = open_view(first, Decoder::new(|_| Restored::Ok), true);
+        until("the first view is connected", || {
+            handle_of(first_view).view.up.load(Ordering::SeqCst)
+        });
+        close_view(first_view);
+        close(first);
+
+        let (request, requested) = channel();
+        let (input, received) = channel();
+        let second_server = serve(
+            "second-handle",
+            client_script(move |socket, _| {
+                welcomed(socket);
+                for text in text_messages(socket, 1) {
+                    request.send(text).unwrap();
+                }
+                wait_for_hangup(socket);
+            })
+            .view(move |socket, _| {
+                send_binary(socket, slice_record(10, true, true, true, b"s"));
+                for text in text_messages(socket, 1) {
+                    input.send(text).unwrap();
+                }
+                wait_for_hangup(socket);
+            }),
+        );
+        let second_fixture = Fixture::new();
+        let second = second_fixture.connect(&second_server);
+        assert!(matches!(second_fixture.next(), Seen::Welcome(..)));
+        assert!(matches!(second_fixture.next(), Seen::Layout(..)));
+        let second_view = open_view(
+            second,
+            Decoder::new(|snapshot| {
+                pull(snapshot, usize::MAX, 64).unwrap();
+                Restored::Ok
+            }),
+            true,
+        );
+        assert_eq!(second_fixture.next(), Seen::Restored(1, Restored::Ok));
+        // SAFETY: first is an opaque closed id that the entry only looks up; all scalar arguments are valid.
+        let stale_client = unsafe { ko_client_size(first, 18, 25, 0, 0) };
+        // SAFETY: first_view is an opaque closed id that the entry only looks up; the input bytes remain live.
+        let stale_input = unsafe { ko_view_input(first_view, b"bad".as_ptr(), 3) };
+        // SAFETY: first_view is an opaque closed id that the entry only looks up.
+        let stale_resync = unsafe { ko_view_resync(first_view, false) };
+        // SAFETY: second is a live opaque id that the entry only looks up.
+        let focused = unsafe { ko_client_focus(second, true) };
+        // SAFETY: second_view is a live opaque id that the entry only looks up; the input bytes remain live.
+        let sent = unsafe { ko_view_input(second_view, b"hi".as_ptr(), 2) };
+        let request = requested.recv_timeout(WAIT).unwrap();
+        let input = received.recv_timeout(WAIT).unwrap();
+        close(second);
+        // SAFETY: second_view is a live opaque id that the entry only looks up; the input bytes remain live.
+        let closed_input = unsafe { ko_view_input(second_view, b"hi".as_ptr(), 2) };
+        // SAFETY: second_view is a live opaque id that the entry only looks up.
+        let closed_resync = unsafe { ko_view_resync(second_view, true) };
+        close_view(second_view);
+        assert_eq!(
+            [stale_client, stale_input, stale_resync],
+            [Code::Argument; 3]
+        );
+        assert_eq!([focused, sent], [Code::Ok; 2]);
+        assert_eq!([closed_input, closed_resync], [Code::Closed; 2]);
+        assert_eq!(request, r#"{"type":"focused","focused":true}"#);
+        assert_eq!(
+            input,
+            r#"{"type":"input","input":{"type":"text","data":"aGk="}}"#
+        );
+    }
+
+    #[test]
+    fn an_entered_view_call_keeps_its_handle_alive_across_close() {
+        let server = serve(
+            "view-entry-close",
+            client_script(|socket, _| {
+                welcomed(socket);
+                wait_for_hangup(socket);
+            })
+            .view(|socket, _| wait_for_hangup(socket)),
+        );
+        let fixture = Fixture::new();
+        let client = fixture.connect(&server);
+        assert!(matches!(fixture.next(), Seen::Welcome(..)));
+        assert!(matches!(fixture.next(), Seen::Layout(..)));
+        let handle = open_view(client, Decoder::new(|_| Restored::Ok), true);
+        let entry = view_handle(handle).unwrap();
+        let weak = Arc::downgrade(&entry);
+        close_view(handle);
+        assert!(!entry.view.up.load(Ordering::SeqCst));
+        assert!(weak.upgrade().is_some());
+        drop(entry);
+        assert!(weak.upgrade().is_none());
+        close(client);
+    }
+
+    #[test]
     fn nothing_queued_is_delivered_after_a_close_from_another_thread() {
         let (server, hangup) = flood("outside");
         let fixture = Fixture::new();
@@ -2297,7 +2566,7 @@ mod tests {
 
     struct Handle(*mut Client);
 
-    // SAFETY: the pointer is only passed to ko_client_close on one other thread.
+    // SAFETY: the test keeps the handle live through each request and closes it once.
     unsafe impl Send for Handle {}
 
     #[test]
@@ -2445,7 +2714,8 @@ mod tests {
             let code = unsafe {
                 ko_client_put_layout(blocked.0, document.as_ptr(), document.len(), &mut out)
             };
-            freed_once(&mut out);
+            // SAFETY: out owns a core allocation that is not freed yet.
+            unsafe { freed_once(&mut out) };
             code
         });
         requested.recv_timeout(WAIT).unwrap();
@@ -2976,10 +3246,15 @@ mod tests {
             edit(r#"{"type":"rename_window","window":"window_1","name":"edited"}"#);
         assert_eq!(code, Code::Ok);
         assert_eq!(
-            serde_json::from_str::<Value>(&contents(&out)).unwrap(),
+            serde_json::from_str::<Value>(
+                // SAFETY: this core buffer remains allocated through this read.
+                &unsafe { contents(&out) }
+            )
+            .unwrap(),
             json!({"snapshot": {"revision": 6, "layout": {"sessions": []}}})
         );
-        freed_once(&mut out);
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
         let bodies = server.bodies("PUT", "/layout");
         assert_eq!(bodies.len(), 2, "one conflict, one converged put");
         assert!(bodies[0].starts_with(r#"{"revision":0,"#) && !bodies[0].contains("added"));
@@ -2992,17 +3267,31 @@ mod tests {
 
         let (code, mut out) = edit(r#"{"type":"rename_window","window":"window_9","name":"x"}"#);
         assert_eq!(
-            (code, contents(&out).as_str()),
+            (
+                code,
+                // SAFETY: this core buffer remains allocated through this read.
+                unsafe { contents(&out) }.as_str()
+            ),
             (Code::NotFound, "window_9")
         );
-        freed_once(&mut out);
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
         let (code, mut out) =
             edit(r#"{"type":"dock","pane":"pane_1","target":"pane_1","edge":"left"}"#);
         assert_eq!(code, Code::Invalid);
-        freed_once(&mut out);
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
         let (code, mut out) = edit(r#"{"type":"rename_window","window":"window_1","name":"boom"}"#);
-        assert_eq!((code, contents(&out).as_str()), (Code::Invalid, "no"));
-        freed_once(&mut out);
+        assert_eq!(
+            (
+                code,
+                // SAFETY: this core buffer remains allocated through this read.
+                unsafe { contents(&out) }.as_str()
+            ),
+            (Code::Invalid, "no")
+        );
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
         let (code, _) = edit(r#"{"type":"nonsense"}"#);
         assert_eq!(code, Code::Argument);
         assert_eq!(
@@ -3060,11 +3349,16 @@ mod tests {
         let (code, mut out) = put(&edit(4));
         assert_eq!(code, Code::Conflict);
         assert_eq!(
-            serde_json::from_str::<Value>(&contents(&out)).unwrap(),
+            serde_json::from_str::<Value>(
+                // SAFETY: this core buffer remains allocated through this read.
+                &unsafe { contents(&out) }
+            )
+            .unwrap(),
             json!({"revision": 5, "layout": {"sessions": []}}),
             "the buffer holds the newer document"
         );
-        freed_once(&mut out);
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
         assert_eq!(server.bodies("PUT", "/layout").len(), 1, "no second try");
         assert!(locked(&taken).is_empty(), "the stale edit changed nothing");
 
@@ -3075,10 +3369,15 @@ mod tests {
             "the caller applies its edit to the newer document"
         );
         assert_eq!(
-            serde_json::from_str::<Value>(&contents(&out)).unwrap(),
+            serde_json::from_str::<Value>(
+                // SAFETY: this core buffer remains allocated through this read.
+                &unsafe { contents(&out) }
+            )
+            .unwrap(),
             json!({"revision": 6, "layout": {"sessions": []}})
         );
-        freed_once(&mut out);
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
         let bodies = server.bodies("PUT", "/layout");
         assert_eq!(bodies.len(), 2);
         assert!(
@@ -3093,8 +3392,16 @@ mod tests {
         );
 
         let (code, mut out) = put(&edit(9));
-        assert_eq!((code, contents(&out).as_str()), (Code::Invalid, "no"));
-        freed_once(&mut out);
+        assert_eq!(
+            (
+                code,
+                // SAFETY: this core buffer remains allocated through this read.
+                unsafe { contents(&out) }.as_str()
+            ),
+            (Code::Invalid, "no")
+        );
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
         let (code, out) = put(r#"{"layout":{"sessions":[]}}"#);
         assert_eq!(
             (code, out.data.is_null()),
@@ -3173,10 +3480,15 @@ mod tests {
                 ko_client_prompt_resolve(client, c"pane_1".as_ptr(), window_only, &mut out)
             };
             assert_eq!(
-                (code, contents(&out)),
+                (
+                    code,
+                    // SAFETY: this core buffer remains allocated through this read.
+                    unsafe { contents(&out) }
+                ),
                 (Code::Ok, format!(r#"[{{"asked":"{expected}"}}]"#))
             );
-            freed_once(&mut out);
+            // SAFETY: out owns a core allocation that is not freed yet.
+            unsafe { freed_once(&mut out) };
         }
         // SAFETY: the client is live; the caller is no pane id.
         let code = unsafe {
@@ -3185,10 +3497,15 @@ mod tests {
         assert_eq!(code, Code::Argument);
         let (code, mut out) = prompt(c"pane_3", "hi\nthere \u{e9}".as_bytes());
         assert_eq!(
-            (code, contents(&out).as_str()),
+            (
+                code,
+                // SAFETY: this core buffer remains allocated through this read.
+                unsafe { contents(&out) }.as_str()
+            ),
             (Code::Ok, r#"{"via":"paste"}"#)
         );
-        freed_once(&mut out);
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
         let bodies = server.bodies("POST", "/prompt");
         let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
         assert_eq!(
@@ -3218,25 +3535,39 @@ mod tests {
         );
         let (code, mut out) = prompt(c"pane_3", b"boom!");
         assert_eq!(
-            (code, contents(&out).as_str()),
+            (
+                code,
+                // SAFETY: this core buffer remains allocated through this read.
+                unsafe { contents(&out) }.as_str()
+            ),
             (Code::Unknown, "the paste was not written"),
             "a send that failed partway may have reached the agent"
         );
-        freed_once(&mut out);
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
         let (code, mut out) = prompt(c"pane_3", b"lost!");
         assert_eq!(
             code,
             Code::Unknown,
             "a send with no answer may have reached the agent"
         );
-        freed_once(&mut out);
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
         for (text, expected, message) in [
             (&b"nope!"[..], Code::Refused, "the agent is busy"),
             (&b"nada!"[..], Code::Invalid, "pane_3 is not a candidate"),
         ] {
             let (code, mut out) = prompt(c"pane_3", text);
-            assert_eq!((code, contents(&out).as_str()), (expected, message));
-            freed_once(&mut out);
+            assert_eq!(
+                (
+                    code,
+                    // SAFETY: this core buffer remains allocated through this read.
+                    unsafe { contents(&out) }.as_str()
+                ),
+                (expected, message)
+            );
+            // SAFETY: out owns a core allocation that is not freed yet.
+            unsafe { freed_once(&mut out) };
         }
         assert_eq!(prompt(c"pane_3", &[0xff, 0xfe]).0, Code::Argument);
         assert_eq!(prompt(c"nonsense", b"x").0, Code::Argument);
@@ -3252,7 +3583,8 @@ mod tests {
             let code = unsafe { ko_client_delete(client, kind, id.as_ptr(), &mut out) };
             assert_eq!(code, expected);
             if expected == Code::Ok {
-                freed_once(&mut out);
+                // SAFETY: out owns a core allocation that is not freed yet.
+                unsafe { freed_once(&mut out) };
             }
         }
         assert_eq!(
@@ -3345,8 +3677,12 @@ mod tests {
             )
         };
         assert_eq!(code, Code::Io, "no executable, no server");
-        assert!(!contents(&socket).is_empty());
-        freed_once(&mut socket);
+        assert!(
+            // SAFETY: this core buffer remains allocated through this read.
+            !unsafe { contents(&socket) }.is_empty()
+        );
+        // SAFETY: socket owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut socket) };
 
         let executable = dir.join("fake-ko");
         let recorded = dir.join("path");
@@ -3378,7 +3714,8 @@ mod tests {
             std::fs::read_to_string(recorded).unwrap(),
             "/login/bin:/usr/bin"
         );
-        freed_once(&mut socket);
+        // SAFETY: socket owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut socket) };
 
         let listener = UnixListener::bind(dir.join("socket")).unwrap();
         // SAFETY: as above.
@@ -3391,11 +3728,16 @@ mod tests {
             )
         };
         assert_eq!(
-            (code, contents(&socket)),
+            (
+                code,
+                // SAFETY: this core buffer remains allocated through this read.
+                unsafe { contents(&socket) }
+            ),
             (Code::Ok, dir.join("socket").display().to_string()),
             "a live server is reused"
         );
-        freed_once(&mut socket);
+        // SAFETY: socket owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut socket) };
         drop(listener);
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -3403,8 +3745,12 @@ mod tests {
         // SAFETY: the string is valid and error is writable.
         let code = unsafe { ko_client_stop_server(c_dir.as_ptr(), &mut error) };
         assert_eq!(code, Code::Io, "no directory, no server");
-        assert!(!contents(&error).is_empty());
-        freed_once(&mut error);
+        assert!(
+            // SAFETY: this core buffer remains allocated through this read.
+            !unsafe { contents(&error) }.is_empty()
+        );
+        // SAFETY: error owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut error) };
 
         let mut version = VersionInfo {
             protocol: std::ptr::null(),
@@ -3416,9 +3762,12 @@ mod tests {
         let ours = protocol::version();
         assert_eq!(
             (
-                owned(version.protocol),
-                owned(version.vt),
-                owned(version.build)
+                // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                unsafe { owned(version.protocol) },
+                // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                unsafe { owned(version.vt) },
+                // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+                unsafe { owned(version.build) }
             ),
             (ours.protocol, ours.vt, ours.build)
         );
@@ -3446,8 +3795,10 @@ mod tests {
             let mut out = empty_buffer();
             // SAFETY: the string is valid and out is writable.
             let code = unsafe { ko_client_probe(socket.as_ptr(), 5_000, &mut out) };
-            let text = contents(&out);
-            freed_once(&mut out);
+            // SAFETY: this core buffer remains allocated through this read.
+            let text = unsafe { contents(&out) };
+            // SAFETY: out owns a core allocation that is not freed yet.
+            unsafe { freed_once(&mut out) };
             (code, text)
         };
         let theirs = [
@@ -3509,8 +3860,10 @@ mod tests {
             let mut out = empty_buffer();
             // SAFETY: the string and the run are valid and out is writable.
             let code = unsafe { ko_remote_socket(c"box".as_ptr(), &run, &mut out) };
-            let text = contents(&out);
-            freed_once(&mut out);
+            // SAFETY: this core buffer remains allocated through this read.
+            let text = unsafe { contents(&out) };
+            // SAFETY: out owns a core allocation that is not freed yet.
+            unsafe { freed_once(&mut out) };
             (code, text)
         };
         assert_eq!(
@@ -3540,8 +3893,10 @@ mod tests {
             let mut out = empty_buffer();
             // SAFETY: the string is valid and out is writable.
             let code = unsafe { ko_remote_unreachable(c"box".as_ptr(), answers, &mut out) };
-            let text = contents(&out);
-            freed_once(&mut out);
+            // SAFETY: this core buffer remains allocated through this read.
+            let text = unsafe { contents(&out) };
+            // SAFETY: out owns a core allocation that is not freed yet.
+            unsafe { freed_once(&mut out) };
             (code, text)
         };
         assert_eq!(
@@ -3576,8 +3931,13 @@ mod tests {
         let mut out = empty_buffer();
         // SAFETY: the string is valid and out is writable.
         let code = unsafe { ko_config_load(c_string(path).as_ptr(), &mut out) };
-        let value = serde_json::from_str(&contents(&out)).unwrap();
-        freed_once(&mut out);
+        let value = serde_json::from_str(
+            // SAFETY: this core buffer remains allocated through this read.
+            &unsafe { contents(&out) },
+        )
+        .unwrap();
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
         (code, value)
     }
 
@@ -3592,26 +3952,42 @@ mod tests {
                 &mut out,
             )
         };
-        let value = serde_json::from_str(&contents(&out)).unwrap();
-        freed_once(&mut out);
+        let value = serde_json::from_str(
+            // SAFETY: this core buffer remains allocated through this read.
+            &unsafe { contents(&out) },
+        )
+        .unwrap();
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
         (code, value)
     }
 
     #[test]
     fn config_defaults_returns_the_path_and_config_without_reading_a_file() {
         let mut out = empty_buffer();
-        // SAFETY: out is writable; a null out is tested as a refused argument.
-        unsafe {
-            assert_eq!(ko_config_defaults(&mut out), Code::Ok);
-            assert_eq!(ko_config_defaults(std::ptr::null_mut()), Code::Argument);
-        }
-        let value: Value = serde_json::from_str(&contents(&out)).unwrap();
+        assert_eq!(
+            // SAFETY: the test arguments remain live, or are null where the ABI accepts null.
+            unsafe { ko_config_defaults(&mut out) },
+            Code::Ok
+        );
+        assert_eq!(
+            // SAFETY: the test arguments remain live, or are null where the ABI accepts null.
+            unsafe { ko_config_defaults(std::ptr::null_mut()) },
+            Code::Argument
+        );
+
+        let value: Value = serde_json::from_str(
+            // SAFETY: this core buffer remains allocated through this read.
+            &unsafe { contents(&out) },
+        )
+        .unwrap();
         assert!(Path::new(value["path"].as_str().unwrap()).ends_with("ko/config.yaml"));
         assert_eq!(
             value["config"],
             serde_json::to_value(ko_config::config::Config::default()).unwrap()
         );
-        freed_once(&mut out);
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
     }
 
     #[test]
@@ -3725,27 +4101,34 @@ mod tests {
         };
         let emptied = |out: &Buffer| out.data.is_null() && (out.len, out.cap) == (0, 0);
         let mut out = sentinel();
-        // SAFETY: each argument is null, not UTF-8 or valid; the calls reject the first two.
-        unsafe {
-            assert_eq!(ko_config_load(bad.as_ptr(), &mut out), Code::Argument);
-            assert!(emptied(&out));
-            out = sentinel();
-            assert_eq!(ko_config_load(std::ptr::null(), &mut out), Code::Argument);
-            assert!(emptied(&out));
-            out = sentinel();
-            assert_eq!(
-                ko_config_load(c"/x".as_ptr(), std::ptr::null_mut()),
-                Code::Argument
-            );
-            let set = |light: *const c_char, out: &mut Buffer| {
-                ko_config_set_theme(c"/x".as_ptr(), light, c"B".as_ptr(), out)
-            };
-            assert_eq!(set(bad.as_ptr(), &mut out), Code::Argument);
-            assert!(emptied(&out));
-            out = sentinel();
-            assert_eq!(set(std::ptr::null(), &mut out), Code::Argument);
-            assert!(emptied(&out));
-        }
+        assert_eq!(
+            // SAFETY: the test arguments remain live, or are null where the ABI accepts null.
+            unsafe { ko_config_load(bad.as_ptr(), &mut out) },
+            Code::Argument
+        );
+        assert!(emptied(&out));
+        out = sentinel();
+        assert_eq!(
+            // SAFETY: the test arguments remain live, or are null where the ABI accepts null.
+            unsafe { ko_config_load(std::ptr::null(), &mut out) },
+            Code::Argument
+        );
+        assert!(emptied(&out));
+        out = sentinel();
+        assert_eq!(
+            // SAFETY: the test arguments remain live, or are null where the ABI accepts null.
+            unsafe { ko_config_load(c"/x".as_ptr(), std::ptr::null_mut()) },
+            Code::Argument
+        );
+        let set = |light: *const c_char, out: &mut Buffer| {
+            // SAFETY: the test arguments remain live, or are null where the ABI accepts null.
+            unsafe { ko_config_set_theme(c"/x".as_ptr(), light, c"B".as_ptr(), out) }
+        };
+        assert_eq!(set(bad.as_ptr(), &mut out), Code::Argument);
+        assert!(emptied(&out));
+        out = sentinel();
+        assert_eq!(set(std::ptr::null(), &mut out), Code::Argument);
+        assert!(emptied(&out));
     }
 
     #[test]
@@ -3824,7 +4207,7 @@ mod tests {
                     std::ptr::null(),
                     c"pane_1".as_ptr(),
                     false,
-                    &mut empty_buffer()
+                    &mut empty_buffer(),
                 ),
                 Code::Argument
             );
@@ -3835,7 +4218,7 @@ mod tests {
                     c"pane_2".as_ptr(),
                     b"x".as_ptr(),
                     1,
-                    &mut empty_buffer()
+                    &mut empty_buffer(),
                 ),
                 Code::Argument
             );
@@ -3848,9 +4231,9 @@ mod tests {
         }
         let (server, _fixture, client) = ready_session("arguments");
         let mut view = std::ptr::dangling_mut::<ViewHandle>();
-        // SAFETY: the client is live; each call has one invalid argument.
-        unsafe {
-            assert_eq!(
+        assert_eq!(
+            // SAFETY: the test arguments remain live, or are null where the ABI accepts null.
+            unsafe {
                 ko_view_open(
                     client,
                     c"pane_1".as_ptr(),
@@ -3858,12 +4241,15 @@ mod tests {
                     None,
                     Some(feed),
                     std::ptr::null_mut(),
-                    &mut view
-                ),
-                Code::Argument
-            );
-            assert!(view.is_null());
-            assert_eq!(
+                    &mut view,
+                )
+            },
+            Code::Argument
+        );
+        assert!(view.is_null());
+        assert_eq!(
+            // SAFETY: the test arguments remain live, or are null where the ABI accepts null.
+            unsafe {
                 ko_view_open(
                     client,
                     c"pane_1".as_ptr(),
@@ -3871,11 +4257,14 @@ mod tests {
                     Some(restore),
                     None,
                     std::ptr::null_mut(),
-                    &mut view
-                ),
-                Code::Argument
-            );
-            assert_eq!(
+                    &mut view,
+                )
+            },
+            Code::Argument
+        );
+        assert_eq!(
+            // SAFETY: the test arguments remain live, or are null where the ABI accepts null.
+            unsafe {
                 ko_view_open(
                     client,
                     c"nonsense".as_ptr(),
@@ -3883,11 +4272,14 @@ mod tests {
                     Some(restore),
                     Some(feed),
                     std::ptr::null_mut(),
-                    &mut view
-                ),
-                Code::Argument
-            );
-            assert_eq!(
+                    &mut view,
+                )
+            },
+            Code::Argument
+        );
+        assert_eq!(
+            // SAFETY: the test arguments remain live, or are null where the ABI accepts null.
+            unsafe {
                 ko_view_open(
                     client,
                     std::ptr::null(),
@@ -3895,11 +4287,14 @@ mod tests {
                     Some(restore),
                     Some(feed),
                     std::ptr::null_mut(),
-                    &mut view
-                ),
-                Code::Argument
-            );
-            assert_eq!(
+                    &mut view,
+                )
+            },
+            Code::Argument
+        );
+        assert_eq!(
+            // SAFETY: the test arguments remain live, or are null where the ABI accepts null.
+            unsafe {
                 ko_view_open(
                     client,
                     c"pane_1".as_ptr(),
@@ -3907,11 +4302,12 @@ mod tests {
                     Some(restore),
                     Some(feed),
                     std::ptr::null_mut(),
-                    std::ptr::null_mut()
-                ),
-                Code::Argument
-            );
-        }
+                    std::ptr::null_mut(),
+                )
+            },
+            Code::Argument
+        );
+
         assert!(
             server
                 .targets("GET")
@@ -4596,7 +4992,8 @@ mod tests {
                     &mut out,
                 )
             };
-            freed_once(&mut out);
+            // SAFETY: out owns a core allocation that is not freed yet.
+            unsafe { freed_once(&mut out) };
             code
         });
         is_stalled.recv_timeout(WAIT).unwrap();
@@ -4877,8 +5274,13 @@ mod tests {
             if unsafe { ko_client_model(client, &mut buffer) } != Code::Ok {
                 return false;
             }
-            let model: Value = serde_json::from_str(&contents(&buffer)).unwrap();
-            freed_once(&mut buffer);
+            let model: Value = serde_json::from_str(
+                // SAFETY: this core buffer remains allocated through this read.
+                &unsafe { contents(&buffer) },
+            )
+            .unwrap();
+            // SAFETY: buffer owns a core allocation that is not freed yet.
+            unsafe { freed_once(&mut buffer) };
             model["layout"]["revision"] == json!(7) && model["panes"][0]["title"] == json!("b")
         });
         // SAFETY: the queue was suspended once above.
@@ -4941,31 +5343,35 @@ mod tests {
             len: 4,
         };
         let avail = [c"text/plain".as_ptr(), c"image/png".as_ptr()];
-        // SAFETY: the client is live; the item and its strings are valid for the call.
-        unsafe {
-            assert_eq!(
-                ko_client_clipboard_answer(client, 5, &item, 1, std::ptr::null(), 0),
-                Code::Ok
-            );
-            assert_eq!(
-                ko_client_clipboard_answer(client, 6, std::ptr::null(), 0, std::ptr::null(), 0),
-                Code::Ok
-            );
-            assert_eq!(
-                ko_client_clipboard_answer(client, 7, &item, 0, avail.as_ptr(), 2),
-                Code::Ok
-            );
-            let big = vec![0u8; ko_pane_wire::frame::MAX_CLIPBOARD];
-            let large = ClipboardItem {
-                mime: c"image/png".as_ptr(),
-                data: big.as_ptr(),
-                len: big.len(),
-            };
-            assert_eq!(
-                ko_client_clipboard_answer(client, 8, &large, 1, std::ptr::null(), 0),
-                Code::Ok
-            );
-        }
+        assert_eq!(
+            // SAFETY: the test arguments remain live, or are null where the ABI accepts null.
+            unsafe { ko_client_clipboard_answer(client, 5, &item, 1, std::ptr::null(), 0) },
+            Code::Ok
+        );
+        assert_eq!(
+            // SAFETY: the test arguments remain live, or are null where the ABI accepts null.
+            unsafe {
+                ko_client_clipboard_answer(client, 6, std::ptr::null(), 0, std::ptr::null(), 0)
+            },
+            Code::Ok
+        );
+        assert_eq!(
+            // SAFETY: the test arguments remain live, or are null where the ABI accepts null.
+            unsafe { ko_client_clipboard_answer(client, 7, &item, 0, avail.as_ptr(), 2) },
+            Code::Ok
+        );
+        let big = vec![0u8; ko_pane_wire::frame::MAX_CLIPBOARD];
+        let large = ClipboardItem {
+            mime: c"image/png".as_ptr(),
+            data: big.as_ptr(),
+            len: big.len(),
+        };
+        assert_eq!(
+            // SAFETY: the test arguments remain live, or are null where the ABI accepts null.
+            unsafe { ko_client_clipboard_answer(client, 8, &large, 1, std::ptr::null(), 0) },
+            Code::Ok
+        );
+
         let sent: Vec<Value> = (0..4)
             .map(|_| serde_json::from_str(&answered.recv_timeout(WAIT).unwrap()).unwrap())
             .collect();
@@ -5058,9 +5464,14 @@ mod tests {
             ),
             (1, 1, 2, 42, 15, 2, 8)
         );
-        assert_eq!(owned(shm.shm_name.as_ptr()), "/ko-77-3");
+        assert_eq!(
+            // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+            unsafe { owned(shm.shm_name.as_ptr()) },
+            "/ko-77-3"
+        );
         assert!(shm.body.data.is_null());
-        freed_once_if_any(&mut shm.body);
+        // SAFETY: this buffer is empty or owns its core allocation, freed once here.
+        unsafe { freed_once_if_any(&mut shm.body) };
         let heads = server.heads("GET", "/panes/pane_1/images/7/frames/2?generation=42");
         assert_eq!(heads.len(), 1);
         assert!(
@@ -5084,17 +5495,31 @@ mod tests {
             ),
             (2, 2, 1, 99, 40, 3, 8)
         );
-        assert_eq!(owned(body.shm_name.as_ptr()), "");
-        assert_eq!(contents(&body.body), "PIXELS!!");
-        freed_once(&mut body.body);
+        assert_eq!(
+            // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
+            unsafe { owned(body.shm_name.as_ptr()) },
+            ""
+        );
+        assert_eq!(
+            // SAFETY: this core buffer remains allocated through this read.
+            unsafe { contents(&body.body) },
+            "PIXELS!!"
+        );
+        // SAFETY: body.body owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut body.body) };
         let heads = server.heads("GET", "/panes/pane_1/images/7/frames/3?generation=99");
         assert!(header(&heads[0], "Ko-Accept-Shm").is_none(), "{}", heads[0]);
 
         for accept in [true, false] {
             let (code, mut gone) = image_of(client, (c"pane_1", 9, 1, 1), accept);
             assert_eq!(code, Code::NotFound);
-            assert_eq!(contents(&gone.body), "image not found");
-            freed_once(&mut gone.body);
+            assert_eq!(
+                // SAFETY: this core buffer remains allocated through this read.
+                unsafe { contents(&gone.body) },
+                "image not found"
+            );
+            // SAFETY: gone.body owns a core allocation that is not freed yet.
+            unsafe { freed_once(&mut gone.body) };
         }
         for bad in [
             (c"bogus", 7, 1, 1),

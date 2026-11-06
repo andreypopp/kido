@@ -11,7 +11,7 @@ use ko_server::protocol::{
 use ko_sys::event::Wake;
 
 use super::calls::{call, rejected};
-use super::{Buffer, Client, Code, client, ko_buffer_free, text_of};
+use super::{Buffer, Client, Code, client, hand_over, text_of};
 use crate::wire::{READ_TIMEOUT, Rejected, exchange, succeeded, text};
 
 const NAME_CAPACITY: usize = 32;
@@ -100,21 +100,19 @@ pub unsafe extern "C" fn ko_client_image(
     accept_shm: bool,
     out: *mut Image,
 ) -> Code {
-    let (Some(client), Some(pane)) = (client(client_).filter(|_| !out.is_null()), text_of(pane))
-    else {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let pane_text = unsafe { text_of(pane, &scope) };
+
+    let (Some(client), Some(pane)) = (client(client_).filter(|_| !out.is_null()), pane_text) else {
         return Code::Argument;
     };
     let path = format!("/panes/{pane}/images/{image}/frames/{frame}?generation={generation}");
     let Ok(route) = Route::of_request("GET", &path) else {
         return Code::Argument;
     };
-    let mut body = Buffer {
-        data: std::ptr::null_mut(),
-        len: 0,
-        cap: 0,
-    };
     let mut shm = None;
-    let code = call(client, &mut body, |socket, client, cancel| {
+    let (code, body) = call(&client, |socket, client, cancel| {
         let response =
             request(socket, client, &route, accept_shm, Some(cancel)).map_err(rejected)?;
         let Some(described) = described(&response, accept_shm) else {
@@ -133,7 +131,7 @@ pub unsafe extern "C" fn ko_client_image(
     let Some(shm) = shm.filter(|_| code == Code::Ok) else {
         // SAFETY: out is non-null and writable by contract.
         unsafe {
-            *out = Image {
+            out.write(Image {
                 format: 0,
                 width: 0,
                 height: 0,
@@ -142,22 +140,18 @@ pub unsafe extern "C" fn ko_client_image(
                 frames: 0,
                 length: 0,
                 shm_name: [0; NAME_CAPACITY],
-                body,
-            };
+                body: hand_over(body),
+            });
         }
         return code;
     };
-    if accept_shm {
-        // SAFETY: body is the empty buffer that call filled, freed here once.
-        unsafe { ko_buffer_free(&mut body) };
-    }
     let mut shm_name = [0; NAME_CAPACITY];
     for (slot, byte) in shm_name.iter_mut().zip(shm.name.bytes()) {
         *slot = byte as c_char;
     }
     // SAFETY: out is non-null and writable by contract.
     unsafe {
-        *out = Image {
+        out.write(Image {
             format: format_number(shm.format),
             width: shm.width,
             height: shm.height,
@@ -166,8 +160,8 @@ pub unsafe extern "C" fn ko_client_image(
             frames: shm.frames,
             length: shm.length,
             shm_name,
-            body,
-        };
+            body: hand_over(body),
+        });
     }
     code
 }

@@ -5,16 +5,22 @@ use ko_config::config::{self, LoadError};
 use ko_config::theme::{self, SetError};
 use serde_json::json;
 
-use super::{Buffer, Code, empty, hand_over, text_of};
+use super::{Buffer, Code, put, text_of};
 
-fn message(code: Code, out: *mut Buffer, text: &str) -> Code {
-    hand_over(
-        out,
+fn message(code: Code, text: &str) -> (Code, Vec<u8>) {
+    (
+        code,
         json!({ "error": { "message": text } })
             .to_string()
             .into_bytes(),
-    );
-    code
+    )
+}
+
+fn invalid(problem: &ko_config::yaml::Problem) -> (Code, Vec<u8>) {
+    (
+        Code::Invalid,
+        json!({ "error": problem }).to_string().into_bytes(),
+    )
 }
 
 /// # Safety
@@ -22,7 +28,6 @@ fn message(code: Code, out: *mut Buffer, text: &str) -> Code {
 /// `out` is writable for one `ko_buffer`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_config_defaults(out: *mut Buffer) -> Code {
-    empty(out);
     if out.is_null() {
         return Code::Argument;
     }
@@ -35,16 +40,18 @@ pub unsafe extern "C" fn ko_config_defaults(out: *mut Buffer) -> Code {
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
     let path = config::default_path(config_home.as_deref(), &home);
-    let Some(path) = path.to_str() else {
-        return message(Code::Io, out, "the configuration path is not UTF-8");
+    let (code, bytes) = match path.to_str() {
+        Some(path) => (
+            Code::Ok,
+            json!({ "path": path, "config": config::Config::default() })
+                .to_string()
+                .into_bytes(),
+        ),
+        None => message(Code::Io, "the configuration path is not UTF-8"),
     };
-    hand_over(
-        out,
-        json!({ "path": path, "config": config::Config::default() })
-            .to_string()
-            .into_bytes(),
-    );
-    Code::Ok
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, bytes) };
+    code
 }
 
 /// # Safety
@@ -52,23 +59,27 @@ pub unsafe extern "C" fn ko_config_defaults(out: *mut Buffer) -> Code {
 /// `path` is a NUL-terminated string. `out` is writable for one `ko_buffer`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_config_load(path: *const c_char, out: *mut Buffer) -> Code {
-    empty(out);
-    let Some(path) = text_of(path).filter(|_| !out.is_null()) else {
-        return Code::Argument;
-    };
-    match config::load(Path::new(path)) {
-        Ok(config) => {
-            hand_over(out, json!({ "config": config }).to_string().into_bytes());
-            Code::Ok
-        }
-        Err(LoadError::Invalid(problem)) => invalid(out, &problem),
-        Err(LoadError::Io(text)) => message(Code::Io, out, &text),
-    }
-}
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let path_text = unsafe { text_of(path, &scope) };
 
-fn invalid(out: *mut Buffer, problem: &ko_config::yaml::Problem) -> Code {
-    hand_over(out, json!({ "error": problem }).to_string().into_bytes());
-    Code::Invalid
+    if out.is_null() {
+        return Code::Argument;
+    }
+    let (code, bytes) = match path_text {
+        Some(path) => match config::load(Path::new(path)) {
+            Ok(config) => (
+                Code::Ok,
+                json!({ "config": config }).to_string().into_bytes(),
+            ),
+            Err(LoadError::Invalid(problem)) => invalid(&problem),
+            Err(LoadError::Io(text)) => message(Code::Io, &text),
+        },
+        None => (Code::Argument, Vec::new()),
+    };
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, bytes) };
+    code
 }
 
 /// # Safety
@@ -81,24 +92,38 @@ pub unsafe extern "C" fn ko_config_set_theme(
     dark: *const c_char,
     out: *mut Buffer,
 ) -> Code {
-    empty(out);
-    let (Some(path), Some(light), Some(dark), false) =
-        (text_of(path), text_of(light), text_of(dark), out.is_null())
-    else {
-        return Code::Argument;
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let (path_text, light_text, dark_text) = unsafe {
+        (
+            text_of(path, &scope),
+            text_of(light, &scope),
+            text_of(dark, &scope),
+        )
     };
-    match theme::set_theme(Path::new(path), light, dark) {
-        Ok(written) => {
-            hand_over(out, json!({ "written": written }).to_string().into_bytes());
-            Code::Ok
-        }
-        Err(SetError::Name(text)) => message(Code::Argument, out, &text),
-        Err(SetError::Changed) => message(
-            Code::Conflict,
-            out,
-            "the file changed while the theme was written",
-        ),
-        Err(SetError::Invalid(problem)) => invalid(out, &problem),
-        Err(SetError::Io(text)) => message(Code::Io, out, &text),
+
+    if out.is_null() {
+        return Code::Argument;
     }
+    let (code, bytes) = match (path_text, light_text, dark_text) {
+        (Some(path), Some(light), Some(dark)) => {
+            match theme::set_theme(Path::new(path), light, dark) {
+                Ok(written) => (
+                    Code::Ok,
+                    json!({ "written": written }).to_string().into_bytes(),
+                ),
+                Err(SetError::Name(text)) => message(Code::Argument, &text),
+                Err(SetError::Changed) => message(
+                    Code::Conflict,
+                    "the file changed while the theme was written",
+                ),
+                Err(SetError::Invalid(problem)) => invalid(&problem),
+                Err(SetError::Io(text)) => message(Code::Io, &text),
+            }
+        }
+        _ => (Code::Argument, Vec::new()),
+    };
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, bytes) };
+    code
 }

@@ -2,7 +2,6 @@
 
 use std::ffi::{c_char, c_int};
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 use ko_server::api::{Route, WindowOnly};
@@ -11,42 +10,28 @@ use ko_server::protocol::{self, Revision, SendPrompt};
 use ko_sys::event::Wake;
 
 use super::engine::failure;
-use super::{Buffer, Client, Code, bytes_of, client, empty, hand_over, locked, text_of};
+use super::{Buffer, Client, Code, client, locked, put, slice_of, text_of};
 use crate::edit::{Edit, Refusal};
 use crate::layout::{self, Document, EditError};
 use crate::wire;
 
 pub(super) fn call(
     client: &Client,
-    out: *mut Buffer,
     work: impl FnOnce(&Path, Option<ClientId>, &Wake) -> Result<Vec<u8>, (Code, Vec<u8>)>,
-) -> Code {
-    empty(out);
-    let shared = Arc::clone(&client.shared);
-    {
-        let mut calls = locked(&shared.calls);
-        if shared.cancel.is_set() {
-            return Code::Closed;
-        }
-        *calls += 1;
-    }
+) -> (Code, Vec<u8>) {
+    let shared = &client.shared;
     let id = *locked(&shared.client);
     let result = work(&shared.socket, id, &shared.cancel);
-    *locked(&shared.calls) -= 1;
-    shared.idle.notify_all();
     match result {
-        Ok(bytes) => {
-            hand_over(out, bytes);
-            Code::Ok
-        }
-        Err((code, bytes)) => {
-            hand_over(out, bytes);
+        Ok(bytes) => (Code::Ok, bytes),
+        Err((code, bytes)) => (
             if shared.cancel.is_set() {
                 Code::Closed
             } else {
                 code
-            }
-        }
+            },
+            bytes,
+        ),
     }
 }
 
@@ -87,27 +72,30 @@ pub unsafe extern "C" fn ko_client_put_layout(
     len: usize,
     out: *mut Buffer,
 ) -> Code {
-    let (Some(client), Some(bytes)) = (client(client_), bytes_of(document, len)) else {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let document_bytes = unsafe { slice_of(document, len, &scope) };
+
+    let (Some(client), Some(bytes)) = (client(client_), document_bytes) else {
         return Code::Argument;
     };
     if out.is_null() {
         return Code::Argument;
     }
-    let document = match protocol::decode::<Document>(bytes) {
-        Ok(document) if document.revision.is_some() => document,
-        _ => {
-            empty(out);
-            return Code::Argument;
-        }
+    let (code, bytes) = match protocol::decode::<Document>(bytes) {
+        Ok(document) if document.revision.is_some() => call(&client, |socket, id, cancel| {
+            let revision = document.revision.unwrap_or(Revision::FIRST);
+            match layout::send(socket, (id, None), revision, document.layout, Some(cancel)) {
+                Ok(Ok(snapshot)) => Ok(protocol::json(&snapshot).into_bytes()),
+                Ok(Err(newer)) => Err((Code::Conflict, protocol::json(&newer).into_bytes())),
+                Err(failure) => Err(rejected(failure)),
+            }
+        }),
+        _ => (Code::Argument, Vec::new()),
     };
-    call(client, out, |socket, id, cancel| {
-        let revision = document.revision.unwrap_or(Revision::FIRST);
-        match layout::send(socket, (id, None), revision, document.layout, Some(cancel)) {
-            Ok(Ok(snapshot)) => Ok(protocol::json(&snapshot).into_bytes()),
-            Ok(Err(newer)) => Err((Code::Conflict, protocol::json(&newer).into_bytes())),
-            Err(failure) => Err(rejected(failure)),
-        }
-    })
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, bytes) };
+    code
 }
 
 /// # Safety
@@ -123,11 +111,21 @@ pub unsafe extern "C" fn ko_client_prompt(
     len: usize,
     out: *mut Buffer,
 ) -> Code {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let (from_text, target_text, text_bytes) = unsafe {
+        (
+            text_of(from, &scope),
+            text_of(target, &scope),
+            slice_of(text, len, &scope),
+        )
+    };
+
     let (Some(client), Some(from), Some(target), Some(text)) = (
         client(client_).filter(|_| !out.is_null()),
-        text_of(from).and_then(|from| from.parse::<PaneId>().ok()),
-        text_of(target).and_then(|target| target.parse().ok()),
-        bytes_of(text, len).and_then(|text| std::str::from_utf8(text).ok()),
+        from_text.and_then(|from| from.parse::<PaneId>().ok()),
+        target_text.and_then(|target| target.parse().ok()),
+        text_bytes.and_then(|text| std::str::from_utf8(text).ok()),
     ) else {
         return Code::Argument;
     };
@@ -140,7 +138,7 @@ pub unsafe extern "C" fn ko_client_prompt(
         target,
         text: text.to_owned(),
     });
-    call(client, out, |socket, id, cancel| {
+    let (code, bytes) = call(&client, |socket, id, cancel| {
         wire::request(
             socket,
             (id, None),
@@ -149,7 +147,10 @@ pub unsafe extern "C" fn ko_client_prompt(
             Some(cancel),
         )
         .map_err(prompt_rejected)
-    })
+    });
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, bytes) };
+    code
 }
 
 /// # Safety
@@ -163,9 +164,13 @@ pub unsafe extern "C" fn ko_client_prompt_resolve(
     window_only: bool,
     out: *mut Buffer,
 ) -> Code {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let from_text = unsafe { text_of(from, &scope) };
+
     let (Some(client), Some(from)) = (
         client(client_).filter(|_| !out.is_null()),
-        text_of(from).and_then(|from| from.parse::<PaneId>().ok()),
+        from_text.and_then(|from| from.parse::<PaneId>().ok()),
     ) else {
         return Code::Argument;
     };
@@ -173,9 +178,12 @@ pub unsafe extern "C" fn ko_client_prompt_resolve(
         from,
         window: window_only.then_some(WindowOnly),
     };
-    call(client, out, |socket, id, cancel| {
+    let (code, bytes) = call(&client, |socket, id, cancel| {
         wire::request(socket, (id, None), &route, b"", Some(cancel)).map_err(rejected)
-    })
+    });
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, bytes) };
+    code
 }
 
 fn edit_failure(failure: EditError) -> (Code, Vec<u8>) {
@@ -198,30 +206,35 @@ pub unsafe extern "C" fn ko_client_edit(
     len: usize,
     out: *mut Buffer,
 ) -> Code {
-    let (Some(client), Some(bytes)) = (
-        client(client_).filter(|_| !out.is_null()),
-        bytes_of(edit, len),
-    ) else {
-        return Code::Argument;
-    };
-    let Ok(edit) = protocol::decode::<Edit>(bytes) else {
-        empty(out);
-        return Code::Argument;
-    };
-    let Some(first) = locked(&client.shared.model)
-        .as_ref()
-        .map(|model| model.layout.clone())
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let edit_bytes = unsafe { slice_of(edit, len, &scope) };
+
+    let (Some(client), Some(bytes)) = (client(client_).filter(|_| !out.is_null()), edit_bytes)
     else {
-        empty(out);
-        return Code::Closed;
+        return Code::Argument;
     };
-    call(client, out, |socket, id, cancel| {
-        layout::edit_from(first, &edit, |revision, draft| {
-            layout::send(socket, (id, None), revision, draft, Some(cancel))
-        })
-        .map(|edited| protocol::json(&edited).into_bytes())
-        .map_err(edit_failure)
-    })
+    let (code, bytes) = match protocol::decode::<Edit>(bytes) {
+        Ok(edit) => {
+            let first = locked(&client.shared.model)
+                .as_ref()
+                .map(|model| model.layout.clone());
+            match first {
+                Some(first) => call(&client, |socket, id, cancel| {
+                    layout::edit_from(first, &edit, |revision, draft| {
+                        layout::send(socket, (id, None), revision, draft, Some(cancel))
+                    })
+                    .map(|edited| protocol::json(&edited).into_bytes())
+                    .map_err(edit_failure)
+                }),
+                None => (Code::Closed, Vec::new()),
+            }
+        }
+        Err(_) => (Code::Argument, Vec::new()),
+    };
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, bytes) };
+    code
 }
 
 const DELETE_PANE: c_int = 1;
@@ -239,7 +252,11 @@ pub unsafe extern "C" fn ko_client_delete(
     id: *const c_char,
     out: *mut Buffer,
 ) -> Code {
-    let (Some(client), Some(id)) = (client(client_).filter(|_| !out.is_null()), text_of(id)) else {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let id_text = unsafe { text_of(id, &scope) };
+
+    let (Some(client), Some(id)) = (client(client_).filter(|_| !out.is_null()), id_text) else {
         return Code::Argument;
     };
     let route = match kind {
@@ -248,13 +265,15 @@ pub unsafe extern "C" fn ko_client_delete(
         DELETE_SESSION => id.parse().ok().map(|id| Route::DeleteSession { id }),
         _ => None,
     };
-    let Some(route) = route else {
-        empty(out);
-        return Code::Argument;
+    let (code, bytes) = match route {
+        Some(route) => call(&client, |socket, id, cancel| {
+            wire::request(socket, (id, None), &route, b"", Some(cancel)).map_err(rejected)
+        }),
+        None => (Code::Argument, Vec::new()),
     };
-    call(client, out, |socket, id, cancel| {
-        wire::request(socket, (id, None), &route, b"", Some(cancel)).map_err(rejected)
-    })
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, bytes) };
+    code
 }
 
 /// # Safety
@@ -266,24 +285,29 @@ pub unsafe extern "C" fn ko_client_runtime_down(
     name: *const c_char,
     out: *mut Buffer,
 ) -> Code {
-    let (Some(client), Some(name)) = (client(client_).filter(|_| !out.is_null()), text_of(name))
-    else {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let name_text = unsafe { text_of(name, &scope) };
+
+    let (Some(client), Some(name)) = (client(client_).filter(|_| !out.is_null()), name_text) else {
         return Code::Argument;
     };
-    let Ok(name) = name.parse() else {
-        empty(out);
-        return Code::Argument;
+    let (code, bytes) = match name.parse() {
+        Ok(name) => call(&client, |socket, id, cancel| {
+            wire::request(
+                socket,
+                (id, None),
+                &Route::DownRuntime { name },
+                protocol::json(&protocol::DownRuntime { force: true }).as_bytes(),
+                Some(cancel),
+            )
+            .map_err(rejected)
+        }),
+        Err(_) => (Code::Argument, Vec::new()),
     };
-    call(client, out, |socket, id, cancel| {
-        wire::request(
-            socket,
-            (id, None),
-            &Route::DownRuntime { name },
-            protocol::json(&protocol::DownRuntime { force: true }).as_bytes(),
-            Some(cancel),
-        )
-        .map_err(rejected)
-    })
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, bytes) };
+    code
 }
 
 /// # Safety
@@ -295,18 +319,24 @@ pub unsafe extern "C" fn ko_client_probe(
     within_ms: u32,
     out: *mut Buffer,
 ) -> Code {
-    let Some(socket) = text_of(socket).filter(|_| !out.is_null()) else {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let socket_text = unsafe { text_of(socket, &scope) };
+
+    let Some(socket) = socket_text.filter(|_| !out.is_null()) else {
         return Code::Argument;
     };
     let within = Duration::from_millis(u64::from(within_ms));
-    match crate::api::version(Path::new(socket), within, None).map_err(|error| failure(&error)) {
-        Ok((mismatch, server)) => {
-            hand_over(out, protocol::json(&server).into_bytes());
-            mismatch.as_ref().map(Code::of).unwrap_or(Code::Ok)
-        }
-        Err((code, message)) => {
-            hand_over(out, message.into_bytes());
-            code
-        }
-    }
+    let (code, bytes) = match crate::api::version(Path::new(socket), within, None)
+        .map_err(|error| failure(&error))
+    {
+        Ok((mismatch, server)) => (
+            mismatch.as_ref().map(Code::of).unwrap_or(Code::Ok),
+            protocol::json(&server).into_bytes(),
+        ),
+        Err((code, message)) => (code, message.into_bytes()),
+    };
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, bytes) };
+    code
 }
