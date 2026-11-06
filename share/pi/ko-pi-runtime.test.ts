@@ -93,6 +93,8 @@ test("the prompt gets the runtime cwd, the runtime's context files after the glo
       },
     };
     await s.emit("before_agent_start", event);
+    assert.deepEqual(await s.emit("resources_discover"), [undefined]);
+    assert.ok(!event.systemPromptOptions.promptGuidelines.some((rule) => rule.includes("read the ko skill first")));
     assert.equal(event.systemPromptOptions.cwd, join(t.rt, "proj"));
     assert.deepEqual(event.systemPromptOptions.contextFiles, [
       { path: join(getAgentDir(), "AGENTS.md"), content: "global" },
@@ -372,6 +374,7 @@ test("a runtime that is missing or runs pi itself refuses every routed tool and 
     ];
     for (const [runtimes, refusal] of cases) {
       const s = await routed(fx, t, { runtimes });
+      assert.deepEqual(await s.emit("resources_discover"), [undefined]);
       assert.equal(s.notifications.length, 1);
       assert.match(s.notifications[0]!.message, refusal);
       assert.equal(s.notifications[0]!.type, "error");
@@ -384,6 +387,7 @@ test("a runtime that is missing or runs pi itself refuses every routed tool and 
       assert.equal(fx.execLog().length, 0, "nothing reached the runtime");
       const event = { systemPromptOptions: { promptGuidelines: [] as string[], sections: {}, contextFiles: [], cwd: "/host" } };
       await s.emit("before_agent_start", event);
+      assert.ok(!event.systemPromptOptions.promptGuidelines.some((rule) => rule.includes("read the ko skill first")));
       assert.deepEqual(event.systemPromptOptions, { promptGuidelines: [event.systemPromptOptions.promptGuidelines[0]], sections: {}, contextFiles: [], cwd: "/host" });
     }
     assert.equal(fx.apiCalls().filter((call) => call.path.endsWith("/exec")).length, 0);

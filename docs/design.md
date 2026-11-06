@@ -152,6 +152,20 @@ real path of `KO_AGENT_TRUSTED_CWD`, which a spawner passes only for a
 directory that it trusts. It never saves the answer
 (design-subagents.md, "What a child is given").
 
+**The ko skill.** Inside ko, the extension answers pi's
+`resources_discover` with the `skills` directory beside its own file,
+which holds the skill `ko` (`share/pi/skills/ko/SKILL.md`, installed
+as `share/ko/pi/skills/ko/SKILL.md`). pi puts only the skill's name,
+description and path in the system prompt, and the model reads the
+file when a task needs it. Inside ko, `before_agent_start`
+also adds one guideline: the user runs ko, and the model reads the
+skill when the user talks about windows, tabs, panes, sessions,
+splits, floats or the sidebar. A routed pi gets neither: its `read`
+and `bash` run in the runtime, where the skill's host path does not
+exist and `ko` does not reach the user's server. The skill is text
+only: it adds no tool and no route. `make preview-pi` previews the
+skill directory with `ko-pi.ts`.
+
 **One copy.** On its first factory call, the extension claims
 `globalThis.__koPiExtensionCopy` with its path. A copy at another path
 registers nothing, because pi dedupes extensions by real path only.

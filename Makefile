@@ -71,6 +71,12 @@ preview-pi unpreview-pi:
 	  test -e "$$dir/$$file.orig" || cp -p "$$dir/$$file" "$$dir/$$file.orig"; src="share/pi/$$file"; \
 	else src="$$dir/$$file.orig"; fi; \
 	tmp=$$(mktemp "$$dir/$$file.XXXXXX"); cp -p "$$src" "$$tmp"; mv "$$tmp" "$$dir/$$file"; \
+	if test '$@' = preview-pi; then \
+	  test -e "$$dir/skills.orig" || ! test -d "$$dir/skills" || cp -Rp "$$dir/skills" "$$dir/skills.orig"; \
+	  rm -rf "$$dir/skills"; cp -Rp share/pi/skills "$$dir/skills"; \
+	else \
+	  rm -rf "$$dir/skills"; ! test -d "$$dir/skills.orig" || cp -Rp "$$dir/skills.orig" "$$dir/skills"; \
+	fi; \
 	echo 'Run /reload in the panes'
 
 release:
@@ -94,6 +100,7 @@ build: $(TERMINFO)/x/xterm-ghostty
 	cp -R share/ko/bin $(KO)/share/ko/bin
 	mkdir -p $(KO)/share/ko/pi
 	cp share/pi/ko-pi.ts $(KO)/share/ko/pi/ko-pi.ts
+	cp -R share/pi/skills $(KO)/share/ko/pi/skills
 	cp share/ko/shim.sh $(KO)/share/ko/shim.sh
 
 # The static Linux ko under share/ko/linux/<arch>: bin/ko and share/ko, which has the SHARE files of

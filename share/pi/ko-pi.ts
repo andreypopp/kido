@@ -798,12 +798,14 @@ declare global {
   var __koPiExtensionExit: (() => void) | undefined;
 }
 
+const extensionPath = fileURLToPath(import.meta.url);
+const KO_SKILL_RULE = "The user runs the ko terminal multiplexer, and this pi runs in one of its panes. When the user talks about windows, tabs, panes, sessions, splits, floats or the sidebar, read the ko skill first.";
+
 // One copy per process: pi dedupes extensions by real path only, so a second
 // copy at another path must register nothing. A /reload runs the same file again
 // and finds it already its own.
 function isFirstCopy(): boolean {
-  const path = fileURLToPath(import.meta.url);
-  return (globalThis.__koPiExtensionCopy ??= path) === path;
+  return (globalThis.__koPiExtensionCopy ??= extensionPath) === extensionPath;
 }
 
 // Must agree with pi's own CombinedAutocompleteProvider (extractAtPrefix), since
@@ -1485,6 +1487,7 @@ export default function (pi: ExtensionAPI) {
   let completion: { rows: AgentRow[]; all: AgentRow[]; at: number; refreshing: Promise<void> | null } | null = null;
 
   const insideKo = (): boolean => !!process.env.KO_SOCKET && findKo() !== null;
+  const offersSkill = (): boolean => insideKo() && !routed;
 
   const varsPath = (): string => `/panes/${pane}/vars`;
 
@@ -3104,8 +3107,13 @@ export default function (pi: ExtensionAPI) {
     return `The tools ${ROUTED_TOOLS.join(", ")} and the user's ! commands run in runtime ${r.name}, at ${r.cwd}. Every other tool${others.length ? ` (${others.join(", ")})` : ""} runs on the host, at ${r.hostCwd}, not in the runtime.`;
   };
 
+  pi.on("resources_discover", () => {
+    if (offersSkill()) return { skillPaths: [join(dirname(extensionPath), "skills")] };
+  });
+
   pi.on("before_agent_start", async (event) => {
     event.systemPromptOptions.promptGuidelines.push(NEVER_SLEEP_RULE);
+    if (offersSkill()) event.systemPromptOptions.promptGuidelines.push(KO_SKILL_RULE);
     if (edge) event.systemPromptOptions.promptGuidelines.push(SUBAGENT_INSTRUCTION);
     if (!routed || "refusal" in routed) return;
     const r = routed;

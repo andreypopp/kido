@@ -164,8 +164,9 @@ These requirements are fixed:
   and `ko enter`, with the exec session's supervisor (`session.rs`).
   It embeds the shell integrations of `share/ko/` with `include_str!`;
   `make build` installs `share/ko/bin` (the `ko`, `ssh` and
-  `ko-pi` shims), `share/ko/shim.sh` and `share/pi/ko-pi.ts` (as
-  `share/ko/pi/ko-pi.ts`) beside `bin/ko` in `build/ko/`, the layout
+  `ko-pi` shims), `share/ko/shim.sh`, `share/pi/ko-pi.ts` (as
+  `share/ko/pi/ko-pi.ts`) and `share/pi/skills` (as
+  `share/ko/pi/skills`) beside `bin/ko` in `build/ko/`, the layout
   that `ko_shell/src/bin_dir.rs` finds as installed.
   `ko_config/` is the crate `ko_config`: the configuration file
   `config.yaml` (its types, the path rule, the YAML decode in
@@ -726,7 +727,8 @@ maps the coordinator's modules.
                         with --extension; its suite ko-pi-*.test.ts on
                         the fake ko of testdata/fake_ko/; ko-api.d.ts,
                         generated from openapi.json; testdata/ko-prompts.txt,
-                        the prompt snapshot
+                        the prompt snapshot; skills/ko/SKILL.md, the ko
+                        skill that ko-pi offers to pi
     .pi/prompts/        gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed;
                         release.md, /release: Kido.app first, then ko
     .pi/extensions/     no-git-writes, the spawned agent's bash-tool guard

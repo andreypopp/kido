@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { mkdirSync, writeFileSync, copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, copyFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
 
 import { join, dirname } from "node:path";
 
@@ -13,6 +13,30 @@ import koPi from "./ko-pi.ts";
 import { makeFixture, createFakePi, startSession, freshExtension, withEnv, pollUntil, selfPane } from "./ko-pi-fixture.ts";
 
 const MESSAGES = "/panes/pane_1/messages";
+
+test("the ko skill and its guideline are available only inside ko", async () => {
+  const fx = makeFixture();
+  try {
+    const { pi, emit } = createFakePi();
+    koPi(pi as never);
+    const skills = join(dirname(fileURLToPath(import.meta.url)), "skills");
+    assert.deepEqual(await emit("resources_discover"), [{ skillPaths: [skills] }]);
+    assert.ok(existsSync(join(skills, "ko/SKILL.md")));
+    const guideline = "The user runs the ko terminal multiplexer, and this pi runs in one of its panes. When the user talks about windows, tabs, panes, sessions, splits, floats or the sidebar, read the ko skill first.";
+    const event = () => ({ systemPromptOptions: { promptGuidelines: [] as string[] } });
+    const inside = event();
+    await emit("before_agent_start", inside);
+    assert.ok(inside.systemPromptOptions.promptGuidelines.includes(guideline));
+    await withEnv({ KO_SOCKET: undefined }, async () => {
+      assert.deepEqual(await emit("resources_discover"), [undefined]);
+      const outside = event();
+      await emit("before_agent_start", outside);
+      assert.ok(!outside.systemPromptOptions.promptGuidelines.includes(guideline));
+    });
+  } finally {
+    await fx.restore();
+  }
+});
 
 test("a second copy of the extension at another path registers nothing, and a reload of the first still does", async () => {
   const first = createFakePi();
