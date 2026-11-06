@@ -2472,19 +2472,44 @@ export default function (pi: ExtensionAPI) {
 
   const taskTooLarge = (task: string): boolean => Buffer.byteLength(JSON.stringify(taskVar(task)), "utf8") > MAX_TASK_BYTES;
 
+  const sessionFiles = (sessionDir?: string): { id: string; path: string }[] => {
+    const directories = new Set(sessionDir ? [sessionDir] : []);
+    const roots = [join(getAgentDir(), "sessions"), join(getAgentDir(), "ko-subagents"), ...(sessionDir ? [dirname(sessionDir)] : [])];
+    for (const root of new Set(roots)) {
+      try {
+        for (const entry of readdirSync(root, { withFileTypes: true })) {
+          if (entry.isDirectory() || entry.isSymbolicLink()) directories.add(join(root, entry.name));
+        }
+      } catch {}
+    }
+    const files: { id: string; path: string }[] = [];
+    for (const directory of directories) {
+      try {
+        for (const file of readdirSync(directory)) {
+          const id = /_([^_]+)\.jsonl$/.exec(file)?.[1];
+          if (id) files.push({ id, path: join(directory, file) });
+        }
+      } catch {}
+    }
+    return files;
+  };
+
   const createPane = async (plan: Plan): Promise<{ placement: Api["Placement"] } | { error: string }> => {
+    const inside = plan.runtime?.mode === "inside";
     if (!ko) return { error: "ko is not on PATH" };
     let trusted = await trustedCwd(plan.cwd);
-    if (trusted && plan.runtime?.mode === "inside") {
+    if (trusted && inside && plan.runtime) {
       const info = plan.runtimeInfo ?? (await fetchRuntime(plan.runtime.name));
       trusted = "error" in info ? undefined : mapHostPath(info.paths, trusted) ?? info.cwd;
     }
     const argv = [
-      plan.runtime?.mode === "inside" ? "ko" : ko, "shell", "--", "ko-pi",
+      inside ? "ko" : ko, "shell", "--", "ko-pi",
       ...(plan.runtime?.mode === "routed" ? ["--runtime", plan.runtime.name] : []),
       ...(plan.mode.kind === "continue" ? ["--session", plan.mode.file] : ["--session-id", plan.session]),
       "--name", plan.name,
       "--model", plan.model,
+      // Copies pi's unexported getDefaultSessionDirPath in core/session-manager.js.
+      ...(plan.toplevel || inside ? [] : ["--session-dir", join(getAgentDir(), "ko-subagents", `--${resolve(plan.cwd).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`)]),
       ...(plan.mode.kind === "copy" ? ["--fork", plan.mode.file] : []),
     ];
     const env: Api["Variable"][] = [
@@ -2495,7 +2520,7 @@ export default function (pi: ExtensionAPI) {
     const body: Api["NewWindow"] = {
       name: plan.name,
       cwd: plan.cwd,
-      ...(plan.runtime?.mode === "inside" ? { runtime: plan.runtime.name } : {}),
+      ...(inside && plan.runtime ? { runtime: plan.runtime.name } : {}),
       command: { type: "argv", argv },
       env,
       ...(plan.toplevel ? { session: plan.koSession } : { parent: pane ?? undefined, close: "on_exit" as const }),
@@ -2525,7 +2550,10 @@ export default function (pi: ExtensionAPI) {
       if (!snapshot.ok) return { error: "could not read the layout" };
       const row = snapshot.all.find((a) => a.id === child.session);
       if (row && row.state === "running") return { running: row };
-      const plan: Plan = { name: child.name, session: child.session, model: child.model, cwd: child.cwd, runtime: child.runtime, task, mode: { kind: "fresh" }, toplevel: false, koSession: snapshot.me?.session ?? "" };
+      const files = sessionFiles(session?.sessionManager.getSessionDir()).filter((file) => file.id === child.session);
+      if (files.length > 1) return { error: `several session files have id ${child.session}` };
+      const file = files[0];
+      const plan: Plan = { name: child.name, session: child.session, model: child.model, cwd: child.cwd, runtime: child.runtime, task, mode: file ? { kind: "continue", file: file.path } : { kind: "fresh" }, toplevel: false, koSession: snapshot.me?.session ?? "" };
       const made = await createPane(plan);
       if ("error" in made) return made;
       recordChild(plan, made.placement);
@@ -2815,22 +2843,7 @@ export default function (pi: ExtensionAPI) {
       let source: { id: string; path: string; cwd: string } | undefined;
       if (params.resume_from) {
         const wanted = params.resume_from;
-        const sessionDir = ctx.sessionManager.getSessionDir();
-        const directories = new Set([sessionDir]);
-        try {
-          for (const entry of readdirSync(dirname(sessionDir), { withFileTypes: true })) {
-            if (entry.isDirectory() || entry.isSymbolicLink()) directories.add(join(dirname(sessionDir), entry.name));
-          }
-        } catch {}
-        const files: { id: string; path: string }[] = [];
-        for (const directory of directories) {
-          try {
-            for (const file of readdirSync(directory)) {
-              const id = /_([^_]+)\.jsonl$/.exec(file)?.[1];
-              if (id) files.push({ id, path: join(directory, file) });
-            }
-          } catch {}
-        }
+        const files = sessionFiles(ctx.sessionManager.getSessionDir());
         const exact = files.filter((file) => file.id === wanted);
         if (!exact.length && wanted.length < MIN_ID_PREFIX) return refuse(`session prefixes need at least ${MIN_ID_PREFIX} characters`);
         const matches = exact.length ? exact : files.filter((file) => file.id.startsWith(wanted));

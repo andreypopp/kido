@@ -631,6 +631,7 @@ test("spawn_agent with a runtime starts a routed child, or an inside child by th
     const routedChild = text(await spawnAgent({ name: "viahost", runtime: "dev" }));
     const [first] = fx.posts("/panes") as Body[];
     assert.equal(first!.runtime, undefined, "a routed child is a host pane");
+    assert.ok(first!.command.argv.includes("--session-dir"));
     assert.deepEqual(first!.command.argv.slice(1, 6), ["shell", "--", "ko-pi", "--runtime", "dev"]);
     assert.equal(first!.cwd, repo);
     assert.equal(env(first!, "KO_AGENT_TRUSTED_CWD"), repo, "the host cwd, unmapped");
@@ -643,6 +644,7 @@ test("spawn_agent with a runtime starts a routed child, or an inside child by th
     assert.equal(second!.runtime, "inner");
     assert.deepEqual(second!.command.argv.slice(0, 4), ["ko", "shell", "--", "ko-pi"]);
     assert.ok(!second!.command.argv.includes("--runtime"));
+    assert.ok(!second!.command.argv.includes("--session-dir"));
     assert.equal(second!.cwd, repo, "the host path, which the server maps");
     assert.equal(env(second!, "KO_AGENT_TRUSTED_CWD"), "/work", "the path the child sees");
     assert.match(insideChild, /pane pane_11, in runtime inner\);/);

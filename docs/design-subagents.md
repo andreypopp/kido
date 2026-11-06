@@ -159,8 +159,9 @@ caller's `parent` chain over the rows plus one, is at most 2. Then
 `createPane` in `ko-pi.ts` sends one `POST /panes` (protocol.md,
 section 7). The pane's command is `ko shell -- ko-pi` with the
 session (`--session-id` for a fresh or copied session, `--session`
-for a continued one), the name, the model, for a copy `--fork` and,
-for a routed child, `--runtime`.
+for a continued one), the name, the model, for a copy `--fork`, for a
+routed child `--runtime` and, except for an inside child,
+`--session-dir` ("Where a child's session lives").
 `ko shell --` starts pi through the user's login shell, so the child
 has the environment of an interactive pane (design.md, "The login
 environment"). The pane has the caller's pane as `parent` and `close:
@@ -213,6 +214,30 @@ result, which is when it invents a result or blocks.
 - A notice is information, not the user speaking. A message's first line
   identifies its sender.
 
+## Where a child's session lives
+
+pi builds the list of `--resume` and `/resume` before any extension
+loads, from the per-cwd directory under `<agent dir>/sessions/` or
+from every directory one level below it. No extension hook can filter
+that list. Thus, the harness gives each child `--session-dir
+<agent dir>/ko-subagents/<per-cwd name>/`, with pi's own agent
+directory (`PI_CODING_AGENT_DIR`, else `~/.pi/agent`) and pi's own
+encoding of the cwd. A child's session file is outside pi's tree, so
+the user's resume list shows only top-level sessions: the sessions of
+a pi that a person started and of `toplevel: true` agents, which keep
+pi's default. A child's own children are children too. A copy goes
+to the directory of its new role: a child's copy to the subagent
+tree, a top-level copy to pi's tree. A continued session keeps its
+file where it is, because pi's `--session` opens the given file. A
+restart through a message finds the child's file in both trees and
+continues it with `--session <file>`: with `--session-id`, pi
+searches only the one directory and starts an empty session when the
+file is elsewhere. An inside child (`pi: "runtime"`) gets no
+`--session-dir`: the host's agent directory and cwd do not exist in
+the runtime, and its session is a file of the runtime
+(design-runtimes.md, "Agents in a runtime"). A routed child is a host
+pi and gets it.
+
 ## Forking the caller's context
 
 `spawn_agent(fork: true)` starts the child as `ko-pi --session-id
@@ -229,8 +254,9 @@ long worker.
 
 `resume_from` names a pi session by its id or a unique prefix of at
 least eight characters. The harness reads only directory listings:
-the caller's session directory and each directory directly under its
-parent, and matches the id at the end of a file name
+the caller's session directory, each directory directly under its
+parent, under `<agent dir>/sessions/` and under
+`<agent dir>/ko-subagents/`, and matches the id at the end of a file name
 (`<time>_<id>.jsonl`). An exact id wins; otherwise the prefix must
 match one file. Then it reads the header line of the match, where pi
 records the session's working directory. A session that never ran a
@@ -498,7 +524,8 @@ which reads `pi.session`.
 ## Restarting through a message
 
 `message_agent` in `message` mode to an ended own child restarts it:
-`POST /panes` with `--session-id <id>` in the recorded cwd, the
+`POST /panes` with `--session <file>` of the child's session, or
+`--session-id <id>` when it has no file yet, in the recorded cwd, the
 message as `ko-pi.task`, the parent's `ko-pi.work` and a new
 `ko-pi.child` with the new pane. The message is never in pi's argv:
 pi's parser reads an argument that starts with `@` as a file, even

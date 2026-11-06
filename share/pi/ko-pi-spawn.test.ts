@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { writeFileSync } from "node:fs";
 
 import { makeFixture, agentPane, selfPane, startSession, text, entriesOf, withEnv, asSubagent, savedSession, pollUntil } from "./ko-pi-fixture.ts";
@@ -25,7 +26,7 @@ test("spawn_agent creates one pane with a parent, close on_exit, the task as a v
     const session = result.details.session as string;
     assert.match(session, /^[0-9a-f]{32}$/);
     const ko = join(fx.binDir, "ko");
-    assert.deepEqual(body!.command, { type: "argv", argv: [ko, "shell", "--", "ko-pi", "--session-id", session, "--name", "worker", "--model", "acme/caller:high"] });
+    assert.deepEqual(body!.command, { type: "argv", argv: [ko, "shell", "--", "ko-pi", "--session-id", session, "--name", "worker", "--model", "acme/caller:high", "--session-dir", join(getAgentDir(), "ko-subagents", `--${process.cwd().slice(1).split("/").join("-")}--`)] });
     assert.deepEqual({ name: body!.name, cwd: body!.cwd, parent: body!.parent, close: body!.close, session: body!.session }, { name: "worker", cwd: process.cwd(), parent: "pane_1", close: "on_exit", session: undefined });
     assert.equal(env(body!, "KO_AGENT_SESSION"), session);
     assert.equal(env(body!, "KO_AGENT_PARENT_SESSION"), "self-session");
@@ -53,6 +54,7 @@ test("a toplevel spawn is one POST with the session and neither parent nor close
     assert.equal(fx.posts("/panes").length, 1);
     assert.deepEqual({ session: body!.session, parent: body!.parent, close: body!.close }, { session: "session_3", parent: undefined, close: undefined });
     assert.equal(env(body!, "KO_AGENT_PARENT_SESSION"), undefined);
+    assert.ok(!body!.command.argv.includes("--session-dir"));
     assert.ok(env(body!, "KO_AGENT_SESSION"));
     assert.equal(body!.vars["ko-pi.task"].text, "go");
     assert.match(reply, /independent peer; no report or ending notice$/);
@@ -114,11 +116,11 @@ test("resume_from continues a saved session by --session in its directory; fork 
     fx.setPanes([selfPane()]);
     const s = await startSession(fx);
     const spawn = s.tools.get("spawn_agent");
-    const sessions = join(fx.dir, "sessions", "caller");
+    const sessions = join(fx.dir, "ko-subagents", "caller");
     const cwd = fx.dir;
     const file = savedSession(sessions, cwd, "0123456789abcdef0123456789abcdef");
-    const resumed = await spawn.execute("c", { name: "again", task: "", resume_from: "01234567" });
-    assert.match(text(resumed), /^spawned again \(session 0123456789abcdef0123456789abcdef,/);
+    const resumed = await withEnv({ PI_CODING_AGENT_DIR: fx.dir }, async () => text(await spawn.execute("c", { name: "again", task: "", resume_from: "01234567" })));
+    assert.match(resumed, /^spawned again \(session 0123456789abcdef0123456789abcdef,/);
     const [body] = fx.posts("/panes") as Body[];
     assert.deepEqual((body!.command.argv as string[]).slice(3, 7), ["ko-pi", "--session", file, "--name"]);
     assert.equal(body!.cwd, cwd, "the recorded directory");
@@ -126,14 +128,17 @@ test("resume_from continues a saved session by --session in its directory; fork 
     assert.deepEqual(entriesOf(s, "ko-pi.work"), [], "and owes no report");
 
     fx.setPanes([selfPane(), agentPane({ pane: "pane_30", session: "0123456789abcdef0123456789abcdef", name: "again", parent: "pane_1" })]);
-    assert.equal(text(await spawn.execute("c", { name: "again", task: "", resume_from: "0123456789abcdef0123456789abcdef" })), "could not spawn agent: session 0123456789abcdef0123456789abcdef is live in a pane");
+    assert.equal(text(await withEnv({ PI_CODING_AGENT_DIR: fx.dir }, () => spawn.execute("c", { name: "again", task: "", resume_from: "0123456789abcdef0123456789abcdef" }))), "could not spawn agent: session 0123456789abcdef0123456789abcdef is live in a pane");
 
-    const forked = await spawn.execute("c", { name: "copy", task: "do it differently", resume_from: "0123456789abcdef0123456789abcdef", fork: true });
-    assert.match(text(forked), /, forked from session 0123456789abcdef0123456789abcdef;/);
+    const forked = await withEnv({ PI_CODING_AGENT_DIR: fx.dir }, async () => text(await spawn.execute("c", { name: "copy", task: "do it differently", resume_from: "0123456789abcdef0123456789abcdef", fork: true })));
+    assert.match(forked, /, forked from session 0123456789abcdef0123456789abcdef;/);
     const argv = (fx.posts("/panes").at(-1)!.command.argv as string[]).slice(3);
     assert.deepEqual(argv.slice(0, 2), ["ko-pi", "--session-id"]);
     assert.notEqual(argv[2], "0123456789abcdef0123456789abcdef");
     assert.deepEqual(argv.slice(-2), ["--fork", file]);
+    assert.equal(argv[argv.indexOf("--session-dir") + 1], join(fx.dir, "ko-subagents", `--${cwd.slice(1).split("/").join("-")}--`));
+    await withEnv({ PI_CODING_AGENT_DIR: fx.dir }, () => spawn.execute("c", { name: "peer-copy", task: "go", resume_from: "01234567", fork: true, toplevel: true }));
+    assert.ok(!fx.posts("/panes").at(-1)!.command.argv.includes("--session-dir"));
   } finally {
     await fx.restore();
   }
@@ -155,7 +160,7 @@ test("a message to an ended subagent restarts it by --session-id in its recorded
     const posts = fx.posts("/panes") as Body[];
     assert.equal(posts.length, 1, "one restart");
     const argv = posts[0]!.command.argv as string[];
-    assert.deepEqual(argv.slice(3), ["ko-pi", "--session-id", "kid-session", "--name", "kid", "--model", "acme/m:low"]);
+    assert.deepEqual(argv.slice(3), ["ko-pi", "--session-id", "kid-session", "--name", "kid", "--model", "acme/m:low", "--session-dir", join(getAgentDir(), "ko-subagents", "--work-kid--")]);
     assert.equal(posts[0]!.cwd, "/work/kid");
     assert.equal(posts[0]!.parent, "pane_1");
     assert.equal(posts[0]!.vars["ko-pi.task"].text, winning);
@@ -170,6 +175,22 @@ test("a message to an ended subagent restarts it by --session-id in its recorded
       return message.execute("c", { to: "kid", message: "now", mode: "steer" });
     })());
     assert.equal(steered, "could not message kid: kid is no longer running", "only a message restarts");
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("message_agent continues an ended child's session file in the normal tree", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    const id = "0123456789abcdef0123456789abcdef";
+    const file = savedSession(join(fx.dir, "sessions", "caller"), fx.dir, id);
+    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", name: "kid", session: id, model: "acme/m:low", fork: false, cwd: fx.dir, pane: { instance: INSTANCE, pane: "pane_77" } } });
+    const result = await withEnv({ PI_CODING_AGENT_DIR: fx.dir }, async () => text(await s.tools.get("message_agent").execute("c", { to: "kid", message: "continue" })));
+    assert.match(result, /^restarted kid in pane pane_10;/);
+    assert.deepEqual(fx.posts("/panes")[0]!.command.argv.slice(3, 7), ["ko-pi", "--session", file, "--name"]);
   } finally {
     await fx.restore();
   }
