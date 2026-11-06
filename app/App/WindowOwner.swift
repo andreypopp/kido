@@ -1040,7 +1040,7 @@ private class AlertEscape: NSView {
         if pendingInitialSession {
             pendingInitialSession = false
             if ko.layout.layout.sessions.isEmpty && !pendingNewSession {
-                create(.ensureSession(.init(name: "session", new: .init(cwd: .absPath(NSHomeDirectory())))))
+                create(.ensureSession(.init(name: "session", new: .init())))
             }
         }
         if pendingNewSession {
@@ -1186,7 +1186,7 @@ private class AlertEscape: NSView {
     }
 
     func createSession(_ name: String, done: @escaping (String?) -> Void) {
-        guard let koModel else { return create(.addSession(.init(name: name, new: .init(cwd: .absPath(NSHomeDirectory())))), done: done) }
+        guard let koModel else { return create(.addSession(.init(name: name, new: .init())), done: done) }
         create(koModel.newSession(name), done: done)
     }
 

@@ -29,6 +29,19 @@ private final class Gate: @unchecked Sendable {
 
     private func editor(_ gate: Gate) -> LayoutEditor { LayoutEditor { try gate.perform($0) } }
 
+    func testNewSessionUsesTheFocusedPaneDirectoryOrTheServerDefault() throws {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let fixture = app.appendingPathComponent("Packages/PaneGeometry/Tests/PaneGeometryTests/Fixtures/ko-layout.json")
+        var model = try JSONDecoder().decode(KoModel.self, from: Data(contentsOf: fixture))
+        let focus = try XCTUnwrap(model.current?.window.focus)
+        guard case .addSession(let focused) = model.newSession("focused") else { return XCTFail("expected addSession") }
+        XCTAssertEqual(focused.new.cwd, .pane(.init(pane: focus)))
+        model.layout.layout.sessions = []
+        model.panes = []
+        guard case .addSession(let empty) = model.newSession("empty") else { return XCTFail("expected addSession") }
+        XCTAssertNil(empty.new.cwd)
+    }
+
     func testOneEditIsInFlightAndTheKeyedSuccessorReplacesTheWaitingOne() {
         let gate = Gate()
         let editor = editor(gate)

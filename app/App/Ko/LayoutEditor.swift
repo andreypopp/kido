@@ -165,7 +165,7 @@ extension PaneCommand {
 // The edits that make sessions and windows, in the directory of the pane that the user works in.
 extension KoModel {
     func newSession(_ name: String) -> KoSchema.Edit {
-        let cwd: KoSchema.Cwd = current.flatMap { pane($0.window.focus) }.map { .pane(.init(pane: $0.id)) } ?? .absPath(NSHomeDirectory())
+        let cwd: KoSchema.Cwd? = current.flatMap { pane($0.window.focus) }.map { .pane(.init(pane: $0.id)) }
         return .addSession(KoSchema.EditAddSession(name: name, new: KoSchema.CreatePane(cwd: cwd)))
     }
 

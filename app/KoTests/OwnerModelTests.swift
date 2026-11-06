@@ -98,12 +98,12 @@ import XCTest
     }
 
     func testConnectingToAnEmptyServerCreatesOneSessionButDeletingItDoesNotRecreateIt() throws {
-        let dir = try server()
+        let cwd = URL(fileURLWithPath: try stateDir()).resolvingSymlinksInPath()
+        let dir = try server(cwd: cwd)
         let owner = try owner(dir)
         wait("one session without Start") { owner.navigation.sessions.count == 1 && owner.testBanner.isHidden }
         wait("the pane's directory") { owner.testModel?.panes.first?.cwd.isEmpty == false }
-        XCTAssertEqual(URL(fileURLWithPath: owner.testModel?.panes.first?.cwd ?? "").standardizedFileURL,
-                       URL(fileURLWithPath: NSHomeDirectory()).standardizedFileURL)
+        XCTAssertEqual(URL(fileURLWithPath: owner.testModel?.panes.first?.cwd ?? "").resolvingSymlinksInPath(), cwd)
         let id = try XCTUnwrap(owner.testModel?.layout.layout.sessions.first?.id)
         try run(["api", "-X", "DELETE", "/sessions/\(id)"], dir: dir)
         wait("the deliberate empty layout") { owner.testModel?.layout.layout.sessions.isEmpty == true && owner.testBanner.testText.title == "No sessions" && !owner.testEditing }

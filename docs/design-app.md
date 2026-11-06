@@ -115,13 +115,13 @@ window's redial only attaches ([Remote hosts](#remote-hosts)). Start also
 remains after a failed dial and the welcome deadline; on "No sessions" it
 creates a session. When the first welcome of a local owner's connection,
 or a `fresh` one, shows no session, the owner sends one `ensure_session`
-edit (one pane in the home directory). The edit adds the session only to
+edit (one pane with no `cwd`, so it starts in the server's working
+directory). The edit adds the session only to
 a layout without one, and the core applies it again to the newer document
 after a revision conflict, so two windows that connect to an empty server
 at once end with one session. A same-instance reconnect, and a layout
 that another client emptied later, create nothing: the window shows "No
-sessions" with Start. A remote owner creates nothing at connect, because
-the home directory is the Mac's, not the host's. A welcome with `fresh`
+sessions" with Start. A remote owner creates nothing at connect. A welcome with `fresh`
 (another server instance) resets the
 session view and the model, because ids mean something only to the server
 that issued them, the owner makes a new `LayoutEditor` (a held edit's
@@ -1470,8 +1470,8 @@ Closing the session will end them." Every close is one `ko_client_delete`
 of the pane, window or session, on a detached task; the server deletes
 the target with its descendants. A failed delete reports "Pane command
 failed" in another sheet. When no session remains, the window shows the
-"No sessions" banner, and its Start creates one session in the home
-directory. The native window's close button still only disconnects
+"No sessions" banner, and its Start creates one session with no `cwd`,
+in the server's working directory. The native window's close button still only disconnects
 ([Remote hosts](#remote-hosts)). With no window, the Window and Session
 menus and Close Window are disabled.
 Captions use a display-only 200ms debounce per row. New text must remain
@@ -1614,7 +1614,8 @@ pane from the pane they act on. The new pane takes the source row's
 pane. Its `cwd` names the source pane, and the server moves that
 pane's directory into the new pane's place (docs/protocol.md,
 section 15, "The cwd of a new pane"); a new session with no focused
-pane starts in the home directory. In the table,
+pane sends no `cwd`, so it starts in the server's working directory on
+the host that runs the server, never in a path of the Mac. In the table,
 arrows and j/k move pane-only selection, Return activates with exactly one
 select, and Escape releases side focus and returns to the pane, also
 without a connection. While the table is first responder, docked or
@@ -1797,7 +1798,7 @@ the field and the list; an edit clears it.
   name." When the anchor window closed, is not navigable or its
   `server_instance` changed, the mode shows "That window is gone".
   `WindowOwner.createSession` sends one `add_session` edit with the name and
-  one pane in the cwd of the anchor's focus pane, else the home directory,
+  one pane in the cwd of the anchor's focus pane, else with no `cwd`,
   and selects the new session from the resulting layout. A refused edit
   creates nothing; it shows the core's message and the mode stays open.
   Success closes the palette.
