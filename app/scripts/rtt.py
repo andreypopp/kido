@@ -292,8 +292,10 @@ def main():
         big, echo = prepare(args, private)
         history = generated(args, private, big)
         app = App(args, private, host)
-        app.until("the first layout", lambda: app.find(t="attach", step="first-layout"), args.deadline)
-        app.until("the restore of both panes", lambda: app.find(t="restore", pane=big) and app.find(t="restore", pane=echo), args.deadline)
+        app.until("the remote layout", lambda: app.find(t="attach", host=host, step="first-layout"), args.deadline)
+        remote_layout = app.events.index(app.find(t="attach", host=host, step="first-layout")[0])
+        del app.events[:remote_layout]
+        app.until("the restore of both remote panes", lambda: app.find(t="restore", pane=big) and app.find(t="restore", pane=echo), args.deadline)
         tmp = f"{private.root}/requests.tmp"
         for key in range(args.keys):
             with open(tmp, "w") as f:
@@ -301,7 +303,7 @@ def main():
             os.rename(tmp, app.requests)
             app.until(f"the echo of key {key + 1}", lambda: len(app.find(t="echo", pane=echo)) > key, args.deadline)
             app.idle(args.interval / 1000)
-        attach = app.find(t="attach", step="first-layout")[0]["ms"]
+        attach = app.find(t="attach", host=host, step="first-layout")[0]["ms"]
         restore = app.find(t="restore", pane=big)[0]
         failed = history is not None and restore["bytes"] < history
         echoes = [e["ms"] for e in app.find(t="echo", pane=echo)]
