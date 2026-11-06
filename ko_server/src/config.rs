@@ -245,9 +245,11 @@ pub fn socket(mode: Dir, dir: &Path) -> Result<PathBuf, String> {
     }
 }
 
+pub const TERM_NAME: &str = "xterm-ghostty";
+
 pub fn terminal(terminfo: Option<&Path>) -> Vec<(&'static str, Vec<u8>)> {
     let mut found = vec![
-        ("TERM", b"xterm-ghostty".to_vec()),
+        ("TERM", TERM_NAME.as_bytes().to_vec()),
         ("TERM_PROGRAM", b"ko".to_vec()),
         ("TERM_PROGRAM_VERSION", BUILD.as_bytes().to_vec()),
     ];

@@ -2,7 +2,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use ko_server::config::{installed, is_executable};
+use ko_server::config::{TERM_NAME, installed, is_executable, terminfo_of};
 
 fn is_file(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|meta| meta.is_file())
@@ -20,6 +20,12 @@ pub fn of_exe(exe: &Path) -> Option<PathBuf> {
         .into_iter()
         .find(|dir| is_file(&dir.join("ko")))
         .filter(|dir| !dir.as_os_str().as_encoded_bytes().contains(&b':'))
+}
+
+pub fn terminfo_entry(exe: &Path) -> Option<Vec<u8>> {
+    fs::read(terminfo_of(exe)?.join("x").join(TERM_NAME))
+        .ok()
+        .filter(|bytes| !bytes.is_empty())
 }
 
 pub fn look_path_past(path: &str, dir: &Path, name: &str) -> Option<PathBuf> {

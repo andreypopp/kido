@@ -480,7 +480,8 @@ fn ssh(args: &[OsString]) -> ExitCode {
         .is_ok_and(|meta| meta.file_type().is_char_device());
     let Target { dir, caller } = target(None);
     let pane = caller.map(|caller| ssh::Pane { dir, caller });
-    let argv = ssh::prepare(tty, pane.as_ref(), args);
+    let terminfo = bin_dir::terminfo_entry(&invoked());
+    let argv = ssh::prepare(tty, pane.as_ref(), args, terminfo.as_deref());
     let Some((first, rest)) = argv.split_first() else {
         return fail("ssh", "no arguments");
     };

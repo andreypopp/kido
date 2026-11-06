@@ -33,6 +33,88 @@ fn path_with(dir: &Path) -> String {
 }
 
 #[test]
+fn ko_ssh_installs_remote_terminfo() {
+    use crate::sshd::{HOST, Remote};
+
+    if !enabled("KO_E2E_HOST_SSH") {
+        return;
+    }
+    let s = start_with(Path::new("/bin/sh"), &[], &[]);
+    let remote = Remote::with_ko(&s.dir);
+    let bin = s.dir.join("remote-bin");
+    fs::create_dir(&bin).unwrap();
+    script(
+        &bin,
+        "infocmp",
+        "#!/bin/sh\nexec /usr/bin/infocmp -A \"$HOME/.terminfo\" \"$@\"\n",
+    );
+    let prefix = s.dir.join("remote-prefix");
+    fs::rename(remote.bin.join("ssh"), remote.bin.join("ssh-real")).unwrap();
+    script(
+        &remote.bin,
+        "ssh",
+        &format!(
+            "#!/bin/sh\nfor arg do\n shift\n case \"$arg\" in *ko_zsh_b64=*) arg=\"$(cat {}); $arg\";; esac\n set -- \"$@\" \"$arg\"\ndone\nexec {} \"$@\"\n",
+            quote(text_of(&prefix)),
+            quote(text_of(&remote.bin.join("ssh-real"))),
+        ),
+    );
+    let entry = fs::read(
+        ko().parent()
+            .unwrap()
+            .join("../share/ko/terminfo/x/xterm-ghostty"),
+    )
+    .unwrap();
+    for case in ["missing", "readonly"] {
+        let home = s.dir.join(case);
+        fs::create_dir_all(home.join(".terminfo")).unwrap();
+        if case == "readonly" {
+            fs::set_permissions(home.join(".terminfo"), fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        fs::write(
+            &prefix,
+            format!(
+                "export HOME={} PATH={}:/usr/bin:/bin SHELL=/bin/sh; printf 'REMOTE_READY\\n'",
+                quote(text_of(&home)),
+                quote(text_of(&bin)),
+            ),
+        )
+        .unwrap();
+        let mut request = sh(&format!(
+            "PATH={}:{}:/usr/bin:/bin TERM=xterm-ghostty exec {} ssh {HOST}",
+            quote(text_of(&ko().parent().unwrap().join("../share/ko/bin"))),
+            quote(text_of(&remote.bin)),
+            quote(text_of(&ko())),
+        ));
+        request["close"] = json!("keep");
+        let pane = s.new_pane(request);
+        s.screen_has(&pane, "REMOTE_READY");
+        s.text(&pane, "printf 'TERM_RESULT=%s\\n' \"$TERM\"; infocmp xterm-ghostty >/dev/null 2>&1 && printf 'ENTRY_%s\\n' OK\r");
+        s.screen_has(
+            &pane,
+            if case == "readonly" {
+                "TERM_RESULT=xterm-256color"
+            } else {
+                "TERM_RESULT=xterm-ghostty"
+            },
+        );
+        if case != "readonly" {
+            s.screen_has(&pane, "ENTRY_OK");
+            for form in ["x", "78"] {
+                assert_eq!(
+                    fs::read(home.join(".terminfo").join(form).join("xterm-ghostty")).unwrap(),
+                    entry,
+                );
+            }
+        }
+        s.text(&pane, "exit\r");
+        if case == "readonly" {
+            fs::set_permissions(home.join(".terminfo"), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+}
+
+#[test]
 fn panes_inherit_current_directories() {
     let s = start_with(Path::new("/bin/sh"), &[], &[]);
     let work = fs::canonicalize(&*s.dir).unwrap().join("sp ace-é%#\t");

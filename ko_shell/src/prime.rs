@@ -70,6 +70,7 @@ const PS0_MINOR: u32 = 4;
 
 const BOOTSTRAP: &str = r#"ko_zsh_b64='@ZSH_B64@'
 ko_bash_b64='@BASH_B64@'
+ko_terminfo_b64='@TERMINFO_B64@'
 ko_dir=''
 ko_shell=${SHELL:-/bin/sh}
 [ -x "$ko_shell" ] || ko_shell=/bin/sh
@@ -80,10 +81,28 @@ ko_plain() {
   exec "$ko_shell"
 }
 ko_decode() {
-  printf %s "$1" | base64 -d > "$2" 2>/dev/null
-  [ -s "$2" ] || printf %s "$1" | base64 -D > "$2" 2>/dev/null
-  [ -s "$2" ]
+  printf %s "$1" | base64 -d > "$2" 2>/dev/null ||
+    printf %s "$1" | base64 -D > "$2" 2>/dev/null
 }
+ko_terminfo() {
+  infocmp xterm-ghostty >/dev/null 2>&1 && return 0
+  [ -n "$ko_terminfo_b64" ] || return 1
+  for ko_form in x 78; do
+    ko_target="$HOME/.terminfo/$ko_form/xterm-ghostty"
+    [ ! -e "$ko_target" ] || continue
+    mkdir -p "$HOME/.terminfo/$ko_form" 2>/dev/null || return 1
+    ko_tmp=$(mktemp "$HOME/.terminfo/$ko_form/.ko.XXXXXXXX" 2>/dev/null) || return 1
+    ko_decode "$ko_terminfo_b64" "$ko_tmp" &&
+      chmod 644 "$ko_tmp" 2>/dev/null && mv -n "$ko_tmp" "$ko_target" 2>/dev/null
+    rm -f "$ko_tmp"
+  done
+  if command -v infocmp >/dev/null 2>&1; then
+    infocmp xterm-ghostty >/dev/null 2>&1
+  else
+    [ -s "$HOME/.terminfo/x/xterm-ghostty" ] && [ -s "$HOME/.terminfo/78/xterm-ghostty" ]
+  fi
+}
+ko_terminfo || export TERM=xterm-256color
 ko_bash_has_ps0() {
   ko_v=$("$ko_shell" -c '@PROBE@' 2>/dev/null)
   ko_maj=${ko_v%%.*}
@@ -240,9 +259,13 @@ pub(crate) fn local_mode(dotdir: &Path, path: &Path) -> Mode {
     }
 }
 
-pub(crate) fn ssh_bootstrap() -> String {
+pub(crate) fn ssh_bootstrap(terminfo: Option<&[u8]>) -> String {
     let args = |mode| shell_args(mode).join(" ");
     BOOTSTRAP
+        .replace(
+            "@TERMINFO_B64@",
+            &base64_encode(terminfo.unwrap_or_default()),
+        )
         .replace("@ZSH_B64@", &base64_encode(ZSH_INTEGRATION.as_bytes()))
         .replace("@BASH_B64@", &base64_encode(BASH_INTEGRATION.as_bytes()))
         .replace("@PLAIN_ARGS@", &args(Mode::Plain))
@@ -303,7 +326,12 @@ exit 0
             ("TERM", "dumb"),
         ];
         vars.extend_from_slice(env);
-        let out = run(Path::new("/bin/sh"), &["-c", &ssh_bootstrap()], "", &vars);
+        let out = run(
+            Path::new("/bin/sh"),
+            &["-c", &ssh_bootstrap(None)],
+            "",
+            &vars,
+        );
         (out, fs::read_dir(&tmpdir).unwrap().count())
     }
 
@@ -315,6 +343,80 @@ exit 0
 
     fn holds(out: &str, file: &str) -> bool {
         out.contains(&format!("\n{file}\n"))
+    }
+
+    #[test]
+    fn the_bootstrap_installs_terminfo_without_infocmp_and_preserves_existing_entries() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let bin = scratch("terminfo-tools");
+        for name in ["base64", "mkdir", "mktemp", "mv", "rm", "chmod"] {
+            let command = ["/usr/bin", "/bin"]
+                .into_iter()
+                .map(|dir| Path::new(dir).join(name))
+                .find(|path| path.is_file())
+                .unwrap();
+            symlink(command, bin.join(name)).unwrap();
+        }
+        let shell = write(
+            &bin.join("shell"),
+            "#!/bin/sh\nprintf 'TERM=%s\\n' \"$TERM\"\n",
+            0o755,
+        );
+        let payload = b"compiled terminfo";
+        for case in ["missing", "existing", "empty"] {
+            let home = scratch(&format!("terminfo-{case}"));
+            if case != "missing" {
+                for form in ["x", "78"] {
+                    write(
+                        &home.join(".terminfo").join(form).join("xterm-ghostty"),
+                        if case == "existing" {
+                            "keep these bytes"
+                        } else {
+                            ""
+                        },
+                        0o644,
+                    );
+                }
+            }
+            if case == "empty" {
+                write(&bin.join("infocmp"), "#!/bin/sh\nexit 1\n", 0o755);
+            }
+            let out = run(
+                Path::new("/bin/sh"),
+                &["-c", &ssh_bootstrap(Some(payload))],
+                "",
+                &[
+                    ("HOME", home.to_str().unwrap()),
+                    ("PATH", bin.to_str().unwrap()),
+                    ("SHELL", shell.to_str().unwrap()),
+                    ("TERM", "xterm-ghostty"),
+                ],
+            );
+            assert_eq!(
+                field("TERM", &out),
+                if case == "empty" {
+                    "xterm-256color"
+                } else {
+                    "xterm-ghostty"
+                }
+            );
+            for form in ["x", "78"] {
+                let target = home.join(".terminfo").join(form).join("xterm-ghostty");
+                assert_eq!(
+                    fs::read(&target).unwrap(),
+                    match case {
+                        "missing" => payload.as_slice(),
+                        "existing" => b"keep these bytes",
+                        _ => b"",
+                    }
+                );
+                assert_eq!(
+                    fs::metadata(target).unwrap().permissions().mode() & 0o777,
+                    0o644
+                );
+            }
+        }
     }
 
     #[test]
@@ -343,7 +445,7 @@ exit 0
             assert!(!bodies(None, mode).contains("_ko_bin"), "{mode:?}");
         }
         for text in [
-            ssh_bootstrap(),
+            ssh_bootstrap(None),
             ZSH_INTEGRATION.to_owned(),
             BASH_INTEGRATION.to_owned(),
         ] {
@@ -429,10 +531,10 @@ exit 0
     #[test]
     fn the_bootstrap_parses_under_sh_and_carries_each_integration_as_single_quoted_base64() {
         assert_eq!(
-            run(Path::new("/bin/sh"), &["-n"], &ssh_bootstrap(), &[]),
+            run(Path::new("/bin/sh"), &["-n"], &ssh_bootstrap(None), &[]),
             ""
         );
-        let bootstrap = ssh_bootstrap();
+        let bootstrap = ssh_bootstrap(None);
         let parts: Vec<&str> = bootstrap.split('\'').collect();
         for (payload, source) in [(parts[1], ZSH_INTEGRATION), (parts[3], BASH_INTEGRATION)] {
             let decoded = run(Path::new("/usr/bin/base64"), &["-d"], payload, &[]);

@@ -75,7 +75,12 @@ fn mark(pane: &Pane, parsed: Option<&SshArgs>) {
     }
 }
 
-pub fn prepare(tty: bool, pane: Option<&Pane>, args: &[OsString]) -> Vec<OsString> {
+pub fn prepare(
+    tty: bool,
+    pane: Option<&Pane>,
+    args: &[OsString],
+    terminfo: Option<&[u8]>,
+) -> Vec<OsString> {
     let unchanged = || {
         std::iter::once(OsString::from("ssh"))
             .chain(args.iter().cloned())
@@ -99,7 +104,7 @@ pub fn prepare(tty: bool, pane: Option<&Pane>, args: &[OsString]) -> Vec<OsStrin
                 .chain(["-t", "--"].map(OsString::from))
                 .chain([
                     OsString::from(&parsed.dest),
-                    OsString::from(ssh_bootstrap()),
+                    OsString::from(ssh_bootstrap(terminfo)),
                 ])
                 .collect()
         }
@@ -123,7 +128,7 @@ mod tests {
                 token: "0123456789abcdef0123456789abcdef".parse().unwrap(),
             },
         };
-        let argv = prepare(true, Some(&pane), &args);
+        let argv = prepare(true, Some(&pane), &args, None);
         assert_eq!(
             argv,
             [OsString::from("ssh"), args[0].clone(), args[1].clone()]
@@ -133,8 +138,8 @@ mod tests {
     #[test]
     fn a_terminal_session_without_a_command_runs_the_bootstrap_after_the_options() {
         let args = [OsString::from("-oBatchMode=yes"), OsString::from("alias")];
-        let primed = prepare(true, None, &args);
-        let bootstrap = ssh_bootstrap();
+        let primed = prepare(true, None, &args, None);
+        let bootstrap = ssh_bootstrap(None);
         assert_eq!(
             primed,
             [
@@ -148,13 +153,19 @@ mod tests {
             .map(OsString::from)
         );
         for passthrough in [
-            prepare(false, None, &args),
+            prepare(false, None, &args, None),
             prepare(
                 true,
                 None,
                 &[OsString::from("alias"), OsString::from("uptime")],
+                None,
             ),
-            prepare(true, None, &[OsString::from("-N"), OsString::from("alias")]),
+            prepare(
+                true,
+                None,
+                &[OsString::from("-N"), OsString::from("alias")],
+                None,
+            ),
         ] {
             assert!(
                 !passthrough.contains(&OsString::from("-t")),
