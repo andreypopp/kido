@@ -1,6 +1,7 @@
 import { test } from "node:test";
 
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 
 import { gatedCommand, makeFixture, agentPane, selfPane, startSession, entriesOf, asSubagent, withEnv, pollUntil, idleTurn, assistant, exited, type Fixture, type Started } from "./ko-pi-fixture.ts";
 
@@ -74,9 +75,36 @@ test("a report whose ack is lost is sent again with its id, by the parent watch,
       const posts = fx.posts(NOTICES);
       assert.ok(posts.length >= 4, `${posts.length} sends: three at the settle, then the tick`);
       assert.equal(new Set(posts.map((p) => p.id)).size, 1, "one id for the one report");
-            const settled = fx.posts(NOTICES).length;
-      await pollUntil(() => fx.apiCalls().filter((c) => c.path === "/layout").length > 0, 500, "a tick");
+      const settled = fx.posts(NOTICES).length;
+      const layouts = fx.apiCalls().filter((c) => c.path === "/layout").length;
+      await pollUntil(() => fx.apiCalls().filter((c) => c.path === "/layout").length > layouts + 1, 500, "a completed tick");
+      assert.equal(entriesOf(s, "ko-pi.sent").length, 1, "concurrent sends record the ack once");
       assert.equal(fx.posts(NOTICES).length, settled, "an acked report is not sent again");
+    }, fx));
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("concurrent settle and parent-watch sends record one report ack", async () => {
+  const fx = makeFixture();
+  try {
+    asChild(fx);
+    await withEnv({ KO_PARENT_POLL_MS: "20" }, () => child(async (s) => {
+      fx.scriptSends([{ status: 200, body: { state: "acked", seq: 1 } }]);
+      await withEnv({ KO_FAKE_SEND_GATE: `${fx.dir}/send-gate` }, async () => {
+        const turn = idleTurn(s, "done");
+        try {
+          await pollUntil(() => fx.posts(NOTICES).length >= 2, 2000, "both report sends to reach the gate");
+        } finally {
+          writeFileSync(`${fx.dir}/send-gate`, "");
+          await turn;
+        }
+        const layouts = fx.apiCalls().filter((c) => c.path === "/layout").length;
+        await pollUntil(() => fx.apiCalls().filter((c) => c.path === "/layout").length > layouts + 1, 2000, "a completed tick");
+        assert.equal(entriesOf(s, "ko-pi.sent").length, 1, "concurrent sends record the ack once");
+        assert.equal(new Set(fx.posts(NOTICES).map((post) => post.id)).size, 1);
+      });
     }, fx));
   } finally {
     await fx.restore();

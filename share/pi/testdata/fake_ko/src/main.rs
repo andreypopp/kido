@@ -261,6 +261,7 @@ fn send_message(pane: &str, body: &str) -> ExitCode {
     if !row["dead"].is_null() {
         return http_error(410, "gone", &format!("{pane} is dead"));
     }
+    wait_gate("KO_FAKE_SEND_GATE");
     let script = env("KO_FAKE_SEND_SCRIPT");
     let scripted = if script.is_empty() {
         None

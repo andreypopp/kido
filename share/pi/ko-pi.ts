@@ -2352,6 +2352,7 @@ export default function (pi: ExtensionAPI) {
   const sendReport = async (report: OwnReport, once: boolean): Promise<void> => {
     if (!parentPane) return;
     const result = await sendIntent(parentPane, "notice", report.text, { id: report.id, data: { report: true }, once });
+    if (entries().some((entry) => entry.customType === ENTRY_SENT && entry.data.id === report.id)) return;
     if (result.state === "acked") append(ENTRY_SENT, { id: report.id });
     else if (result.state === "refused") append(ENTRY_SENT, { id: report.id, refused: true });
   };
