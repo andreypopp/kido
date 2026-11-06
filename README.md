@@ -125,8 +125,9 @@ click selects a word, a triple click a line, and the wheel scrolls;
 the pane gets no mouse event.
 
 `ko HOST` attaches to a ko server on another machine over ssh, and
-reconnects when the connection drops. It never starts a server there:
-run `ssh HOST ko server` once.
+reconnects when the connection drops. When no server runs there, it
+starts one, on the first connect and on each reconnect. `ko` must be
+on the PATH of non-interactive ssh commands on HOST.
 
 Every pane runs your login shell with a shell integration, so shell
 panes show a running command, a green `✓` for the last command's

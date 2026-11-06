@@ -79,7 +79,12 @@ pub fn reported_path(text: &str) -> Option<&str> {
 }
 
 pub fn no_remote_ko(host: &str) -> String {
-    format!("ko was not found on {host}; install it there, on the PATH of ssh commands")
+    format!(
+        "ko is not on the PATH of non-interactive ssh commands on {host}; \
+         put the line that adds it to PATH (for Homebrew: eval \"$(brew shellenv)\" \
+         with brew's full path) in ~/.bashrc before its non-interactive return, \
+         or in ~/.zshenv"
+    )
 }
 
 pub fn forwarding_refused(host: &str) -> String {

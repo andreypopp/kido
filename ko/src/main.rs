@@ -181,9 +181,12 @@ struct ServerArgs {
     /// ~/.config/ko/config.yaml.
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
-    /// Print the absolute path of the socket that the server would use, and start nothing.
+    /// Print the absolute socket path. Start nothing unless --ensure is set.
     #[arg(long)]
     print_socket: bool,
+    /// Start the server in the background when none answers, then print its socket.
+    #[arg(long, requires = "print_socket", conflicts_with_all = ["bin_dir", "config"])]
+    ensure: bool,
 }
 
 #[derive(Debug, Args)]
@@ -290,7 +293,13 @@ fn server(args: ServerArgs) -> ExitCode {
     if args.print_socket {
         let socket = std::path::absolute(config::dir(args.server))
             .map_err(|error| error.to_string())
-            .and_then(|dir| config::socket_path(&dir));
+            .and_then(|dir| {
+                if args.ensure {
+                    launch::attach(&dir, &invoked(), None, PATIENCE).map(|(socket, _)| socket)
+                } else {
+                    config::socket_path(&dir)
+                }
+            });
         return match socket {
             Ok(socket) => {
                 let _ = writeln!(io::stdout().lock(), "{}", socket.display());

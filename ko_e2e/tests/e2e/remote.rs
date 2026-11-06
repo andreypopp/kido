@@ -228,11 +228,13 @@ fn remote_a_restarted_server_starts_a_fresh_model_and_a_signal_cleans_up() {
 
     // The new ring is longer than the old offset, so a wrong resume would find its offset inside
     // the ring, keep the old screen and append the tail of the new output to it.
+    std::fs::write(&remote.block, "").unwrap();
     s.restart(&[]);
     let history = history_lines(300);
     s.pane(&format!(
         "{history}; printf '\\033]0;second-title\\007SECOND'; exec cat"
     ));
+    std::fs::remove_file(&remote.block).unwrap();
     outer.contains("second-title");
     outer.gone("first-title");
     outer.gone("READY");
@@ -244,7 +246,7 @@ fn remote_a_restarted_server_starts_a_fresh_model_and_a_signal_cleans_up() {
 }
 
 #[test]
-fn remote_api_uses_a_forward_and_a_stopped_server_names_the_command_that_starts_one() {
+fn remote_api_and_concurrent_dials_start_one_server_and_reconnect_starts_another() {
     if !enabled("KO_E2E_HOST_SSH") {
         return;
     }
@@ -259,15 +261,49 @@ fn remote_api_uses_a_forward_and_a_stopped_server_names_the_command_that_starts_
     remote.nothing_left(&remote.dir, None);
 
     s.stop();
-    let message = remote.api(&["/version"]).error(1);
-    assert_eq!(
-        message,
-        format!(
-            "ko {HOST}: no ko server is running on {HOST}; start one there with: ssh {HOST} ko server\n"
-        )
-    );
-    assert!(!s.dir.join("socket").exists(), "ko HOST started a server");
+    struct StopServer<'a>(&'a Server);
+    impl Drop for StopServer<'_> {
+        fn drop(&mut self) {
+            if self.0.dial().is_ok() {
+                self.0.ko(&["kill-server"], "");
+            }
+        }
+    }
+    let _stop = StopServer(&s);
+    let dir = &remote.dir;
+    let env = remote.client_env();
+    let (first, second) = std::thread::scope(|scope| {
+        let first =
+            scope.spawn(|| run_ko(dir, &env, &["api", "--host", HOST, "/version"], "").json());
+        let second =
+            scope.spawn(|| run_ko(dir, &env, &["api", "--host", HOST, "/version"], "").json());
+        (first.join().unwrap(), second.join().unwrap())
+    });
+    assert_eq!(first["instance"], second["instance"]);
+    assert!(!first["instance"].as_str().unwrap().is_empty());
+    s.ko(&["kill-server"], "").ok();
+    let outer = attach(&remote, &s.dir);
+    poll("ko HOST to start the server and create its pane", || {
+        s.dial().is_ok() && !s.rows().is_empty()
+    });
+    let attached = s.ko(&["api", "/version"], "").json();
+    outer.line("printf '\\033]0;started-title\\007STARTED'");
+    outer.contains("started-title");
+    s.ko(&["kill-server"], "").ok();
+    poll("the client to start another remote server", || {
+        s.dial().is_ok() && !s.rows().is_empty()
+    });
+    let next = s.ko(&["api", "/version"], "").json();
+    assert_ne!(attached["instance"], next["instance"]);
+    outer.line("printf '\\033]0;new-title\\007RESTARTED'");
+    outer.contains("new-title");
+    outer.gone("started-title");
+    outer.detach();
+    s.ko(&["kill-server"], "").ok();
     remote.nothing_left(&remote.dir, None);
+    std::fs::create_dir(s.dir.join("socket")).unwrap();
+    let failure = remote.api(&["/version"]).error(1);
+    assert!(failure.contains("ko server:"), "{failure}");
 }
 
 #[test]
@@ -306,7 +342,9 @@ fn remote_without_ko_on_the_host_is_a_clear_error() {
     let remote = Remote::start(&empty, "/usr/bin:/bin", Options::default());
     let message = remote.api(&["/version"]).error(1);
     assert!(
-        message.starts_with(&format!("ko {HOST}: ko was not found on {HOST}")),
+        message.starts_with(&format!(
+            "ko {HOST}: ko is not on the PATH of non-interactive ssh commands on {HOST}"
+        )),
         "{message}"
     );
     remote.nothing_left(&remote.dir, None);

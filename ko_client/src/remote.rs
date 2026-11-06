@@ -53,7 +53,7 @@ impl fmt::Display for Error {
             Error::Refused { host } => f.write_str(&ssh::forwarding_refused(host)),
             Error::NoServer { host } => write!(
                 f,
-                "no ko server is running on {host}; start one there with: ssh {host} ko server"
+                "the ko server on {host} did not answer through the forward; reconnect"
             ),
             Error::Interrupted => f.write_str("interrupted"),
         }
@@ -72,6 +72,7 @@ enum Stage {
     Master(Instant),
     Query(Pid, Instant),
     Forward(Pid, Instant),
+    Cancel(Pid, Instant),
     Up,
 }
 
@@ -81,6 +82,7 @@ pub struct Remote {
     ssh: PathBuf,
     dir: PathBuf,
     remote_socket: Option<String>,
+    forwarded_socket: Option<String>,
     master: Option<Pid>,
     stage: Stage,
     interactive: bool,
@@ -237,6 +239,7 @@ impl Remote {
             ssh: ssh.to_path_buf(),
             dir: create_dir(state)?,
             remote_socket: None,
+            forwarded_socket: None,
             master: None,
             stage: Stage::Down,
             interactive: true,
@@ -303,6 +306,15 @@ impl Remote {
         self.stage == Stage::Up && !self.master_running()
     }
 
+    pub fn reconnect(&mut self) {
+        self.remote_socket = None;
+        self.stage = if self.master_running() {
+            Stage::Master(Instant::now() + MASTER_WITHIN)
+        } else {
+            Stage::Down
+        };
+    }
+
     fn scratch(&self, name: &str) -> Result<File, Error> {
         OpenOptions::new()
             .write(true)
@@ -345,6 +357,8 @@ impl Remote {
     }
 
     fn start_master(&mut self) -> Result<(), Error> {
+        self.remote_socket = None;
+        self.forwarded_socket = None;
         for stale in [ssh::CONTROL, "socket"] {
             let _ = fs::remove_file(self.dir.join(stale));
         }
@@ -361,7 +375,7 @@ impl Remote {
     }
 
     fn retry_forward(&mut self, error: Error) -> Error {
-        self.stage = Stage::Master(Instant::now() + MASTER_WITHIN);
+        self.reconnect();
         error
     }
 
@@ -373,7 +387,11 @@ impl Remote {
                 false,
             ),
             None => (
-                remote_ko_args(&self.ctl(), &self.host, &["server", "--print-socket"]),
+                remote_ko_args(
+                    &self.ctl(),
+                    &self.host,
+                    &["server", "--print-socket", "--ensure"],
+                ),
                 true,
             ),
         };
@@ -419,7 +437,9 @@ impl Remote {
                     Ok(Progress::Pending(deadline.min(now + TICK)))
                 }
             }
-            Stage::Query(child, deadline) | Stage::Forward(child, deadline) => {
+            Stage::Query(child, deadline)
+            | Stage::Forward(child, deadline)
+            | Stage::Cancel(child, deadline) => {
                 let exit = match child.try_wait() {
                     Ok(Waited::Ended(exit)) => exit,
                     Ok(Waited::Running) if now < deadline => {
@@ -437,9 +457,26 @@ impl Remote {
                 if matches!(self.stage, Stage::Query(..)) {
                     let found = remote_socket(&self.host, exit, &self.step_output("out"), &stderr)
                         .map_err(|e| self.retry_forward(e))?;
+                    if self.forwarded_socket.as_ref() == Some(&found) {
+                        self.stage = Stage::Up;
+                        return Ok(Progress::Up);
+                    }
                     self.remote_socket = Some(found);
-                    self.start_step()
+                    if let Some(old) = self.forwarded_socket.take() {
+                        let spec = format!("{}:{old}", utf8(&self.socket()));
+                        let args =
+                            control_args(&self.ctl(), &["-O", "cancel", "-L", &spec], &self.host);
+                        let child = self.spawn_step(&args).map_err(|e| self.retry_forward(e))?;
+                        self.stage = Stage::Cancel(child, now + COMMAND_WITHIN);
+                        Ok(Progress::Pending(now + COMMAND_WITHIN))
+                    } else {
+                        self.start_step()
+                    }
                 } else if exit == Exit::Exited(0) {
+                    if matches!(self.stage, Stage::Cancel(..)) {
+                        return self.start_step();
+                    }
+                    self.forwarded_socket = self.remote_socket.take();
                     self.stage = Stage::Up;
                     self.interactive = false;
                     Ok(Progress::Up)
@@ -471,7 +508,9 @@ impl Remote {
 
 impl Drop for Remote {
     fn drop(&mut self) {
-        if let Stage::Query(child, _) | Stage::Forward(child, _) = self.stage {
+        if let Stage::Query(child, _) | Stage::Forward(child, _) | Stage::Cancel(child, _) =
+            self.stage
+        {
             kill(child);
         }
         self.stop_master();
@@ -508,8 +547,8 @@ mod tests {
             "-S /d/ctl -O forward -L /d/socket:/r/socket h"
         );
         assert_eq!(
-            remote_ko_args(ctl, "h", &["server", "--print-socket"]).join(" "),
-            "-S /d/ctl -T -o RemoteCommand=none -o BatchMode=yes h ko server --print-socket"
+            remote_ko_args(ctl, "h", &["server", "--print-socket", "--ensure"]).join(" "),
+            "-S /d/ctl -T -o RemoteCommand=none -o BatchMode=yes h ko server --print-socket --ensure"
         );
     }
 
@@ -538,7 +577,7 @@ mod tests {
                 host: "h".to_owned()
             }
             .to_string()
-            .contains("ko was not found on h")
+            .contains("ko is not on the PATH of non-interactive ssh commands on h")
         );
     }
 
@@ -563,7 +602,11 @@ mod tests {
                 .to_string()
                 .contains("refuses unix-socket forwarding")
         );
-        assert!(missing.to_string().contains("ssh h ko server"));
+        assert!(
+            missing
+                .to_string()
+                .contains("did not answer through the forward; reconnect")
+        );
     }
 
     #[test]
@@ -581,6 +624,7 @@ mod tests {
             ssh: PathBuf::from("/nonexistent/ssh"),
             dir: dir.clone(),
             remote_socket: None,
+            forwarded_socket: None,
             master: None,
             stage: Stage::Down,
             interactive: false,

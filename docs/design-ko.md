@@ -744,8 +744,15 @@ the macOS limit, on every platform.
 in which the socket file is stale; a connect timeout means a busy
 server), it takes `DIR/launch.lock`, starts `ko server` detached with
 its stdio to `DIR/log`, waits for the socket with a deadline of 5 s,
-then connects (`ko_client/src/launch.rs`). Two `ko` started at once
-start one server. The server runs until `ko kill-server`, which sends
+then connects (`ko_client/src/launch.rs`). It holds the lock until the
+socket answers, so two `ko` started at once start one server: the
+second takes the lock after the first server listens and attaches to
+it. The server's own bind takes `DIR/bind.lock`, not `launch.lock`, so
+the server that the launcher started does not wait for its launcher.
+Only the bind removes a stale socket, under `bind.lock`, so a launcher
+never removes the socket of a server that an explicit `ko server`
+bound meanwhile. A failed start reports the text that the server
+wrote to `DIR/log`. The server runs until `ko kill-server`, which sends
 no HTTP request: it reads the server's pid and uid from the socket's
 peer credentials, refuses another user's server, sends `SIGTERM` and
 waits up to 5 s for that pid to end. `SIGTERM`, `SIGINT` and `SIGHUP` stop the server: it removes
@@ -931,8 +938,18 @@ attaches to `<local>` as to a local server. Each connection is one
 `direct-streamlocal` channel with SSH's own window as its
 backpressure; these channels are not sessions, so sshd's `MaxSessions`
 does not cap the number of views. Nothing runs on the remote besides
-`ko`; the remote server starts only on an explicit `ssh HOST ko
-server`. OpenSSH reports a refused forward and a missing socket with
+`ko`. The client finds the remote socket with `ko server --print-socket
+--ensure` through the master, which starts the remote server as a
+local `ko` does when none runs (the launcher above, so concurrent
+dials from `ko HOST` and Kido.app start one server) and prints the
+socket when it answers. Every dial runs it once: the first connect
+and each reconnect, so a server that ended on the host (`ko
+kill-server`, a reboot) starts again and the client gets a fresh
+instance. A failed start reports the server's log text. Exit 127 of
+this step means that `ko` is not on the PATH of a non-interactive ssh
+command; its message names the fix. A reconnect keeps the forward
+only while the step prints the same remote socket.
+OpenSSH reports a refused forward and a missing socket with
 the same message, so the client asks the remote `ko api /version`
 through the master to tell them apart. Kido.app owns its own master,
 forward and agent publication and connects to the forward's local
@@ -1168,3 +1185,11 @@ Each decision names its date. The code states the rest.
   Everything that can be derived has no file. Runtimes are managed
   through the HTTP API only: a runtime starts with its first pane or
   exec session and stops by the idle rule.
+
+2026-11-06:
+
+- A client starts the remote server when none runs, on a connect and
+  on each reconnect, as a local `ko` starts a local server (the user's
+  choice). It reverses the rule that the remote server starts only on
+  an explicit `ssh HOST ko server`: that rule made a reboot or a `ko
+  kill-server` on the host a dead end for every window to it.

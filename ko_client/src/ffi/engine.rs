@@ -174,7 +174,17 @@ impl Engine<'_> {
             &Route::Client {},
             Some(Arc::clone(&shared.cancel)),
         )
-        .map_err(|error| failure(&error))?;
+        .map_err(|error| {
+            let (code, message) = failure(&error);
+            (
+                if code == Code::Closed {
+                    Code::NoServer
+                } else {
+                    code
+                },
+                message,
+            )
+        })?;
         let hello = locked(&shared.hello).clone();
         let joined = Model::join(&mut link, hello).map_err(|error| match error {
             JoinError::Refused(message) => (Code::Refused, message),

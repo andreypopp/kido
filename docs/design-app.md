@@ -111,7 +111,8 @@ The core reports that code at most once for each outage
 start never loops: a failed start shows "Could not start the ko server",
 and a start that brings no welcome shows "Disconnected", both with Start.
 A launch result that arrives after the welcome changes nothing. A remote
-window's redial only attaches ([Remote hosts](#remote-hosts)). Start also
+owner answers the same code with one remote start
+([Remote hosts](#remote-hosts)). Start also
 remains after a failed dial and the welcome deadline.
 
 **The empty layout.** A window never shows an empty layout. When the
@@ -133,7 +134,6 @@ tmux server's clients detach when its last session ends. A welcome
 resets the rule, so a window that reconnects to a layout emptied during
 the outage makes a session again. The app keeps running without windows;
 a Dock reopen opens a window, which makes a session. A welcome with `fresh`
-A welcome with `fresh`
 (another server instance) resets the
 session view and the model, because ids mean something only to the server
 that issued them, the owner makes a new `LayoutEditor` (a held edit's
@@ -225,18 +225,21 @@ reconnect, the resume by offset and the `instance` gate as for a local
 server. Each remote window has its own `SSH`: one ControlMaster, one 0700
 directory `/tmp/ka-<12>` with the control socket `c` and the forward's
 local end `socket`. Two windows to one host have two masters and two
-forwards. The app never starts a remote server: the server on the host
-starts only with an explicit `ssh HOST ko server`, which the banner names.
+forwards. When no server runs on the host, the app starts one there with
+the same step as `ko HOST` (docs/design-ko.md, "Remote").
 
 The connect sequence (`open` in `app/App/Remote.swift`) runs on one
 task of the owner, with each ssh child off main:
 
 1. `ssh -G` for the resolved `user@host`, then the master (`-M -N -T`),
    ready when `-O check` succeeds, within 10 s.
-2. A passenger `ko server --print-socket`. `ko_remote_socket` classifies
-   its result with the same code and texts as `ko HOST`
+2. A passenger `ko server --print-socket --ensure` (`SSH.ensure`), which
+   starts the server when none runs. `ko_remote_socket` classifies its
+   result with the same code and texts as `ko HOST`
    (`ko_client/src/remote.rs`): no `ko` on the PATH of ssh commands, an
-   ssh failure, a reply that is not a socket path, or the remote socket.
+   ssh failure, a failed start (a nonzero exit, "Could not start the ko
+   server on HOST" with the server's log text), a reply that is not a
+   socket path, or the remote socket.
 3. `ssh -O forward -L <dir>/socket:<remote socket>`. Exit 255 is an ssh
    failure. Any other result goes on to the probe, because OpenSSH
    reports a missing remote socket and a refused forward with the same
@@ -252,8 +255,15 @@ task of the owner, with each ssh child off main:
 Each failure is a banner with Reconnect (`RemoteFailure.banner`). The
 title is the app's; the detail is the core's text, so `ko HOST` and the
 app name a failure alike.
-The no-server banner has no button that starts a server: `ko server` runs
-in the foreground, and a remote server starts only on an explicit command (docs/design-ko.md, "Remote").
+"No ko server is running" remains only for a server that ends between
+the start and the probe.
+
+When the core reports `KO_ERR_NO_SERVER` for a remote owner (the server
+on the host ended), the owner runs `SSH.ensure` once over the live master
+(`WindowOwner.startRemoteServer`), and the core's next attempt attaches
+with a fresh welcome. A failed start shows its banner with Reconnect. The
+recovery after a lost master runs `SSH.ensure` before the forward too;
+there a failed start is a recovery failure, with the detail of the start.
 
 **Outage.** A `failed` event from the core shows "Disconnected from HOST"
 with "The connection to HOST is down." for an absent socket and the

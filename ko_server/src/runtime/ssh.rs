@@ -434,7 +434,10 @@ mod tests {
             )
             .unwrap_err()
         };
-        assert!(failed(Exit::Exited(127), b"").starts_with("ko was not found on box"));
+        assert!(
+            failed(Exit::Exited(127), b"")
+                .starts_with("ko is not on the PATH of non-interactive ssh commands on box")
+        );
         assert_eq!(
             failed(Exit::Exited(255), b"Permission denied\n"),
             "Permission denied"

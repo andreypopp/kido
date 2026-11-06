@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io;
+use std::io::{self, Read, Seek, SeekFrom};
 use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
@@ -102,14 +102,17 @@ fn started(pid: Pid) -> Option<Arc<AtomicBool>> {
         .map(|(_, ended)| Arc::clone(ended))
 }
 
-fn lock(dir: &Path, patience: Patience) -> io::Result<File> {
+const LAUNCH_LOCK: &str = "launch.lock";
+const BIND_LOCK: &str = "bind.lock";
+
+fn lock(dir: &Path, name: &str, patience: Patience) -> io::Result<File> {
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .open(dir.join("launch.lock"))?;
+        .open(dir.join(name))?;
     let deadline = Instant::now() + patience.deadline;
     loop {
         match lock.try_lock() {
@@ -126,7 +129,7 @@ fn lock(dir: &Path, patience: Patience) -> io::Result<File> {
 }
 
 pub fn bind(dir: &Path, socket: &Path, patience: Patience) -> io::Result<UnixListener> {
-    let _lock = lock(dir, patience)?;
+    let _lock = lock(dir, BIND_LOCK, patience)?;
     if let Err(error) = connect(socket, patience, None) {
         remove_stale(socket, &error)?;
     }
@@ -146,19 +149,21 @@ pub fn attach(
         Err(error) if absent(&error) => {}
         Err(error) => return Err(message(error)),
     }
-    let held = lock(dir, patience).map_err(message)?;
+    let _held = lock(dir, LAUNCH_LOCK, patience).map_err(message)?;
     match connect(&socket, patience, None) {
         Ok(stream) => return Ok((socket, stream)),
-        Err(error) if absent(&error) => remove_stale(&socket, &error).map_err(message)?,
+        Err(error) if absent(&error) => {}
         Err(error) => return Err(message(error)),
     }
     let log = dir.join("log");
-    let output = OpenOptions::new()
+    let mut output = OpenOptions::new()
+        .read(true)
         .create(true)
         .append(true)
         .mode(0o600)
         .open(&log)
         .map_err(message)?;
+    let log_start = output.metadata().map_err(message)?.len();
     let args = ["server", "--server", &dir.to_string_lossy()];
     let environment = path.map(|path| {
         std::env::vars_os()
@@ -171,7 +176,6 @@ pub fn attach(
         .as_deref()
         .map_or(ko_sys::spawn::Env::Inherit, ko_sys::spawn::Env::Only);
     let child = ko_sys::spawn::detached(executable, &args, output.as_fd(), env).map_err(message)?;
-    drop(held);
     let ended = reap(child);
     let deadline = Instant::now() + patience.deadline;
     loop {
@@ -180,17 +184,26 @@ pub fn attach(
             Err(error) if absent(&error) => {}
             Err(error) => return Err(message(error)),
         }
-        if ended.load(Ordering::SeqCst) {
-            return Err(format!("server exited; see {}", log.display()));
+        let failure = if ended.load(Ordering::SeqCst) {
+            "server exited".to_owned()
+        } else if Instant::now() >= deadline {
+            format!(
+                "server did not start within {} seconds",
+                patience.deadline.as_secs()
+            )
+        } else {
+            std::thread::sleep(patience.retry);
+            continue;
+        };
+        let mut detail = Vec::new();
+        if output.seek(SeekFrom::Start(log_start)).is_ok() {
+            let _ = output.take(16 * 1024).read_to_end(&mut detail);
         }
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "server did not start within {} seconds; see {}",
-                patience.deadline.as_secs(),
-                log.display()
-            ));
-        }
-        std::thread::sleep(patience.retry);
+        return Err(format!(
+            "{failure}; see {}\n{}",
+            log.display(),
+            String::from_utf8_lossy(&detail).trim()
+        ));
     }
 }
 
@@ -256,8 +269,22 @@ mod tests {
         let dir = scratch("exit");
         std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .unwrap();
-        let error = attach(&dir, Path::new("/usr/bin/false"), None, PATIENCE).unwrap_err();
+        let executable = dir.join("ko");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '\\377START-FAILED\\n' >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            &executable,
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        std::fs::write(dir.join("log"), "OLD-FAILURE\n").unwrap();
+        let error = attach(&dir, &executable, None, PATIENCE).unwrap_err();
         assert!(error.starts_with("server exited"), "{error}");
+        assert!(error.contains("�START-FAILED"), "{error}");
+        assert!(!error.contains("OLD-FAILURE"), "{error}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -292,7 +319,7 @@ mod tests {
     fn a_missing_socket_binds_and_a_held_lock_is_waited_for_until_the_deadline() {
         let dir = scratch("lock");
         let socket = dir.join("socket");
-        let held = lock(&dir, PATIENCE).unwrap();
+        let held = lock(&dir, BIND_LOCK, PATIENCE).unwrap();
         let short = Patience {
             deadline: Duration::from_millis(50),
             retry: Duration::from_millis(10),

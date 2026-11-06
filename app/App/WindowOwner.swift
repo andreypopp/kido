@@ -402,13 +402,23 @@ private class AlertEscape: NSView {
         down("Starting the ko server…", "", button: nil)
         task = Task {
             guard accepts(generation) else { return }
-            do throws(Failure) {
-                _ = try await KoServer.launch(dir: serverDir)
+            do throws(RemoteFailure) {
+                if host == .local {
+                    do throws(Failure) { _ = try await KoServer.launch(dir: serverDir) }
+                    catch { throw .start(error.message) }
+                } else if let ssh, let drain {
+                    try await ssh.ensure(drain: drain)
+                    ssh.publishAgent(drain: drain)
+                }
                 guard accepts(generation), !welcomed else { return }
-                down("Disconnected from \(host.label)", "Reconnecting…", button: "Start")
+                down("Disconnected from \(host.label)", "Reconnecting…", button: host == .local ? "Start" : "Reconnect")
             } catch {
                 guard accepts(generation), !welcomed else { return }
-                down("Could not start the ko server", error.message, button: "Start")
+                if host == .local {
+                    down("Could not start the ko server", error.banner(host.label).detail, button: "Start")
+                } else {
+                    remoteFailed(error)
+                }
             }
         }
     }
@@ -986,7 +996,7 @@ private class AlertEscape: NSView {
             if code == KO_ERR_REFUSED { return refused(message) }
             welcomed = false
             guard recovering == nil else { return }
-            if host == .local, code == KO_ERR_NO_SERVER { return startServer() }
+            if code == KO_ERR_NO_SERVER { return startServer() }
             down("Disconnected from \(host.label)", (code == KO_ERR_NO_SERVER ? "The connection to \(host.label) is down." : message) + "\nReconnecting…", button: host == .local ? "Start" : "Reconnect")
         case .mismatch(let code, let server, let own):
             protocolMismatch(code: code, server: server, own: own)

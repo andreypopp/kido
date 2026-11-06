@@ -11,6 +11,7 @@ import PaneGeometry
     private(set) var forwardsAgent = false
     private var publishing: Task<Void, Never>?
     private var serving: Child?
+    private var forwardedSocket: String?
     private var lost: ((Failure) -> Void)?
     var mark: (String) -> Void = { _ in }
     private var stopped = false
@@ -129,6 +130,7 @@ import PaneGeometry
     private func launchMaster(within seconds: TimeInterval, drain: Drain?) async throws(Failure) {
         guard !stopped, !Task.isCancelled else { throw Failure(message: "Connection cancelled") }
         serving = nil
+        forwardedSocket = nil
         let child = try Child("/usr/bin/ssh", masterArguments, env: environment, stdout: Pipe())
         master = child
         var ready = false
@@ -159,9 +161,16 @@ import PaneGeometry
     // The forward of the remote socket to <directory>/socket. Exit 255 is ssh failing; another failure shows when the
     // probe finds nothing at the socket.
     func forward(drain: Drain) async throws(Failure) {
-        guard let remote = remoteSocket else { return }
+        guard let remote = remoteSocket, remote != forwardedSocket else { return }
+        if let old = forwardedSocket {
+            let arguments = options + ["-S", directory + "/c", "-O", "cancel", "-L", directory + "/socket:" + old, "--", destination]
+            let cancelled = try await Child.run("/usr/bin/ssh", arguments, env: environment, deadline: 10, drain: drain)
+            guard cancelled.status == 0 else { throw Failure.ssh(destination + ": " + cancelled.err) }
+            forwardedSocket = nil
+        }
         let run = try await Child.run("/usr/bin/ssh", forwardArguments(remote: remote), env: environment, deadline: 10, drain: drain)
         if run.status == 255 { throw Failure.ssh(destination + ": " + run.err) }
+        forwardedSocket = remote
         mark("forward")
     }
 
@@ -191,7 +200,7 @@ import PaneGeometry
     // After the master ended: a new master and the same forward. The engine of the client reconnects by itself.
     func recover(drain: Drain) async throws(Failure) {
         try await relaunch(drain: drain)
-        try await forward(drain: drain)
+        do throws(RemoteFailure) { try await ensure(drain: drain) } catch { throw Failure.ssh(error.banner(destination).detail) }
         publishAgent(drain: drain)
     }
 

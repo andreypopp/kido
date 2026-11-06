@@ -269,7 +269,7 @@ import XCTest
         XCTAssertEqual(classify(0, "banner\n").failure?.code, KO_ERR_INVALID)
         XCTAssertEqual(classify(9, signaled: true).failure?.code, KO_ERR_INVALID)
         XCTAssertEqual(KoClient.unreachable(host: "devbox", remoteAnswers: true).code, KO_ERR_REFUSED)
-        XCTAssertEqual(KoClient.unreachable(host: "devbox", remoteAnswers: false).detail, "no ko server is running on devbox; start one there with: ssh devbox ko server")
+        XCTAssertEqual(KoClient.unreachable(host: "devbox", remoteAnswers: false).detail, "the ko server on devbox did not answer through the forward; reconnect")
         guard case .unreachable(let code, _) = KoClient.probe(socket: "/tmp/ko-kr-none/socket", within: 1) else { return XCTFail("a probe of no socket") }
         XCTAssertEqual(code, KO_ERR_NO_SERVER)
     }
@@ -279,6 +279,7 @@ import XCTest
             (.ssh(Failure.transport("down")), "Kido could not reach devbox"),
             (.noKo("t"), "ko is not installed on devbox"),
             (.noServer("t"), "No ko server is running on devbox"),
+            (.start("t"), "Could not start the ko server on devbox"),
             (.refused("t"), "devbox refuses unix-socket forwarding"),
             (.badSocket("t"), "Kido could not find the ko socket on devbox"),
         ]
@@ -330,10 +331,12 @@ import XCTest
         }
         let noKo = try owner(host, scope, path: "/usr/bin:/bin")
         banner(noKo, "ko is not installed on h")
-        XCTAssertTrue(noKo.testBanner.testText.detail.contains("ko was not found on h"), noKo.testBanner.testText.detail)
-        let noServer = try owner(host, scope)
-        banner(noServer, "No ko server is running on h")
-        XCTAssertTrue(noServer.testBanner.testText.detail.contains("ssh h ko server"), noServer.testBanner.testText.detail)
+        XCTAssertTrue(noKo.testBanner.testText.detail.contains("ko is not on the PATH of non-interactive ssh commands on h"), noKo.testBanner.testText.detail)
+        addTeardownBlock { @MainActor in try? self.run(["kill-server"], dir: scope.dir) }
+        let started = try owner(host, scope)
+        wait("the remote server starts and ensures one session", within: 20) {
+            started.navigation.sessions.map(\.name) == ["session"] && started.testBanner.isHidden && !started.testEditing
+        }
         let refused = try owner(refusing, refusingScope)
         banner(refused, "h refuses unix-socket forwarding")
         XCTAssertTrue(refused.testBanner.testText.detail.contains("AllowStreamLocalForwarding"))
@@ -360,6 +363,7 @@ import XCTest
     func testAKilledMasterIsReplacedAndTheSameClientResumesThenARestartedServerIsFresh() throws {
         let host = try host(), scope = try host.scope()
         let dir = try serverWithWindows([1], at: scope.dir)
+        addTeardownBlock { @MainActor in try? self.run(["kill-server"], dir: dir) }
         let owner = try owner(host, scope)
         connected(owner)
         let client = try XCTUnwrap(owner.testClient)
@@ -377,11 +381,12 @@ import XCTest
         XCTAssertEqual(names(owner), ["s"])
 
         try run(["kill-server"], dir: dir)
-        wait("the server is gone") { !FileManager.default.fileExists(atPath: dir + "/socket") }
-        wait("the outage banner again", within: 20) { owner.testBanner.testText.title == "Disconnected from h" }
-        _ = try ko(["server"], dir: dir)
-        wait("the new server") { FileManager.default.fileExists(atPath: dir + "/socket") }
-        try put(#"{"revision":0,"layout":{"sessions":[{"name":"after","windows":[{"name":"w","tree":{"pane":{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}}}]}]}}"#, dir: dir)
+        wait("the client starts the new server and ensures one session", within: 20) {
+            self.names(owner) == ["session"] && owner.testBanner.isHidden && !owner.testEditing
+        }
+        let layout = try JSONDecoder().decode(KoSchema.Snapshot.self, from: Data(output(["api", "/layout"], dir: dir).utf8))
+        let pane = try XCTUnwrap(owner.testModel?.panes.first?.id)
+        try put(#"{"revision":\#(layout.revision),"layout":{"sessions":[{"name":"after","windows":[{"name":"w","tree":{"pane":"\#(pane)"}}]}]}}"#, dir: dir)
         wait("the layout of the new server", within: 20) { self.names(owner) == ["after"] }
         XCTAssertTrue(owner.testClient === client)
     }

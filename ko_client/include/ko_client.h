@@ -67,7 +67,9 @@ extern "C" {
  * a KO_EVENT_FAILED with KO_ERR_REFUSED. A refusal before Welcome carries the
  * server's text and stops reconnect attempts. KO_EVENT_FAILED reports the first
  * failure of an outage, and reports once more if a later attempt first finds
- * no server (KO_ERR_NO_SERVER). A new KO_EVENT_WELCOME ends the outage. Its
+ * no server (KO_ERR_NO_SERVER): no socket, nothing listens, or the peer
+ * closes before it answers the upgrade, as a forward with no server behind it
+ * does. A new KO_EVENT_WELCOME ends the outage. Its
  * `fresh` is true when the server is another process than the one before
  * (another `instance`): every view is then closed with KO_EVENT_VIEW_CLOSED,
  * and the caller reads the model and opens the views again. Otherwise the

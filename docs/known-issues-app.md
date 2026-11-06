@@ -313,7 +313,7 @@ Status: accepted.
 
 ## A remote shell that prints at start breaks the socket query
 
-`ko server --print-socket` runs through the remote login shell. A shell
+`ko server --print-socket --ensure` runs through the remote login shell. A shell
 that prints text on a noninteractive start gives a reply that is not a
 socket path, and the window shows "Kido could not find the ko socket on
 HOST" with the text. `ko HOST` has the same limit. Status: accepted.

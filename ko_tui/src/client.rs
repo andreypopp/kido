@@ -1769,6 +1769,9 @@ impl Client {
         if self.reconnecting.is_some() {
             return Ok(());
         }
+        if let Some(remote) = self.remote.as_mut() {
+            remote.reconnect();
+        }
         self.keys.leave();
         self.pending_selection = None;
         self.link.unwatch(&mut self.poll);

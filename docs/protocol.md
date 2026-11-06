@@ -85,8 +85,8 @@ remote backpressure. These channels are not sessions, so sshd's
 `MaxSessions` does not cap the number of views. The remote side does
 not differ from the local side: there is no stdio bridge. The
 client finds `<dir>/socket` through the master with `ko server
---print-socket`, which starts nothing; the remote server starts only
-when the user runs `ssh host ko server`. OpenSSH reports a refused
+--print-socket --ensure`, which starts the remote server when none
+runs, on a connect and on each reconnect. OpenSSH reports a refused
 forward and a missing socket with the same message, so the client
 asks the remote `ko api /version` through the master to tell them
 apart. A host that refuses unix-socket forwarding is unsupported.

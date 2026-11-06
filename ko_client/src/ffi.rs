@@ -3879,7 +3879,7 @@ mod tests {
             classify(127, false, b"", b"sh: ko: not found"),
             (
                 Code::NotFound,
-                "ko was not found on box; install it there, on the PATH of ssh commands".to_owned()
+                "ko is not on the PATH of non-interactive ssh commands on box; put the line that adds it to PATH (for Homebrew: eval \"$(brew shellenv)\" with brew's full path) in ~/.bashrc before its non-interactive return, or in ~/.zshenv".to_owned()
             )
         );
         assert_eq!(
@@ -3910,8 +3910,7 @@ mod tests {
             unreachable(false),
             (
                 Code::NoServer,
-                "no ko server is running on box; start one there with: ssh box ko server"
-                    .to_owned()
+                "the ko server on box did not answer through the forward; reconnect".to_owned()
             )
         );
     }
