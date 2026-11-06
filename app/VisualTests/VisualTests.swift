@@ -1666,6 +1666,82 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         header.addWindow.mouseExited(with: hover)
     }
 
+    func testBecomingKeyRestoresPaneFocusUnlessSheetOrSidebarOwnsIt() async throws {
+        try loadRuntime()
+        _ = try await KoServer.launch(dir: directory.path)
+        try await koPut(directory.path, #"[{"name":"visual","windows":[{"name":"a","tree":\#(koPane())}]}]"#)
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        defer { owner.close() }
+        owner.testServerDir = directory.path
+        owner.start()
+        try await wait("owner ready") { owner.testSession?.activePane != nil && owner.testBanner.isHidden }
+        let pane = try XCTUnwrap(owner.testSession?.activePane)
+        let window = try XCTUnwrap(owner.window)
+        let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 60), styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        window.beginSheet(sheet, completionHandler: nil)
+        window.makeFirstResponder(nil)
+        let sheetFocus = window.firstResponder
+        XCTAssertNotNil(window.attachedSheet)
+        window.becomeKey()
+        XCTAssertTrue(window.firstResponder === sheetFocus, "activation must not take focus under a sheet")
+        window.endSheet(sheet)
+        sheet.close()
+
+        owner.sidebar.list.focus()
+        let sidebarFocus = window.firstResponder
+        XCTAssertFalse(owner.sidebar.isFloating)
+        XCTAssertTrue(owner.sidebar.list.containsFocus)
+        window.becomeKey()
+        XCTAssertTrue(window.firstResponder === sidebarFocus, "explicit sidebar keyboard focus survives activation")
+
+        owner.sidebar.list.leave()
+        window.makeFirstResponder(nil)
+        window.becomeKey()
+        XCTAssertTrue(window.firstResponder === pane, "becoming key must restore the active pane")
+    }
+
+    func testBannerDismissalRestoresPaneFocus() async throws {
+        try loadRuntime()
+        _ = try await KoServer.launch(dir: directory.path)
+        try await koPut(directory.path, #"[{"name":"visual","windows":[{"name":"a","tree":\#(koPane())}]}]"#)
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        defer { owner.close() }
+        owner.testServerDir = directory.path
+        owner.start()
+        try await wait("owner ready") { owner.snapshot != nil && owner.testSession?.activePane != nil && owner.testBanner.isHidden }
+        let pane = try XCTUnwrap(owner.testSession?.activePane)
+        owner.window.makeFirstResponder(pane)
+        let snapshot = try XCTUnwrap(owner.snapshot)
+        owner.down("Disconnected", "Reconnecting…", button: nil)
+        XCTAssertFalse(owner.window.firstResponder === pane)
+        owner.testReceive(snapshot)
+        XCTAssertTrue(owner.testBanner.isHidden)
+        XCTAssertTrue(owner.window.firstResponder === pane, "a restored connection must restore pane focus without activation")
+    }
+
+    func testPaletteDismissalDoesNotRestoreHiddenPane() async throws {
+        try loadRuntime()
+        _ = try await KoServer.launch(dir: directory.path)
+        try await koPut(directory.path, #"[{"name":"visual","windows":[{"name":"a","tree":\#(koPane())},{"name":"b","tree":\#(koPane())}]}]"#)
+        let app = AppDelegate(runtime: runtime)
+        let owner = try XCTUnwrap(app.open(.local, start: false))
+        defer { app.closePalette(); owner.close() }
+        owner.testServerDir = directory.path
+        owner.start()
+        try await wait("two windows ready") { owner.testSession?.windows.count == 2 }
+        let session = try XCTUnwrap(owner.testSession)
+        let original = try XCTUnwrap(session.activePane)
+        owner.window.makeFirstResponder(original)
+        app.togglePalette()
+        XCTAssertNotNil(app.palettePanel)
+        let next = try XCTUnwrap(session.windows.first { !$0.value.panes.contains { $0 === original } }?.key)
+        session.show(next)
+        XCTAssertTrue(original.isHiddenOrHasHiddenAncestor)
+        app.closePalette()
+        XCTAssertTrue(owner.window.firstResponder === session.activePane, "palette dismissal must not restore a hidden pane")
+    }
+
     func testSameWindowDeferredPaneFocus() async throws {
         try loadRuntime()
         _ = try await KoServer.launch(dir: directory.path)

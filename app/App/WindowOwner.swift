@@ -1417,7 +1417,10 @@ private class AlertEscape: NSView {
 
     private func ready() {
         guard welcomed, model.session != nil, case .connected = link else { return }
-        banner.isHidden = true
+        if !banner.isHidden {
+            banner.isHidden = true
+            focusSelected()
+        }
         showConfigError()
     }
 

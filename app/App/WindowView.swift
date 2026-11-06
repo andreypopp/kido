@@ -914,7 +914,11 @@ final class WindowView: NSView {
     }
 
     @objc private func didBecomeKey() {
-        guard !isHidden, let pane = window?.firstResponder as? PaneView, pane.pane != active else { return }
-        session?.selectPane(pane.pane)
+        guard !isHidden, let window else { return }
+        if let pane = PaneView.owner(window.firstResponder), pane.superview === self, !pane.isHiddenOrHasHiddenAncestor {
+            if pane.pane != active { session?.selectPane(pane.pane) }
+        } else if window.attachedSheet == nil, !(session?.sidebarFocused() ?? false) {
+            focusActive(force: true)
+        }
     }
 }

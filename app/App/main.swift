@@ -596,7 +596,7 @@ import SidebarFeed
     private func restorePaletteFocus(_ saved: (owner: WindowOwner, responder: NSResponder?)? = nil) {
         guard let focus = saved ?? paletteFocus, focus.owner.alive else { return }
         if !background { focus.owner.window.makeKeyAndOrderFront(nil) }
-        if let view = focus.responder as? NSView, view.window === focus.owner.window {
+        if let view = focus.responder as? NSView, view.window === focus.owner.window, !view.isHiddenOrHasHiddenAncestor {
             focus.owner.window.makeFirstResponder(view)
         } else { focus.owner.focusSelected() }
     }

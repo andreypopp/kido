@@ -882,6 +882,22 @@ pane edge, or the sidebar edge if the sidebar list is still first
 responder. A window that has never been key counts as key, so off-screen
 test windows keep the focused look.
 
+When a window becomes key (Command-Tab, a Dock click, a click on its
+chrome), the active pane of the shown window becomes first responder,
+unless the first responder is already a visible pane of that window or a
+control inside it, such as its find field, which then becomes the active
+pane on the server. A sheet over the window and docked sidebar keyboard
+focus keep the first responder; the floating sidebar leaves at resign
+key, so it never holds focus over an activation, and an open palette
+closes when the window becomes key. AppKit keeps a window's first
+responder over resign and become key, so without this rule a stale
+responder (the window itself, a hidden pane) survives the activation and
+no pane takes typing. The palette's dismissal restores its saved
+responder only while that view is visible, else the selected pane, as
+after a jump. The connection banner clears the first responder when it
+shows; when a connection is ready and the banner was showing, the
+selected pane gets the focus again in the same way.
+
 One click on a pane in a window that is not key, or in an inactive app,
 activates the window and focuses that pane, as in Ghostty's own app
 (`SurfaceView_AppKit.swift`, `localEventLeftMouseDown`). A local
