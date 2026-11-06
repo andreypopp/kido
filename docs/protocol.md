@@ -51,9 +51,31 @@ half of a connection's output queue), because a welcome's or layout
 event's pane rows carry every variable of their panes (section 7); a
 larger message closes the connection. Client to server
 frames are masked, as the RFC requires; it costs an XOR over input
-bytes and buys standard tooling (`websocat --unix`). The server pings
-every 30 s on idle streams and closes a connection without a pong
-after 10 s more, with the reason `io`. A close frame carries the error kind of section 2 as
+bytes and buys standard tooling (`websocat --unix`).
+
+Keepalive: the server proves its liveness, and checks the client's, on
+one fixed schedule. It sends a ping on every open WebSocket each
+`PING_INTERVAL` (`ko_server/src/ws.rs`), whatever traffic flows in
+either direction, and closes a connection without a pong within `PONG`
+with the reason `io`. Only a pong answers a ping: other client
+messages move neither the next ping nor the pong deadline. While the
+connection's output progresses, the pong deadline starts again, and
+output that makes no progress closes it (section 4). While the server
+does not read a connection (an exec session's stdin backpressure,
+design-runtimes.md), it still pings and waits for no pong; the pong
+deadline starts again when reads resume. A client sends no pings of
+its own. It treats a link as lost when no byte arrives for `WATCHDOG`
+(`ko_client/src/wire.rs`) while it reads the link; a byte of a partial
+frame counts, so a large snapshot on a slow link keeps the link alive,
+and its own sends never count. `WATCHDOG` is twice `PING_INTERVAL`,
+so one late ping does not trip it. Rationale: each side's check reads
+only what the other side must send, so a client that sends often to a
+server with nothing to say does not see the server as silent. The
+monotonic clocks of both sides stop in sleep, so a local deadline
+keeps its remaining time across a sleep; an awake peer can still
+close the link of a peer that slept, and the client reconnects.
+
+A close frame carries the error kind of section 2 as
 its reason. The exception is a view's overflow close (section 4),
 with code 1013 and the reason `view queue overflow`. The removal of a
 pane closes each of its views with code 1008 and the reason `gone`,

@@ -20,10 +20,6 @@ pub(crate) enum Role {
 }
 
 impl Role {
-    pub(crate) fn paused(&self) -> bool {
-        matches!(self, Role::Exec(session) if session.paused())
-    }
-
     pub(crate) fn reads(&self) -> bool {
         match self {
             Role::Exec(session) => session.reads(),

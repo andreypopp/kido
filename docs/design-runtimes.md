@@ -605,8 +605,9 @@ stderr pipe only while the connection's queue is below its cap, so a
 slow reader blocks the command on its write as a full pipe does; the
 inside ko applies the same rule between its frames and the command's
 pipes. Nothing is dropped and nothing spills. While a session pauses its
-WebSocket reads for stdin, its pong deadline restarts at each ping,
-and a hangup of the peer still ends it. A WebSocket that closes first
+WebSocket reads for stdin, queued or running, the server still pings
+it and does not wait for a pong, and a hangup of the peer still ends
+it (protocol.md, section 1). A WebSocket that closes first
 closes the helper's stdin, which cancels the command inside, and sends
 the helper `SIGTERM`, then `SIGKILL` after `KO_STOP_ESCALATION_MS`;
 a step that a failed or cancelled start ends gets the same. At its

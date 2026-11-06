@@ -21,7 +21,7 @@ const MAX_MESSAGE: usize = 128 << 20;
 const RECEIVE_BUFFER: usize = 1 << 20;
 const MAX_RESERVE: usize = 64 << 20;
 pub const READ_TIMEOUT: Duration = Duration::from_secs(40);
-pub const WATCHDOG: Duration = Duration::from_secs(40);
+pub const WATCHDOG: Duration = Duration::from_secs(60);
 
 // poll cannot see frames that the upgrade read already buffered in the link,
 // so the owner of a new link dispatches one read at once.
@@ -50,10 +50,16 @@ struct Interruptible<'a> {
 
 impl Read for Interruptible<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if let Some(cancel) = self.cancel {
-            wait_or_cancel(self.stream, Want::Read, cancel, self.within)?;
+        match fd::wait(
+            self.stream.as_fd(),
+            Want::Read,
+            self.cancel.map(Wake::fd),
+            Some(self.within),
+        )? {
+            Waited::Ready => fd::read(self.stream.as_fd(), buffer),
+            Waited::Cancelled => Err(launch::cancelled_error()),
+            Waited::TimedOut => Err(io::ErrorKind::TimedOut.into()),
         }
-        fd::read(self.stream.as_fd(), buffer)
     }
 }
 
@@ -346,25 +352,33 @@ pub struct Link {
 
 struct Io<'a> {
     stream: &'a UnixStream,
-    source: Option<PollRead<'a>>,
+    source: Option<(PollRead<'a>, Instant)>,
     out: &'a mut Queue,
     cancel: Option<&'a Wake>,
+    received: &'a mut Instant,
 }
 
 impl Read for Io<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        match self.source.as_mut() {
+        let count = match self.source.as_mut() {
             None => {
                 self.out.flush(self.stream.as_fd())?;
                 Interruptible {
                     stream: self.stream,
                     cancel: self.cancel,
-                    within: READ_TIMEOUT,
+                    within: WATCHDOG,
                 }
                 .read(buffer)
             }
-            Some(source) => source.read(buffer),
+            Some((source, _)) => source.read(buffer),
+        }?;
+        if count > 0 {
+            *self.received = self
+                .source
+                .as_ref()
+                .map_or_else(Instant::now, |(_, now)| *now);
         }
+        Ok(count)
     }
 }
 
@@ -439,6 +453,7 @@ impl Link {
             Upgrade::Refused(response) => return Ok(Err(response)),
         };
         accepted(&response, key)?;
+        stream.set_read_timeout(None)?;
         ko_sys::sock::set_receive_buffer(stream.as_fd(), RECEIVE_BUFFER)?;
         let mut link = Link::of(stream, rest);
         link.cancel = cancel;
@@ -508,6 +523,11 @@ impl Link {
         self.received
     }
 
+    #[cfg(target_vendor = "apple")]
+    pub(crate) fn reset_received(&mut self, now: Instant) {
+        self.received = now;
+    }
+
     pub fn begin_turn(&mut self) {
         self.reads = Reads::new();
     }
@@ -521,13 +541,12 @@ impl Link {
             &mut self.ctx,
             &mut Io {
                 stream: &self.stream,
-                source: Some(source),
+                source: Some((source, now)),
                 out: &mut self.out,
                 cancel: None,
+                received: &mut self.received,
             },
-            &mut self.received,
             &mut self.closing,
-            now,
         )?;
         if !matches!(next, Next::Closed | Next::Gone) {
             self.settle(poll)?;
@@ -543,10 +562,9 @@ impl Link {
                 source: None,
                 out: &mut self.out,
                 cancel: self.cancel.as_deref(),
+                received: &mut self.received,
             },
-            &mut self.received,
             &mut self.closing,
-            Instant::now(),
         )?;
         if !matches!(next, Next::Closed | Next::Gone) {
             self.flush_blocking()?;
@@ -557,9 +575,7 @@ impl Link {
     fn pump(
         ctx: &mut WebSocketContext,
         io: &mut Io<'_>,
-        received: &mut Instant,
         closing: &mut Option<(u16, String)>,
-        now: Instant,
     ) -> io::Result<Next> {
         let next = loop {
             let message = match ctx.read(io) {
@@ -570,7 +586,6 @@ impl Link {
                 Err(Error::ConnectionClosed | Error::AlreadyClosed) => break Next::Closed,
                 Err(error) => return Err(failed(error)),
             };
-            *received = now;
             match message {
                 Message::Text(body) => break Next::Text(body),
                 Message::Binary(body) => break Next::Binary(body),
@@ -597,6 +612,7 @@ impl Link {
             source: None,
             out: &mut self.out,
             cancel: None,
+            received: &mut self.received,
         };
         self.ctx
             .write(&mut io, Message::Text(body.into()))
@@ -723,6 +739,19 @@ mod tests {
             server.shutdown(std::net::Shutdown::Both).unwrap();
             assert_eq!(settled(&mut link, &mut poll), [expected]);
         }
+    }
+
+    #[test]
+    fn partial_frames_feed_the_watchdog_but_outbound_messages_do_not() {
+        let (mut link, mut server, mut poll) = pair();
+        let start = link.received();
+        let now = start + Duration::from_secs(20);
+        server.write_all(&[0x82, 100, 1]).unwrap();
+        assert_eq!(settled_at(&mut link, &mut poll, now), [Next::Wait]);
+        assert_eq!(link.received(), now);
+        link.send("input".to_owned()).unwrap();
+        link.settle(&mut poll).unwrap();
+        assert_eq!(link.received(), now);
     }
 
     #[test]

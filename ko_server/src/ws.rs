@@ -21,11 +21,10 @@ const RECORD_HEADER: usize = 9;
 const MAX_HEADER: usize = 10 + RECORD_HEADER;
 const MAX_MESSAGE: usize = 1 << 20;
 const MAX_SENT: usize = 32 << 20;
-const IDLE: Duration = Duration::from_secs(30);
+pub(crate) const PING_INTERVAL: Duration = Duration::from_secs(30);
 const PONG: Duration = Duration::from_secs(10);
 const STALL: Duration = Duration::from_secs(10);
 pub(crate) const OVERFLOW_REASON: &str = "view queue overflow";
-pub(crate) const FIRST_PING: Duration = IDLE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Rejection {
@@ -243,11 +242,17 @@ pub(crate) enum Ping {
     Expired,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Awaiting {
+    Pong(Instant),
+    Reads,
+}
+
 #[derive(Debug)]
 pub(crate) struct Ws {
     ctx: WebSocketContext,
-    last: Instant,
-    ping: Option<Instant>,
+    next_ping: Instant,
+    ping: Option<Awaiting>,
     accepted: u64,
     blocked: Option<Instant>,
 }
@@ -259,9 +264,10 @@ impl Ws {
             .write_buffer_size(0)
             .max_message_size(Some(MAX_MESSAGE))
             .max_frame_size(Some(MAX_MESSAGE));
+        let now = Instant::now();
         Ws {
             ctx: WebSocketContext::from_partially_read(part, Side::Server, Some(config)),
-            last: Instant::now(),
+            next_ping: now.checked_add(PING_INTERVAL).unwrap_or(now),
             ping: None,
             accepted: 0,
             blocked: None,
@@ -285,22 +291,19 @@ impl Ws {
         };
         let next = loop {
             match self.ctx.read(&mut io) {
-                Ok(message) => {
-                    self.last = Instant::now();
-                    match message {
-                        Message::Text(text) => break Next::Text(text.as_str().to_owned()),
-                        Message::Pong(_) => self.ping = None,
-                        Message::Ping(_) | Message::Frame(_) => {}
-                        Message::Binary(_) => {
-                            out.closing(Cause::Refused);
-                            break Next::Close;
-                        }
-                        Message::Close(_) => {
-                            out.closing(Cause::PeerClosed);
-                            break Next::Close;
-                        }
+                Ok(message) => match message {
+                    Message::Text(text) => break Next::Text(text.as_str().to_owned()),
+                    Message::Pong(_) => self.ping = None,
+                    Message::Ping(_) | Message::Frame(_) => {}
+                    Message::Binary(_) => {
+                        out.closing(Cause::Refused);
+                        break Next::Close;
                     }
-                }
+                    Message::Close(_) => {
+                        out.closing(Cause::PeerClosed);
+                        break Next::Close;
+                    }
+                },
                 Err(Error::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
                     break Next::Wait;
                 }
@@ -366,11 +369,6 @@ impl Ws {
         self.close_with(out, CloseCode::Error, reason);
     }
 
-    pub(crate) fn keep_alive(&mut self, now: Instant) {
-        self.last = now;
-        self.ping = None;
-    }
-
     pub(crate) fn finish(&mut self, out: &mut Output) {
         out.closing(Cause::Finished);
         self.close_with(out, CloseCode::Normal, "done");
@@ -393,8 +391,8 @@ impl Ws {
     fn stall(&mut self, out: &Output, now: Instant) -> Option<Duration> {
         let moved = out.accepted() != self.accepted;
         self.accepted = out.accepted();
-        if moved && self.ping.is_some() {
-            self.ping = Some(now);
+        if moved && matches!(self.ping, Some(Awaiting::Pong(_))) {
+            self.ping = Some(Awaiting::Pong(now));
         }
         if moved || !out.waiting() {
             self.blocked = None;
@@ -408,7 +406,15 @@ impl Ws {
         )
     }
 
-    pub(crate) fn ping(&mut self, out: &mut Output, now: Instant) -> Ping {
+    pub(crate) fn reads_changed(&mut self, reads: bool, now: Instant) {
+        self.ping = match (self.ping, reads) {
+            (Some(_), false) => Some(Awaiting::Reads),
+            (Some(Awaiting::Reads), true) => Some(Awaiting::Pong(now)),
+            (pending, true) | (pending @ None, false) => pending,
+        };
+    }
+
+    pub(crate) fn ping(&mut self, out: &mut Output, now: Instant, reads: bool) -> Ping {
         let stall = self.stall(out, now);
         if stall.is_some_and(|left| left.is_zero()) {
             out.closing(Cause::Stalled);
@@ -420,33 +426,46 @@ impl Ws {
             Life::Draining => return Ping::After(stall.unwrap_or(STALL)),
             Life::Open => {}
         }
-        let due = match self.ping {
-            Some(sent) => sent.checked_add(PONG),
-            None => self.last.checked_add(IDLE),
-        };
-        if let Some(left) = due
-            .and_then(|due| due.checked_duration_since(now))
-            .filter(|left| !left.is_zero())
+        if reads
+            && matches!(self.ping, Some(Awaiting::Pong(sent)) if now.saturating_duration_since(sent) >= PONG)
         {
-            return Ping::After(stall.map_or(left, |stall| left.min(stall)));
-        }
-        if self.ping.is_some() {
             out.closing(Cause::PingTimeout);
             self.close_with(out, CloseCode::Policy, "io");
             out.shut();
             return Ping::Expired;
         }
-        self.ping = Some(now);
-        let _ = self
-            .ctx
-            .write(&mut writer(out), Message::Ping(Default::default()));
-        out.flush();
-        self.accepted = out.accepted();
-        if out.is_shut() {
-            Ping::Expired
-        } else {
-            Ping::After(PONG)
+        if now >= self.next_ping {
+            if self
+                .ctx
+                .write(&mut writer(out), Message::Ping(Default::default()))
+                .is_err()
+            {
+                if out.life() == Life::Draining {
+                    return Ping::After(stall.unwrap_or(STALL));
+                }
+                out.closing(Cause::Io);
+                out.shut();
+                return Ping::Expired;
+            }
+            self.next_ping = now.checked_add(PING_INTERVAL).unwrap_or(now);
+            if self.ping.is_none() {
+                self.ping = Some(if !reads {
+                    Awaiting::Reads
+                } else {
+                    Awaiting::Pong(now)
+                });
+            }
+            out.flush();
+            self.accepted = out.accepted();
         }
+        if out.is_shut() {
+            return Ping::Expired;
+        }
+        let mut left = self.next_ping.saturating_duration_since(now);
+        if reads && let Some(Awaiting::Pong(sent)) = self.ping {
+            left = left.min(PONG.saturating_sub(now.saturating_duration_since(sent)));
+        }
+        Ping::After(stall.map_or(left, |stall| left.min(stall)))
     }
 }
 
@@ -653,6 +672,58 @@ mod tests {
     }
 
     #[test]
+    fn client_traffic_does_not_postpone_the_servers_ping() {
+        let crate::conn::tests::Pair {
+            mut poll,
+            mut conn,
+            mut client,
+        } = crate::conn::tests::pair();
+        client.set_nonblocking(false).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut ws = Ws::new(Vec::new());
+        let start = Instant::now() - Duration::from_secs(20);
+        ws.next_ping = at(start, 30);
+        for second in [10, 20, 30] {
+            client.write_all(&text("input")).unwrap();
+            assert_eq!(
+                ws.next(&mut conn.out, &mut poll, conn.token, &mut Reads::new()),
+                Next::Text("input".to_owned())
+            );
+            if second < 30 {
+                let _ = ws.ping(&mut conn.out, at(start, second), true);
+            }
+        }
+        assert_eq!(
+            ws.ping(&mut conn.out, at(start, 30), true),
+            Ping::After(PONG)
+        );
+        let mut bytes = [0; 2];
+        client.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, [0x89, 0]);
+        client
+            .write_all(&masked(10, true, b"", [1, 2, 3, 4], 0))
+            .unwrap();
+        assert_eq!(
+            ws.next(&mut conn.out, &mut poll, conn.token, &mut Reads::new()),
+            Next::Wait
+        );
+        assert_eq!(
+            ws.ping(&mut conn.out, at(start, 60), true),
+            Ping::After(PONG)
+        );
+        client.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, [0x89, 0]);
+        client.write_all(&text("not a pong")).unwrap();
+        assert_eq!(
+            ws.next(&mut conn.out, &mut poll, conn.token, &mut Reads::new()),
+            Next::Text("not a pong".to_owned())
+        );
+        assert_eq!(ws.ping(&mut conn.out, at(start, 70), true), Ping::Expired);
+    }
+
+    #[test]
     fn an_idle_link_pings_after_30_seconds_and_closes_10_seconds_later_without_a_pong() {
         let (mut client, server) = UnixStream::pair().unwrap();
         client.set_nonblocking(true).unwrap();
@@ -663,14 +734,13 @@ mod tests {
             crate::config::QUEUE_BYTES,
         );
         let mut ws = Ws::new(Vec::new());
-        let start = ws.last;
-        let at = |seconds| start + Duration::from_secs(seconds);
-        let early = ws.ping(&mut conn.out, at(20));
-        let pinged = ws.ping(&mut conn.out, at(30));
+        let start = ws.next_ping - PING_INTERVAL;
+        let early = ws.ping(&mut conn.out, at(start, 20), true);
+        let pinged = ws.ping(&mut conn.out, at(start, 30), true);
         let mut sent = vec![0; 16];
         let count = std::io::Read::read(&mut client, &mut sent).unwrap();
-        let waiting = ws.ping(&mut conn.out, at(35));
-        let expired = ws.ping(&mut conn.out, at(40));
+        let waiting = ws.ping(&mut conn.out, at(start, 35), true);
+        let expired = ws.ping(&mut conn.out, at(start, 40), true);
         let mut closed = [0; 6];
         std::io::Read::read_exact(&mut client, &mut closed).unwrap();
         assert_eq!(closed, [0x88, 4, 3, 0xf0, b'i', b'o']);
@@ -694,6 +764,79 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reads_resumed_between_ticks_start_the_pong_allowance_at_resume() {
+        let crate::conn::tests::Pair {
+            mut conn,
+            client: _client,
+            ..
+        } = crate::conn::tests::pair();
+        let mut ws = Ws::new(Vec::new());
+        let start = ws.next_ping - PING_INTERVAL;
+        assert_eq!(
+            ws.ping(&mut conn.out, at(start, 30), true),
+            Ping::After(PONG)
+        );
+        ws.reads_changed(false, at(start, 31));
+        ws.reads_changed(true, at(start, 35));
+        assert_eq!(
+            ws.ping(&mut conn.out, at(start, 44), true),
+            Ping::After(Duration::from_secs(1))
+        );
+        assert_eq!(ws.ping(&mut conn.out, at(start, 45), true), Ping::Expired);
+    }
+
+    #[test]
+    fn a_ping_that_overflows_a_view_keeps_the_overflow_close() {
+        let (mut out, mut reader) = crate::conn::tests::full_output();
+        let close = overflow_close();
+        out.view(
+            std::path::Path::new("/nonexistent").into(),
+            0,
+            close.clone(),
+        );
+        out.send(vec![0; crate::config::QUEUE_BYTES]);
+        let mut ws = Ws::new(Vec::new());
+        assert_eq!(ws.ping(&mut out, ws.next_ping, true), Ping::After(STALL));
+        assert_eq!(out.life(), Life::Draining);
+        let bytes = crate::conn::tests::drain(&mut out, &mut reader);
+        assert!(bytes.ends_with(&close));
+    }
+
+    #[test]
+    fn paused_reads_keep_pinging_and_resume_with_a_fresh_pong_allowance() {
+        let crate::conn::tests::Pair {
+            poll: _poll,
+            mut conn,
+            mut client,
+        } = crate::conn::tests::pair();
+        client.set_nonblocking(false).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut ws = Ws::new(Vec::new());
+        let start = ws.next_ping - PING_INTERVAL;
+        let mut bytes = [0; 2];
+        for second in [30, 60, 90] {
+            assert_eq!(
+                ws.ping(&mut conn.out, at(start, second), false),
+                Ping::After(PING_INTERVAL)
+            );
+            client.read_exact(&mut bytes).unwrap();
+            assert_eq!(bytes, [0x89, 0]);
+        }
+        ws.reads_changed(true, at(start, 100));
+        assert_eq!(
+            ws.ping(&mut conn.out, at(start, 100), true),
+            Ping::After(PONG)
+        );
+        assert_eq!(
+            ws.ping(&mut conn.out, at(start, 109), true),
+            Ping::After(Duration::from_secs(1))
+        );
+        assert_eq!(ws.ping(&mut conn.out, at(start, 110), true), Ping::Expired);
+    }
+
     fn at(start: Instant, seconds: u64) -> Instant {
         start + Duration::from_secs(seconds)
     }
@@ -703,9 +846,9 @@ mod tests {
      {
         let (mut out, mut reader) = crate::conn::tests::full_output();
         let mut ws = Ws::new(Vec::new());
-        let start = ws.last;
+        let start = ws.next_ping - PING_INTERVAL;
         assert_eq!(
-            ws.ping(&mut out, at(start, 30)),
+            ws.ping(&mut out, at(start, 30), true),
             Ping::After(PONG),
             "the ping waits behind the full socket"
         );
@@ -723,17 +866,17 @@ mod tests {
             }
             assert_ne!(out.accepted(), before, "the reads freed no room");
             assert!(
-                matches!(ws.ping(&mut out, at(start, second)), Ping::After(_)),
+                matches!(ws.ping(&mut out, at(start, second), true), Ping::After(_)),
                 "the link ended at {second} s while its output progressed"
             );
             assert!(out.is_open());
         }
         assert_eq!(
-            ws.ping(&mut out, at(start, 61)),
+            ws.ping(&mut out, at(start, 61), true),
             Ping::After(Duration::from_secs(9)),
             "a stall begins at the first look without progress"
         );
-        assert_eq!(ws.ping(&mut out, at(start, 71)), Ping::Expired);
+        assert_eq!(ws.ping(&mut out, at(start, 71), true), Ping::Expired);
         assert!(out.is_shut());
     }
 
@@ -748,14 +891,14 @@ mod tests {
         out.send(vec![0; crate::config::QUEUE_BYTES + 1]);
         assert_eq!(out.life(), Life::Draining);
         let mut ws = Ws::new(Vec::new());
-        let start = ws.last;
-        assert_eq!(ws.ping(&mut out, at(start, 1)), Ping::After(STALL));
+        let start = ws.next_ping - PING_INTERVAL;
+        assert_eq!(ws.ping(&mut out, at(start, 1), true), Ping::After(STALL));
         assert_eq!(
-            ws.ping(&mut out, at(start, 5)),
+            ws.ping(&mut out, at(start, 5), true),
             Ping::After(Duration::from_secs(6))
         );
         assert_eq!(out.life(), Life::Draining);
-        assert_eq!(ws.ping(&mut out, at(start, 11)), Ping::Expired);
+        assert_eq!(ws.ping(&mut out, at(start, 11), true), Ping::Expired);
         assert!(out.is_shut());
     }
 }

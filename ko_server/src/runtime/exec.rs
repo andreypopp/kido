@@ -325,7 +325,7 @@ impl Helper {
         [self.stdout.reader(), &self.stderr].into_iter()
     }
 
-    pub(crate) fn backed_up(&self) -> bool {
+    fn backed_up(&self) -> bool {
         self.stdin
             .as_ref()
             .is_some_and(|stdin| stdin.sent < stdin.pending.len())
@@ -616,10 +616,6 @@ impl Session {
             Stage::Running(running) => !running.helper.backed_up(),
             Stage::Ended => false,
         }
-    }
-
-    pub(crate) fn paused(&self) -> bool {
-        matches!(&self.stage, Stage::Running(running) if running.helper.backed_up())
     }
 
     pub(crate) fn live(&self) -> bool {

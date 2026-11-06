@@ -798,7 +798,9 @@ the terminal client fail at once with the server's own text.
 server. With `--stream`, it upgrades a WebSocket route, prints each
 text message as one line and sends each line of its stdin as one text
 message, for a script or a harness that answers on its message
-stream or runs an exec session. `ko panes`, `ko layout` and `ko layout put` or `edit` are
+stream or runs an exec session. A stream whose link stays silent past
+the client's watchdog (protocol.md, section 1) fails with exit 1, as
+any other lost link does. `ko panes`, `ko layout` and `ko layout put` or `edit` are
 readers and writers of the document from the shell. The signal rules
 of AGENTS.md ("Signals") apply to every kill.
 

@@ -560,6 +560,7 @@ impl Engine<'_> {
                 continue;
             };
             *paused = false;
+            link.reset_received(Instant::now());
             let token = conn.token;
             match link.settle(&mut self.poll) {
                 Ok(()) => self.view_ready(at, buffered(token)),

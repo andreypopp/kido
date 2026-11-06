@@ -294,6 +294,7 @@ pub fn forward(
     let mut poll = Poll::new();
     link.watch(&mut poll)?;
     let mut input = Some(poll.watch(stdin, Interest::Read));
+    let watchdog = poll.timer();
     let (mut events, mut pending, mut chunk) = (Events::default(), Vec::new(), vec![0u8; 1 << 16]);
     loop {
         link.begin_turn();
@@ -306,6 +307,17 @@ pub fn forward(
             }
         }
         link.settle(&mut poll)?;
+        let now = Instant::now();
+        if wire::silent(link.received(), now, wire::WATCHDOG) {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "the server went silent").into());
+        }
+        if !poll.is_active(watchdog) {
+            poll.start(
+                watchdog,
+                wire::WATCHDOG.saturating_sub(now.saturating_duration_since(link.received())),
+                None,
+            )?;
+        }
         poll.turn(Mode::Wait, &mut events)?;
         if !events
             .ready()

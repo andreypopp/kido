@@ -1075,13 +1075,13 @@ pub(crate) mod tests {
         }
     }
 
-    struct Pair {
-        poll: Poll,
-        conn: Conn,
-        client: UnixStream,
+    pub(crate) struct Pair {
+        pub(crate) poll: Poll,
+        pub(crate) conn: Conn,
+        pub(crate) client: UnixStream,
     }
 
-    fn pair() -> Pair {
+    pub(crate) fn pair() -> Pair {
         let (client, server) = UnixStream::pair().unwrap();
         client.set_nonblocking(true).unwrap();
         let mut poll = Poll::new();

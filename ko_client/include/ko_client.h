@@ -80,7 +80,7 @@ extern "C" {
  *
  * A view's link ends without its view only when the pane is gone or the
  * server restarted (KO_EVENT_VIEW_CLOSED). Any other end of the link (a close
- * frame other than `gone`, an I/O error, or 40 s with no byte while the view
+ * frame other than `gone`, an I/O error, or 60 s with no byte while the view
  * reads) is an outage of that link: KO_EVENT_VIEW_LINK reports it with its
  * code and message, and the core opens the link again with the current
  * client, at the offset of the last bytes that were delivered. A view's

@@ -2123,6 +2123,32 @@ mod tests {
         while socket.read().is_ok() {}
     }
 
+    fn ping_until_hangup(socket: &mut Ws, tick: Option<&Sender<()>>) {
+        socket
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(20)))
+            .unwrap();
+        loop {
+            match socket.read() {
+                Err(tungstenite::Error::Io(error))
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    if socket.send(Message::Ping(Default::default())).is_err() {
+                        break;
+                    }
+                    if let Some(tick) = tick {
+                        let _ = tick.send(());
+                    }
+                }
+                Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    }
+
     fn welcomed(socket: &mut Ws) {
         send(socket, &welcome(INSTANCE, 1));
         send(socket, &layout(0));
@@ -5210,9 +5236,10 @@ mod tests {
     fn a_surface_that_is_slow_to_take_live_output_pauses_the_connection_and_it_goes_on_after() {
         const RECORD: usize = 256 << 10;
         const COUNT: usize = 64;
-        let routes = client_script(|socket, _| {
+        let (tick, ticks) = channel();
+        let routes = client_script(move |socket, _| {
             welcomed(socket);
-            wait_for_hangup(socket);
+            ping_until_hangup(socket, Some(&tick));
         })
         .view(|socket, _| {
             send_binary(socket, slice_record(100, true, true, true, b"s"));
@@ -5226,7 +5253,7 @@ mod tests {
         });
         let server = serve("live-pause", routes);
         let fixture = Fixture::new();
-        let client = fixture.connect(&server);
+        let client = fixture.connect_as(&server, None, Duration::from_millis(100));
         assert!(matches!(fixture.next(), Seen::Welcome(..)));
         assert!(matches!(fixture.next(), Seen::Layout(0, ..)));
         let decoder = Decoder::new(|snapshot| {
@@ -5239,6 +5266,11 @@ mod tests {
         until("the core stops reading output nobody takes", || {
             handle_of(view).view.pause.load(Ordering::SeqCst)
         });
+        while ticks.try_recv().is_ok() {}
+        for _ in 0..10 {
+            ticks.recv_timeout(WAIT).unwrap();
+        }
+        assert!(handle_of(view).view.up.load(Ordering::SeqCst));
         let queued = handle_of(view).view.queued();
         assert!(
             queued <= 4 * (1 << 20) + RECORD,
@@ -5314,26 +5346,7 @@ mod tests {
             if matches!(outage, ViewOutage::Client) {
                 dropped.recv_timeout(WAIT).unwrap();
             } else if silent_view {
-                socket
-                    .get_ref()
-                    .set_read_timeout(Some(Duration::from_millis(20)))
-                    .unwrap();
-                loop {
-                    match socket.read() {
-                        Err(tungstenite::Error::Io(error))
-                            if matches!(
-                                error.kind(),
-                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                            ) =>
-                        {
-                            if socket.send(Message::Ping(Default::default())).is_err() {
-                                break;
-                            }
-                        }
-                        Err(_) => break,
-                        Ok(_) => {}
-                    }
-                }
+                ping_until_hangup(socket, None);
             } else {
                 wait_for_hangup(socket);
             }

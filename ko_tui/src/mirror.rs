@@ -287,8 +287,11 @@ impl Mirror {
         self.token
     }
 
-    pub(crate) fn received(&self) -> Instant {
-        self.link.received()
+    pub(crate) fn received(&self) -> Option<Instant> {
+        self.link
+            .close_frame()
+            .is_none()
+            .then(|| self.link.received())
     }
 
     pub(crate) fn begin_turn(&mut self) {
@@ -813,6 +816,19 @@ mod tests {
         let mut poll = Poll::new();
         let mirror = Mirror::with(Link::of(ours, Vec::new()), default_limits(), &mut poll).unwrap();
         (mirror, theirs, poll)
+    }
+
+    #[test]
+    fn a_gone_view_keeps_its_display_but_has_no_watchdog_deadline() {
+        use std::io::Write;
+        let (mut mirror, mut server, mut poll) = mirror();
+        assert!(mirror.received().is_some());
+        server
+            .write_all(&[0x88, 6, 3, 0xf0, b'g', b'o', b'n', b'e'])
+            .unwrap();
+        mirror.begin_turn();
+        mirror.handle(&mut poll, Instant::now()).unwrap();
+        assert_eq!(mirror.received(), None);
     }
 
     fn server(cols: u16, rows: u16, text: &str) -> Terminal {

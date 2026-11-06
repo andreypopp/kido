@@ -502,9 +502,9 @@ impl Client {
     }
 
     fn received(&self) -> Instant {
-        panes(&self.view).fold(self.link.received(), |received, pane| {
-            received.max(pane.mirror.received())
-        })
+        panes(&self.view)
+            .filter_map(|pane| pane.mirror.received())
+            .fold(self.link.received(), Instant::min)
     }
 
     fn shown(&self) -> Option<(&protocol::Session, &protocol::Window)> {

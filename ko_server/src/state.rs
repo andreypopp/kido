@@ -1669,16 +1669,12 @@ impl State {
         }) = self.conns.iter_mut().find(|conn| conn.timer == timer)
         {
             let now = Instant::now();
-            let left = if link.role.paused() {
-                if ko_sys::sock::peer_closed(out.parts().0.as_fd()) {
-                    out.shut();
-                    return;
-                }
-                link.ws.keep_alive(now);
-                Ping::After(crate::ws::FIRST_PING)
-            } else {
-                link.ws.ping(out, now)
-            };
+            let reads = link.role.reads();
+            if !reads && ko_sys::sock::peer_closed(out.parts().0.as_fd()) {
+                out.shut();
+                return;
+            }
+            let left = link.ws.ping(out, now, reads);
             if let Ping::After(left) = left {
                 let _ = poll.start(timer, left, None);
             }
@@ -1743,7 +1739,17 @@ impl State {
         if client_closed {
             self.refocus(poll);
         }
-        for conn in &self.conns {
+        for conn in &mut self.conns {
+            let interest = conn.interest();
+            if interest.reads() != poll.interest_of(conn.token).reads()
+                && let Phase::Ws(link) = &mut conn.phase
+            {
+                let now = Instant::now();
+                link.ws.reads_changed(interest.reads(), now);
+                if let Ping::After(left) = link.ws.ping(&mut conn.out, now, link.role.reads()) {
+                    let _ = poll.start(conn.timer, left, None);
+                }
+            }
             poll.interest(conn.token, conn.interest());
         }
     }

@@ -96,7 +96,7 @@ fn upgrade(state: &mut State, poll: &mut Poll, index: usize, response: Vec<u8>, 
         ws: Ws::new(part),
         role,
     }));
-    let _ = poll.start(conn.timer, ws::FIRST_PING, None);
+    let _ = poll.start(conn.timer, ws::PING_INTERVAL, None);
 }
 
 fn acting(
