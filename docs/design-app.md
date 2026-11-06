@@ -344,7 +344,10 @@ two rows. A Dock menu item does not activate the app, so Connect to Remote
 Host… activates it before it opens the palette. The cold remote-launch gate
 holds back ordinary Local opens (launch, reopen, New Session); Connect
 to Local Host is a new-window request, which the gate does not hold back. Dock
-reopen focuses an existing window; with no window it opens a Local window.
+reopen follows AppKit: when a window is visible, the app does nothing and
+AppKit activates it with the window order unchanged, so the last-used window
+stays in front. When every live window is minimized or hidden, reopen restores
+the most recently used one. With no live window it opens a Local window.
 The app opts out of automatic termination at launch: AppKit marks a
 windowless app as terminated by the transparent app lifecycle (TAL), and a
 Dock reopen then does not reach the process. The recent list lives in
@@ -371,7 +374,7 @@ Closing the last window leaves the app available for another intent.
 
 Launch bootstrap initializes shared resources and drains queued Host requests;
 it does not open Local. Ordinary AppKit untitled/reopen delivery opens Local
-only when no live window exists; reopening with a live window focuses it.
+only when no live window exists.
 There is no timer, debounce or compensating close of a Local window. Off-screen
 routing tests prove queued cold and warm behavior. The launch gate requires
 `launchIsDefaultUserInfoKey == true` and an initial `oapp` (if available);

@@ -6,6 +6,13 @@ import SidebarFeed
 @MainActor final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemValidation {
     private var runtime: GhosttyRuntime?
     private(set) var owners: [WindowOwner] = []
+    private weak var lastKeyOwner: WindowOwner?
+    var reopenOwner: WindowOwner? {
+        if let lastKeyOwner, lastKeyOwner.alive { return lastKeyOwner }
+        return NSApp.orderedWindows.lazy.compactMap { window in
+            self.owners.first { $0.alive && $0.window === window }
+        }.first ?? owners.first(where: \.alive)
+    }
     #if KIDO_VISUAL || KIDO_STRESS
     private var rttDriver: RTTDriver?
     #endif
@@ -126,6 +133,8 @@ import SidebarFeed
         guard let runtime else { return nil }
         let owner = WindowOwner(host: host, runtime: runtime, start: start, cause: cause)
         owners.append(owner)
+        owner.becameKey = { [weak self, weak owner] in self?.lastKeyOwner = owner }
+        if owner.window.isKeyWindow { lastKeyOwner = owner }
         owner.snapshotReceived = { [weak self, weak owner] in
             guard let self else { return }
             defer { paletteStateChanged() }
@@ -182,8 +191,15 @@ import SidebarFeed
         return true
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !owners.contains(where: \.alive) { routes.ordinaryOpen(cause: .reopen) }
-        else if !background { owners.first(where: \.alive)?.window.makeKeyAndOrderFront(nil) }
+        guard let owner = reopenOwner else {
+            routes.ordinaryOpen(cause: .reopen)
+            return false
+        }
+        if owners.contains(where: { $0.alive && $0.window.isVisible && !$0.window.isMiniaturized }) { return true }
+        if !background {
+            owner.window.deminiaturize(nil)
+            owner.window.makeKeyAndOrderFront(nil)
+        }
         return false
     }
 

@@ -85,6 +85,35 @@ import XCTest
         XCTAssertEqual(opened, [.remote("alias"), .local])
     }
 
+    func testDockReopenKeepsTheMostRecentWindow() throws {
+        let board = NSPasteboard(name: .init("dock-order-" + UUID().uuidString))
+        let app = AppDelegate(runtime: try XCTUnwrap(GhosttyRuntime(pasteboard: board)))
+        defer {
+            app.owners.forEach { $0.close() }
+            board.releaseGlobally()
+        }
+        let first = try XCTUnwrap(app.open(.local, start: false))
+        let second = try XCTUnwrap(app.open(.local, start: false))
+        first.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: first.window))
+        second.windowDidBecomeKey(Notification(name: NSWindow.didBecomeKeyNotification, object: second.window))
+        XCTAssertTrue(app.reopenOwner === second)
+        second.window.setIsVisible(true)
+        let order = NSApp.orderedWindows
+        let key = NSApp.keyWindow
+        XCTAssertTrue(app.applicationShouldHandleReopen(NSApp, hasVisibleWindows: true))
+        XCTAssertEqual(NSApp.orderedWindows, order)
+        XCTAssertTrue(NSApp.keyWindow === key)
+        XCTAssertTrue(app.reopenOwner === second)
+        first.window.miniaturize(nil)
+        second.window.miniaturize(nil)
+        first.window.orderOut(nil)
+        second.window.orderOut(nil)
+        XCTAssertFalse(app.applicationShouldHandleReopen(NSApp, hasVisibleWindows: true))
+        XCTAssertTrue(app.reopenOwner === second)
+        second.close()
+        XCTAssertTrue(app.reopenOwner === first)
+    }
+
     func testDockReopenWithoutAWindowOpensAndConnectsLocal() async throws {
         let dir = try await koLaunched()
         let board = NSPasteboard(name: .init("kr-" + UUID().uuidString))

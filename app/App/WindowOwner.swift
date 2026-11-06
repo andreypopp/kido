@@ -94,6 +94,7 @@ private class AlertEscape: NSView {
     private(set) var ssh: SSH?
     private(set) var identity: String? { didSet { sidebar.tabs.needsLayout = true; sidebar.tabs.needsDisplay = true } }
     var menuChanged: () -> Void = {}
+    var becameKey: () -> Void = {}
     var onClose: () -> Void = {}
     var snapshotReceived: () -> Void = {}
     private(set) var window: NSWindow!
@@ -1532,7 +1533,7 @@ private class AlertEscape: NSView {
         window.delegate = nil
         onClose()
     }
-    func windowDidBecomeKey(_ notification: Notification) { supersedeIntent(); menuChanged(); attend() }
+    func windowDidBecomeKey(_ notification: Notification) { becameKey(); supersedeIntent(); menuChanged(); attend() }
     func windowDidResignKey(_ notification: Notification) { supersedeIntent(); attend() }
     func windowDidMiniaturize(_ notification: Notification) { attend() }
     func windowDidDeminiaturize(_ notification: Notification) { attend() }
