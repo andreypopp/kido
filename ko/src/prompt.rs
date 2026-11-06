@@ -8,7 +8,7 @@ use ko_client::prompt;
 use ko_server::ids::MessageId;
 use ko_server::protocol::SendPrompt;
 
-use crate::{Target, complain, fail, server_message, target};
+use crate::{Target, complain, fail, target};
 
 #[derive(Debug, Args)]
 pub(crate) struct PromptArgs {
@@ -21,13 +21,7 @@ pub(crate) struct PromptArgs {
 }
 
 fn failed(dir: &Path, failure: ReplyError) -> ExitCode {
-    fail(
-        "prompt",
-        match failure {
-            ReplyError::Server(failure) => server_message(dir, failure),
-            ReplyError::Refused(failure) => failure.message,
-        },
-    )
+    fail("prompt", ko_client::api::describe(dir, failure))
 }
 
 pub(crate) fn prompt(args: PromptArgs) -> ExitCode {

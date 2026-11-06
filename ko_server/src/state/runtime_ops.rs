@@ -5,7 +5,8 @@ use crate::api::{Route, WaitMs, routes};
 use crate::pane::Birth;
 use crate::panes::{AddError, Start, is_descendant, program, scope};
 use crate::protocol::{
-    ClientRuntime, Empty, Error, ErrorKind, LeadReport, LinkState, RuntimeInfo, RuntimeWait,
+    ClientRuntime, Empty, Error, ErrorKind, LeadReport, LinkState, RuntimeInfo, RuntimeSource,
+    RuntimeWait,
 };
 use crate::runtime::pane::{self, Dir, Wrap as Entering, socket_path};
 use crate::runtime::{CLEANUP_LIMIT, Due, PASS_HOLD, RuntimeKey, Wait, Who};
@@ -34,30 +35,86 @@ pub(super) struct ChosenRuntimes {
 }
 
 impl State {
+    pub(super) fn session_of(&self, pane: PaneId) -> Option<SessionId> {
+        self.document
+            .layout()
+            .locate(pane)
+            .map(|(session, _)| session.id)
+    }
+
+    pub(super) fn validate_runtime_layout(
+        &mut self,
+        before: &Layout,
+        read: &Read,
+    ) -> Result<(), Error> {
+        for pane in before.panes() {
+            let Some(key) = self.panes.find(pane).and_then(Pane::runtime).cloned() else {
+                continue;
+            };
+            let Some(session) = self.session_of(pane) else {
+                continue;
+            };
+            if before
+                .locate(pane)
+                .is_some_and(|(previous, _)| previous.id == session)
+            {
+                continue;
+            }
+            let resolved = self
+                .runtimes
+                .resolve(&key.name, Some(session), read.get())?;
+            if key != resolved {
+                let message = match key.source {
+                    RuntimeSource::Session { id } => {
+                        format!("{pane} runs in runtime {} of {id}", key.name)
+                    }
+                    RuntimeSource::Config => format!(
+                        "{pane} runs in configured runtime {}; runtime {} of {session} shadows it",
+                        key.name, key.name
+                    ),
+                };
+                return Err(Error::new(ErrorKind::Invalid, message));
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn remove_session_runtimes(&mut self, poll: &mut Poll, before: &Layout) {
+        for session in &before.sessions {
+            if self.document.layout().session(session.id).is_none() {
+                for (key, settings) in self.runtimes.session_definitions(session.id) {
+                    self.force_down_runtime(poll, &key);
+                    self.runtimes.delete(&key, &settings);
+                    self.runtimes.remove_directory(&key);
+                }
+            }
+        }
+        self.announce_runtimes();
+    }
+
     pub(crate) fn runtime_key(
-        &self,
+        &mut self,
         caller: Option<PaneId>,
         session: Option<SessionId>,
         name: &RuntimeName,
-    ) -> Result<RuntimeKey, Error> {
-        let own = caller.and_then(|id| {
-            self.document
-                .layout()
-                .locate(id)
-                .map(|(session, _)| session.id)
-        });
+    ) -> Result<(RuntimeKey, Runtime), Error> {
+        let own = caller.and_then(|id| self.session_of(id));
         if caller.is_some() && session.is_some() && session != own {
             return Err(Error::new(
                 ErrorKind::Refused,
                 "a pane may name only its own session",
             ));
         }
-        Ok(self.runtimes.resolve(name))
+        let read = Read::new(&self.config.file);
+        let key = self.runtimes.resolve(name, own.or(session), read.get())?;
+        let settings = self.runtimes.settings_in(&key, read.get())?;
+        Ok((key, settings))
     }
 
     pub(super) fn choose_runtimes<'a>(
         &mut self,
         requests: impl Iterator<Item = (PaneId, &'a CreatePane)>,
+        origin: &Origin,
         read: &Read,
     ) -> Result<ChosenRuntimes, Error> {
         let mut chosen = BTreeMap::new();
@@ -65,7 +122,20 @@ impl State {
         for (id, name) in
             requests.filter_map(|(id, request)| request.runtime.as_ref().map(|name| (id, name)))
         {
-            let key = self.runtimes.resolve(name);
+            let session = self.session_of(id);
+            let key = self.runtimes.resolve(name, session, read.get())?;
+            if let Origin::Runtime(own) = origin
+                && (*own != key
+                    || matches!(own.source, RuntimeSource::Session { id } if Some(id) != session))
+            {
+                return Err(Error::new(
+                    ErrorKind::Refused,
+                    format!(
+                        "a connection of runtime {} cannot create a pane in another runtime or session",
+                        own.name
+                    ),
+                ));
+            }
             keys.insert(id, key.clone());
             if !chosen.contains_key(&key) {
                 chosen.insert(key.clone(), self.runtimes.settings_in(&key, read.get())?);
@@ -254,7 +324,7 @@ impl State {
         }
     }
 
-    fn runtime_info(&self, key: &RuntimeKey, runtime: &Runtime) -> RuntimeInfo {
+    pub(crate) fn runtime_info(&self, key: &RuntimeKey, runtime: &Runtime) -> RuntimeInfo {
         RuntimeInfo {
             runtime: ClientRuntime {
                 name: key.name.clone(),
@@ -273,18 +343,21 @@ impl State {
         }
     }
 
-    pub(crate) fn list_runtimes(&mut self) -> Result<Vec<RuntimeInfo>, Error> {
+    pub(crate) fn list_runtimes(
+        &mut self,
+        caller: Option<PaneId>,
+    ) -> Result<Vec<RuntimeInfo>, Error> {
+        let session = caller.and_then(|pane| self.session_of(pane));
         Ok(self
             .runtimes
             .known()?
             .iter()
+            .filter(|(key, _)| match key.source {
+                RuntimeSource::Config => true,
+                RuntimeSource::Session { id } => caller.is_none() || session == Some(id),
+            })
             .map(|(key, runtime)| self.runtime_info(key, runtime))
             .collect())
-    }
-
-    pub(crate) fn get_runtime(&mut self, key: &RuntimeKey) -> Result<RuntimeInfo, Error> {
-        let settings = self.runtimes.settings(key)?;
-        Ok(self.runtime_info(key, &settings))
     }
 
     fn runtime_pane(&self, caller: Option<PaneId>, key: &RuntimeKey) -> Result<PaneId, Error> {
@@ -307,7 +380,7 @@ impl State {
         timeout: WaitMs,
     ) -> Option<Result<RuntimeWait, Error>> {
         let name = match self.runtime_key(caller, None, &name) {
-            Ok(key) => key,
+            Ok((key, _)) => key,
             Err(error) => return Some(Err(error)),
         };
         let pane = match self.runtime_pane(caller, &name) {
@@ -350,7 +423,7 @@ impl State {
         name: RuntimeName,
         report: LeadReport,
     ) -> Result<Empty, Error> {
-        let name = self.runtime_key(caller, None, &name)?;
+        let (name, _) = self.runtime_key(caller, None, &name)?;
         let pane = self.runtime_pane(caller, &name)?;
         self.runtimes.report_lead(poll, &name, pane, report)?;
         self.runtimes_changed(poll);
@@ -363,17 +436,12 @@ impl State {
         key: &RuntimeKey,
         force: bool,
     ) -> Result<(), Error> {
-        if !self.runtimes.is_live(key) {
-            return self.runtimes.settings(key).map(|_| ());
-        }
-        let live: Vec<PaneId> = self
+        let live = self
             .panes
             .in_runtime(key)
-            .filter(|pane| pane.proc().dead().is_none())
-            .map(Pane::id)
-            .collect();
+            .any(|pane| pane.proc().dead().is_none());
         let sessions = self.conns.iter().any(|conn| conn.runs_exec(key));
-        if (!live.is_empty() || sessions) && !force {
+        if (live || sessions) && !force {
             return Err(Error::new(
                 ErrorKind::Refused,
                 format!(
@@ -381,6 +449,17 @@ impl State {
                 ),
             ));
         }
+        self.force_down_runtime(poll, key);
+        Ok(())
+    }
+
+    fn force_down_runtime(&mut self, poll: &mut Poll, key: &RuntimeKey) {
+        let live: Vec<_> = self
+            .panes
+            .in_runtime(key)
+            .filter(|pane| pane.proc().dead().is_none())
+            .map(Pane::id)
+            .collect();
         for id in live {
             self.kill_pane(poll, id);
         }
@@ -395,19 +474,41 @@ impl State {
             conn.out.close();
         }
         self.runtimes_changed(poll);
-        Ok(())
     }
 
     pub(crate) fn delete_runtime(
         &mut self,
         poll: &mut Poll,
         key: &RuntimeKey,
+        settings: &Runtime,
     ) -> Result<Empty, Error> {
-        let settings = self.runtimes.settings(key)?;
         self.down_runtime(poll, key, false)?;
-        self.runtimes.delete(key, &settings);
+        self.runtimes.delete(key, settings);
         self.runtimes.remove_directory(key);
+        self.announce_runtimes();
         Ok(Empty {})
+    }
+
+    pub(crate) fn put_runtime(
+        &mut self,
+        caller: Option<PaneId>,
+        name: RuntimeName,
+        runtime: Runtime,
+    ) -> Result<RuntimeInfo, Error> {
+        let id = caller
+            .and_then(|pane| self.session_of(pane))
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorKind::Refused,
+                    "define an ad-hoc runtime from a pane of its session",
+                )
+            })?;
+        let read = Read::new(&self.config.file);
+        let key = self
+            .runtimes
+            .define(name, id, runtime.clone(), read.get())?;
+        self.announce_runtimes();
+        Ok(self.runtime_info(&key, &runtime))
     }
 
     fn hidden(caller: PaneId, target: PaneId, runtime: &RuntimeKey) -> Error {

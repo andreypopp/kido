@@ -224,10 +224,7 @@ impl State {
             self.admit_parent(caller, parent)?;
         }
         let layout = self.document.layout();
-        let session_of = |pane: Option<PaneId>| {
-            pane.and_then(|pane| layout.locate(pane))
-                .map(|(session, _)| session.id)
-        };
+        let session_of = |pane: Option<PaneId>| pane.and_then(|pane| self.session_of(pane));
         let chosen = match &session {
             Some(SessionRef::Id(id)) => Some(
                 layout
@@ -290,6 +287,7 @@ impl State {
                     layout: draft,
                 },
                 caller,
+                origin,
                 &read,
             )
             .map_err(Error::from)?;

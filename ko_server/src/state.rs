@@ -390,7 +390,7 @@ impl State {
         caller: Option<PaneId>,
     ) -> Result<Snapshot, PutFailure> {
         let read = Read::new(&self.config.file);
-        self.put_layout_in(poll, request, caller, &read)
+        self.put_layout_in(poll, request, caller, &Origin::Host, &read)
     }
 
     fn put_layout_in(
@@ -398,6 +398,7 @@ impl State {
         poll: &mut Poll,
         request: PutLayout,
         caller: Option<PaneId>,
+        origin: &Origin,
         read: &Read,
     ) -> Result<Snapshot, PutFailure> {
         let before = self.document.clone();
@@ -415,6 +416,10 @@ impl State {
                 PutError::Stale => PutFailure::Stale(self.document.snapshot()),
                 PutError::Invalid(message) => PutFailure::Invalid(message),
             })?;
+        if let Err(error) = self.validate_runtime_layout(before.layout(), read) {
+            self.document.rollback(before);
+            return Err(PutFailure::Rejected(error));
+        }
         let admitted = created
             .iter()
             .filter_map(|(_, request, _)| request.parent)
@@ -424,8 +429,8 @@ impl State {
                     self.admit_cwd(caller, &Origin::Host, request.cwd.as_ref())
                 })
             });
-        let chosen =
-            admitted.and_then(|()| self.choose_runtimes(created.iter().map(|c| (c.0, &c.1)), read));
+        let chosen = admitted
+            .and_then(|()| self.choose_runtimes(created.iter().map(|c| (c.0, &c.1)), origin, read));
         let runtime_ops::ChosenRuntimes {
             settings: chosen,
             keys,
@@ -606,6 +611,7 @@ impl State {
             self.selected(index, current);
         }
         self.refocus(poll);
+        self.remove_session_runtimes(poll, before);
     }
 
     fn selected(&mut self, index: usize, current: Option<Current>) {

@@ -289,7 +289,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description The runtimes of the configuration file and of the links that are up, with their state. */
+        /** @description The configured runtimes and the ad-hoc runtimes of the caller's session, with their state. For the user, lists the ad-hoc runtimes of every session. */
         get: operations["ListRuntimes"];
         put?: never;
         post?: never;
@@ -308,7 +308,8 @@ export interface paths {
         };
         /** @description One runtime. */
         get: operations["GetRuntime"];
-        put?: never;
+        /** @description Defines a runtime of the caller pane's session without starting it. */
+        put: operations["PutRuntime"];
         post?: never;
         /** @description Takes the runtime down, as down without force does, and removes its files except the empty io directory. */
         delete: operations["DeleteRuntime"];
@@ -442,6 +443,8 @@ export interface components {
     schemas: {
         /** @description an absolute path */
         AbsPath: string;
+        /** @enum {string} */
+        Access: "ro";
         Agent: {
             msg?: string;
             since: number;
@@ -461,6 +464,8 @@ export interface components {
             /** @constant */
             type: "idle";
         };
+        /** @description an argv that starts with an absolute program path */
+        Argv: string[];
         /** @enum {string} */
         Axis: "h" | "v";
         Base64: string;
@@ -641,11 +646,53 @@ export interface components {
             /** @constant */
             type: "shell";
         };
+        Command2: {
+            lead?: components["schemas"]["Argv"];
+            /**
+             * @description The argv that goes before `ko enter` in a pane's program.
+             * @default []
+             */
+            prefix?: components["schemas"]["Prefix"];
+            socket?: components["schemas"]["AbsPath"];
+            up?: components["schemas"]["Argv"];
+        };
         CommandExit: {
             code: number;
             command: string;
             ended_at: number;
             started_at: number;
+        };
+        /** @description ssh connection options, with no destination and no command */
+        ConnectionArgs: string[];
+        Container: {
+            container?: components["schemas"]["Program"];
+            from: components["schemas"]["Source"];
+            /**
+             * @description The command that keeps the container alive.
+             * @default [
+             *       "sleep",
+             *       "infinity"
+             *     ]
+             */
+            init?: components["schemas"]["Init"];
+            /**
+             * @description The static Linux ko beside the server's installation, the ko on PATH, or mount=DIR.
+             * @default shipped
+             */
+            ko?: components["schemas"]["Ko"];
+            /**
+             * @description More arguments of the engine's `run`. ko refuses the options it owns.
+             * @default []
+             */
+            run_args?: components["schemas"]["RunArgs"];
+            /**
+             * @description The host's agent at /var/host-services/ssh-auth.sock (`--ssh`).
+             * @default none
+             */
+            ssh_agent?: components["schemas"]["SshAgent"];
+            user?: components["schemas"]["User"];
+            /** @default [] */
+            volumes?: components["schemas"]["Volume"][];
         };
         CreatePane: {
             close?: components["schemas"]["Close"];
@@ -678,6 +725,8 @@ export interface components {
             if?: components["schemas"]["VarCondition"];
             names: components["schemas"]["VarName"][];
         };
+        /** @description an ssh destination */
+        Destination: string;
         /** @enum {string} */
         Direction: "next" | "previous";
         DownRuntime: {
@@ -744,6 +793,10 @@ export interface components {
         } & components["schemas"]["Dead"]) | {
             /** @constant */
             type: "gone";
+        };
+        /** @description Environment variables: names without = or NUL, values without NUL. */
+        Env: {
+            [key: string]: string;
         };
         Error: {
             message: string;
@@ -877,6 +930,8 @@ export interface components {
         };
         /** @enum {string} */
         Images: "none";
+        /** @description a command */
+        Init: string[];
         Input: ({
             /** @constant */
             type: "key";
@@ -909,6 +964,9 @@ export interface components {
          * @enum {string}
          */
         KillSignal: "term" | "kill" | "int";
+        Ko: "shipped" | "path" | {
+            mount: components["schemas"]["MountDir"];
+        };
         Layout: {
             sessions: components["schemas"]["Session"][];
         };
@@ -1052,6 +1110,8 @@ export interface components {
          * @enum {string}
          */
         MessageState: "queued" | "delivered" | "acked";
+        /** @description an absolute path without a comma */
+        MountDir: string;
         Mouse: {
             action: components["schemas"]["MouseAction"];
             button: components["schemas"]["MouseButton"];
@@ -1084,6 +1144,8 @@ export interface components {
         };
         /** @description A byte offset of the pane's stream. */
         Offset: number;
+        /** @description an image reference or a container name */
+        Operand: string;
         Origin: {
             /** @constant */
             type: "unknown";
@@ -1160,6 +1222,31 @@ export interface components {
             session: components["schemas"]["SessionId"];
             window: components["schemas"]["WindowId"];
         };
+        Podman: {
+            from: components["schemas"]["Source"];
+            /**
+             * @description The command that keeps the container alive.
+             * @default [
+             *       "sleep",
+             *       "infinity"
+             *     ]
+             */
+            init?: components["schemas"]["Init"];
+            /**
+             * @description The static Linux ko beside the server's installation, the ko on PATH, or mount=DIR.
+             * @default shipped
+             */
+            ko?: components["schemas"]["Ko"];
+            podman?: components["schemas"]["Program"];
+            /**
+             * @description More arguments of the engine's `run`. ko refuses the options it owns.
+             * @default []
+             */
+            run_args?: components["schemas"]["RunArgs"];
+            user?: components["schemas"]["User"];
+            /** @default [] */
+            volumes?: components["schemas"]["Volume"][];
+        };
         /**
          * @description The state of a sent message. The seq counts the messages of the pane in arrival order. A
          *     repeat of an id that the pane has seen is a duplicate and gets the state of the original.
@@ -1169,6 +1256,10 @@ export interface components {
             seq: number;
             state: components["schemas"]["MessageState"];
         };
+        /** @description an argv */
+        Prefix: string[];
+        /** @description a program name or path */
+        Program: string;
         /** @enum {string} */
         ProgramKind: "permission" | "question" | "auth";
         ProgramRecord: {
@@ -1231,6 +1322,42 @@ export interface components {
             /** @constant */
             type: "agent";
         };
+        /** @description an absolute path without a colon, a percent sign or a newline */
+        RemoteDir: string;
+        /** @description arguments of the container engine's `run` without an option that ko owns */
+        RunArgs: string[];
+        Runtime: {
+            color?: components["schemas"]["RuntimeColor"];
+            command?: components["schemas"]["Command2"];
+            container?: components["schemas"]["Container"];
+            cwd?: components["schemas"]["AbsPath"];
+            /**
+             * @description Variables for every pane of the runtime, applied before the variables of the request.
+             * @default {}
+             */
+            env?: components["schemas"]["Env"];
+            /**
+             * @description A host directory that a host caller names as cwd maps to the runtime directory of the
+             *     longest matching host prefix.
+             * @default []
+             */
+            paths?: components["schemas"]["PathMap"][];
+            /**
+             * @description Where pi runs for an agent in this runtime.
+             * @default host
+             */
+            pi?: components["schemas"]["RuntimePi"];
+            podman?: components["schemas"]["Podman"];
+            ssh?: components["schemas"]["Ssh"];
+        } & ({
+            ssh: Record<string, never>;
+        } | {
+            container: Record<string, never>;
+        } | {
+            command: Record<string, never>;
+        } | {
+            podman: Record<string, never>;
+        });
         /** @description an #rrggbb colour */
         RuntimeColor: string;
         /** @description What a client needs of a runtime to mark its panes and offer it for a new pane. */
@@ -1371,6 +1498,21 @@ export interface components {
             layout: components["schemas"]["Layout"];
             revision: number;
         };
+        Source: {
+            image: components["schemas"]["Operand"];
+        } | {
+            container: components["schemas"]["Operand"];
+        };
+        Ssh: {
+            destination: components["schemas"]["Destination"];
+            dir?: components["schemas"]["RemoteDir"];
+            /**
+             * @description Connection options for the master (`-p`, `-J`, `-F`, `-i`, `-l`, `-o`, ...).
+             * @default []
+             */
+            ssh_args?: components["schemas"]["ConnectionArgs"];
+        };
+        SshAgent: "none" | "forward";
         StatusChange: {
             now: number;
             pane: components["schemas"]["PaneId"];
@@ -1410,6 +1552,8 @@ export interface components {
             pane: components["schemas"]["PaneId"];
             title: string;
         };
+        /** @description a user name or id */
+        User: string;
         VarCondition: {
             name: components["schemas"]["VarName"];
             value: unknown;
@@ -1456,6 +1600,14 @@ export interface components {
             /** @constant */
             type: "input";
         };
+        /** @description A directory of the host that the container mounts, files only: never a socket. */
+        Volume: {
+            host: components["schemas"]["VolumePath"];
+            options?: components["schemas"]["Access"];
+            runtime: components["schemas"]["VolumePath"];
+        };
+        /** @description an absolute path without a colon */
+        VolumePath: string;
         /** @description Milliseconds. */
         WaitMs: number;
         Welcome: {
@@ -2351,6 +2503,42 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeInfo"];
+                };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    PutRuntime: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example dev */
+                name: components["schemas"]["RuntimeName"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Runtime"];
+            };
+        };
         responses: {
             /** @description OK */
             200: {

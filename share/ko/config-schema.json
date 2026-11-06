@@ -298,6 +298,7 @@
           ]
         },
         "ko": {
+          "description": "The static Linux ko beside the server's installation, the ko on PATH, or mount=DIR.",
           "$ref": "#/$defs/Ko",
           "default": "shipped"
         },
@@ -307,6 +308,7 @@
           "default": []
         },
         "ssh_agent": {
+          "description": "The host's agent at /var/host-services/ssh-auth.sock (`--ssh`).",
           "$ref": "#/$defs/SshAgent",
           "default": "none"
         },
@@ -550,6 +552,7 @@
           ]
         },
         "ko": {
+          "description": "The static Linux ko beside the server's installation, the ko on PATH, or mount=DIR.",
           "$ref": "#/$defs/Ko",
           "default": "shipped"
         },

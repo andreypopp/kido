@@ -1096,7 +1096,8 @@ active screen changed after a write.
 
 [design-runtimes.md](design-runtimes.md) gives the design. A runtime
 is a named place where panes and exec sessions run, from the server's
-configuration file. Each runtime has one listener at
+configuration file or defined by a pane for its layout session (an
+ad-hoc runtime). Each runtime has one listener at
 `<dir>/runtimes/<tag>/io/socket`, bound while its link is up, which is
 `KO_SOCKET` inside the runtime. Section 1 gives the identity rule on
 it.
@@ -1104,9 +1105,11 @@ it.
 **A pane in a runtime.** `POST /panes` and a new pane of `PUT
 /layout` take `runtime`. A pane's runtime is the connection's
 runtime on a runtime connection, else the body's, else the host. A
-runtime caller that names another runtime is `refused`. A name that
-the configuration does not have is `not_found` ("no runtime NAME in
-FILE"); a configuration that does not parse is `invalid` with its
+runtime caller that names another runtime is `refused`, and so is a runtime caller of an ad-hoc
+runtime whose new pane lands in another session. The name resolves
+in the session that the new pane lands in (design-runtimes.md, "The model"). A name that
+neither that session nor the configuration has is `not_found` ("no
+runtime NAME in SESSION or in FILE"); a configuration that does not parse is `invalid` with its
 line. The request returns when the pane exists. A runtime that is
 `Down` or `Failed` starts with it; the pane shows `starting runtime
 NAME` until the link is up, and dies with `runtime NAME: <message>`
@@ -1153,11 +1156,14 @@ runtime and its agent scope; a hidden pane is `refused`, not
 views, search, `PUT /layout` and the `/runtimes` routes among them.
 
 **The `/runtimes` routes** are the host's. `GET /runtimes` lists the
-configured runtimes with their link state, the `color`, the effective `paths`,
+configured runtimes and, for a pane identity, the ad-hoc runtimes of
+its session, for the user those of every session, each with its
+`source`, its link state, the `color`, the effective `paths`,
 the default `cwd` and `pi`, where an agent's pi runs; `GET
 /runtimes/NAME` one. `GET /runtimes/NAME`, `POST /runtimes/NAME/down`,
 `DELETE /runtimes/NAME` and `GET /runtimes/NAME/exec` take an optional
-query `session`: the session in which NAME resolves
+query `session`: the session in which NAME resolves, its ad-hoc
+runtime before the configured one
 (design-runtimes.md, "The model"). A pane identity's requests resolve
 in the pane's own session, and a pane identity that names another
 session is `refused`. The user's requests without it resolve to the
@@ -1170,8 +1176,27 @@ takes the link down; it refuses while the runtime has live panes or
 exec sessions unless `force`, which removes the panes first.
 `DELETE /runtimes/NAME` refuses in the same way and also removes the
 runtime's directory, except its empty `io/`, which a container may
-mount. The server takes an idle runtime down on its own
-(design-runtimes.md, "Down").
+mount; for an ad-hoc runtime it also drops the definition. The
+server takes an idle runtime down on its own (design-runtimes.md,
+"Down").
+
+**`PUT /runtimes/NAME`** defines an ad-hoc runtime of the caller
+pane's session, with a `Runtime` body in the shape of a configuration
+entry, and replies with its `RuntimeInfo`. It starts no link; the
+clients get a `runtime` event. Only a host-connection pane identity
+may call it: the user is `refused` ("define an ad-hoc runtime from a
+pane of its session"). A configured runtime of that name is
+`refused` ("NAME is a runtime of FILE"). The same definition again is
+`200` and changes nothing; another definition of that name in the
+session is `refused` ("runtime NAME of SESSION has another
+definition; delete it or use another name"). A body that does not
+decode, and the `command` kind without the server's knob, are
+`invalid`. The definition lives in the server's memory until a
+`DELETE` of the runtime, the end of its session or the server's
+exit (design-runtimes.md, "Ad-hoc runtimes"). `PUT /layout` refuses,
+as `invalid`, a document that moves a runtime pane into a session
+where its runtime's name resolves to another runtime ("pane_N runs in
+runtime NAME of SESSION" for a pane of an ad-hoc runtime).
 
 **Clients** learn the runtimes from `/client`, not from a pane row:
 the row carries only the pane's `runtime` name (decided 2026-11-03).
@@ -1182,7 +1207,7 @@ order. A `runtime` event carries a whole entry when one is added or
 its kind, colour or link state changes, and the client replaces its
 entry by name and source or adds it; `runtime_deleted` names the name
 and source of a runtime that left the configuration and has no live
-link. The server reads the configuration file on each
+link, or of an ad-hoc runtime that was deleted or whose session went. The server reads the configuration file on each
 request that needs it, not on a change of the file, so an edit shows
 in these events after the next such request (`GET /runtimes`, or a new
 pane). A runtime that leaves the file while its link is `Starting` or

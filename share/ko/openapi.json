@@ -6,6 +6,12 @@
         "pattern": "^/",
         "type": "string"
       },
+      "Access": {
+        "enum": [
+          "ro"
+        ],
+        "type": "string"
+      },
       "Agent": {
         "properties": {
           "msg": {
@@ -80,6 +86,13 @@
             "type": "object"
           }
         ]
+      },
+      "Argv": {
+        "description": "an argv that starts with an absolute program path",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "Axis": {
         "enum": [
@@ -856,6 +869,30 @@
           }
         ]
       },
+      "Command2": {
+        "additionalProperties": false,
+        "properties": {
+          "lead": {
+            "$ref": "#/components/schemas/Argv"
+          },
+          "prefix": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Prefix"
+              }
+            ],
+            "default": [],
+            "description": "The argv that goes before `ko enter` in a pane's program."
+          },
+          "socket": {
+            "$ref": "#/components/schemas/AbsPath"
+          },
+          "up": {
+            "$ref": "#/components/schemas/Argv"
+          }
+        },
+        "type": "object"
+      },
       "CommandExit": {
         "properties": {
           "code": {
@@ -878,6 +915,77 @@
           "command",
           "started_at",
           "ended_at"
+        ],
+        "type": "object"
+      },
+      "ConnectionArgs": {
+        "description": "ssh connection options, with no destination and no command",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "Container": {
+        "additionalProperties": false,
+        "properties": {
+          "container": {
+            "$ref": "#/components/schemas/Program"
+          },
+          "from": {
+            "$ref": "#/components/schemas/Source"
+          },
+          "init": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Init"
+              }
+            ],
+            "default": [
+              "sleep",
+              "infinity"
+            ],
+            "description": "The command that keeps the container alive."
+          },
+          "ko": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Ko"
+              }
+            ],
+            "default": "shipped",
+            "description": "The static Linux ko beside the server's installation, the ko on PATH, or mount=DIR."
+          },
+          "run_args": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RunArgs"
+              }
+            ],
+            "default": [],
+            "description": "More arguments of the engine's `run`. ko refuses the options it owns."
+          },
+          "ssh_agent": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SshAgent"
+              }
+            ],
+            "default": "none",
+            "description": "The host's agent at /var/host-services/ssh-auth.sock (`--ssh`)."
+          },
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "volumes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Volume"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "from"
         ],
         "type": "object"
       },
@@ -966,6 +1074,11 @@
           "names"
         ],
         "type": "object"
+      },
+      "Destination": {
+        "description": "an ssh destination",
+        "pattern": "^[^-\\u0000][^\\u0000]*$",
+        "type": "string"
       },
       "Direction": {
         "enum": [
@@ -1182,6 +1295,13 @@
             "type": "object"
           }
         ]
+      },
+      "Env": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Environment variables: names without = or NUL, values without NUL.",
+        "type": "object"
       },
       "Error": {
         "oneOf": [
@@ -1678,6 +1798,13 @@
         ],
         "type": "string"
       },
+      "Init": {
+        "description": "a command",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
       "Input": {
         "oneOf": [
           {
@@ -1817,6 +1944,33 @@
           "int"
         ],
         "type": "string"
+      },
+      "Ko": {
+        "oneOf": [
+          {
+            "const": "shipped",
+            "description": "The static Linux ko beside the server's installation, mounted read-only at /opt/ko.",
+            "type": "string"
+          },
+          {
+            "const": "path",
+            "description": "The `ko` on the PATH of the image.",
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Another installed layout, mounted read-only at /opt/ko.",
+            "properties": {
+              "mount": {
+                "$ref": "#/components/schemas/MountDir"
+              }
+            },
+            "required": [
+              "mount"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "Layout": {
         "properties": {
@@ -2366,6 +2520,11 @@
         ],
         "type": "string"
       },
+      "MountDir": {
+        "description": "an absolute path without a comma",
+        "pattern": "^/[^,\\u0000]*$",
+        "type": "string"
+      },
       "Mouse": {
         "properties": {
           "action": {
@@ -2478,6 +2637,11 @@
         "maximum": 4611686018427387903,
         "minimum": 0,
         "type": "integer"
+      },
+      "Operand": {
+        "description": "an image reference or a container name",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/@+-]*$",
+        "type": "string"
       },
       "Origin": {
         "oneOf": [
@@ -2775,6 +2939,61 @@
         ],
         "type": "object"
       },
+      "Podman": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "$ref": "#/components/schemas/Source"
+          },
+          "init": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Init"
+              }
+            ],
+            "default": [
+              "sleep",
+              "infinity"
+            ],
+            "description": "The command that keeps the container alive."
+          },
+          "ko": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Ko"
+              }
+            ],
+            "default": "shipped",
+            "description": "The static Linux ko beside the server's installation, the ko on PATH, or mount=DIR."
+          },
+          "podman": {
+            "$ref": "#/components/schemas/Program"
+          },
+          "run_args": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RunArgs"
+              }
+            ],
+            "default": [],
+            "description": "More arguments of the engine's `run`. ko refuses the options it owns."
+          },
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "volumes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Volume"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "from"
+        ],
+        "type": "object"
+      },
       "Posted": {
         "description": "The state of a sent message. The seq counts the messages of the pane in arrival order. A\nrepeat of an id that the pane has seen is a duplicate and gets the state of the original.",
         "properties": {
@@ -2794,6 +3013,18 @@
           "seq"
         ],
         "type": "object"
+      },
+      "Prefix": {
+        "description": "an argv",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "Program": {
+        "description": "a program name or path",
+        "pattern": "^[^\\u0000]+$",
+        "type": "string"
       },
       "ProgramKind": {
         "enum": [
@@ -3032,6 +3263,110 @@
             "type": "object"
           }
         ]
+      },
+      "RemoteDir": {
+        "description": "an absolute path without a colon, a percent sign or a newline",
+        "pattern": "^/[^:%\\n\\u0000]*$",
+        "type": "string"
+      },
+      "RunArgs": {
+        "description": "arguments of the container engine's `run` without an option that ko owns",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "Runtime": {
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "properties": {
+              "ssh": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "ssh"
+            ]
+          },
+          {
+            "properties": {
+              "container": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "container"
+            ]
+          },
+          {
+            "properties": {
+              "command": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          {
+            "properties": {
+              "podman": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "podman"
+            ]
+          }
+        ],
+        "properties": {
+          "color": {
+            "$ref": "#/components/schemas/RuntimeColor"
+          },
+          "command": {
+            "$ref": "#/components/schemas/Command2"
+          },
+          "container": {
+            "$ref": "#/components/schemas/Container"
+          },
+          "cwd": {
+            "$ref": "#/components/schemas/AbsPath"
+          },
+          "env": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Env"
+              }
+            ],
+            "default": {},
+            "description": "Variables for every pane of the runtime, applied before the variables of the request."
+          },
+          "paths": {
+            "default": [],
+            "description": "A host directory that a host caller names as cwd maps to the runtime directory of the\nlongest matching host prefix.",
+            "items": {
+              "$ref": "#/components/schemas/PathMap"
+            },
+            "type": "array"
+          },
+          "pi": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RuntimePi"
+              }
+            ],
+            "default": "host",
+            "description": "Where pi runs for an agent in this runtime."
+          },
+          "podman": {
+            "$ref": "#/components/schemas/Podman"
+          },
+          "ssh": {
+            "$ref": "#/components/schemas/Ssh"
+          }
+        },
+        "type": "object"
       },
       "RuntimeColor": {
         "description": "an #rrggbb colour",
@@ -3541,6 +3876,75 @@
         ],
         "type": "object"
       },
+      "Source": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "A container that ko creates from the image and owns: down stops it and DELETE removes it.",
+            "properties": {
+              "image": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            },
+            "required": [
+              "image"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A container that the user created with the runtime socket shared and manages.",
+            "properties": {
+              "container": {
+                "$ref": "#/components/schemas/Operand"
+              }
+            },
+            "required": [
+              "container"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Ssh": {
+        "additionalProperties": false,
+        "properties": {
+          "destination": {
+            "$ref": "#/components/schemas/Destination"
+          },
+          "dir": {
+            "$ref": "#/components/schemas/RemoteDir"
+          },
+          "ssh_args": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ConnectionArgs"
+              }
+            ],
+            "default": [],
+            "description": "Connection options for the master (`-p`, `-J`, `-F`, `-i`, `-l`, `-o`, ...)."
+          }
+        },
+        "required": [
+          "destination"
+        ],
+        "type": "object"
+      },
+      "SshAgent": {
+        "oneOf": [
+          {
+            "enum": [
+              "none"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "forward",
+            "description": "The host's agent at /var/host-services/ssh-auth.sock (`--ssh`).",
+            "type": "string"
+          }
+        ]
+      },
       "StatusChange": {
         "properties": {
           "now": {
@@ -3667,6 +4071,11 @@
           "title"
         ],
         "type": "object"
+      },
+      "User": {
+        "description": "a user name or id",
+        "pattern": "^[^-\\u0000][^\\u0000]*$",
+        "type": "string"
       },
       "VarCondition": {
         "properties": {
@@ -3866,6 +4275,31 @@
             "type": "object"
           }
         ]
+      },
+      "Volume": {
+        "additionalProperties": false,
+        "description": "A directory of the host that the container mounts, files only: never a socket.",
+        "properties": {
+          "host": {
+            "$ref": "#/components/schemas/VolumePath"
+          },
+          "options": {
+            "$ref": "#/components/schemas/Access"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/VolumePath"
+          }
+        },
+        "required": [
+          "host",
+          "runtime"
+        ],
+        "type": "object"
+      },
+      "VolumePath": {
+        "description": "an absolute path without a colon",
+        "pattern": "^/[^:\\u0000]*$",
+        "type": "string"
       },
       "WaitMs": {
         "description": "Milliseconds.",
@@ -5221,7 +5655,7 @@
     },
     "/runtimes": {
       "get": {
-        "description": "The runtimes of the configuration file and of the links that are up, with their state.",
+        "description": "The configured runtimes and the ad-hoc runtimes of the caller's session, with their state. For the user, lists the ad-hoc runtimes of every session.",
         "operationId": "ListRuntimes",
         "responses": {
           "200": {
@@ -5320,6 +5754,53 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeInfo"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      },
+      "put": {
+        "description": "Defines a runtime of the caller pane's session without starting it.",
+        "operationId": "PutRuntime",
+        "parameters": [
+          {
+            "example": "dev",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RuntimeName"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Runtime"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {

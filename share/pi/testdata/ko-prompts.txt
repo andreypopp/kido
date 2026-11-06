@@ -98,7 +98,7 @@ Start an agent in a new window. Resume a saved session or fork a copy of it; for
 promptSnippet:
 
 ```
-spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?) - start, resume or copy an agent in a new window; returns its pi session id; toplevel starts an independent peer, not a child; runtime works in a configured runtime
+spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?) - start, resume or copy an agent in a new window; returns its pi session id; toplevel starts an independent peer, not a child; runtime works in a configured runtime or an ad-hoc runtime of this session
 ```
 
 promptGuidelines (merged into the system prompt's rules while the tool is registered):
@@ -118,7 +118,7 @@ parameters:
 - `resume_from` (string): Pi session id or unique prefix of at least eight characters. Continuing a live session is refused; fork copies it.
 - `toplevel` (boolean): Start an independent peer, with no parent, reports or notices. Depth does not apply. Fork is allowed; an existing child cannot become a peer.
 - `fork` (boolean): Copy resume_from, or this session when omitted. A copy requires a task. Defaults to false.
-- `runtime` (string): Run the agent's tools in a configured runtime (a container or an ssh host) by name. Its pi runs here, so resume_from and fork work; a runtime that runs pi itself refuses them. Omitted: the runtime of the caller.
+- `runtime` (string): Run the agent's tools in a configured runtime or an ad-hoc runtime of this session by name. Its pi runs here, so resume_from and fork work; a runtime that runs pi itself refuses them. Omitted: the runtime of the caller.
 
 ### stop_agent
 

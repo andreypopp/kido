@@ -149,6 +149,547 @@ pub(crate) fn stop_pane(s: &Server, pane: &str) {
     post(s, None, &format!("/panes/{pane}/stop"), &json!({}));
 }
 
+fn session_named(s: &Server, name: &str) -> String {
+    s.doc()["layout"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["name"] == name)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn define_command(s: &Server, pane: &str, name: &str) {
+    s.ko_as(
+        Some(pane),
+        &[
+            "api",
+            "--method",
+            "PUT",
+            "--input",
+            "-",
+            &format!("/runtimes/{name}"),
+        ],
+        "{\"command\":{}}",
+    )
+    .ok();
+}
+
+#[test]
+fn adhoc_boundary_runtime_connections_cannot_create_in_another_session() {
+    let s = serve("", &[]);
+    let a = token_pane_in_new_session(&s, "a");
+    let b = token_pane_in_new_session(&s, "b");
+    let sa = session_named(&s, "a");
+    let sb = session_named(&s, "b");
+    define_command(&s, &a, "dev");
+    define_command(&s, &b, "dev");
+    let pane = s.token_pane_with(json!({"session": sa, "runtime": "dev"}), "exec cat");
+    let token = s.token(&pane).unwrap();
+    refuses(
+        via(
+            &s,
+            &format!("{sa}-dev"),
+            ("PUT", "/runtimes/nested"),
+            Some((&pane, &token)),
+            &json!({"command": {}}),
+        ),
+        "PUT /runtimes/nested is not available on a runtime connection",
+    );
+    let response = via(
+        &s,
+        &format!("{sa}-dev"),
+        ("POST", "/panes"),
+        Some((&pane, &token)),
+        &json!({"session": sb, "runtime": "dev", "command": {"type":"shell", "command":"exec cat"}}),
+    );
+    assert_eq!(
+        response.0, 409,
+        "cross-session runtime creation: {}",
+        response.1
+    );
+    assert_eq!(response.1["kind"], "refused");
+}
+
+#[test]
+fn adhoc_boundary_layout_removal_drops_the_session_definition() {
+    let s = serve("", &[]);
+    let a = token_pane_in_new_session(&s, "a");
+    token_pane_in_new_session(&s, "b");
+    let sa = session_named(&s, "a");
+    define_command(&s, &a, "dev");
+    let (mut client, _) = s.client(None);
+    s.edit(|layout| {
+        let sessions = layout["sessions"].as_array_mut().unwrap();
+        let at = sessions
+            .iter()
+            .position(|session| session["id"] == sa)
+            .unwrap();
+        let removed = sessions.remove(at);
+        let target = sessions
+            .iter_mut()
+            .find(|session| session["name"] == "b")
+            .unwrap();
+        target["windows"]
+            .as_array_mut()
+            .unwrap()
+            .extend(removed["windows"].as_array().unwrap().iter().cloned());
+    });
+    let response = raw(
+        &s,
+        "GET",
+        &format!("/runtimes/dev?session={sa}"),
+        &s.headers(),
+        &Value::Null,
+    );
+    assert_eq!(
+        response.0, 404,
+        "definition after PUT /layout removed its session: {}",
+        response.1
+    );
+    loop {
+        let Message::Text(text) = client.read() else {
+            continue;
+        };
+        let event: Value = serde_json::from_str(&text).unwrap();
+        if event
+            == json!({"type":"runtime_deleted", "name":"dev", "source":{"type":"session", "id":sa}})
+        {
+            break;
+        }
+    }
+}
+
+#[test]
+fn adhoc_boundary_a_configured_pane_cannot_move_under_a_session_shadow() {
+    let s = serve("", &[]);
+    token_pane_in_new_session(&s, "a");
+    let b = token_pane_in_new_session(&s, "b");
+    let sa = session_named(&s, "a");
+    let sb = session_named(&s, "b");
+    define_command(&s, &b, "dev");
+    s.rewrite("runtimes:\n  dev: {command: {}}\n");
+    let pane = s.token_pane_with(json!({"session":sa, "runtime":"dev"}), "exec cat");
+    s.rewrite("runtimes: [");
+    let renamed = s.edit(|layout| {
+        layout["sessions"][0]["windows"][0]["name"] = json!("renamed");
+    });
+    assert_eq!(
+        renamed["layout"]["sessions"][0]["windows"][0]["name"],
+        "renamed"
+    );
+    s.rewrite("runtimes:\n  dev: {command: {}}\n");
+    let mut doc = s.doc();
+    let sessions = doc["layout"]["sessions"].as_array_mut().unwrap();
+    let source = sessions
+        .iter_mut()
+        .find(|session| session["id"] == sa)
+        .unwrap();
+    let windows = source["windows"].as_array_mut().unwrap();
+    let at = windows
+        .iter()
+        .position(|window| window["tree"]["pane"] == pane)
+        .unwrap();
+    let moved = windows.remove(at);
+    sessions
+        .iter_mut()
+        .find(|session| session["id"] == sb)
+        .unwrap()["windows"]
+        .as_array_mut()
+        .unwrap()
+        .push(moved);
+    let response = raw(&s, "PUT", "/layout", &s.headers(), &doc);
+    assert_eq!(
+        response.0, 400,
+        "configured pane moved under shadow: {}",
+        response.1
+    );
+    assert_eq!(response.1["kind"], "invalid");
+}
+
+#[test]
+fn adhoc_containers_delete_stale_owned_state_once_and_delete_at_server_exit() {
+    let files = Dir::new("ko-rtf-");
+    let (kind, delete) = if cfg!(target_os = "linux") {
+        ("podman", "rm")
+    } else {
+        ("container", "delete")
+    };
+    crate::shell::fake(&files, kind);
+    let log = files.join("calls");
+    let version = run_ko(&files, &test_env(&files), &["version"], "").ok();
+    let path = format!("{}:/usr/bin:/bin", files.display());
+    let s = serve(
+        &format!(
+            "runtimes:\n  configured:\n    {kind}:\n      from: {{image: image}}\n      ko: path\n"
+        ),
+        &[
+            ("PATH", &path),
+            ("KO_FAKE_ENGINE_LOG", text_of(&log)),
+            ("KO_FAKE_ENGINE_VERSION", &version),
+        ],
+    );
+    assert_eq!(
+        s.ko(
+            &["run", "container", "--name", "dev", "--from-image", "image"],
+            ""
+        )
+        .error(1),
+        "ko run: needs a pane\n"
+    );
+    assert!(
+        s.ko(&["run", "--name", "dev"], "")
+            .error(124)
+            .contains("unexpected argument")
+    );
+    let mut nested = test_env(&files);
+    nested.push(b"KO_RUNTIME=dev".to_vec());
+    assert_eq!(
+        run_ko(
+            &files,
+            &nested,
+            &["run", "container", "--name", "dev", "--from-image", "image"],
+            ""
+        )
+        .error(1),
+        "ko run: inside runtime dev; run it from a host pane\n"
+    );
+    let host = token_pane_in_new_session(&s, "adhoc");
+    s.ko_as(
+        Some(&host),
+        &[
+            "run",
+            kind,
+            "--name",
+            "dev",
+            "--from-image",
+            "image",
+            "--ko",
+            "path",
+        ],
+        "",
+    )
+    .ok();
+    assert!(!log.exists());
+    let definition: Value =
+        serde_json::from_str(&s.ko_as(Some(&host), &["api", "/runtimes/dev"], "").ok()).unwrap();
+    let session = definition["source"]["id"].as_str().unwrap();
+    let run = || {
+        let mut ws = s
+            .dial_ws("/runtimes/dev/exec", Some(as_pane(&s, &host)), 101)
+            .unwrap();
+        ws.send(
+            &json!({"type": "exec", "argv": ["/bin/sh", "-c", "printf works"], "stdin": false}),
+        );
+        let done = read_exec(&mut ws);
+        assert_eq!(done.end, json!({"type": "exit", "status": 0}));
+        let info: Value =
+            serde_json::from_str(&s.ko_as(Some(&host), &["api", "/runtimes/dev"], "").ok())
+                .unwrap();
+        assert_eq!(info["state"]["type"], "up");
+    };
+    run();
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(
+        calls.contains(&format!(
+            "{delete} --force ko-{session}-dev\nrun -d --name ko-{session}-dev"
+        )),
+        "{calls}"
+    );
+    s.ko_as(
+        Some(&host),
+        &[
+            "api",
+            "--method",
+            "POST",
+            "--input",
+            "-",
+            "/runtimes/dev/down",
+        ],
+        "{}",
+    )
+    .ok();
+    run();
+    let calls = fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        calls
+            .lines()
+            .filter(|line| line.starts_with(&format!("{delete} ")))
+            .count(),
+        1
+    );
+    let mut configured = start_exec(
+        &s,
+        "configured",
+        json!({"argv": ["/bin/true"], "stdin": false}),
+    );
+    assert_eq!(
+        read_exec(&mut configured).end,
+        json!({"type": "exit", "status": 0})
+    );
+    assert_eq!(info(&s, "configured")["state"]["type"], "up");
+    s.ko(&["kill-server"], "").ok();
+    poll("the detached delete cleanup", || {
+        fs::read_to_string(&log).is_ok_and(|text| {
+            text.lines()
+                .filter(|line| line.starts_with(&format!("{delete} ")))
+                .count()
+                == 2
+                && text.lines().any(|line| line == "stop ko-configured")
+        })
+    });
+    let calls = fs::read_to_string(&log).unwrap();
+    assert!(
+        !calls
+            .lines()
+            .any(|line| line == format!("{delete} --force ko-configured")),
+        "{calls}"
+    );
+}
+
+#[test]
+fn adhoc_definitions_resolve_in_the_session_and_end_with_it() {
+    let s = serve("runtimes:\n  configured:\n    command: {}\n", &[]);
+    let a = token_pane_in_new_session(&s, "a");
+    let b = token_pane_in_new_session(&s, "b");
+    let doc = s.doc();
+    let sessions = doc["layout"]["sessions"].as_array().unwrap();
+    let sa = sessions[sessions.len() - 2]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sb = sessions[sessions.len() - 1]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let definition = json!({"command": {}, "pi": "host"});
+    let api = |pane: Option<&str>, method: &str, path: &str, body: &Value| -> Value {
+        let mut args = vec!["api", "--method", method, path];
+        if !body.is_null() {
+            args.extend(["--input", "-"]);
+        }
+        let text = s.ko_as(pane, &args, &body.to_string()).ok();
+        serde_json::from_str(&text).unwrap()
+    };
+    let (mut client, _) = s.client(None);
+    let (status, error) = raw(
+        &s,
+        "PUT",
+        "/runtimes/bad",
+        &as_pane(&s, &a),
+        &json!({"command": []}),
+    );
+    assert_eq!(status, 400);
+    assert_eq!(error["kind"], "invalid");
+    let registered = api(Some(&a), "PUT", "/runtimes/dev", &definition);
+    assert_eq!(registered["source"], json!({"type": "session", "id": sa}));
+    assert_eq!(registered["state"]["type"], "down");
+    assert_eq!(
+        api(Some(&a), "PUT", "/runtimes/dev", &definition),
+        registered
+    );
+    let listed = api(Some(&a), "GET", "/runtimes", &Value::Null);
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["source"] == registered["source"])
+    );
+    assert!(
+        !api(Some(&b), "GET", "/runtimes", &Value::Null)
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"] == "dev")
+    );
+    let (status, error) = raw(&s, "GET", "/runtimes/dev", &as_pane(&s, &b), &Value::Null);
+    assert_eq!(status, 404);
+    assert_eq!(
+        error["message"],
+        format!(
+            "no runtime dev in {sb} or in {}",
+            s.config.join("config.yaml").display()
+        )
+    );
+    let (status, error) = raw(
+        &s,
+        "PUT",
+        "/runtimes/dev",
+        &as_pane(&s, &a),
+        &json!({"command": {}, "pi": "runtime"}),
+    );
+    assert_eq!(status, 409);
+    assert_eq!(
+        error["message"],
+        format!("runtime dev of {sa} has another definition; delete it or use another name")
+    );
+    let (status, error) = raw(
+        &s,
+        "PUT",
+        "/runtimes/configured",
+        &as_pane(&s, &a),
+        &definition,
+    );
+    assert_eq!(status, 409);
+    assert_eq!(
+        error["message"],
+        format!(
+            "configured is a runtime of {}",
+            s.config.join("config.yaml").display()
+        )
+    );
+    let (status, error) = raw(&s, "PUT", "/runtimes/user", &s.headers(), &definition);
+    assert_eq!(status, 409);
+    assert_eq!(
+        error["message"],
+        "define an ad-hoc runtime from a pane of its session"
+    );
+    api(Some(&a), "PUT", "/runtimes/disposable", &definition);
+    api(Some(&a), "DELETE", "/runtimes/disposable", &Value::Null);
+    let (status, _) = raw(
+        &s,
+        "GET",
+        "/runtimes/disposable",
+        &as_pane(&s, &a),
+        &Value::Null,
+    );
+    assert_eq!(status, 404);
+    let second = api(
+        Some(&b),
+        "PUT",
+        "/runtimes/dev",
+        &json!({"command": {"prefix": ["/usr/bin/env", "SESSION_MARK=b"]}, "pi": "runtime"}),
+    );
+    assert_eq!(second["source"], json!({"type": "session", "id": sb}));
+    assert_eq!(second["pi"], "runtime");
+    let all = api(None, "GET", "/runtimes", &Value::Null);
+    assert_eq!(
+        all.as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["name"] == "dev")
+            .count(),
+        2
+    );
+    assert_eq!(
+        api(
+            None,
+            "GET",
+            &format!("/runtimes/dev?session={sa}"),
+            &Value::Null
+        ),
+        registered
+    );
+    let mut exec = s
+        .dial_ws("/runtimes/dev/exec", Some(as_pane(&s, &a)), 101)
+        .unwrap();
+    exec.send(&json!({"type": "exec", "argv": ["/bin/sh", "-c", "printf routed"], "stdin": false}));
+    let done = read_exec(&mut exec);
+    assert_eq!(done.stdout, b"routed");
+    assert_eq!(done.end, json!({"type": "exit", "status": 0}));
+    let mut request = sh(
+        "ko api /version; printf 'RUNTIME=%s MARK=%s\\n' \"$KO_RUNTIME\" \"$SESSION_MARK\"; exec cat",
+    );
+    request["runtime"] = json!("dev");
+    request["parent"] = json!(a);
+    let pane = api(Some(&a), "POST", "/panes", &request)["pane"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    s.screen_has(&pane, "RUNTIME=dev MARK=");
+    s.screen_has(&pane, "protocol");
+    request["parent"] = json!(b);
+    let other = api(Some(&b), "POST", "/panes", &request)["pane"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    s.screen_has(&other, "RUNTIME=dev MARK=b");
+    s.screen_has(&other, "protocol");
+    let put = s.edit(|layout| {
+        let session = layout["sessions"].as_array_mut().unwrap().iter_mut().find(|session| session["id"] == sa).unwrap();
+        session["windows"].as_array_mut().unwrap().push(json!({"name": "layout-born", "tree": {"pane": {"new": sh_in("dev", "printf layout-born; exec cat")}}}));
+    });
+    let layout_born = put["layout"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|session| session["id"] == sa)
+        .unwrap()["windows"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["tree"]["pane"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    s.screen_has(&layout_born, "layout-born");
+    s.rewrite("runtimes:\n  configured: {command: {}}\n  dev: {command: {}, pi: runtime}\n");
+    assert_eq!(
+        api(Some(&a), "GET", "/runtimes/dev", &Value::Null)["source"],
+        registered["source"]
+    );
+    assert_eq!(
+        api(None, "GET", "/runtimes/dev", &Value::Null)["source"],
+        json!({"type": "config"})
+    );
+    s.rewrite("runtimes:\n  configured: {command: {}}\n");
+    let mut moved = s.doc();
+    let windows = moved["layout"]["sessions"].as_array_mut().unwrap();
+    let source = windows
+        .iter()
+        .position(|session| session["id"] == sa)
+        .unwrap();
+    let target = windows
+        .iter()
+        .position(|session| session["id"] == sb)
+        .unwrap();
+    let at = windows[source]["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|window| window["tree"]["pane"] == pane)
+        .unwrap();
+    let window = windows[source]["windows"]
+        .as_array_mut()
+        .unwrap()
+        .remove(at);
+    windows[target]["windows"]
+        .as_array_mut()
+        .unwrap()
+        .push(window);
+    let (status, error) = raw(&s, "PUT", "/layout", &s.headers(), &moved);
+    assert_eq!(status, 400);
+    assert_eq!(
+        error["message"],
+        format!("{pane} runs in runtime dev of {sa}")
+    );
+    api(None, "DELETE", &format!("/sessions/{sa}"), &Value::Null);
+    let (status, _) = raw(
+        &s,
+        "GET",
+        &format!("/runtimes/dev?session={sa}"),
+        &s.headers(),
+        &Value::Null,
+    );
+    assert_eq!(status, 404);
+    poll("runtime socket to go", || {
+        !s.dir.join(format!("runtimes/{sa}-dev/io/socket")).exists()
+    });
+    let expected =
+        json!({"type": "runtime_deleted", "name": "dev", "source": {"type": "session", "id": sa}});
+    loop {
+        if let Message::Text(text) = client.read() {
+            let event: Value = serde_json::from_str(&text).unwrap();
+            if event == expected {
+                break;
+            }
+        }
+    }
+}
+
 #[test]
 fn a_runtime_pane_runs_through_the_wrapper_and_its_token_file_is_private_and_used_once() {
     let files = Dir::new("ko-rtf-");
@@ -1048,6 +1589,19 @@ fn a_configuration_that_cannot_be_used_fails_the_runtime_requests_and_not_the_se
         "{body}"
     );
 
+    let caller = token_pane_in_new_session(&s, "definitions");
+    let (status, body) = raw(
+        &s,
+        "PUT",
+        "/runtimes/adhoc",
+        &as_pane(&s, &caller),
+        &json!({"command": {}}),
+    );
+    assert_eq!((status, body["kind"].as_str()), (400, Some("invalid")));
+    assert_eq!(
+        body["message"],
+        "command is a test kind; set KO_RUNTIME_COMMAND_KIND=1"
+    );
     fs::write(&file, "runtimes:\n  dev:\n    command: {}\n").unwrap();
     let (status, body) = get("/runtimes");
     assert_eq!((status, body["kind"].as_str()), (400, Some("invalid")));
@@ -1059,7 +1613,11 @@ fn a_configuration_that_cannot_be_used_fails_the_runtime_requests_and_not_the_se
         "without the knob a command runtime is an error that names the runtime and the field: {body}"
     );
     assert_eq!(created("dev").0, 400);
-    assert!(s.rows().is_empty(), "the request that failed made no pane");
+    assert_eq!(
+        ids(&json!(s.rows())),
+        [caller.as_str()],
+        "the request that failed made no pane"
+    );
 
     fs::write(&file, "runtimes:\n  dev: [").unwrap();
     let (status, body) = get("/runtimes");

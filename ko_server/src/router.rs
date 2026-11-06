@@ -387,13 +387,17 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             ok::<routes::DeleteVar>(&mut state.conns[index], &Empty {});
         }
         Request::ListRuntimes {} => {
-            let result = state.list_runtimes();
+            let result = state.list_runtimes(caller);
             reply::<routes::ListRuntimes>(&mut state.conns[index], result);
+        }
+        Request::PutRuntime { name, body } => {
+            let result = state.put_runtime(caller, name, body);
+            reply::<routes::PutRuntime>(&mut state.conns[index], result);
         }
         Request::GetRuntime { name, session } => {
             let result = state
                 .runtime_key(caller, session, &name)
-                .and_then(|key| state.get_runtime(&key));
+                .map(|(key, settings)| state.runtime_info(&key, &settings));
             reply::<routes::GetRuntime>(&mut state.conns[index], result);
         }
         Request::WaitRuntime { name, timeout_ms } => {
@@ -412,14 +416,14 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
         } => {
             let result = state
                 .runtime_key(caller, session, &name)
-                .and_then(|key| state.down_runtime(poll, &key, body.force))
+                .and_then(|(key, _)| state.down_runtime(poll, &key, body.force))
                 .map(|()| Empty {});
             reply::<routes::DownRuntime>(&mut state.conns[index], result);
         }
         Request::DeleteRuntime { name, session } => {
             let result = state
                 .runtime_key(caller, session, &name)
-                .and_then(|key| state.delete_runtime(poll, &key));
+                .and_then(|(key, settings)| state.delete_runtime(poll, &key, &settings));
             reply::<routes::DeleteRuntime>(&mut state.conns[index], result);
         }
         Request::Exec { name, session } => {
@@ -431,14 +435,11 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                 );
             };
             let name = match state.runtime_key(caller, session, &name) {
-                Ok(key) => key,
+                Ok((key, _)) => key,
                 Err(Error { kind, message }) => {
                     return error(&mut state.conns[index], kind, message);
                 }
             };
-            if let Err(Error { kind, message }) = state.get_runtime(&name) {
-                return error(&mut state.conns[index], kind, message);
-            }
             upgrade(state, poll, index, response, Role::Exec(Session::new(name)));
             state.read_ws(poll, index);
         }

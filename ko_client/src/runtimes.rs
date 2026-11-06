@@ -11,7 +11,7 @@ use ko_server::protocol::{Empty, LeadReport, LinkState, RuntimeWait, STDERR_TAIL
 use ko_sys::fd::{self, Waited, Want};
 use ko_sys::signal::{Signal, Signals};
 
-use crate::api::{Failure, ReplyError, call};
+use crate::api::{ReplyError, call, describe};
 use crate::wire::{self, Caller};
 
 const STILL_STARTING: Duration = Duration::from_secs(120);
@@ -63,14 +63,6 @@ pub fn report_lead(
         wire::READ_TIMEOUT,
     )
     .map(|_| ())
-}
-
-fn describe(dir: &Path, failure: ReplyError) -> String {
-    match failure {
-        ReplyError::Refused(error) => error.message,
-        ReplyError::Server(Failure::NoServer) => format!("no server at {}", dir.display()),
-        ReplyError::Server(Failure::Failed(message)) => message,
-    }
 }
 
 fn failed(message: impl Into<String>) -> LeadReport {

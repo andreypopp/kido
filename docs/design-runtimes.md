@@ -32,8 +32,13 @@ sessions and the start's waiters hold the key; the wire keeps the
 bare name where the request gives the session. A request's name
 resolves to a key by the request's session: the caller pane's
 session, the session that a new pane lands in, or, for the user,
-the `session` query (protocol.md, section 15). Only configured
-runtimes exist, so every name resolves to its configured entry. The
+the `session` query (protocol.md, section 15). In that session the
+name resolves to the session's ad-hoc runtime of that name, else the
+configured one (`Registry::resolve`); a name that neither has is
+`not_found` with "no runtime NAME in SESSION or in FILE". An ad-hoc
+runtime thus shadows a configured runtime that gains its name later,
+while it lives. The user's requests without `session` resolve to the
+configured runtime. The
 key's **tag** (`RuntimeKey::tag`) is its one-word form for a file
 system and a container engine: the name for a configured runtime,
 `<session>-<name>` for a session's. A session id has an underscore and
@@ -114,6 +119,54 @@ interactive step that one waiting pane runs on its own pty (the ssh
 master's login), and `up`, a step that the server runs as its own
 child (the ssh forward). The fields of the other kinds are in their
 sections below.
+
+## Ad-hoc runtimes
+
+A pane defines a runtime of its own layout session with `PUT
+/runtimes/NAME` (protocol.md, section 15 gives the rules and the
+refusals), and `ko run <kind>` (`ko/src/run.rs`) is that request
+from the command line. The body is a `Runtime` of
+`ko_config/src/runtime.rs`, the shape of a configuration entry, so
+one decode and one validation serve the file and the route, and
+`ko run`'s options are the fields. A definition starts nothing: a
+pane born in the runtime, an exec session or `ko-pi --runtime NAME`
+uses it by name, as a configured runtime. The registry keeps the
+definitions in memory only, in its `adhoc` map beside the links
+(`ko_server/src/runtime/mod.rs`); nothing persists across a server
+restart.
+
+**A pane stays where its runtime name resolves.** A row carries the
+bare `runtime` name, and the name resolves by the pane's session.
+Thus `PUT /layout` refuses a move of a pane into a session where its
+name resolves to another key, and a runtime connection creates panes
+only in its runtime's session: the row's name and the pane's session
+always give the pane's key, and a client finds the entry with one
+lookup.
+
+**The end of a definition.** A session goes with its last window,
+with `DELETE /sessions/{id}` or with a `PUT /layout` that leaves it
+out. Its panes go first, in the same layout change; then each ad-hoc
+runtime of the session gets a forced down and then the effects of
+`DELETE /runtimes/NAME`: the kind's delete cleanup runs, the runtime directory goes
+but its `io/`, the definition leaves the map, and `runtime_deleted`
+names the key. The idle rule only takes the link down and keeps the
+definition, so the next pane or exec starts the link from it again.
+At its exit the server takes every link down and then queues the
+delete cleanup of every ad-hoc runtime, because nothing would remove
+its container later; the cleanup runs after the server as the stops
+do.
+
+**A fresh definition** has not yet reached `Up`. An image runtime of
+the container kinds finds its container `ko-<tag>` by name, and a
+container of that name can remain from an earlier server that ended
+before its cleanup ran, with another image or other volumes. The
+first start of a fresh definition therefore deletes a `ko-<tag>` that
+it finds ("The container kind", the start stages) and creates it
+again. The name is the proof that ko created it: the tag carries the
+session id, which no user container of `from: {container}` uses, and
+that source is never deleted. A start that fails keeps the
+definition fresh; after `Up`, a start after an idle down reuses the
+container.
 
 ## Clients
 
@@ -210,7 +263,8 @@ the rule; read when the timer starts), on a loop timer.
 exec sessions, unless `force`, which removes them first as a stop
 does. `DELETE /runtimes/NAME` refuses in the same way, takes the link
 down and removes the runtime directory but its empty `io/` ("The
-runtime directory"). Down unbinds the listener,
+runtime directory"); for an ad-hoc runtime it also drops the
+definition ("Ad-hoc runtimes"). Down unbinds the listener,
 removes the socket and the token files and closes the runtime's
 connections. At its exit the server takes every link down after the
 panes. Nothing reconnects on its own: the next pane or exec starts
@@ -518,7 +572,10 @@ the image; ko has no measurement of an amd64 image under Rosetta.
 
 1. `container system status`. A failure is `container system is not
    running: run container system start`.
-2. `container inspect <target>`. A missing container (exit 1, `not
+2. `container inspect <target>`. For the fresh definition of an
+   ad-hoc image runtime ("Ad-hoc runtimes"), a container that exists
+   goes to `container delete --force ko-<tag>` and then to `container
+   run`. A missing container (exit 1, `not
    found`) of an image runtime goes to `container run -d --name
    ko-<tag> --init` with the socket relay, each configured volume as
    `-v`, the `/opt/ko` mount, `--ssh` for `ssh_agent: forward`,
@@ -570,7 +627,8 @@ cancels the command.
 server's exit stop a container that ko created (`container stop`); a
 user's container is never stopped. `DELETE /runtimes/{name}` also
 removes a container that ko created (`container delete --force`) and
-never a user's. The cleanup of a runtime is one queue of the
+never a user's; so do the end of an ad-hoc runtime's session and the
+server's exit for an ad-hoc runtime ("Ad-hoc runtimes"). The cleanup of a runtime is one queue of the
 registry, in order: first the start stage and the watch that the down
 ended, until they are reaped, then the stop, then the delete. A
 stage that was killed can still finish its engine operation, which is
@@ -580,8 +638,8 @@ kills it after 30 s, but never sends it `SIGTERM`. A start of the
 same runtime that arrives meanwhile is `Starting` and runs its first
 stage only when the queue is empty, so an old stop never stops a new
 start's container. The reply to `DELETE` does not wait for the
-removal. At the server's exit the stops start without the queue's
-order and finish after the server is gone.
+removal. At the server's exit the stops and the deletes start without
+the queue's order and finish after the server is gone.
 
 ## The podman kind
 
@@ -791,7 +849,13 @@ no master outlives a down.
 An agent works in a runtime in one of two modes, by the runtime's
 `pi`. The harness side is `share/pi/ko-pi.ts`; ko's part of either
 mode is the configuration's `pi`, the `cwd` and `pi` of `GET
-/runtimes/NAME`, the exec session and the `runtime` body field.
+/runtimes/NAME`, the exec session and the `runtime` body field. The
+harness sends a runtime's name with its pane identity, so the name
+resolves in the pane's session ("The model"), and an ad-hoc runtime
+works in both modes as a configured one, with no branch in the
+harness; a child's pane lands in its spawner's session and resolves
+the same name. An ad-hoc runtime that is down starts at the first
+exec from its stored definition.
 
 **Routed** (`pi: "host"`, the default). pi runs on the host in a host
 pane, as `ko-pi --runtime NAME`: its session file, extensions,
@@ -846,308 +910,5 @@ The pane is a host pane in every row field.
   MCP tools and codemode stay on the host: the harness cannot know
   which of them touch files, and a refusal would break the user's
   setup. Skills, prompt templates, project `.pi/` resources and `@`
-  completion stay the host's; on a mounted project they are the same
-  files, and on an ssh project they are absent.
-- **What refuses.** At `session_start` the harness reads `GET
-  /runtimes/NAME`. A missing runtime or one whose `pi` is `"runtime"`
-  leaves pi running with every routed tool, `!`, `async_bash` and a
-  `spawn_agent` without `runtime` refusing with the reason, and a
-  notice. A `Failed` runtime does not
-  refuse: the next exec starts it again, and a failed start reaches
-  the tool as the exec's `error`.
-- **Jobs.** `async_bash` and a moved `bash` call are jobs of the
-  harness (design-subagents.md, "A job") over the same operations:
-  the job's process is the `ko api --stream /runtimes/NAME/exec`
-  child of pi, in the registry beside the local jobs. A stop kills
-  that child, so ko closes the session and the ko inside ends the
-  command's group ("Cancel"); the harness sends no `signal` frame.
-  The child's connection survives `/reload` as any child does. The
-  log is written on the host, so the routed `read`, which runs in the
-  runtime, reads it only where the runtime maps it. A job counts
-  against the 32 exec sessions and keeps the runtime from going idle.
-- **The variables.** The harness writes `pi.runtime` (`{ name, cwd }`,
-  the runtime cwd) beside `pi.session`, believed under the same trust
-  rule, and `ko.runtime` (the name), and deletes both with the others
-  at shutdown. `ko.runtime` is a generic marker: any program that
-  sends its work into a runtime from a host pane may set it; no
-  client reads it, because nothing makes it trusted ("Clients"), and
-  ko itself reads neither.
-- **Messages.** A message from a routed pi carries `data.runtime`,
-  and the receiver's header adds `in runtime NAME`; the server never
-  reads a message's data.
 
-**Inside** (`pi: "runtime"`). pi runs in a runtime pane, through
-`ko enter`, with `KO_RUNTIME` in its environment, and the harness
-routes nothing. Its session is a file of the runtime, so a spawner
-refuses `resume_from` and `fork` into such a runtime.
-
-**Spawning.** `spawn_agent`'s `runtime` reads `GET /runtimes/NAME`
-and starts a routed child (a host pane whose command gains `--runtime
-NAME`) or an inside child (`POST /panes` with `runtime`; the server
-maps its host cwd). An inside spawner sends its runtime cwd as a
-string, which passes unchanged because the caller is in the target
-runtime; it does not name its own pane, because pi reports no OSC 7. Without `runtime`, a routed spawner's child is
-routed in the same runtime, and an inside spawner's child is in its
-runtime by the server's inheritance; an inside spawner refuses another
-runtime. `KO_AGENT_TRUSTED_CWD` is the host cwd for a routed child
-and the mapped runtime path for an inside child, which is the
-directory that child's pi sees. The registry entry of a child
-records its runtime and mode, so a restart through a message starts
-it the same way. `list_agents` shows `runtime` from the row's field,
-else from a trusted `pi.runtime`, and a routed agent's `cwd` from
-that variable.
-
-**Cancel.** A tool's abort or timeout kills its `ko api --stream`
-process, which closes the session. On every kind, the inside ko then
-ends the command's process group ("The exec session"); a process that
-left the group survives.
-
-## Decisions
-
-Fixed before the design, 2026-11-03:
-
-- The first kinds are `ssh` and Apple's `container`, both validated on
-  this Mac; podman on Linux followed ("The podman kind"), and
-  Firecracker is later ("Not built").
-  The podman-machine transport of macOS is out of scope.
-- A pane in a runtime gets a `KO_SOCKET` that belongs to that runtime
-  only, and every pane, run and agent that a runtime pane creates is
-  in the same runtime.
-- No stdio fallback for attaching clients, and no views and no
-  `/client` on a runtime socket.
-- Runtimes are managed through the HTTP API only: no `ko runtime`
-  subcommands and no `--runtime` flag on `ko layout edit`.
-  A runtime starts with its first pane and stops by the idle rule,
-  600 s.
-- ko ships a static musl Linux `ko` for the container kind. The
-  Homebrew formula builds the host's architecture only. An ssh host
-  needs an installed ko; an upload belongs to the bridge transport
-  ("Not built").
-- The `command` kind is test-only, and the container e2e runs locally
-  behind `KO_E2E_CONTAINER=1`.
-- ssh panes ride the master: one authentication and one connection.
-  The alternative, one connection for each pane, keeps panes alive
-  through a master loss, but authenticates for each pane and leaves
-  the inner agents without a socket while the master is down. The
-  cost: a laptop that sleeps loses its remote panes, as it loses a
-  `ko ssh` pane.
-- `starting runtime NAME` is the whole text of a waiting pane; a
-  container image pull shows no progress there.
-
-Podman kind, 2026-11-04:
-
-- A `podman` kind for a server on Linux with podman on the same host;
-  the podman-machine transport of macOS stays out of scope, and the
-  kind refuses at the link start on another OS, not at the decode.
-- The container mounts the directory of the socket, not the socket
-  file, and every kind's socket moves into `io/`, which holds only
-  the socket and which ko never removes.
-- No `ssh_agent` for podman (see "The podman kind").
-- The podman e2e runs on CI's Ubuntu runner, behind `KO_E2E_PODMAN=1`.
-
-The configuration file, 2026-11-04:
-
-- The file is YAML 1.2, `config.yaml`, with no JSON form: a person
-  writes it, with comments, and an editor checks it with the JSON
-  schema through the `yaml-language-server` line.
-- One file for every setting that ko and Kido.app cannot derive, with
-  one top-level key for each owner: `server:` and `runtimes:` are the
-  server's, `app:` is Kido.app's.
-- The parser is saphyr-parser, the event parser of the yaml-rust2 line:
-  pure Rust without `unsafe`, YAML 1.2, two packages. serde-saphyr and
-  serde_norway were rejected: a serde YAML crate must pick a type for a
-  plain scalar in `deserialize_any`, so a buffered string field fails
-  on `2222`; serde-saphyr adds about twelve packages, and serde_norway
-  is unsafe-libyaml, unreleased since 2024-12, and keeps the last of
-  two duplicate keys. serde_yml has a RUSTSEC advisory. libyaml's YAML
-  1.1 resolution reads `no` as false.
-- The deserializer resolves a scalar by the type that asks, not by the
-  scalar alone: a string field takes `yes` and `0755` as written, and
-  a bool, an integer or a float field takes only the core schema's
-  forms.
-- The kind is a key of the entry (`ssh:`, `container:`, `command:`),
-  not a `kind:` tag beside flattened fields: serde's `flatten` and an
-  internal tag buffer the value through `deserialize_any` and refuse
-  `deny_unknown_fields`. A derived raw record with the three optional
-  keys converts through `try_from` into the runtime, whose kind is an
-  enum; the schema states the rule as a `oneOf` of `required` keys.
-- The error for zero or two kinds names `ssh`, `container` and `podman` only:
-  `command` is a test kind, and the server's knob check explains it.
-
-2026-11-04:
-
-- The ssh master is the leader pane's process, with
-  `ControlPersist=yes`, not the server's child: a headless server
-  cannot answer ssh's prompts, and a batch-mode master would need a
-  login command.
-- The remote directory is resolved on the remote by `ko enter`, both
-  for `--prepare` and for a pane, so the pane's argv needs no fact
-  of the link.
-- The exec session is a WebSocket, not a pane: a pane would give every
-  tool call a pty that merges stderr and rewrites bytes, a
-  window in the layout and a sweep; the tools need bytes, a status and
-  stdin.
-- No file routes. Read, write, list and search inside a runtime are
-  commands of its shell (`cat`, `test`, `mkdir -p`, `ls -1Ap`, `find`
-  or `fd`, `grep` or `rg`), which every image with a shell has,
-  through the exec session. A file route would need a file server
-  inside the runtime; the exec session reaches the same files with
-  less code and no second protocol, and a slow case, such as a search
-  of a large tree, is slow inside the runtime, not in ko.
-- The ssh channel budget is a cap of 32 sessions for each runtime
-  with a queue and one retry, and no configuration field ("Limits").
-- The exec passes variables in the first frame to `ko enter --exec`, not `SetEnv`,
-  which a default sshd's `AcceptEnv` refuses.
-- The option classifier lives in `ko_config::ssh_args`, because the
-  configuration validates `ssh_args` and `ko_server`, `ko_shell` and
-  `ko_client` depend on `ko_config`. The ssh facts that the remote
-  attach shares stay in `ko_server::ssh`.
-- Down does not clean the remote files: the next `--prepare` does,
-  and a dead pane's token buys nothing.
-
-- The configuration's kinds are a closed enum that holds only what is
-  built.
-- The interactive step's report is `POST /runtimes/{name}/lead`, one
-  name for every kind, and the wait's reply carries the step's argv
-  only for the leader, as one optional field.
-- A runtime connection is deny by default: `PUT /layout` and the
-  `/runtimes` routes are refused there.
-- A live exec session keeps a runtime from going idle, as a pane does.
-
-Agents in a runtime, 2026-11-04:
-
-- An agent in a runtime is routed unless the runtime says `pi:
-  "runtime"`; ko never copies pi into a runtime.
-- Other extensions' tools in a routed pi run on the host, with a
-  prompt section and a notice, not a refusal.
-- `@` completion in a routed pi lists host files.
-- A routed tool's cancel is ko's, not the harness's.
-
-Jobs in a runtime, 2026-11-05:
-
-- A routed pi's `async_bash` and moved `bash` call are exec sessions,
-  not runs: a job has no pane and no screen, and the exec session is
-  the one path that the routed tools already take.
-
-Exec cancel, 2026-11-04:
-
-- Every exec runs under the ko inside the runtime, not as the
-  transport's own command: no transport passes a signal (the container
-  CLI and sshd do not), and only a process inside can end the
-  command's group and report a signal exit by name.
-- The signal and the stdin's end reach the inside ko as frames on the
-  helper's stdin, not through the runtime socket: an exec has no pane
-  identity there, and the stdin is there on every kind. The output
-  and the exit are frames on the helper's stdout; the helper's stderr
-  stays raw, because the transport writes its own errors there.
-- A normal exit leaves the group alone, as a host shell does; only a
-  cancel kills it.
-
-Container kind, 2026-11-04:
-
-- The relay of a socket-file volume carries the runtime socket;
-  `--publish-socket` and `--ssh` are not used for it.
-- The container's name is `ko-<name>`, not tied to a server instance,
-  so a restarted server reuses it and the files that agents installed
-  in it persist.
-- The token reaches the pane through an env file written when the
-  link is up, at the same point as the `command` kind's token file,
-  not before the pane's `ko-pane` starts: the pane's `container exec`
-  runs only after its wait returned `Up`.
-- The link learns that its container stopped from a watch child, not
-  from a poll and not only from the next pane.
-
-Clients, 2026-11-04:
-
-- A runtime's `color` is an optional configuration field, with a hue
-  from the name as the fallback: a hash alone cannot be corrected when
-  two names collide.
-- Clients get a narrow `ClientRuntime` (name, kind, colour, state),
-  not `RuntimeInfo`: a pane count in it would go stale between events.
-- The `runtime` event carries the whole entry, and `runtime_deleted`
-  removes one, because the configuration file can change while a
-  client is connected.
-- `ko.runtime` marks no pane in a client; only the row's `runtime` and
-  a trusted pi's `pi.runtime` do.
-- A new pane takes the focused row's `runtime`; a routed pi's host
-  pane gives a host pane.
-
-## Not built
-
-Later kinds and ideas that the model holds a place for, with the
-facts read or measured for them on 2026-11-03 and 2026-11-04. None is
-scheduled.
-
-- **pi shipped into a runtime.** An inside agent without an installed
-  pi. pi's GitHub releases (earendil-works/pi, read for v1.5.0) ship
-  standalone Bun builds for darwin, linux and windows on arm64 and
-  x64, with `SHA256SUMS`. `pi-linux-arm64.tar.gz` is 59 MB: one
-  123 MB ELF `pi` built with Bun v1.4.4, linked against glibc
-  (`/lib/ld-linux-aarch64.so.1`), so it runs on Debian-like images and
-  not on musl images such as Alpine; beside it `photon_rs_bg.wasm`, an
-  X11 clipboard addon that a headless runtime does not need, and pi's
-  docs, themes and examples. No Node is needed, so ko could copy the
-  archive into a runtime as it mounts the static ko. Not probed:
-  whether `--extension ko-pi.ts` loads in the standalone binary, the
-  59 MB copy for each runtime and pi version, and the credentials,
-  because a pi inside needs the model key in the runtime unless ko
-  proxies model requests on the host. The decision stands: ko never
-  copies pi.
-- **The bridge transport.** A kind whose runtime gives only a byte
-  channel (a pty, a `virtio-serial` port, a vsock connection)
-  delivers connections by frames instead of a listener: `exec` (host
-  to guest: argv, env, cwd, and a pty size or none), `data` (both
-  ways: bytes, tagged `stdin`, `stdout` or `stderr` when the session
-  has no pty), `resize` (host to guest), `exit` (guest to host: the
-  status or the signal), and on a shared channel `open`, `close` and
-  `credit` with a stream id. The exec session is this session as a
-  WebSocket, so a bridge kind serves `GET /runtimes/NAME/exec` by
-  sending the frames on its channel, with no helper process. On a
-  shared channel the host side makes a `socketpair` for each `open`
-  that is an API stream, keeps one end as the stream's pump on the
-  loop and hands the other end to `State::accept` as a connection
-  with the runtime's origin; `credit` is the window, so a slow inner
-  reader stalls one stream, not the channel. The codec would live in
-  `ko_pane_wire` beside the pane frames, because `ko-pane` strips and
-  injects the pty variant: its payload is base64 inside `ESC _ ko ...
-  ESC \`, since APC cannot carry `ESC \`; the stdio variant is raw
-  with a length prefix. `ko enter --bridge` would be the pane's first
-  process inside a runtime that gives only a pty: it opens an inner
-  pty for `ko shell`, binds its own unix socket in the runtime as that
-  pane's `KO_SOCKET`, and carries each connection to it as frames over
-  its own stdin and stdout, the outer pty. The channel is one pane's,
-  so every connection on it is that pane's identity without a token:
-  `Origin` would gain a variant for a pane's channel, and the token
-  check is skipped, not failed, for it. When the runtime has no ko,
-  the host uploads the static Linux ko over the same pty before `ko
-  enter --bridge` starts. The code already keeps what the bridge
-  needs: a connection is a stream with an `Origin` whatever delivered
-  it, the registry's link is optional, `KO_SOCKET` inside a runtime is
-  an argument of `ko enter`, the version check runs through whatever
-  carries the first exec, and the status model reads only the inner
-  records. About 7 agent-days with `ko guest` and a Firecracker kind.
-- **Firecracker on Linux (KVM).** Its vsock device forwards a guest
-  connection to CID 2 port P to the host unix socket `<uds_path>_P`,
-  so the runtime listener is bound at that name and nothing on the
-  host changes. The guest needs a small `ko guest`: a unix listener at
-  `/run/ko/socket` that connects each client to vsock 2:P, one guest
-  connection for one host connection, and a vsock listener for exec
-  sessions that the host reaches with `CONNECT port\n` and the
-  bridge's dedicated-connection frames, with the pty in the guest;
-  the host-side pane program is a small vsock client in `ko`. One VM
-  for each runtime; a snapshot and restore keep the guest's listen
-  sockets and close its connections, which suits the relay.
-  cloud-hypervisor has the same vsock model and adds virtio-fs.
-  Neither ran here: no KVM.
-- **QEMU, Lima, Apple Virtualization.framework.** QEMU on Linux goes
-  through `vhost-vsock`, which needs an AF_VSOCK listener type on the
-  host; on macOS only through `virtio-serial` with a unix chardev, one
-  byte stream, the shared-channel bridge. Lima is the ssh kind with
-  `ssh_args: [-F, <limactl show-ssh config>]`; its `portForwards` also
-  reverse-forward unix sockets. Apple Virtualization.framework exposes
-  vsock only in the VM's owner process; Apple's `container` is that
-  owner with a CLI, which is why it is the macOS kind.
-- **`@` completion from the runtime.** A routed pi's `@` lists host
-  files. A later change can wrap the provider with
-  `ctx.ui.addAutocompleteProvider` over an exec of `fd` or `find`, at
-  a round trip for each keystroke.
+[Showing lines 1-923 of 1230 (50.0KB limit). Use offset=924 to continue.]

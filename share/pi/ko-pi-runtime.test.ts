@@ -33,7 +33,7 @@ function tree(fx: Fixture) {
 }
 
 function dev(t: ReturnType<typeof tree>, extra: Record<string, unknown> = {}) {
-  return { cwd: join(t.rt, "fallback"), paths: [{ host: t.host, runtime: t.rt }], pi: "host", ...extra };
+  return { cwd: join(t.rt, "fallback"), paths: [{ host: t.host, runtime: t.rt }], pi: "host", source: { type: "session", id: "session_3" }, ...extra };
 }
 
 async function routed(fx: Fixture, t: ReturnType<typeof tree>, opts: { runtimes?: Record<string, Record<string, unknown>>; cwd?: string } = {}): Promise<Started> {
@@ -370,6 +370,7 @@ test("a runtime that is missing or runs pi itself refuses every routed tool and 
     fx.setPanes([selfPane()]);
     const cases: Array<[Record<string, Record<string, unknown>>, RegExp]> = [
       [{}, /no runtime dev in the fake$/],
+      [{ dev: { not_found: "no runtime dev in session_3 or in /config.yaml" } }, /no runtime dev in session_3 or in \/config.yaml$/],
       [{ dev: dev(t, { pi: "runtime" }) }, /runtime dev runs pi inside it/],
     ];
     for (const [runtimes, refusal] of cases) {
@@ -623,7 +624,7 @@ test("spawn_agent with a runtime starts a routed child, or an inside child by th
     const repo = process.cwd();
     fx.setRuntimes({
       dev: dev(t),
-      inner: { pi: "runtime", paths: [{ host: repo, runtime: "/work" }] },
+      inner: { pi: "runtime", source: { type: "session", id: "session_3" }, paths: [{ host: repo, runtime: "/work" }] },
       lost: { pi: "runtime" },
       fall: { pi: "runtime", cwd: "/fallback" },
     });

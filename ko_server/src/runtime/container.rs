@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use ko_config::runtime::{Access, Engine, Ko, Source, SshAgent};
+use ko_config::values::Operand;
 use ko_sys::pid::Exit;
 use serde::Deserialize;
 
@@ -16,9 +17,10 @@ const RUN_DIR: &str = "/run/ko";
 const SOCKET: &str = "/run/ko/socket";
 const MOUNT: &str = "/opt/ko";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Stage {
     System,
+    DeleteStale(Operand),
     Inspect,
     Start,
     Run,
@@ -383,7 +385,13 @@ fn step(settings: &Engine, cx: &Ctx<'_>, args: Vec<String>) -> Next {
     }
 }
 
-fn inspected(settings: &Engine, stage: &mut Stage, cx: &Ctx<'_>, out: &Outcome<'_>) -> Next {
+fn inspected(
+    settings: &Engine,
+    stage: &mut Stage,
+    fresh: bool,
+    cx: &Ctx<'_>,
+    out: &Outcome<'_>,
+) -> Next {
     let facts = facts(settings);
     if let Source::Image(image) = settings.options().from
         && facts.missing(out)
@@ -416,6 +424,10 @@ fn inspected(settings: &Engine, stage: &mut Stage, cx: &Ctx<'_>, out: &Outcome<'
             ));
         }
     }
+    if fresh && let Source::Image(image) = settings.options().from {
+        *stage = Stage::DeleteStale(image.clone());
+        return step(settings, cx, words(&[facts.delete, "--force", &target]));
+    }
     if found.state == "running" {
         *stage = Stage::Version;
         step(settings, cx, version_args(settings, &target))
@@ -429,9 +441,15 @@ fn version_args(settings: &Engine, target: &str) -> Vec<String> {
     words(&["exec", target, inner_ko(settings), "version"])
 }
 
-pub(crate) fn next(settings: &Engine, stage: &mut Stage, cx: &Ctx<'_>, out: &Outcome<'_>) -> Next {
+pub(crate) fn next(
+    settings: &Engine,
+    stage: &mut Stage,
+    fresh: bool,
+    cx: &Ctx<'_>,
+    out: &Outcome<'_>,
+) -> Next {
     let facts = facts(settings);
-    match *stage {
+    match stage {
         Stage::System if out.ok() => {
             *stage = Stage::Inspect;
             step(settings, cx, facts.inspect_args(cx.key, settings))
@@ -439,7 +457,13 @@ pub(crate) fn next(settings: &Engine, stage: &mut Stage, cx: &Ctx<'_>, out: &Out
         Stage::System => {
             Next::Fail("container system is not running: run container system start".to_owned())
         }
-        Stage::Inspect => inspected(settings, stage, cx, out),
+        Stage::Inspect => inspected(settings, stage, fresh, cx, out),
+        Stage::DeleteStale(image) if out.ok() => {
+            let image = image.clone();
+            *stage = Stage::Run;
+            run(settings, image.as_str(), cx)
+        }
+        Stage::DeleteStale(_) => facts.failure(out, "delete"),
         Stage::Start | Stage::Run if out.ok() => {
             *stage = Stage::Version;
             step(
@@ -513,6 +537,7 @@ mod tests {
         next(
             &Engine::Apple(settings.clone()),
             stage,
+            false,
             &Rig::new().ctx(),
             &Outcome {
                 exit,
@@ -539,6 +564,47 @@ mod tests {
     }
 
     #[test]
+    fn a_fresh_image_deletes_a_stale_owned_container_but_a_user_container_is_kept() {
+        let image = settings(IMAGE);
+        let mut stage = Stage::Inspect;
+        let advance = |settings: &Container, stage: &mut Stage, seen: (i32, &str, &str)| {
+            let (stdout, tail, exit) = outcome(seen.0, seen.1, seen.2);
+            next(
+                &Engine::Apple(settings.clone()),
+                stage,
+                true,
+                &Rig::new().ctx(),
+                &Outcome {
+                    exit,
+                    stdout: &stdout,
+                    tail: &tail,
+                },
+            )
+        };
+        assert_eq!(
+            args(advance(&image, &mut stage, (0, RUNNING, ""))),
+            words(&["delete", "--force", "ko-dev"])
+        );
+        assert_eq!(
+            stage,
+            Stage::DeleteStale(Operand::try_from("debian:trixie".to_owned()).unwrap())
+        );
+        assert!(
+            args(advance(&image, &mut stage, (0, "", "")))
+                .starts_with(&words(&["run", "-d", "--name", "ko-dev"]))
+        );
+        let mut user = image;
+        user.from =
+            Source::Container(ko_config::values::Operand::try_from("mine".to_owned()).unwrap());
+        stage = Stage::Inspect;
+        assert_eq!(
+            args(advance(&user, &mut stage, (0, RUNNING, ""))),
+            words(&["exec", "mine", "/opt/ko/bin/ko", "version"])
+        );
+        assert_eq!(stage, Stage::Version);
+    }
+
+    #[test]
     fn podman_uses_its_argv_and_inspect_table() {
         let settings: Podman = serde_json::from_str(r#"{"from":{"image":"docker.io/library/debian:trixie"},"podman":"/usr/bin/podman","volumes":[{"host":"/src","runtime":"/work","options":"ro"}],"ko":{"mount":"/layout"},"user":"1000","run_args":["--cpus","2"],"init":["sleep","infinity"]}"#).unwrap();
         let engine = &Engine::Podman(settings.clone());
@@ -559,6 +625,7 @@ mod tests {
             next(
                 engine,
                 stage,
+                false,
                 &cx,
                 &Outcome {
                     exit: Exit::Exited(code),
@@ -634,6 +701,7 @@ mod tests {
             next(
                 &Engine::Podman(mine.clone()),
                 &mut Stage::Inspect,
+                false,
                 &cx,
                 &Outcome {
                     exit: Exit::Exited(0),

@@ -477,7 +477,12 @@ fn get_runtimes(name: Option<&str>) -> ExitCode {
             )
         ),
         Some(name) => match all.get(name) {
-            Some(entry) => println!("{}", runtime_info(name, entry)),
+            Some(entry) => {
+                if let Some(message) = entry["not_found"].as_str() {
+                    return http_error(404, "not_found", message);
+                }
+                println!("{}", runtime_info(name, entry));
+            }
             None => return http_error(404, "not_found", &format!("no runtime {name} in the fake")),
         },
     }

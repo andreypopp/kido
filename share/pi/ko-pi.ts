@@ -1464,7 +1464,7 @@ async function routedGrep(r: Routed, params: GrepToolInput, signal: AbortSignal 
 
 export default function (pi: ExtensionAPI) {
   if (!isFirstCopy()) return;
-  pi.registerFlag("runtime", { description: "Run the built-in tools and ! commands in a configured runtime (a container or an ssh host) by name", type: "string" });
+  pi.registerFlag("runtime", { description: "Run the built-in tools and ! commands in a configured runtime or an ad-hoc runtime of this session by name", type: "string" });
   pi.on("project_trust", async (event) => {
     const trusted = process.env.KO_AGENT_TRUSTED_CWD;
     const want = trusted ? realpathOf(trusted) : undefined;
@@ -2775,7 +2775,7 @@ export default function (pi: ExtensionAPI) {
     description:
       "Start an agent in a new window. Resume a saved session or fork a copy of it; fork alone copies this session. Returns the pi session id for later resume_from. Children report by notice and stay alive. A toplevel agent is an independent peer: no report, notice, depth limit or descendant controls; fork is allowed, but an existing child cannot become a peer.",
     promptSnippet:
-      "spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?) - start, resume or copy an agent in a new window; returns its pi session id; toplevel starts an independent peer, not a child; runtime works in a configured runtime",
+      "spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?) - start, resume or copy an agent in a new window; returns its pi session id; toplevel starts an independent peer, not a child; runtime works in a configured runtime or an ad-hoc runtime of this session",
     promptGuidelines: [
       "A subagent's result arrives on its own as a notice when it finishes; never poll list_agents for it; list_agents lists the agent and stop_agent stops it.",
       "Trust but verify: a child's report says what it intended to do, not what it did - check the diff before relaying success.",
@@ -2806,7 +2806,7 @@ export default function (pi: ExtensionAPI) {
         runtime: Type.Optional(
           Type.String({
             description:
-              "Run the agent's tools in a configured runtime (a container or an ssh host) by name. Its pi runs here, so resume_from and fork work; a runtime that runs pi itself refuses them. Omitted: the runtime of the caller.",
+              "Run the agent's tools in a configured runtime or an ad-hoc runtime of this session by name. Its pi runs here, so resume_from and fork work; a runtime that runs pi itself refuses them. Omitted: the runtime of the caller.",
           }),
         ),
       },

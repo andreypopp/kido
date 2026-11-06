@@ -15,7 +15,7 @@ use ko_sys::pid::{Exit, Pid, Waited};
 
 use crate::config::{Config, SUN_PATH_MAX, server_settings};
 use crate::exec_wire::Start as ExecStart;
-use crate::ids::{PaneId, PaneToken};
+use crate::ids::{PaneId, PaneToken, SessionId};
 use crate::protocol::{
     ClientEvent, ClientRuntime, Error, ErrorKind, ExecRequest, LeadReport, LinkState, RuntimeKind,
     RuntimeSource, Variable, Version, check_version, version,
@@ -44,6 +44,13 @@ impl RuntimeKey {
         Self {
             name,
             source: RuntimeSource::Config,
+        }
+    }
+
+    pub(crate) fn session(name: RuntimeName, id: SessionId) -> Self {
+        Self {
+            name,
+            source: RuntimeSource::Session { id },
         }
     }
 
@@ -275,18 +282,24 @@ const MISMATCH: &str = "the kind of the runtime changed during its start";
 #[derive(Debug)]
 enum Start {
     Command,
-    Container(container::Stage),
+    Container {
+        stage: container::Stage,
+        fresh: bool,
+    },
     Ssh(ssh::Link),
 }
 
 impl Start {
-    fn new(settings: &Runtime) -> Start {
+    fn new(settings: &Runtime, fresh: bool) -> Start {
         match &settings.kind {
             Kind::Command(_) => Start::Command,
-            Kind::Container(engine) => Start::Container(match engine {
-                Engine::Apple(_) => container::Stage::System,
-                Engine::Podman(_) => container::Stage::Inspect,
-            }),
+            Kind::Container(engine) => Start::Container {
+                stage: match engine {
+                    Engine::Apple(_) => container::Stage::System,
+                    Engine::Podman(_) => container::Stage::Inspect,
+                },
+                fresh,
+            },
             Kind::Ssh(_) => Start::Ssh(ssh::Link::new()),
         }
     }
@@ -294,7 +307,7 @@ impl Start {
     fn first(&self, settings: &Runtime, cx: &Ctx<'_>) -> Result<Option<Launch>, String> {
         match (&settings.kind, self) {
             (Kind::Command(command), Start::Command) => Ok(command::first(command, cx.env)),
-            (Kind::Container(engine), Start::Container(_)) => {
+            (Kind::Container(engine), Start::Container { .. }) => {
                 container::first(engine, cx).map(Some)
             }
             (Kind::Ssh(remote), Start::Ssh(_)) => ssh::first(remote, cx).map(Some),
@@ -314,8 +327,8 @@ impl Start {
     fn next(&mut self, settings: &Runtime, cx: &Ctx<'_>, out: &Outcome<'_>) -> Next {
         match (&settings.kind, self) {
             (Kind::Command(_), Start::Command) => command::next(out),
-            (Kind::Container(engine), Start::Container(stage)) => {
-                container::next(engine, stage, cx, out)
+            (Kind::Container(engine), Start::Container { stage, fresh }) => {
+                container::next(engine, stage, *fresh, cx, out)
             }
             (Kind::Ssh(remote), Start::Ssh(link)) => ssh::next(remote, link, cx, out),
             _ => Next::Fail(MISMATCH.to_owned()),
@@ -325,7 +338,7 @@ impl Start {
     fn watch(&self, settings: &Runtime, cx: &Ctx<'_>) -> Result<Option<Launch>, String> {
         match (&settings.kind, self) {
             (Kind::Command(_), Start::Command) => Ok(None),
-            (Kind::Container(engine), Start::Container(_)) => {
+            (Kind::Container(engine), Start::Container { .. }) => {
                 container::watch(engine, cx).map(Some)
             }
             (Kind::Ssh(_), Start::Ssh(_)) => Ok(None),
@@ -386,6 +399,12 @@ struct Link {
     occupied: bool,
 }
 
+impl Link {
+    fn live(&self) -> bool {
+        matches!(self.phase, Phase::Starting(_) | Phase::Up)
+    }
+}
+
 #[derive(Debug)]
 struct Pass {
     pane: PaneId,
@@ -438,12 +457,19 @@ pub(crate) enum Due {
 type Configured = BTreeMap<RuntimeKey, (RuntimeKind, Option<RuntimeColor>)>;
 
 #[derive(Debug)]
+struct Adhoc {
+    runtime: Runtime,
+    fresh: bool,
+}
+
+#[derive(Debug)]
 pub(crate) struct Registry {
     file: PathBuf,
     command_kind: bool,
     root: PathBuf,
     env: Vec<Vec<u8>>,
     links: BTreeMap<RuntimeKey, Link>,
+    adhoc: BTreeMap<RuntimeKey, Adhoc>,
     waits: Vec<(RuntimeKey, Wait)>,
     dying: Vec<Pid>,
     cleaning: Vec<Pid>,
@@ -533,6 +559,7 @@ impl Registry {
             root: config.dir.join("runtimes"),
             env: config.env.clone(),
             links: BTreeMap::new(),
+            adhoc: BTreeMap::new(),
             waits: Vec::new(),
             dying: Vec::new(),
             cleaning: Vec::new(),
@@ -594,16 +621,15 @@ impl Registry {
             ),
             LoadError::Io(message) => Error::new(ErrorKind::Io, message.clone()),
         })?;
-        if let Some(name) = config
+        if let Some((name, message)) = config
             .runtimes
             .iter()
-            .find_map(|(name, runtime)| matches!(runtime.kind, Kind::Command(_)).then_some(name))
-            .filter(|_| !self.command_kind)
+            .find_map(|(name, runtime)| self.command_error(runtime).map(|message| (name, message)))
         {
             return Err(Error::new(
                 ErrorKind::Invalid,
                 format!(
-                    "{}: runtimes: {name}: command: is a test kind; set KO_RUNTIME_COMMAND_KIND=1",
+                    "{}: runtimes: {name}: command: {message}",
                     self.file.display()
                 ),
             ));
@@ -624,14 +650,95 @@ impl Registry {
         Ok(config)
     }
 
-    pub(crate) fn resolve(&self, name: &RuntimeName) -> RuntimeKey {
-        RuntimeKey::config(name.clone())
+    pub(crate) fn resolve(
+        &mut self,
+        name: &RuntimeName,
+        session: Option<SessionId>,
+        loaded: &Result<settings::Config, LoadError>,
+    ) -> Result<RuntimeKey, Error> {
+        self.adopt(loaded)?;
+        if let Some(id) = session {
+            let key = RuntimeKey::session(name.clone(), id);
+            if self.adhoc.contains_key(&key) {
+                return Ok(key);
+            }
+            let configured = RuntimeKey::config(name.clone());
+            if !self
+                .configured
+                .as_ref()
+                .is_some_and(|entries| entries.contains_key(&configured))
+                && !self.links.get(&configured).is_some_and(Link::live)
+            {
+                return Ok(key);
+            }
+        }
+        Ok(RuntimeKey::config(name.clone()))
+    }
+
+    pub(crate) fn define(
+        &mut self,
+        name: RuntimeName,
+        id: SessionId,
+        runtime: Runtime,
+        loaded: &Result<settings::Config, LoadError>,
+    ) -> Result<RuntimeKey, Error> {
+        let key = RuntimeKey::session(name, id);
+        if self.adopt(loaded)?.runtimes.contains_key(&key.name) {
+            return Err(Error::new(
+                ErrorKind::Refused,
+                format!("{} is a runtime of {}", key.name, self.file.display()),
+            ));
+        }
+        if let Some(message) = self.command_error(&runtime) {
+            return Err(Error::new(ErrorKind::Invalid, format!("command {message}")));
+        }
+        if let Some(existing) = self.adhoc.get(&key) {
+            if existing.runtime == runtime {
+                return Ok(key);
+            }
+            return Err(Error::new(
+                ErrorKind::Refused,
+                format!(
+                    "runtime {} of {id} has another definition; delete it or use another name",
+                    key.name
+                ),
+            ));
+        }
+        self.adhoc.insert(
+            key.clone(),
+            Adhoc {
+                runtime,
+                fresh: true,
+            },
+        );
+        self.dirty = true;
+        Ok(key)
+    }
+
+    pub(crate) fn session_definitions(&self, id: SessionId) -> Vec<(RuntimeKey, Runtime)> {
+        self.adhoc
+            .iter()
+            .filter(|(key, _)| key.source == RuntimeSource::Session { id })
+            .map(|(key, entry)| (key.clone(), entry.runtime.clone()))
+            .collect()
+    }
+
+    fn command_error(&self, runtime: &Runtime) -> Option<&'static str> {
+        (!self.command_kind && matches!(runtime.kind, Kind::Command(_)))
+            .then_some("is a test kind; set KO_RUNTIME_COMMAND_KIND=1")
     }
 
     fn missing(&self, key: &RuntimeKey) -> Error {
         Error::new(
             ErrorKind::Missing,
-            format!("no runtime {key} in {}", self.file.display()),
+            match key.source {
+                RuntimeSource::Config => format!("no runtime {key} in {}", self.file.display()),
+                RuntimeSource::Session { id } => format!(
+                    "no runtime {} in {id} or in {}",
+                    key.name,
+                    self.file.display()
+                ),
+            },
         )
     }
 
@@ -646,12 +753,16 @@ impl Registry {
         loaded: &Result<settings::Config, LoadError>,
     ) -> Result<Runtime, Error> {
         if let Some(link) = self.links.get(key)
-            && matches!(link.phase, Phase::Starting(_) | Phase::Up)
+            && link.live()
         {
             return Ok(link.settings.clone());
         }
         if key.source != RuntimeSource::Config {
-            return Err(self.missing(key));
+            return self
+                .adhoc
+                .get(key)
+                .map(|entry| entry.runtime.clone())
+                .ok_or_else(|| self.missing(key));
         }
         self.adopt(loaded)?
             .runtimes
@@ -668,8 +779,13 @@ impl Registry {
             .iter()
             .map(|(name, runtime)| (RuntimeKey::config(name.clone()), runtime.clone()))
             .collect();
+        known.extend(
+            self.adhoc
+                .iter()
+                .map(|(key, entry)| (key.clone(), entry.runtime.clone())),
+        );
         for (key, link) in &self.links {
-            if matches!(link.phase, Phase::Starting(_) | Phase::Up) {
+            if link.live() {
                 known.insert(key.clone(), link.settings.clone());
             }
         }
@@ -698,8 +814,14 @@ impl Registry {
 
     fn sync(&mut self) {
         let mut desired: Configured = self.configured.clone().unwrap_or_default();
+        desired.extend(self.adhoc.iter().map(|(key, entry)| {
+            (
+                key.clone(),
+                (kind(&entry.runtime), entry.runtime.color.clone()),
+            )
+        }));
         for (key, link) in &self.links {
-            if matches!(link.phase, Phase::Starting(_) | Phase::Up) {
+            if link.live() {
                 desired.insert(
                     key.clone(),
                     (kind(&link.settings), link.settings.color.clone()),
@@ -744,16 +866,9 @@ impl Registry {
         self.announced.values().cloned().collect()
     }
 
-    pub(crate) fn is_live(&self, key: &RuntimeKey) -> bool {
-        self.links.contains_key(key)
-    }
-
     pub(crate) fn begin(&mut self, poll: &mut Poll, key: &RuntimeKey, settings: Runtime) {
         self.dirty = true;
-        if matches!(
-            self.links.get(key).map(|link| &link.phase),
-            Some(Phase::Starting(_) | Phase::Up)
-        ) {
+        if self.links.get(key).is_some_and(Link::live) {
             return;
         }
         if let Some(old) = self.links.remove(key) {
@@ -761,7 +876,8 @@ impl Registry {
         }
         // A deletion waits for the cleanup, and a start that follows it keeps the directory.
         self.deleting.remove(key);
-        let start = Start::new(&settings);
+        let fresh = self.adhoc.get(key).is_some_and(|entry| entry.fresh);
+        let start = Start::new(&settings, fresh);
         let socket = socket_path(&self.root, key);
         let cx = Ctx {
             root: &self.root,
@@ -1114,6 +1230,8 @@ impl Registry {
     }
 
     pub(crate) fn delete(&mut self, key: &RuntimeKey, settings: &Runtime) {
+        self.adhoc.remove(key);
+        self.dirty = true;
         let socket = socket_path(&self.root, key);
         let cx = Ctx {
             root: &self.root,
@@ -1493,6 +1611,9 @@ impl Registry {
             }
             Next::Up => {
                 poll.free(deadline);
+                if let Some(entry) = self.adhoc.get_mut(key) {
+                    entry.fresh = false;
+                }
                 self.watch(poll, key, &socket);
             }
             Next::Fail(message) => {
@@ -1575,6 +1696,9 @@ impl Registry {
         for key in keys {
             self.down(poll, &key, true);
         }
+        for (key, entry) in std::mem::take(&mut self.adhoc) {
+            self.delete(&key, &entry.runtime);
+        }
         // What a down or a delete queued earlier still runs after the server.
         for pending in std::mem::take(&mut self.cleanups).into_values() {
             for launch in &pending.queue {
@@ -1592,23 +1716,12 @@ impl Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::SessionId;
 
     #[test]
     fn runtime_keys_order_by_source_then_session_then_name_and_have_distinct_tags() {
         let config = RuntimeKey::config("dev".parse().unwrap());
-        let first = RuntimeKey {
-            name: "dev".parse().unwrap(),
-            source: RuntimeSource::Session {
-                id: SessionId::new(3),
-            },
-        };
-        let second = RuntimeKey {
-            name: "abc".parse().unwrap(),
-            source: RuntimeSource::Session {
-                id: SessionId::new(4),
-            },
-        };
+        let first = RuntimeKey::session("dev".parse().unwrap(), SessionId::new(3));
+        let second = RuntimeKey::session("abc".parse().unwrap(), SessionId::new(4));
         assert_eq!(config.tag().to_string(), "dev");
         assert_eq!(first.tag().to_string(), "session_3-dev");
         let mut keys = vec![second.clone(), first.clone(), config.clone()];

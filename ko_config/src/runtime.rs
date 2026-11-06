@@ -223,8 +223,10 @@ pub struct Container {
     /// The command that keeps the container alive.
     #[serde(default)]
     pub init: Init,
+    /// The host's agent at /var/host-services/ssh-auth.sock (`--ssh`).
     #[serde(default)]
     pub ssh_agent: SshAgent,
+    /// The static Linux ko beside the server's installation, the ko on PATH, or mount=DIR.
     #[serde(default)]
     pub ko: Ko,
 }
@@ -247,6 +249,7 @@ pub struct Podman {
     /// The command that keeps the container alive.
     #[serde(default)]
     pub init: Init,
+    /// The static Linux ko beside the server's installation, the ko on PATH, or mount=DIR.
     #[serde(default)]
     pub ko: Ko,
 }

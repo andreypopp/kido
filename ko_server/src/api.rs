@@ -687,8 +687,11 @@ routes! {
         reply: Empty,
         errors: { 412 },
     }
-    /// The runtimes of the configuration file and of the links that are up, with their state.
+    /// The configured runtimes and the ad-hoc runtimes of the caller's session, with their state.
+    /// For the user, lists the ad-hoc runtimes of every session.
     ListRuntimes { method: GET, path: /runtimes, reply: Vec<RuntimeInfo> }
+    /// Defines a runtime of the caller pane's session without starting it.
+    PutRuntime { method: PUT, path: /runtimes/{name: RuntimeName}, body: ko_config::runtime::Runtime, reply: RuntimeInfo }
     /// One runtime.
     GetRuntime { method: GET, path: /runtimes/{name: RuntimeName}, query: { session: Option<SessionId> }, reply: RuntimeInfo }
     /// Waits up to the timeout for the link of the runtime to be up or failed. Only a pane of the

@@ -23,6 +23,29 @@ pub enum ReplyError {
     Refused(protocol::Error),
 }
 
+pub fn describe(dir: &Path, failure: ReplyError) -> String {
+    match failure {
+        ReplyError::Refused(error) => error.message,
+        ReplyError::Server(Failure::NoServer) => format!("no server at {}", dir.display()),
+        ReplyError::Server(Failure::Failed(message)) => message,
+    }
+}
+
+pub fn put_runtime(
+    dir: &Path,
+    caller: Option<Caller>,
+    name: ko_config::values::RuntimeName,
+    runtime: &ko_config::runtime::Runtime,
+) -> Result<ko_server::protocol::RuntimeInfo, ReplyError> {
+    call(
+        dir,
+        &Route::PutRuntime { name },
+        caller,
+        Some(runtime),
+        wire::READ_TIMEOUT,
+    )
+}
+
 pub(crate) fn call<T: Serialize + DeserializeOwned>(
     dir: &Path,
     route: &Route,

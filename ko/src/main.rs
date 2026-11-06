@@ -25,6 +25,7 @@ use ko_sys::signal::{Signal, Signals};
 use ko_tui::client;
 
 mod prompt;
+mod run;
 mod runtime;
 
 const USAGE_ERROR: u8 = 124;
@@ -110,6 +111,8 @@ enum Command {
         )]
         args: Vec<OsString>,
     },
+    /// Define a runtime of the current session. Panes and agents use it by name.
+    Run(run::RunArgsCli),
     /// Start a pane's program inside its runtime.
     #[command(hide = true)]
     Enter(runtime::EnterArgs),
@@ -606,8 +609,12 @@ fn layout_edit(server: Option<PathBuf>, edit: &str) -> ExitCode {
     }
 }
 
+pub(crate) fn inside_runtime() -> Option<OsString> {
+    std::env::var_os("KO_RUNTIME").filter(|runtime| !runtime.is_empty())
+}
+
 fn attach(server: Option<PathBuf>, host: Option<String>) -> ExitCode {
-    if let Some(runtime) = std::env::var_os("KO_RUNTIME").filter(|runtime| !runtime.is_empty()) {
+    if let Some(runtime) = inside_runtime() {
         complain(format_args!(
             "ko: inside runtime {}; attach from the host",
             runtime.to_string_lossy()
@@ -691,6 +698,7 @@ fn main() -> ExitCode {
         Command::Ssh { args } => ssh(&args),
         Command::Enter(args) => runtime::enter(args),
         Command::RuntimeExec(args) => runtime::runtime_exec(args),
+        Command::Run(args) => run::run(args),
         Command::Panes(args) => panes(args),
         Command::Layout(args) => layout(args),
         Command::Prompt(args) => prompt::prompt(args),

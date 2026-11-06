@@ -83,6 +83,39 @@ fn main() -> std::io::Result<()> {
         return mismatch_server(dir);
     }
     match name_of(&program) {
+        "container" | "podman" => {
+            let log = std::env::var_os("KO_FAKE_ENGINE_LOG")
+                .ok_or_else(|| std::io::Error::other("no engine log"))?;
+            let mut log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log)?;
+            writeln!(log, "{}", args.join(" "))?;
+            match args
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                ["system", "status"] => {}
+                ["inspect", _] => {
+                    emit(r#"[{"status":{"state":"running"},"configuration":{"mounts":[]}}]"#)
+                }
+                ["container", "inspect", _] => {
+                    emit(r#"[{"State":{"Status":"running"},"Mounts":[]}]"#)
+                }
+                ["delete" | "rm", "--force", _] | ["stop", _] => {}
+                ["run", ..] if args.iter().any(|arg| arg == "--name") => {}
+                ["exec", _, _, "version"] => {
+                    emit(&std::env::var("KO_FAKE_ENGINE_VERSION").map_err(std::io::Error::other)?)
+                }
+                ["exec", "-i", _, _, "enter", "--watch"] => {
+                    std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink())?;
+                }
+                ["exec", "-i", _, _, "enter", "--exec"] => {}
+                _ => return Err(std::io::Error::other("unexpected engine argv")),
+            }
+        }
         "ko-probe" => {
             emit("OUT\n");
             let _ = std::io::stdin().lock().read_line(&mut String::new());
