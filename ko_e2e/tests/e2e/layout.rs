@@ -683,9 +683,10 @@ fn selecting_another_window_sizes_it_in_the_same_change_as_the_focus() {
 }
 
 #[test]
-fn a_title_change_moves_no_revision_so_a_layout_put_from_before_it_lands() {
+fn a_title_change_moves_no_revision_and_a_pop_restores_the_pushed_title() {
     let s = start(&[]);
-    let pane = s.pane("printf READY; read x; printf '\\033]0;changed\\007'; exec cat");
+    let pane =
+        s.pane("printf READY; read x; stty raw -echo; printf '\\033]0;changed\\007'; exec cat");
     s.screen_has(&pane, "READY");
     assert_eq!(s.row(&pane)["title"], "");
     let before = s.doc();
@@ -693,4 +694,10 @@ fn a_title_change_moves_no_revision_so_a_layout_put_from_before_it_lands() {
     s.wait_row(&pane, "the title", |row| row["title"] == "changed");
     assert_eq!(s.doc()["revision"], before["revision"]);
     assert_eq!(s.put(&before)["revision"], before["revision"]);
+    s.text(&pane, "\x1b[22;0t\x1b]2;second\x07");
+    s.wait_row(&pane, "the second title", |row| row["title"] == "second");
+    s.text(&pane, "\x1b[23;0t");
+    s.wait_row(&pane, "the restored title", |row| row["title"] == "changed");
+    let path = format!("/panes/{pane}");
+    assert_eq!(s.ko(&["api", &path], "").json()["title"], "changed");
 }
