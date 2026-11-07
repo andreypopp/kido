@@ -1,5 +1,7 @@
 import {
   AgentSession,
+  SessionManager,
+  parseSessionEntries,
   type BashOperations,
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -38,7 +40,7 @@ import {
 import { Key, matchesKey, type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, type ProgramStatus, replaceControlCharacters, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { type WriteStream, accessSync, closeSync, constants, createWriteStream, mkdirSync, openSync, readSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { type WriteStream, accessSync, constants, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2500,6 +2502,35 @@ export default function (pi: ExtensionAPI) {
     return files;
   };
 
+  const formatModel = (provider: string, id: string, thinking?: string): string => `${provider}/${id}${thinking === undefined ? "" : `:${thinking}`}`;
+
+  const readSavedSession = (file: { id: string; path: string }, registry: ExtensionContext["modelRegistry"]): { cwd: string; model: string | undefined } | { error: string } => {
+    let content: string;
+    try { content = readFileSync(file.path, "utf8"); }
+    catch (error) { return { error: `could not read session file ${file.path}: ${error instanceof Error ? error.message : String(error)}` }; }
+    let header: unknown;
+    try { header = JSON.parse(content.split("\n", 1)[0] ?? ""); }
+    catch { return { error: `invalid session header: ${file.path}` }; }
+    if (!isRecord(header) || header.type !== "session" || header.id !== file.id || typeof header.cwd !== "string") return { error: `invalid session header: ${file.path}` };
+    try {
+      const entries = parseSessionEntries(content);
+      const branch = SessionManager.inMemory(header.cwd, undefined, entries).getBranch();
+      const change = branch.findLast((entry) => entry.type === "model_change" && typeof entry.provider === "string" && typeof entry.modelId === "string");
+      // pi 1.5.0 does not export getBranchSelection from core/virtual-models.js.
+      const virtual = change?.type === "model_change" && registry.find(change.provider, change.modelId)?.api === "pi-virtual";
+      let model: { provider: string; modelId: string } | undefined;
+      let thinking: string | undefined;
+      for (const entry of branch) {
+        if (entry.type === "thinking_level_change") thinking = entry.thinkingLevel;
+        if (entry.type === "model_change" && typeof entry.provider === "string" && typeof entry.modelId === "string") model = entry;
+        if (entry.type === "message" && entry.message.role === "assistant" && entry.message.api !== "pi-virtual" && typeof entry.message.provider === "string" && typeof entry.message.model === "string") {
+          model = virtual && change?.type === "model_change" ? change : { provider: entry.message.provider, modelId: entry.message.model };
+        }
+      }
+      return { cwd: header.cwd, model: model ? formatModel(model.provider, model.modelId, thinking) : undefined };
+    } catch { return { error: `invalid session file: ${file.path}` }; }
+  };
+
   const createPane = async (plan: Plan): Promise<{ placement: Api["Placement"] } | { error: string }> => {
     const inside = plan.runtime?.mode === "inside";
     if (!ko) return { error: "ko is not on PATH" };
@@ -2559,7 +2590,10 @@ export default function (pi: ExtensionAPI) {
       const files = sessionFiles(session?.sessionManager.getSessionDir()).filter((file) => file.id === child.session);
       if (files.length > 1) return { error: `several session files have id ${child.session}` };
       const file = files[0];
-      const plan: Plan = { name: child.name, session: child.session, model: child.model, cwd: child.cwd, runtime: child.runtime, task, mode: file ? { kind: "continue", file: file.path } : { kind: "fresh" }, toplevel: false, koSession: snapshot.me?.session ?? "" };
+      if (!session) return { error: "no active session" };
+      const saved = file ? readSavedSession(file, session.modelRegistry) : undefined;
+      if (saved && "error" in saved) return saved;
+      const plan: Plan = { name: child.name, session: child.session, model: saved?.model ?? child.model, cwd: child.cwd, runtime: child.runtime, task, mode: file ? { kind: "continue", file: file.path } : { kind: "fresh" }, toplevel: false, koSession: snapshot.me?.session ?? "" };
       const made = await createPane(plan);
       if ("error" in made) return made;
       recordChild(plan, made.placement);
@@ -2793,7 +2827,7 @@ export default function (pi: ExtensionAPI) {
         model: Type.Optional(
           Type.String({
             description:
-              'Model as provider/model-id[:thinking]. Default: caller’s current model and thinking level. Required if the caller has no model. Bare aliases are refused; see pi --list-models.',
+              'Model as provider/model-id[:thinking]. Default: saved session’s last model and thinking level with resume_from, else caller’s current model and thinking level. A saved session with no model uses the caller’s. Required if neither has a model. Bare aliases are refused; see pi --list-models.',
           }),
         ),
         cwd: Type.Optional(Type.String({ description: "Existing working directory. Default: saved session's directory with resume_from, else caller's. Continue requires its recorded directory; fork can copy into another directory." })),
@@ -2840,13 +2874,11 @@ export default function (pi: ExtensionAPI) {
         childRuntime = { name: routed.name, mode: "routed" };
       }
       if (childRuntime?.mode === "inside" && (params.resume_from || params.fork)) return refuse("a saved session is a file of this filesystem: resume_from and fork need a runtime whose pi runs on the host");
-      const model = params.model ?? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}:${pi.getThinkingLevel()}` : null);
-      if (!model) return refuse("caller has no model; specify model");
       if (params.model) {
-        const error = await validateModel(model);
+        const error = await validateModel(params.model);
         if (error) return refuse(error);
       }
-      let source: { id: string; path: string; cwd: string } | undefined;
+      let source: { id: string; path: string; cwd: string; model: string | undefined } | undefined;
       if (params.resume_from) {
         const wanted = params.resume_from;
         const files = sessionFiles(ctx.sessionManager.getSessionDir());
@@ -2858,24 +2890,12 @@ export default function (pi: ExtensionAPI) {
           : `unknown session ${quote(wanted)}`);
         const file = matches[0];
         if (!file) return refuse(`unknown session ${quote(wanted)}`);
-        const fd = openSync(file.path, "r");
-        try {
-          const buffer = Buffer.alloc(4096);
-          const chunks: Buffer[] = [];
-          for (let bytes = 0; bytes < 1024 * 1024;) {
-            const count = readSync(fd, buffer, 0, buffer.length, bytes);
-            if (!count) break;
-            bytes += count;
-            const chunk = Buffer.from(buffer.subarray(0, count));
-            chunks.push(chunk);
-            if (chunk.includes(10)) break;
-          }
-          const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8").split("\n", 1)[0] ?? "");
-          if (!isRecord(parsed) || parsed.type !== "session" || parsed.id !== file.id || typeof parsed.cwd !== "string") return refuse(`invalid session header: ${file.path}`);
-          source = { ...file, cwd: parsed.cwd };
-        } catch { return refuse(`invalid session header: ${file.path}`); }
-        finally { closeSync(fd); }
+        const saved = readSavedSession(file, ctx.modelRegistry);
+        if ("error" in saved) return refuse(saved.error);
+        source = { ...file, ...saved };
       }
+      const model = params.model ?? source?.model ?? (ctx.model ? formatModel(ctx.model.provider, ctx.model.id, pi.getThinkingLevel()) : null);
+      if (!model) return refuse("caller has no model; specify model");
       const forkFile = params.fork ? source?.path ?? ctx.sessionManager.getSessionFile() : undefined;
       if (params.fork && !forkFile) return refuse("caller has no session file to copy");
       const mode: Plan["mode"] = forkFile ? { kind: "copy", file: forkFile } : source ? { kind: "continue", file: source.path } : { kind: "fresh" };

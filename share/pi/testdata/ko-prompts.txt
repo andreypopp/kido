@@ -113,7 +113,7 @@ parameters:
 
 - `task` (string, required): First task. State the files, changes and required result. Empty only when resuming without fork: starts no turn and owes no report.
 - `name` (string, required): Window and session name. Unique among this caller's children; for toplevel, unique among live agents in the session. Resume an ended child with its existing name.
-- `model` (string): Model as provider/model-id[:thinking]. Default: caller’s current model and thinking level. Required if the caller has no model. Bare aliases are refused; see pi --list-models.
+- `model` (string): Model as provider/model-id[:thinking]. Default: saved session’s last model and thinking level with resume_from, else caller’s current model and thinking level. A saved session with no model uses the caller’s. Required if neither has a model. Bare aliases are refused; see pi --list-models.
 - `cwd` (string): Existing working directory. Default: saved session's directory with resume_from, else caller's. Continue requires its recorded directory; fork can copy into another directory.
 - `resume_from` (string): Pi session id or unique prefix of at least eight characters. Continuing a live session is refused; fork copies it.
 - `toplevel` (boolean): Start an independent peer, with no parent, reports or notices. Depth does not apply. Fork is allowed; an existing child cannot become a peer.

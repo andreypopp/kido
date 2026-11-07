@@ -150,8 +150,9 @@ the caller's session instead.
 **Spawning.** Without `model`, the child runs the caller's current
 model and thinking level, `provider/model-id:thinking`. A caller with
 no model is refused. An explicit `model` is checked with `pi
---list-models`. The registry records the resolved value, so a restart
-runs the model that the child ran. `cwd` must be an existing
+--list-models`. A resumed session has its own default ("Resuming a
+saved session"). The registry records the resolved value. `cwd` must
+be an existing
 directory. Without it, the child starts in the caller's directory, or
 in a resumed session's own directory. Then the harness reads
 `/layout` and checks the depth: the child's depth, the length of the
@@ -275,6 +276,18 @@ run under the restart lock for that session.
 **Copy** (`resume_from` with `fork: true`) starts `ko-pi --session-id
 <minted id> --fork <session file>`. The original is unchanged, and
 a live original is not refused, because pi only reads it.
+
+**The model.** Without `model`, a continued or copied session gets
+the model and thinking level that it last used, so a `/model` or
+thinking change inside the agent survives its return. The harness
+reads the file once, without pi's `SessionManager.open`, which can
+write to it, and walks the current branch as pi's own resume does:
+the last model change or assistant response sets the model, but a
+response does not replace a virtual model that a change selected;
+the last thinking level change sets the thinking level. A file
+without a thinking level change gives no `:thinking`, so pi applies
+its default. A file that records no model gets the caller's model.
+An explicit `model` wins.
 
 **An empty task** is allowed only to continue a session. The session
 comes back and starts no turn. No `ko-pi.task` and no `ko-pi.work`
@@ -527,7 +540,9 @@ which reads `pi.session`.
 
 `message_agent` in `message` mode to an ended own child restarts it:
 `POST /panes` with `--session <file>` of the child's session, or
-`--session-id <id>` when it has no file yet, in the recorded cwd, the
+`--session-id <id>` when it has no file yet, in the recorded cwd, on
+the file's last model as for a resume (the registry's `model` when the
+file records none), the
 message as `ko-pi.task`, the parent's `ko-pi.work` and a new
 `ko-pi.child` with the new pane. The message is never in pi's argv:
 pi's parser reads an argument that starts with `@` as a file, even

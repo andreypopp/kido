@@ -431,6 +431,7 @@ function fakeCtx(
     },
     cwd: process.cwd(),
     model: { provider: "acme", id: "caller" },
+    modelRegistry: { find: () => undefined },
     isProjectTrusted: () => false,
     isIdle: idle,
     hasPendingMessages: () => false,
