@@ -87,7 +87,7 @@ pub(crate) fn send(
         (method, &target),
         &[],
         protocol::json(&request).as_bytes(),
-        wire::READ_TIMEOUT,
+        wire::Limit::Idle(wire::READ_TIMEOUT),
         cancel,
     )?;
     match response.status {

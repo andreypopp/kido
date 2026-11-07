@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
 use clap::Args;
+use clap_complete::engine::ArgValueCompleter;
 use ko_client::runtimes::{self, Up};
 use ko_client::wire::Caller;
 use ko_config::values::RuntimeName;
@@ -26,14 +27,14 @@ pub(crate) struct EnterArgs {
     #[arg(long, value_name = "PATH", conflicts_with = "prepare")]
     socket: Option<PathBuf>,
     /// The pane that the program belongs to.
-    #[arg(long, value_name = "PANE", value_parser = pane_id, required_unless_present_any = ["prepare", "exec", "watch"], conflicts_with_all = ["prepare", "exec", "watch"])]
+    #[arg(long, value_name = "PANE", value_parser = pane_id, add = ArgValueCompleter::new(crate::complete::panes), required_unless_present_any = ["prepare", "exec", "watch"], conflicts_with_all = ["prepare", "exec", "watch"])]
     pane: Option<PaneId>,
     /// A private file with the pane's token, which ko enter reads and removes. Without it,
     /// the token is KO_PANE_TOKEN in the environment.
     #[arg(long, value_name = "FILE", requires = "socket")]
     token_file: Option<PathBuf>,
     /// The runtime of the pane.
-    #[arg(long, value_name = "NAME", required_unless_present_any = ["exec", "watch"], conflicts_with_all = ["exec", "watch"])]
+    #[arg(long, value_name = "NAME", add = ArgValueCompleter::new(crate::complete::runtimes), required_unless_present_any = ["exec", "watch"], conflicts_with_all = ["exec", "watch"])]
     runtime: Option<RuntimeName>,
     /// The runtime directory tag. Default: the runtime name.
     #[arg(long, value_name = "TAG", conflicts_with_all = ["exec", "watch"])]
@@ -68,7 +69,7 @@ pub(crate) struct EnterArgs {
 #[derive(Debug, Args)]
 pub(crate) struct RuntimeExecArgs {
     /// The runtime of the pane.
-    #[arg(value_name = "NAME")]
+    #[arg(value_name = "NAME", add = ArgValueCompleter::new(crate::complete::runtimes))]
     name: RuntimeName,
     /// The program to run when the runtime is up, after --.
     #[arg(last = true, required = true, value_name = "ARGV")]

@@ -707,9 +707,11 @@ shell.
 
 **Nothing persists but the terminfo.** ko resends the payload on every
 connection, and only the terminfo entry stays on the host. `.zshenv`
-reads the integration into a parameter and removes the whole
-directory. zsh sources the integration at its first `precmd`, not in
-`.zshenv`, so ko's hooks come after the user's setup.
+reads the integration into a parameter and keeps the directory only
+for the user's `compinit` ("Completion" below). At its first `precmd`
+zsh loads `_ko`, removes the directory, then sources the integration,
+not in `.zshenv`, so ko's hooks come after the user's setup and ko's
+bin directory is again first on PATH as the last step.
 
 **Degrade, never break.** `ko ssh host` must not behave worse than
 `ssh host`. ko passes the command line unchanged, without `-t` or a
@@ -767,6 +769,36 @@ tab starts there (protocol.md, section 15, "The cwd of a new pane").
 The real hostname matters: the same integrations run on the far side
 of `ko ssh`, and the server ignores a host pane's report for another
 host.
+
+**Completion.** Every primed shell completes `ko` with no change to the user's
+dotfiles. The shells ask the `ko` that the pane's PATH resolves (the
+bin directory's shim, so Kido.app's bundled ko answers in its panes).
+The stubs hold clap_complete's callback themselves and never run the
+registration form `COMPLETE=<shell> ko`: a ko without completion
+treats that as plain `ko` and starts the terminal client, while the
+callback's `ko -- WORDS...` is only a usage error there, which the
+stub discards. A clap_complete bump that changes the callback's
+variables fails the e2e test that compares them with the generated
+script.
+
+- zsh: the temporary `ZDOTDIR` holds `_ko` (`share/ko/zsh/_ko`, with
+  `#compdef ko`). Its `.zshenv` puts that directory first on `fpath`
+  before it sources the user's `.zshenv`, and again after it, so the
+  user's own `compinit` finds `_ko`; ko never runs `compinit`. At the
+  first prompt it loads `_ko` into memory, maps `ko` to it with
+  `compdef` when `compinit -C` read an older dump without `_ko`,
+  removes the directory from
+  `fpath` and deletes it; a shell that exits before its first prompt
+  deletes it at exit. A `compinit` that runs only after the first
+  prompt does not find `_ko`.
+- bash: `share/ko/bash/integration.bash` registers its function with
+  the builtin `complete`, so completion works with or without
+  bash-completion, also in bash 3.2, which gets no OSC 133 marks. It
+  joins the words that bash splits at `=` and `:` before the callback,
+  so `--server=DIR` reaches ko as one word.
+
+Over `ko ssh` the same files go to the remote side; where the remote
+has no `ko`, Tab completes nothing for `ko`.
 
 ## The bin directory
 

@@ -41,11 +41,27 @@ pub fn silent(received: Instant, now: Instant, limit: Duration) -> bool {
     now.saturating_duration_since(received) >= limit
 }
 
-// Reads that end when the cancel wake is set or `within` passes without data.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Limit {
+    Idle(Duration),
+    Deadline(Instant),
+}
+
+impl Limit {
+    fn remaining(self) -> io::Result<Duration> {
+        match self {
+            Limit::Idle(within) => Ok(within),
+            Limit::Deadline(deadline) => deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| io::ErrorKind::TimedOut.into()),
+        }
+    }
+}
+
 struct Interruptible<'a> {
     stream: &'a UnixStream,
     cancel: Option<&'a Wake>,
-    within: Duration,
+    within: Limit,
 }
 
 impl Read for Interruptible<'_> {
@@ -54,7 +70,7 @@ impl Read for Interruptible<'_> {
             self.stream.as_fd(),
             Want::Read,
             self.cancel.map(Wake::fd),
-            Some(self.within),
+            Some(self.within.remaining()?),
         )? {
             Waited::Ready => fd::read(self.stream.as_fd(), buffer),
             Waited::Cancelled => Err(launch::cancelled_error()),
@@ -63,41 +79,37 @@ impl Read for Interruptible<'_> {
     }
 }
 
-fn wait_or_cancel(
-    stream: &UnixStream,
-    want: Want,
-    cancel: &Wake,
-    within: Duration,
-) -> io::Result<()> {
-    match fd::wait(stream.as_fd(), want, Some(cancel.fd()), Some(within))? {
-        Waited::Ready => Ok(()),
-        Waited::Cancelled => Err(launch::cancelled_error()),
-        Waited::TimedOut => Err(io::ErrorKind::TimedOut.into()),
-    }
-}
-
-// A write that ends when the cancel wake is set or `within` passes without room.
 fn write_until(
     stream: &mut UnixStream,
     mut bytes: &[u8],
     cancel: Option<&Wake>,
-    within: Duration,
+    within: Limit,
 ) -> io::Result<()> {
-    let Some(cancel) = cancel else {
+    if cancel.is_none() && matches!(within, Limit::Idle(_)) {
         return stream.write_all(bytes);
-    };
+    }
     stream.set_nonblocking(true)?;
     while !bytes.is_empty() {
+        let _ = within.remaining()?;
         match fd::write(stream.as_fd(), bytes) {
             Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
             Ok(count) => bytes = bytes.get(count..).unwrap_or_default(),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                wait_or_cancel(stream, Want::Write, cancel, within)?;
+                match fd::wait(
+                    stream.as_fd(),
+                    Want::Write,
+                    cancel.map(Wake::fd),
+                    Some(within.remaining()?),
+                )? {
+                    Waited::Ready => {}
+                    Waited::Cancelled => return Err(launch::cancelled_error()),
+                    Waited::TimedOut => return Err(io::ErrorKind::TimedOut.into()),
+                }
             }
             Err(error) => return Err(error),
         }
     }
-    stream.set_nonblocking(false)
+    stream.set_nonblocking(matches!(within, Limit::Deadline(_)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,12 +141,24 @@ fn open(
     (method, target): (&str, &str),
     headers: &[(&str, &str)],
     body: &[u8],
-    within: Duration,
+    within: Limit,
     cancel: Option<&Wake>,
 ) -> io::Result<UnixStream> {
-    let mut stream = launch::connect(socket, PATIENCE, cancel)?;
-    stream.set_read_timeout(Some(within))?;
-    stream.set_write_timeout(Some(within))?;
+    let mut stream = match within {
+        Limit::Idle(_) => launch::connect(socket, PATIENCE, cancel)?,
+        Limit::Deadline(_) => loop {
+            let remaining = within.remaining()?;
+            match ko_sys::sock::connect_nonblocking(socket) {
+                Ok(socket) => break UnixStream::from(socket),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(remaining.min(Duration::from_millis(10)));
+                }
+                Err(error) => return Err(error),
+            }
+        },
+    };
+    stream.set_read_timeout(Some(within.remaining()?))?;
+    stream.set_write_timeout(Some(within.remaining()?))?;
     let identity = identity(caller.as_ref());
     let mut extra = vec![("Connection", "keep-alive")];
     extra.extend_from_slice(headers);
@@ -154,28 +178,26 @@ pub(crate) fn exchange(
     target: (&str, &str),
     headers: &[(&str, &str)],
     body: &[u8],
-    within: Duration,
+    within: Limit,
     cancel: Option<&Wake>,
 ) -> io::Result<Response> {
     let stream = open(socket, who, target, headers, body, within, cancel)?;
+    let mut reader = Interruptible {
+        stream: &stream,
+        cancel,
+        within,
+    };
     let mut answer = Vec::new();
-    let mut response = http::read_response_with(
-        &mut Interruptible {
-            stream: &stream,
-            cancel,
-            within,
-        },
-        |head, piece| {
-            if answer.is_empty() {
-                let length = head
-                    .header("content-length")
-                    .and_then(|length| length.parse().ok());
-                answer.reserve(length.unwrap_or(0).min(MAX_RESERVE));
-            }
-            answer.extend_from_slice(piece);
-            Ok(())
-        },
-    )?;
+    let mut response = http::read_response_with(&mut reader, |head, piece| {
+        if answer.is_empty() {
+            let length = head
+                .header("content-length")
+                .and_then(|length| length.parse().ok());
+            answer.reserve(length.unwrap_or(0).min(MAX_RESERVE));
+        }
+        answer.extend_from_slice(piece);
+        Ok(())
+    })?;
     response.body = answer;
     Ok(response)
 }
@@ -230,6 +252,7 @@ fn fetch(
     mut sink: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> Result<(), Rejected> {
     let (method, target) = route.to_request();
+    let within = Limit::Idle(within);
     let stream = open(socket, who, (method, &target), &[], body, within, cancel)?;
     let mut failure = Vec::new();
     let mut reader = Interruptible {
@@ -366,7 +389,7 @@ impl Read for Io<'_> {
                 Interruptible {
                     stream: self.stream,
                     cancel: self.cancel,
-                    within: WATCHDOG,
+                    within: Limit::Idle(WATCHDOG),
                 }
                 .read(buffer)
             }
@@ -432,11 +455,16 @@ impl Link {
         let (method, target) = route.to_request();
         let identity = identity(caller.as_ref());
         let (request, key) = upgrade_request(method, &target, client, &borrowed(&identity));
-        write_until(&mut stream, &request, cancel.as_deref(), within)?;
+        write_until(
+            &mut stream,
+            &request,
+            cancel.as_deref(),
+            Limit::Idle(within),
+        )?;
         let upgrade = http::read_upgrade(&mut Interruptible {
             stream: &stream,
             cancel: cancel.as_deref(),
-            within,
+            within: Limit::Idle(within),
         })?;
         Link::upgraded(stream, upgrade, &key, cancel, None)
     }

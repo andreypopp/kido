@@ -22,6 +22,18 @@ Kido.app, the macOS client:
 brew install --cask andreypopp/tap/kido-app
 ```
 
+Every shell that ko starts (a Kido.app pane, `ko shell`, a runtime
+pane, `ko ssh` to a host with ko) completes `ko` in zsh and bash, with
+the live pane ids, runtime names and `ko api` paths, and needs no
+change to your dotfiles; zsh needs your own `compinit`. Homebrew also
+installs the completions for your other shells. To add them by hand
+elsewhere:
+
+```sh
+echo 'source <(COMPLETE=zsh ko)' >> ~/.zshrc    # after compinit
+echo 'source <(COMPLETE=bash ko)' >> ~/.bashrc
+```
+
 ## Use
 
 Start ko from a plain terminal:

@@ -252,7 +252,10 @@ These requirements are fixed:
   and `verus_state_machines_macros` in `ko_pane_wire` and `vstd` in
   `ko_server`, pinned with `=` to the crates version of `scripts/verus.sh`
   (`scripts/lint.sh` compares them), and `saphyr-parser` (it brings
-  `arraydeque` and `thiserror`) in `ko_config`.
+  `arraydeque` and `thiserror`) in `ko_config`, and `clap_complete`
+  (pinned with `=`, `default-features = false`, with
+  `unstable-dynamic` only; it brings `is_executable`, `shlex` and
+  `clap_lex`, and enables clap's `unstable-ext`) in `ko`.
   `proptest` and `loom` are dev-dependencies.
   `scripts/crates.txt` lists every package of `Cargo.lock`, ko's own
   crates included. `scripts/lint.sh` fails on a package that the list

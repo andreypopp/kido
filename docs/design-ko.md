@@ -804,6 +804,24 @@ any other lost link does. `ko panes`, `ko layout` and `ko layout put` or `edit` 
 readers and writers of the document from the shell. The signal rules
 of AGENTS.md ("Signals") apply to every kill.
 
+**Completion.** `ko` completes its own command line in zsh and bash
+through clap_complete's environment callback (`ko/src/complete.rs`): a
+shell runs `COMPLETE=<shell> ko -- WORDS...`, and the first step of
+`main` answers and exits 0, also on an error. Commands and flags come
+from the clap table. The arguments that name live objects (a runtime
+name, a pane id, a path of `ko api`, whose path parameters expand from
+the route catalog) ask the server for their values. The rules:
+completion never starts a server, reads no file of the state directory
+(it only connects to the socket), writes nothing to stderr, and returns
+no candidates on any failure. It targets the server as the completed
+command would: `--server DIR` among the words, else the pane's own
+server and identity inside a pane, else the default directory; with
+`--host` it asks nothing. All its requests share one short deadline,
+so a busy or stalled server costs the prompt little. On a runtime
+connection the runtime list is refused, so runtime names do not
+complete there. Rationale: a completion runs on every Tab, so it must
+be cheap and silent, and a key press must not start a server.
+
 `ko server --help` lists the server's options; `ko_server/src/config.rs`
 reads its environment knobs (design.md, "Knobs"), and `ko_server/src/panes.rs` sets the
 variables of every pane, `SSH_AUTH_SOCK=<dir>/agent.sock` among them,

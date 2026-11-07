@@ -421,6 +421,156 @@ fn pane_runs_the_shims() {
     );
 }
 
+#[test]
+fn shell_completions_survive_priming_cleanup() {
+    let s = start_with(
+        Path::new("/bin/sh"),
+        &[("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")],
+        &[],
+    );
+    for flavour in [Flavour::Zsh, Flavour::Bash] {
+        let Some(shell) = shell_of(&flavour) else {
+            continue;
+        };
+        let zsh = matches!(flavour, Flavour::Zsh);
+        dotfiles(
+            &flavour,
+            &s.dir,
+            if zsh {
+                r#"autoload -Uz compinit compdump
+_ko_test_fpath=("${fpath[@]}")
+fpath=("${(@)fpath:#*/ko-shell.*}")
+compinit -D -d "$HOME/complete.dump"
+unset '_comps[ko]'
+compdump
+fpath=("${_ko_test_fpath[@]}")
+unset _ko_test_fpath
+compinit -C -d "$HOME/complete.dump"
+print -r -- "${_comps[ko]-absent}" > "$HOME/ko-before-precmd""#
+            } else {
+                ""
+            },
+        );
+        if zsh {
+            fs::write(
+                s.dir.join(".zshenv"),
+                "fpath=(\"${(@)fpath:#*/ko-shell.*}\")\n",
+            )
+            .unwrap();
+        }
+        let pane = s.pane(&format!(
+            "KO_SHELL={} exec {} shell",
+            quote(text_of(&shell)),
+            quote(text_of(&ko()))
+        ));
+        s.wait_row(&pane, "the primed prompt", |row| {
+            row["status"]["kind"]["phase"]["type"] == "idle"
+        });
+        let out = s
+            .dir
+            .join(if zsh { "zsh-complete" } else { "bash-complete" });
+        let script = if zsh {
+            format!(
+                r#"{{ print -r -- "${{_comps[ko]}}"; _describe() {{ print -rl -- "${{other[@]}}" "${{dirs[@]}}"; }}; words=(ko api /panes/{pane}/scr); CURRENT=3; _ko; }} > {}"#,
+                quote(text_of(&out))
+            )
+        } else {
+            format!(
+                r#"{{ complete -p ko; COMP_LINE="ko --server={} api /panes/{pane}/scr"; COMP_WORDS=(ko --server = {} api /panes/{pane}/scr); COMP_CWORD=5; COMP_TYPE=9; _ko_complete ko /panes/{pane}/scr api; printf '%s\n' "${{COMPREPLY[@]}}"; complete -p ko; }} > {}"#,
+                text_of(&s.dir),
+                quote(text_of(&s.dir)),
+                quote(text_of(&out))
+            )
+        };
+        s.text(
+            &pane,
+            &format!("{script}; printf 'COMPLETION_%s\\n' DONE\r"),
+        );
+        s.screen_has(&pane, "COMPLETION_DONE");
+        let written = fs::read_to_string(out).unwrap();
+        assert!(
+            written.contains(&format!("/panes/{pane}/screen")),
+            "{written}"
+        );
+        if zsh {
+            assert_eq!(
+                fs::read_to_string(s.dir.join("ko-before-precmd")).unwrap(),
+                "absent\n"
+            );
+            assert!(written.starts_with("_ko\n"), "{written}");
+        } else {
+            assert!(
+                written
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .contains("-F _ko_complete ko"),
+                "{written}"
+            );
+            assert!(
+                written
+                    .lines()
+                    .last()
+                    .unwrap()
+                    .contains("-F _ko_complete ko"),
+                "{written}"
+            );
+        }
+        if zsh {
+            let marker = s.dir.join("zsh-early-exit");
+            fs::write(
+                s.dir.join(".zshenv"),
+                format!(
+                    "print -r -- \"$_ko_dir\" > {}; exit 17\n",
+                    quote(text_of(&marker))
+                ),
+            )
+            .unwrap();
+            let mut request = sh(&format!(
+                "KO_SHELL={} exec {} shell",
+                quote(text_of(&shell)),
+                quote(text_of(&ko()))
+            ));
+            request["close"] = json!("keep");
+            let exited = s.new_pane(request);
+            s.wait_row(&exited, "the startup exit", |row| !row["dead"].is_null());
+            let dir = fs::read_to_string(marker).unwrap();
+            assert!(!Path::new(dir.trim()).exists(), "{dir}");
+            fs::remove_file(s.dir.join(".zshenv")).unwrap();
+        }
+    }
+    let integration = s.scratch.join("integration.bash");
+    fs::write(
+        &integration,
+        include_str!("../../../share/ko/bash/integration.bash"),
+    )
+    .unwrap();
+    let script = format!(
+        ". {}; printf '%s\\n' \"${{BASH_VERSINFO[0]}}\"; complete -p ko",
+        quote(text_of(&integration))
+    );
+    let registration = run_program(
+        &s.scratch,
+        Path::new("/bin/bash"),
+        &test_env(&s.dir),
+        &["--noprofile", "--norc", "-i", "-c", &script],
+        "",
+        DEADLINE,
+    );
+    assert_eq!(
+        registration.exit,
+        ko_sys::pid::Exit::Exited(0),
+        "{registration:?}"
+    );
+    let registration = registration.stdout;
+    let major: u32 = registration.lines().next().unwrap().parse().unwrap();
+    assert_eq!(
+        registration.contains("-o nospace"),
+        major >= 4,
+        "{registration}"
+    );
+}
+
 const PROBE_SHELLS: [&str; 3] = ["bash", "zsh", "sh"];
 const PROBE_ARGS: [&[&str]; 3] = [&["-l", "-i", "-c", ":"], &["-i", "-c", ":"], &["-c", ":"]];
 

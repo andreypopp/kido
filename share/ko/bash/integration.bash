@@ -2,6 +2,54 @@
 
 # PS0 and PROMPT_COMMAND are read nowhere but an interactive shell.
 [[ $- == *i* ]] || return 0
+_ko_complete() {
+  local IFS=$'\013'
+  local _CLAP_COMPLETE_INDEX=0
+  local _CLAP_COMPLETE_COMP_TYPE=${COMP_TYPE}
+  if compopt +o nospace 2>/dev/null; then
+    local _CLAP_COMPLETE_SPACE=false
+  else
+    local _CLAP_COMPLETE_SPACE=true
+  fi
+  local original=("${COMP_WORDS[@]}") words=()
+  if [[ ${BASH_VERSINFO[0]} -ge 4 ]]; then
+    original[COMP_CWORD]="$2"
+  fi
+  local i word gap line=${COMP_LINE-} last=0
+  for ((i=0; i<${#original[@]}; i++)); do
+    word=${original[i]}
+    gap=
+    if [[ -n ${COMP_LINE-} ]]; then
+      gap=${line%%"$word"*}
+      line=${line#*"$word"}
+    fi
+    if ((i > 0)) && [[ $gap != *[[:space:]]* ]] && [[ $word == = || $word == : || ${original[i-1]} == = || ${original[i-1]} == : ]]; then
+      words[last]+=$word
+    else
+      words+=("$word")
+      last=$((${#words[@]} - 1))
+    fi
+    ((i == COMP_CWORD)) && _CLAP_COMPLETE_INDEX=$last
+  done
+  COMPREPLY=( $(
+    _CLAP_IFS="$IFS" \
+    _CLAP_COMPLETE_INDEX="$_CLAP_COMPLETE_INDEX" \
+    _CLAP_COMPLETE_COMP_TYPE="$_CLAP_COMPLETE_COMP_TYPE" \
+    _CLAP_COMPLETE_SPACE="$_CLAP_COMPLETE_SPACE" \
+    COMPLETE=bash \
+    ko -- "${words[@]}" </dev/null 2>/dev/null
+  ) )
+  if [[ $? != 0 ]]; then
+    unset COMPREPLY
+  elif [[ $_CLAP_COMPLETE_SPACE == false ]] && [[ ${COMPREPLY-} =~ [=/:]$ ]]; then
+    compopt -o nospace
+  fi
+}
+if type compopt >/dev/null 2>&1; then
+  complete -o nospace -o bashdefault -F _ko_complete ko
+else
+  complete -o bashdefault -F _ko_complete ko
+fi
 # PS0 arrived in bash 4.4, and macOS still ships 3.2 as /bin/bash.
 ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) || return 0
 # With promptvars unset bash does not expand a prompt string at all, so

@@ -4,6 +4,7 @@ mod agents;
 mod client;
 mod clients;
 mod clipboard;
+mod complete;
 mod config;
 mod container;
 mod edits;

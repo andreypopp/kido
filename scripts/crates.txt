@@ -18,6 +18,7 @@ cfg_aliases
 chacha20
 clap
 clap_builder
+clap_complete
 clap_derive
 clap_lex
 const-oid
@@ -43,6 +44,7 @@ http
 httparse
 hybrid-array
 indexmap
+is_executable
 itoa
 jobserver
 ko

@@ -6,7 +6,9 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::CompleteEnv;
+use clap_complete::engine::ArgValueCompleter;
 use ko_client::api;
 use ko_client::edit::Edit;
 use ko_client::launch::{self, PATIENCE};
@@ -24,6 +26,7 @@ use ko_shell::{bin_dir, shell, ssh};
 use ko_sys::signal::{Signal, Signals};
 use ko_tui::client;
 
+mod complete;
 mod prompt;
 mod run;
 mod runtime;
@@ -216,10 +219,11 @@ struct ApiArgs {
     #[arg(long, conflicts_with_all = ["method", "input", "include"])]
     stream: bool,
     /// The request path, with its query string.
-    #[arg(value_name = "PATH")]
+    #[arg(value_name = "PATH", add = ArgValueCompleter::new(complete::paths))]
     path: String,
 }
 
+#[derive(Debug)]
 pub(crate) struct Target {
     pub(crate) dir: PathBuf,
     pub(crate) caller: Option<Caller>,
@@ -674,6 +678,13 @@ fn attach(server: Option<PathBuf>, host: Option<String>) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    match CompleteEnv::with_factory(Cli::command)
+        .completer("ko")
+        .try_complete(std::env::args_os(), std::env::current_dir().ok().as_deref())
+    {
+        Ok(false) => {}
+        Ok(true) | Err(_) => return ExitCode::SUCCESS,
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => {

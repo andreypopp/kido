@@ -7,41 +7,60 @@ use std::process::Command;
 use ko_pane_wire::base64::encode as base64_encode;
 
 use crate::bin_dir::path_prepend_script;
+
+const ZSH_COMPLETION: &str = include_str!("../../share/ko/zsh/_ko");
 const ZSH_INTEGRATION: &str = include_str!("../../share/ko/zsh/integration.zsh");
 const BASH_INTEGRATION: &str = include_str!("../../share/ko/bash/integration.bash");
 
 const ZSHENV: &str = r#"# Written by ko into a throwaway ZDOTDIR.
-# It removes itself; nothing ko writes here is meant to outlive the session.
 if [[ -n ${KO_ORIG_ZDOTDIR+X} ]]; then
   export ZDOTDIR=$KO_ORIG_ZDOTDIR
 else
   unset ZDOTDIR
 fi
 unset KO_ORIG_ZDOTDIR
+_ko_cleanup() {
+  fpath=("${(@)fpath:#$_ko_dir}")
+  command rm -rf -- "$_ko_dir"
+  unset _ko_dir _ko_src
+  zshexit_functions=("${(@)zshexit_functions:#_ko_cleanup}")
+  unfunction _ko_cleanup
+}
+typeset -ag zshexit_functions
+zshexit_functions+=(_ko_cleanup)
 # Every expansion is quoted: /etc/zshenv runs before this file and may
 # have set SH_WORD_SPLIT, under which an unquoted eval would rejoin the
 # integration's lines with spaces.
 {
   _ko_dir="${${(%):-%x}:A:h}"
   _ko_src="$(<"$_ko_dir/integration.zsh")"
-  command rm -rf -- "$_ko_dir"
-  unset _ko_dir
-  _ko_zshenv="${ZDOTDIR-~}/.zshenv"
+  fpath=("$_ko_dir" "${(@)fpath:#$_ko_dir}")
+  _ko_zshenv="${ZDOTDIR-$HOME}/.zshenv"
   [[ ! -r $_ko_zshenv ]] || source -- "$_ko_zshenv"
   unset _ko_zshenv
+  fpath=("$_ko_dir" "${(@)fpath:#$_ko_dir}")
 } always {
   if [[ -o interactive && -n $_ko_src ]]; then
     typeset -ag precmd_functions
     precmd_functions+=(_ko_ssh_init)
   else
-    unset _ko_src
+    _ko_cleanup
   fi
 }
 _ko_ssh_init() {
   precmd_functions=(${precmd_functions:#_ko_ssh_init})
-  eval "$_ko_src"
-  unset _ko_src
-  unfunction _ko_ssh_init
+  local src="$_ko_src"
+  {
+    (( $+functions[_ko] )) || autoload -Uz _ko
+    autoload +X _ko 2>/dev/null
+    if (( $+functions[compdef] )) && [[ -z ${_comps[ko]-} ]]; then
+      compdef _ko ko
+    fi
+  } always {
+    _ko_cleanup
+    unfunction _ko_ssh_init
+  }
+  eval "$src"
   (( $+functions[ko_osc133_precmd] )) && ko_osc133_precmd
 }
 "#;
@@ -70,6 +89,7 @@ const PS0_MINOR: u32 = 4;
 
 const BOOTSTRAP: &str = r#"ko_zsh_b64='@ZSH_B64@'
 ko_bash_b64='@BASH_B64@'
+ko_completion_b64='@COMPLETION_B64@'
 ko_terminfo_b64='@TERMINFO_B64@'
 ko_dir=''
 ko_shell=${SHELL:-/bin/sh}
@@ -126,6 +146,7 @@ ko_dir=$(mktemp -d "${TMPDIR:-/tmp}/ko-ssh.XXXXXXXX" 2>/dev/null) && [ -d "$ko_d
 trap 'rm -rf "$ko_dir"' EXIT HUP INT TERM
 if [ "$ko_name" = zsh ]; then
   ko_decode "$ko_zsh_b64" "$ko_dir/integration.zsh" || ko_plain
+  ko_decode "$ko_completion_b64" "$ko_dir/_ko" || ko_plain
   ko_zdotdir=${ZDOTDIR:-$HOME}
   [ -f "$ko_zdotdir/.zshrc" ] || [ -f "$ko_zdotdir/.zshenv" ] ||
     [ -f "$ko_zdotdir/.zprofile" ] || [ -f "$ko_zdotdir/.zlogin" ] || ko_plain
@@ -210,6 +231,7 @@ pub(crate) fn local(
         Mode::Plain => return Ok(Vec::new()),
         Mode::Zsh => vec![
             (".zshenv", ZSHENV.to_owned()),
+            ("_ko", ZSH_COMPLETION.to_owned()),
             ("integration.zsh", with_path(ZSH_INTEGRATION)),
         ],
         Mode::Bash => vec![
@@ -267,6 +289,10 @@ pub(crate) fn ssh_bootstrap(terminfo: Option<&[u8]>) -> String {
             &base64_encode(terminfo.unwrap_or_default()),
         )
         .replace("@ZSH_B64@", &base64_encode(ZSH_INTEGRATION.as_bytes()))
+        .replace(
+            "@COMPLETION_B64@",
+            &base64_encode(ZSH_COMPLETION.as_bytes()),
+        )
         .replace("@BASH_B64@", &base64_encode(BASH_INTEGRATION.as_bytes()))
         .replace("@PLAIN_ARGS@", &args(Mode::Plain))
         .replace("@PROBE@", BASH_VERSION_PROBE)
@@ -513,7 +539,7 @@ exit 0
         assert_eq!(zsh.len(), 1);
         assert_eq!(zsh[0].0, "ZDOTDIR");
         assert!(zsh[0].1.contains("/ko-shell."));
-        assert_eq!(listing(Path::new(&zsh[0].1)), ".zshenv integration.zsh");
+        assert_eq!(listing(Path::new(&zsh[0].1)), ".zshenv _ko integration.zsh");
         let zsh = local(Some("/home/me/dots"), None, Mode::Zsh).unwrap();
         assert_eq!(
             zsh[1],

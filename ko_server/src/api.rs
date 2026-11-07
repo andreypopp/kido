@@ -18,6 +18,10 @@ use crate::protocol::{
 };
 use crate::route::{Invalid, Param, binary, pixels, routes, text};
 
+pub fn route_paths() -> impl Iterator<Item = (&'static str, &'static [&'static str])> {
+    ROUTES.iter().map(|route| (route.path, route.docs))
+}
+
 const MAX_OFFSET: u64 = (1 << 62) - 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

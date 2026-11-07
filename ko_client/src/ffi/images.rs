@@ -12,7 +12,7 @@ use ko_sys::event::Wake;
 
 use super::calls::{call, rejected};
 use super::{Buffer, Client, Code, client, hand_over, text_of};
-use crate::wire::{READ_TIMEOUT, Rejected, exchange, succeeded, text};
+use crate::wire::{Limit, READ_TIMEOUT, Rejected, exchange, succeeded, text};
 
 const NAME_CAPACITY: usize = 32;
 
@@ -49,7 +49,7 @@ fn request(
         (method, &target),
         headers,
         b"",
-        READ_TIMEOUT,
+        Limit::Idle(READ_TIMEOUT),
         cancel,
     )
     .map_err(|error| Rejected::Unanswered(text(error)))?;

@@ -85,7 +85,7 @@ pub fn version(
         (method, &target),
         &[],
         b"",
-        within,
+        wire::Limit::Idle(within),
         cancel,
     )?;
     if response.status != 200 {
@@ -145,7 +145,7 @@ pub(crate) fn exchange(
         (method, path),
         &[],
         body,
-        within,
+        wire::Limit::Idle(within),
         None,
     )
     .map_err(failure)
@@ -182,6 +182,29 @@ pub fn request_within(
         return Err(Error::Websocket);
     }
     exchange(dir, caller, (method, path), body, within).map_err(Error::Server)
+}
+
+pub fn probe<T: Serialize + DeserializeOwned>(
+    dir: &Path,
+    caller: Option<Caller>,
+    route: &Route,
+    deadline: Instant,
+) -> Option<T> {
+    let socket = socket(dir, caller.as_ref()).ok()?;
+    let (method, path) = route.to_request();
+    let response = wire::exchange(
+        &socket,
+        (None, caller),
+        (method, &path),
+        &[],
+        b"",
+        wire::Limit::Deadline(deadline),
+        None,
+    )
+    .ok()?;
+    (response.status == 200)
+        .then(|| protocol::decode(&response.body).ok())
+        .flatten()
 }
 
 pub fn stream(

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{ArgGroup, Args, Subcommand};
+use clap_complete::engine::ArgValueCompleter;
 use ko_config::runtime::{
     self, Access, Engine, Kind, Ko, PathMap, Runtime, RuntimePi, Source, SshAgent, Volume,
 };
@@ -26,7 +27,7 @@ pub(crate) struct RunArgsCli {
 #[derive(Debug, Args)]
 struct Entry {
     /// The runtime's name in the current session.
-    #[arg(verbatim_doc_comment, long, required = true, value_parser = |s: &str| RuntimeName::try_from(s.to_owned()))]
+    #[arg(verbatim_doc_comment, long, required = true, value_parser = |s: &str| RuntimeName::try_from(s.to_owned()), add = ArgValueCompleter::new(crate::complete::runtimes))]
     name: Option<RuntimeName>,
     /// The server's state directory.
     #[arg(verbatim_doc_comment, long)]
