@@ -1235,6 +1235,12 @@ delegates as its brief says and does not write code.
      the model"), each place that dispatches on them, what to delete,
      and the tests that must fail first. The manager checks the design
      against the code. Then it spawns one implementer with the design.
+     For a big feature, the planner stays alive while the implementer
+     works, and the brief names it as the implementer's advisor: the
+     implementer asks it with `message_agent` when the code does not
+     fit the design. The planner stays read-only, answers only, and
+     reports a change of the design to the manager. The manager stops
+     it with the implementer.
      A trivial change goes to the implementer directly.
   2. When the implementer reports, the manager writes the docs that the
      change needs itself, in `docs/`, this file and READMEs, before
