@@ -40,6 +40,16 @@ Delete the old one.
 State from an older ko is not a bug if a restart or user action
 clears it.
 
+**A feature fits the model; it is not bolted on.** A significant
+feature can change what the existing abstractions must express.
+Before it adds code, its design finds every place that dispatches on
+the concepts it touches (an enum, a classification, a set of cases)
+and decides whether to extend or replace them. A new case goes into
+the type that names the cases, so that every match handles it. Do
+not add a filter, an `Option` branch or a parallel field beside the
+existing dispatch, and do not add a new abstraction where an
+existing one extends.
+
 **Plain functions over data.** Use abstraction only when it has a benefit.
 Do not use a trait, generic or trait object without a second
 implementation. Express the design through data structures. Make illegal
@@ -1220,8 +1230,10 @@ delegates as its brief says and does not write code.
   code. It does these steps:
   1. For a fix or a feature that is not trivial, it first spawns one
      read-only planner. The planner reads the code path end to end and
-     reports one design: the rule for each part, what to delete, and
-     the tests that must fail first. The manager checks the design
+     reports one design: the rule for each part, the existing
+     abstractions that the change extends or replaces ("A feature fits
+     the model"), each place that dispatches on them, what to delete,
+     and the tests that must fail first. The manager checks the design
      against the code. Then it spawns one implementer with the design.
      A trivial change goes to the implementer directly.
   2. When the implementer reports, the manager writes the docs that the
