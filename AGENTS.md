@@ -1222,8 +1222,9 @@ delegates as its brief says and does not write code.
   count. Local tooling (the pi extensions in `.pi/`, a script that only
   agents use, a brief, a plan or other prose) gets one agent, a quick
   check such as `scripts/lint.sh`, and no tests, reviewers or full
-  verification. A small product change may use fewer reviewers when
-  the manager says which ones.
+  verification. A small product change (one behaviour, a few files)
+  takes the small track: no planner, one implementer and one
+  correctness reviewer, and the manager says that it chose it.
 - **Approval for new unsafe code and new routes.** Before an
   implementer writes a new `unsafe` block, `unsafe fn`, `unsafe impl`
   or `unsafe extern`, or adds a route to the `routes!` block, the
@@ -1238,7 +1239,10 @@ delegates as its brief says and does not write code.
      reports one design: the rule for each part, the existing
      abstractions that the change extends or replaces ("A feature fits
      the model"), each place that dispatches on them, what to delete,
-     and the tests that must fail first. The manager checks the design
+     and the tests that must fail first. It names each place to change
+     as file and line, with the shape of the new code (the types, the
+     signatures, the match arms), so the implementer does not explore
+     the code again. The manager checks the design
      against the code. Then it spawns one implementer with the design.
      For a big feature, the planner stays alive while the implementer
      works, and the brief names it as the implementer's advisor: the
@@ -1247,14 +1251,16 @@ delegates as its brief says and does not write code.
      reports a change of the design to the manager. The manager stops
      it with the implementer.
      A trivial change goes to the implementer directly.
-  2. When the implementer reports, the manager writes the docs that the
-     change needs itself, in `docs/`, this file and READMEs, before
-     review. The implementer reports the facts that the docs need and
+  2. When the change builds and its new tests pass, the implementer
+     reports, before any full verification. The manager writes the
+     docs that the change needs itself, in `docs/`, this file and
+     READMEs. The implementer reports the facts that the docs need and
      never writes them, so a smart model writes every doc.
   3. The manager spawns the four read-only reviewers of a simplify pass,
      one angle each, one correctness reviewer and one modules
      reviewer, so that review has fresh context. They review the code
-     and the docs ("Review" above).
+     and the docs ("Review" above). Review does not wait for the full
+     verification: that runs once, after the findings are applied.
   4. The manager merges their findings and decides which to apply. It
      changes the docs that the findings affect.
   5. It gives the findings to apply to the same implementer with
