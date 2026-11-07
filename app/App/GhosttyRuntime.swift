@@ -45,7 +45,27 @@ extension NSColor {
         ghostty_app_update_config_without_surface_propagation(app, config)
     }
     #endif
-    private(set) var configError: ConfigError?
+    static let configErrorChanged = Notification.Name("KidoConfigErrorChanged")
+    private struct FailedConfig {
+        let error: ConfigError
+        var dismissed = false
+    }
+    private var failedConfig: FailedConfig? {
+        didSet {
+            let previous = oldValue.flatMap { $0.dismissed ? nil : $0.error }
+            if previous != visibleConfigError { NotificationCenter.default.post(name: Self.configErrorChanged, object: self) }
+        }
+    }
+    var configError: ConfigError? { failedConfig?.error }
+    var visibleConfigError: ConfigError? { failedConfig.flatMap { $0.dismissed ? nil : $0.error } }
+    private func setConfigError(_ error: ConfigError?) {
+        guard error != configError else { return }
+        failedConfig = error.map { FailedConfig(error: $0) }
+    }
+    func dismissConfigError() { failedConfig?.dismissed = true }
+    #if KIDO_VISUAL
+    func testConfigError(_ error: ConfigError?) { setConfigError(error) }
+    #endif
     private(set) var themeFiles: [String: ThemeFile]
     var clipboard: KoSchema.Clipboard { values.clipboard }
     enum ThemeOverride: Equatable { case none, preview(String), session(String) }
@@ -141,7 +161,7 @@ extension NSColor {
         self.config = loaded.config
         self.values = loaded.values
         self.loadedText = loaded.text
-        self.configError = loaded.error
+        self.failedConfig = loaded.error.map { FailedConfig(error: $0) }
         self.themeFiles = loaded.themeFiles
         self.diagnostics = loaded.diagnostics
 
@@ -313,13 +333,13 @@ extension NSColor {
         switch Self.read(configFile) {
         case .success(let loaded): values = loaded
         case .failure(let error):
-            configError = error
+            setConfigError(error)
             onConfigChange()
             return
         }
         guard let loaded = Self.makeConfig(values, file: configFile, override: overrideValue, error: nil) else { return }
         diagnostics = loaded.diagnostics
-        configError = loaded.error
+        setConfigError(loaded.error)
         let changed = loadedText != loaded.text || loadedTheme != overrideValue || themeFiles != loaded.themeFiles
         #if KIDO_VISUAL
         if loadedTheme != overrideValue { visualThemeApplies += 1 }

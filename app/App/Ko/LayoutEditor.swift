@@ -16,7 +16,7 @@ import PaneGeometry
 
     private enum State {
         case idle
-        case sending(then: Done?, waiting: [Waiting])
+        case sending(edit: KoSchema.Edit, then: Done?, waiting: [Waiting])
     }
 
     typealias Done = (Result<KoSchema.Edited, Error>) -> Void
@@ -27,7 +27,7 @@ import PaneGeometry
     private var state = State.idle
     private(set) var expected: Int?
     private var seen = 0
-    var onFailure: (String) -> Void = { _ in }
+    var onFailure: (KoSchema.Edit, String) -> Void = { _, _ in }
     var onSettled: () -> Void = {}
 
     // `perform` sends one edit and returns the layout that the server made of it, and what it made.
@@ -42,10 +42,10 @@ import PaneGeometry
 
     // `then` runs on main with the edit's result; a keyed edit that a successor replaced has none.
     func submit(_ edit: KoSchema.Edit, key: Key? = nil, then: Done? = nil) {
-        guard case .sending(let current, var waiting) = state else { return start((edit, key, then)) }
+        guard case .sending(let currentEdit, let current, var waiting) = state else { return start((edit, key, then)) }
         if let key, let index = waiting.firstIndex(where: { $0.key == key }) { waiting[index] = (edit, key, then) }
         else { waiting.append((edit, key, then)) }
-        state = .sending(then: current, waiting: waiting)
+        state = .sending(edit: currentEdit, then: current, waiting: waiting)
     }
 
     func layoutChanged(revision: Int) {
@@ -54,7 +54,7 @@ import PaneGeometry
     }
 
     private func start(_ next: Waiting, waiting: [Waiting] = []) {
-        state = .sending(then: next.then, waiting: waiting)
+        state = .sending(edit: next.edit, then: next.then, waiting: waiting)
         let perform = perform, edit = next.edit
         queue.async { [weak self] in
             let result = Result { try perform(edit) }
@@ -63,11 +63,12 @@ import PaneGeometry
     }
 
     private func finished(_ result: Result<KoSchema.Edited, Error>) {
+        guard case .sending(let edit, let then, var waiting) = state else { return }
         switch result {
         case .success(let edited): expected = max(expected ?? 0, edited.snapshot.revision)
-        case .failure(let error): onFailure(failureText(error))
+        case .failure(let error): if then == nil { onFailure(edit, failureText(error)) }
         }
-        guard case .sending(let then, var waiting) = state else { return }
+        if case .sending(_, _, let queued) = state { waiting = queued }
         if waiting.isEmpty { state = .idle } else { start(waiting.removeFirst(), waiting: waiting) }
         then?(result)
         settle()

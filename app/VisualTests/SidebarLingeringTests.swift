@@ -16,7 +16,7 @@ import XCTest
         defer { window.close() }
         let list = SidebarView()
         window.contentView = list
-        list.update(fixtureSnapshot(window: 1, pane: 1, [("main", [
+        list.show(fixtureSnapshot(window: 1, pane: 1, [("main", [
             .item(fixtureItem(1, "parent", piLifecycle(.running(.init())), records: [
                 .working(.init(id: "job/42", started: 3535_000_000_000, title: "Build app")),
                 .done(.init(id: "job/43", started: 0, title: "Run tests")),
@@ -65,7 +65,7 @@ import XCTest
         defer { window.close() }
         let list = SidebarView()
         window.contentView = list
-        list.update(fixtureSnapshot(window: 1, pane: 1, [("main", [
+        list.show(fixtureSnapshot(window: 1, pane: 1, [("main", [
             fixtureNode(1, "parent", piLifecycle(), children: [fixtureNode(2, "helper", shellLifecycle())]),
             fixtureNode(3, "exit 0, on_exit", .lingering(.exited(.init(code: 0)))),
             fixtureNode(4, "exit 2, on_exit", .lingering(.exited(.init(code: 2)))),

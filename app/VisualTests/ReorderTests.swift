@@ -206,7 +206,7 @@ import PaneGeometry
         XCTAssertEqual(list.visualRows.map(\.id), sidebarRows(moved).map(\.id))
         XCTAssertNotNil(list.tableView(table, pasteboardWriterForRow: row))
         XCTAssertTrue(owner.reorder.claim(.tab))
-        XCTAssertEqual(list.visualDiagnostic, "")
+        XCTAssertTrue(owner.notices.testTransients.entries.isEmpty)
     }
 
     private func destination(_ window: NSWindow, at point: NSPoint) -> NSView? {
@@ -224,7 +224,7 @@ import PaneGeometry
         table.draggingSession(drag.session, willBeginAt: .zero)
         XCTAssertNotNil(list.visualDragging, "AppKit forwards the drag start")
         try await Task.sleep(for: .milliseconds(50))
-        let moving = center(table, row, dy: row == 0 ? 20 : -20)
+        let moving = center(table, row, dy: row == 0 ? 10 : -10)
         let info = try drop(list, at: moving)
         let live = Drop(info.draggingPasteboard, moving, table.window, source: table)
         let start = destination(table.window!, at: moving)
@@ -468,7 +468,7 @@ import PaneGeometry
 
         try await wait("the failure", within: 5) { owner.reorder.state.pending == nil }
         XCTAssertEqual(list.visualRows.map(\.id), rows.map(\.id), "a failure reverts to the latest snapshot")
-        XCTAssertEqual(list.visualDiagnostic, "no such top-level window in session")
+        XCTAssertEqual(owner.notices.testTransients.entries.map(\.detail), ["no such top-level window in session"])
         XCTAssertNil(owner.reorder.state.pending)
 
         try press(table, pane, drag: true)
@@ -479,7 +479,7 @@ import PaneGeometry
         XCTAssertEqual(list.visualScroll.draggingUpdated(retry), .move)
         XCTAssertTrue(list.visualScroll.performDragOperation(retry))
         list.tableView(table, draggingSession: again.session, endedAt: .zero, operation: .move)
-        XCTAssertEqual(list.visualDiagnostic, "", "a new drop clears the old error")
+        XCTAssertEqual(owner.notices.testTransients.entries.count, 1, "the failure stays on its own clock")
         XCTAssertEqual(list.visualRows.map(\.id), sidebarRows(moved).map(\.id))
         sent[1].reply(.reordered)
         try await wait("the reply", within: 5) { owner.reorder.state.pending?.replied == true }
@@ -524,7 +524,7 @@ import PaneGeometry
         let sidebar = Sidebar()
         window.contentViewController = sidebar
         let list = sidebar.list, table = list.visualTable as! Table
-        list.update(fixture())
+        list.show(fixture())
         window.display()
         window.contentView?.superview?.layoutSubtreeIfNeeded()
         let row = try XCTUnwrap(list.visualRows.firstIndex { $0.target != nil })
@@ -606,7 +606,7 @@ import PaneGeometry
         let tabs = sidebar.tabs, reorder = Reorder()
         tabs.reorder = reorder
         sidebar.list.reorder = reorder
-        sidebar.list.update(fixture())
+        sidebar.list.show(fixture())
         let ids = (1...4).map { WindowID(number: $0) }
         tabs.entries = ids.map { SessionModel.Tab(id: $0, name: "Window \($0.number)", active: $0.number == 1, status: .quiet) }
         root.layoutSubtreeIfNeeded()

@@ -15,6 +15,7 @@ import KoModel
             var handled: [String] = []
             let owner = WindowOwner(host: host, runtime: runtime, start: false, openBrowser: { opened.append($0) })
             defer { owner.close() }
+            owner.notices.testTime = 0
             for (text, osc8) in [("https://example.com/osc8?x=1", true), ("file:///tmp/kido-link-test", true), ("https://example.com/regex", false)] {
                 let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, host: host) { _ in })
                 defer { pane.dispose() }
@@ -51,6 +52,9 @@ import KoModel
                 XCTAssertEqual(opened.map(\.absoluteString), handled.filter { $0.hasPrefix("https:") || (host == .local && $0.hasPrefix("file:")) }, "only permitted links must reach NSWorkspace")
             }
             XCTAssertEqual(opened.map(\.absoluteString), host == .local ? ["https://example.com/osc8?x=1", "file:///tmp/kido-link-test"] : ["https://example.com/osc8?x=1", "https://example.com/regex"])
+            XCTAssertEqual(owner.notices.testTransients.entries.map(\.title), host == .local ? [] : ["Unsupported link"])
+            XCTAssertNil(owner.preparedAlert)
+            XCTAssertNil(owner.window.attachedSheet)
             XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || owner.window.isMainWindow || NSApp.isActive)
         }
     }

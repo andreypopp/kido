@@ -152,13 +152,7 @@ import KoModel
         try pane.koView?.resync()
         try await wait("the resync restored") { pane.visualRestores > restores }
         try await wait("the image fetched again") { pane.visualText.contains("below") && pane.visualPendingImageFrames == 0 }
-        var status = GHOSTTY_RENDER_PRESENTATION_DISCARDED
-        for _ in 0..<5 where status != GHOSTTY_RENDER_PRESENTATION_PRESENTED {
-            let frame = expectation(description: "presented")
-            pane.visualFrame { result in status = result; frame.fulfill() }
-            await fulfillment(of: [frame], timeout: 10)
-        }
-        XCTAssertEqual(status, GHOSTTY_RENDER_PRESENTATION_PRESENTED)
+        await presentedFrame(pane, attempts: 5)
         pane.scroller.isHidden = true
         CATransaction.flush()
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"

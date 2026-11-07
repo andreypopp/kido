@@ -191,9 +191,11 @@ class PaneCapsule: NSView {
     }
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
+        needsLayout = true
         needsDisplay = true
     }
-    override func updateLayer() {
+    override func updateLayer() { updateSurface() }
+    private func updateSurface() {
         let background = runtime.background, foreground = runtime.foreground
         layer?.backgroundColor = background.mixed(toward: foreground, amount: surface.fillMix).cgColor
         edge.borderColor = Chrome.capsuleEdge(foreground, alpha: surface.edgeAlpha).cgColor
@@ -206,6 +208,7 @@ class PaneCapsule: NSView {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
+        if !wantsUpdateLayer { updateSurface() }
         layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: radius, cornerHeight: radius, transform: nil)
         edge.frame = bounds.insetBy(dx: -edgeOutset, dy: -edgeOutset)
         highlight.frame = bounds

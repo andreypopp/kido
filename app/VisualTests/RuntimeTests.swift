@@ -235,7 +235,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
         ]
         for dark in [false, true] {
             let (list, window) = list(dark: dark)
-            list.update(fixtureSnapshot(window: 3, pane: 3, [(name: "main", nodes: tree)]))
+            list.show(fixtureSnapshot(window: 3, pane: 3, [(name: "main", nodes: tree)]))
             sidebarSnapshot(list, "\(dark ? "dark" : "light")-rows", testName: "runtime")
             _ = window
         }
@@ -247,7 +247,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
         ]
         for dark in [false, true] {
             let (list, window) = list(dark: dark)
-            list.update(fixtureSnapshot(window: 3, pane: 3, [(name: "main", nodes: tree)]))
+            list.show(fixtureSnapshot(window: 3, pane: 3, [(name: "main", nodes: tree)]))
             sidebarSnapshot(list, "\(dark ? "dark" : "light")-routed", testName: "runtime")
             _ = window
         }

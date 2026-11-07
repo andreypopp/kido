@@ -81,6 +81,7 @@ import SidebarFeed
         Upload.sweepPromises(launch: true)
         if let notifications = Notifier.shared.poster as? SystemNotifications {
             notifications.click = { [weak self] in self?.route($0) }
+            notifications.failure = { Notifier.shared.failed($0) }
             notifications.install()
         }
         let event = NSAppleEventManager.shared().currentAppleEvent

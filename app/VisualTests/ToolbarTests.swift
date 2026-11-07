@@ -172,9 +172,6 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
     }
 
     func testHeaderBackground() async throws {
-        final class NativeHeader: NSView {
-            override func draw(_ rect: NSRect) { NSColor.white.setFill(); bounds.fill() }
-        }
         final class ShadowStandIn: NSView {
             override func draw(_ rect: NSRect) {
                 NSGradient(starting: NSColor(calibratedWhite: 0, alpha: 0.2), ending: .clear)!.draw(in: bounds, angle: 0)
@@ -196,11 +193,8 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             let expected = NSColor(srgbRed: rgb[0] / 255, green: rgb[1] / 255, blue: rgb[2] / 255, alpha: 1)
             let windowedShadow = ShadowStandIn()
             owner.window.contentView?.addSubview(windowedShadow)
-            let header = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 900, height: 52), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
-            header.isReleasedWhenClosed = false
-            header.contentView = NativeHeader()
+            let header = fullscreenHeader(width: 900)
             header.titlebarAppearsTransparent = true
-            header.setFrame(NSRect(x: -20000, y: -20000, width: 900, height: 52), display: false)
             defer { header.close() }
             let transferredTabs = WindowTabs(frame: NSRect(x: 200, y: 8, width: 700, height: 36))
             transferredTabs.sidebar = owner.sidebar
@@ -421,7 +415,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                 let owner = WindowOwner(host: .local, runtime: runtime, start: false)
                 defer { owner.close() }
                 let list = owner.sidebar.list
-                list.update(fixture)
+                list.show(fixture)
                 let root = try XCTUnwrap(owner.window.contentView?.superview)
                 let channels: [Double]
                 switch (hex, value) {
@@ -573,7 +567,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             XCTAssertEqual(rgb, hex == "fff9ec" ? [242, 237, 224] : [35, 35, 35])
         }
         let list = owner.sidebar.list
-        list.update(sidebarFixture())
+        list.show(sidebarFixture())
         for floating in [false, true] {
             owner.sidebar.dismissFloating()
             owner.sidebar.isCollapsed = floating
@@ -602,9 +596,6 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
 
     func testLiveHeaderTheme() async throws {
         XCTAssertEqual(ghostty_init(0, nil), GHOSTTY_SUCCESS)
-        final class NativeHeader: NSView {
-            override func draw(_ rect: NSRect) { NSColor.white.setFill(); bounds.fill() }
-        }
         let board = NSPasteboard(name: .init("live-header-\(UUID().uuidString)"))
         defer { board.releaseGlobally() }
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
@@ -614,10 +605,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         owner.window.display()
         await mainQueueFence()
         let tabs = owner.sidebar.tabs
-        let header = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 900, height: 52), styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
-        header.isReleasedWhenClosed = false
-        header.contentView = NativeHeader()
-        header.setFrame(NSRect(x: -20000, y: -20000, width: 900, height: 52), display: false)
+        let header = fullscreenHeader(width: 900)
         defer { header.close() }
         for transferred in [false, true] {
             if transferred {

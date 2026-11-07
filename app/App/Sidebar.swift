@@ -76,8 +76,6 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     }
     let list = SidebarView()
     let content = NSView()
-    let configBanner = ConfigBanner()
-    private var contentTop: NSLayoutConstraint!
     let tabs = WindowTabs()
     private var lastTabActivity = false
     let terminalHost = NSView()
@@ -92,7 +90,13 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         }
         return nil
     }
+    weak var notices: NSView?
     private final class Outside: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            if let notices = (window?.contentViewController as? Sidebar)?.notices, let parent = notices.superview,
+               notices.hitTest(parent.convert(point, from: superview)) != nil { return nil }
+            return super.hitTest(point)
+        }
         var dismiss: () -> Void = {}
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
         override func mouseDown(with event: NSEvent) { dismiss() }
@@ -117,15 +121,6 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
             }
         }
     }
-    func showConfigError(_ error: (title: String, detail: String)?) {
-        if let error { configBanner.show(error.title, error.detail) }
-        else { configBanner.isHidden = true }
-        let height = error == nil ? 0 : ConfigBanner.height
-        guard contentTop.constant != height else { return }
-        contentTop.constant = height
-        terminalHost.layoutSubtreeIfNeeded()
-    }
-
     var changed: () -> Void = {}
     var listBackground: NSColor? { didSet { view.needsLayout = true } }
 
@@ -162,20 +157,13 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         addSplitViewItem(sidebarItem)
         let terminal = NSViewController()
         terminalHost.addSubview(content)
-        terminalHost.addSubview(configBanner)
         content.translatesAutoresizingMaskIntoConstraints = false
-        configBanner.translatesAutoresizingMaskIntoConstraints = false
-        contentTop = content.topAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.topAnchor)
         leading = content.leadingAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.leadingAnchor)
         NSLayoutConstraint.activate([
             leading,
             content.trailingAnchor.constraint(equalTo: terminalHost.trailingAnchor),
-            contentTop,
+            content.topAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.topAnchor),
             content.bottomAnchor.constraint(equalTo: terminalHost.bottomAnchor),
-            configBanner.topAnchor.constraint(equalTo: terminalHost.safeAreaLayoutGuide.topAnchor),
-            configBanner.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            configBanner.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            configBanner.heightAnchor.constraint(equalToConstant: ConfigBanner.height),
         ])
         terminal.view = terminalHost
         let terminalItem = NSSplitViewItem(viewController: terminal)
@@ -352,7 +340,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     static func allowsFirstResponder(_ responder: NSResponder?, in window: NSWindow?) -> Bool {
         guard let sidebar = window?.contentViewController as? Sidebar, let target = focusView(responder),
               target.isDescendant(of: sidebar.list) || target.isDescendant(of: sidebar.tabs) else { return true }
-        return sidebar.grantingFocus || sidebar.list.containsFocus || target === sidebar.list.statusLine
+        return sidebar.grantingFocus || sidebar.list.containsFocus
     }
 
     @objc func focusSidebar(_ sender: Any?) {

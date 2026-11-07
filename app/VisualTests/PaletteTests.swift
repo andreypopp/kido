@@ -1352,8 +1352,7 @@ import PaneGeometry
         let pane = try XCTUnwrap(panes(remote).first)
         XCTAssertNil(pane.check())
         if case .run(let jump) = pane.operation { jump() }
-        // The owner has no server, so the jump that it sends reports that.
-        XCTAssertEqual(remote.sidebar.list.visualDiagnostic, "devbox is not connected.")
+        XCTAssertTrue(remote.notices.testTransients.entries.isEmpty)
         remote.testReceive(sidebarFixture { $0.sessions = [] })
         XCTAssertEqual(pane.check(), "That pane is gone")
         XCTAssertEqual(panes(remote).map(\.title), [])
@@ -1363,8 +1362,8 @@ import PaneGeometry
         second.testReceive(snapshot)
         let secondPane = try XCTUnwrap(panes(second).first)
         if case .run(let jump) = secondPane.operation { jump() }
-        XCTAssertEqual(local.sidebar.list.visualDiagnostic, "", "the other window's row jumps in its own owner")
-        XCTAssertEqual(second.sidebar.list.visualDiagnostic, "Local is not connected.")
+        XCTAssertTrue(local.notices.testTransients.entries.isEmpty)
+        XCTAssertTrue(second.notices.testTransients.entries.isEmpty)
     }
 
     func testPaletteKeyTogglesAndRestoresFocus() async throws {
@@ -1449,7 +1448,7 @@ import PaneGeometry
         XCTAssertEqual(stale.check(), "That pane is gone")
         palette.chooseEntry(stale)
         XCTAssertEqual(palette.error, "That pane is gone")
-        XCTAssertEqual(owner.sidebar.list.visualDiagnostic, "", "a gone pane sends no jump")
+        XCTAssertTrue(owner.notices.testTransients.entries.isEmpty, "a gone pane sends no jump")
     }
 
     func testPaletteModesAndKeys() throws {

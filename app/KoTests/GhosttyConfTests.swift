@@ -227,38 +227,42 @@ import XCTest
         XCTAssertEqual(runtime.values.font.size, 13)
     }
 
-    func testConfigBannerAndLinkFailurePrecedence() throws {
+    func testConfigNoticeKeepsGeometryAndStaysAboveLinkFailure() throws {
         let file = try fixture("app: {font: {size: bad}}\n")
-        let dir = try server()
-        try put(#"{"revision":0,"layout":{"sessions":[{"name":"main","windows":[{"name":"shell","tree":{"pane":{"new":{"command":{"type":"argv","argv":["/bin/cat"]}}}}}]}]}}"#, dir: dir)
         let board = NSPasteboard(name: .init(UUID().uuidString))
         let runtime = try XCTUnwrap(GhosttyRuntime(configFile: file, pasteboard: board))
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
-        owner.testServerDir = dir
-        runtime.onConfigChange = { owner.updateAppearance() }
-        addTeardownBlock { @MainActor in owner.close(); board.releaseGlobally() }
-        owner.start()
-        let strip = owner.sidebar.configBanner
-        wait("config error strip") { !strip.isHidden && owner.testBanner.isHidden }
-        XCTAssertEqual(strip.testText.title, file + " has an error")
-        XCTAssertEqual(strip.testText.detail, runtime.configError?.problem.detail)
-        let pane = try XCTUnwrap(owner.testSession?.windows.values.first?.panes.first)
-        owner.window.makeFirstResponder(pane)
-        let height = owner.sidebar.content.bounds.height
-        try "".write(toFile: file, atomically: true, encoding: .utf8)
-        wait("successful load hides strip") { runtime.configError == nil && strip.isHidden }
-        XCTAssertTrue(owner.window.firstResponder === pane)
-        XCTAssertEqual(owner.sidebar.content.bounds.height, height + ConfigBanner.height, accuracy: 0.1)
-        try "app: {font: {size: bad}}\n".write(toFile: file, atomically: true, encoding: .utf8)
-        wait("error returns") { !strip.isHidden }
-        XCTAssertTrue(owner.window.firstResponder === pane)
-        XCTAssertTrue(owner.testBanner.isHidden)
-        XCTAssertEqual(owner.sidebar.content.bounds.height, height, accuracy: 0.1)
-        owner.testServerDir = file + "/server"
-        try run(["kill-server"], dir: dir)
-        wait("link failure wins") { owner.testBanner.testText.title == "Could not start the ko server" && strip.isHidden }
-        owner.updateAppearance()
-        XCTAssertTrue(strip.isHidden)
+        let other = WindowOwner(host: .local, runtime: runtime, start: false)
+        addTeardownBlock { @MainActor in owner.close(); other.close(); board.releaseGlobally() }
+        owner.window.layoutIfNeeded()
+        let frame = owner.sidebar.content.frame
+        func reload(_ text: String) throws {
+            let changed = expectation(description: "config load")
+            runtime.onConfigChange = { changed.fulfill() }
+            try text.write(toFile: file, atomically: true, encoding: .utf8)
+            wait(for: [changed], timeout: 5)
+            runtime.onConfigChange = {}
+        }
+        XCTAssertNotNil(owner.notices.testConfigCard)
+        owner.down("Disconnected", "Retrying", button: nil)
+        owner.window.layoutIfNeeded()
+        XCTAssertEqual(owner.sidebar.content.frame, frame)
+        XCTAssertNotNil(owner.notices.testConfigCard)
+        XCTAssertTrue(owner.sidebar.content.subviews.last === owner.notices)
+        runtime.dismissConfigError()
+        XCTAssertNil(owner.notices.testConfigCard)
+        XCTAssertNil(other.notices.testConfigCard)
+        let newer = WindowOwner(host: .local, runtime: runtime, start: false)
+        defer { newer.close() }
+        XCTAssertNil(newer.notices.testConfigCard)
+        try reload("app: {font: {size: bad}}\n")
+        XCTAssertNil(owner.notices.testConfigCard)
+        try reload("app: {font: {size: different}}\n")
+        wait("changed error returns") { owner.notices.testConfigCard != nil && other.notices.testConfigCard != nil }
+        try reload("")
+        wait("successful load hides card") { runtime.configError == nil && owner.notices.testConfigCard == nil }
+        try reload("app: {font: {size: different}}\n")
+        wait("recurring error returns") { owner.notices.testConfigCard != nil }
     }
 
     func testActualMenuShortcutsAreReserved() throws {

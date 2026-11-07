@@ -143,10 +143,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     let runtimeSection = RuntimeSection()
     private let table = Table()
     private let scroll = DropScroll()
-    let statusLine = NSTextField(labelWithString: "")
     private var snapshot: Snapshot?
-    private var feedNote: (String, NSColor)?
-    private var failure: String?
     private let fonts = SidebarFonts()
     private var captionTimer: Timer?
     private var tick: Timer?
@@ -165,7 +162,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         tick?.invalidate()
         tick = nil
     }
-    private var captions = SidebarCaptions()
+    private var seededCaptions: SidebarCaptions?
     var captionDelay: TimeInterval = 0.2
 
     override var isFlipped: Bool { true }
@@ -206,11 +203,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         scroll.automaticallyAdjustsContentInsets = false
-        statusLine.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        statusLine.isSelectable = true
-        statusLine.lineBreakMode = .byTruncatingTail
-        statusLine.maximumNumberOfLines = 1
-        for view in [scroll, statusLine, runtimeSection] { addSubview(view) }
+        for view in [scroll, runtimeSection] { addSubview(view) }
         runtimeSection.changed = { [weak self] in self?.needsLayout = true }
         runtimeSection.selected = { [weak self] in self?.table.deselectAll(nil) }
         runtimeSection.previous = { [weak self] in
@@ -248,9 +241,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     override func layout() {
         super.layout()
         let inner = bounds.width - 16
-        let note: CGFloat = statusLine.isHidden ? 0 : 16
-        statusLine.frame = CGRect(x: 8, y: safeAreaInsets.top + 2, width: inner, height: note)
-        let top = safeAreaInsets.top + 2 + note
+        let top = safeAreaInsets.top + 2
         let footer = runtimeSection.height
         runtimeSection.isHidden = footer == 0
         runtimeSection.frame = CGRect(x: 0, y: max(top, bounds.height - footer - 10), width: bounds.width, height: footer)
@@ -259,41 +250,14 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         table.setFrameSize(NSSize(width: scroll.contentSize.width, height: table.frame.height))
     }
 
-    func update(_ snapshot: Snapshot) {
-        if feedNote != nil { captions = SidebarCaptions() }
-        show(snapshot, captionTick: feedNote != nil)
-        feedNote = nil
-        noteChanged()
-    }
-
-    func offline(_ reason: String) {
-        show(nil)
-        feedNote = (reason, Chrome.inkSecondary)
-        noteChanged()
-    }
-
     var position: Snapshot.Position? { snapshot?.client }
 
     var containsFocus: Bool {
         Sidebar.focusView(window?.firstResponder)?.isDescendant(of: self) == true
     }
 
-    func failed(_ message: String?) {
-        failure = message
-        noteChanged()
-    }
-
-    private func noteChanged() {
-        let note = failure.map { ($0, Chrome.errorText) } ?? feedNote
-        statusLine.stringValue = note?.0.replacingOccurrences(of: "\n", with: " ") ?? ""
-        statusLine.toolTip = note?.0
-        statusLine.textColor = note?.1
-        statusLine.isHidden = note == nil
-        needsLayout = true
-    }
-
     func show(_ next: Snapshot?, pin: SidebarRow.ID? = nil, captionTick: Bool = false) {
-        if !captionTick, pin == nil, renderedCollapsed == collapsed, next == snapshot {
+        if !captionTick, pin == nil, renderedCollapsed == collapsed, next == snapshot, seededCaptions != nil || next == nil {
             snapshot = next
             return
         }
@@ -311,11 +275,13 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         snapshot = next
         clockNow = serverNow
         let previous = items
-        if next == nil || next?.serverInstance != previousInstance { captions = SidebarCaptions() }
-        items = captions.apply(sidebarRows(snapshot), now: ProcessInfo.processInfo.systemUptime, delay: captionDelay)
+        if next == nil || next?.serverInstance != previousInstance { seededCaptions = nil }
+        var renderedCaptions = seededCaptions ?? SidebarCaptions()
+        items = renderedCaptions.apply(sidebarRows(snapshot), now: ProcessInfo.processInfo.systemUptime, delay: captionDelay)
+        if next != nil, pin == nil || seededCaptions != nil { seededCaptions = renderedCaptions }
         captionTimer?.invalidate()
         captionTimer = nil
-        if let deadline = captions.deadline {
+        if let deadline = renderedCaptions.deadline {
             let timer = Timer(timeInterval: max(0, deadline - ProcessInfo.processInfo.systemUptime), target: self,
                               selector: #selector(captionsChanged), userInfo: nil, repeats: false)
             captionTimer = timer
@@ -641,7 +607,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     var visualTable: NSTableView { table }
     var visualScroll: NSScrollView { scroll }
     var visualRows: [SidebarRow] { items }
-    var visualDiagnostic: String { statusLine.stringValue }
     func visualJump(_ row: SidebarRow) { activate(items.firstIndex { $0.id == row.id } ?? -1, focus: .pane) }
     var visualDragging: String? { dragging.map { "\($0)" } }
     var visualInsertion: NSRect? { insertion.isHidden ? nil : insertion.frame }

@@ -13,6 +13,33 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
 @MainActor class VisualTestCase: XCTestCase {
     var serverEnvironment: [String: String] = [:]
 
+    func presentedFrame(_ pane: PaneView, attempts: Int = 3, file: StaticString = #filePath, line: UInt = #line) async {
+        var status = GHOSTTY_RENDER_PRESENTATION_DISCARDED
+        for _ in 0..<attempts where status == GHOSTTY_RENDER_PRESENTATION_DISCARDED {
+            let frame = expectation(description: "Ghostty presented \(pane.pane)")
+            pane.visualFrame { status = $0; frame.fulfill() }
+            await fulfillment(of: [frame], timeout: 10)
+        }
+        XCTAssertEqual(status, GHOSTTY_RENDER_PRESENTATION_PRESENTED, file: file, line: line)
+    }
+
+    func fullscreenHeader(width: CGFloat, background: NSColor? = .white) -> NSWindow {
+        final class NativeHeader: NSView {
+            var background = NSColor.white
+            override func draw(_ rect: NSRect) { background.setFill(); bounds.fill() }
+        }
+        let header = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: 52),
+                              styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        header.isReleasedWhenClosed = false
+        if let background {
+            let content = NativeHeader()
+            content.background = background
+            header.contentView = content
+        }
+        header.setFrame(NSRect(x: -20000, y: -20000, width: width, height: 52), display: false)
+        return header
+    }
+
     func checkSnapshot(file: StaticString = #filePath, line: UInt = #line, _ verify: (Bool) -> String?) {
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
         if let failure = verify(record), !record || !failure.hasPrefix("Record mode is on.") {

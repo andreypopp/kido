@@ -121,7 +121,7 @@ import XCTest
         let list = SidebarView()
         window.contentView = list
         let snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", []), ("work", [])])
-        list.update(snapshot)
+        list.show(snapshot)
         window.layoutIfNeeded()
         list.layoutSubtreeIfNeeded()
         let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SidebarCell)

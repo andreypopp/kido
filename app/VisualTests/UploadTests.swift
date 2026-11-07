@@ -87,6 +87,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         owner.testUploadBase = root + "/state"
+        owner.notices.testTime = 0
         let input = Input()
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { input.data.append($0) })
         owner.window.contentView = pane
@@ -109,8 +110,22 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
     }
 
     private func notice(_ owner: WindowOwner) -> String? {
-        defer { if owner.preparedAlert != nil { owner.respondToAlert(.alertFirstButtonReturn) } }
-        return owner.preparedAlert.map { $0.alert.messageText + "\n" + $0.alert.informativeText }
+        let entries = owner.notices.testTransients.entries
+        defer { entries.forEach { owner.notices.dismiss($0.id) } }
+        return entries.last.map { $0.title + "\n" + $0.detail }
+    }
+
+    func testUploadFailureKeepsFirstResponderWithoutSheet() async throws {
+        let (owner, pane, board, _, _) = try localPane()
+        owner.window.makeFirstResponder(pane)
+        let responder = owner.window.firstResponder
+        board.clearContents()
+        board.setData(Data(), forType: NSPasteboard.PasteboardType(NSFilePromiseReceiver.readableDraggedTypes[0]))
+        XCTAssertTrue(pane.performDragOperation(SyntheticDrag(board)))
+        try await drain(pane.runtime)
+        XCTAssertNil(owner.preparedAlert)
+        XCTAssertNil(owner.window.attachedSheet)
+        XCTAssertTrue(owner.window.firstResponder === responder)
     }
 
     func testPromisedDropCopiesFile() async throws {
@@ -190,7 +205,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
         promise.stalled = true
         owner.uploadPromises([promise], to: pane)
         try await wait("promise requested", within: 2) { promise.destination != nil }
-        try await wait("promise expired", within: 2) { !owner.uploading(pane) && owner.preparedAlert != nil }
+        try await wait("promise expired", within: 2) { !owner.uploading(pane) && !owner.notices.testTransients.entries.isEmpty }
         promise.reply(recreate: true)
         try await wait("late reply cleaned", within: 2) { promise.didReply && !owner.uploading(pane) && self.removed(promise) }
         Upload.promiseTimeout = old
@@ -450,7 +465,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
         XCTAssertLessThan(huge.count, 64 << 20)
         board.setData(huge, forType: .tiff)
         XCTAssertTrue(ghostty_surface_binding_action(pane.surface, "paste_from_clipboard", 20))
-        try await wait("oversized TIFF refused") { owner.preparedAlert != nil }
+        try await wait("oversized TIFF refused") { !owner.notices.testTransients.entries.isEmpty }
         XCTAssertEqual(notice(owner)?.contains("40 million pixels"), true)
         XCTAssertEqual(input.data, Data())
         XCTAssertEqual(published().count, 2)

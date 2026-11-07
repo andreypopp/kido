@@ -97,13 +97,42 @@ private final class Gate: @unchecked Sendable {
         XCTAssertEqual(settled, 1)
     }
 
+    func testFailureCallbackCanSubmitTheNextEdit() {
+        let gate = Gate()
+        gate.failing = true
+        let editor = editor(gate)
+        var completed = false
+        editor.onFailure = { [weak editor] _, _ in editor?.submit(self.rename("next")) { _ in completed = true } }
+        editor.submit(rename("first"))
+        wait("first sent") { gate.edits == ["first"] }
+        gate.release()
+        wait("callback edit sent") { gate.edits == ["first", "next"] }
+        gate.release()
+        wait("callback edit completed") { completed }
+        XCTAssertFalse(editor.holding)
+    }
+
+    func testOwnedRefusalOnlyInvokesCompletion() {
+        let gate = Gate()
+        gate.failing = true
+        let editor = editor(gate)
+        var failures = 0
+        var completed = false
+        editor.onFailure = { _, _ in failures += 1 }
+        editor.submit(rename("owned")) { _ in completed = true }
+        wait("sent") { gate.edits == ["owned"] }
+        gate.release()
+        wait("completion") { completed }
+        XCTAssertEqual(failures, 0)
+    }
+
     func testAFailureReportsItsMessageAndEndsTheHold() {
         let gate = Gate()
         gate.failing = true
         let editor = editor(gate)
         var failures: [String] = []
         var settled = 0
-        editor.onFailure = { failures.append($0) }
+        editor.onFailure = { _, text in failures.append(text) }
         editor.onSettled = { settled += 1 }
         editor.submit(rename("a"))
         wait("sent") { gate.edits == ["a"] }

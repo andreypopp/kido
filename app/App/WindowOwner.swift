@@ -105,6 +105,7 @@ private class AlertEscape: NSView {
         sidebar.tabs.needsDisplay = true
     } }
     let sidebar = Sidebar()
+    let notices: Notices
     let reorder = Reorder()
     // What `receive` makes of the core's model, set in one place.
     private struct Received {
@@ -210,13 +211,7 @@ private class AlertEscape: NSView {
             && (fileHost.isEmpty || fileHost == "localhost" || fileHost == ownHost)
         guard let url, scheme == "http" || scheme == "https" || localFile else {
             let message = "Only HTTP, HTTPS, and local file links in local windows can be opened: \(text)"
-            note("\(host.label): \(message)")
-            if !background {
-                let alert = NSAlert()
-                alert.messageText = "Unsupported link"
-                alert.informativeText = message
-                alert.beginSheetModal(for: window) { _ in }
-            }
+            notice("Unsupported link", message)
             return
         }
         openBrowser(url)
@@ -228,6 +223,7 @@ private class AlertEscape: NSView {
         self.host = host
         if case .newSession = cause { pendingNewSession = true }
         self.runtime = runtime
+        notices = Notices(runtime: runtime)
         super.init()
         NotificationCenter.default.addObserver(self, selector: #selector(localServerRestarted(_:)), name: Self.localServerRestarted, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(attend), name: NSApplication.didBecomeActiveNotification, object: nil)
@@ -305,10 +301,11 @@ private class AlertEscape: NSView {
         banner = Banner(background: runtime.background, target: self, action: #selector(WindowOwner.start))
         banner.frame = sidebar.content.bounds
         sidebar.content.addSubview(banner)
-        sidebar.configBanner.reveal = { [weak self] in
-            guard let error = self?.runtime.configError else { return }
-            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: error.path)])
-        }
+        notices.frame = sidebar.content.bounds
+        sidebar.content.addSubview(notices)
+        sidebar.notices = notices
+        NotificationCenter.default.addObserver(self, selector: #selector(showConfigError), name: GhosttyRuntime.configErrorChanged, object: runtime)
+        showConfigError()
         window.center()
         if let main = NSScreen.main?.visibleFrame {
             let open = NSApp.windows.compactMap { other -> CGRect? in
@@ -336,13 +333,12 @@ private class AlertEscape: NSView {
         sidebar.content.wantsLayer = true
         sidebar.content.layer?.backgroundColor = background.cgColor
         banner?.background = background
-        sidebar.configBanner.background = background
+        notices.updateAppearance()
         let dark = background.isDark
         let theme = (background: background, appearance: NSAppearance(named: dark ? .darkAqua : .aqua))
         window.appearance = theme.appearance
         sidebar.updateAppearance(runtime: runtime)
         session?.updateBackground()
-        showConfigError()
     }
 
     func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions) -> NSApplication.PresentationOptions {
@@ -380,14 +376,12 @@ private class AlertEscape: NSView {
     func down(_ title: String, _ detail: String, button: String?, action: Selector = #selector(WindowOwner.start)) {
         guard alive else { return }
         sidebar.list.leave()
-        sidebar.showConfigError(nil)
         banner.show(title, detail, button: button, action: action)
-        sidebar.list.offline(title)
+        sidebar.list.show(nil)
     }
 
-    func showConfigError() {
-        guard welcomed, case .connected = link, preparedAlert == nil else { return }
-        sidebar.showConfigError(runtime.configError.map { (runtime.abbreviate($0.path) + " has an error", $0.problem.detail) })
+    @objc private func showConfigError() {
+        notices.showConfig()
     }
 
     @objc func start() {
@@ -836,11 +830,8 @@ private class AlertEscape: NSView {
 
     private func notice(_ title: String, _ detail: String) {
         note("\(host.label): \(title): \(detail)")
-        guard alive, preparedAlert == nil, window.attachedSheet == nil else { return }
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = detail
-        prepareAlert(alert) { _ in }
+        guard alive else { return }
+        notices.show(title, detail)
     }
 
     func cancelClipboardAlert(_ alert: NSAlert) {
@@ -1022,7 +1013,7 @@ private class AlertEscape: NSView {
         #else
         let editor = LayoutEditor(perform: perform)
         #endif
-        editor.onFailure = { [weak self] in self?.sidebar.list.failed($0) }
+        editor.onFailure = { [weak self] edit, text in self?.notice(edit.failureTitle, text) }
         editor.onSettled = { [weak self] in
             self?.session?.editsSettled()
             self?.settleOrder { $0.settled(); return nil }
@@ -1035,7 +1026,7 @@ private class AlertEscape: NSView {
         session?.close()
         session = view
         received = Received()
-        sidebar.list.offline("Connecting…")
+        sidebar.list.show(nil)
         present(view)
     }
 
@@ -1103,7 +1094,7 @@ private class AlertEscape: NSView {
             Notifier.shared.update(host: host, snapshotOwner: self)
         }
         let projected = reorder.state.project(snapshot)
-        sidebar.list.update(projected)
+        sidebar.list.show(projected)
         updateRuntimeSection()
         if let session { present(session, projected: projected) } else { updateTabs(projected) }
         menuChanged()
@@ -1204,17 +1195,14 @@ private class AlertEscape: NSView {
     private func connecting() {
         guard alive else { return }
         sidebar.list.leave()
-        sidebar.showConfigError(nil)
         banner.show("Connecting to \(host.label)…", "", button: nil, action: #selector(start))
-        sidebar.list.failed(nil)
-        sidebar.list.offline("Connecting…")
+        sidebar.list.show(nil)
     }
 
     @objc func ensureSession() {
         connecting()
         create(.ensureSession(.init(name: "session", new: .init()))) { [weak self] error in
             guard let self, let error else { return }
-            sidebar.list.failed(nil)
             down("Could not create a session", error, button: "Retry", action: #selector(ensureSession))
         }
     }
@@ -1222,7 +1210,6 @@ private class AlertEscape: NSView {
     // An edit that makes a session or a window selects it.
     private func create(_ edit: KoSchema.Edit, done: ((String?) -> Void)? = nil) {
         guard let editor else {
-            sidebar.list.failed("\(host.label) is not connected.")
             done?("\(host.label) is not connected.")
             return
         }
@@ -1233,7 +1220,9 @@ private class AlertEscape: NSView {
             case .success(let edited):
                 done?(nil)
                 if case .connected(let client) = link { try? client.select(made: edited.created) }
-            case .failure(let error): done?("\(error)")
+            case .failure(let error):
+                if let done { done("\(error)") }
+                else { notice(edit.failureTitle, failureText(error)) }
             }
         }
     }
@@ -1242,15 +1231,16 @@ private class AlertEscape: NSView {
         create(.renameSession(KoSchema.EditRenameSession(name: name, session: id)), done: done)
     }
 
-    func createSession(_ name: String, done: @escaping (String?) -> Void) {
+    func createSession(_ name: String, done: ((String?) -> Void)? = nil) {
         guard let koModel else { return create(.addSession(.init(name: name, new: .init())), done: done) }
         create(koModel.newSession(name), done: done)
     }
 
     @objc func newSession() {
+        guard editor != nil else { return }
         let names = Set(koModel?.layout.layout.sessions.map(\.name) ?? [])
         let name = (1...).lazy.map { $0 == 1 ? "session" : "session \($0)" }.first { !names.contains($0) }!
-        createSession(name) { [weak self] error in if let error { self?.sidebar.list.failed(error) } }
+        createSession(name)
     }
 
     func newWindow(in target: SessionID? = nil, _ runtime: NewPaneRuntime = .inherit) {
@@ -1439,9 +1429,8 @@ private class AlertEscape: NSView {
             sidebar.list.select(target)
         }
         supersedeIntent()
-        sidebar.list.failed(nil)
         if case .releaseSideFocus = navigation { return sidebar.list.leave() }
-        guard case .connected(let client) = link else { return sidebar.list.failed("\(host.label) is not connected.") }
+        guard case .connected(let client) = link else { return }
         do {
             switch navigation {
             case .jump(let target):
@@ -1472,27 +1461,34 @@ private class AlertEscape: NSView {
         } catch {
             awaitingSelect = nil
             activating = nil
-            sidebar.list.failed("\(error)")
+            let title: String = switch navigation {
+            case .jump: "Could not select the pane"
+            case .selectWindow, .switchWindow: "Could not select the window"
+            case .selectSession, .switchSession: "Could not select the session"
+            case .releaseSideFocus: "Could not select the pane"
+            }
+            notice(title, failureText(error))
         }
     }
 
     private func submit(_ move: ReorderMove) {
         guard let snapshot, let editor, let edit = snapshot.reorderEdit(move), let token = reorder.state.submit(move, to: snapshot) else { return }
         supersedeIntent()
-        sidebar.list.failed(nil)
         showOrder()
         editor.submit(edit) { [weak self] result in
             let error: String? = if case .failure(let error) = result { failureText(error) } else { nil }
-            self?.settleOrder { $0.complete(token, error: error) }
+            if let text = self?.settleOrder({ $0.complete(token, error: error) }) {
+                self?.notice(edit.failureTitle, text)
+            }
         }
     }
 
-    private func settleOrder(_ change: (inout ReorderState) -> String?) {
+    @discardableResult private func settleOrder(_ change: (inout ReorderState) -> String?) -> String? {
         let before = reorder.state
         let error = change(&reorder.state)
-        guard reorder.state != before else { return }
-        if let error { sidebar.list.failed(error) }
+        guard reorder.state != before else { return nil }
         showOrder()
+        return error
     }
 
     private func showOrder() {
@@ -1522,7 +1518,6 @@ private class AlertEscape: NSView {
             banner.isHidden = true
             focusSelected()
         }
-        showConfigError()
     }
 
     func accepts(_ token: Int) -> Bool {
@@ -1576,6 +1571,7 @@ private class AlertEscape: NSView {
         guard alive else { return }
         saveFrame()
         alive = false
+        notices.stop()
         Notifier.shared.forget(self)
         invalidate()
         link = .down
@@ -1620,4 +1616,22 @@ private class AlertEscape: NSView {
         adopt(snapshot)
     }
     #endif
+}
+
+private extension KoSchema.Edit {
+    var failureTitle: String {
+        switch self {
+        case .addWindow: "Could not open a window"
+        case .split: "Could not split the pane"
+        case .resizeBy, .resizePair: "Could not resize the pane"
+        case .zoom, .toggleZoom: "Could not zoom the pane"
+        case .float: "Could not move the float"
+        case .addSession: "Could not create a session"
+        case .renameSession: "Could not rename the session"
+        case .reorderWindows: "Could not move the window"
+        case .reorderSessions: "Could not move the session"
+        case .equalize, .swap, .dock, .dockWindow, .unfloat, .breakPane, .renameWindow, .ensureSession:
+            "Kido could not change the layout"
+        }
+    }
 }

@@ -15,6 +15,7 @@ import UserNotifications
     private var loggedFailure = false
     private var lastBadgeCount: Int?
     var click: (NoticeTarget) -> Void = { _ in }
+    var failure: (String) -> Void = { _ in }
 
     func install() {
         let center = UNUserNotificationCenter.current()
@@ -29,6 +30,7 @@ import UserNotifications
         guard !loggedFailure else { return }
         loggedFailure = true
         note("notifications: \(message)")
+        failure(message)
     }
 
     func post(_ notice: Notice) {
@@ -106,7 +108,7 @@ import UserNotifications
     func setBadgeCount(_ count: Int) { badgeCount = count }
 }
 
-@MainActor final class Notifier {
+@MainActor final class Notifier: NSObject {
     #if KIDO_VISUAL || KIDO_STRESS
     static let shared = Notifier(poster: RecordedNotifications())
     #else
@@ -116,8 +118,27 @@ import UserNotifications
     private var state = NotifierState()
     private let owners = NSHashTable<WindowOwner>.weakObjects()
     private var authorized = false
+    private var pendingFailure: String?
 
-    init(poster: NotificationPoster) { self.poster = poster }
+    func failed(_ message: String) {
+        pendingFailure = message
+        deliverFailure(in: NSApp.keyWindow)
+    }
+
+    @objc private func becameKey(_ notification: Notification) { deliverFailure(in: notification.object as? NSWindow) }
+
+    private func deliverFailure(in window: NSWindow?) {
+        guard let message = pendingFailure,
+              let owner = owners.allObjects.first(where: { $0.alive && $0.window === window }) else { return }
+        pendingFailure = nil
+        owner.notices.show("Kido could not post a notification", message)
+    }
+
+    init(poster: NotificationPoster) {
+        self.poster = poster
+        super.init()
+        NotificationCenter.default.addObserver(self, selector: #selector(becameKey), name: NSWindow.didBecomeKeyNotification, object: nil)
+    }
 
     func connected() {
         guard !authorized else { return }

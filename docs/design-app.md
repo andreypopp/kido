@@ -120,7 +120,7 @@ first model after a welcome, of any connection, local or remote, and
 also after a same-instance reconnect, shows no session, the owner sends
 one `ensure_session` edit (one pane with no `cwd`, so it starts in the
 server's working directory; on a remote host, the host's). While it
-runs, the sidebar shows "Connecting…"; a failed edit shows "Could not
+runs, the banner stays; a failed edit shows "Could not
 create a session" with its error and Retry, which sends it again. The
 edit adds the session only to a layout without one, and the core applies
 it again to the newer document after a revision conflict, so two windows
@@ -464,15 +464,13 @@ typed value, not from Ghostty's config.
 
 If the file does not decode, the app writes `<file>:<line>:<column>:
 <message>` to stderr. At launch it uses the defaults, so it starts; at a
-reload it keeps the settings that it loaded. Every window then shows a
-strip at the top of its terminal area (`app/App/ConfigBanner.swift`):
-"~/.config/ko/config.yaml has an error", the `<line>:<column>:
-<message>` on one line, cut at its end, and "Reveal in Finder". The
-panes reflow below the strip, and the strip never takes the first
-responder, so the user can fix the file in a pane. A link failure
-shows the full veil of `Banner` and hides the strip. The next load that
-succeeds hides it. A theme file that fails its check (below) shows the
-same strip with the theme file's path.
+reload it keeps the settings that it loaded. Every window then shows
+the config card ([Notices](#notices)): "~/.config/ko/config.yaml has an
+error", the `<line>:<column>: <message>` on one line, cut at its end,
+and "Open config". The panes keep their size, and the card never
+takes the first responder, so the user can fix the file in a pane. A
+theme file that fails its check (below) shows the same card with the
+theme file's path.
 
 The window and pane chrome follow the effective Ghostty background and its light or dark
 appearance. Colours derived from the theme stay in `GhosttyRuntime`.
@@ -784,7 +782,8 @@ absolute path, no user, password or port, and a host that is empty,
 `localhost` or the `gethostname` of the Mac, as Ghostty's `os/hostname.zig`
 decides. A remote window opens only `http` and `https`,
 because a file path there names a file of the remote host. The owner refuses
-every other link with an alert sheet.
+every other link with a transient card, "Unsupported link"
+([Notices](#notices)).
 
 A right-click on a selection, in copy mode or not, opens a context menu with
 two items: Copy (⌘C) and Prompt with Selection… (⌘O). The menu is built for each
@@ -1036,7 +1035,8 @@ confirmation's window-modal warning asks first; dead panes and exec
 sessions do not count, and with no live pane the request goes at once.
 The confirmation and the close confirmation share one flow: a sheet
 answered after a reconnect to another server instance sends nothing.
-A failure shows the owner's notice sheet with the server's text.
+A failure shows a transient card with the server's text
+([Notices](#notices)).
 
 ### Clipboard
 
@@ -1118,7 +1118,8 @@ file descriptor until exit. Reader callbacks are
 nonisolated and send results to the main actor. A continuation and one
 30-second timer wait for the source; there is no polling. Promise waits count
 as uploads. Escape and pane disposal cancel them, and connection changes
-prevent late results from pasting. Reader errors and timeouts show a notice.
+prevent late results from pasting. Reader errors and timeouts show a
+transient card ([Notices](#notices)).
 
 Promised files use the same regular-file validation and copying limits as
 other uploads: 64 MiB per file, 16 files, and 256 MiB total. Open file handles
@@ -1245,7 +1246,7 @@ frames do no placement or cursor invalidation. Full placement assigns each
 pane's final frame once. Placement skips unchanged backing, toolbar and scroller
 frames and retains an installed mask rather than assigning it again. A float keeps its pixel frame after release until the layout shows its
 last edit. Escape stops further edits, not edits that the server already
-applied. Pane command errors appear in a sheet. Sidebar drops are not
+applied. A refused edit shows a transient card. Sidebar drops are not
 supported.
 
 Every gesture is one typed `Edit` (`KoSchema.Edit`) through the window's
@@ -1552,8 +1553,8 @@ extra warning. Close Session checks every pane of every window of the
 session, and asks with "Programs are still running in this session.
 Closing the session will end them." Every close is one `ko_client_delete`
 of the pane, window or session, on a detached task; the server deletes
-the target with its descendants. A failed delete reports "Pane command
-failed" in another sheet. When the close leaves no session, the window
+the target with its descendants. A failed delete shows the transient
+card "Pane command failed". When the close leaves no session, the window
 closes ("The empty layout" in [One ko client](#one-ko-client)). The native window's close button still only disconnects
 ([Remote hosts](#remote-hosts)). Close Window closes the native window
 when the owner has no current ko window or is not connected: a
@@ -1662,8 +1663,8 @@ Selection and scroll survive snapshots by session-scoped node identity.
 Scroll anchors the first visible identity and its intra-row offset,
 falling back to pixels only if that row disappears.
 
-The single-line, truncating diagnostic sits above the table; the full
-diagnostic is available in its tooltip. The sidebar has no filter. Jump
+The sidebar never shows an error: the list starts at the top, and a
+failure goes to a card ([Notices](#notices)). The sidebar has no filter. Jump
 failures leave focus intact; a successful jump from Return, or from a
 click outside sidebar focus, gives focus to the selected pane.
 Selection changes from other clients update the selection without taking
@@ -1765,7 +1766,7 @@ after the change would already have ended the pane's copy mode. The
 grants are Focus Sidebar, the inline rename and the restore of a saved
 responder that was in the sidebar (the end of a rename, the palette's
 dismissal), which comes back to the modal focus that the keyboard
-entered. The selectable status line above the table is exempt.
+entered.
 
 The inline rename is the one exception to the mouse rule: a
 double-click on a session name starts the edit also from a pane, because
@@ -2249,6 +2250,66 @@ Every other close path restores it too: Command-P, a click outside, another
 window becoming key and the app's deactivation. The panel's `close` ends the
 preview, so one place serves them all.
 
+## Notices
+
+A failure that has no UI of its own shows as a card over the bottom
+right of the terminal area (`app/App/Notices.swift`); the design and its
+mockup are in `app/design/notices/`. The sidebar never shows an error,
+and no failure opens a sheet. Three other places stay: a control that
+failed shows its own error inline (the palette, the sidebar's rename, a
+runtime row); the connection state is the pane-area `Banner` alone; and a
+system notification is for what happens while the user is away
+([Notifications](#notifications)), never for a failure in the app, which
+Kido suppresses while frontmost and the user can deny.
+
+**The column.** Each `WindowOwner` owns one `Notices` view, a subview of
+the sidebar's content above the banner, so a card draws above the panes,
+the floats and the banner's veil. It belongs to the area, not to a pane:
+it crosses dividers, takes no part in the layout and stays at the same
+anchor in every sidebar mode and in full screen. Bottom-right was chosen
+because the other corners hold the hover toolbar, find, the COPY pill and
+a shell's prompt. The cards stack upward from the anchor, newest nearest
+the edge, so nothing below moves when a card above leaves.
+
+**Never the keyboard.** No view of the column accepts the first
+responder, and the config card's buttons refuse it. A click on a card is
+consumed by it and changes neither the first responder nor the focused
+pane. A floating sidebar's outside-click catcher lets a click over a card
+through to the card, so it does not dismiss the sidebar first. A new card
+posts an accessibility announcement with its title and detail; the card is
+a group with the two texts and its buttons. The card draws its text
+itself, as the sidebar's rows do: an `NSTextField` in it renders the
+secondary colour as full ink.
+
+**Transient cards.** Every other failure gets a transient card of its
+window: the edit that `LayoutEditor` reports through `onFailure` (only an
+edit without a completion; an edit with an owner reports to that owner
+alone), a failed navigation, a refused reorder, File → New Session, the
+upload path, a failed runtime or close command, an unsupported link and the
+first notification failure of a launch. A card goes 5 s after it shows, 8 s
+when its detail wraps to three lines or more at the card's width. The
+pointer over a card pauses its clock; a click dismisses it. At most three
+show; a fourth pushes the oldest out. The same title and detail arriving
+while its card shows resets that card's clock in place: a drag refused
+twice does not stack. A replace rule (one card, the newer replaces the
+older) was rejected, because a second failure then hides the first within
+a second. With no connection the banner already says so, so a layout action
+without a connection shows no card. Every card writes one `note` line,
+`HOST: TITLE: DETAIL`, with the whole detail; the card cuts it at five
+lines and has no tooltip, so the log is the one place for the full text.
+The clipboard protocol's reads are not failures: a declined or timed-out
+consent is a refusal and shows nothing.
+
+**The config card.** A failed load of the app's configuration or a theme
+file shows a persistent card in every window, with × and "Open config",
+which opens the file with its default app: the file needs an edit, not a
+Finder selection. It holds the anchor (transient cards stack above it),
+and it stays over the banner's veil, because a user who fixes the file
+while the server restarts needs its line number. `GhosttyRuntime` owns
+the error and its dismissal: × in one window dismisses it in all, the same
+error stays dismissed, a different error shows again, and a load that
+succeeds clears both. A window opened while the error stands shows it.
+
 ## Notifications
 
 Kido.app posts a native notification when a pane starts waiting on the
@@ -2325,9 +2386,11 @@ is installed in `applicationWillFinishLaunching`, because a click that
 launches the app reaches only a handler already in place.
 
 **Authorization and builds.** Alert, sound and badge permission is
-requested once, when the first owner connects, if still undetermined; a
-denial and every posting failure are logged once and otherwise silent,
-and there is no in-app toggle. `App/Notifications.swift` is the only file
+requested once, when the first owner connects, if still undetermined. The
+first denial or posting failure of a launch writes one log line and shows
+one transient card, "Kido could not post a notification", in the key
+window (or the next window that becomes key); later failures are silent.
+There is no in-app toggle. `App/Notifications.swift` is the only file
 that imports UserNotifications. Background, visual and stress builds use
 `RecordedNotifications`, which records posts, withdrawals, badge counts
 and authorization calls and never touches Notification Center.
@@ -2363,8 +2426,10 @@ alternate screen and settled resize. The shared visual runtime's Ghostty
 config is its own `$TMPDIR/kido-visual-PID.yaml`, removed in the class
 teardown. `testYAMLSettingsRendering` records the system font, a font
 family and size, a dark theme and a user theme of the test's own
-`themes` directory; `testConfigErrorBanner` records the error strip in
-light and dark; `testClientRefusalBanner` records the refusal banner of a
+`themes` directory; `NoticesTests.testMockupStates` records each state
+of the notices mockup in light and dark, windowed and in full screen
+(a native header composed over the live content, not a Space
+transition), with the sidebar docked, floating and collapsed; `testClientRefusalBanner` records the refusal banner of a
 local owner (with Restart Server) and a remote one (with Reconnect), in light
 and dark. A test-only
 `KIDO_VISUAL` build condition exposes an occlusion bypass through

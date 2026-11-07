@@ -77,7 +77,7 @@ import KoModel
         let list = SidebarView()
         list.frame = NSRect(x: 0, y: 0, width: 300, height: 110)
         window.contentView!.addSubview(list)
-        list.update(snapshot)
+        list.show(snapshot)
         list.layoutSubtreeIfNeeded()
         let index = try XCTUnwrap(list.visualRows.firstIndex { $0.target != nil })
         let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)

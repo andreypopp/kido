@@ -214,7 +214,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
         self.client = client
         let editor = LayoutEditor { try client.edit($0) }
-        editor.onFailure = { XCTFail("edit failed: \($0)") }
+        editor.onFailure = { _, text in XCTFail("edit failed: \(text)") }
         editor.onSettled = { [weak self] in self?.session?.editsSettled() }
         self.editor = editor
         session.client = client
@@ -448,44 +448,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
     }
 
-    func testConfigErrorBanner() async throws {
-        let config = directory.appendingPathComponent("config.yaml")
-        try "app: {theme: kido-light}\n".write(to: config, atomically: true, encoding: .utf8)
-        try await start(configFile: config.path)
-        let sidebar = Sidebar()
-        window.contentViewController = sidebar
-        sidebar.content.addSubview(session)
-        session.frame = sidebar.content.bounds
-        session.autoresizingMask = [.width, .height]
-        sidebar.isCollapsed = true
-        let pane = try XCTUnwrap(terminal?.panes.first)
-        try await emit(pane, "The terminal stays usable while config.yaml has an error.\r\n$ vim ~/.config/ko/config.yaml\r\n")
-        for side in ["light", "dark"] {
-            let changed = expectation(description: side)
-            runtime.onConfigChange = { changed.fulfill() }
-            try "app: {theme: kido-\(side)}\n".write(to: config, atomically: true, encoding: .utf8)
-            await fulfillment(of: [changed], timeout: 5)
-            window.appearance = NSAppearance(named: side == "dark" ? .darkAqua : .aqua)
-            window.backgroundColor = runtime.unfocusedPaper
-            sidebar.terminalHost.wantsLayer = true
-            sidebar.terminalHost.layer?.backgroundColor = runtime.unfocusedPaper.cgColor
-            sidebar.content.wantsLayer = true
-            sidebar.content.layer?.backgroundColor = runtime.background.cgColor
-            sidebar.updateAppearance(runtime: runtime)
-            session.updateBackground()
-            sidebar.configBanner.background = runtime.background
-            let failed = expectation(description: "invalid config")
-            runtime.onConfigChange = { failed.fulfill() }
-            try "app:\n  font: {size: wrong}\n".write(to: config, atomically: true, encoding: .utf8)
-            await fulfillment(of: [failed], timeout: 5)
-            let error = try XCTUnwrap(runtime.configError)
-            sidebar.showConfigError(("~/.config/ko/config.yaml has an error", error.problem.detail))
-            try await settle()
-            try await snapshot(side, view: sidebar.terminalHost)
-            sidebar.showConfigError(nil)
-        }
-    }
-
     func testAdjustedFontConfigReload() async throws {
         let config = directory.appendingPathComponent("adjusted-font.yaml")
         try "app: {font: {size: 13}}\n".write(to: config, atomically: true, encoding: .utf8)
@@ -634,13 +596,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let terminal = try XCTUnwrap(terminal)
         window.contentView?.layoutSubtreeIfNeeded()
         for pane in terminal.panes.filter({ !$0.isHidden }) {
-            var status = GHOSTTY_RENDER_PRESENTATION_DISCARDED
-            for _ in 0..<3 where status == GHOSTTY_RENDER_PRESENTATION_DISCARDED {
-                let frame = expectation(description: "Ghostty presented \(pane.pane)")
-                pane.visualFrame { result in status = result; frame.fulfill() }
-                await fulfillment(of: [frame], timeout: 10)
-            }
-            XCTAssertEqual(status, GHOSTTY_RENDER_PRESENTATION_PRESENTED)
+            await presentedFrame(pane)
         }
     }
 
@@ -803,7 +759,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         sidebar.viewDidLayout()
         let row = try XCTUnwrap(self.terminal?.panes.first)
         let shown = try XCTUnwrap(currentModel.window)
-        sidebar.list.update(Snapshot(clock: .init(now: 0, local: 0), client: .init(session: SessionID(number: 0), window: shown, pane: row.pane), serverInstance: ServerInstance("4242/1791000000"),
+        sidebar.list.show(Snapshot(clock: .init(now: 0, local: 0), client: .init(session: SessionID(number: 0), window: shown, pane: row.pane), serverInstance: ServerInstance("4242/1791000000"),
                                      sessions: [SessionNodes(id: SessionID(number: 0), name: "visual",
                                                              nodes: [.item(fixtureItem(row.pane.number, window: shown.number, "Terminal", shellLifecycle()))])]))
         let menu = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "View" }?.submenu)
@@ -969,7 +925,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let enter = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
         window.sendEvent(enter)
-        XCTAssertEqual(sidebar.list.visualDiagnostic, "Local is not connected.", "the owner of this sidebar has no server")
+        XCTAssertTrue(owner.notices.testTransients.entries.isEmpty, "the connection banner owns the disconnected state")
         window.sendEvent(try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)))
         try await wait("Escape dismisses the sidebar") { !sidebar.isFloating }
@@ -1078,7 +1034,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let root = try XCTUnwrap(window.contentView?.superview)
         root.layoutSubtreeIfNeeded()
         sidebar.splitView.setPosition(236, ofDividerAt: 0)
-        sidebar.list.update(sidebarFixture())
+        sidebar.list.show(sidebarFixture())
         session.sidebarFocused = { [weak sidebar] in sidebar?.list.containsFocus == true }
         (window as? OwnerWindow)?.focusChanged = { [weak self, weak sidebar] _, _ in
             self?.terminal?.updateFocusTreatment()
@@ -1534,15 +1490,15 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await wait("caption hide deadline") { list.visualRows[index].tail.isEmpty }
         XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - hiddenAt, 0.2)
         XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 32)
-        list.update(changed)
+        list.show(changed)
         XCTAssertEqual(list.visualRows[index].tail, "")
-        list.offline("Reconnect test")
-        list.update(changed)
+        list.show(nil)
+        list.show(changed)
         XCTAssertEqual(list.visualRows[index].tail, "Delayed caption", "identical reconnect snapshot must show its caption immediately")
         XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 48)
-        list.offline("Reconnect during drag")
+        list.show(nil)
         list.show(changed, pin: id)
-        list.update(fixture("Reconnected caption"))
+        list.show(fixture("Reconnected caption"))
         XCTAssertEqual(list.visualRows[index].tail, "Reconnected caption", "drag during reconnect must not seed old captions")
     }
 
@@ -1562,7 +1518,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let list = SidebarView()
         window.contentView = list
         list.layoutSubtreeIfNeeded()
-        list.update(live)
+        list.show(live)
         let table = list.visualTable
         XCTAssertEqual(table.numberOfRows, rows.count)
         for index in rows.indices {
@@ -1573,10 +1529,10 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let target = try XCTUnwrap(rows[nested].target)
         var changed = live
         changed.client = target
-        list.update(changed)
+        list.show(changed)
         XCTAssertEqual(table.selectedRow, nested)
         let origin = list.visualScroll.contentView.bounds.origin
-        list.update(changed)
+        list.show(changed)
         XCTAssertEqual(table.selectedRow, nested)
         XCTAssertEqual(list.visualScroll.contentView.bounds.origin, origin)
         let previous = try XCTUnwrap(rows[..<nested].lastIndex { $0.target != nil })
@@ -1605,7 +1561,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
         for dark in [false, true] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-            list.update(fixture)
+            list.show(fixture)
             sidebarSnapshot(list, dark ? "claude-dark" : "claude-light")
         }
         let programs = list.visualRows.indices.filter { if case .program = list.visualRows[$0].id { true } else { false } }
@@ -1638,7 +1594,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let live = sidebarFixture()
         for dark in [false, true] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-            list.update(live)
+            list.show(live)
             sidebarSnapshot(list, dark ? "live-dark" : "live-light")
         }
         let nested = sidebarFixture { snapshot in
@@ -1654,14 +1610,14 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             snapshot.sessions[0].nodes[1].group.children[1].fixtureLifecycle = shellLifecycle(shellExit(0, command: "make -C ../kido-app/app demo"))
             snapshot.sessions[0].nodes[1].group.children[1].pane.mark = .done
         }
-        list.update(nested)
+        list.show(nested)
         sidebarSnapshot(list, "active-parent-dark")
         window.appearance = NSAppearance(named: .aqua)
         sidebarSnapshot(list, "active-parent-light")
         window.setContentSize(NSSize(width: 236, height: 680))
         sidebarSnapshot(list, "narrow-light")
         window.setContentSize(NSSize(width: 292, height: 680))
-        list.update(sidebarFixture { $0.client = .init(session: SessionID(number: 0), window: WindowID(number: 786), pane: PaneID(number: 892)) })
+        list.show(sidebarFixture { $0.client = .init(session: SessionID(number: 0), window: WindowID(number: 786), pane: PaneID(number: 892)) })
         sidebarSnapshot(list, "child-active-light")
         let subtree = sidebarFixture { snapshot in
             let zsh = fixtureNode(1991, "zsh", shellLifecycle(shellExit(0)), mark: .done)
@@ -1674,7 +1630,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
         XCTAssertEqual(sidebarRows(subtree).filter { $0.focused && $0.target != nil }.map { $0.target!.window },
                        [WindowID(number: 824)])
-        list.update(subtree)
+        list.show(subtree)
         sidebarSnapshot(list, "focused-child-subtree-light")
         window.appearance = NSAppearance(named: .darkAqua)
         sidebarSnapshot(list, "focused-child-subtree-dark")
@@ -1688,7 +1644,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             snapshot.sessions[0].nodes = [.window(.init(id: first.window, children: [first, second, third]))]
             snapshot.client = .init(session: SessionID(number: 0), window: first.window, pane: first.id)
         }
-        list.update(grouped)
+        list.show(grouped)
         list.focus()
         let down = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, characters: "j", charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38))
@@ -2081,7 +2037,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let list = SidebarView()
         window.contentView = list
         let fixture = sidebarFixture()
-        list.update(fixture)
+        list.show(fixture)
         list.focus()
         list.layoutSubtreeIfNeeded()
         let header = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SidebarCell)
@@ -2129,14 +2085,14 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         window.contentView = list
         let initial = sidebarFixture()
         let destination = sidebarFixture { $0.client = .init(session: SessionID(number: 0), window: WindowID(number: 458), pane: PaneID(number: 502)) }
-        list.update(initial)
+        list.show(initial)
         list.layoutSubtreeIfNeeded()
         let selectedBeforeNil = list.visualTable.selectedRow
         let originBeforeNil = list.visualScroll.contentView.bounds.origin
         owner.perform(.switchWindow(next: true))
         XCTAssertEqual(list.visualTable.selectedRow, selectedBeforeNil)
         XCTAssertEqual(list.visualScroll.contentView.bounds.origin, originBeforeNil)
-        list.update(destination)
+        list.show(destination)
         let selected = list.visualTable.selectedRow
         XCTAssertGreaterThanOrEqual(selected, 0, "feed-first completion must select the destination")
         if selected >= 0 {
@@ -2153,23 +2109,23 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         list.frame = NSRect(x: 0, y: 0, width: 292, height: 260)
         window.contentView = list
         let fixture = sidebarFixture { $0.repeatSession(Array(0..<20)) }
-        list.update(fixture)
+        list.show(fixture)
         list.layoutSubtreeIfNeeded()
         let anchorIndex = 12
         let anchorID = list.visualRows[anchorIndex].id
         list.visualScroll.contentView.scroll(to: NSPoint(x: 0, y: list.visualTable.rect(ofRow: anchorIndex).minY + 7.25))
         let before = list.visualScroll.contentView.bounds.minY - list.visualTable.rect(ofRow: anchorIndex).minY
         let stable = sidebarFixture { $0.repeatSession([99] + Array(0..<20)) }
-        list.update(stable)
+        list.show(stable)
         list.layoutSubtreeIfNeeded()
         let newIndex = try XCTUnwrap(list.visualRows.firstIndex { $0.id == anchorID })
         XCTAssertGreaterThan(before, 0)
         XCTAssertGreaterThan(newIndex, anchorIndex)
         XCTAssertEqual(list.visualScroll.contentView.bounds.minY - list.visualTable.rect(ofRow: newIndex).minY, before, accuracy: 1)
-        list.update(fixture)
+        list.show(fixture)
         XCTAssertTrue(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) })
         let navigated = sidebarFixture { $0.client = .init(session: SessionID(number: 0), window: WindowID(number: 458), pane: PaneID(number: 502)) }
-        list.update(navigated)
+        list.show(navigated)
         XCTAssertEqual(list.visualRows[list.visualTable.selectedRow].target?.window, navigated.client.window)
         XCTAssertTrue(list.visualRows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 502)) })
         let row = try XCTUnwrap(list.visualRows.first { $0.target != nil })
@@ -2178,7 +2134,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         list.focus()
         list.visualJump(row)
         XCTAssertEqual(left, 0, "a jump that the server did not take keeps the sidebar")
-        XCTAssertEqual(list.visualDiagnostic, "Local is not connected.")
+        XCTAssertTrue(owner.notices.testTransients.entries.isEmpty)
         XCTAssertTrue(list.containsFocus)
         let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
                                                   windowNumber: window.windowNumber, context: nil, characters: "j", charactersIgnoringModifiers: "j", isARepeat: false, keyCode: 38))

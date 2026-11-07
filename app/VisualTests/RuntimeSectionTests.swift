@@ -158,7 +158,7 @@ import KoModel
                     let index: Int? = switch item.id.number { case 1, 3, 4, 5: 0; case 6: 2; case 7: 3; default: nil }
                     if let index { item.runtime = RuntimeMark.known(runtimes[index], routed: item.id.number == 3) }
                 }
-                list.update(snapshot)
+                list.show(snapshot)
                 list.layoutSubtreeIfNeeded()
                 if state == "selected" { section.selection = .runtime(runtimes[0].key) }
                 if state == "hover" || state == "hover-stop" {
