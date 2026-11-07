@@ -1199,9 +1199,10 @@ delegates as its brief says and does not write code.
     `openai-codex/gpt-6-astra`, mixed across the four. The correctness
     reviewer runs on `openai-codex/gpt-6-astra`. The modules reviewer
     runs on `claude-bridge/claude-opus-5-5`.
-  - A planner and design work run on `claude-bridge/claude-fable-5-1`,
-    never on Sol. Fable also takes a complex task or review when the
-    user asks for it.
+  - The planner of a unit runs on `openai-codex/gpt-6-astra`.
+  - Design work (a plan in `plans/`, a design in `docs/`) runs on
+    `claude-bridge/claude-fable-5-1`, never on Sol. Fable also takes
+    a complex task or review when the user asks for it.
 - **Size the process to what the change is for,** not to its line
   count. Local tooling (the pi extensions in `.pi/`, a script that only
   agents use, a brief, a plan or other prose) gets one agent, a quick
@@ -1217,7 +1218,12 @@ delegates as its brief says and does not write code.
   needs no approval.
 - **One manager for each unit of work.** The manager does not write
   code. It does these steps:
-  1. It spawns one implementer.
+  1. For a fix or a feature that is not trivial, it first spawns one
+     read-only planner. The planner reads the code path end to end and
+     reports one design: the rule for each part, what to delete, and
+     the tests that must fail first. The manager checks the design
+     against the code. Then it spawns one implementer with the design.
+     A trivial change goes to the implementer directly.
   2. When the implementer reports, the manager writes the docs that the
      change needs itself, in `docs/`, this file and READMEs, before
      review. The implementer reports the facts that the docs need and
