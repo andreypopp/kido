@@ -722,7 +722,7 @@ fn main() -> ExitCode {
         },
         Command::Api(args) => api(args),
         Command::Shell { command } => {
-            let error = shell::exec(&command, &invoked());
+            let error = shell::exec(&command, &invoked(), inside_runtime().is_some());
             let target = target(None);
             fail_before_program(
                 "shell",

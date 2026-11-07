@@ -23,19 +23,44 @@ fn argv(path: &Path, mode: Mode) -> Vec<OsString> {
     }
 }
 
-fn login_shell() -> PathBuf {
+fn login_shell(in_runtime: bool) -> PathBuf {
     ["KO_SHELL", "SHELL"]
-        .iter()
+        .into_iter()
+        .filter(|name| *name != "KO_SHELL" || !in_runtime)
         .filter_map(std::env::var_os)
         .map(PathBuf::from)
+        .chain(std::iter::once_with(|| ko_sys::user::login_shell().ok().flatten()).flatten())
         .find(|shell| is_executable(shell))
         .unwrap_or_else(|| PathBuf::from("/bin/sh"))
 }
 
-pub fn exec(command: &[String], exe: &Path) -> io::Error {
-    let path = login_shell();
+pub fn exec(command: &[String], exe: &Path, in_runtime: bool) -> io::Error {
+    let selected = match command {
+        [program]
+            if matches!(
+                Path::new(program)
+                    .file_name()
+                    .and_then(|name| name.to_str()),
+                Some("bash" | "zsh")
+            ) =>
+        {
+            let path = PathBuf::from(program);
+            if path.components().count() > 1 {
+                Some(path)
+            } else {
+                std::env::var_os("PATH").and_then(|paths| {
+                    std::env::split_paths(&paths)
+                        .map(|dir| dir.join(program))
+                        .find(|path| is_executable(path))
+                })
+            }
+        }
+        _ => None,
+    };
+    let remaining = command.split_first().filter(|_| selected.is_none());
+    let path = selected.unwrap_or_else(|| login_shell(in_runtime));
     let bin_dir = bin_dir::of_exe(exe);
-    let Some((program, arguments)) = command.split_first() else {
+    let Some((program, arguments)) = remaining else {
         let zdotdir = std::env::var("ZDOTDIR").ok().filter(|dir| !dir.is_empty());
         let dotdir = zdotdir
             .clone()

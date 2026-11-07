@@ -503,6 +503,14 @@ in `ko_server/src/config.rs` makes them for both), with
 `TERMINFO_DIRS` from its own installation and its own `share/ko/bin`
 first on PATH, applies each `--env`, changes to `DIR` (`ko enter: cwd DIR: No such file or
 directory`, exit 1, and the pane dies) and execs `ko shell [-- CMD...]`.
+Thus the runtime's own `ko shell` primes a bash or zsh pane inside the
+runtime under the conditions of design.md, "Priming a local shell": it writes the embedded
+integration files to the runtime's temporary directory, and the shell's
+OSC 7 and OSC 133 records are the runtime pane's cwd and status. The
+shell is the runtime's `$SHELL` (the runtime's `env` can set it), else
+the account's shell, never the host's `$KO_SHELL`. Without a writable
+temporary directory, or with a shell that those conditions refuse, the pane runs unprimed: it
+reports no cwd, and a new pane from it starts in the runtime's `cwd`.
 It never lets `--env` override an inherited `SSH_AUTH_SOCK`. It opens
 the token file without following a link, checks the open descriptor
 (a regular file of its own uid, no group or other bits), reads it and

@@ -207,6 +207,24 @@ fn an_ssh_pane_rides_the_master_and_a_dead_master_ends_its_panes_and_never_recon
         !rt.join(format!("{pane}.token")).exists()
     });
 
+    let zsh =
+        crate::status::shell_of(&crate::status::Flavour::Zsh).expect("KO_E2E_HOST_SSH needs zsh");
+    let shell =
+        s.new_pane(json!({"runtime": "box", "command": {"type": "argv", "argv": [text_of(&zsh)]}}));
+    s.wait_row(&shell, "explicit remote shell is primed", |row| {
+        row["status"]["kind"]["phase"]["type"] == "idle"
+    });
+    let cwd = rt.join("sp ace");
+    fs::create_dir(&cwd).unwrap();
+    s.text(&shell, &format!("cd {}\r", quote(text_of(&cwd))));
+    s.wait_row(&shell, "remote shell cwd", |row| {
+        row["cwd"]
+            .as_str()
+            .is_some_and(|cwd| cwd.ends_with("/sp%20ace"))
+    });
+    let split = s.new_pane(json!({"runtime": "box", "cwd": {"pane": shell}}));
+    s.text(&split, "pwd -P\r");
+    s.screen_has(&split, text_of(&cwd));
     let second = s.token_pane_with(json!({"runtime": "box"}), "exec cat");
     let listing = boxed.ps();
     let mut tokens = vec![s.token(&pane).unwrap(), s.token(&second).unwrap()];

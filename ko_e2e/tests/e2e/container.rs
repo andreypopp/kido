@@ -387,6 +387,25 @@ runtimes:
         s.screen_has(&first, &needle);
     }
     s.screen_has(&second, &format!("second-{name}"));
+    let shell = s.new_pane(json!({"runtime": name}));
+    s.wait_row(&shell, "passwd shell is primed", |row| {
+        row["status"]["kind"]["phase"]["type"] == "idle"
+    });
+    s.text(&shell, "printf 'PASSWD=%s\\n' \"${BASH_VERSION:+bash}\"; mkdir -p '/tmp/sp ace'; cd '/tmp/sp ace'\r");
+    s.screen_has(&shell, "PASSWD=bash");
+    s.wait_row(&shell, "container cwd follows cd", |row| {
+        row["cwd"]
+            .as_str()
+            .is_some_and(|cwd| cwd.ends_with("/sp%20ace"))
+    });
+    let split = s.new_pane(json!({"runtime": name, "cwd": {"pane": shell}}));
+    s.text(&split, "pwd -P\r");
+    s.screen_has(&split, "/tmp/sp ace");
+    s.wait_row(&split, "container split reports cwd", |row| {
+        row["cwd"]
+            .as_str()
+            .is_some_and(|cwd| cwd.ends_with("/sp%20ace"))
+    });
     assert_eq!(engine.state().as_deref(), Some("running"));
     let io = s.dir.join(format!("runtimes/{name}/io"));
     let inode = fs::metadata(&io).unwrap().ino();

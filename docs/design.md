@@ -728,7 +728,14 @@ thing (design-ko.md, "Remote").
 `ko shell` is the default pane command. It resolves the user's shell
 in this order, checking each candidate for executability: `$KO_SHELL`
 (the server's shell: `server: shell` of the configuration file, else
-its own `$SHELL`), `$SHELL`, `/bin/sh`. It runs a login shell
+its own `$SHELL`), `$SHELL`, the shell of the user's account
+(`ko_sys::user::login_shell`, `getpwuid_r`), `/bin/sh`. Inside a
+runtime (`$KO_RUNTIME` set) it skips `$KO_SHELL`, because that is the
+host server's shell: a container's environment often has no `$SHELL`,
+and the account's shell (root's `/bin/bash` in Debian) is primed where
+`/bin/sh` is not. A command that is one word whose basename is `bash`
+or `zsh` (a bare name found on PATH) is that interactive shell, with
+the same priming. It runs a login shell
 with the same priming as `ko ssh`:
 
 - zsh with any of `.zshrc`, `.zshenv`, `.zprofile` or `.zlogin` in
@@ -742,8 +749,8 @@ with the same priming as `ko ssh`:
 temporary-directory contents, argv tail and minimum bash version.
 Transport differs: the remote side has only sh, so these parts
 generate a POSIX ssh bootstrap. A failure to write the files falls
-back to plain mode. `ko shell -- CMD...` runs a command in the same
-shell, without priming ("The login environment").
+back to plain mode. `ko shell -- CMD...` with any other command runs
+it in the same shell, without priming ("The login environment").
 
 The bash integration uses `PS0` for command-start markers and
 `PROMPT_COMMAND` for prompt markers. Sourcing it a second time causes

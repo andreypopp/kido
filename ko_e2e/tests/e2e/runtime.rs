@@ -15,6 +15,64 @@ use crate::harness::{
 use crate::outer::{Keys, Outer};
 use crate::panes::{as_pane, headers, post, raw, raw_on, refuses, token_pane_in_new_session};
 
+#[test]
+fn runtime_shells_report_and_inherit_the_directory() {
+    use crate::status::{Flavour, shell_of};
+
+    let (Some(bash), Some(zsh)) = (shell_of(&Flavour::Bash), shell_of(&Flavour::Zsh)) else {
+        eprintln!("SKIP: runtime shell test needs bash >= 4.4 and zsh");
+        return;
+    };
+    let work = Dir::new("ko-shell-cwd-");
+    let target = work.join("sp ace");
+    fs::create_dir(&target).unwrap();
+    let s = serve(
+        &format!(
+            "runtimes:\n  dev:\n    command: {{}}\n    env:\n      SHELL: {}\n",
+            bash.display()
+        ),
+        &[("KO_SHELL", text_of(&zsh))],
+    );
+    let panes = [None, Some("bash"), Some("zsh")].map(|command| {
+        let mut request = json!({"runtime": "dev"});
+        if let Some(program) = command {
+            request["command"] = json!({"type": "argv", "argv": [if program == "bash" { text_of(&bash) } else { text_of(&zsh) }]});
+        }
+        (command, s.new_pane(request))
+    });
+    for (command, pane) in panes {
+        s.wait_row(&pane, "runtime shell prompt is primed", |row| {
+            row["status"]["kind"]["phase"]["type"] == "idle"
+        });
+        s.text(
+            &pane,
+            "printf 'SHELL=%s\\n' \"${BASH_VERSION:+bash}${ZSH_VERSION:+zsh}\"\r",
+        );
+        s.screen_has(
+            &pane,
+            if command == Some("zsh") {
+                "SHELL=zsh"
+            } else {
+                "SHELL=bash"
+            },
+        );
+        s.text(&pane, &format!("cd {}\r", quote(text_of(&target))));
+        s.wait_row(&pane, "runtime cwd follows cd", |row| {
+            row["cwd"]
+                .as_str()
+                .is_some_and(|cwd| cwd.ends_with("/sp%20ace"))
+        });
+        let split = s.new_pane(json!({"runtime": "dev", "cwd": {"pane": pane}}));
+        s.text(&split, "pwd -P\r");
+        s.screen_has(&split, text_of(&target));
+        s.wait_row(&split, "split reports inherited cwd", |row| {
+            row["cwd"]
+                .as_str()
+                .is_some_and(|cwd| cwd.ends_with("/sp%20ace"))
+        });
+    }
+}
+
 fn ids(rows: &Value) -> Vec<&str> {
     rows.as_array()
         .unwrap()
@@ -52,12 +110,11 @@ pub(crate) fn serve_in(dir: Dir, text: &str, env: &[(&str, &str)]) -> Rt {
     fs::write(&file, text).unwrap();
     let mut env = env.to_vec();
     env.push(("KO_RUNTIME_COMMAND_KIND", "1"));
-    let server = start_in(
-        dir,
-        Path::new("/bin/sh"),
-        &env,
-        &["--config", text_of(&file)],
-    );
+    let shell = env
+        .iter()
+        .find_map(|(name, value)| (*name == "KO_SHELL").then_some(*value))
+        .unwrap_or("/bin/sh");
+    let server = start_in(dir, Path::new(shell), &env, &["--config", text_of(&file)]);
     Rt { server, config }
 }
 
