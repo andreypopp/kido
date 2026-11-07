@@ -713,10 +713,11 @@ login files without markers, through the same route as an unsupported
 shell.
 
 **Nothing persists but the terminfo.** ko resends the payload on every
-connection, and only the terminfo entry stays on the host. `.zshenv`
-reads the integration into a parameter and keeps the directory only
-for the user's `compinit` ("Completion" below). At its first `precmd`
-zsh loads `_ko`, removes the directory, then sources the integration,
+connection, and only the terminfo entry stays on the host, except for
+the zsh completion directory of a shell that ends without `zshexit`. `.zshenv`
+reads the integration into a parameter and keeps the directory for
+`_ko` ("Completion" below). At its first `precmd` zsh loads `_ko`,
+deletes `.zshenv` and the integration file, then sources the integration,
 not in `.zshenv`, so ko's hooks come after the user's setup and ko's
 bin directory is again first on PATH as the last step.
 
@@ -793,11 +794,16 @@ script.
   before it sources the user's `.zshenv`, and again after it, so the
   user's own `compinit` finds `_ko`; ko never runs `compinit`. At the
   first prompt it loads `_ko` into memory, maps `ko` to it with
-  `compdef` when `compinit -C` read an older dump without `_ko`,
-  removes the directory from
-  `fpath` and deletes it; a shell that exits before its first prompt
-  deletes it at exit. A `compinit` that runs only after the first
-  prompt does not find `_ko`.
+  `compdef` when `compinit -C` read an older dump without `_ko`, and
+  deletes the other two files. The directory with `_ko` stays on
+  `fpath` until `zshexit` deletes it, so a `compinit` that runs after
+  the first prompt (a plugin manager's reload, a hook that runs
+  `compinit` again when `$FPATH` changed) still finds `_ko`. ko does
+  not change `fpath` after `.zshrc`, so such a hook sees no change. A
+  shell killed without `zshexit` leaves the directory with `_ko` in the
+  temporary directory (`ko-shell.*` locally, `${TMPDIR:-/tmp}/ko-ssh.*`
+  on a remote), where the OS clears it; so does an `exec` that replaces
+  the shell, because `zshexit` does not run then.
 - bash: `share/ko/bash/integration.bash` registers its function with
   the builtin `complete`, so completion works with or without
   bash-completion, also in bash 3.2, which gets no OSC 133 marks. It

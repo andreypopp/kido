@@ -20,7 +20,6 @@ else
 fi
 unset KO_ORIG_ZDOTDIR
 _ko_cleanup() {
-  fpath=("${(@)fpath:#$_ko_dir}")
   command rm -rf -- "$_ko_dir"
   unset _ko_dir _ko_src
   zshexit_functions=("${(@)zshexit_functions:#_ko_cleanup}")
@@ -44,6 +43,7 @@ zshexit_functions+=(_ko_cleanup)
     typeset -ag precmd_functions
     precmd_functions+=(_ko_ssh_init)
   else
+    fpath=("${(@)fpath:#$_ko_dir}")
     _ko_cleanup
   fi
 }
@@ -57,7 +57,8 @@ _ko_ssh_init() {
       compdef _ko ko
     fi
   } always {
-    _ko_cleanup
+    command rm -f -- "$_ko_dir/.zshenv" "$_ko_dir/integration.zsh"
+    unset _ko_src
     unfunction _ko_ssh_init
   }
   eval "$src"

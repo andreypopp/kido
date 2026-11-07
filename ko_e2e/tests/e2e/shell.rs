@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use crate::harness::{
-    DEADLINE, Dir, Server, enabled, ko, quote, run_ko, run_program, sh, start_with, test_env,
+    DEADLINE, Dir, Server, enabled, ko, poll, quote, run_ko, run_program, sh, start_with, test_env,
     text_of, which,
 };
 use crate::status::{Flavour, dotfiles, shell_of};
@@ -446,7 +446,17 @@ compdump
 fpath=("${_ko_test_fpath[@]}")
 unset _ko_test_fpath
 compinit -C -d "$HOME/complete.dump"
-print -r -- "${_comps[ko]-absent}" > "$HOME/ko-before-precmd""#
+print -r -- "${_comps[ko]-absent}" > "$HOME/ko-before-precmd"
+print -r -- "$_ko_dir" > "$HOME/ko-completion-dir"
+_t_fpath=$FPATH
+_t_hook() {
+  [[ $FPATH == $_t_fpath ]] || {
+    _t_fpath=$FPATH
+    unset _comps
+    compinit
+  }
+}
+precmd_functions+=(_t_hook)"#
             } else {
                 ""
             },
@@ -463,9 +473,15 @@ print -r -- "${_comps[ko]-absent}" > "$HOME/ko-before-precmd""#
             quote(text_of(&shell)),
             quote(text_of(&ko()))
         ));
-        s.wait_row(&pane, "the primed prompt", |row| {
-            row["status"]["kind"]["phase"]["type"] == "idle"
-        });
+        s.text(&pane, "printf 'PRIMED_%s\\n' READY\r");
+        s.screen_has(&pane, "PRIMED_READY");
+        if zsh {
+            s.text(
+                &pane,
+                "unset _comps; compinit; printf 'SECOND_%s\\n' PROMPT\r",
+            );
+            s.screen_has(&pane, "SECOND_PROMPT");
+        }
         let out = s
             .dir
             .join(if zsh { "zsh-complete" } else { "bash-complete" });
@@ -517,6 +533,13 @@ print -r -- "${_comps[ko]-absent}" > "$HOME/ko-before-precmd""#
             );
         }
         if zsh {
+            let dir = fs::read_to_string(s.dir.join("ko-completion-dir")).unwrap();
+            let dir = Path::new(dir.trim());
+            assert!(dir.join("_ko").is_file(), "{}", dir.display());
+            assert!(!dir.join(".zshenv").exists());
+            assert!(!dir.join("integration.zsh").exists());
+            s.text(&pane, "exit\r");
+            poll("the completion directory cleanup", || !dir.exists());
             let marker = s.dir.join("zsh-early-exit");
             fs::write(
                 s.dir.join(".zshenv"),
