@@ -956,7 +956,7 @@ function agentCompletionItems(agents: AgentRow[], all: AgentRow[], token: string
   matched.sort((x, y) => x.rank - y.rank);
   return matched.slice(0, MAX_AGENT_COMPLETIONS).map(({ agent: a }) => {
     const parent = a.parent ? nameByID.get(a.parent) || a.parent : "";
-    const description = [
+    const description = a.state === "ended" ? "ended peer" : [
       a.activity ? `${a.status || "agent"} - ${a.activity}` : a.status || "agent",
       parent ? `subagent of ${parent}` : "",
     ].filter(Boolean).join(", ");
@@ -3381,7 +3381,7 @@ export default function (pi: ExtensionAPI) {
             cache.refreshing = discovery()
               .then(({ rows, all }) => {
                 cache.all = all;
-                cache.rows = rows.filter((a) => a.state !== "ended");
+                cache.rows = rows.filter((a) => a.state !== "ended" || a.relationship === "peer");
                 cache.at = Date.now();
               })
               .catch(() => {})

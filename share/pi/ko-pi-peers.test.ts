@@ -19,13 +19,28 @@ test("peers observed only on /client can end and resume as independent peers", a
     fx.dropClient();
     await pollUntil(() => fx.streamOpens("/client") === 2);
     await pollUntil(() => entriesOf(s, "ko-pi.agent").filter((e) => e.role === "peer" && e.session === id && e.cwd === process.cwd()).length === 2);
-    fx.setClientPanes([selfPane()]);
+    const live = agentPane({ pane: "pane_3", session: "0123456789abcdee", name: "PeerLive" });
+    fx.setPanes([selfPane(), live]);
+    fx.setClientPanes([selfPane(), live]);
     await pollUntil(async () => JSON.parse(text(await s.tools.get("list_agents").execute("c", { which: "peers" }))).some((a: any) => a.id === id && a.state === "ended" && a.cwd === fx.dir));
+    const provider = s.autocompleteFactories[0]!({
+      getSuggestions: async () => null,
+      applyCompletion: () => {},
+    });
+    let suggestions: any;
+    await pollUntil(async () => {
+      suggestions = await provider.getSuggestions(["@Pe"], 0, 3);
+      return suggestions?.items.some((item: any) => item.label === "@Peer");
+    });
+    assert.deepEqual(suggestions.items.map((item: any) => item.label), ["@PeerLive", "@Peer"]);
+    const completed = suggestions.items[1];
+    assert.equal(completed.description, "ended peer");
+    assert.equal(completed.value, `@Peer (session ${id})`);
     const calls = fx.apiCalls().length;
     assert.match(text(await s.tools.get("stop_agent").execute("c", { agent: "Peer" })), /had already ended/);
     assert.equal(fx.posts("/panes").length, 0);
     assert.ok(fx.apiCalls().slice(calls).every((c) => c.method === "GET"));
-    assert.match(text(await s.tools.get("message_agent").execute("c", { to: "Peer", message: "continue" })), /restarted Peer/);
+    assert.match(text(await s.tools.get("message_agent").execute("c", { to: completed.value, message: "continue" })), /restarted Peer/);
     const body = fx.posts("/panes")[0]!;
     assert.equal(body.session, "session_1");
     assert.equal(body.cwd, process.cwd(), "resume uses the session header cwd, not the observed peer cwd");

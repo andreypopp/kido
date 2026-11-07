@@ -369,9 +369,12 @@ accepts a whole mention from the prompt: `@reviewer (session
 01a0bfcf)` resolves by the id in the parentheses only, so another
 agent's name cannot capture it.
 
-In pi's prompt editor, `@` and a prefix complete live agent rows from
-`list_agents`. Completion excludes ended children and peers. Each row shows the
-name, status, activity and a subagent's parent. The extension wraps
+In pi's prompt editor, `@` and a prefix complete the agent rows of
+`list_agents`: the live ones, and the ended peers that it lists, so a
+stopped peer can be mentioned and messaged back to life. Completion
+excludes ended children. For the same match, a live agent comes before
+an ended peer. Each row shows the name, status, activity and a
+subagent's parent; an ended peer shows that it ended. The extension wraps
 the completion provider to place agent matches first, and delegates
 tokens with no agent match. Completion inserts `@reviewer (session
 01a0bfcf)`, where the id is the shortest prefix, of at least eight
