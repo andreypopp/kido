@@ -385,7 +385,7 @@ fn wait_for(
     timeout: Option<Duration>,
 ) -> io::Result<libc::c_int> {
     let limit = timeout.map(|left| libc::timespec {
-        tv_sec: libc::time_t::try_from(left.as_secs()).unwrap_or(libc::time_t::MAX),
+        tv_sec: left.as_secs().try_into().unwrap_or(i64::MAX),
         tv_nsec: libc::c_long::from(left.subsec_nanos()),
     });
     // SAFETY: fds holds count initialized pollfd entries; the timeout is null or one timespec.
