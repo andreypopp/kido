@@ -32,10 +32,10 @@ subcommand of its own.
 
 | tool | what it uses |
 |---|---|
-| `list_agents(which?)` | `ko api /layout`, `/version`, the registry in the own session |
+| `list_agents(which?)` | `ko api /layout`, `/version`, the registry in the own session, which a top-level pi keeps with `ko api --stream /client` |
 | `read_report(agent, which?)` | the own session's `ko-pi.report` entries |
 | `list_async_bash()` | the process's job registry |
-| `message_agent(to, message, mode?)` | `POST /panes/{t}/messages`; `POST /panes` to restart an ended child |
+| `message_agent(to, message, mode?)` | `POST /panes/{t}/messages`; `POST /panes` to restart an ended child or peer |
 | `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?)` | pi's session directories, `pi --list-models`, `GET /runtimes/NAME`, `POST /panes` |
 | `stop_agent(agent, force?)` | `POST /panes/{t}/messages` kind `stop`, then `POST /panes/{t}/stop` |
 | `async_bash(command, name, stream?)` | a child process of pi through pi's shell configuration (a routed pi: `ko api --stream /runtimes/NAME/exec`) |
@@ -66,7 +66,10 @@ open. An own child adds `model`, `reported` and `report`: the first
 1000 bytes of its last report. `read_report` gives the rest. An
 ended child is a registry entry whose pane is gone, dead or of
 another server instance (`/version`'s `instance`); every ended child
-lists, with `ended`, its cause or "its pane is gone". The agents
+lists, with `ended`, its cause or "its pane is gone". An ended
+peer is a recorded peer ("Peers", below) whose session no live pi
+agent pane runs, by the trust rule; it lists under `all` and `peers` as a peer with
+`ended`, and only while its session file exists. The agents
 come from the panes whose status kind is a pi agent (design.md, "The
 trust rule") and from the caller's own children whose pane has not
 yet published `pi.session`.
@@ -111,7 +114,8 @@ In the parent:
 
 | entry | when | data |
 |---|---|---|
-| `ko-pi.child` | at each spawn and restart | `name`, `session`, `model`, `fork`, `cwd`, the `runtime`, and `pane: { instance, pane }`; the last entry of a name is current |
+| `ko-pi.agent`, role `subagent` | at each spawn and restart | `name`, `session`, `model`, `fork`, `cwd`, the `runtime`, and `pane: { instance, pane }`; the last entry of a name is current |
+| `ko-pi.agent`, role `peer` | when the `/client` stream shows a peer whose facts differ from its last entry, and at a top-level spawn or a peer restart (a top-level host pi only) | `name`, `session`, `cwd`; the last entry of a session is current |
 | `ko-pi.work` | before it sends an own child work, in any mode, and at a spawn or restart with a task | `child` |
 | `ko-pi.report` | when a child's report arrives, before the ack | `child`, `name`, `text`, `id` |
 | `ko-pi.ended` | when it announces a child's ending, and when it stops the child | `child`, `pane` |
@@ -171,7 +175,7 @@ harness mints the child's session id, 32 hex characters. The task
 never enters a command line: it is the pane variable `ko-pi.task`,
 with the text and the sender's session, name and pane, and its JSON
 must fit the variable limit of 1,044,480 bytes. After the request
-returns, the harness appends `ko-pi.child` and, with a task,
+returns, the harness appends `ko-pi.agent` and, with a task,
 `ko-pi.work`.
 
 | variable | what it carries |
@@ -302,13 +306,60 @@ work.
 after the caller's window and names it in the same change, so no
 unnamed window flashes. The task goes as `ko-pi.task` like a child's;
 the new agent delivers it as a message from the caller, because its
-edge does not name the caller. There is no registry entry, no notice
-and no orphan rule. The pane has the default `close: exit`: when pi
+edge does not name the caller. It is a peer ("Peers", below): there
+is no subagent entry, no notice and no orphan rule. The pane has the default `close: exit`: when pi
 exits, the sweep removes it at once, as for any other command, and
 the agent leaves `list_agents`. `resume_from` reads the pi session,
 not the pane, so a closed top-level agent stays resumable. The depth ceiling does not apply; `fork`,
 `resume_from`, `model`, `cwd` and the trusted cwd apply as for a
 child. One of the caller's own children cannot become top-level.
+
+## Peers
+
+A peer of a top-level pi is another top-level pi agent of its ko
+session: a pane whose status kind is a pi agent (design.md, "The
+trust rule"), with `pi.session` and no `parent`. It does not matter
+who started it: `spawn_agent(toplevel: true)`, another agent or a
+person. A subagent is never a peer here, and a child pi records no
+peers.
+
+**Recording.** A top-level host pi (no parent edge, no
+`KO_RUNTIME`) opens `ko api --stream /client` after its own pane
+variables are written, with a hello that shows no window, is not
+focused and takes no part in sizing (protocol.md, section 3), so the
+server never picks it as a window's viewer. It keeps the rows of the
+stream's layout and events, and after each change it appends a peer
+entry for each peer whose name, session or cwd differs from its last
+entry in the session, so a reconnect or a restart of this pi appends
+nothing for a peer that did not change. A stream that ends without a
+`refused` event connects again with a backoff that resets at the
+next `Welcome`; a `refused` before the `Welcome` stops it, as for any
+client. The session's shutdown ends the stream and its timer. After
+a reconnect, the new layout shows every peer that lives, so a peer
+that lives across the outage is recorded.
+
+**Peer activity never notifies the agent.** A peer's start, end or
+cwd change only appends entries to the own session: no message, no
+notice, no turn, no context and no UI notification. The entries are
+read only when a tool resolves an address or lists.
+
+**The model** of a peer is not recorded. A restart reads it from the
+peer's session file by the rule of "Resuming a saved session", so a
+peer comes back on the model that it last ran on, whoever started
+it.
+
+**Names.** Two peers can have the same name; each is its own row,
+and an address that matches several needs the session id or a unique
+prefix (design.md, "Addressing"). A live agent wins over an ended
+peer. A recorded peer does not reserve its name for `spawn_agent`.
+
+**Restart and stop.** `message_agent` in `message` mode to an ended
+peer restarts it ("Restarting through a message"), and
+`spawn_agent(name, resume_from)` of a recorded peer continues it as
+a peer. A peer never gets `ko-pi.work`, a report, a notice or
+`ko-pi.ended`. `stop_agent` stops a live peer as any agent of the
+scope; to an ended peer it answers `NAME had already ended`, sends
+nothing and keeps the entry.
 
 ## A child's life
 
@@ -538,13 +589,14 @@ which reads `pi.session`.
 
 ## Restarting through a message
 
-`message_agent` in `message` mode to an ended own child restarts it:
+`message_agent` in `message` mode to an ended own child or an ended
+recorded peer restarts it. A child restarts as follows:
 `POST /panes` with `--session <file>` of the child's session, or
 `--session-id <id>` when it has no file yet, in the recorded cwd, on
 the file's last model as for a resume (the registry's `model` when the
 file records none), the
 message as `ko-pi.task`, the parent's `ko-pi.work` and a new
-`ko-pi.child` with the new pane. The message is never in pi's argv:
+`ko-pi.agent` with the new pane. The message is never in pi's argv:
 pi's parser reads an argument that starts with `@` as a file, even
 after `--`. The rules:
 
@@ -557,6 +609,17 @@ after `--`. The rules:
   under a lock for that child's session. A second message during the
   restart finds the first one's live pane and goes to it.
 - The new pane's `parent` is the sender's current pane.
+
+A peer restarts as a top-level agent ("A top-level agent"): `POST
+/panes` with the sender's ko session, no `parent`, `close` or
+`KO_AGENT_PARENT_SESSION`, `--session <file>` in the directory of
+the file's header, on the file's last model, and the message as `ko-pi.task`. It is
+refused without a session file: a peer never restarts as an empty
+session. The restart lock and the live-first rule above apply. A
+peer entry has no pane, so the harness keeps the new pane in memory
+as the peer's starting pane until it publishes `pi.session` or ends;
+a second message in that time goes to it. No `ko-pi.work` is
+written, and the reply asks for no report.
 
 ## A job
 
@@ -887,6 +950,17 @@ These nested windows do not follow the document's window order.
   reports while that job runs.
 - A subagent's window moved to another session is outside its
   parent's scope.
+- A top-level pi records only the peers that its `/client` stream
+  shows. A peer that starts and ends while the stream is down, or
+  while this pi does not run, is never recorded.
+- A pi inside a runtime records no peers: the runtime gate refuses
+  `/client` (design-runtimes.md, "Identity on a runtime connection").
+- A routed peer restarts as a host pi: a peer entry holds no runtime.
+  Its recorded cwd is the one that `list_agents` shows, the
+  runtime's for a routed peer; the restart uses the session file's.
+- Two top-level pis that record one peer can both restart it at the
+  same time, because each restart lock is in its own process. Then
+  two pis write one session file.
 - The name claim and the restart lock are in the caller's process.
   Two callers that resume one saved session at the same time can both
   pass the live check, and two pi processes then write one session

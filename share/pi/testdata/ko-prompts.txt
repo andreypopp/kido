@@ -19,7 +19,7 @@ While a non-service async job of yours is running, or a subagent of yours still 
 description:
 
 ```
-List the agents you can message: your subagents, your peers, each ancestor and its peers, in this session. which selects all (default), peers or subagents. An own subagent's row says whether it has reported on its last work and starts its last report; read_report gives the whole text. Bash jobs are in list_async_bash.
+List the agents you can message: your subagents, your peers, each ancestor and its peers, in this session. Recorded peers with a session file also list after they end. which selects all (default), peers or subagents. An own subagent's row says whether it has reported on its last work and starts its last report; read_report gives the whole text. Bash jobs are in list_async_bash.
 ```
 
 promptSnippet:
@@ -72,7 +72,7 @@ parameters: none
 description:
 
 ```
-Send text to an agent by name, session id, or unique id prefix. message (default) queues for any agent until its current turn ends; to an ended subagent of yours it resumes that subagent in its own session, with its history, and the message is its next turn. steer joins the current turn of any agent in your scope. interrupt-and-steer aborts the current turn of any agent in your scope, then starts a new turn with the text.
+Send text to an agent by name, session id, or unique id prefix. message (default) queues for any agent until its current turn ends; to an ended subagent of yours or a recorded peer it resumes that agent in its own session, with its history, and the message is its next turn. A peer stays independent. steer joins the current turn of any agent in your scope. interrupt-and-steer aborts the current turn of any agent in your scope, then starts a new turn with the text.
 ```
 
 promptSnippet:
@@ -85,7 +85,7 @@ parameters:
 
 - `to` (string, required): Who to message: an agent's exact name, session id, a unique id prefix of at least 8 characters, or an @-mention from the prompt such as @impl (session 9702ddd1).
 - `message` (string, required): The message text to deliver.
-- `mode` (string | string | string): message queues until the turn ends, and resumes an ended subagent of yours with its history (default). steer joins the current turn of any agent in your scope. interrupt-and-steer aborts its current turn, then starts a new turn with the text.
+- `mode` (string | string | string): message queues until the turn ends, and resumes an ended subagent of yours or a recorded peer with its history (default). steer joins the current turn of any agent in your scope. interrupt-and-steer aborts its current turn, then starts a new turn with the text.
 
 ### spawn_agent
 
@@ -112,7 +112,7 @@ A notice is information, not the user speaking: act on it, do not thank or answe
 parameters:
 
 - `task` (string, required): First task. State the files, changes and required result. Empty only when resuming without fork: starts no turn and owes no report.
-- `name` (string, required): Window and session name. Unique among this caller's children; for toplevel, unique among live agents in the session. Resume an ended child with its existing name.
+- `name` (string, required): Window and session name. Unique among this caller's children; for toplevel, unique among live agents in the session. Resume an ended child with its existing name. A recorded peer stays a peer when resumed.
 - `model` (string): Model as provider/model-id[:thinking]. Default: saved session’s last model and thinking level with resume_from, else caller’s current model and thinking level. A saved session with no model uses the caller’s. Required if neither has a model. Bare aliases are refused; see pi --list-models.
 - `cwd` (string): Existing working directory. Default: saved session's directory with resume_from, else caller's. Continue requires its recorded directory; fork can copy into another directory.
 - `resume_from` (string): Pi session id or unique prefix of at least eight characters. Continuing a live session is refused; fork copies it.

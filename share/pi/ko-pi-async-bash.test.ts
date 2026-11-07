@@ -67,7 +67,7 @@ test("running jobs and children reserve names, endings release them, and stop pr
     const twins = await Promise.all([tool.execute("a", { command, name: "twin" }), tool.execute("b", { command, name: "TWIN" })]);
     assert.equal(twins.filter((r) => text(r).startsWith("started job")).length, 1);
     assert.match(text(twins.find((r) => !text(r).startsWith("started job"))), /already taken/);
-    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp", pane: { instance: "a".repeat(32), pane: "pane_5" } } });
+    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp", pane: { instance: "a".repeat(32), pane: "pane_5" } } });
     assert.match(text(await tool.execute("c", { command, name: "KID" })), /already taken/);
     assert.match(text(await tool.execute("c", { command, name: "" })), /name is required/);
     writeFileSync(join(fx.dir, "gate"), "");

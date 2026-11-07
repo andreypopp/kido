@@ -45,8 +45,8 @@ test("spawn_agent creates one pane with a parent, close on_exit, the task as a v
 
     assert.match(reply, new RegExp(`^spawned worker \\(session ${session}, window window_10, pane pane_10\\); session id is what resume_from takes later; its result arrives as a notice`));
     assert.match(reply, /list_agents lists this agent and stop_agent stops it/);
-    const [child] = entriesOf(s, "ko-pi.child");
-    assert.deepEqual(child, { owner: "self-session", at: child!.at, name: "worker", session, model: "acme/caller:high", fork: false, cwd: process.cwd(), pane: { instance: INSTANCE, pane: "pane_10" } });
+    const [child] = entriesOf(s, "ko-pi.agent");
+    assert.deepEqual(child, { role: "subagent", owner: "self-session", at: child!.at, name: "worker", session, model: "acme/caller:high", fork: false, cwd: process.cwd(), pane: { instance: INSTANCE, pane: "pane_10" } });
     assert.deepEqual(entriesOf(s, "ko-pi.work").map((work) => [work.owner, work.child]), [["self-session", session]]);
     assert.equal(fx.row("pane_10")?.parent, "pane_1");
   } finally {
@@ -68,7 +68,7 @@ test("a toplevel spawn is one POST with the session and neither parent nor close
     assert.ok(env(body!, "KO_AGENT_SESSION"));
     assert.equal(body!.vars["ko-pi.task"].text, "go");
     assert.match(reply, /independent peer; no report or ending notice$/);
-    assert.deepEqual(entriesOf(s, "ko-pi.child"), []);
+    assert.deepEqual(entriesOf(s, "ko-pi.agent").map((entry) => entry.role), ["peer"]);
     assert.deepEqual(entriesOf(s, "ko-pi.work"), []);
   } finally {
     await fx.restore();
@@ -110,7 +110,7 @@ test("a name taken by an own child is refused, and a failed POST leaves no regis
     await withEnv({ KO_FAKE_SPAWN_FAIL: "no room" }, async () => {
       assert.equal(text(await spawn.execute("c", { name: "worker", task: "x" })), "could not spawn agent: no room");
     });
-    assert.deepEqual(entriesOf(s, "ko-pi.child"), []);
+    assert.deepEqual(entriesOf(s, "ko-pi.agent"), []);
     await spawn.execute("c", { name: "worker", task: "x" });
     assert.match(text(await spawn.execute("c", { name: "Worker", task: "x" })), /^could not spawn agent: the name "Worker" is already taken by one of this session's agents; message it instead$/);
     const concurrent = await Promise.all([spawn.execute("c", { name: "twin", task: "x" }), spawn.execute("c", { name: "twin", task: "x" })]);
@@ -202,7 +202,7 @@ test("invalid session headers and unreadable files return tool errors for resume
     const s = await startSession(fx);
     const id = "0123456789abcdef0123456789abcdef";
     const file = savedSession(join(fx.dir, "sessions", "caller"), fx.dir, id);
-    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", name: "kid", session: id, model: "acme/m:low", fork: false, cwd: fx.dir, pane: { instance: INSTANCE, pane: "pane_77" } } });
+    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: id, model: "acme/m:low", fork: false, cwd: fx.dir, pane: { instance: INSTANCE, pane: "pane_77" } } });
     writeFileSync(file, "{}");
     await withEnv({ PI_CODING_AGENT_DIR: fx.dir }, async () => {
       assert.equal(text(await s.tools.get("spawn_agent").execute("c", { name: "again", task: "", resume_from: id })), `could not spawn agent: invalid session header: ${file}`);
@@ -226,7 +226,7 @@ test("a message to an ended subagent restarts it by --session-id in its recorded
   try {
     fx.setPanes([selfPane()]);
     const s = await startSession(fx);
-    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", name: "kid", session: "kid-session", model: "acme/m:low", fork: false, cwd: "/work/kid", pane: { instance: INSTANCE, pane: "pane_77" } } });
+    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "acme/m:low", fork: false, cwd: "/work/kid", pane: { instance: INSTANCE, pane: "pane_77" } } });
     const message = s.tools.get("message_agent");
     const results = await Promise.all([message.execute("c", { to: "kid", message: "carry on" }), message.execute("c", { to: "kid", message: "also this" })]);
     const texts = results.map(text);
@@ -242,13 +242,13 @@ test("a message to an ended subagent restarts it by --session-id in its recorded
     assert.equal(posts[0]!.parent, "pane_1");
     assert.equal(posts[0]!.vars["ko-pi.task"].text, winning);
     assert.ok(texts[1 - winner]!.startsWith("queued for kid:"), "the other message goes to the pane that the first started");
-    const children = entriesOf(s, "ko-pi.child");
+    const children = entriesOf(s, "ko-pi.agent");
     assert.deepEqual(children.map((child) => child.pane.pane), ["pane_77", "pane_10"]);
     assert.equal(entriesOf(s, "ko-pi.work").length, 2, "the restart and the second message are each work");
     assert.deepEqual(fx.posts("/panes/pane_10/messages").map((post) => post.text), [losing]);
 
     const steered = text(await (async () => {
-      s.entries.push({ type: "custom", customType: "ko-pi.child", data: { ...children[0], owner: "self-session", pane: { instance: INSTANCE, pane: "pane_78" } } });
+      s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { role: "subagent", ...children[0], owner: "self-session", pane: { instance: INSTANCE, pane: "pane_78" } } });
       return message.execute("c", { to: "kid", message: "now", mode: "steer" });
     })());
     assert.equal(steered, "could not message kid: kid is no longer running", "only a message restarts");
@@ -265,7 +265,7 @@ test("message_agent continues an ended child's session file in the normal tree",
     const id = "0123456789abcdef0123456789abcdef";
     const file = savedSession(join(fx.dir, "sessions", "caller"), fx.dir, id);
     recordModelChanges(file);
-    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", name: "kid", session: id, model: "acme/m:low", fork: false, cwd: fx.dir, pane: { instance: INSTANCE, pane: "pane_77" } } });
+    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: id, model: "acme/m:low", fork: false, cwd: fx.dir, pane: { instance: INSTANCE, pane: "pane_77" } } });
     const result = await withEnv({ PI_CODING_AGENT_DIR: fx.dir }, async () => text(await s.tools.get("message_agent").execute("c", { to: "kid", message: "continue" })));
     assert.match(result, /^restarted kid in pane pane_10;/);
     assert.deepEqual(fx.posts("/panes")[0]!.command.argv.slice(3, 7), ["ko-pi", "--session", file, "--name"]);

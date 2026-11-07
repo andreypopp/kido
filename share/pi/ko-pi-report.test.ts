@@ -178,7 +178,7 @@ test("a child reports nothing while a bash run of its own lives or a subagent of
       await idleTurn(s, "waiting");
       assert.deepEqual(fx.posts(NOTICES), [], "a live run");
       await s.tools.get("stop_async_bash").execute("c", { job: job.details.job });
-      s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp", pane: { instance: "a".repeat(32), pane: "pane_5" } } });
+      s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp", pane: { instance: "a".repeat(32), pane: "pane_5" } } });
       s.entries.push({ type: "custom", customType: "ko-pi.work", data: { owner: "self-session", child: "kid-session", at: 1 } });
       fx.setPanes([...fx.panes(), agentPane({ pane: "pane_5", session: "kid-session", name: "kid", parent: "pane_1" })]);
       await idleTurn(s, "waiting");

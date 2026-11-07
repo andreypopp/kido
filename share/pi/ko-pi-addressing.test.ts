@@ -22,14 +22,14 @@ function tree(fx: Fixture): void {
   ]);
 }
 
-const kid = { name: "kid", session: "kid-session", model: "acme/m:high", fork: false, cwd: "/work/kid", pane: { instance: INSTANCE, pane: "pane_5" } };
+const kid = { role: "subagent", name: "kid", session: "kid-session", model: "acme/m:high", fork: false, cwd: "/work/kid", pane: { instance: INSTANCE, pane: "pane_5" } };
 
 test("list_agents lists the scope with each relationship, depth and the own subagent's report", async () => {
   const fx = makeFixture();
   try {
     tree(fx);
     const s = await startSession(fx, { name: "Self" });
-    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", ...kid } });
+    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { owner: "self-session", ...kid } });
     s.entries.push({ type: "custom", customType: "ko-pi.work", data: { owner: "self-session", child: "kid-session", at: 1 } });
     s.entries.push({ type: "custom", customType: "ko-pi.report", data: { owner: "self-session", child: "kid-session", name: "kid", text: "x".repeat(1500), at: 2, id: "r" } });
     const list = s.tools.get("list_agents");
@@ -99,10 +99,10 @@ test("an ended subagent lists from the registry, with the cause of its lingering
   try {
     fx.setPanes([selfPane(), agentPane({ pane: "pane_5", session: "kid-session", name: "kid", parent: "pane_1", dead: exited(1) })]);
     const s = await startSession(fx);
-    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", ...kid } });
-    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", ...kid, name: "old", session: "old-session", pane: { instance: INSTANCE, pane: "pane_77" } } });
-    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "other-session", ...kid, name: "foreign", session: "foreign-session" } });
-    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", ...kid, name: "stale", session: "stale-session", pane: { instance: "b".repeat(32), pane: "pane_1" } } });
+    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { owner: "self-session", ...kid } });
+    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { owner: "self-session", ...kid, name: "old", session: "old-session", pane: { instance: INSTANCE, pane: "pane_77" } } });
+    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { owner: "other-session", ...kid, name: "foreign", session: "foreign-session" } });
+    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { owner: "self-session", ...kid, name: "stale", session: "stale-session", pane: { instance: "b".repeat(32), pane: "pane_1" } } });
     const rows = JSON.parse(text(await s.tools.get("list_agents").execute("c", {}))) as Array<Record<string, unknown>>;
     assert.deepEqual(
       rows.map((row) => [row.name, row.state, row.ended, row.canMessage]).sort(),
@@ -216,7 +216,7 @@ test("read_report returns the whole last report or all of them, only for an own 
     tree(fx);
     const s = await startSession(fx);
     const data = (extra: Record<string, unknown>) => ({ owner: "self-session", child: "kid-session", name: "kid", id: "r", ...extra });
-    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", ...kid } });
+    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { owner: "self-session", ...kid } });
     const read = s.tools.get("read_report");
     assert.equal(text(await read.execute("c", { agent: "kid" })), "kid has not reported");
     s.entries.push({ type: "custom", customType: "ko-pi.report", data: data({ text: "first", at: 1 }) });

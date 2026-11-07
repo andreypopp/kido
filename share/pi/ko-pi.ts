@@ -50,6 +50,8 @@ import type { components } from "./ko-api.d.ts";
 type Api = components["schemas"];
 
 const KO_TIMEOUT_MS = 5000;
+const PEER_RESULT_RULE = "independent peer; no report or ending notice";
+const reconnectBackoff = (previous: number): number => Math.min(previous ? previous * 2 : envMs("KO_RECEIVER_BACKOFF_MS", 200), 5000);
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
 const VAR_SESSION = "pi.session";
@@ -60,7 +62,7 @@ const VAR_RUNTIME = "pi.runtime";
 const VAR_KO_RUNTIME = "ko.runtime";
 const VAR_KEYS = [VAR_SESSION, VAR_NAME, VAR_ACTIVITY];
 
-const ENTRY_CHILD = "ko-pi.child";
+const ENTRY_AGENT = "ko-pi.agent";
 const ENTRY_WORK = "ko-pi.work";
 const ENTRY_REPORT = "ko-pi.report";
 const ENTRY_ENDED = "ko-pi.ended";
@@ -200,6 +202,10 @@ function rootRecord(programStatus: Api["ProgramStatus"] | null): { app: string; 
 
 function piAgent(kind: Api["Live"] | null) {
   return (kind?.type === "host" || kind?.type === "runtime") && kind.pane.type === "pi_agent" ? kind.pane : undefined;
+}
+
+function peerPanes(panes: PaneInfo[], of: PaneInfo): PaneInfo[] {
+  return panes.filter((p) => p.session === of.session && p.pane !== of.pane && p.parent === of.parent);
 }
 
 type Place = { session: string; window: string };
@@ -359,7 +365,11 @@ type AgentRow = {
 
 type ChildRuntime = { name: string; mode: "routed" | "inside" };
 
+type PeerData = { role: "peer"; name: string; session: string; cwd: string };
+type AgentData = ChildData | PeerData;
+
 type ChildData = {
+  role: "subagent";
   owner: string;
   name: string;
   session: string;
@@ -1549,22 +1559,111 @@ export default function (pi: ExtensionAPI) {
   const lastIndex = (all: Entry[], customType: string, match: (data: Record<string, unknown>) => boolean): number =>
     all.findLast((entry) => entry.customType === customType && match(entry.data))?.index ?? -1;
 
-  const childOf = (data: Record<string, unknown>): ChildData | undefined => {
-    const { name, session: id, model, cwd, pane: where } = data;
-    if (typeof name !== "string" || typeof id !== "string" || typeof model !== "string" || typeof cwd !== "string" || !isRecord(where)) return undefined;
-    const { runtime: recorded } = data;
-    const runtime = isRecord(recorded) && typeof recorded.name === "string" && (recorded.mode === "routed" || recorded.mode === "inside") ? { runtime: { name: recorded.name, mode: recorded.mode === "routed" ? ("routed" as const) : ("inside" as const) } } : {};
-    return { owner: ownSessionId ?? "", name, session: id, model, fork: data.fork === true, cwd, ...runtime, pane: { instance: str(where.instance), pane: str(where.pane) } };
+  const agentOf = (data: Record<string, unknown>): AgentData | undefined => {
+    const { name, session: id, cwd } = data;
+    if (typeof name !== "string" || typeof id !== "string" || typeof cwd !== "string") return undefined;
+    switch (data.role) {
+      case "peer": return { role: "peer", name, session: id, cwd };
+      case "subagent": {
+        const { model, pane: where, runtime: recorded } = data;
+        if (typeof model !== "string" || !isRecord(where)) return undefined;
+        const runtime = isRecord(recorded) && typeof recorded.name === "string" && (recorded.mode === "routed" || recorded.mode === "inside") ? { runtime: { name: recorded.name, mode: recorded.mode === "routed" ? ("routed" as const) : ("inside" as const) } } : {};
+        return { role: "subagent", owner: ownSessionId ?? "", name, session: id, model, fork: data.fork === true, cwd, ...runtime, pane: { instance: str(where.instance), pane: str(where.pane) } };
+      }
+      default: return undefined;
+    }
   };
 
-  const children = (all = entries()): ChildData[] => {
-    const current = new Map<string, ChildData>();
-    for (const entry of all) {
-      if (entry.customType !== ENTRY_CHILD) continue;
-      const child = childOf(entry.data);
-      if (child) current.set(child.name, child);
+  const agents = (all = entries()): AgentData[] => {
+    const current = new Map<string, AgentData>();
+    for (const { customType, data } of all) {
+      if (customType !== ENTRY_AGENT) continue;
+      const agent = agentOf(data);
+      if (agent) current.set(`${agent.role}:${agent.role === "peer" ? agent.session : agent.name}`, agent);
     }
     return [...current.values()];
+  };
+  const children = (all = entries()): ChildData[] => agents(all).filter((agent): agent is ChildData => agent.role === "subagent");
+  const peers = (all = entries()): PeerData[] => agents(all).filter((agent): agent is PeerData => agent.role === "peer");
+  const pendingPeers = new Map<string, string>();
+  let recordsPeers = false;
+
+  let peerClient: ChildProcess | undefined;
+  let peerRetry: NodeJS.Timeout | undefined;
+  let peerStopped = true;
+  const stopPeerClient = (): void => {
+    peerStopped = true;
+    clearTimeout(peerRetry);
+    peerRetry = undefined;
+    peerClient?.kill();
+    peerClient = undefined;
+  };
+  const startPeerClient = (): void => {
+    if (!ko || !recordsPeers) return;
+    peerStopped = false;
+    let delay = 0;
+    const connect = (): void => {
+      if (peerStopped || !ko) return;
+      let layout: Api["LayoutPanes"] | undefined;
+      let welcomed = false;
+      let refused = false;
+
+      const recordPeers = (): void => {
+        if (!layout) return;
+        const panes = parsePanes(layout);
+        const me = panes.find((p) => p.pane === pane);
+        if (!me) return;
+        const recorded = new Map(peers().map((peer) => [peer.session, peer]));
+        for (const p of peerPanes(panes, me)) {
+          const id = piAgent(p.kind)?.session;
+          if (p.parent || p.dead || !id || id === ownSessionId) continue;
+          const facts: PeerData = { role: "peer", name: p.name || p.title, session: id, cwd: p.cwd };
+          const previous = recorded.get(id);
+          if (previous?.name === facts.name && previous.cwd === facts.cwd) continue;
+          append(ENTRY_AGENT, facts);
+        }
+      };
+      const receive = (event: Api["ClientEvent"]): void => {
+        if (peerStopped) return;
+        if (event.type === "welcome") { welcomed = true; layout = undefined; delay = 0; }
+        else if (event.type === "refused") { refused = !welcomed; }
+        else if (event.type === "layout" && welcomed) {
+          const rows = new Map(layout?.panes.map((row) => [row.id, row]));
+          for (const row of event.panes) rows.set(row.id, row);
+          const placed = placesOf(event);
+          layout = { ...event, panes: [...rows.values()].filter((row) => placed.has(row.id)) };
+          recordPeers();
+        }
+        else if (layout && "pane" in event) {
+          const row = layout.panes.find((p) => p.id === event.pane);
+          if (!row) return;
+          switch (event.type) {
+            case "status": row.status = event.status; break;
+            case "pwd": row.cwd = event.pwd; break;
+            case "dead": row.dead = event.dead; break;
+            case "var": row.vars[event.name] = event.value; break;
+            case "var_deleted": delete row.vars[event.name]; break;
+            default: return;
+          }
+          recordPeers();
+        }
+      };
+      const child = openStream(ko, "/client", "pipe");
+      peerClient = child;
+      const hello: Api["ClientRequest"] = { type: "hello", name: "ko-pi", focused: false, ignore_size: true, size: { cols: 80, rows: 24 } };
+      child.stdin?.write(JSON.stringify(hello) + "\n");
+      child.stdout?.on("data", lineReader({ partial: Buffer.alloc(0) }, (line) => {
+        try { receive(JSON.parse(line)); } catch {}
+      }));
+      child.on("close", () => {
+        if (peerClient === child) peerClient = undefined;
+        if (peerStopped || refused) return;
+        delay = reconnectBackoff(delay);
+        peerRetry = setTimeout(connect, delay);
+        peerRetry.unref();
+      });
+    };
+    connect();
   };
 
   const childReports = (child: ChildData): Array<{ text: string; at: number }> =>
@@ -1610,7 +1709,7 @@ export default function (pi: ExtensionAPI) {
 
   const endedAfter = (child: ChildData): boolean => {
     const all = entries();
-    const spawned = lastIndex(all, ENTRY_CHILD, (data) => data.name === child.name);
+    const spawned = lastIndex(all, ENTRY_AGENT, (data) => data.role === "subagent" && data.name === child.name);
     return lastIndex(all, ENTRY_ENDED, (data) => data.child === child.session) > spawned;
   };
 
@@ -1650,31 +1749,41 @@ export default function (pi: ExtensionAPI) {
     const relationship = new Map<string, AgentRow["relationship"]>();
     if (me) {
       const ancestors = ancestorsOf(me);
-      const peers = (of: PaneInfo): PaneInfo[] => panes.filter((p) => p.session === mySession && p.pane !== of.pane && p.parent === of.parent);
       ancestors.forEach((a, i) => {
         relationship.set(a.pane, i === 0 ? "parent" : "relative");
-        for (const peer of peers(a)) if (!relationship.has(peer.pane)) relationship.set(peer.pane, "relative");
+        for (const peer of peerPanes(panes, a)) if (!relationship.has(peer.pane)) relationship.set(peer.pane, "relative");
       });
-      for (const peer of peers(me)) relationship.set(peer.pane, "peer");
+      for (const peer of peerPanes(panes, me)) relationship.set(peer.pane, "peer");
       for (const p of panes) if (p.parent === me.pane && p.session === mySession) relationship.set(p.pane, "own");
     }
     const branch = entries();
     const marks = childMarks(branch);
     const registry = children(branch);
+    const registryPeers = peers(branch);
+    const pending = new Map<string, PeerData>();
+    for (const [id, paneId] of pendingPeers) {
+      const row = byPane.get(paneId);
+      if (!row || row.dead || piAgent(row.kind)?.session === id) pendingPeers.delete(id);
+      else {
+        const peer = registryPeers.find((peer) => peer.session === id);
+        if (peer) pending.set(paneId, peer);
+      }
+    }
     const alive = new Map(registry.filter((c) => c.pane.instance === instance).map((c) => [c.pane.pane, c]));
     const reportOf = (child: ChildData): string | undefined => marks.get(child.session)?.text;
     const all: AgentRow[] = [];
     const elsewhere: AgentRow[] = [];
     for (const p of panes) {
       const child = alive.get(p.pane);
+      const peer = pending.get(p.pane);
       const self = p.pane === pane;
       const agent = piAgent(p.kind);
-      if (p.dead || !(agent || (child && p.parent === pane))) continue;
+      if (p.dead || !(agent || peer || (child && p.parent === pane))) continue;
       const parentPane = byPane.get(p.parent);
       const row: AgentRow = {
-        id: agent?.session || child?.session || p.pane,
-        name: p.name || child?.name || p.title,
-        named: p.name !== "" || !!child,
+        id: agent?.session || child?.session || peer?.session || p.pane,
+        name: p.name || child?.name || peer?.name || p.title,
+        named: p.name !== "" || !!child || !!peer,
         pane: p.pane,
         window: p.window,
         status: p.root?.state ?? "starting",
@@ -1723,6 +1832,13 @@ export default function (pi: ExtensionAPI) {
         reported: childReported(child, marks),
         ...(report === undefined ? {} : { report: utf8Prefix(report, MAX_REPORT_BYTES) }),
       });
+    }
+    const liveSessions = new Set(all.concat(elsewhere).filter((row) => row.state === "running").map((row) => row.id));
+    const savedSessions = new Set(registryPeers.length ? sessionFiles(session?.sessionManager.getSessionDir()).map((file) => file.id) : []);
+    for (const peer of registryPeers) {
+      if (liveSessions.has(peer.session)) continue;
+      if (!savedSessions.has(peer.session)) continue;
+      all.push({ id: peer.session, name: peer.name, named: true, pane: "", window: "", status: "ended", activity: "", parent: "", depth: 0, self: false, cwd: peer.cwd, canMessage: false, kind: "agent", relationship: "peer", state: "ended", ended: "its pane is gone" });
     }
     const rows = all.filter((a) => !a.self && a.relationship !== "other");
     const ancestors = me ? ancestorsOf(me) : [];
@@ -2047,7 +2163,7 @@ export default function (pi: ExtensionAPI) {
   const onStreamExit = (): void => {
     if (!receiving) return;
     receiver = null;
-    receiverBackoff = Math.min(receiverBackoff ? receiverBackoff * 2 : envMs("KO_RECEIVER_BACKOFF_MS", 200), 5000);
+    receiverBackoff = reconnectBackoff(receiverBackoff);
     receiverTimer = setTimeout(openReceiver, receiverBackoff);
     receiverTimer.unref();
   };
@@ -2507,6 +2623,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const formatModel = (provider: string, id: string, thinking?: string): string => `${provider}/${id}${thinking === undefined ? "" : `:${thinking}`}`;
+  const callerModel = (ctx: ExtensionContext): string | undefined => ctx.model ? formatModel(ctx.model.provider, ctx.model.id, pi.getThinkingLevel()) : undefined;
 
   const readSavedSession = (file: { id: string; path: string }, registry: ExtensionContext["modelRegistry"]): { cwd: string; model: string | undefined } | { error: string } => {
     let content: string;
@@ -2572,8 +2689,16 @@ export default function (pi: ExtensionAPI) {
     return isPlacement(placement) ? { placement } : { error: apiError(answer).message };
   };
 
-  const recordChild = (plan: Plan, placement: Api["Placement"]): void => {
-    append(ENTRY_CHILD, {
+  const recordAgent = (plan: Plan, placement: Api["Placement"]): void => {
+    if (plan.toplevel) {
+      if (recordsPeers) {
+        append(ENTRY_AGENT, { role: "peer", name: plan.name, session: plan.session, cwd: plan.cwd });
+        pendingPeers.set(plan.session, placement.pane);
+      }
+      return;
+    }
+    append(ENTRY_AGENT, {
+      role: "subagent",
       name: plan.name,
       session: plan.session,
       model: plan.model,
@@ -2585,7 +2710,7 @@ export default function (pi: ExtensionAPI) {
     if (plan.task) append(ENTRY_WORK, { child: plan.session });
   };
 
-  const restartChild = (child: ChildData, task: string): Promise<{ placement: Api["Placement"] } | { running: AgentRow } | { error: string }> =>
+  const restartAgent = (child: AgentData, task: string): Promise<{ placement: Api["Placement"] } | { running: AgentRow } | { error: string }> =>
     withRestartLock(child.session, async () => {
       const snapshot = await discovery();
       if (!snapshot.ok) return { error: "could not read the layout" };
@@ -2597,10 +2722,17 @@ export default function (pi: ExtensionAPI) {
       if (!session) return { error: "no active session" };
       const saved = file ? readSavedSession(file, session.modelRegistry) : undefined;
       if (saved && "error" in saved) return saved;
-      const plan: Plan = { name: child.name, session: child.session, model: saved?.model ?? child.model, cwd: child.cwd, runtime: child.runtime, task, mode: file ? { kind: "continue", file: file.path } : { kind: "fresh" }, toplevel: false, koSession: snapshot.me?.session ?? "" };
+      if (child.role === "peer" && !file) return { error: `session file is missing for ${child.session}` };
+      let role: Pick<Plan, "toplevel" | "cwd" | "runtime"> & { model: string | undefined };
+      switch (child.role) {
+        case "peer": role = { toplevel: true, cwd: saved?.cwd ?? child.cwd, model: saved?.model ?? callerModel(session) }; break;
+        case "subagent": role = { toplevel: false, cwd: child.cwd, runtime: child.runtime, model: saved?.model ?? child.model }; break;
+      }
+      if (!role.model) return { error: "caller has no model; specify model" };
+      const plan: Plan = { name: child.name, session: child.session, ...role, model: role.model, task, mode: file ? { kind: "continue", file: file.path } : { kind: "fresh" }, koSession: snapshot.me?.session ?? "" };
       const made = await createPane(plan);
       if ("error" in made) return made;
-      recordChild(plan, made.placement);
+      recordAgent(plan, made.placement);
       return made;
     });
 
@@ -2705,7 +2837,7 @@ export default function (pi: ExtensionAPI) {
     name: "list_agents",
     label: "List Agents",
     description:
-      "List the agents you can message: your subagents, your peers, each ancestor and its peers, in this session. which selects all (default), peers or subagents. An own subagent's row says whether it has reported on its last work and starts its last report; read_report gives the whole text. Bash jobs are in list_async_bash.",
+      "List the agents you can message: your subagents, your peers, each ancestor and its peers, in this session. Recorded peers with a session file also list after they end. which selects all (default), peers or subagents. An own subagent's row says whether it has reported on its last work and starts its last report; read_report gives the whole text. Bash jobs are in list_async_bash.",
     promptSnippet: "list_agents(which?) - discover the agents you can message, and your own subagents to stop with stop_agent",
     parameters: Type.Object(
       {
@@ -2767,7 +2899,7 @@ export default function (pi: ExtensionAPI) {
     name: "message_agent",
     label: "Message Agent",
     description:
-      "Send text to an agent by name, session id, or unique id prefix. message (default) queues for any agent until its current turn ends; to an ended subagent of yours it resumes that subagent in its own session, with its history, and the message is its next turn. steer joins the current turn of any agent in your scope. interrupt-and-steer aborts the current turn of any agent in your scope, then starts a new turn with the text.",
+      "Send text to an agent by name, session id, or unique id prefix. message (default) queues for any agent until its current turn ends; to an ended subagent of yours or a recorded peer it resumes that agent in its own session, with its history, and the message is its next turn. A peer stays independent. steer joins the current turn of any agent in your scope. interrupt-and-steer aborts the current turn of any agent in your scope, then starts a new turn with the text.",
     promptSnippet: "message_agent(to, message, mode?) - send a message to another agent in this session",
     parameters: Type.Object(
       {
@@ -2776,7 +2908,7 @@ export default function (pi: ExtensionAPI) {
         }),
         message: Type.String({ description: "The message text to deliver." }),
         mode: Type.Optional(Type.Union([Type.Literal("message"), Type.Literal("steer"), Type.Literal("interrupt-and-steer")], {
-          description: "message queues until the turn ends, and resumes an ended subagent of yours with its history (default). steer joins the current turn of any agent in your scope. interrupt-and-steer aborts its current turn, then starts a new turn with the text.",
+          description: "message queues until the turn ends, and resumes an ended subagent of yours or a recorded peer with its history (default). steer joins the current turn of any agent in your scope. interrupt-and-steer aborts its current turn, then starts a new turn with the text.",
         })),
       },
       { additionalProperties: false },
@@ -2793,15 +2925,15 @@ export default function (pi: ExtensionAPI) {
       let target = resolved.agent;
       const name = agentName(target);
       if (target.self) return reply(`${name} is this agent`);
-      const child = target.relationship === "own" ? children().find((c) => c.session === target.id) : undefined;
+      const child = agents().find((c) => c.session === target.id);
       if (target.state === "ended") {
         if (!child || mode !== "message") return reply(`could not message ${params.to}: ${name} is no longer running`);
-        const restarted = await restartChild(child, params.message);
+        const restarted = await restartAgent(child, params.message);
         if ("error" in restarted) return reply(`could not message ${params.to}: ${restarted.error}`);
-        if ("placement" in restarted) return reply(`restarted ${name} in pane ${restarted.placement.pane}; ${liveRunRule(SPAWN_RESULT_RULE)}`);
+        if ("placement" in restarted) return reply(`restarted ${name} in pane ${restarted.placement.pane}; ${child.role === "peer" ? PEER_RESULT_RULE : liveRunRule(SPAWN_RESULT_RULE)}`);
         target = restarted.running;
       }
-      if (child) markChildWork(child);
+      if (child?.role === "subagent") markChildWork(child);
       const kind: SendKind = mode === "interrupt-and-steer" ? "interrupt" : mode;
       const result = await sendIntent(target.pane, kind, params.message, routed && !("refusal" in routed) ? { data: { runtime: routed.name } } : {});
       const sent = deliveryText(name, mode, result, target.status === "working", true);
@@ -2827,7 +2959,7 @@ export default function (pi: ExtensionAPI) {
           description:
             "First task. State the files, changes and required result. Empty only when resuming without fork: starts no turn and owes no report.",
         }),
-        name: Type.String({ description: "Window and session name. Unique among this caller's children; for toplevel, unique among live agents in the session. Resume an ended child with its existing name." }),
+        name: Type.String({ description: "Window and session name. Unique among this caller's children; for toplevel, unique among live agents in the session. Resume an ended child with its existing name. A recorded peer stays a peer when resumed." }),
         model: Type.Optional(
           Type.String({
             description:
@@ -2898,12 +3030,13 @@ export default function (pi: ExtensionAPI) {
         if ("error" in saved) return refuse(saved.error);
         source = { ...file, ...saved };
       }
-      const model = params.model ?? source?.model ?? (ctx.model ? formatModel(ctx.model.provider, ctx.model.id, pi.getThinkingLevel()) : null);
+      const model = params.model ?? source?.model ?? callerModel(ctx);
       if (!model) return refuse("caller has no model; specify model");
       const forkFile = params.fork ? source?.path ?? ctx.sessionManager.getSessionFile() : undefined;
       if (params.fork && !forkFile) return refuse("caller has no session file to copy");
       const mode: Plan["mode"] = forkFile ? { kind: "copy", file: forkFile } : source ? { kind: "continue", file: source.path } : { kind: "fresh" };
-      const toplevel = !!params.toplevel;
+      const recordedPeer = mode.kind === "continue" && source ? peers().find((p) => p.session === source.id) : undefined;
+      const toplevel = !!params.toplevel || !!recordedPeer;
       const cwd = resolve(ctx.cwd, params.cwd ?? source?.cwd ?? ctx.cwd);
       if (mode.kind === "continue" && source && cwd !== resolve(source.cwd)) return refuse(`a continued session runs in its recorded directory ${source.cwd}; fork copies it into another`);
       let directoryExists = false;
@@ -2915,7 +3048,7 @@ export default function (pi: ExtensionAPI) {
         const snapshot = await discovery();
         if (!snapshot.ok || !snapshot.me) return refuse("could not read the layout");
         if (mode.kind === "continue" && !toplevel && snapshot.ancestors.includes(childSession)) return refuse(`session ${childSession} is an ancestor of this session`);
-        if (mode.kind === "continue" && snapshot.panes.some((p) => p.sessionVar === childSession && !p.dead)) return refuse(`session ${childSession} is live in a pane`);
+        if (mode.kind === "continue" && (snapshot.panes.some((p) => p.sessionVar === childSession && !p.dead) || snapshot.all.some((a) => a.id === childSession && a.state === "running"))) return refuse(`session ${childSession} is live in a pane`);
         const existing = mode.kind === "continue" ? children().find((c) => c.session === childSession) : undefined;
         if (existing && (toplevel || existing.name !== name)) return refuse("resume this child with its existing name and without toplevel");
         if (!claimName(name)) return taken();
@@ -2940,11 +3073,11 @@ export default function (pi: ExtensionAPI) {
           };
           const made = await createPane(plan);
           if ("error" in made) return refuse(made.error);
-          if (!toplevel) recordChild(plan, made.placement);
+          recordAgent(plan, made.placement);
           const { window, pane: childPane } = made.placement;
           const inRuntime = childRuntime?.name ?? process.env.KO_RUNTIME;
           return reply(
-            `spawned ${name} (session ${childSession}, window ${window}, pane ${childPane}${inRuntime ? `, in runtime ${inRuntime}` : ""})${mode.kind === "copy" ? `, forked from session ${source?.id ?? ownSessionId}` : ""}; session id is what resume_from takes later; ${toplevel ? "independent peer; no report or ending notice" : task ? liveRunRule(SPAWN_RESULT_RULE) : SPAWN_RESULT_RULE}`,
+            `spawned ${name} (session ${childSession}, window ${window}, pane ${childPane}${inRuntime ? `, in runtime ${inRuntime}` : ""})${mode.kind === "copy" ? `, forked from session ${source?.id ?? ownSessionId}` : ""}; session id is what resume_from takes later; ${toplevel ? PEER_RESULT_RULE : task ? liveRunRule(SPAWN_RESULT_RULE) : SPAWN_RESULT_RULE}`,
             { session: childSession, name, window, pane: childPane, fork: mode.kind === "copy" },
           );
         } finally { releaseName(name); }
@@ -3220,6 +3353,7 @@ export default function (pi: ExtensionAPI) {
     pane = process.env.KO_PANE || null;
     const parent = process.env.KO_AGENT_PARENT_SESSION;
     edge = ownSessionId && parent && process.env.KO_AGENT_SESSION === ownSessionId ? { parent } : null;
+    recordsPeers = !edge && !process.env.KO_RUNTIME;
     const previousExit = globalThis.__koPiExtensionExit;
     if (previousExit) process.removeListener("exit", previousExit);
     globalThis.__koPiExtensionExit = unsetVarsSync;
@@ -3279,6 +3413,7 @@ export default function (pi: ExtensionAPI) {
       ]);
       await markRouted();
       await readInstance();
+      startPeerClient();
     }
     adoptJobs();
     const wrapsBash = registerLocalBash(ctx) || !!(routed && !("refusal" in routed));
@@ -3374,6 +3509,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {
     startupCancelled = true;
+    stopPeerClient();
+    pendingPeers.clear();
     clearImmediate(startup);
     await starting;
     const reason = event?.reason;

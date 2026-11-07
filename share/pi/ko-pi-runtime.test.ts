@@ -641,7 +641,7 @@ test("spawn_agent with a runtime starts a routed child, or an inside child by th
     assert.equal(first!.cwd, repo);
     assert.equal(env(first!, "KO_AGENT_TRUSTED_CWD"), repo, "the host cwd, unmapped");
     assert.match(routedChild, /^spawned viahost \(session [0-9a-f]{32}, window window_10, pane pane_10, in runtime dev\);/);
-    const [entry] = entriesOf(s, "ko-pi.child");
+    const [entry] = entriesOf(s, "ko-pi.agent");
     assert.deepEqual(entry!.runtime, { name: "dev", mode: "routed" });
 
     const insideChild = text(await spawnAgent({ name: "inside", runtime: "inner" }));

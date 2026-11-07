@@ -100,7 +100,9 @@ The extension uses only these interfaces of ko:
   `POST /panes/pane_N/stop`; `GET /panes/pane_N/screen?history=all`;
   `PUT` and `DELETE` on `/panes/$KO_PANE/vars`.
 - `ko api --stream` for its own message stream,
-  `/panes/$KO_PANE/messages` (protocol.md, section 7).
+  `/panes/$KO_PANE/messages` (protocol.md, section 7), and, in a
+  top-level host pi, `/client` for its peers (design-subagents.md,
+  "Peers").
 - In a routed pi, `GET /runtimes/NAME` and `ko api --stream
   /runtimes/NAME/exec` for its tools and its jobs
   (design-runtimes.md, "Agents in a runtime").
@@ -357,7 +359,7 @@ target resolves by these rules in order:
    characters. A shorter prefix that matches an id is refused for its
    length.
 
-Each rule prefers a live agent over an ended child and reports its own
+Each rule prefers a live agent over an ended child or peer and reports its own
 ambiguity. A target in another ko session is reported as such, not as
 "not found". Unnamed pi sessions match only by id. Native-only panes
 have no addressable session.
@@ -368,7 +370,7 @@ accepts a whole mention from the prompt: `@reviewer (session
 agent's name cannot capture it.
 
 In pi's prompt editor, `@` and a prefix complete live agent rows from
-`list_agents`. Completion excludes ended children. Each row shows the
+`list_agents`. Completion excludes ended children and peers. Each row shows the
 name, status, activity and a subagent's parent. The extension wraps
 the completion provider to place agent matches first, and delegates
 tokens with no agent match. Completion inserts `@reviewer (session
@@ -524,7 +526,9 @@ nothing more is needed, or continue it with `message_agent`.
 own child starts it again in a new pane under the same pi session,
 with `ko-pi --session-id <id>` and the message as its task. A reused
 name means "message it". design-subagents.md, "Restarting through a
-message", gives the rules. `spawn_agent` with `resume_from` continues
+message", gives the rules. An ended peer that a top-level pi
+recorded restarts the same way, as a top-level agent
+(design-subagents.md, "Peers"). `spawn_agent` with `resume_from` continues
 any saved session that no pane holds.
 
 ## Steer, interrupt and stop

@@ -126,7 +126,7 @@ test("a notice that cannot be recorded is refused, and one that can is acked and
     fx.setPanes([selfPane()]);
     const s = await startSession(fx);
     const report = { type: "pane", pane: "pane_5", session: "kid-session", name: "kid" };
-    s.entries.push({ type: "custom", customType: "ko-pi.child", data: { owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp", pane: { instance: "a".repeat(32), pane: "pane_5" } } });
+    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp", pane: { instance: "a".repeat(32), pane: "pane_5" } } });
     s.failAppends.add("ko-pi.report");
     fx.feed({ id: "rep-fail-001", kind: "notice", text: "done", data: { report: true }, relation: "child", from: report });
     await pollUntil(() => fx.acks().some((ack) => ack.id === "rep-fail-001"), 2000, "the verdict");

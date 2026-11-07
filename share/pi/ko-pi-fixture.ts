@@ -18,6 +18,7 @@ import { join, delimiter } from "node:path";
 import { SessionManager, initTheme } from "@earendil-works/pi-coding-agent";
 
 import koPi from "./ko-pi.ts";
+import type { components } from "./ko-api.d.ts";
 
 initTheme("dark");
 
@@ -125,6 +126,10 @@ export interface Fixture {
   sessions: Array<() => Promise<unknown>>;
   setPi(script: string): void;
   setPanes(panes: PaneRow[]): void;
+  setClientPanes(panes: PaneRow[]): void;
+  clientEvent(event: components["schemas"]["ClientEvent"]): void;
+  dropClient(): void;
+  clientLayouts(): Array<{ panes: unknown[] }>;
   panes(): PaneRow[];
   row(pane: string): PaneRow | undefined;
   apiCalls(): ApiCall[];
@@ -217,6 +222,10 @@ export function makeFixture(): Fixture {
   process.env.KO_FAKE_KO = cachedFakeKo;
   process.env.KO_FAKE_API_LOG = apiLog;
   process.env.KO_FAKE_PANES = panesFile;
+  process.env.KO_FAKE_CLIENT_PANES = file("client-panes.json");
+  process.env.KO_FAKE_CLIENT_FEED = file("client-feed.jsonl");
+  process.env.KO_FAKE_CLIENT_DROP = file("client-drop");
+  process.env.KO_FAKE_CLIENT_LAYOUTS = file("client-layouts.jsonl");
   process.env.KO_FAKE_FEED = feedFile;
   process.env.KO_FAKE_ACKS = acksFile;
   process.env.KO_FAKE_STREAM_DROP = dropFile;
@@ -246,6 +255,18 @@ export function makeFixture(): Fixture {
     },
     setPanes(panes) {
       writeFileSync(panesFile, JSON.stringify(panes));
+    },
+    setClientPanes(panes) {
+      writeFileSync(file("client-panes.json"), JSON.stringify(panes));
+    },
+    clientEvent(event) {
+      appendFileSync(file("client-feed.jsonl"), JSON.stringify(event) + "\n");
+    },
+    dropClient() {
+      writeFileSync(file("client-drop"), "");
+    },
+    clientLayouts() {
+      return jsonLines(file("client-layouts.jsonl"));
     },
     panes() {
       return JSON.parse(readFileSync(panesFile, "utf8"));
@@ -288,7 +309,7 @@ export function makeFixture(): Fixture {
       return jsonLines(execLog);
     },
     running() {
-      return work.size;
+      return [...work].filter((child) => !child.spawnargs.includes("/client")).length;
     },
     async restore() {
       for (const shutdown of sessions.reverse()) await shutdown();

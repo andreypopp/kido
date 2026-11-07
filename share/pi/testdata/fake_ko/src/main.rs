@@ -112,9 +112,15 @@ fn row_of<'a>(table: &'a [Value], pane: &str) -> Option<&'a Value> {
 
 fn listing(row: &Value) -> Value {
     let mut listed = row.clone();
+    let gate = env("KO_FAKE_PEER_IDENTITY_GATE");
+    if !gate.is_empty() && Path::new(&gate).exists() && row["fake_session"].is_string() {
+        listed["vars"]["pi.session"] = row["fake_session"].clone();
+        listed["status"] = json!({"kind": {"type": "host", "pane": {"type": "pi_agent", "session": row["fake_session"], "status": {"since": 0, "state": {"type": "idle"}}}}});
+    }
     if let Some(fields) = listed.as_object_mut() {
         fields.remove("session");
         fields.remove("window");
+        fields.remove("fake_session");
         fields.entry("pid").or_insert(json!(1));
         fields.entry("command").or_insert(json!([]));
         fields.entry("cwd").or_insert(json!("/tmp"));
@@ -210,6 +216,13 @@ fn new_pane(body: &str) -> ExitCode {
             "close": request["close"],
             "parent": request["parent"],
         });
+        if !env("KO_FAKE_PEER_IDENTITY_GATE").is_empty() {
+            row["fake_session"] = request["env"]
+                .as_array()
+                .and_then(|vars| vars.iter().find(|var| var["name"] == "KO_AGENT_SESSION"))
+                .map(|var| var["value"].clone())
+                .unwrap_or(Value::Null);
+        }
         if let Some(fields) = row.as_object_mut() {
             fields.retain(|_, value| !value.is_null());
         }
@@ -439,6 +452,57 @@ fn stream_messages(pane: &str) -> ExitCode {
                 printed.insert(id);
             }
         }
+        std::thread::sleep(POLL);
+    }
+}
+
+fn stream_client() -> ExitCode {
+    let mut hello = String::new();
+    let _ = std::io::stdin().read_line(&mut hello);
+    let request: Value = serde_json::from_str(&hello).unwrap_or(Value::Null);
+    if request["type"] != "hello"
+        || request["focused"] != false
+        || request["ignore_size"] != true
+        || request.get("pane").is_some()
+        || request.get("window").is_some()
+        || request.get("session").is_some()
+    {
+        return http_error(400, "invalid", "invalid observer hello");
+    }
+    emit(&json!({"type": "welcome", "instance": env("KO_FAKE_INSTANCE")}).to_string());
+    let mut previous = String::new();
+    let mut known = BTreeSet::new();
+    let mut fed = 0;
+    loop {
+        let drop = env("KO_FAKE_CLIENT_DROP");
+        if !drop.is_empty() && Path::new(&drop).exists() {
+            let _ = fs::remove_file(drop);
+            return ExitCode::FAILURE;
+        }
+        let table = if Path::new(&env("KO_FAKE_CLIENT_PANES")).exists() {
+            rows("KO_FAKE_CLIENT_PANES")
+        } else {
+            rows("KO_FAKE_PANES")
+        };
+        let snapshot = layout(&table);
+        let raw = snapshot.to_string();
+        if raw != previous {
+            let mut event = snapshot;
+            event["type"] = json!("layout");
+            if let Some(panes) = event["panes"].as_array_mut() {
+                panes.retain(|row| !known.contains(&text(row, "id")));
+            }
+            known = table.iter().map(|row| text(row, "id")).collect();
+            emit(&event.to_string());
+            append("KO_FAKE_CLIENT_LAYOUTS", &event.to_string());
+            previous = raw;
+        }
+        let feed = fs::read_to_string(env("KO_FAKE_CLIENT_FEED")).unwrap_or_default();
+        let lines: Vec<_> = feed.lines().collect();
+        for line in lines.iter().skip(fed) {
+            emit(line);
+        }
+        fed = lines.len();
         std::thread::sleep(POLL);
     }
 }
@@ -695,6 +759,7 @@ fn api(argv: &[String]) -> ExitCode {
     let segments: Vec<&str> = route.split('/').collect();
     match (method.as_str(), segments.as_slice()) {
         ("STREAM", ["", "panes", pane, "messages"]) => return stream_messages(pane),
+        ("STREAM", ["", "client"]) => return stream_client(),
         ("STREAM", ["", "runtimes", name, "exec"]) => return exec_session(name),
         ("GET", ["", "runtimes"]) => return get_runtimes(None),
         ("GET", ["", "runtimes", name]) => return get_runtimes(Some(name)),
