@@ -116,7 +116,13 @@ final class RuntimeSection: NSView {
     }()
 
     override var isFlipped: Bool { true }
-    override var acceptsFirstResponder: Bool { true }
+    override var acceptsFirstResponder: Bool {
+        guard let event = NSApp.currentEvent, event.type == .leftMouseDown,
+              event.window === window, !event.modifierFlags.contains(.control) else { return true }
+        let point = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(point) else { return true }
+        return point.y >= 29.5 && (collapsed || !rows.indices.contains { actionRect($0).contains(point) })
+    }
     var height: CGFloat {
         rows.isEmpty && configError == nil ? 0 : 29.5 + (collapsed ? 0 : CGFloat(rows.count + (configError == nil ? 0 : 1)) * 28)
     }
@@ -226,18 +232,22 @@ final class RuntimeSection: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        selected()
-        window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
+        let focused = window?.firstResponder === self
         if point.y < 29.5 {
-            selection = .header
+            if focused { selected(); selection = .header }
             collapsed.toggle()
             return
         }
         guard !collapsed, let index = rows.indices.first(where: { rowRect($0).contains(point) }) else { return }
         let row = rows[index]
-        selection = .runtime(row.runtime.key)
-        if actionRect(index).contains(point) {
+        let action = actionRect(index).contains(point)
+        if focused || !action {
+            selected()
+            window?.makeFirstResponder(self)
+            selection = .runtime(row.runtime.key)
+        }
+        if action {
             act(row)
         } else if event.clickCount == 2 {
             open(row.runtime.key)

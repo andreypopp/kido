@@ -52,6 +52,74 @@ import KoModel
         try await wait("the runtime-focused menu command adds a window") { (owner.snapshot?.sessions.flatMap(\.nodes).count ?? 0) == windows + 1 }
     }
 
+    func testRuntimeHeaderClickKeepsKeyboardFocus() throws {
+        let original = UserDefaults.standard.object(forKey: "runtimesCollapsed")
+        defer { if let original { UserDefaults.standard.set(original, forKey: "runtimesCollapsed") } else { UserDefaults.standard.removeObject(forKey: "runtimesCollapsed") } }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 200), styleMask: [], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let content = try XCTUnwrap(window.contentView)
+        let section = RuntimeSection(frame: NSRect(x: 0, y: 0, width: 292, height: 200))
+        let editor = NSTextView(frame: NSRect(x: 292, y: 0, width: 208, height: 200))
+        content.addSubview(section)
+        content.addSubview(editor)
+        section.collapsed = false
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        window.orderBack(nil)
+        var selected = false
+        section.selected = { selected = true }
+        XCTAssertTrue(window.makeFirstResponder(editor))
+        let point = section.convert(NSPoint(x: 50, y: 14), to: nil)
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0))
+        NSApp.postEvent(event, atStart: true)
+        NSApp.sendEvent(try XCTUnwrap(NSApp.nextEvent(matching: .leftMouseDown, until: Date(timeIntervalSinceNow: 1), inMode: .default, dequeue: true)))
+        XCTAssertTrue(window.firstResponder === editor)
+        XCTAssertTrue(section.collapsed)
+        XCTAssertNil(section.selection)
+        XCTAssertFalse(selected)
+    }
+
+    func testRuntimeActionClickKeepsKeyboardFocus() throws {
+        let original = UserDefaults.standard.object(forKey: "runtimesCollapsed")
+        defer { if let original { UserDefaults.standard.set(original, forKey: "runtimesCollapsed") } else { UserDefaults.standard.removeObject(forKey: "runtimesCollapsed") } }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 200), styleMask: [], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let content = try XCTUnwrap(window.contentView)
+        let section = RuntimeSection(frame: NSRect(x: 0, y: 0, width: 292, height: 200))
+        let editor = NSTextView(frame: NSRect(x: 292, y: 0, width: 208, height: 200))
+        content.addSubview(section)
+        content.addSubview(editor)
+        section.collapsed = false
+        window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        window.orderBack(nil)
+        var selected = false
+        section.selected = { selected = true }
+        var actions: [String] = []
+        section.start = { actions.append("start " + $0.name) }
+        section.stop = { actions.append("stop " + $0.name) }
+        for state: KoSchema.LinkState in [.down, .up] {
+            let runtime = KoSchema.ClientRuntime(kind: .ssh, name: "box", source: .config, state: state)
+            section.rows = [.init(runtime: runtime, panes: 0, stopping: false)]
+            XCTAssertTrue(window.makeFirstResponder(editor))
+            let point = section.convert(NSPoint(x: 264, y: 43.5), to: nil)
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0))
+            NSApp.postEvent(event, atStart: true)
+            NSApp.sendEvent(try XCTUnwrap(NSApp.nextEvent(matching: .leftMouseDown, until: Date(timeIntervalSinceNow: 1), inMode: .default, dequeue: true)))
+            XCTAssertTrue(window.firstResponder === editor)
+            XCTAssertNil(section.selection)
+            XCTAssertFalse(selected)
+        }
+        XCTAssertEqual(actions, ["start box", "stop box"])
+        let point = section.convert(NSPoint(x: 264, y: 43.5), to: nil)
+        let controlClick = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [.control], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0))
+        NSApp.postEvent(controlClick, atStart: true)
+        let event = try XCTUnwrap(NSApp.nextEvent(matching: .leftMouseDown, until: Date(timeIntervalSinceNow: 1), inMode: .default, dequeue: true))
+        XCTAssertNotNil(section.menu(for: event))
+        XCTAssertTrue(window.firstResponder === section)
+        XCTAssertEqual(section.selection, .runtime(RuntimeKey(name: "box", source: .config)))
+    }
+
     func testRuntimeSectionKeyboardAndActions() throws {
         let original = UserDefaults.standard.object(forKey: "runtimesCollapsed")
         defer { if let original { UserDefaults.standard.set(original, forKey: "runtimesCollapsed") } else { UserDefaults.standard.removeObject(forKey: "runtimesCollapsed") } }
