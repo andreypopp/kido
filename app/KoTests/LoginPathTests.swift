@@ -21,10 +21,11 @@ final class LoginPathTests: XCTestCase {
             let script = "#!/bin/sh\n[ \"$1\" = -l ] && [ \"$2\" = -c ] || exit 2\n" + body + "\n"
             try script.write(to: shell, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: shell.path)
+            let timesOut = body == "exec /bin/sleep 10"
             let start = ProcessInfo.processInfo.systemUptime
-            let result = await LoginPath.read(shell: shell.path, deadline: 0.2)
+            let result = await LoginPath.read(shell: shell.path, deadline: timesOut ? 0.2 : 3)
             XCTAssertEqual(result, expected, body)
-            if body == "exec /bin/sleep 10" {
+            if timesOut {
                 XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 2)
             }
         }

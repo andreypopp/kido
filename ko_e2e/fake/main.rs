@@ -90,7 +90,7 @@ fn main() -> std::io::Result<()> {
                 .create(true)
                 .append(true)
                 .open(log)?;
-            writeln!(log, "{}", args.join(" "))?;
+            log.write_all(format!("{}\n", args.join(" ")).as_bytes())?;
             match args
                 .iter()
                 .map(String::as_str)

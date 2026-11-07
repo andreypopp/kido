@@ -810,7 +810,10 @@ mod tests {
         let timer = poll.timer();
         let start = Instant::now();
         poll.start(timer, Duration::from_millis(50), None).unwrap();
-        poll.turn(Mode::Wait, &mut events).unwrap();
+        while poll.is_active(timer) {
+            assert!(start.elapsed() < Duration::from_secs(5));
+            poll.turn(Mode::Wait, &mut events).unwrap();
+        }
         assert!(start.elapsed() >= Duration::from_millis(50));
         assert_eq!(events.due().len(), 1);
         poll.start(timer, Duration::from_micros(400), None).unwrap();

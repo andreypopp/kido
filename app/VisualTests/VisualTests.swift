@@ -277,21 +277,26 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         session.frame = content.bounds
         session.autoresizingMask = [.width, .height]
         for hex in ["fffaf0", "172029"] {
-            let changed = expectation(description: "single pane theme")
-            runtime.onConfigChange = { owner.updateAppearance(); self.session.updateBackground(); changed.fulfill() }
+            runtime.onConfigChange = { owner.updateAppearance(); self.session.updateBackground() }
             let config = try XCTUnwrap(ghostty_config_new())
             let text = "background = #\(hex)\n"
             ghostty_config_load_string(config, text, UInt(text.utf8.count), "/single-pane-header")
             ghostty_config_finalize(config)
             ghostty_app_update_config(runtime.app, config)
             ghostty_config_free(config)
-            await fulfillment(of: [changed], timeout: 3)
+            let rgb = headerPaperRGB[hex]!
+            try await wait("single pane theme \(hex)", within: 3) {
+                guard let color = self.runtime.background.usingColorSpace(.sRGB) else { return false }
+                return zip([color.redComponent, color.greenComponent, color.blueComponent], rgb).allSatisfy {
+                    abs(Double($0.0) * 255 - $0.1) < 0.5
+                }
+            }
             for collapsed in [false, true] {
                 owner.sidebar.isCollapsed = collapsed
                 let root = try XCTUnwrap(owner.window.contentView?.superview)
                 root.layoutSubtreeIfNeeded()
                 owner.window.display()
-                await mainQueueFence()
+                try await presented()
                 let pane = try XCTUnwrap(terminal?.panes.first)
                 XCTAssertEqual(terminal?.panes.count, 1)
                 XCTAssertEqual(pane.paperColor, runtime.background)

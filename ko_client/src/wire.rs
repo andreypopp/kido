@@ -85,9 +85,6 @@ fn write_until(
     cancel: Option<&Wake>,
     within: Limit,
 ) -> io::Result<()> {
-    if cancel.is_none() && matches!(within, Limit::Idle(_)) {
-        return stream.write_all(bytes);
-    }
     stream.set_nonblocking(true)?;
     while !bytes.is_empty() {
         let _ = within.remaining()?;
@@ -157,8 +154,6 @@ fn open(
             }
         },
     };
-    stream.set_read_timeout(Some(within.remaining()?))?;
-    stream.set_write_timeout(Some(within.remaining()?))?;
     let identity = identity(caller.as_ref());
     let mut extra = vec![("Connection", "keep-alive")];
     extra.extend_from_slice(headers);
@@ -451,7 +446,6 @@ impl Link {
         cancel: Option<Arc<Wake>>,
         within: Duration,
     ) -> io::Result<Result<Link, Response>> {
-        stream.set_read_timeout(Some(within))?;
         let (method, target) = route.to_request();
         let identity = identity(caller.as_ref());
         let (request, key) = upgrade_request(method, &target, client, &borrowed(&identity));
@@ -481,8 +475,8 @@ impl Link {
             Upgrade::Refused(response) => return Ok(Err(response)),
         };
         accepted(&response, key)?;
-        stream.set_read_timeout(None)?;
-        ko_sys::sock::set_receive_buffer(stream.as_fd(), RECEIVE_BUFFER)?;
+        // macOS can return EINVAL for this tuning when the peer has closed.
+        let _ = ko_sys::sock::set_receive_buffer(stream.as_fd(), RECEIVE_BUFFER);
         let mut link = Link::of(stream, rest);
         link.cancel = cancel;
         link.token = token;
@@ -663,6 +657,63 @@ impl Link {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_handshake_with_a_closed_peer_reports_the_hangup() {
+        let closed = |stream: &UnixStream| {
+            assert!(matches!(
+                fd::wait(
+                    stream.as_fd(),
+                    Want::Read,
+                    None,
+                    Some(Duration::from_secs(5))
+                )
+                .unwrap(),
+                Waited::Ready
+            ));
+            assert_eq!(fd::read(stream.as_fd(), &mut [0]).unwrap(), 0);
+        };
+        let (stream, peer) = UnixStream::pair().unwrap();
+        drop(peer);
+        closed(&stream);
+        let error = Link::handshake(
+            stream,
+            (None, None),
+            &Route::Client {},
+            None,
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                error.kind(),
+                io::ErrorKind::BrokenPipe | io::ErrorKind::NotConnected
+            ),
+            "{error:?}"
+        );
+
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let key = "test-key";
+        let accept = tungstenite::handshake::derive_accept_key(key.as_bytes());
+        write!(
+            peer,
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+        )
+        .unwrap();
+        drop(peer);
+        let upgrade = http::read_upgrade(&mut Interruptible {
+            stream: &stream,
+            cancel: None,
+            within: Limit::Idle(Duration::from_secs(5)),
+        })
+        .unwrap();
+        closed(&stream);
+        assert!(
+            Link::upgraded(stream, upgrade, key, None, None)
+                .unwrap()
+                .is_ok()
+        );
+    }
 
     fn pair() -> (Link, UnixStream, Poll) {
         let (ours, theirs) = UnixStream::pair().unwrap();
