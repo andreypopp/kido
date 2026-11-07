@@ -57,7 +57,7 @@
       "description": "The settings of ko server.",
       "$ref": "#/$defs/Server",
       "default": {
-        "kitty_images_max_bytes": 10000000,
+        "kitty_images_max_bytes": 320000000,
         "linger_seconds": 30.0,
         "runtime_idle_seconds": 600.0,
         "scrollback": {
@@ -807,7 +807,7 @@
           "description": "The most bytes of kitty graphics images that a pane keeps.",
           "type": "integer",
           "format": "uint",
-          "default": 10000000,
+          "default": 320000000,
           "minimum": 1
         },
         "linger_seconds": {

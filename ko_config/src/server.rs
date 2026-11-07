@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::values::{AbsPath, Number, ranged, word_or_map, word_or_number};
 
 const SCROLLBACK_BYTES: NonZeroUsize = NonZeroUsize::new(50_000_000).unwrap();
-const KITTY_IMAGES_BYTES: NonZeroUsize = NonZeroUsize::new(10_000_000).unwrap();
+const KITTY_IMAGES_BYTES: NonZeroUsize = NonZeroUsize::new(320_000_000).unwrap();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Limit {
@@ -240,7 +240,7 @@ mod tests {
             serde_json::to_value(&found).unwrap(),
             serde_json::json!({
                 "scrollback": {"bytes": 50_000_000, "lines": "unlimited"},
-                "kitty_images_max_bytes": 10_000_000,
+                "kitty_images_max_bytes": 320_000_000,
                 "linger_seconds": 30.0,
                 "runtime_idle_seconds": 600.0
             })
