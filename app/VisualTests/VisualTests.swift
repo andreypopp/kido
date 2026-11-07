@@ -1154,7 +1154,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
             try await drain(runtime)
             try await expectLook(true, "window key again")
-            window.makeFirstResponder(sidebar.list)
+            sidebar.focusSidebar(nil)
             XCTAssertFalse(sidebar.visualFocusEdge.isHidden)
             NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
             try await drain(runtime)
@@ -1214,7 +1214,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 let kido = firstMouse.filter { !$0.hasPrefix("NS") && !$0.hasPrefix("_") }
                 let toolbarButtons = PaneToolbar(runtime: runtime).subviews.compactMap { $0 as? IconButton }
                 XCTAssertTrue(toolbarButtons.allSatisfy { !$0.acceptsFirstMouse(for: nil) }, "a first click on a hover toolbar button only activates the window")
-                XCTAssertEqual(kido, ["IconButton", "MouseButton", "PaneView", "Table"], "pane chrome, dividers, tabs and sidebar rows never take first mouse; PaneView and Table answer true only in the visual build")
+                XCTAssertEqual(kido, ["IconButton", "MouseButton", "PaneView", "Table", "RuntimeSection"], "pane chrome, dividers, tabs and sidebar rows never take first mouse; PaneView, Table and RuntimeSection answer true only in the visual build")
             }
             var image = try capture()
             let textRect = root.convert(CGRect(x: 20, y: active.bounds.maxY - 80, width: 240, height: 75), from: active)
@@ -1279,7 +1279,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                     XCTAssertGreaterThan(abs(border.redComponent * 255 - Double(shifted[0])), 3, "inactive hollow cursor remains visible")
                 }
             }
-            window.makeFirstResponder(sidebar.list)
+            sidebar.focusSidebar(nil)
             terminal.updateFocusTreatment()
             sidebar.view.needsLayout = true
             root.layoutSubtreeIfNeeded()
@@ -1382,7 +1382,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
             try await drain(runtime)
             try await expectLook(true, "single pane window key again", edge: false)
-            window.makeFirstResponder(sidebar.list)
+            sidebar.focusSidebar(nil)
             terminal.updateFocusTreatment()
             sidebar.view.needsLayout = true
             root.layoutSubtreeIfNeeded()
@@ -1606,7 +1606,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let programs = list.visualRows.indices.filter { if case .program = list.visualRows[$0].id { true } else { false } }
         XCTAssertEqual(programs.count, 4)
         var requests: [Navigation] = []
-        list.navigate = { requests.append($0) }
+        list.navigate = { navigation, _ in requests.append(navigation) }
         for index in programs {
             XCTAssertFalse(list.tableView(list.visualTable, shouldSelectRow: index))
             list.visualJump(list.visualRows[index])
@@ -1720,7 +1720,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         window.endSheet(sheet)
         sheet.close()
 
-        owner.sidebar.list.focus()
+        owner.sidebar.focusSidebar(nil)
         let sidebarFocus = window.firstResponder
         XCTAssertFalse(owner.sidebar.isFloating)
         XCTAssertTrue(owner.sidebar.list.containsFocus)
@@ -1785,17 +1785,55 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let split = PaneID(number: 2), first = PaneID(number: 1)
         try await wait("owner split snapshot") { owner.sidebar.list.visualRows.contains { $0.target?.pane == split } }
         let row = try XCTUnwrap(owner.sidebar.list.visualRows.first { $0.target?.pane == split })
-        owner.sidebar.list.focus()
+        owner.sidebar.focusSidebar(nil)
         owner.sidebar.list.visualJump(row)
         XCTAssertTrue(owner.sidebar.list.containsFocus, "focus must wait until the pane becomes current")
         try await wait("the jump lands") { owner.window.firstResponder.flatMap(PaneView.owner)?.pane == split }
         let original = try XCTUnwrap(owner.sidebar.list.visualRows.first { $0.target?.pane == first })
-        owner.sidebar.list.focus()
+        owner.sidebar.focusSidebar(nil)
         owner.sidebar.list.visualJump(original)
-        owner.sidebar.list.focus()
+        owner.sidebar.focusSidebar(nil)
         try await wait("the server moved the client") { owner.testModel?.selection.pane == first }
         await mainQueueFence()
         XCTAssertTrue(owner.sidebar.list.containsFocus, "new focus intent must cancel a deferred pane target")
+        let list = owner.sidebar.list, table = list.visualTable
+        owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+        owner.window.orderBack(nil)
+        owner.window.display()
+        func click(_ index: Int) throws {
+            let rect = table.rect(ofRow: index)
+            let point = table.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+            for type: NSEvent.EventType in [.leftMouseUp, .leftMouseDown] {
+                NSApp.postEvent(try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                    windowNumber: owner.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)), atStart: true)
+            }
+            owner.window.sendEvent(try XCTUnwrap(NSApp.nextEvent(matching: .leftMouseDown, until: Date(timeIntervalSinceNow: 1), inMode: .default, dequeue: true)))
+            if let up = NSApp.nextEvent(matching: .leftMouseUp, until: Date(), inMode: .default, dequeue: true) { owner.window.sendEvent(up) }
+        }
+        list.leave()
+        let pane = try XCTUnwrap(owner.window.firstResponder as? PaneView)
+        try await wait("the copy pane is ready") { !pane.restoring }
+        pane.toggleCopyMode(nil)
+        try await wait("the pane enters copy mode") { if case .cursor = pane.copyMode { true } else { false } }
+        try click(try XCTUnwrap(list.visualRows.firstIndex { $0.target?.pane == pane.pane }))
+        XCTAssertTrue(owner.window.firstResponder === pane)
+        XCTAssertNotNil(pane.copyMode, "a sidebar click does not end the pane's copy mode")
+        pane.endCopy()
+        for floating in [false, true] {
+            owner.sidebar.isCollapsed = floating
+            owner.sidebar.focusSidebar(nil)
+            let index = try XCTUnwrap(list.visualRows.firstIndex { $0.target != nil && $0.target != list.position })
+            let target = try XCTUnwrap(list.visualRows[index].target)
+            try click(index)
+            try await wait("mouse selection completed") { list.position == target }
+            XCTAssertTrue(list.containsFocus)
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber,
+                context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+            NSApp.postEvent(event, atStart: true)
+            owner.window.sendEvent(try XCTUnwrap(NSApp.nextEvent(matching: .keyDown, until: Date(timeIntervalSinceNow: 1), inMode: .default, dequeue: true)))
+            try await wait("Return leaves sidebar") { !list.containsFocus }
+            XCTAssertFalse(owner.sidebar.isFloating)
+        }
     }
 
     func testHeaderCreatesWindowInItsSession() async throws {

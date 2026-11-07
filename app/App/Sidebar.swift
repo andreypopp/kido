@@ -335,6 +335,26 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         } else { isCollapsed.toggle() }
     }
 
+    static func focusView(_ responder: NSResponder?) -> NSView? {
+        if let editor = responder as? NSTextView, editor.isFieldEditor { return editor.delegate as? NSView }
+        return responder as? NSView
+    }
+
+    private var grantingFocus = false
+    static func grantFocus(in window: NSWindow?, _ action: () -> Void) {
+        guard let sidebar = window?.contentViewController as? Sidebar else { return action() }
+        let previous = sidebar.grantingFocus
+        sidebar.grantingFocus = true
+        defer { sidebar.grantingFocus = previous }
+        action()
+    }
+
+    static func allowsFirstResponder(_ responder: NSResponder?, in window: NSWindow?) -> Bool {
+        guard let sidebar = window?.contentViewController as? Sidebar, let target = focusView(responder),
+              target.isDescendant(of: sidebar.list) || target.isDescendant(of: sidebar.tabs) else { return true }
+        return sidebar.grantingFocus || sidebar.list.containsFocus || target === sidebar.list.statusLine
+    }
+
     @objc func focusSidebar(_ sender: Any?) {
         if isFloating { list.leave(); return }
         if isCollapsed, let root = view.window?.contentView?.superview {
@@ -354,7 +374,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
                 MainActor.assumeIsolated { self?.list.leave() }
             }
         }
-        list.focus()
+        Self.grantFocus(in: view.window) { list.focus() }
     }
 
     private func endFloating() {

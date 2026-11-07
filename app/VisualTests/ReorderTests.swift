@@ -78,9 +78,9 @@ import PaneGeometry
         owner.sidebar.list.move = probe
         owner.sidebar.tabs.move = probe
         let navigate = owner.sidebar.list.navigate
-        owner.sidebar.list.navigate = { [weak self] navigation in
+        owner.sidebar.list.navigate = { [weak self] navigation, focus in
             if case .jump(let target) = navigation { self?.sent.append((.jump(target), { _ in })) }
-            navigate(navigation)
+            navigate(navigation, focus)
         }
         let queue = pending
         owner.testEditor { _ in
@@ -337,7 +337,7 @@ import PaneGeometry
         let pane = try XCTUnwrap(rows.indices.filter { rows[$0].root == group && rows[$0].indent == 0 }.last)
         let id = rows[pane].id
         func selectPane() {
-            list.focus()
+            owner.sidebar.focusSidebar(nil)
             table.selectRowIndexes([list.visualRows.firstIndex { $0.id == id }!], byExtendingSelection: false)
         }
         selectPane()
@@ -538,7 +538,7 @@ import PaneGeometry
         try press(table, row, drag: false)
         XCTAssertEqual(sidebarFocus, 0, "sidebar mouse click must not show its focus edge, even before navigation returns")
         XCTAssertFalse(list.containsFocus)
-        list.focus()
+        sidebar.focusSidebar(nil)
         XCTAssertTrue(list.containsFocus, "keyboard sidebar focus is unchanged")
         XCTAssertFalse(sidebar.visualFocusEdge.isHidden)
         XCTAssertGreaterThan(sidebarFocus, 0)

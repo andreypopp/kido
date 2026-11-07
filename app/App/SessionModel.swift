@@ -9,6 +9,8 @@ enum Navigation: Equatable {
     case releaseSideFocus
 }
 
+enum SelectionFocus { case pane, sidebar }
+
 enum WindowStep {
     case next, previous, last
     case number(Int)

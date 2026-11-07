@@ -95,13 +95,10 @@ final class RuntimeSection: NSView {
     }()
 
     override var isFlipped: Bool { true }
-    override var acceptsFirstResponder: Bool {
-        guard let event = NSApp.currentEvent, event.type == .leftMouseDown,
-              event.window === window, !event.modifierFlags.contains(.control) else { return true }
-        let point = convert(event.locationInWindow, from: nil)
-        guard bounds.contains(point) else { return true }
-        return point.y >= 29.5 && (collapsed || !rows.indices.contains { actionRect($0).contains(point) })
-    }
+    override var acceptsFirstResponder: Bool { Sidebar.allowsFirstResponder(self, in: window) }
+    #if KIDO_VISUAL
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    #endif
     var height: CGFloat {
         rows.isEmpty && configError == nil ? 0 : 29.5 + (collapsed ? 0 : CGFloat(rows.count + (configError == nil ? 0 : 1)) * 28)
     }
@@ -221,9 +218,8 @@ final class RuntimeSection: NSView {
         guard !collapsed, let index = rows.indices.first(where: { rowRect($0).contains(point) }) else { return }
         let row = rows[index]
         let action = actionRect(index).contains(point)
-        if focused || !action {
+        if focused {
             selected()
-            window?.makeFirstResponder(self)
             selection = .runtime(row.runtime.key)
         }
         if action {
@@ -246,9 +242,6 @@ final class RuntimeSection: NSView {
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
         guard !collapsed, let index = rows.indices.first(where: { rowRect($0).contains(point) }) else { return nil }
-        selected()
-        selection = .runtime(rows[index].runtime.key)
-        window?.makeFirstResponder(self)
         return contextMenu(rows[index])
     }
 
@@ -264,6 +257,7 @@ final class RuntimeSection: NSView {
             if title == "Copy Name" { menu.addItem(.separator()) }
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
+            item.representedObject = row.runtime.key
             item.isEnabled = enabled
             menu.addItem(item)
         }
@@ -275,16 +269,16 @@ final class RuntimeSection: NSView {
         return rows.first { $0.runtime.key == key }
     }
 
-    @objc private func startItem() {
-        if let row = selectedRow { start(row.runtime.key) }
+    @objc private func startItem(_ sender: NSMenuItem) {
+        if let key = sender.representedObject as? RuntimeKey { start(key) }
     }
 
-    @objc private func stopItem() {
-        if let row = selectedRow { stop(row.runtime.key) }
+    @objc private func stopItem(_ sender: NSMenuItem) {
+        if let key = sender.representedObject as? RuntimeKey { stop(key) }
     }
 
-    @objc private func copyItem() {
-        if let row = selectedRow { copy(row.runtime.key) }
+    @objc private func copyItem(_ sender: NSMenuItem) {
+        if let key = sender.representedObject as? RuntimeKey { copy(key) }
     }
 
     override func keyDown(with event: NSEvent) {

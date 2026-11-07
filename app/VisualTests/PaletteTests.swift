@@ -498,7 +498,7 @@ import PaneGeometry
                 snapshot.sessions = [snapshot.sessions[0]]
             }
             owner.testReceive(initialSnapshot)
-            owner.sidebar.list.focus()
+            owner.sidebar.focusSidebar(nil)
             NSApp.mainMenu = app.mainMenu()
             // AppKit does not add its automatic full-screen item to an unordered test window's menu.
             let view = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "View" }?.submenu)
@@ -1397,7 +1397,7 @@ import PaneGeometry
             XCTAssertTrue(owner.window.firstResponder === pane)
         }
         for modifiers: NSEvent.ModifierFlags in [.command, [.command, .shift]] {
-            owner.sidebar.list.focus()
+            owner.sidebar.focusSidebar(nil)
             let prior = try XCTUnwrap(owner.window.firstResponder)
             let event = try key(owner.window, modifiers.contains(.shift) ? "P" : "p", code: 35, modifiers: modifiers)
             XCTAssertTrue(NSApp.mainMenu?.performKeyEquivalent(with: event) == true)
@@ -1421,13 +1421,14 @@ import PaneGeometry
         let app = AppDelegate(runtime: runtime)
         let a = try XCTUnwrap(app.open(.local, start: false)), b = try XCTUnwrap(app.open(.remote("devbox"), start: false))
         defer { app.closePalette(); a.close(); b.close() }
-        a.window.makeFirstResponder(a.sidebar.list)
-        b.window.makeFirstResponder(b.sidebar.list)
+        a.sidebar.focusSidebar(nil)
+        b.sidebar.focusSidebar(nil)
+        let aFocus = a.window.firstResponder, bFocus = b.window.firstResponder
         app.togglePalette()
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: b.window)
         XCTAssertNil(app.palettePanel)
-        XCTAssertTrue(b.window.firstResponder === b.sidebar.list)
-        XCTAssertTrue(a.window.firstResponder === a.sidebar.list)
+        XCTAssertTrue(b.window.firstResponder === bFocus)
+        XCTAssertTrue(a.window.firstResponder === aFocus)
     }
 
     func testPaletteRefreshesWhileOpen() throws {

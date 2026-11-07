@@ -633,7 +633,7 @@ import SidebarFeed
         guard let focus = saved ?? paletteFocus, focus.owner.alive else { return }
         if !background { focus.owner.window.makeKeyAndOrderFront(nil) }
         if let view = focus.responder as? NSView, view.window === focus.owner.window, !view.isHiddenOrHasHiddenAncestor {
-            focus.owner.window.makeFirstResponder(view)
+            Sidebar.grantFocus(in: focus.owner.window) { focus.owner.window.makeFirstResponder(view) }
         } else { focus.owner.focusSelected() }
     }
     @objc private func quitItem() { quit("the Quit menu item") }

@@ -83,7 +83,7 @@ import KoModel
         let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
         var paneCloses: [PaneID] = [], activations = 0
         list.closePane = { if let pane = $0.target?.pane { paneCloses.append(pane) } }
-        list.navigate = { _ in activations += 1 }
+        list.navigate = { _, _ in activations += 1 }
         cell.layoutSubtreeIfNeeded()
         cell.updateTrackingAreas()
         XCTAssertEqual(cell.trackingAreas.first?.rect, cell.close.frame)

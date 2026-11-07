@@ -37,6 +37,7 @@ import XCTest
         let plus = cell.addWindow.frame
         let below = table.rect(ofRow: 1)
         let previousFocus = owner.window.firstResponder
+        XCTAssertTrue(previousFocus is PaneView)
         let original = cell.accessibilityLabel()!
         let realRename = list.renameSession
         var sent: [(SessionID, String)] = []
@@ -92,6 +93,7 @@ import XCTest
         XCTAssertTrue(cell.control(cell.nameField, textView: enterEditor, doCommandBy: #selector(NSResponder.insertNewline(_:))))
         cell.finishRename(true)
         try await wait("snapshot names renamed session") { owner.snapshot?.sessions.contains { $0.id == snapshot.sessions.first?.id && $0.name == "renamed 'quoted' name" } == true }
+        XCTAssertTrue(owner.window.firstResponder === previousFocus)
         XCTAssertEqual(sent.count, 1)
         XCTAssertEqual(sent.first?.0, snapshot.sessions.first?.id)
         XCTAssertTrue(cell.nameField.isHidden)

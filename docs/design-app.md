@@ -897,12 +897,11 @@ a reparented view does not keep a stale solid cursor. The sidebar
 then has the same 1pt accent stroke around its whole column, including the
 band behind the toolbar, also in a single-pane window. The active pane
 stays remembered, and focus that returns to the terminal (a click, Escape)
-restores its edge. Only one surface has the edge at a time. A mouse click
-on a sidebar row, a sidebar toolbar button or a pane toolbar button does
-not make that view first responder, so a click that navigates and returns
-focus to a pane does not flash the sidebar edge. The pane grip is the
-exception: it takes first responder for its drag and Escape. Keyboard focus to the sidebar still shows
-it.
+restores its edge. Only one surface has the edge at a time. A mouse
+action in the sidebar never makes a sidebar view first responder
+([Sidebar focus](#sidebar-focus)), and a pane toolbar button does not
+either, so a click does not flash the sidebar edge. The pane grip is the
+exception: it takes first responder for its drag and Escape.
 
 The toolbar top line and the pane dividers use the terminal background
 mixed 18% toward the terminal foreground, one device pixel, so they stay
@@ -1665,7 +1664,8 @@ falling back to pixels only if that row disappears.
 
 The single-line, truncating diagnostic sits above the table; the full
 diagnostic is available in its tooltip. The sidebar has no filter. Jump
-failures leave focus intact; a successful jump returns focus to the pane.
+failures leave focus intact; a successful jump from Return, or from a
+click outside sidebar focus, gives focus to the selected pane.
 Selection changes from other clients update the selection without taking
 keyboard focus.
 
@@ -1738,6 +1738,46 @@ done or error outcome becomes quiet when its pane's outcome is seen
 (the core's `records_seen`). Seen is not persisted across launches. The sidebar is visible by
 default; it does not automatically collapse at narrow widths.
 
+### Sidebar focus
+
+Sidebar focus is modal. Only Focus Sidebar (Command-S) enters it, and
+Escape, Return, a pane menu command or a click in a pane leaves it. A
+mouse action in the sidebar never takes keyboard focus from a pane: a
+click, a double-click, a context menu (also Control-click), a drag, a
+scroll or a resize of the sidebar's width, on a button, a header, a row
+of any kind or the Runtimes footer, docked or floating. The action does
+its one effect (select a pane, toggle a section, start or stop a
+runtime, open a menu), and keyboard focus stays in the pane, or moves
+to the pane that the action selected. While the sidebar has focus, a
+mouse action acts and the sidebar keeps its focus: a click on a pane
+row selects that pane and the table stays first responder. An action
+whose result is a palette or a sheet, such as a double-click on a
+runtime row, leaves the sidebar for it as Return does.
+
+The rule is one predicate of `Sidebar`, `allowsFirstResponder`. A
+responder in the sidebar, or a field editor whose delegate is in it, is
+admitted only while the sidebar already has focus or inside a grant
+(`Sidebar.grantFocus`). The table and the Runtimes section answer
+`acceptsFirstResponder` from it, so AppKit never asks them on a click
+and still delivers the click. `OwnerWindow.makeFirstResponder` refuses
+every other admission before AppKit changes the responder: a refusal
+after the change would already have ended the pane's copy mode. The
+grants are Focus Sidebar, the inline rename and the restore of a saved
+responder that was in the sidebar (the end of a rename, the palette's
+dismissal), which comes back to the modal focus that the keyboard
+entered. The selectable status line above the table is exempt.
+
+The inline rename is the one exception to the mouse rule: a
+double-click on a session name starts the edit also from a pane, because
+the edit is itself a modal entry. When the edit ends or is cancelled,
+focus goes back to the responder that it came from.
+
+A select request carries its focus outcome from its caller
+(`SelectionFocus`): Return and a click outside sidebar focus give the
+selected pane the focus at completion, a click in sidebar focus keeps it.
+The context menu of a runtime row carries its runtime in each item and
+does not move the keyboard selection.
+
 ### Runtimes section
 
 `RuntimeSection` (`app/App/RuntimeSection.swift`) is a footer of
@@ -1769,8 +1809,10 @@ it shows only its most urgent count.
 
 The header is the one selectable header of the sidebar, because
 collapse needs a key target. Its collapsed state is the app's
-`runtimesCollapsed` default, not a fact of ko. A click selects a row
-and nothing else: the user rejected a highlight of the runtime's panes.
+`runtimesCollapsed` default, not a fact of ko. In sidebar focus, a click
+selects a row and nothing else: the user rejected a highlight of the
+runtime's panes. Outside it, a click on a row does nothing
+([Sidebar focus](#sidebar-focus)).
 Return or a double-click opens the palette's runtime step for it
 ([Command palette](#command-palette)). The hover button, Space and the
 context menu run Start for a down or failed runtime and Shut Down for

@@ -33,6 +33,7 @@ class OwnerWindow: NSWindow {
     // Ending a field editor's session first makes the window itself first
     // responder, through this method.
     override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        if !Sidebar.allowsFirstResponder(responder, in: self) { return false }
         let old = firstResponder, owner = PaneView.owner(old)
         nested += 1
         let accepted = super.makeFirstResponder(responder)
@@ -134,7 +135,7 @@ private class AlertEscape: NSView {
     private var focusTarget: Target?
     private var intent = 0
     private var activating: Int?
-    private var awaitingSelect = false
+    private var awaitingSelect: SelectionFocus?
     private(set) var preparedAlert: (alert: NSAlert, respond: (NSApplication.ModalResponse) -> Void)?
 
     private static let localServerRestarted = Notification.Name("KidoLocalServerRestarted")
@@ -263,7 +264,7 @@ private class AlertEscape: NSView {
         sidebar.splitView.setPosition(max(200, min(360, width)), ofDividerAt: 0)
         if !background { sidebar.isCollapsed = UserDefaults.standard.bool(forKey: "sidebarCollapsed") }
         sidebar.changed = { [weak self] in self?.menuChanged() }
-        sidebar.list.navigate = { [weak self] in self?.perform($0) }
+        sidebar.list.navigate = { [weak self] navigation, focus in self?.perform(navigation, focus: focus) }
         sidebar.list.onIntent = { [weak self] in self?.supersedeIntent() }
         sidebar.list.commandTarget = { [weak self] in self?.session?.activePane }
         sidebar.list.runtimeSection.start = { [weak self] in self?.startRuntime($0) }
@@ -988,11 +989,11 @@ private class AlertEscape: NSView {
         case .selected(let session, let window, let pane):
             note("selection received session=\(session?.description ?? "none") window=\(window?.description ?? "none") pane=\(pane?.description ?? "none") owner=\(ownerID)")
             receiveSoon()
-            guard awaitingSelect else { return }
-            awaitingSelect = false
-            if let session, let window {
+            guard let focus = awaitingSelect else { return }
+            awaitingSelect = nil
+            activating = nil
+            if let session, let window, focus == .pane {
                 focusTarget = pane.map { .pane(.init(session: session, window: window, pane: $0)) } ?? .window(session, window)
-                activating = nil
                 sidebar.list.leave()
             }
         case .failed(let code, let message):
@@ -1317,7 +1318,7 @@ private class AlertEscape: NSView {
     func supersedeIntent() {
         intent += 1
         focusTarget = nil
-        awaitingSelect = false
+        awaitingSelect = nil
     }
 
     func runtimeLabel(_ key: RuntimeKey) -> String {
@@ -1432,7 +1433,7 @@ private class AlertEscape: NSView {
         window.makeKeyAndOrderFront(nil)
     }
 
-    func perform(_ navigation: Navigation) {
+    func perform(_ navigation: Navigation, focus: SelectionFocus = .pane) {
         if case .jump(let target) = navigation {
             guard activating != intent else { return }
             sidebar.list.select(target)
@@ -1445,7 +1446,7 @@ private class AlertEscape: NSView {
             switch navigation {
             case .jump(let target):
                 activating = intent
-                awaitingSelect = true
+                awaitingSelect = focus
                 // A pane that the zoom hides is shown: the jump ends the zoom.
                 if let window = koModel?.layout.layout.window(target.window),
                    let zoom = window.zoom, zoom != target.pane {
@@ -1453,23 +1454,23 @@ private class AlertEscape: NSView {
                 }
                 try client.select(KO_SELECT_PANE, target.pane)
             case .selectWindow(_, let window):
-                awaitingSelect = true
+                awaitingSelect = focus
                 try client.select(KO_SELECT_WINDOW, window)
             case .selectSession(let session):
-                awaitingSelect = true
+                awaitingSelect = focus
                 try client.select(KO_SELECT_SESSION, session)
             case .switchSession(let next):
-                awaitingSelect = true
+                awaitingSelect = focus
                 try client.switchOver(KO_OVER_SESSION, next ? KO_DIRECTION_NEXT : KO_DIRECTION_PREVIOUS)
             case .switchWindow(let next):
                 guard let current = model.window, let layout = koModel?.layout.layout,
                       let window = adjacentWindow(snapshot.map(reorder.state.project), surviving: layout.survivingWindows, from: current, next: next) else { return }
-                awaitingSelect = true
+                awaitingSelect = focus
                 try client.select(KO_SELECT_WINDOW, window)
             case .releaseSideFocus: break
             }
         } catch {
-            awaitingSelect = false
+            awaitingSelect = nil
             activating = nil
             sidebar.list.failed("\(error)")
         }
@@ -1530,7 +1531,7 @@ private class AlertEscape: NSView {
 
     private func invalidate(keepingSnapshot: Bool = false) {
         focusTarget = nil
-        awaitingSelect = false
+        awaitingSelect = nil
         generation += 1
         stoppingRuntimes = []
         updateRuntimeSection()

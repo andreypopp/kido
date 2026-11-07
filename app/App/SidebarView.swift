@@ -47,7 +47,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     private var heldSelection: SidebarRow.ID?
     private let insertion = Insertion()
     private let dragOwner = UUID().uuidString
-    var navigate: (Navigation) -> Void = { _ in }
+    var navigate: (Navigation, SelectionFocus) -> Void = { _, _ in }
     var onIntent: () -> Void = {}
     var commandTarget: () -> PaneView? = { nil }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
@@ -82,8 +82,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         cell.nameField.stringValue = item.title
         cell.nameField.isHidden = false
         cell.needsDisplay = true
-        window?.makeFirstResponder(cell.nameField)
-        cell.nameField.selectText(nil)
+        Sidebar.grantFocus(in: window) {
+            window?.makeFirstResponder(cell.nameField)
+            cell.nameField.selectText(nil)
+        }
     }
 
     private func endRename() {
@@ -97,7 +99,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
             edit.cell.configure(items[row], now: clockNow)
             resizeRows([row])
         }
-        window?.makeFirstResponder(edit.responder)
+        Sidebar.grantFocus(in: window) { window?.makeFirstResponder(edit.responder) }
     }
 
     private func resizeRows(_ rows: IndexSet) {
@@ -141,7 +143,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     let runtimeSection = RuntimeSection()
     private let table = Table()
     private let scroll = DropScroll()
-    private let statusLine = NSTextField(labelWithString: "")
+    let statusLine = NSTextField(labelWithString: "")
     private var snapshot: Snapshot?
     private var feedNote: (String, NSColor)?
     private var failure: String?
@@ -273,8 +275,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     var position: Snapshot.Position? { snapshot?.client }
 
     var containsFocus: Bool {
-        guard let focused = window?.firstResponder else { return false }
-        return (focused as? NSView)?.isDescendant(of: self) == true
+        Sidebar.focusView(window?.firstResponder)?.isDescendant(of: self) == true
     }
 
     func failed(_ message: String?) {
@@ -410,8 +411,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         {
             table.selectRowIndexes([index], byExtendingSelection: false)
         }
-        table.requestingFocus = true
-        defer { table.requestingFocus = false }
         window?.makeFirstResponder(table)
         table.scrollRowToVisible(table.selectedRow)
     }
@@ -430,9 +429,9 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         table.scrollRowToVisible(i)
     }
 
-    fileprivate func activate(_ index: Int) {
+    fileprivate func activate(_ index: Int, focus: SelectionFocus) {
         guard let target = entry(index)?.target else { return }
-        navigate(.jump(target))
+        navigate(.jump(target), focus)
     }
 
     func select(_ target: Snapshot.Position) {
@@ -450,9 +449,9 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         switch (Int(event.keyCode), event.charactersIgnoringModifiers ?? "", mods) {
         case (125, _, []), (_, "j", []), (_, "n", .control): move(1)
         case (126, _, []), (_, "k", []), (_, "p", .control): move(-1)
-        case (36, _, []), (76, _, []): activate(table.selectedRow)
+        case (36, _, []), (76, _, []): activate(table.selectedRow, focus: .pane)
         case (53, _, []):
-            navigate(.releaseSideFocus)
+            navigate(.releaseSideFocus, .pane)
         default: return false
         }
         return true
@@ -643,7 +642,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     var visualScroll: NSScrollView { scroll }
     var visualRows: [SidebarRow] { items }
     var visualDiagnostic: String { statusLine.stringValue }
-    func visualJump(_ row: SidebarRow) { activate(items.firstIndex { $0.id == row.id } ?? -1) }
+    func visualJump(_ row: SidebarRow) { activate(items.firstIndex { $0.id == row.id } ?? -1, focus: .pane) }
     var visualDragging: String? { dragging.map { "\($0)" } }
     var visualInsertion: NSRect? { insertion.isHidden ? nil : insertion.frame }
     override func draw(_ dirtyRect: NSRect) {
@@ -668,19 +667,14 @@ final class Table: NSTableView {
     var keyboardSelection = false {
         didSet { enumerateAvailableRowViews { row, _ in row.subviews.forEach { $0.needsDisplay = true } } }
     }
-    private var selectingWithMouse = false
-    var requestingFocus = false
-    override var acceptsFirstResponder: Bool {
-        (requestingFocus || (!selectingWithMouse && NSApp.currentEvent?.type != .leftMouseDown)) && super.acceptsFirstResponder
-    }
+    override var acceptsFirstResponder: Bool { Sidebar.allowsFirstResponder(self, in: window) && super.acceptsFirstResponder }
     override func mouseDown(with event: NSEvent) {
-        selectingWithMouse = true
-        defer { selectingWithMouse = false }
         keyboardSelection = false
         super.mouseDown(with: event)
         guard let up = NSApp.currentEvent, up.type == .leftMouseUp,
               hypot(up.locationInWindow.x - event.locationInWindow.x, up.locationInWindow.y - event.locationInWindow.y) < 4 else { return }
-        (delegate as? SidebarView)?.activate(row(at: convert(event.locationInWindow, from: nil)))
+        guard let sidebar = delegate as? SidebarView else { return }
+        sidebar.activate(row(at: convert(event.locationInWindow, from: nil)), focus: sidebar.containsFocus ? .sidebar : .pane)
     }
     override func beginDraggingSession(with items: [NSDraggingItem], event: NSEvent, source: any NSDraggingSource) -> NSDraggingSession {
         (delegate as? SidebarView)?.dragImage(items)
