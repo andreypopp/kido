@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
-use crate::pane_kind::{self, Kind, RemoteKind};
+use crate::pane_kind::{self, Kind, LocalKind, RemoteKind};
 use crate::program_status::{app, root};
 use crate::protocol::{
-    Agent, AgentState, CommandExit, Foreground, Live, Origin, Outcome, OutcomeResult, Phase,
+    Agent, AgentState, CommandExit, Foreground, Live, Local, Origin, Outcome, OutcomeResult, Phase,
     ProgramKind, ProgramRecord, ProgramState, ProgramStatus, Remote, Shell,
 };
 use crate::telemetry::Telemetry;
@@ -270,7 +270,7 @@ fn shell(
                     fullscreen,
                 }
             } else if prompted {
-                Phase::Idle {
+                Phase::Pending {
                     last: t.last.clone(),
                 }
             } else {
@@ -305,29 +305,24 @@ fn shell(
 }
 
 fn identity(kind: &Kind) -> Identity {
-    Identity {
-        root: match kind {
-            Kind::SomeAgent { name }
-            | Kind::Ssh {
-                pane: RemoteKind::Agent { name },
-                ..
-            } => Root::Agent(name.clone()),
-            Kind::PiAgent { .. } => Root::Agent("pi".to_owned()),
-            Kind::Terminal
-            | Kind::Ssh {
-                pane: RemoteKind::Terminal,
-                ..
-            } => Root::Program,
+    let (root, session, ssh) = match kind {
+        Kind::Host { pane } | Kind::Runtime { pane } => match pane {
+            LocalKind::Terminal => (Root::Program, None, None),
+            LocalKind::SomeAgent { name } => (Root::Agent(name.clone()), None, None),
+            LocalKind::PiAgent { session, .. } => {
+                (Root::Agent("pi".to_owned()), Some(session.clone()), None)
+            }
         },
-        session: match kind {
-            Kind::PiAgent { session, .. } => Some(session.clone()),
-            _ => None,
-        },
-        ssh: match kind {
-            Kind::Ssh { destination, .. } => Some(destination.clone()),
-            _ => None,
-        },
-    }
+        Kind::Ssh { destination, pane } => (
+            match pane {
+                RemoteKind::Terminal => Root::Program,
+                RemoteKind::Agent { name } => Root::Agent(name.clone()),
+            },
+            None,
+            Some(destination.clone()),
+        ),
+    };
+    Identity { root, session, ssh }
 }
 
 pub(crate) fn observe(
@@ -373,33 +368,48 @@ pub(crate) fn observe(
         agent
     };
     let fullscreen = telemetry.alternate;
+    let local = |pane: &LocalKind, mut t: Track| {
+        let pane = match pane {
+            LocalKind::Terminal => {
+                let (next, status) = shell(
+                    now,
+                    fullscreen,
+                    serial,
+                    records,
+                    reading(false, telemetry),
+                    t,
+                );
+                t = next;
+                Local::Terminal(status)
+            }
+            LocalKind::SomeAgent { name } => Local::SomeAgent {
+                name: name.clone(),
+                status: agent(&mut t, false, None),
+            },
+            LocalKind::PiAgent {
+                session, activity, ..
+            } => Local::PiAgent {
+                session: session.clone(),
+                status: agent(
+                    &mut t,
+                    true,
+                    (!activity.is_empty()).then(|| activity.clone()),
+                ),
+            },
+        };
+        (t, pane)
+    };
     let live = match kind {
-        Kind::Terminal => {
-            let (next, shell) = shell(
-                now,
-                fullscreen,
-                serial,
-                records,
-                reading(false, telemetry),
-                t,
-            );
+        Kind::Host { pane } => {
+            let (next, pane) = local(pane, t);
             t = next;
-            Live::Terminal(shell)
+            Live::Host { pane }
         }
-        Kind::SomeAgent { name } => Live::SomeAgent {
-            name: name.clone(),
-            status: agent(&mut t, false, None),
-        },
-        Kind::PiAgent {
-            session, activity, ..
-        } => Live::PiAgent {
-            session: session.clone(),
-            status: agent(
-                &mut t,
-                true,
-                (!activity.is_empty()).then(|| activity.clone()),
-            ),
-        },
+        Kind::Runtime { pane } => {
+            let (next, pane) = local(pane, t);
+            t = next;
+            Live::Runtime { pane }
+        }
         Kind::Ssh {
             destination,
             pane: RemoteKind::Agent { name },
@@ -536,8 +546,8 @@ mod tests {
     fn shell_text(shell: &Shell) -> String {
         let phase = match &shell.phase {
             Phase::Unknown => "unknown".to_owned(),
-            Phase::Idle { last: None } => "idle".to_owned(),
-            Phase::Idle { last: Some(exit) } => format!(
+            Phase::Idle { last: None } | Phase::Pending { last: None } => "idle".to_owned(),
+            Phase::Idle { last: Some(exit) } | Phase::Pending { last: Some(exit) } => format!(
                 "idle last={} {:?} {:.0}-{:.0}",
                 exit.code,
                 exit.command,
@@ -569,8 +579,12 @@ mod tests {
 
     fn text(live: &Live) -> String {
         match live {
-            Live::Terminal(shell) => shell_text(shell),
-            Live::SomeAgent { status, .. } | Live::PiAgent { status, .. } => agent_text(status),
+            Live::Host { pane } | Live::Runtime { pane } => match pane {
+                Local::Terminal(shell) => shell_text(shell),
+                Local::SomeAgent { status, .. } | Local::PiAgent { status, .. } => {
+                    agent_text(status)
+                }
+            },
             Live::Ssh {
                 pane: Remote::Agent { status, .. },
                 ..
@@ -611,7 +625,7 @@ mod tests {
             records: &ProgramStatus,
         ) -> String {
             self.now += ms * MS;
-            let kind = classify(telemetry.foreground.as_ref(), vars, &records.records);
+            let kind = classify(None, telemetry.foreground.as_ref(), vars, &records.records);
             self.observe(label, 22, telemetry, &kind, records)
         }
 
@@ -674,6 +688,41 @@ mod tests {
     }
 
     #[test]
+    fn entering_a_runtime_keeps_the_local_agent_episode_and_reads_only_the_root() {
+        let pane = LocalKind::PiAgent {
+            session: "s".to_owned(),
+            name: "Worker".to_owned(),
+            activity: String::new(),
+        };
+        let records = status(
+            1,
+            agent("pi", ProgramState::Done, &[("job", working(None))]),
+        );
+        let (track, host) = observe(
+            T0,
+            &Telemetry::default(),
+            "",
+            &Kind::Host { pane: pane.clone() },
+            &records,
+            None,
+        );
+        let (_, runtime) = observe(
+            T0 + MS,
+            &Telemetry::default(),
+            "",
+            &Kind::Runtime { pane },
+            &records,
+            Some(track),
+        );
+        assert_eq!(host.agent(), runtime.agent());
+        assert!(matches!(runtime, Live::Runtime { .. }));
+        assert!(matches!(
+            runtime.agent().unwrap().state,
+            AgentState::Idle { outcome: Some(_) }
+        ));
+    }
+
+    #[test]
     fn agent_children_do_not_change_root_state() {
         let shown = agent_steps(vec![
             (0, "idle", 1, agent("pi", ProgramState::Idle, &[])),
@@ -732,7 +781,15 @@ mod tests {
                 rec("a", blocked(Some(ProgramKind::Auth), Some(3)), None, None),
             ],
         );
-        let shown = run.observe("blocked", 22, &telemetry, &Kind::Terminal, &blocked);
+        let shown = run.observe(
+            "blocked",
+            22,
+            &telemetry,
+            &Kind::Host {
+                pane: LocalKind::Terminal,
+            },
+            &blocked,
+        );
         assert!(shown.contains("report waiting:auth(3%)"), "{shown}");
         let working = status(
             2,
@@ -742,7 +799,15 @@ mod tests {
                 rec("y", working(Some(8)), None, None),
             ],
         );
-        let shown = run.observe("working", 22, &telemetry, &Kind::Terminal, &working);
+        let shown = run.observe(
+            "working",
+            22,
+            &telemetry,
+            &Kind::Host {
+                pane: LocalKind::Terminal,
+            },
+            &working,
+        );
         assert!(shown.contains("report running(8%)"), "{shown}");
     }
 
@@ -896,7 +961,9 @@ mod tests {
                 label,
                 0,
                 &Telemetry::default(),
-                &Kind::Terminal,
+                &Kind::Host {
+                    pane: LocalKind::Terminal,
+                },
                 &status(serial, records),
             ));
             run.now += 1000 * MS;
@@ -923,21 +990,32 @@ mod tests {
             run.now += 1000 * MS;
             shown.push(run.observe(label, 20, &telemetry, kind, &status(serial, records)));
         };
-        let pi = |id: &str| Kind::PiAgent {
-            session: id.to_owned(),
-            name: String::new(),
-            activity: String::new(),
+        let pi = |id: &str| Kind::Host {
+            pane: LocalKind::PiAgent {
+                session: id.to_owned(),
+                name: String::new(),
+                activity: String::new(),
+            },
         };
         let done = |app: &str| agent(app, ProgramState::Done, &[]);
         step("pi done", &pi("a"), 1, done("pi"));
         step("same", &pi("a"), 2, done("pi"));
         step("new session id", &pi("b"), 3, done("pi"));
-        let claude = Kind::SomeAgent {
-            name: "claude-code".to_owned(),
+        let claude = Kind::Host {
+            pane: LocalKind::SomeAgent {
+                name: "claude-code".to_owned(),
+            },
         };
         step("claude replaces pi", &claude, 4, done("claude-code"));
         step("same claude", &claude, 5, done("claude-code"));
-        step("root cleared", &Kind::Terminal, 5, Vec::new());
+        step(
+            "root cleared",
+            &Kind::Host {
+                pane: LocalKind::Terminal,
+            },
+            5,
+            Vec::new(),
+        );
         step("claude again", &claude, 6, done("claude-code"));
         let ssh = |destination: &str| Kind::Ssh {
             destination: destination.to_owned(),
@@ -1038,6 +1116,81 @@ mod tests {
             serial: 1,
             ..Pane::default()
         }
+    }
+
+    #[test]
+    fn a_prompted_command_is_pending_before_promotion_even_with_the_shell_foreground() {
+        let kind = Kind::Host {
+            pane: LocalKind::Terminal,
+        };
+        let records = status(0, vec![]);
+        let (mut telemetry, _) = sh(Some(-9), None, false, None, "").parts();
+        telemetry.foreground = Some(Foreground {
+            pid: 100,
+            name: "zsh".to_owned(),
+        });
+        let (track, live) = observe(T0, &telemetry, "", &kind, &records, None);
+        assert_eq!(
+            serde_json::to_value(&live.shell().unwrap().phase).unwrap()["type"],
+            "idle"
+        );
+        telemetry.command = Some(CommandRun {
+            started_at: T0,
+            line: "sleep 5".to_owned(),
+            running: true,
+        });
+        let (track, live) = observe(T0, &telemetry, "", &kind, &records, Some(track));
+        assert_eq!(
+            serde_json::to_value(&live.shell().unwrap().phase).unwrap()["type"],
+            "pending"
+        );
+        let (track, live) = observe(
+            T0 + DEBOUNCE - 1,
+            &telemetry,
+            "",
+            &kind,
+            &records,
+            Some(track),
+        );
+        assert_eq!(
+            serde_json::to_value(&live.shell().unwrap().phase).unwrap()["type"],
+            "pending"
+        );
+        let (track, live) = observe(T0 + DEBOUNCE, &telemetry, "", &kind, &records, Some(track));
+        assert_eq!(
+            serde_json::to_value(&live.shell().unwrap().phase).unwrap()["type"],
+            "running"
+        );
+        telemetry.command.as_mut().unwrap().running = false;
+        telemetry.last_exit = Some(LastExit {
+            code: 0,
+            at: T0 + DEBOUNCE + 1,
+        });
+        let (track, live) = observe(
+            T0 + DEBOUNCE + 1,
+            &telemetry,
+            "",
+            &kind,
+            &records,
+            Some(track),
+        );
+        assert_eq!(
+            serde_json::to_value(&live.shell().unwrap().phase).unwrap()["type"],
+            "idle"
+        );
+        telemetry.last_prompt = Some(T0 + DEBOUNCE + 1);
+        let (_, live) = observe(
+            T0 + DEBOUNCE + 1,
+            &telemetry,
+            "",
+            &kind,
+            &records,
+            Some(track),
+        );
+        assert_eq!(
+            serde_json::to_value(&live.shell().unwrap().phase).unwrap()["type"],
+            "idle"
+        );
     }
 
     #[test]

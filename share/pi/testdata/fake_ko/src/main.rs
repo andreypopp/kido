@@ -121,8 +121,8 @@ fn listing(row: &Value) -> Value {
         fields.entry("title").or_insert(json!(""));
         fields.entry("dead").or_insert(Value::Null);
         fields.entry("vars").or_insert(json!({}));
-        if let Some(status) = fields.remove("program_status") {
-            fields.insert("status".to_owned(), json!({"program_status": status}));
+        if let Some(records) = fields.remove("program_status") {
+            fields.entry("status").or_insert(json!({}))["program_status"] = records;
         }
     }
     listed

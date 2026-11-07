@@ -269,7 +269,8 @@ fn ssh_mark() {
 
     s.text(&pane, "exit\n");
     let row = s.wait_row(&pane, "the shell back in the foreground", |row| {
-        row["status"]["kind"]["type"] == "terminal"
+        row["status"]["kind"]["type"] == "host"
+            && row["status"]["kind"]["pane"]["type"] == "terminal"
     });
     assert_eq!(row["vars"]["ssh.dest"], "alias");
     assert_eq!(row["vars"]["ssh.args"], json!(["alias"]));
@@ -389,7 +390,7 @@ fn pane_runs_the_shims() {
     let shims = fs::canonicalize(ko().parent().unwrap().join("../share/ko/bin")).unwrap();
     let pane = s.shell_pane();
     s.wait_row(&pane, "the first prompt", |row| {
-        row["status"]["kind"]["phase"]["type"] == "idle"
+        row["status"]["kind"]["pane"]["phase"]["type"] == "idle"
     });
     let out = s.dir.join("shims.txt");
     s.text(
@@ -605,7 +606,7 @@ fn ko_ssh_primes_a_remote_shell() {
     let Some(s) = host_ssh() else { return };
     let plain = s.shell_pane();
     s.wait_row(&plain, "the first prompt", |row| {
-        row["status"]["kind"]["phase"]["type"] == "idle"
+        row["status"]["kind"]["pane"]["phase"]["type"] == "idle"
     });
     s.text(&plain, "ssh -tt localhost 'exec $SHELL -i'\r");
     s.wait_row(&plain, "an unprimed ssh", |row| {
@@ -621,7 +622,7 @@ fn ko_ssh_primes_a_remote_shell() {
 
     let primed = s.shell_pane();
     s.wait_row(&primed, "the first prompt", |row| {
-        row["status"]["kind"]["phase"]["type"] == "idle"
+        row["status"]["kind"]["pane"]["phase"]["type"] == "idle"
     });
     s.text(&primed, "ssh localhost\r");
     let row = s.wait_row(&primed, "a primed remote prompt", |row| {
@@ -648,7 +649,7 @@ fn ko_ssh_opens_an_ordinary_session() {
     let Some(s) = host_ssh() else { return };
     let pane = s.shell_pane();
     s.wait_row(&pane, "the first prompt", |row| {
-        row["status"]["kind"]["phase"]["type"] == "idle"
+        row["status"]["kind"]["pane"]["phase"]["type"] == "idle"
     });
     s.text(
         &pane,
@@ -656,11 +657,11 @@ fn ko_ssh_opens_an_ordinary_session() {
     );
     s.screen_has(&pane, "ordinary-21");
     let row = s.wait_row(&pane, "the session to end", |row| {
-        row["status"]["kind"]["type"] == "terminal"
-            && !row["status"]["kind"]["phase"]["last"].is_null()
+        row["status"]["kind"]["pane"]["type"] == "terminal"
+            && !row["status"]["kind"]["pane"]["phase"]["last"].is_null()
     });
     assert_eq!(
-        row["status"]["kind"]["phase"]["last"]["code"], 0,
+        row["status"]["kind"]["pane"]["phase"]["last"]["code"], 0,
         "a command ssh runs normally: {row}"
     );
 }
@@ -670,7 +671,7 @@ fn ssh_remote_shell_status() {
     let Some(s) = host_ssh() else { return };
     let pane = s.shell_pane();
     s.wait_row(&pane, "the first prompt", |row| {
-        row["status"]["kind"]["phase"]["type"] == "idle"
+        row["status"]["kind"]["pane"]["phase"]["type"] == "idle"
     });
     s.text(&pane, "ssh localhost\r");
     s.wait_row(&pane, "a primed remote prompt", |row| {

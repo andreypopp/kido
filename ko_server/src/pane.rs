@@ -11,7 +11,7 @@ use crate::ids::{PaneId, PaneToken};
 use crate::inbox::Inbox;
 use crate::model::PaneModel;
 use crate::pane_proc::{Input, Io, Launch, PaneProc};
-use crate::protocol::{Close, Foreground, Variable};
+use crate::protocol::{Close, Variable};
 use crate::runtime::RuntimeKey;
 use crate::telemetry::Telemetry;
 use crate::vars::Vars;
@@ -160,13 +160,6 @@ impl Pane {
         Some(ended)
     }
 
-    pub(crate) fn status_foreground(&self) -> Option<&Foreground> {
-        self.telemetry
-            .foreground
-            .as_ref()
-            .filter(|_| self.runtime().is_none())
-    }
-
     pub(crate) fn runtime_token(&self) -> Option<&PaneToken> {
         match self.membership.as_ref()? {
             Membership::Born { .. } => Some(&self.token),
@@ -198,8 +191,8 @@ impl Pane {
         &mut self.model
     }
 
-    pub(crate) fn parts_mut(&mut self) -> (&mut Telemetry, &Vars, &mut PaneModel) {
-        (&mut self.telemetry, &self.vars, &mut self.model)
+    pub(crate) fn parts_mut(&mut self) -> (&mut Telemetry, &mut PaneModel) {
+        (&mut self.telemetry, &mut self.model)
     }
 
     pub(crate) fn command(&self) -> &[Vec<u8>] {

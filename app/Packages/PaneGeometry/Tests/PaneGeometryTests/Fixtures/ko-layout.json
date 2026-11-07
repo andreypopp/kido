@@ -172,10 +172,13 @@
       "records_seen" : false,
       "status" : {
         "kind" : {
-          "phase" : {
-            "type" : "unknown"
+          "pane" : {
+            "phase" : {
+              "type" : "unknown"
+            },
+            "type" : "terminal"
           },
-          "type" : "terminal"
+          "type" : "host"
         },
         "program_status" : {
           "records" : [
@@ -210,10 +213,13 @@
       "records_seen" : false,
       "status" : {
         "kind" : {
-          "phase" : {
-            "type" : "unknown"
+          "pane" : {
+            "phase" : {
+              "type" : "unknown"
+            },
+            "type" : "terminal"
           },
-          "type" : "terminal"
+          "type" : "host"
         },
         "program_status" : {
           "records" : [
@@ -248,10 +254,13 @@
       "records_seen" : false,
       "status" : {
         "kind" : {
-          "phase" : {
-            "type" : "unknown"
+          "pane" : {
+            "phase" : {
+              "type" : "unknown"
+            },
+            "type" : "terminal"
           },
-          "type" : "terminal"
+          "type" : "host"
         },
         "program_status" : {
           "records" : [
@@ -286,10 +295,13 @@
       "records_seen" : false,
       "status" : {
         "kind" : {
-          "phase" : {
-            "type" : "unknown"
+          "pane" : {
+            "phase" : {
+              "type" : "unknown"
+            },
+            "type" : "terminal"
           },
-          "type" : "terminal"
+          "type" : "host"
         },
         "program_status" : {
           "records" : [
@@ -324,10 +336,13 @@
       "records_seen" : false,
       "status" : {
         "kind" : {
-          "phase" : {
-            "type" : "unknown"
+          "pane" : {
+            "phase" : {
+              "type" : "unknown"
+            },
+            "type" : "terminal"
           },
-          "type" : "terminal"
+          "type" : "host"
         },
         "program_status" : {
           "records" : [
@@ -362,10 +377,13 @@
       "records_seen" : false,
       "status" : {
         "kind" : {
-          "phase" : {
-            "type" : "unknown"
+          "pane" : {
+            "phase" : {
+              "type" : "unknown"
+            },
+            "type" : "terminal"
           },
-          "type" : "terminal"
+          "type" : "host"
         },
         "program_status" : {
           "records" : [
@@ -400,10 +418,13 @@
       "records_seen" : false,
       "status" : {
         "kind" : {
-          "phase" : {
-            "type" : "unknown"
+          "pane" : {
+            "phase" : {
+              "type" : "unknown"
+            },
+            "type" : "terminal"
           },
-          "type" : "terminal"
+          "type" : "host"
         },
         "program_status" : {
           "records" : [

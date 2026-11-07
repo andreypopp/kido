@@ -2,6 +2,7 @@ use crate::ids::VarName;
 use crate::pane::Pane;
 use crate::program_status::{app, root};
 use crate::protocol::{Foreground, ProgramRecord};
+use crate::runtime::RuntimeKey;
 use crate::vars::Vars;
 
 const SSH_DEST: VarName = VarName::known("ssh.dest");
@@ -16,7 +17,7 @@ pub(crate) enum RemoteKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Kind {
+pub(crate) enum LocalKind {
     Terminal,
     SomeAgent {
         name: String,
@@ -26,10 +27,29 @@ pub(crate) enum Kind {
         name: String,
         activity: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Host {
+        pane: LocalKind,
+    },
+    Runtime {
+        pane: LocalKind,
+    },
     Ssh {
         destination: String,
         pane: RemoteKind,
     },
+}
+
+impl Kind {
+    pub(crate) fn local(&self) -> Option<&LocalKind> {
+        match self {
+            Self::Host { pane } | Self::Runtime { pane } => Some(pane),
+            Self::Ssh { .. } => None,
+        }
+    }
 }
 
 fn destination(vars: &Vars) -> Option<String> {
@@ -39,46 +59,56 @@ fn destination(vars: &Vars) -> Option<String> {
 }
 
 pub(crate) fn classify(
+    runtime: Option<&RuntimeKey>,
     foreground: Option<&Foreground>,
     vars: &Vars,
     records: &[ProgramRecord],
 ) -> Kind {
     let root_app = root(records).and_then(|record| app(records, record));
-    let ssh = foreground
-        .is_some_and(|foreground| foreground.name == "ssh")
-        .then(|| destination(vars))
-        .flatten();
-    if let Some(destination) = ssh {
-        let pane = match root_app {
-            Some(name @ ("pi" | "claude-code")) => RemoteKind::Agent {
-                name: name.to_owned(),
+    let local = || {
+        let var = |name: &VarName| vars.text(name).unwrap_or_default().to_owned();
+        match root_app {
+            Some("pi") => match vars.text(&PI_SESSION).filter(|session| !session.is_empty()) {
+                Some(session) => LocalKind::PiAgent {
+                    session: session.to_owned(),
+                    name: var(&PI_NAME),
+                    activity: var(&PI_ACTIVITY),
+                },
+                None => LocalKind::SomeAgent {
+                    name: "pi".to_owned(),
+                },
             },
-            _ => RemoteKind::Terminal,
-        };
-        return Kind::Ssh { destination, pane };
-    }
-    let var = |name: &VarName| vars.text(name).unwrap_or_default().to_owned();
-    match root_app {
-        Some("pi") => match vars.text(&PI_SESSION).filter(|session| !session.is_empty()) {
-            Some(session) => Kind::PiAgent {
-                session: session.to_owned(),
-                name: var(&PI_NAME),
-                activity: var(&PI_ACTIVITY),
+            Some("claude-code") => LocalKind::SomeAgent {
+                name: "claude-code".to_owned(),
             },
-            None => Kind::SomeAgent {
-                name: "pi".to_owned(),
-            },
-        },
-        Some("claude-code") => Kind::SomeAgent {
-            name: "claude-code".to_owned(),
-        },
-        _ => Kind::Terminal,
+            _ => LocalKind::Terminal,
+        }
+    };
+    match runtime {
+        Some(_) => Kind::Runtime { pane: local() },
+        None => {
+            let ssh = foreground
+                .is_some_and(|foreground| foreground.name == "ssh")
+                .then(|| destination(vars))
+                .flatten();
+            if let Some(destination) = ssh {
+                let pane = match root_app {
+                    Some(name @ ("pi" | "claude-code")) => RemoteKind::Agent {
+                        name: name.to_owned(),
+                    },
+                    _ => RemoteKind::Terminal,
+                };
+                return Kind::Ssh { destination, pane };
+            }
+            Kind::Host { pane: local() }
+        }
     }
 }
 
 pub(crate) fn of_pane(pane: &Pane) -> Kind {
     classify(
-        pane.status_foreground(),
+        pane.runtime(),
+        pane.telemetry().foreground.as_ref(),
         pane.vars(),
         &pane.telemetry().records.published().records,
     )
@@ -93,21 +123,23 @@ pub(crate) fn title(kind: &Kind, pane_title: &str) -> Option<String> {
         }
     };
     match kind {
+        Kind::Host { pane } | Kind::Runtime { pane } => match pane {
+            LocalKind::Terminal => None,
+            LocalKind::SomeAgent { name } => Some(named(name)),
+            LocalKind::PiAgent { name, .. } => Some(if name.is_empty() {
+                pane_title.to_owned()
+            } else {
+                name.clone()
+            }),
+        },
         Kind::Ssh {
             pane: RemoteKind::Terminal,
             ..
-        }
-        | Kind::Terminal => None,
-        Kind::SomeAgent { name }
-        | Kind::Ssh {
+        } => None,
+        Kind::Ssh {
             pane: RemoteKind::Agent { name },
             ..
         } => Some(named(name)),
-        Kind::PiAgent { name, .. } => Some(if name.is_empty() {
-            pane_title.to_owned()
-        } else {
-            name.clone()
-        }),
     }
 }
 
@@ -126,7 +158,12 @@ mod tests {
 
     impl Fixture {
         fn kind(&self, records: &[ProgramRecord]) -> Kind {
-            classify(self.telemetry.foreground.as_ref(), &self.vars, records)
+            classify(
+                None,
+                self.telemetry.foreground.as_ref(),
+                &self.vars,
+                records,
+            )
         }
     }
 
@@ -173,29 +210,45 @@ mod tests {
             "zsh",
             &[("pi.session", json!("s1")), ("pi.name", json!("Worker"))],
         );
-        assert_eq!(pi.kind(&[]), Kind::Terminal);
+        assert_eq!(
+            pi.kind(&[]),
+            Kind::Host {
+                pane: LocalKind::Terminal
+            }
+        );
         assert_eq!(
             pi.kind(&root_app("pi")),
-            Kind::PiAgent {
-                session: "s1".to_owned(),
-                name: "Worker".to_owned(),
-                activity: String::new(),
+            Kind::Host {
+                pane: LocalKind::PiAgent {
+                    session: "s1".to_owned(),
+                    name: "Worker".to_owned(),
+                    activity: String::new(),
+                }
             }
         );
         let bare = telemetry("zsh", &[("pi.session", json!(7))]);
         assert_eq!(
             bare.kind(&root_app("pi")),
-            Kind::SomeAgent {
-                name: "pi".to_owned()
+            Kind::Host {
+                pane: LocalKind::SomeAgent {
+                    name: "pi".to_owned()
+                }
             }
         );
         assert_eq!(
             bare.kind(&root_app("claude-code")),
-            Kind::SomeAgent {
-                name: "claude-code".to_owned()
+            Kind::Host {
+                pane: LocalKind::SomeAgent {
+                    name: "claude-code".to_owned()
+                }
             }
         );
-        assert_eq!(bare.kind(&root_app("make")), Kind::Terminal);
+        assert_eq!(
+            bare.kind(&root_app("make")),
+            Kind::Host {
+                pane: LocalKind::Terminal
+            }
+        );
     }
 
     #[test]
@@ -211,11 +264,18 @@ mod tests {
                 }
             }
         );
-        assert_eq!(telemetry("zsh", &vars).kind(&[]), Kind::Terminal);
+        assert_eq!(
+            telemetry("zsh", &vars).kind(&[]),
+            Kind::Host {
+                pane: LocalKind::Terminal
+            }
+        );
         for dest in [json!(""), json!(5)] {
             assert_eq!(
                 telemetry("ssh", &[("ssh.dest", dest)]).kind(&[]),
-                Kind::Terminal
+                Kind::Host {
+                    pane: LocalKind::Terminal
+                }
             );
         }
         let remote = telemetry("ssh", &[("ssh.dest", json!("h"))]).kind(&[]);
@@ -223,19 +283,90 @@ mod tests {
     }
 
     #[test]
+    fn runtime_membership_precedes_the_transport_and_uses_the_local_root() {
+        let runtime =
+            RuntimeKey::config(ko_config::values::RuntimeName::try_from("dev".to_owned()).unwrap());
+        for foreground in ["zsh", "ssh"] {
+            for (app, session, expected) in [
+                (None, None, LocalKind::Terminal),
+                (
+                    Some("claude-code"),
+                    None,
+                    LocalKind::SomeAgent {
+                        name: "claude-code".to_owned(),
+                    },
+                ),
+                (
+                    Some("pi"),
+                    None,
+                    LocalKind::SomeAgent {
+                        name: "pi".to_owned(),
+                    },
+                ),
+                (
+                    Some("pi"),
+                    Some("s"),
+                    LocalKind::PiAgent {
+                        session: "s".to_owned(),
+                        name: "Worker".to_owned(),
+                        activity: String::new(),
+                    },
+                ),
+                (None, Some("stale"), LocalKind::Terminal),
+            ] {
+                let mut vars = vec![
+                    ("ssh.dest", json!("transport")),
+                    ("pi.name", json!("Worker")),
+                ];
+                if let Some(session) = session {
+                    vars.push(("pi.session", json!(session)));
+                }
+                let fixture = telemetry(foreground, &vars);
+                let records = app.map_or_else(Vec::new, root_app);
+                assert_eq!(
+                    classify(
+                        Some(&runtime),
+                        fixture.telemetry.foreground.as_ref(),
+                        &fixture.vars,
+                        &records
+                    ),
+                    Kind::Runtime {
+                        pane: expected.clone()
+                    }
+                );
+                if foreground != "ssh" {
+                    assert_eq!(fixture.kind(&records), Kind::Host { pane: expected });
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_title_prefers_the_pane_title_for_an_agent_and_the_name_for_a_pi_session() {
-        let some = Kind::SomeAgent {
-            name: "claude-code".to_owned(),
+        let some = Kind::Host {
+            pane: LocalKind::SomeAgent {
+                name: "claude-code".to_owned(),
+            },
         };
         assert_eq!(title(&some, "Claude Code").as_deref(), Some("Claude Code"));
         assert_eq!(title(&some, "").as_deref(), Some("claude-code"));
-        let pi = |name: &str| Kind::PiAgent {
-            session: "s".to_owned(),
-            name: name.to_owned(),
-            activity: String::new(),
+        let pi = |name: &str| Kind::Host {
+            pane: LocalKind::PiAgent {
+                session: "s".to_owned(),
+                name: name.to_owned(),
+                activity: String::new(),
+            },
         };
         assert_eq!(title(&pi("Worker"), "pane").as_deref(), Some("Worker"));
         assert_eq!(title(&pi(""), "pane").as_deref(), Some("pane"));
-        assert_eq!(title(&Kind::Terminal, "x"), None);
+        assert_eq!(
+            title(
+                &Kind::Host {
+                    pane: LocalKind::Terminal
+                },
+                "x"
+            ),
+            None
+        );
     }
 }

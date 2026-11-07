@@ -31,13 +31,13 @@ import XCTest
         wait("every pane has its status") {
             guard let panes = (try? client.model())?.panes else { return false }
             let phases = panes.compactMap { pane -> KoSchema.Phase? in
-                if case .terminal(let shell)? = pane.status?.kind { shell.phase } else { nil }
+                if case .host(let host)? = pane.status?.kind, case .terminal(let shell) = host.pane { shell.phase } else { nil }
             }
             let ran = phases.contains { if case .idle(let idle) = $0 { idle.last != nil } else { false } }
             let running = phases.contains { if case .running = $0 { true } else { false } }
             return ran && running && panes.allSatisfy { $0.status != nil }
         }
-        let piPane = try XCTUnwrap(try client.model().panes.first { if case .piAgent = $0.status?.kind { true } else { false } }?.id)
+        let piPane = try XCTUnwrap(try client.model().panes.first { if case .host(let host)? = $0.status?.kind, case .piAgent = host.pane { true } else { false } }?.id)
         let first = try createPane(#"{"session":"session_1","name":"first","parent":"\#(piPane)","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
         _ = try createPane(#"{"session":"session_1","name":"nested","parent":"\#(first)","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
         _ = try createPane(#"{"session":"session_1","name":"ended","close":"keep","command":{"type":"argv","argv":["/bin/sh","-c","exit 3"]}}"#, dir: dir)

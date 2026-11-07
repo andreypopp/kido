@@ -74,7 +74,7 @@ private struct Projection {
             lifecycle: lifecycle(pane),
             program_status: programStatus(pane.status?.programStatus),
             children: children, mark: pane.mark, recordsSeen: pane.recordsSeen, inbox: pane.inbox == true,
-            runtime: marks[entry.id], pid: pane.pid, foreground: pane.foreground)
+            runtime: marks[entry.id])
     }
 
     private func lifecycle(_ pane: KoSchema.PaneJson) -> Lifecycle {
@@ -84,17 +84,24 @@ private struct Projection {
     }
 
     private func kind(_ pane: KoSchema.PaneJson) -> PaneKind {
-        guard let live = pane.status?.kind else { return .terminal(ShellStatus(phase: .unknown, report: nil)) }
+        guard let live = pane.status?.kind else { return .host(.terminal(ShellStatus(phase: .unknown, report: nil))) }
         switch live {
-        case .terminal(let shell): return .terminal(Self.shell(shell))
-        case .someAgent(let agent): return .someAgent(name: agent.name, Self.report(agent.status))
-        case .piAgent(let agent): return .piAgent(session: agent.session, Self.report(agent.status))
+        case .host(let host): return .host(Self.local(host.pane))
+        case .runtime(let runtime): return .runtime(Self.local(runtime.pane))
         case .ssh(let ssh):
             let remote: PaneKind.Remote = switch ssh.pane {
             case .terminal(let terminal): .terminal(interactive: terminal.interactive, Self.shell(terminal.status))
             case .agent(let agent): .agent(name: agent.name, Self.report(agent.status))
             }
             return .ssh(.init(ssh.destination), remote)
+        }
+    }
+
+    private static func local(_ pane: KoSchema.Local) -> PaneKind.Local {
+        switch pane {
+        case .terminal(let shell): .terminal(Self.shell(shell))
+        case .someAgent(let agent): .someAgent(name: agent.name, Self.report(agent.status))
+        case .piAgent(let agent): .piAgent(session: agent.session, Self.report(agent.status))
         }
     }
 
@@ -130,6 +137,10 @@ private struct Projection {
         case .unknown: .unknown
         case .idle(let idle):
             .idle(last: idle.last.map {
+                ShellStatus.Exit(code: $0.code, command: $0.command, startedAt: date($0.startedAt), endedAt: date($0.endedAt))
+            })
+        case .pending(let pending):
+            .pending(last: pending.last.map {
                 ShellStatus.Exit(code: $0.code, command: $0.command, startedAt: date($0.startedAt), endedAt: date($0.endedAt))
             })
         case .running(let running):

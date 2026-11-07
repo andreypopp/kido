@@ -212,7 +212,7 @@ fn an_ssh_pane_rides_the_master_and_a_dead_master_ends_its_panes_and_never_recon
     let shell =
         s.new_pane(json!({"runtime": "box", "command": {"type": "argv", "argv": [text_of(&zsh)]}}));
     s.wait_row(&shell, "explicit remote shell is primed", |row| {
-        row["status"]["kind"]["phase"]["type"] == "idle"
+        row["status"]["kind"]["pane"]["phase"]["type"] == "idle"
     });
     let cwd = rt.join("sp ace");
     fs::create_dir(&cwd).unwrap();

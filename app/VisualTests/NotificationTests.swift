@@ -68,7 +68,7 @@ import XCTest
             while let node = nodes.popLast() {
                 nodes += node.children
                 if case .item(let item) = node, item.pane == pane,
-                   case .live(.terminal(let shell)) = item.lifecycle,
+                   case .live(.host(.terminal(let shell))) = item.lifecycle,
                    case .idle(let exit?) = shell.phase, exit.code == 130 { return true }
             }
             return false

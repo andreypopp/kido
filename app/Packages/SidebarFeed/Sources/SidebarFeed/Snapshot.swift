@@ -102,8 +102,6 @@ public struct Item: Equatable, Sendable {
     public var started: Int
     public var parent: PaneID?
     public var lifecycle: Lifecycle
-    public var pid: Int?
-    public var foreground: KoSchema.Foreground?
     public var program_status: ProgramStatus
     public var children: [Node]
     // The core's mark: an outcome that no attended view showed yet, or the work of the pane.
@@ -115,15 +113,13 @@ public struct Item: Equatable, Sendable {
     // Where the pane works, when not on the host.
     public var runtime: RuntimeMark?
     public init(id: PaneID, window: WindowID, title: String, started: Int, parent: PaneID?, lifecycle: Lifecycle, program_status: ProgramStatus,
-                children: [Node], mark: KoSchema.Mark, recordsSeen: Bool = false, inbox: Bool = false, runtime: RuntimeMark? = nil, pid: Int? = nil, foreground: KoSchema.Foreground? = nil) {
+                children: [Node], mark: KoSchema.Mark, recordsSeen: Bool = false, inbox: Bool = false, runtime: RuntimeMark? = nil) {
         self.started = started
         self.parent = parent
         self.id = id
         self.window = window
         self.title = title
         self.lifecycle = lifecycle
-        self.pid = pid
-        self.foreground = foreground
         self.program_status = program_status
         self.children = children
         self.mark = mark
@@ -156,10 +152,21 @@ public enum PaneKind: Equatable, Sendable {
         case terminal(interactive: Bool, ShellStatus)
         case agent(name: String, Report)
     }
-    case terminal(ShellStatus)
-    case someAgent(name: String, Report)
-    case piAgent(session: String, Report)
+    public enum Local: Equatable, Sendable {
+        case terminal(ShellStatus)
+        case someAgent(name: String, Report)
+        case piAgent(session: String, Report)
+    }
+    case host(Local)
+    case runtime(Local)
     case ssh(Destination, Remote)
+
+    public var local: Local? {
+        switch self {
+        case .host(let pane), .runtime(let pane): pane
+        case .ssh: nil
+        }
+    }
 }
 
 public struct Outcome: Equatable, Sendable {
@@ -211,6 +218,7 @@ public struct ShellStatus: Equatable, Sendable {
     public enum Phase: Equatable, Sendable {
         case unknown
         case idle(last: Exit?)
+        case pending(last: Exit?)
         case running(Command?, fullscreen: Bool)
     }
     public let phase: Phase

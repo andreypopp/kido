@@ -76,7 +76,7 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     }
 }
 
-@Test func projectedQuietTerminalCloseChecksTheForeground() throws {
+@Test func projectedQuietTerminalCloseIgnoresTheForeground() throws {
     var model = try recorded()
     let index = try #require(model.panes.firstIndex { $0.id == PaneID(number: 4) })
     model.panes[index].pid = 100
@@ -85,8 +85,42 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
         let snapshot = try #require(Snapshot(model: model))
         let item = try #require(items(snapshot)[PaneID(number: 4)])
         #expect(item.rowTitle == "Terminal")
-        #expect(closeScope(snapshot, target: .pane(item.pane)).ask == (foreground?.pid != 100))
+        #expect(!closeScope(snapshot, target: .pane(item.pane)).ask)
     }
+}
+
+@Test func runtimeWireProjectsAQuietTerminalWithoutAHostForeground() throws {
+    let model = try recorded()
+    let data = try JSONEncoder().encode(model)
+    var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    var panes = try #require(object["panes"] as? [[String: Any]])
+    let index = try #require(panes.firstIndex { $0["id"] as? String == "pane_4" })
+    var status = try #require(panes[index]["status"] as? [String: Any])
+    let kind = try #require(status["kind"] as? [String: Any])
+    status["kind"] = ["type": "runtime", "pane": try #require(kind["pane"])]
+    panes[index]["status"] = status
+    panes[index].removeValue(forKey: "foreground")
+    object["panes"] = panes
+    let runtime = try JSONDecoder().decode(KoModel.self, from: JSONSerialization.data(withJSONObject: object))
+    let snapshot = try #require(Snapshot(model: runtime))
+    let item = try #require(items(snapshot)[PaneID(number: 4)])
+    #expect(item.rowTitle == "Terminal")
+    #expect(!closeScope(snapshot, target: .pane(item.pane)).ask)
+}
+
+@Test func runtimePiProjectsAsAMessageableAgent() throws {
+    var model = try recorded()
+    let index = try #require(model.panes.firstIndex { $0.id == PaneID(number: 5) })
+    guard case .host(let host)? = model.panes[index].status?.kind else { Issue.record("expected host"); return }
+    model.panes[index].status?.kind = .runtime(.init(pane: host.pane))
+    model.panes[index].inbox = true
+    let snapshot = try #require(Snapshot(model: model))
+    let item = try #require(items(snapshot)[PaneID(number: 5)])
+    #expect(item.isMessageable)
+    #expect(item.agent != nil)
+    #expect(item.shell == nil)
+    #expect(item.rowTitle == "@Worker")
+    #expect(item.lifecycle == .live(.runtime(.piAgent(session: "s1", try #require(item.agent)))))
 }
 
 private func nest(_ model: inout KoModel, _ moved: [UInt32], under parentNumber: UInt32, window: UInt32) throws {
@@ -119,7 +153,7 @@ private func nest(_ model: inout KoModel, _ moved: [UInt32], under parentNumber:
     let failed = try item(4)
     guard case .idle(let last?) = failed.shell?.phase else { Issue.record("not idle after a command"); return }
     #expect(last.code == 1 && last.command == "false")
-    #expect(try item(5).lifecycle == .live(.piAgent(session: "s1", try #require(item(5).agent))))
+    #expect(try item(5).lifecycle == .live(.host(.piAgent(session: "s1", try #require(item(5).agent)))))
     #expect(try item(5).title == "Worker")
     #expect(try item(6).shell?.phase == .unknown)
     let child = try item(7)

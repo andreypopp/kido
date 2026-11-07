@@ -3,7 +3,7 @@ use ko_pane_wire::frame::{Key, KeyAction, KeyCode};
 use super::*;
 use crate::api::routes;
 use crate::ids::WindowId;
-use crate::pane_kind::{self, Kind, RemoteKind};
+use crate::pane_kind::{self, Kind, LocalKind, RemoteKind};
 use crate::panes::{acts_as, is_descendant};
 use crate::protocol::{Candidate, Content, Error, ErrorKind, Payload, SendPrompt, Sent, Via};
 use crate::server::Origin;
@@ -45,14 +45,15 @@ impl State {
                 };
                 let kind = pane_kind::of_pane(pane);
                 let title = lossy(pane.proc().title());
-                if matches!(
-                    kind,
-                    Kind::Terminal
-                        | Kind::Ssh {
+                if matches!(kind.local(), Some(LocalKind::Terminal))
+                    || matches!(
+                        kind,
+                        Kind::Ssh {
                             pane: RemoteKind::Terminal,
                             ..
                         }
-                ) {
+                    )
+                {
                     continue;
                 }
                 found.push(Candidate {

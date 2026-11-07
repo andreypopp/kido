@@ -133,15 +133,19 @@ across `/reload` until the next `session_start` replaces it. Only a
 process that ends without cleanup, such as with SIGKILL, leaves them;
 the trust rule makes them harmless for identity.
 
-**The trust rule.** The extension's own discovery uses ko's rule: a
-pane is a local pi agent only with an OSC 7501 root with `app=pi` and
-`pi.session`. Discovery and addressing apply it. A stale variable on a
+**The trust rule.** The extension's own discovery uses ko's rule
+through the row's status: a pane is a pi agent only when its kind is
+a `pi_agent`, on the host or in a runtime, and the agent's id is that
+kind's `session`. Discovery and addressing apply it. `pi.runtime`
+places only a host pi agent; a runtime pane's row `runtime` and `cwd`
+win. A stale variable on a
 shell pane is no agent. Liveness of a known session is the exception,
 because pi clears its root while it runs: pi-tui's `stop()` writes a
 `clear` record while pi opens the external editor and while Ctrl+Z
 suspends it. The parent watch finds a parent alive while its pane is
 not dead and holds the parent's `pi.session`, with or without a pi
-root. Thus, an agent in its external editor or suspended is not
+root, and a resume refuses a session that a live pane holds in
+`pi.session` for the same reason. Thus, an agent in its external editor or suspended is not
 listed and cannot be addressed by name, but its children stay. A
 suspended pi reads its message stream only after `fg`.
 

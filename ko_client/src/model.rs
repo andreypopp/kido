@@ -6,7 +6,7 @@ use ko_pane_wire::frame::Limits;
 use ko_server::ids::{ClientId, Instance, PaneId, SessionId, VarName, WindowId};
 use ko_server::protocol::{
     self, ClientEvent, ClientRequest, ClientRuntime, ClipboardContent, ClipboardLocation, Hello,
-    LayoutPanes, Listing, Live, Row, Selection, Snapshot,
+    LayoutPanes, Listing, Live, Local, Row, Selection, Snapshot,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -306,7 +306,9 @@ impl Model {
         }
         if !matches!(
             pane.row.status.as_ref().map(|status| &status.kind),
-            Some(Live::PiAgent { .. })
+            Some(Live::Host {
+                pane: Local::PiAgent { .. }
+            })
         ) {
             return None;
         }
@@ -1107,8 +1109,8 @@ mod tests {
         .unwrap();
         let routed = |name: &str| (("pi.runtime"), json!({"name": name, "cwd": "/w"}));
         let pi_status = serde_json::from_value::<protocol::PaneStatus>(json!({
-            "kind": {"type": "pi_agent", "session": "s", "status":
-                {"since": 0, "state": {"type": "idle"}}},
+            "kind": {"type": "host", "pane": {"type": "pi_agent", "session": "s", "status":
+                {"since": 0, "state": {"type": "idle"}}}},
             "program_status": {"serial": 0, "records": []}, "title": "pi", "since": 0}))
         .unwrap();
         let mut entries = vec![
@@ -1286,8 +1288,8 @@ mod tests {
             ClientEvent::Status(
                 serde_json::from_value(json!({
                     "pane": pane(number), "now": 2000, "status": {
-                        "kind": {"type": "terminal", "phase": {"type": "idle", "last":
-                            {"code": 1, "command": "false", "started_at": 1500, "ended_at": 1600}}},
+                        "kind": {"type": "host", "pane": {"type": "terminal", "phase": {"type": "idle", "last":
+                            {"code": 1, "command": "false", "started_at": 1500, "ended_at": 1600}}}},
                         "program_status": {"serial": 0, "records": []},
                         "title": "zsh", "since": 0}
                 }))

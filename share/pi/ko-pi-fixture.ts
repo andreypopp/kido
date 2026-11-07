@@ -51,11 +51,14 @@ interface PaneRow {
   title?: string;
   vars?: Record<string, unknown>;
   program_status?: unknown;
+  runtime?: string;
+  status?: unknown;
 }
 
 type ApiCall = { method: string; path: string; body: string };
 
 const piStatus = (state = "idle") => ({ serial: 1, records: [{ id: "", state, app: "pi" }] });
+const piKind = (session: string) => ({ kind: { type: "host", pane: { type: "pi_agent", session, status: { since: 0, state: { type: "idle" } } } } });
 
 export const exited = (code: number) => ({ at: 1, cause: { type: "exited", code } });
 
@@ -67,13 +70,14 @@ function paneRow(row: PaneRow): PaneRow {
     title: "",
     dead: null,
     program_status: piStatus(),
+    status: { kind: { type: "host", pane: { type: "terminal", phase: { type: "unknown" } } } },
     ...row,
     vars: row.vars ?? {},
   };
 }
 
 export function selfPane(row: Partial<PaneRow> = {}): PaneRow {
-  return paneRow({ id: "pane_1", title: "π - Self", ...row, vars: { "pi.session": "self-session", "pi.name": "Self", ...row.vars } });
+  return paneRow({ id: "pane_1", title: "π - Self", status: piKind(String(row.vars?.["pi.session"] ?? "self-session")), ...row, vars: { "pi.session": "self-session", "pi.name": "Self", ...row.vars } });
 }
 
 export function agentPane(row: {
@@ -98,6 +102,7 @@ export function agentPane(row: {
     inbox: row.inbox ?? true,
     dead: row.dead ?? null,
     program_status: piStatus(row.state ?? "idle"),
+    status: piKind(row.session),
     title: row.title ?? "",
     cwd: row.cwd ?? "/tmp",
     vars: { "pi.session": row.session, "pi.name": row.name ?? "", ...row.vars },

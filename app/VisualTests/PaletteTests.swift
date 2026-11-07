@@ -855,7 +855,7 @@ import PaneGeometry
         for index in 0..<paneCount() {
             let pane = try XCTUnwrap(owner.testSession?.activePane).pane
             owner.testReceive(withLifecycle(try XCTUnwrap(owner.snapshot), pane: pane,
-                .live(.terminal(ShellStatus(phase: .unknown, report: nil))), mark: .none_))
+                .live(.host(.terminal(ShellStatus(phase: .unknown, report: nil)))), mark: .none_))
             try focusSidebar(index.isMultiple(of: 2))
             try sendKey(owner.window, "w", code: 13, modifiers: .command)
             XCTAssertEqual(owner.preparedAlert?.alert.informativeText, "A program is still running in this pane. Closing the pane will end it.")
@@ -1622,8 +1622,6 @@ import PaneGeometry
             if quietPanes.contains($0.pane) {
                 $0.lifecycle = shellLifecycle(.idle(last: nil))
                 $0.mark = .none_
-                $0.pid = 100
-                $0.foreground = .init(name: "zsh", pid: 100)
             }
         }
         owner.testReceive(quietSnapshot)

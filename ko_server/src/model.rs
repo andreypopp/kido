@@ -5,7 +5,7 @@ use ko_sys::event::{Poll, Timer};
 
 use crate::http::lossy;
 use crate::pane::Pane;
-use crate::pane_kind::{self, Kind, RemoteKind};
+use crate::pane_kind::{self, Kind, LocalKind, RemoteKind};
 use crate::pane_status::{self, DEBOUNCE, Track};
 use crate::protocol::{AgentState, Live, PaneStatus};
 
@@ -76,7 +76,9 @@ fn row_title(kind: &Kind, live: &Live, pane_title: &str, label: String) -> Strin
             Some(command) => format!("ssh {destination}: {command}"),
             None => format!("ssh {destination}"),
         },
-        (_, Live::Terminal(_)) => command.map_or(label, str::to_owned),
+        _ if matches!(kind.local(), Some(LocalKind::Terminal)) => {
+            command.map_or(label, str::to_owned)
+        }
         _ => label,
     }
 }
@@ -109,12 +111,19 @@ impl Model {
 pub(crate) fn observe(pane: &mut Pane, poll: &mut Poll) -> Option<PaneStatus> {
     let now = Mono::now().nanos();
     let pane_title = lossy(pane.proc().title());
-    let has_foreground = pane.status_foreground().is_some();
-    let (telemetry, vars, model) = pane.parts_mut();
+    let published = pane.telemetry().records.published();
+    let kind = pane_kind::classify(
+        pane.runtime(),
+        pane.telemetry().foreground.as_ref(),
+        pane.vars(),
+        &published.records,
+    );
+    let (telemetry, model) = pane.parts_mut();
     model.dirty = false;
-    let published = telemetry.records.published();
-    let foreground = telemetry.foreground.as_ref().filter(|_| has_foreground);
-    let kind = pane_kind::classify(foreground, vars, &published.records);
+    let foreground = telemetry
+        .foreground
+        .as_ref()
+        .filter(|_| !matches!(kind, Kind::Runtime { .. }));
     let (track, live) = pane_status::observe(
         now,
         telemetry,

@@ -81,7 +81,7 @@ impl<'a> Probe<'a> {
 }
 
 pub(crate) fn agent(status: &Value) -> &Value {
-    &status["kind"]["status"]
+    &status["kind"]["pane"]["status"]
 }
 
 pub(crate) fn state(status: &Value) -> &str {
@@ -89,7 +89,7 @@ pub(crate) fn state(status: &Value) -> &str {
 }
 
 pub(crate) fn phase(status: &Value) -> &Value {
-    &status["kind"]["phase"]
+    &status["kind"]["pane"]["phase"]
 }
 
 pub(crate) fn serial(status: &Value) -> u64 {
@@ -117,8 +117,8 @@ fn status_events_for_an_agent() {
     let mut probe = Probe::new(&s, pane.clone());
 
     let status = probe.osc("state=idle:app=claude-code");
-    assert_eq!(status["kind"]["type"], "some_agent");
-    assert_eq!(status["kind"]["name"], "claude-code");
+    assert_eq!(status["kind"]["pane"]["type"], "some_agent");
+    assert_eq!(status["kind"]["pane"]["name"], "claude-code");
     assert_eq!(status["title"], "claude-code");
     assert_eq!(state(&status), "idle");
     assert!(agent(&status)["state"]["outcome"].is_null());
@@ -166,7 +166,7 @@ fn status_events_for_an_agent() {
 }
 
 fn report(status: &Value) -> &Value {
-    &status["kind"]["report"]
+    &status["kind"]["pane"]["report"]
 }
 
 fn record<'a>(status: &'a Value, id: &str) -> &'a Value {
@@ -191,7 +191,7 @@ fn program_status_records() {
     let status = probe.osc(&format!(
         "state=working:app=builder:title={title}:msg={message}"
     ));
-    assert_eq!(status["kind"]["type"], "terminal");
+    assert_eq!(status["kind"]["pane"]["type"], "terminal");
     assert_eq!(report(&status)["state"]["type"], "running");
     assert_eq!(report(&status)["msg"], "compiling");
     assert_eq!(record(&status, "")["title"], "Build");
@@ -356,7 +356,7 @@ fn child_records() {
         ["", "a", "a-other", "a/b", "a/b/c"],
         "published in bytewise order"
     );
-    assert_eq!(status["kind"]["name"], "claude-code");
+    assert_eq!(status["kind"]["pane"]["name"], "claude-code");
     let status = probe.osc("state=done:app=claude-code");
     assert_eq!(record(&status, "a")["state"], "working");
     assert_eq!(state(&status), "idle");
@@ -415,11 +415,11 @@ fn shell_phases(flavour: Flavour) {
     dotfiles(&flavour, &s.dir, "");
     let pane = s.shell_pane();
     let mut probe = Probe::after(&s, pane.clone(), "the first prompt", |status| {
-        status["kind"]["phase"]["type"] == "idle"
+        status["kind"]["pane"]["phase"]["type"] == "idle"
     });
     let row = s.row(&pane);
     assert!(
-        row["status"]["kind"]["phase"]["last"].is_null(),
+        row["status"]["kind"]["pane"]["phase"]["last"].is_null(),
         "no exit at the first prompt: {row}"
     );
 
@@ -521,7 +521,7 @@ fn foreground_on_events() {
     dotfiles(&Flavour::Zsh, &s.dir, "");
     let pane = s.shell_pane();
     s.wait_row(&pane, "the first prompt", |row| {
-        row["status"]["kind"]["phase"]["type"] == "idle"
+        row["status"]["kind"]["pane"]["phase"]["type"] == "idle"
     });
     assert_eq!(s.row(&pane)["foreground"]["name"], "zsh");
     let probe_dir = Dir::new("ko-probe-");
@@ -558,19 +558,19 @@ fn pi_variables_gate() {
         row["vars"]["pi.activity"] == "checking"
     })["status"]
         .clone();
-    assert_eq!(status["kind"]["type"], "terminal");
+    assert_eq!(status["kind"]["pane"]["type"], "terminal");
     assert_ne!(
         status["title"], "Worker",
         "options need a pi root: {status}"
     );
 
     let status = probe.osc("state=idle:app=pi");
-    assert_eq!(status["kind"]["type"], "pi_agent");
-    assert_eq!(status["kind"]["session"], "s1");
+    assert_eq!(status["kind"]["pane"]["type"], "pi_agent");
+    assert_eq!(status["kind"]["pane"]["session"], "s1");
     assert_eq!(status["title"], "Worker");
     assert_eq!(status["message"], "checking");
 
     let status = probe.osc("state=clear");
-    assert_eq!(status["kind"]["type"], "terminal");
+    assert_eq!(status["kind"]["pane"]["type"], "terminal");
     assert_ne!(status["title"], "Worker");
 }

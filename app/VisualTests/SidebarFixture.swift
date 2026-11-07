@@ -8,15 +8,15 @@ import PaneGeometry
 let fixtureSince = Date(timeIntervalSince1970: 1791131000)
 
 func piLifecycle(_ state: Report.State = .idle(nil), msg: String? = nil, session: String = "session") -> Lifecycle {
-    .live(.piAgent(session: session, Report(since: fixtureSince, msg: msg, state: state)))
+    .live(.host(.piAgent(session: session, Report(since: fixtureSince, msg: msg, state: state))))
 }
 
 func agentLifecycle(_ state: Report.State, msg: String? = nil, name: String = "claude-code") -> Lifecycle {
-    .live(.someAgent(name: name, Report(since: fixtureSince, msg: msg, state: state)))
+    .live(.host(.someAgent(name: name, Report(since: fixtureSince, msg: msg, state: state))))
 }
 
 func shellLifecycle(_ phase: ShellStatus.Phase = .idle(last: nil), report: Report? = nil) -> Lifecycle {
-    .live(.terminal(ShellStatus(phase: phase, report: report)))
+    .live(.host(.terminal(ShellStatus(phase: phase, report: report))))
 }
 
 func shellExit(_ code: Int, command: String = "true") -> ShellStatus.Phase {
@@ -32,7 +32,7 @@ func fixtureItem(_ pane: UInt32, window: UInt32? = nil, _ title: String, _ lifec
                  records: [ProgramStatus.Record] = [], serial: Int = 0, mark: KoSchema.Mark = .none_, children: [SidebarFeed.Node] = []) -> Item {
     Item(id: PaneID(number: pane), window: WindowID(number: window ?? pane), title: title, started: 0, parent: nil, lifecycle: lifecycle,
          program_status: ProgramStatus(serial: serial, records: records),
-         children: children, mark: mark, inbox: { if case .live(.piAgent) = lifecycle { true } else { false } }())
+         children: children, mark: mark, inbox: { if case .live(.host(.piAgent)) = lifecycle { true } else { false } }())
 }
 
 func fixtureNode(_ pane: UInt32, window: UInt32? = nil, _ title: String, _ lifecycle: Lifecycle,
@@ -86,7 +86,7 @@ func sidebarFixture(_ edit: (inout Snapshot) -> Void = { _ in }) -> Snapshot {
         ])
     edit(&snapshot)
     snapshot.mapItems { item in
-        item.inbox = if case .live(.piAgent) = item.lifecycle { true } else { false }
+        item.inbox = if case .live(.host(.piAgent)) = item.lifecycle { true } else { false }
     }
     return snapshot
 }

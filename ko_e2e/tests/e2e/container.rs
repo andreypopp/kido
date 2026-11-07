@@ -389,7 +389,7 @@ runtimes:
     s.screen_has(&second, &format!("second-{name}"));
     let shell = s.new_pane(json!({"runtime": name}));
     s.wait_row(&shell, "passwd shell is primed", |row| {
-        row["status"]["kind"]["phase"]["type"] == "idle"
+        row["status"]["kind"]["pane"]["phase"]["type"] == "idle"
     });
     s.text(&shell, "printf 'PASSWD=%s\\n' \"${BASH_VERSION:+bash}\"; mkdir -p '/tmp/sp ace'; cd '/tmp/sp ace'\r");
     s.screen_has(&shell, "PASSWD=bash");

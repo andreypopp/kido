@@ -1517,21 +1517,19 @@ row has no hover treatment and records have no close button. Every app-issued
 close goes through one confirmation: the row and tab ×, Close Pane (Command-W)
 and the menu commands. A close proceeds at once only when every live pane in
 the target (the pane, or the window with its descendant windows, or the
-session) is a quiet shell that holds the foreground: the pane whose sidebar row
-is titled "Terminal" and whose reported foreground pid is the pane's own pid.
-The title and the decision of `closeScope` come from the same predicate in
-SidebarFeed's `Rows.swift`; the close adds only the foreground check. The title
-keeps the server's 200 ms command debounce, so a quick command does not flicker
-the row, but the foreground changes at once, so a close during the debounce
-asks. A runtime pane execs its entry in the pane's pid, so an idle runtime
-"Terminal" closes at once too. Every other live pane makes the close ask: an
-agent, also an idle one, a running command, a full-screen program such as nvim
-or less, a shell with no integration or over ssh, whose phase is unknown, a
-foreground process other than the shell, and a pane with no reported
-foreground. A dead or lingering pane has no process and does not ask. The known
-limit is that of the foreground report (docs/design-program-status.md, "The
-foreground and the active screen"): a command that prints nothing in its first
-200 ms still shows the shell as the foreground, and its close does not ask. The question is a stock `.warning`
+session) is a shell at an idle prompt: a terminal on the host, in a runtime or
+over an interactive ssh whose phase is Idle and whose indicator is quiet, done
+or failed. The decision comes from the status kind alone, in SidebarFeed's
+`Rows.swift`; no foreground or pid is read, because a runtime pane's foreground
+is its transport and a shell sends `C` before it forks. A Pending phase (the
+server's 200 ms command debounce, design-program-status.md, "OSC
+133") shows the row as idle, so a quick command does not flicker it,
+but the close asks. Every other live pane makes the close ask: an agent, also
+an idle one, a running command, a full-screen program such as nvim or less, a
+shell with no integration, whose phase is unknown, and an ssh session without
+a remote prompt. A dead or lingering pane has no process and does not ask. The
+known limit: the decision is exact only for the OSC reports that reached the
+server. The question is a stock `.warning`
 NSAlert sheet `Close “name”?` with "A program is still running in this pane.
 Closing the pane will end it." or "Programs are still running in this window.
 Closing the window will end them."; its Close (Return) and Cancel (Escape)
@@ -1605,7 +1603,7 @@ prefix, never doubled, marks an agent that can be messaged, which is exactly
 a live pi agent pane. A native agent pane (such as
 Claude Code) and an agent over SSH (an Ssh pane with a remote agent, out of
 reach of message_agent, which only reaches pi sessions on the same server)
-cannot be messaged, so they keep the semibold title without the @. Idle local shell panes
+cannot be messaged, so they keep the semibold title without the @. Idle shell panes on the host or in a runtime
 (Live Terminal at a known Idle prompt, idle/done/failed indicator) display secondary-colored
 `Terminal`; an Unknown phase, full-screen programs and SSH keep their labels. Both display
 rules leave raw pane labels and tab/window titles unchanged.

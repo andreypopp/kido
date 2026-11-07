@@ -94,8 +94,8 @@ typealias AppWindow = StressWindow
         while let (node, nested) = nodes.popLast() {
             let childNested = if case .item = node { true } else { nested }
             nodes += node.children.map { ($0, childNested) }
-            if nested, case .item(let item) = node, case .live(.terminal) = item.lifecycle,
-               childWindows.insert(item.window).inserted {
+            if nested, case .item(let item) = node, case .live(let kind) = item.lifecycle,
+               case .terminal = kind.local, childWindows.insert(item.window).inserted {
                 counts["child-window-seen", default: 0] += 1
                 log(["event": "child-window-seen", "window": item.window.description, "pane": item.pane.description])
             }

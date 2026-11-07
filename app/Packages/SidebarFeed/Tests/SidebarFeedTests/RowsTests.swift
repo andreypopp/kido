@@ -124,6 +124,8 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
     let failedReport = report(idle(outcome(4, .failure)), msg: "Build failed")
     let cases: [(Lifecycle, String, Bool, SidebarRow.Status, KoSchema.Mark, String, String)] = [
         (terminal(), "Terminal", true, .quiet, .none_, "idle", ""),
+        (terminal(.pending(last: nil)), "Terminal", true, .quiet, .none_, "idle", ""),
+        (terminal(.pending(last: .init(code: 130, command: "false", startedAt: since, endedAt: since + 1))), "Terminal", true, .error, .failed, "failed", ""),
         (terminal(exited(0)), "Terminal", true, .done, .done, "done", ""),
         (terminal(exited(130)), "Terminal", true, .error, .failed, "failed", ""),
         (terminal(report: report(idle())), "Terminal", true, .quiet, .none_, "idle", ""),
@@ -155,6 +157,10 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
         let row = try #require(sidebarRows(snapshot).first { $0.target != nil })
         #expect(row.title == title)
         #expect(row.quietShell == quiet)
+        if case .live(let kind) = lifecycle, case .terminal(let shell) = kind.local, case .pending(let exit) = shell.phase,
+           case .item(let item) = snapshot.sessions[0].nodes[0] {
+            #expect(item.lastCommand == exit)
+        }
         #expect(row.status == status)
         #expect(row.indicatorDescription == description)
         #expect(row.tail == tail)

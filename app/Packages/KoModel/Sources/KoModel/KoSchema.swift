@@ -1139,19 +1139,70 @@ public enum KoSchema {
     }
 
     public enum Live: Codable, Equatable, Sendable {
-        case terminal(Shell)
-        case someAgent(LiveSomeAgent)
-        case piAgent(LivePiAgent)
+        case host(LiveHost)
+        case runtime(LiveRuntime)
         case ssh(LiveSsh)
         private enum Tag: String, CodingKey { case type = "type" }
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: Tag.self)
             switch try container.decode(String.self, forKey: .type) {
-            case "terminal": self = .terminal(try Shell(from: decoder))
-            case "some_agent": self = .someAgent(try LiveSomeAgent(from: decoder))
-            case "pi_agent": self = .piAgent(try LivePiAgent(from: decoder))
+            case "host": self = .host(try LiveHost(from: decoder))
+            case "runtime": self = .runtime(try LiveRuntime(from: decoder))
             case "ssh": self = .ssh(try LiveSsh(from: decoder))
             case let other: throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "unknown Live \(other)")
+            }
+        }
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: Tag.self)
+            switch self {
+            case .host(let value):
+                try container.encode("host", forKey: .type)
+                try value.encode(to: encoder)
+            case .runtime(let value):
+                try container.encode("runtime", forKey: .type)
+                try value.encode(to: encoder)
+            case .ssh(let value):
+                try container.encode("ssh", forKey: .type)
+                try value.encode(to: encoder)
+            }
+        }
+    }
+
+    public struct LiveHost: Codable, Equatable, Sendable {
+        public var pane: Local
+        public init(pane: Local) {
+            self.pane = pane
+        }
+    }
+
+    public struct LiveRuntime: Codable, Equatable, Sendable {
+        public var pane: Local
+        public init(pane: Local) {
+            self.pane = pane
+        }
+    }
+
+    public struct LiveSsh: Codable, Equatable, Sendable {
+        public var destination: String
+        public var pane: Remote
+        public init(destination: String, pane: Remote) {
+            self.destination = destination
+            self.pane = pane
+        }
+    }
+
+    public enum Local: Codable, Equatable, Sendable {
+        case terminal(Shell)
+        case someAgent(LocalSomeAgent)
+        case piAgent(LocalPiAgent)
+        private enum Tag: String, CodingKey { case type = "type" }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: Tag.self)
+            switch try container.decode(String.self, forKey: .type) {
+            case "terminal": self = .terminal(try Shell(from: decoder))
+            case "some_agent": self = .someAgent(try LocalSomeAgent(from: decoder))
+            case "pi_agent": self = .piAgent(try LocalPiAgent(from: decoder))
+            case let other: throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "unknown Local \(other)")
             }
         }
         public func encode(to encoder: Encoder) throws {
@@ -1166,14 +1217,11 @@ public enum KoSchema {
             case .piAgent(let value):
                 try container.encode("pi_agent", forKey: .type)
                 try value.encode(to: encoder)
-            case .ssh(let value):
-                try container.encode("ssh", forKey: .type)
-                try value.encode(to: encoder)
             }
         }
     }
 
-    public struct LivePiAgent: Codable, Equatable, Sendable {
+    public struct LocalPiAgent: Codable, Equatable, Sendable {
         public var session: String
         public var status: Agent
         public init(session: String, status: Agent) {
@@ -1182,21 +1230,12 @@ public enum KoSchema {
         }
     }
 
-    public struct LiveSomeAgent: Codable, Equatable, Sendable {
+    public struct LocalSomeAgent: Codable, Equatable, Sendable {
         public var name: String
         public var status: Agent
         public init(name: String, status: Agent) {
             self.name = name
             self.status = status
-        }
-    }
-
-    public struct LiveSsh: Codable, Equatable, Sendable {
-        public var destination: String
-        public var pane: Remote
-        public init(destination: String, pane: Remote) {
-            self.destination = destination
-            self.pane = pane
         }
     }
 
@@ -1468,6 +1507,7 @@ public enum KoSchema {
 
     public enum Phase: Codable, Equatable, Sendable {
         case unknown
+        case pending(PhasePending)
         case idle(PhaseIdle)
         case running(PhaseRunning)
         private enum Tag: String, CodingKey { case type = "type" }
@@ -1475,6 +1515,7 @@ public enum KoSchema {
             let container = try decoder.container(keyedBy: Tag.self)
             switch try container.decode(String.self, forKey: .type) {
             case "unknown": self = .unknown
+            case "pending": self = .pending(try PhasePending(from: decoder))
             case "idle": self = .idle(try PhaseIdle(from: decoder))
             case "running": self = .running(try PhaseRunning(from: decoder))
             case let other: throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "unknown Phase \(other)")
@@ -1484,6 +1525,9 @@ public enum KoSchema {
             var container = encoder.container(keyedBy: Tag.self)
             switch self {
             case .unknown: try container.encode("unknown", forKey: .type)
+            case .pending(let value):
+                try container.encode("pending", forKey: .type)
+                try value.encode(to: encoder)
             case .idle(let value):
                 try container.encode("idle", forKey: .type)
                 try value.encode(to: encoder)
@@ -1495,6 +1539,13 @@ public enum KoSchema {
     }
 
     public struct PhaseIdle: Codable, Equatable, Sendable {
+        public var last: CommandExit?
+        public init(last: CommandExit? = nil) {
+            self.last = last
+        }
+    }
+
+    public struct PhasePending: Codable, Equatable, Sendable {
         public var last: CommandExit?
         public init(last: CommandExit? = nil) {
             self.last = last

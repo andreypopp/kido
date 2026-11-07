@@ -277,7 +277,7 @@ them, because the pane row carries no link state.
 **Where a pane runs** is one function, `Model::place` in
 `ko_client/src/model.rs`, which both clients use (Kido.app through
 the model JSON's `place`): the row's `runtime`, else, only while the
-pane's status is a pi agent, the `name` of its `pi.runtime`
+pane's status is a host pi agent, the `name` of its `pi.runtime`
 ("Agents in a runtime"), which is a routed pi. `ko.runtime` is not
 read: any program can set it, and no rule makes it trusted. A pane
 whose runtime is not in the list still shows the name, without a
@@ -529,11 +529,13 @@ runtime-exec` are plumbing, hidden from `ko --help`; so are `ko enter`'s
 `--exec` ("The exec session") and `--watch` ("The container kind").
 
 **Status.** A runtime pane's foreground is the transport's process,
-which says nothing about the program inside. `pane_kind.rs` reads a
-runtime pane only through its OSC 133 and OSC 7501 records, which
-the inner primed shell and agents emit through the transport: its
-kind is never `Ssh`, and the foreground's name is not a title
-fallback.
+which says nothing about the program inside. `pane_kind::classify`
+takes the pane's runtime and gives a runtime pane the kind
+`Runtime`, from its OSC 133 and OSC 7501 records alone, which the
+inner primed shell and agents emit through the transport: its kind
+is never `Ssh`, and the foreground's name is not a title fallback
+(design-program-status.md, "Pane kinds"). The status names only the
+case; the row's `runtime` names the runtime.
 
 ## The exec session
 

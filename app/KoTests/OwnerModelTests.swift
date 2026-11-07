@@ -82,7 +82,7 @@ import XCTest
     func testAPromptResolvesItsCandidatesAndSendsThroughTheCore() throws {
         let agent = shell("printf '\\033]7501;state=idle:app=claude-code\\007'; " + cat)
         let (_, owner) = try shown(#"[{"name":"w","tree":{"split":"h","children":[\#(shell(cat)),\#(agent)]}}]"#)
-        wait("the agent") { self.items(owner).contains { if case .live(.someAgent) = $0.lifecycle { true } else { false } } }
+        wait("the agent") { self.items(owner).contains { if case .live(.host(.someAgent)) = $0.lifecycle { true } else { false } } }
         var candidates: WindowOwner.PromptReply?
         owner.prompt(.resolve(from: PaneID(number: 1))) { candidates = try? $0.get() }
         wait("the candidates") { candidates != nil }

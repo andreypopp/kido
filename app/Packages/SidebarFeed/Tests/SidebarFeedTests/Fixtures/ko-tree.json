@@ -266,14 +266,17 @@
       "records_seen" : false,
       "status" : {
         "kind" : {
-          "name" : "claude-code",
-          "status" : {
-            "since" : 1940501360660791,
-            "state" : {
-              "type" : "running"
-            }
+          "pane" : {
+            "name" : "claude-code",
+            "status" : {
+              "since" : 1940501360660791,
+              "state" : {
+                "type" : "running"
+              }
+            },
+            "type" : "some_agent"
           },
-          "type" : "some_agent"
+          "type" : "host"
         },
         "program_status" : {
           "records" : [
@@ -312,15 +315,18 @@
       "records_seen" : false,
       "status" : {
         "kind" : {
-          "name" : "claude-code",
-          "status" : {
-            "since" : 1940501360675333,
-            "state" : {
-              "kind" : "permission",
-              "type" : "waiting"
-            }
+          "pane" : {
+            "name" : "claude-code",
+            "status" : {
+              "since" : 1940501360675333,
+              "state" : {
+                "kind" : "permission",
+                "type" : "waiting"
+              }
+            },
+            "type" : "some_agent"
           },
-          "type" : "some_agent"
+          "type" : "host"
         },
         "program_status" : {
           "records" : [
@@ -361,16 +367,19 @@
       "records_seen" : false,
       "status" : {
         "kind" : {
-          "phase" : {
-            "fullscreen" : false,
-            "origin" : {
-              "command" : "make",
-              "started_at" : 1940501355970791,
-              "type" : "command"
+          "pane" : {
+            "phase" : {
+              "fullscreen" : false,
+              "origin" : {
+                "command" : "make",
+                "started_at" : 1940501355970791,
+                "type" : "command"
+              },
+              "type" : "running"
             },
-            "type" : "running"
+            "type" : "terminal"
           },
-          "type" : "terminal"
+          "type" : "host"
         },
         "program_status" : {
           "records" : [
@@ -405,16 +414,19 @@
       "records_seen" : false,
       "status" : {
         "kind" : {
-          "phase" : {
-            "last" : {
-              "code" : 1,
-              "command" : "false",
-              "ended_at" : 1940501355757916,
-              "started_at" : 1940501355757916
+          "pane" : {
+            "phase" : {
+              "last" : {
+                "code" : 1,
+                "command" : "false",
+                "ended_at" : 1940501355757916,
+                "started_at" : 1940501355757916
+              },
+              "type" : "idle"
             },
-            "type" : "idle"
+            "type" : "terminal"
           },
-          "type" : "terminal"
+          "type" : "host"
         },
         "program_status" : {
           "records" : [
@@ -449,14 +461,17 @@
       "records_seen" : false,
       "status" : {
         "kind" : {
-          "session" : "s1",
-          "status" : {
-            "since" : 1940501360680458,
-            "state" : {
-              "type" : "running"
-            }
+          "pane" : {
+            "session" : "s1",
+            "status" : {
+              "since" : 1940501360680458,
+              "state" : {
+                "type" : "running"
+              }
+            },
+            "type" : "pi_agent"
           },
-          "type" : "pi_agent"
+          "type" : "host"
         },
         "program_status" : {
           "records" : [
@@ -496,10 +511,13 @@
       "records_seen" : false,
       "status" : {
         "kind" : {
-          "phase" : {
-            "type" : "unknown"
+          "pane" : {
+            "phase" : {
+              "type" : "unknown"
+            },
+            "type" : "terminal"
           },
-          "type" : "terminal"
+          "type" : "host"
         },
         "program_status" : {
           "records" : [
@@ -535,10 +553,13 @@
       "records_seen" : false,
       "status" : {
         "kind" : {
-          "phase" : {
-            "type" : "unknown"
+          "pane" : {
+            "phase" : {
+              "type" : "unknown"
+            },
+            "type" : "terminal"
           },
-          "type" : "terminal"
+          "type" : "host"
         },
         "program_status" : {
           "records" : [
@@ -574,10 +595,13 @@
       "records_seen" : false,
       "status" : {
         "kind" : {
-          "phase" : {
-            "type" : "unknown"
+          "pane" : {
+            "phase" : {
+              "type" : "unknown"
+            },
+            "type" : "terminal"
           },
-          "type" : "terminal"
+          "type" : "host"
         },
         "program_status" : {
           "records" : [

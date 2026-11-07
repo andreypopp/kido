@@ -59,15 +59,15 @@ orphan rule.
 `all` (the default), `peers` or `subagents` (the caller's own). A
 row is an `AgentRow` of `ko-pi.ts`. Its `id` is the pi session. Its
 `status` is the root's OSC 7501 state, `starting` before the pane
-has one, or `ended`. Its `runtime` is the row's field, else a trusted
-`pi.runtime`; a routed agent's `cwd` is that variable's. Its
+has one, or `ended`. Its `runtime` is the row's field, else the `pi.runtime` of a host
+pi agent; a routed agent's `cwd` is that variable's. Its
 `canMessage` is the row's `inbox`: the pane's message stream is
 open. An own child adds `model`, `reported` and `report`: the first
 1000 bytes of its last report. `read_report` gives the rest. An
 ended child is a registry entry whose pane is gone, dead or of
 another server instance (`/version`'s `instance`); every ended child
 lists, with `ended`, its cause or "its pane is gone". The agents
-come from the panes with a pi root and `pi.session` (design.md, "The
+come from the panes whose status kind is a pi agent (design.md, "The
 trust rule") and from the caller's own children whose pane has not
 yet published `pi.session`.
 

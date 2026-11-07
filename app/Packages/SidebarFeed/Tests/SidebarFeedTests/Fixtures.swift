@@ -14,12 +14,12 @@ func working(_ progress: Int? = nil) -> Report.State { .running(progress: progre
 func report(_ state: Report.State, msg: String? = nil) -> Report { Report(since: since, msg: msg, state: state) }
 
 func agent(_ state: Report.State = idle(), msg: String? = nil, name: String = "claude-code") -> Lifecycle {
-    .live(.someAgent(name: name, report(state, msg: msg)))
+    .live(.host(.someAgent(name: name, report(state, msg: msg))))
 }
-func piAgent(_ state: Report.State = idle(), msg: String? = nil) -> Lifecycle { .live(.piAgent(session: "pi-session", report(state, msg: msg))) }
+func piAgent(_ state: Report.State = idle(), msg: String? = nil) -> Lifecycle { .live(.host(.piAgent(session: "pi-session", report(state, msg: msg)))) }
 
 func shell(_ phase: ShellStatus.Phase = .idle(last: nil), report: Report? = nil) -> ShellStatus { ShellStatus(phase: phase, report: report) }
-func terminal(_ phase: ShellStatus.Phase = .idle(last: nil), report: Report? = nil) -> Lifecycle { .live(.terminal(shell(phase, report: report))) }
+func terminal(_ phase: ShellStatus.Phase = .idle(last: nil), report: Report? = nil) -> Lifecycle { .live(.host(.terminal(shell(phase, report: report)))) }
 func exited(_ code: Int, started: Double = 1780000000, ended: Double = 1780000001.25) -> ShellStatus.Phase {
     .idle(last: ShellStatus.Exit(code: code, command: "false", startedAt: Date(timeIntervalSince1970: started), endedAt: Date(timeIntervalSince1970: ended)))
 }
@@ -37,10 +37,10 @@ func record(_ id: String, _ state: ProgramStatus.Record.State, app: String? = ni
 
 func pane(_ id: Int, window: Int? = nil, title: String = "", lifecycle: Lifecycle = terminal(),
           records: [ProgramStatus.Record] = [], serial: Int = 0, recordsSeen: Bool = false, mark: KoSchema.Mark = .none_, children: [Node] = []) -> Node {
-    let pi = if case .live(.piAgent) = lifecycle { true } else { false }
+    let pi = if case .live(.host(.piAgent)) = lifecycle { true } else { false }
     return .item(Item(id: PaneID(number: UInt32(id)), window: WindowID(number: UInt32(window ?? id)), title: title, started: 0, parent: nil, lifecycle: lifecycle,
                       program_status: ProgramStatus(serial: serial, records: records),
-                      children: children, mark: mark, recordsSeen: recordsSeen, inbox: pi, pid: 100, foreground: .init(name: "zsh", pid: 100)))
+                      children: children, mark: mark, recordsSeen: recordsSeen, inbox: pi))
 }
 
 func group(_ id: Int, name: String = "group", _ children: [Node]) -> Node {

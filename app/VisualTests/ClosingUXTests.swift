@@ -126,14 +126,8 @@ import KoModel
         func status(_ running: Bool, pane: PaneView, created: WindowID) async throws {
             try await wait("the snapshot has the pane") { sidebarRows(owner.snapshot).contains { $0.target?.pane == pane.pane } }
             let phase: ShellStatus.Phase = running ? .running(.init(command: "sleep 60", startedAt: Date()), fullscreen: false) : .idle(last: nil)
-            var snapshot = withLifecycle(try XCTUnwrap(owner.snapshot), pane: pane.pane,
-                .live(.terminal(ShellStatus(phase: phase, report: nil))), mark: running ? .running : .none_)
-            snapshot.mapItems {
-                if $0.pane == pane.pane {
-                    $0.pid = 100
-                    $0.foreground = .init(name: running ? "sleep" : "zsh", pid: running ? 101 : 100)
-                }
-            }
+            let snapshot = withLifecycle(try XCTUnwrap(owner.snapshot), pane: pane.pane,
+                .live(.host(.terminal(ShellStatus(phase: phase, report: nil)))), mark: running ? .running : .none_)
             owner.testReceive(snapshot)
         }
         try await status(true, pane: pane, created: created)

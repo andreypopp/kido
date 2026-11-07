@@ -1652,7 +1652,7 @@ fn sidebar_mark_column() {
     let (first, second) = (s.shell_pane(), s.shell_pane());
     for pane in [&first, &second] {
         s.wait_row(pane, "the first prompt", |row| {
-            row["status"]["kind"]["phase"]["type"] == "idle"
+            row["status"]["kind"]["pane"]["phase"]["type"] == "idle"
         });
     }
     let o = Outer::new(&s.dir, Keys::Extended);

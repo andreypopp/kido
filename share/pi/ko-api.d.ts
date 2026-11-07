@@ -1053,7 +1053,21 @@ export interface components {
                 [key: string]: unknown;
             };
         };
-        Live: ({
+        Live: {
+            pane: components["schemas"]["Local"];
+            /** @constant */
+            type: "host";
+        } | {
+            pane: components["schemas"]["Local"];
+            /** @constant */
+            type: "runtime";
+        } | {
+            destination: string;
+            pane: components["schemas"]["Remote"];
+            /** @constant */
+            type: "ssh";
+        };
+        Local: ({
             /** @constant */
             type: "terminal";
         } & components["schemas"]["Shell"]) | {
@@ -1066,11 +1080,6 @@ export interface components {
             status: components["schemas"]["Agent"];
             /** @constant */
             type: "pi_agent";
-        } | {
-            destination: string;
-            pane: components["schemas"]["Remote"];
-            /** @constant */
-            type: "ssh";
         };
         Marked: {
             marker: components["schemas"]["Marker"];
@@ -1221,6 +1230,10 @@ export interface components {
         Phase: {
             /** @constant */
             type: "unknown";
+        } | {
+            last?: components["schemas"]["CommandExit"];
+            /** @constant */
+            type: "pending";
         } | {
             last?: components["schemas"]["CommandExit"];
             /** @constant */

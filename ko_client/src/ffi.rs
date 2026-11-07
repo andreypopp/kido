@@ -3053,17 +3053,19 @@ mod tests {
 
     fn failed_idle_status() -> PaneStatus {
         PaneStatus {
-            kind: Live::Terminal(Shell {
-                phase: Phase::Idle {
-                    last: Some(CommandExit {
-                        code: 1,
-                        command: "false".to_owned(),
-                        started_at: 90,
-                        ended_at: 100,
-                    }),
-                },
-                report: None,
-            }),
+            kind: Live::Host {
+                pane: ko_server::protocol::Local::Terminal(Shell {
+                    phase: Phase::Idle {
+                        last: Some(CommandExit {
+                            code: 1,
+                            command: "false".to_owned(),
+                            started_at: 90,
+                            ended_at: 100,
+                        }),
+                    },
+                    report: None,
+                }),
+            },
             program_status: ProgramStatus::default(),
             title: "zsh".to_owned(),
             message: None,

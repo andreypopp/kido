@@ -33,7 +33,7 @@ fn no_idle_wakeups() {
         for _ in 0..3 {
             let p = s.shell_pane();
             s.wait_row(&p, "the first prompt", |row| {
-                row["status"]["kind"]["phase"]["type"] == "idle"
+                row["status"]["kind"]["pane"]["phase"]["type"] == "idle"
             });
             panes.push(p);
         }

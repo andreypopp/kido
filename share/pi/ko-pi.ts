@@ -179,7 +179,8 @@ type PaneInfo = {
   pane: string;
   session: string;
   window: string;
-  agentSession: string;
+  sessionVar: string;
+  kind: Api["Live"] | null;
   name: string;
   activity: string;
   cwd: string;
@@ -197,8 +198,8 @@ function rootRecord(programStatus: Api["ProgramStatus"] | null): { app: string; 
   return root ? { app: root.app ?? "", state: root.state } : null;
 }
 
-function isAgentPane(pane: PaneInfo): boolean {
-  return pane.agentSession !== "" && pane.root?.app === "pi";
+function piAgent(kind: Api["Live"] | null) {
+  return (kind?.type === "host" || kind?.type === "runtime") && kind.pane.type === "pi_agent" ? kind.pane : undefined;
 }
 
 type Place = { session: string; window: string };
@@ -225,17 +226,19 @@ function parsePanes(layout: Api["LayoutPanes"]): PaneInfo[] {
   return layout.panes.map((row) => {
     const place = places.get(row.id);
     const root = rootRecord(row.status?.program_status ?? null);
+    const kind = row.status?.kind ?? null;
     const routed = row.vars[VAR_RUNTIME];
-    const inRuntime = root?.app === "pi" && isRecord(routed) && typeof routed.name === "string" ? { name: routed.name, cwd: str(routed.cwd) } : undefined;
+    const route = kind?.type === "host" && piAgent(kind) && isRecord(routed) && typeof routed.name === "string" ? { name: routed.name, cwd: str(routed.cwd) } : undefined;
     return {
       pane: row.id,
       session: place?.session ?? "",
       window: place?.window ?? "",
-      agentSession: str(row.vars[VAR_SESSION]),
+      sessionVar: str(row.vars[VAR_SESSION]),
+      kind,
       name: str(row.vars[VAR_NAME]),
       activity: str(row.vars[VAR_ACTIVITY]),
-      cwd: inRuntime?.cwd || row.cwd,
-      runtime: row.runtime ?? inRuntime?.name ?? "",
+      cwd: route?.cwd || row.cwd,
+      runtime: row.runtime ?? route?.name ?? "",
       dead: row.dead,
       root,
       title: row.title,
@@ -1665,23 +1668,24 @@ export default function (pi: ExtensionAPI) {
     for (const p of panes) {
       const child = alive.get(p.pane);
       const self = p.pane === pane;
-      if (p.dead || !(isAgentPane(p) || (child && p.parent === pane))) continue;
+      const agent = piAgent(p.kind);
+      if (p.dead || !(agent || (child && p.parent === pane))) continue;
       const parentPane = byPane.get(p.parent);
       const row: AgentRow = {
-        id: p.agentSession || child?.session || p.pane,
+        id: agent?.session || child?.session || p.pane,
         name: p.name || child?.name || p.title,
         named: p.name !== "" || !!child,
         pane: p.pane,
         window: p.window,
         status: p.root?.state ?? "starting",
         activity: p.activity,
-        parent: parentPane?.agentSession ?? (p.parent === pane ? ownSessionId ?? "" : ""),
+        parent: parentPane ? piAgent(parentPane.kind)?.session ?? "" : (p.parent === pane ? ownSessionId ?? "" : ""),
         depth: ancestorsOf(p).length,
         self,
         cwd: p.cwd,
         ...(p.runtime ? { runtime: p.runtime } : {}),
         canMessage: p.inbox,
-        kind: parentPane && (isAgentPane(parentPane) || parentPane.pane === pane) ? "subagent" : "agent",
+        kind: parentPane && (piAgent(parentPane.kind) || parentPane.pane === pane) ? "subagent" : "agent",
         relationship: self ? "own" : relationship.get(p.pane) ?? "other",
         state: "running",
       };
@@ -1722,7 +1726,7 @@ export default function (pi: ExtensionAPI) {
     }
     const rows = all.filter((a) => !a.self && a.relationship !== "other");
     const ancestors = me ? ancestorsOf(me) : [];
-    return { rows, all, elsewhere, panes, ok, me, depth: ancestors.length, ancestors: ancestors.map((a) => a.agentSession).filter(Boolean) };
+    return { rows, all, elsewhere, panes, ok, me, depth: ancestors.length, ancestors: ancestors.map((a) => piAgent(a.kind)?.session).filter((session): session is string => !!session) };
   };
 
   const toolRow = (a: AgentRow) => {
@@ -2372,7 +2376,7 @@ export default function (pi: ExtensionAPI) {
     if (!me?.parent) return;
     parentPane = me.parent;
     const parent = panes.find((p) => p.pane === me.parent);
-    if (parent && !parent.dead && parent.agentSession === edge.parent) return;
+    if (parent && !parent.dead && parent.sessionVar === edge.parent) return;
     stopTick();
     leave();
   };
@@ -2911,7 +2915,7 @@ export default function (pi: ExtensionAPI) {
         const snapshot = await discovery();
         if (!snapshot.ok || !snapshot.me) return refuse("could not read the layout");
         if (mode.kind === "continue" && !toplevel && snapshot.ancestors.includes(childSession)) return refuse(`session ${childSession} is an ancestor of this session`);
-        if (mode.kind === "continue" && snapshot.panes.some((p) => p.agentSession === childSession && !p.dead)) return refuse(`session ${childSession} is live in a pane`);
+        if (mode.kind === "continue" && snapshot.panes.some((p) => p.sessionVar === childSession && !p.dead)) return refuse(`session ${childSession} is live in a pane`);
         const existing = mode.kind === "continue" ? children().find((c) => c.session === childSession) : undefined;
         if (existing && (toplevel || existing.name !== name)) return refuse("resume this child with its existing name and without toplevel");
         if (!claimName(name)) return taken();

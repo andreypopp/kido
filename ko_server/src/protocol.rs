@@ -355,6 +355,10 @@ pub enum Origin {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Phase {
     Unknown,
+    Pending {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last: Option<CommandExit>,
+    },
     Idle {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last: Option<CommandExit>,
@@ -397,34 +401,56 @@ pub enum Remote {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum Live {
+pub enum Local {
     Terminal(Shell),
     SomeAgent { name: String, status: Agent },
     PiAgent { session: String, status: Agent },
+}
+
+impl Local {
+    fn shell(&self) -> Option<&Shell> {
+        match self {
+            Self::Terminal(shell) => Some(shell),
+            Self::SomeAgent { .. } | Self::PiAgent { .. } => None,
+        }
+    }
+
+    fn agent(&self) -> Option<&Agent> {
+        match self {
+            Self::SomeAgent { status, .. } | Self::PiAgent { status, .. } => Some(status),
+            Self::Terminal(_) => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Live {
+    Host { pane: Local },
+    Runtime { pane: Local },
     Ssh { destination: String, pane: Remote },
 }
 
 impl Live {
     pub fn shell(&self) -> Option<&Shell> {
         match self {
-            Live::Terminal(shell)
-            | Live::Ssh {
+            Live::Host { pane } | Live::Runtime { pane } => pane.shell(),
+            Live::Ssh {
                 pane: Remote::Terminal { status: shell, .. },
                 ..
             } => Some(shell),
-            Live::SomeAgent { .. } | Live::PiAgent { .. } | Live::Ssh { .. } => None,
+            Live::Ssh { .. } => None,
         }
     }
 
     pub fn agent(&self) -> Option<&Agent> {
         match self {
-            Live::SomeAgent { status, .. }
-            | Live::PiAgent { status, .. }
-            | Live::Ssh {
+            Live::Host { pane } | Live::Runtime { pane } => pane.agent(),
+            Live::Ssh {
                 pane: Remote::Agent { status, .. },
                 ..
             } => Some(status),
-            Live::Terminal(_) | Live::Ssh { .. } => None,
+            Live::Ssh { .. } => None,
         }
     }
 }
@@ -2138,15 +2164,15 @@ mod tests {
             same::<Row>(json);
         }
         same::<Row>(
-            r#"{"id":"pane_4","started":0,"pid":1,"command":["/bin/sh"],"cwd":"/","title":"","dead":null,"foreground":{"pid":77,"name":"sleep"},"status":{"kind":{"type":"terminal","phase":{"type":"running","origin":{"type":"command","command":"sleep 2","started_at":5},"fullscreen":false},"report":{"since":4,"msg":"m","state":{"type":"waiting","kind":"question","progress":42}}},"program_status":{"serial":3,"records":[{"id":"","state":"blocked","kind":"question","progress":42,"app":"pi","title":"t","msg":"m"},{"id":"a/b","state":"working"},{"id":"c","state":"done"}]},"title":"sleep 2","message":"m","progress":42,"since":6},"progress":{"state":"set","progress":50}}"#,
+            r#"{"id":"pane_4","started":0,"pid":1,"command":["/bin/sh"],"cwd":"/","title":"","dead":null,"foreground":{"pid":77,"name":"sleep"},"status":{"kind":{"type":"host","pane":{"type":"terminal","phase":{"type":"running","origin":{"type":"command","command":"sleep 2","started_at":5},"fullscreen":false},"report":{"since":4,"msg":"m","state":{"type":"waiting","kind":"question","progress":42}}}},"program_status":{"serial":3,"records":[{"id":"","state":"blocked","kind":"question","progress":42,"app":"pi","title":"t","msg":"m"},{"id":"a/b","state":"working"},{"id":"c","state":"done"}]},"title":"sleep 2","message":"m","progress":42,"since":6},"progress":{"state":"set","progress":50}}"#,
         );
         for json in [
-            r#"{"type":"some_agent","name":"claude-code","status":{"since":1,"state":{"type":"idle","outcome":{"serial":2,"result":"success"}}}}"#,
-            r#"{"type":"pi_agent","session":"s","status":{"since":1,"state":{"type":"running"}}}"#,
+            r#"{"type":"host","pane":{"type":"some_agent","name":"claude-code","status":{"since":1,"state":{"type":"idle","outcome":{"serial":2,"result":"success"}}}}}"#,
+            r#"{"type":"host","pane":{"type":"pi_agent","session":"s","status":{"since":1,"state":{"type":"running"}}}}"#,
             r#"{"type":"ssh","destination":"deploy@h","pane":{"type":"terminal","interactive":true,"status":{"phase":{"type":"idle","last":{"code":1,"command":"false","started_at":1,"ended_at":2}}}}}"#,
             r#"{"type":"ssh","destination":"h","pane":{"type":"agent","name":"pi","status":{"since":0,"state":{"type":"idle"}}}}"#,
-            r#"{"type":"terminal","phase":{"type":"running","origin":{"type":"unknown"},"fullscreen":true}}"#,
-            r#"{"type":"terminal","phase":{"type":"unknown"}}"#,
+            r#"{"type":"host","pane":{"type":"terminal","phase":{"type":"running","origin":{"type":"unknown"},"fullscreen":true}}}"#,
+            r#"{"type":"host","pane":{"type":"terminal","phase":{"type":"unknown"}}}"#,
         ] {
             same::<Live>(json);
         }
@@ -2268,7 +2294,7 @@ mod tests {
             r#"{"type":"title","pane":"pane_3","title":"x"}"#,
             r#"{"type":"pwd","pane":"pane_3","pwd":"file://h/tmp"}"#,
             r#"{"type":"dead","pane":"pane_3","dead":{"at":123456789012345,"cause":{"type":"signaled","signal":15}}}"#,
-            r#"{"type":"status","pane":"pane_3","status":{"kind":{"type":"terminal","phase":{"type":"idle"}},"program_status":{"serial":0,"records":[]},"title":"zsh","since":9},"now":99}"#,
+            r#"{"type":"status","pane":"pane_3","status":{"kind":{"type":"host","pane":{"type":"terminal","phase":{"type":"idle"}}},"program_status":{"serial":0,"records":[]},"title":"zsh","since":9},"now":99}"#,
             r#"{"type":"var","pane":"pane_3","name":"ssh.args","value":["-l","x"]}"#,
             r#"{"type":"var_deleted","pane":"pane_3","name":"ssh.args"}"#,
             r#"{"type":"bell","pane":"pane_3"}"#,

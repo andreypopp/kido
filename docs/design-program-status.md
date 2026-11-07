@@ -127,10 +127,14 @@ The shell phase:
 - Idle: the shell is at a known prompt. The last exit carries the
   code, the command line, the start and the end. A `C` without a `D`
   gives no exit; a later prompt does not mean success.
+- Pending: a `C` arrived and the command is not yet promoted. It keeps the last exit of the Idle that
+  came before. Clients show it as that Idle, so a short command never
+  shows running; only the close decision tells the two apart
+  (design-app.md, closing).
 - Running: the model observes a command for 0.2 s on its clock, from
-  the first observation (`DEBOUNCE` in `pane_status.rs`). Until
-  promotion, it reports the Idle that came before, so a short command
-  never reports running. Promotion removes the last exit and any
+  the first observation (`DEBOUNCE` in `pane_status.rs`), then promotes
+  it. On ssh, a command with no prompt since ssh started stays Unknown
+  until then. Promotion removes the last exit and any
   report outcome from before the command. The model arms one timer of
   `DEBOUNCE` for a pane with a pending promotion (`ko_server/src/model.rs`).
 - The alternate screen reports running at once (`fullscreen`). It
@@ -199,15 +203,23 @@ the first remote command argument.
 `Kind` in `ko_server/src/pane_kind.rs` classifies a pane in this
 order. A variable that is not a JSON string counts as absent.
 
-1. `ssh.dest` is a non-empty string and the foreground process is
+1. The pane is in a runtime (born there or on a visit): `Runtime`,
+   with the `LocalKind` of steps 3 to 5. Its foreground is the
+   transport's process, which says nothing about the program inside,
+   so `ssh.dest` and the foreground are not read
+   (design-runtimes.md, "Status").
+2. `ssh.dest` is a non-empty string and the foreground process is
    `ssh`: `Ssh`. Its `pane` is `RemoteKind::Agent` when the root record's
    app is `pi` or `claude-code`, else `RemoteKind::Terminal`.
-2. The root app is `pi` and `pi.session` is a non-empty string:
+3. The root app is `pi` and `pi.session` is a non-empty string:
    `PiAgent`, with its name and activity from `pi.name` and
    `pi.activity`.
-3. The root app is `claude-code`, or `pi` without the session
+4. The root app is `claude-code`, or `pi` without the session
    variable: `SomeAgent` with the app as its name.
-4. Anything else: `Terminal`.
+5. Anything else: `Terminal`.
+
+On the host, steps 3 to 5 give `Host`. A routed pi (`ko-pi
+--runtime`) runs on the host, so it is a `Host` pane.
 
 The trust rule is the gate above and nothing else: a stale
 `pi.session` on a shell pane is no agent; a stale `ssh.dest` after ssh
@@ -215,18 +227,24 @@ exits is no `Ssh`.
 
 ## The matrix
 
-|                  | local                     | over ssh                                      |
-|------------------|---------------------------|-----------------------------------------------|
-| shell            | `Terminal`                | `Ssh { pane: RemoteKind::Terminal }`              |
-| some agent       | `SomeAgent`              | `Ssh { pane: RemoteKind::Agent }`                 |
-| local pi agent   | `PiAgent`                |                                               |
+|                  | host                | in a runtime           | over ssh                             |
+|------------------|---------------------|------------------------|--------------------------------------|
+| shell            | `Host { Terminal }` | `Runtime { Terminal }` | `Ssh { pane: RemoteKind::Terminal }` |
+| some agent       | `Host { SomeAgent }` | `Runtime { SomeAgent }` | `Ssh { pane: RemoteKind::Agent }`   |
+| pi with ko-pi    | `Host { PiAgent }`  | `Runtime { PiAgent }`  |                                      |
+
+The sections below describe a `LocalKind`; it has the same rules on
+the host and in a runtime, except that a runtime pane's row title
+never falls back to the foreground process name. The wire's
+`Live` (`ko_server/src/protocol.rs`) has the same shape and carries
+no runtime name: the row's `runtime` is the one source of it.
 
 ### `Terminal`
 
 - Status: the shell phase from OSC 133, plus a separate report from any
   other program's records, present in every phase.
 - Row title: the representative record's title, then its app, then the
-  foreground process name; while a non-fullscreen command runs with no
+  foreground process name (on the host only); while a non-fullscreen command runs with no
   report, the command line.
 
 ### `SomeAgent`

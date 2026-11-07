@@ -2,7 +2,7 @@ use super::*;
 use crate::api::routes;
 use crate::ids::MessageId;
 use crate::inbox::{Admit, Outcome, Status};
-use crate::pane_kind::{self, Kind};
+use crate::pane_kind::{self, Kind, LocalKind};
 use crate::panes::{Edge, acts_as, relation};
 use crate::protocol::{
     Content, End, Error, ErrorKind, MessageState, Payload, Posted, Relation, SendMessage, Sender,
@@ -44,11 +44,11 @@ impl Waits {
 }
 
 fn stamp(id: PaneId, pane: Option<&Pane>) -> Sender {
-    match pane.map(pane_kind::of_pane) {
-        Some(Kind::PiAgent { session, name, .. }) => Sender::Pane {
+    match pane.map(pane_kind::of_pane).as_ref().and_then(Kind::local) {
+        Some(LocalKind::PiAgent { session, name, .. }) => Sender::Pane {
             pane: id,
-            session: Some(session),
-            name: Some(name).filter(|name| !name.is_empty()),
+            session: Some(session.clone()),
+            name: Some(name.clone()).filter(|name| !name.is_empty()),
         },
         _ => Sender::Pane {
             pane: id,

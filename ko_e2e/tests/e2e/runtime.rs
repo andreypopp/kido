@@ -42,7 +42,7 @@ fn runtime_shells_report_and_inherit_the_directory() {
     });
     for (command, pane) in panes {
         s.wait_row(&pane, "runtime shell prompt is primed", |row| {
-            row["status"]["kind"]["phase"]["type"] == "idle"
+            row["status"]["kind"]["pane"]["phase"]["type"] == "idle"
         });
         s.text(
             &pane,
@@ -71,6 +71,63 @@ fn runtime_shells_report_and_inherit_the_directory() {
                 .is_some_and(|cwd| cwd.ends_with("/sp%20ace"))
         });
     }
+}
+
+#[test]
+fn runtime_kinds_select_agents_keep_sender_identity_and_hide_the_transport_title() {
+    let s = serve("runtimes:\n  dev:\n    command: {}\n", &[]);
+    let from = s.token_pane("exec cat");
+    let terminal = s.new_pane(json!({"runtime": "dev", "command": {"type": "shell", "command": "stty raw -echo; exec cat"}}));
+    let agent = s.new_pane(json!({
+        "runtime": "dev",
+        "command": {"type": "shell", "command": format!("printf '\\033]7501;state=idle:app=pi\\007'; stty raw -echo; {PRINT_TOKEN}; exec cat")},
+        "vars": {"pi.session": "runtime-session", "pi.name": "Runtime Worker", "ssh.dest": "stale"}
+    }));
+    s.wait_row(&terminal, "the runtime terminal is classified", |row| {
+        row["status"]["kind"]["type"] == "runtime"
+            && row["status"]["kind"]["pane"]["type"] == "terminal"
+    });
+    s.text(&terminal, "transport-probe");
+    s.screen_has(&terminal, "transport-probe");
+    s.wait_row(&terminal, "the host transport has a foreground", |row| {
+        !row["foreground"].is_null()
+    });
+    assert_eq!(s.row(&terminal)["status"]["title"], "");
+    s.wait_row(&agent, "the runtime pi is classified", |row| {
+        row["status"]["kind"]["type"] == "runtime"
+            && row["status"]["kind"]["pane"]["type"] == "pi_agent"
+    });
+    let resolve = s.ko(&["api", &format!("/prompt/resolve?from={from}")], "");
+    assert_eq!(crate::harness::code(&resolve), 0, "{}", resolve.stderr);
+    let candidates: Value = serde_json::from_str(&resolve.stdout).unwrap();
+    assert_eq!(
+        candidates
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|candidate| candidate["pane"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [agent.as_str()]
+    );
+    s.screen_has(&agent, "TOKEN<");
+    let mut stream = crate::messages::open(&s, &from);
+    let send = s.ko_as(
+        Some(&agent),
+        &[
+            "api",
+            "--method",
+            "POST",
+            "--input",
+            "-",
+            &format!("/panes/{from}/messages"),
+        ],
+        r#"{"id":"runtime-identity","kind":"message","text":"hello"}"#,
+    );
+    assert_eq!(crate::harness::code(&send), 0, "{}", send.stderr);
+    assert_eq!(
+        crate::messages::received(&mut stream)["from"],
+        json!({"type": "pane", "pane": agent, "session": "runtime-session", "name": "Runtime Worker"})
+    );
 }
 
 fn ids(rows: &Value) -> Vec<&str> {

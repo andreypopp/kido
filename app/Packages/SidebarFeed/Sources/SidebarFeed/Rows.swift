@@ -52,33 +52,36 @@ public func sidebarTitle(_ title: String, messageable: Bool) -> String {
 
 extension Item {
     var isAgent: Bool { agent != nil }
-    var isMessageable: Bool { if case .live(.piAgent) = lifecycle { inbox } else { false } }
+    var isMessageable: Bool {
+        if case .live(let kind) = lifecycle, case .piAgent = kind.local { inbox } else { false }
+    }
     var agent: Report? {
-        switch lifecycle {
-        case .live(.someAgent(_, let status)), .live(.piAgent(_, let status)), .live(.ssh(_, .agent(_, let status))): status
-        default: nil
+        guard case .live(let kind) = lifecycle else { return nil }
+        if case .ssh(_, .agent(_, let status)) = kind { return status }
+        switch kind.local {
+        case .someAgent(_, let status), .piAgent(_, let status): return status
+        default: return nil
         }
     }
 
     var shell: ShellStatus? {
-        switch lifecycle {
-        case .live(.terminal(let status)), .live(.ssh(_, .terminal(_, let status))): status
-        default: nil
-        }
+        guard case .live(let kind) = lifecycle else { return nil }
+        if case .ssh(_, .terminal(_, let status)) = kind { return status }
+        if case .terminal(let status) = kind.local { return status }
+        return nil
     }
 
     var label: String {
-        switch lifecycle {
-        case .live(.terminal(let status)) where status.report == nil:
-            if case .running(let command?, fullscreen: false) = status.phase, !command.command.isEmpty { return command.command }
-            return title
-        case .live(.ssh(let destination, .terminal(let interactive, let status))):
+        guard case .live(let kind) = lifecycle else { return title }
+        if case .ssh(let destination, .terminal(let interactive, let status)) = kind {
             if status.report == nil, interactive, case .running(let command?, fullscreen: false) = status.phase, !command.command.isEmpty {
                 return "ssh \(destination): \(command.command)"
             }
             return "ssh \(destination)"
-        default: return title
         }
+        if case .terminal(let status) = kind.local, status.report == nil,
+           case .running(let command?, fullscreen: false) = status.phase, !command.command.isEmpty { return command.command }
+        return title
     }
 
     var departure: (status: SidebarRow.Status, caption: String)? {
@@ -107,17 +110,27 @@ extension Item {
 
     // The last command of a plain shell, which neither an agent nor a report covers.
     var lastCommand: ShellStatus.Exit? {
-        guard agent == nil, shell?.report == nil, case .idle(let exit?) = shell?.phase else { return nil }
-        return exit
+        guard agent == nil, let shell, shell.report == nil else { return nil }
+        switch shell.phase {
+        case .idle(let exit), .pending(let exit): return exit
+        case .unknown, .running: return nil
+        }
     }
 
     var quietShell: Bool {
-        guard case .live(.terminal(let shell)) = lifecycle, case .idle = shell.phase else { return false }
-        return [.quiet, .done, .error].contains(indicator.status)
+        guard case .live(let kind) = lifecycle, case .terminal(let shell) = kind.local else { return false }
+        switch shell.phase {
+        case .idle, .pending: return [.quiet, .done, .error].contains(indicator.status)
+        case .unknown, .running: return false
+        }
     }
 
     var closesQuietly: Bool {
-        quietShell && pid != nil && foreground?.pid == pid
+        guard case .live(let kind) = lifecycle, case .idle = shell?.phase,
+              [.quiet, .done, .error].contains(indicator.status) else { return false }
+        if case .terminal = kind.local { return true }
+        if case .ssh(_, .terminal(interactive: true, _)) = kind { return true }
+        return false
     }
 
     var rowTitle: String {

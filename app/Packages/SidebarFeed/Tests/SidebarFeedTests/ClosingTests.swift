@@ -31,7 +31,7 @@ import KoModel
         (terminal(running("nvim", fullscreen: true)), .none_, true),
         (terminal(running("sleep 60")), .none_, true),
         (terminal(.unknown), .none_, true),
-        (remote(.terminal(interactive: true, shell())), .none_, true),
+        (remote(.terminal(interactive: true, shell())), .none_, false),
         (.ended(.exited(.init(code: 0))), .running, false),
     ]
     for (lifecycle, mark, ask) in cases {
@@ -42,12 +42,31 @@ import KoModel
     let mixed = makeSnapshot([group(0, [pane(0), pane(1, window: 0, lifecycle: agent())])])
     #expect(closeScope(mixed, target: .window(WindowID(number: 0))).ask)
     #expect(closeScope(mixed, target: .session(SessionID(number: 0))).ask)
-    for foreground in [KoSchema.Foreground(name: "zsh", pid: 100), .init(name: "nvim", pid: 101), nil] {
-        guard case .item(var item) = pane(0) else { Issue.record("expected pane"); continue }
-        item.foreground = foreground
-        #expect(closeScope(makeSnapshot([.item(item)]), target: .pane(item.pane)).ask == (foreground?.pid != 100))
-    }
     #expect(!closeScope(nil, target: .pane(PaneID(number: 0))).ask)
+}
+
+@Test func terminalCloseUsesTrueIdleWithoutAProcessComparison() throws {
+    let cases: [(ShellStatus, KoSchema.Mark, Bool)] = [
+        (shell(), .none_, false),
+        (shell(exited(1)), .failed, false),
+        (shell(.pending(last: nil)), .none_, true),
+        (shell(running()), .running, true),
+        (shell(.unknown), .none_, true),
+        (shell(report: report(waiting())), .waiting, true),
+    ]
+    for (status, mark, ask) in cases {
+        for kind in [PaneKind.host(.terminal(status)), .runtime(.terminal(status)), .ssh(.init(user: "", host: "host"), .terminal(interactive: true, status))] {
+            let node = pane(0, lifecycle: .live(kind), mark: mark)
+            #expect(closeScope(makeSnapshot([node]), target: .pane(PaneID(number: 0))).ask == ask)
+            if case .pending = status.phase, case .item(let item) = node {
+                if kind.local != nil { #expect(item.rowTitle == "Terminal") }
+                #expect(item.indicator.status == .quiet)
+            }
+        }
+    }
+    for kind in [PaneKind.ssh(.init(user: "", host: "host"), .terminal(interactive: false, shell())), .host(.someAgent(name: "pi", report(idle()))), .runtime(.piAgent(session: "s", report(idle())))] {
+        #expect(closeScope(makeSnapshot([pane(0, lifecycle: .live(kind))]), target: .pane(PaneID(number: 0))).ask)
+    }
 }
 
 @Test func recentHostsAddRefreshOrderClearAndEmpty() throws {

@@ -2237,6 +2237,62 @@
       "Live": {
         "oneOf": [
           {
+            "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/Local"
+              },
+              "type": {
+                "const": "host",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/Local"
+              },
+              "type": {
+                "const": "runtime",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pane"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "destination": {
+                "type": "string"
+              },
+              "pane": {
+                "$ref": "#/components/schemas/Remote"
+              },
+              "type": {
+                "const": "ssh",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "destination",
+              "pane"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Local": {
+        "oneOf": [
+          {
             "allOf": [
               {
                 "$ref": "#/components/schemas/Shell"
@@ -2290,26 +2346,6 @@
               "type",
               "session",
               "status"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "destination": {
-                "type": "string"
-              },
-              "pane": {
-                "$ref": "#/components/schemas/Remote"
-              },
-              "type": {
-                "const": "ssh",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "destination",
-              "pane"
             ],
             "type": "object"
           }
@@ -2881,6 +2917,21 @@
             "properties": {
               "type": {
                 "const": "unknown",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "last": {
+                "$ref": "#/components/schemas/CommandExit"
+              },
+              "type": {
+                "const": "pending",
                 "type": "string"
               }
             },

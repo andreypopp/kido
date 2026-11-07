@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use ko_server::ids::PaneId;
+use ko_server::protocol::Local;
 use ko_server::protocol::{
     AgentState, CommandExit, Live, Outcome, OutcomeResult, PaneStatus, Phase,
 };
@@ -58,7 +59,7 @@ fn outcomes(status: &PaneStatus) -> (Option<(Source, Outcome)>, Option<&CommandE
         _ => None,
     };
     let exit = match &shell.phase {
-        Phase::Idle { last } => last.as_ref(),
+        Phase::Idle { last } | Phase::Pending { last } => last.as_ref(),
         Phase::Unknown | Phase::Running { .. } => None,
     };
     (report, exit)
@@ -171,8 +172,11 @@ impl Seen {
 
 fn explicit_title(live: &Live) -> bool {
     match live {
-        Live::Terminal(shell) => shell.running_command().is_some(),
-        Live::SomeAgent { .. } | Live::PiAgent { .. } | Live::Ssh { .. } => true,
+        Live::Host { pane } | Live::Runtime { pane } => match pane {
+            Local::Terminal(shell) => shell.running_command().is_some(),
+            Local::SomeAgent { .. } | Local::PiAgent { .. } => true,
+        },
+        Live::Ssh { .. } => true,
     }
 }
 
@@ -248,27 +252,31 @@ mod tests {
     }
 
     fn idle(last: Option<CommandExit>, report: Option<AgentState>) -> Live {
-        Live::Terminal(Shell {
-            phase: Phase::Idle { last },
-            report: report.map(|state| Agent {
-                since: 0,
-                msg: None,
-                state,
+        Live::Host {
+            pane: Local::Terminal(Shell {
+                phase: Phase::Idle { last },
+                report: report.map(|state| Agent {
+                    since: 0,
+                    msg: None,
+                    state,
+                }),
             }),
-        })
+        }
     }
 
     fn running(fullscreen: bool) -> Live {
-        Live::Terminal(Shell {
-            phase: Phase::Running {
-                origin: Origin::Command {
-                    command: "sleep 2".to_owned(),
-                    started_at: 1,
+        Live::Host {
+            pane: Local::Terminal(Shell {
+                phase: Phase::Running {
+                    origin: Origin::Command {
+                        command: "sleep 2".to_owned(),
+                        started_at: 1,
+                    },
+                    fullscreen,
                 },
-                fullscreen,
-            },
-            report: None,
-        })
+                report: None,
+            }),
+        }
     }
 
     fn outcome(serial: u64, result: OutcomeResult) -> AgentState {
@@ -278,12 +286,14 @@ mod tests {
     }
 
     fn agent(state: AgentState) -> Live {
-        Live::SomeAgent {
-            name: "claude-code".to_owned(),
-            status: Agent {
-                since: 0,
-                msg: None,
-                state,
+        Live::Host {
+            pane: Local::SomeAgent {
+                name: "claude-code".to_owned(),
+                status: Agent {
+                    since: 0,
+                    msg: None,
+                    state,
+                },
             },
         }
     }
@@ -296,20 +306,22 @@ mod tests {
             ("a fullscreen program", running(true), Mark::None),
             (
                 "a report of a fullscreen program",
-                Live::Terminal(Shell {
-                    phase: Phase::Running {
-                        origin: Origin::Unknown,
-                        fullscreen: true,
-                    },
-                    report: Some(Agent {
-                        since: 0,
-                        msg: None,
-                        state: AgentState::Waiting {
-                            kind: None,
-                            progress: None,
+                Live::Host {
+                    pane: Local::Terminal(Shell {
+                        phase: Phase::Running {
+                            origin: Origin::Unknown,
+                            fullscreen: true,
                         },
+                        report: Some(Agent {
+                            since: 0,
+                            msg: None,
+                            state: AgentState::Waiting {
+                                kind: None,
+                                progress: None,
+                            },
+                        }),
                     }),
-                }),
+                },
                 Mark::Waiting,
             ),
             ("a clean exit", idle(Some(exit(0, 1, 2)), None), Mark::Done),
@@ -381,7 +393,28 @@ mod tests {
             ),
         ];
         for (what, live, expected) in cases {
-            assert_eq!(seen.mark(&pane(1, Some(live))), expected, "{what}");
+            let idle_pane = pane(1, Some(live.clone()));
+            assert_eq!(seen.mark(&idle_pane), expected, "{what}");
+            if let Live::Host {
+                pane:
+                    Local::Terminal(Shell {
+                        phase: Phase::Idle { last },
+                        report,
+                    }),
+            } = live
+            {
+                let pending = pane(
+                    1,
+                    Some(Live::Host {
+                        pane: Local::Terminal(Shell {
+                            phase: Phase::Pending { last },
+                            report,
+                        }),
+                    }),
+                );
+                assert_eq!(seen.mark(&pending), expected, "pending: {what}");
+                assert_eq!(title(&pending), title(&idle_pane), "pending: {what}");
+            }
         }
         assert_eq!(seen.mark(&pane(1, None)), Mark::None);
         let mut dead = pane(1, Some(running(false)));
