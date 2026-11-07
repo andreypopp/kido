@@ -162,8 +162,8 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
         func item(_ item: Item) -> Item {
             var updated = item
             if item.id == pane {
-                updated.lifecycle = lifecycle
-                updated.mark = mark
+                updated.fixtureLifecycle = lifecycle
+                updated.pane.mark = mark
             }
             updated.children = item.children.map(node)
             return updated
@@ -171,11 +171,11 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
         func node(_ node: SidebarFeed.Node) -> SidebarFeed.Node {
             switch node {
             case .item(let i): .item(item(i))
-            case .window(let group): .window(.init(id: group.id, name: group.name, children: group.children.map(item)))
+            case .window(let group): .window(.init(id: group.id, children: group.children.map(item)))
             }
         }
         var snapshot = snapshot
-        snapshot.sessions = snapshot.sessions.map { SessionNodes(id: $0.id, name: $0.name, current: $0.current, nodes: $0.nodes.map(node)) }
+        snapshot.sessions = snapshot.sessions.map { SessionNodes(id: $0.id, name: $0.name, nodes: $0.nodes.map(node)) }
         return snapshot
     }
 }

@@ -8,7 +8,7 @@ public func closeScope(_ snapshot: Snapshot?, target: CloseTarget) -> (ask: Bool
     var roots: [Node] = []
     func find(_ node: Node) {
         let matches: Bool = switch (target, node) {
-        case (.pane(let id), .item(let item)): id == item.pane
+        case (.pane(let id), .item(let item)): id == item.id
         case (.window(let id), .item(let item)): id == item.window
         case (.window(let id), .window(let window)): id == window.window
         default: false
@@ -50,7 +50,7 @@ public func sidebarWindows(_ snapshot: Snapshot?, session: SessionID?, surviving
     var result = WindowProjection()
     func collect(_ node: Node, ancestor: WindowID?, enclosing: WindowID?) {
         let window = node.window
-        if case .item(let item) = node, activePanes[window] == item.pane {
+        if case .item(let item) = node, activePanes[window] == item.id {
             result.labels[window] = .init(title: item.label, agent: item.isAgent, messageable: item.isMessageable)
         }
         let root = ancestor ?? (surviving.contains(window) ? window : nil)

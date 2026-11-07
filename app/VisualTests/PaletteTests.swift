@@ -403,14 +403,14 @@ import PaneGeometry
 
     @MainActor private final class PromptProbe {
         var recorded: [WindowOwner.PromptRequest] = []
-        var candidates: [PromptCandidate] = []
+        var candidates: [KoSchema.Candidate] = []
         var reply: Result<WindowOwner.PromptReply, Error>?
         var sends: [WindowOwner.PromptRequest] { recorded.filter { if case .send = $0 { true } else { false } } }
         func install(_ owner: WindowOwner) {
             owner.testPrompt = { [self] request, done in
                 recorded.append(request)
                 switch request {
-                case .resolve: done(.success(.candidates(candidates.map(\.schema))))
+                case .resolve: done(.success(.candidates(candidates)))
                 case .send: if let reply { done(reply) }
                 }
             }
@@ -435,8 +435,8 @@ import PaneGeometry
             let session = try XCTUnwrap(snapshot.sessions.first)
             source = PromptSource(owner: owner, instance: snapshot.serverInstance, session: session.id, window: WindowID(number: 0), pane: PaneID(number: 0), windowName: "app")
             probe.candidates = [
-                PromptCandidate(pane: PaneID(number: 0), session: session.id, window: source.window, title: "near"),
-                PromptCandidate(pane: PaneID(number: 502), session: session.id, window: WindowID(number: 2), title: "far"),
+                KoSchema.Candidate(inbox: false, pane: PaneID(number: 0), session: session.id, title: "near", window: source.window),
+                KoSchema.Candidate(inbox: false, pane: PaneID(number: 502), session: session.id, title: "far", window: WindowID(number: 2)),
             ]
             probe.install(owner)
             NSApp.mainMenu = app.mainMenu()
@@ -494,7 +494,7 @@ import PaneGeometry
             let remote = try XCTUnwrap(app.open(.remote("devbox"), start: false))
             defer { app.closePalette(); owner.close(); remote.close() }
             let initialSnapshot = sidebarFixture { snapshot in
-                snapshot.mapItems { if $0.title == "pi-ui" { $0.lifecycle = piLifecycle(.waiting(nil, progress: nil), session: "session-905"); $0.mark = .waiting } }
+                snapshot.mapItems { if $0.pane.label == "pi-ui" { $0.fixtureLifecycle = piLifecycle(.waiting(.init()), session: "session-905"); $0.pane.mark = .waiting } }
                 snapshot.sessions = [snapshot.sessions[0]]
             }
             owner.testReceive(initialSnapshot)
@@ -545,10 +545,10 @@ import PaneGeometry
             for _ in 0..<selectedAgent { _ = palette.control(palette.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.moveDown(_:))) }
             image(palette, "\(theme)-root-agent")
             let probe = PromptProbe()
-            let near = PromptCandidate(pane: PaneID(number: 0), session: session.id, window: WindowID(number: 0), title: "kido-app")
+            let near = KoSchema.Candidate(inbox: false, pane: PaneID(number: 0), session: session.id, title: "kido-app", window: WindowID(number: 0))
             probe.candidates = [near,
-                PromptCandidate(pane: PaneID(number: 3), session: session.id, window: WindowID(number: 2), title: "sidebar-mockup"),
-                PromptCandidate(pane: PaneID(number: 4), session: session.id, window: WindowID(number: 3), title: "pi-ui")]
+                KoSchema.Candidate(inbox: false, pane: PaneID(number: 3), session: session.id, title: "sidebar-mockup", window: WindowID(number: 2)),
+                KoSchema.Candidate(inbox: false, pane: PaneID(number: 4), session: session.id, title: "pi-ui", window: WindowID(number: 3))]
             probe.install(owner)
             let source = PromptSource(owner: owner, instance: try XCTUnwrap(owner.snapshot).serverInstance, session: session.id, window: near.window, pane: PaneID(number: 0), windowName: "app")
             let typed = "Look at the failing e2e test in the build log.\nIt reports failed where completed is expected.\nFind the cause and propose a fix."
@@ -855,7 +855,7 @@ import PaneGeometry
         for index in 0..<paneCount() {
             let pane = try XCTUnwrap(owner.testSession?.activePane).pane
             owner.testReceive(withLifecycle(try XCTUnwrap(owner.snapshot), pane: pane,
-                .live(.host(.terminal(ShellStatus(phase: .unknown, report: nil)))), mark: .none_))
+                .live(.host(.init(pane: .terminal(KoSchema.Shell(phase: .unknown, report: nil))))), mark: .none_))
             try focusSidebar(index.isMultiple(of: 2))
             try sendKey(owner.window, "w", code: 13, modifiers: .command)
             XCTAssertEqual(owner.preparedAlert?.alert.informativeText, "A program is still running in this pane. Closing the pane will end it.")
@@ -983,7 +983,7 @@ import PaneGeometry
         var replies: [(@MainActor (Result<WindowOwner.PromptReply, Error>) -> Void)] = []
         owner.testPrompt = { _, done in replies.append(done) }
         let candidates = fixture.probe.candidates
-        let result: Result<WindowOwner.PromptReply, Error> = .success(.candidates(candidates.map(\.schema)))
+        let result: Result<WindowOwner.PromptReply, Error> = .success(.candidates(candidates))
         var source = fixture.source
         source.quote = "selected text"
         let draftKey = PromptDraft.Key(host: owner.host, instance: source.instance, pane: candidates[0].pane)
@@ -1128,8 +1128,8 @@ import PaneGeometry
         NSApp.delegate = app
         defer { app.closePalette(); NSApp.delegate = delegate }
         let session = try XCTUnwrap(owner.currentSession)
-        let near = PromptCandidate(pane: PaneID(number: 2), session: session.id, window: WindowID(number: 1), title: "near")
-        let second = PromptCandidate(pane: PaneID(number: 3), session: session.id, window: near.window, title: "second")
+        let near = KoSchema.Candidate(inbox: false, pane: PaneID(number: 2), session: session.id, title: "near", window: WindowID(number: 1))
+        let second = KoSchema.Candidate(inbox: false, pane: PaneID(number: 3), session: session.id, title: "second", window: near.window)
         probe.candidates = [near, second]; probe.install(owner)
         owner.window.makeFirstResponder(pane)
         app.updateMenu(owner, responder: pane)
@@ -1281,8 +1281,8 @@ import PaneGeometry
         app.closePalette(.moved)
         XCTAssertEqual(app.promptDrafts.count, 1)
         let editor = sidebarFixture { snapshot in
-            snapshot.sessions[0].nodes[0].item.lifecycle = snapshot.sessions[0].nodes[1].group.children[1].lifecycle
-            snapshot.sessions[0].nodes[0].item.mark = snapshot.sessions[0].nodes[1].group.children[1].mark
+            snapshot.sessions[0].nodes[0].item.fixtureLifecycle = snapshot.sessions[0].nodes[1].group.children[1].lifecycle
+            snapshot.sessions[0].nodes[0].item.pane.mark = snapshot.sessions[0].nodes[1].group.children[1].pane.mark
         }
         owner.testReceive(editor)
         XCTAssertFalse(editor.promptPanes.first { $0.pane == candidate.pane }!.agent)
@@ -1292,7 +1292,7 @@ import PaneGeometry
         XCTAssertEqual(prompt.textView.string, "agent", "the draft returns when the same pane reports an agent again")
         app.closePalette()
         var removed = snapshot
-        removed.sessions[0].nodes.removeAll { if case .item(let item) = $0 { item.pane == candidate.pane } else { false } }
+        removed.sessions[0].nodes.removeAll { if case .item(let item) = $0 { item.id == candidate.pane } else { false } }
         owner.testReceive(removed)
         XCTAssertTrue(app.promptDrafts.isEmpty, "a killed agent pane drops its draft")
         owner.testReceive(snapshot)
@@ -1323,8 +1323,8 @@ import PaneGeometry
         let connecting = try XCTUnwrap(app.paletteEntries(owner: local, responder: nil).first { $0.title == "New Session…" })
         XCTAssertEqual(connecting.check(), "Not available now")
         let snapshot = sidebarFixture { snapshot in
-            snapshot.sessions[0].nodes[0].item.program_status = ProgramStatus(serial: 1, records: [
-                programRecord("", .working, app: "pi"), programRecord("review", .working, title: "Review palette")])
+            snapshot.sessions[0].nodes[0].item.pane.status?.programStatus = .init(records: [
+                .working(.init(app: "pi", id: "")), .working(.init(id: "review", title: "Review palette"))], serial: 1)
         }
         XCTAssertTrue(sidebarRows(snapshot).contains { $0.title == "Review palette" })
         XCTAssertTrue(sidebarRows(snapshot).contains { $0.title == "main-watch" })
@@ -1619,9 +1619,9 @@ import PaneGeometry
         let quietPanes = Set(sidebarRows(quietSnapshot).compactMap { $0.target?.session == quiet ? $0.target?.pane : nil })
         XCTAssertFalse(quietPanes.isEmpty)
         quietSnapshot.mapItems {
-            if quietPanes.contains($0.pane) {
-                $0.lifecycle = shellLifecycle(.idle(last: nil))
-                $0.mark = .none_
+            if quietPanes.contains($0.id) {
+                $0.fixtureLifecycle = shellLifecycle(.idle(.init(last: nil)))
+                $0.pane.mark = .none_
             }
         }
         owner.testReceive(quietSnapshot)
@@ -1703,11 +1703,4 @@ import PaneGeometry
 
 @MainActor private extension PalettePrompt {
     func type(_ text: String) { textView.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0)) }
-}
-
-private extension PromptCandidate {
-    init(pane: PaneID, session: SessionID, window: WindowID, title: String) {
-        self.init(KoSchema.Candidate(inbox: false, pane: pane, session: session, title: title, window: window))
-    }
-    var schema: KoSchema.Candidate { KoSchema.Candidate(inbox: false, pane: pane, session: session, title: title, window: window) }
 }

@@ -1,5 +1,15 @@
 public typealias KoModel = KoSchema.ModelJson
 
+extension KoSchema.Live {
+    public var local: KoSchema.Local? {
+        switch self {
+        case .host(let host): host.pane
+        case .runtime(let runtime): runtime.pane
+        case .ssh: nil
+        }
+    }
+}
+
 extension KoSchema.Window {
     // The panes of the tree in document order, then the floats.
     public var panes: [PaneID] {

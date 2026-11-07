@@ -191,7 +191,7 @@ private class AlertEscape: NSView {
         case down
         case refused
         case starting
-        case mismatch(code: ko_code, server: KoVersion, own: KoVersion)
+        case mismatch(code: ko_code, server: KoSchema.Version, own: KoSchema.Version)
         case changed
         case connected(KoClient)
     }
@@ -271,7 +271,7 @@ private class AlertEscape: NSView {
         sidebar.list.runtimeSection.open = { [weak self] key in
             guard let self, let runtime = self.runtime(key) else { return }
             sidebar.list.leave()
-            (NSApp.delegate as? AppDelegate)?.showRuntimePalette(RuntimeMark(runtime))
+            (NSApp.delegate as? AppDelegate)?.showRuntimePalette(RuntimeMark.known(runtime, routed: false))
         }
         sidebar.list.newSession = { [weak self] in self?.newSession() }
         sidebar.list.newWindow = { [weak self] session in self?.newWindow(in: session) }
@@ -530,12 +530,12 @@ private class AlertEscape: NSView {
     static let restartTitle = "Restart Server"
     static let restartWarning = "Restarting ends all sessions and panes on this local ko server. Running commands and agents will stop. Other clients attached to this server will disconnect."
 
-    static func mismatchAlert(host: Host, code: ko_code, server: KoVersion, own: KoVersion, serverDir: String) -> NSAlert {
+    static func mismatchAlert(host: Host, code: ko_code, server: KoSchema.Version, own: KoSchema.Version, serverDir: String) -> NSAlert {
         let alert = NSAlert()
         let local = host == .local
         let builds = "The server is build \(server.build); this app is build \(own.build)."
         let command = "ko kill-server" + (local ? " --server '\(serverDir.replacingOccurrences(of: "'", with: "'\"'\"'"))'" : "")
-        let protocols = "This app speaks ko protocol \(own.protocolVersion). The server speaks \(server.protocolVersion)."
+        let protocols = "This app speaks ko protocol \(own.`protocol`). The server speaks \(server.`protocol`)."
         let revisions = "This app runs terminal revision \(own.vt.prefix(9)); the server runs \(server.vt.prefix(9))."
         if local {
             let detail = code == KO_ERR_PROTOCOL_MISMATCH ? protocols : "This app runs terminal revision \(own.vt.prefix(9)). The server runs \(server.vt.prefix(9))."
@@ -544,7 +544,7 @@ private class AlertEscape: NSView {
                 + "\n\n" + restartWarning
         } else if code == KO_ERR_PROTOCOL_MISMATCH, let major = server.major, let ours = own.major, major > ours {
             alert.messageText = "Update Kido.app to connect to \(host.label)"
-            alert.informativeText = "The server speaks ko protocol \(server.protocolVersion); this app speaks \(own.protocolVersion). Update Kido.app on this Mac. \(builds)"
+            alert.informativeText = "The server speaks ko protocol \(server.`protocol`); this app speaks \(own.`protocol`). Update Kido.app on this Mac. \(builds)"
         } else if code == KO_ERR_PROTOCOL_MISMATCH {
             alert.messageText = "Update ko on \(host.label)"
             alert.informativeText = "\(protocols) Update ko on the host, then reconnect. \(builds)"
@@ -574,7 +574,7 @@ private class AlertEscape: NSView {
         return alert
     }
 
-    private func protocolMismatch(code: ko_code, server: KoVersion, own: KoVersion) {
+    private func protocolMismatch(code: ko_code, server: KoSchema.Version, own: KoSchema.Version) {
         invalidate(keepingSnapshot: true)
         link = .mismatch(code: code, server: server, own: own)
         down("Disconnected from \(host.label)", "", button: "Reconnect")
@@ -688,7 +688,7 @@ private class AlertEscape: NSView {
         guard host == .local else { return nil }
         func find(_ nodes: [SidebarFeed.Node]) -> String? {
             for node in nodes {
-                if case .item(let item) = node, item.pane == pane.pane { return if case .live(.ssh(let destination, _)) = item.lifecycle { destination.description } else { nil } }
+                if case .item(let item) = node, item.id == pane.pane { return if case .live(.ssh(let ssh)) = item.lifecycle { ssh.destination } else { nil } }
                 if let found = find(node.children) { return found }
             }
             return nil

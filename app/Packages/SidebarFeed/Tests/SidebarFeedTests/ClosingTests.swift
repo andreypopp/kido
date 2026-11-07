@@ -31,7 +31,7 @@ import KoModel
         (terminal(running("nvim", fullscreen: true)), .none_, true),
         (terminal(running("sleep 60")), .none_, true),
         (terminal(.unknown), .none_, true),
-        (remote(.terminal(interactive: true, shell())), .none_, false),
+        (remote(.terminal(.init(interactive: true, status: shell()))), .none_, false),
         (.ended(.exited(.init(code: 0))), .running, false),
     ]
     for (lifecycle, mark, ask) in cases {
@@ -46,16 +46,16 @@ import KoModel
 }
 
 @Test func terminalCloseUsesTrueIdleWithoutAProcessComparison() throws {
-    let cases: [(ShellStatus, KoSchema.Mark, Bool)] = [
+    let cases: [(KoSchema.Shell, KoSchema.Mark, Bool)] = [
         (shell(), .none_, false),
         (shell(exited(1)), .failed, false),
-        (shell(.pending(last: nil)), .none_, true),
+        (shell(.pending(.init(last: nil))), .none_, true),
         (shell(running()), .running, true),
         (shell(.unknown), .none_, true),
         (shell(report: report(waiting())), .waiting, true),
     ]
     for (status, mark, ask) in cases {
-        for kind in [PaneKind.host(.terminal(status)), .runtime(.terminal(status)), .ssh(.init(user: "", host: "host"), .terminal(interactive: true, status))] {
+        for kind in [KoSchema.Live.host(.init(pane: .terminal(status))), .runtime(.init(pane: .terminal(status))), .ssh(.init(destination: "host", pane: .terminal(.init(interactive: true, status: status))))] {
             let node = pane(0, lifecycle: .live(kind), mark: mark)
             #expect(closeScope(makeSnapshot([node]), target: .pane(PaneID(number: 0))).ask == ask)
             if case .pending = status.phase, case .item(let item) = node {
@@ -64,7 +64,7 @@ import KoModel
             }
         }
     }
-    for kind in [PaneKind.ssh(.init(user: "", host: "host"), .terminal(interactive: false, shell())), .host(.someAgent(name: "pi", report(idle()))), .runtime(.piAgent(session: "s", report(idle())))] {
+    for kind in [KoSchema.Live.ssh(.init(destination: "host", pane: .terminal(.init(interactive: false, status: shell())))), .host(.init(pane: .someAgent(.init(name: "pi", status: report(idle()))))), .runtime(.init(pane: .piAgent(.init(session: "s", status: report(idle())))))] {
         #expect(closeScope(makeSnapshot([pane(0, lifecycle: .live(kind))]), target: .pane(PaneID(number: 0))).ask)
     }
 }

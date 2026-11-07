@@ -11,7 +11,7 @@ private func recorded() throws -> KoModel {
 private func shape(_ nodes: [SidebarFeed.Node]) -> [String] {
     nodes.map { node in
         switch node {
-        case .window(let group): "\(group.name)[\(group.children.map { shape([.item($0)])[0] }.joined(separator: ","))]"
+        case .window(let group): "\(group.id.number)[\(group.children.map { shape([.item($0)])[0] }.joined(separator: ","))]"
         case .item(let item):
             item.children.isEmpty ? "\(item.id.number)" : "\(item.id.number)>\(shape(item.children).joined(separator: ","))"
         }
@@ -34,9 +34,8 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
 @Test func theRecordedModelBecomesTheSidebarTree() throws {
     let snapshot = try #require(Snapshot(model: recorded()))
     #expect(snapshot.sessions.map(\.name) == ["main", "other"])
-    #expect(snapshot.sessions.map(\.current) == [true, false])
     #expect(snapshot.client == .init(session: .init(number: 1), window: .init(number: 1), pane: .init(number: 1)))
-    #expect(shape(snapshot.sessions[0].nodes) == ["build[1,2]", "3", "4", "5>7>8", "9"])
+    #expect(shape(snapshot.sessions[0].nodes) == ["1[1,2]", "3", "4", "5>7>8", "9"])
     #expect(shape(snapshot.sessions[1].nodes) == ["6"])
 }
 
@@ -85,7 +84,7 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
         let snapshot = try #require(Snapshot(model: model))
         let item = try #require(items(snapshot)[PaneID(number: 4)])
         #expect(item.rowTitle == "Terminal")
-        #expect(!closeScope(snapshot, target: .pane(item.pane)).ask)
+        #expect(!closeScope(snapshot, target: .pane(item.id)).ask)
     }
 }
 
@@ -105,7 +104,7 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     let snapshot = try #require(Snapshot(model: runtime))
     let item = try #require(items(snapshot)[PaneID(number: 4)])
     #expect(item.rowTitle == "Terminal")
-    #expect(!closeScope(snapshot, target: .pane(item.pane)).ask)
+    #expect(!closeScope(snapshot, target: .pane(item.id)).ask)
 }
 
 @Test func runtimePiProjectsAsAMessageableAgent() throws {
@@ -120,7 +119,7 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     #expect(item.agent != nil)
     #expect(item.shell == nil)
     #expect(item.rowTitle == "@Worker")
-    #expect(item.lifecycle == .live(.runtime(.piAgent(session: "s1", try #require(item.agent)))))
+    #expect(item.lifecycle == .live(.runtime(.init(pane: .piAgent(.init(session: "s1", status: try #require(item.agent)))))))
 }
 
 private func nest(_ model: inout KoModel, _ moved: [UInt32], under parentNumber: UInt32, window: UInt32) throws {
@@ -134,34 +133,35 @@ private func nest(_ model: inout KoModel, _ moved: [UInt32], under parentNumber:
     var model = try recorded()
     try nest(&model, [3, 4], under: 5, window: 2)
     let snapshot = try #require(Snapshot(model: model))
-    #expect(shape(snapshot.sessions[0].nodes) == ["build[1,2]", "5>running[3,4],7>8", "9"])
+    #expect(shape(snapshot.sessions[0].nodes) == ["1[1,2]", "5>2[3,4],7>8", "9"])
 }
 
 @Test func statusesAndEndedPanesKeepTheirMeaning() throws {
     let found = items(try #require(Snapshot(model: recorded())))
     func item(_ number: UInt32) throws -> Item { try #require(found[.init(number: number)]) }
     let working = try item(1)
-    #expect(working.agent?.state == .running(progress: nil))
-    #expect(working.title == "claude-code")
+    #expect(working.agent?.state == .running(.init()))
+    #expect(working.pane.label == "claude-code")
     let blocked = try item(2)
-    #expect(blocked.agent?.state == .waiting(.permission, progress: nil))
-    #expect(blocked.program_status.records.map(\.state) == [.blocked])
-    #expect(blocked.program_status.records.first?.kind == .permission)
-    #expect(blocked.program_status.records.first?.title == "Message")
-    guard case .running(let command?, fullscreen: false)? = try item(3).shell?.phase else { Issue.record("not running a command"); return }
+    #expect(blocked.agent?.state == .waiting(.init(kind: .permission)))
+    guard case .blocked(let record)? = blocked.pane.status?.programStatus.records.first else { Issue.record("not blocked"); return }
+    #expect(record.kind == .permission)
+    #expect(record.title == "Message")
+    guard case .running(let running)? = try item(3).shell?.phase,
+          !running.fullscreen, case .command(let command) = running.origin else { Issue.record("not running a command"); return }
     #expect(command.command == "make")
     let failed = try item(4)
-    guard case .idle(let last?) = failed.shell?.phase else { Issue.record("not idle after a command"); return }
+    guard case .idle(let idle)? = failed.shell?.phase, let last = idle.last else { Issue.record("not idle after a command"); return }
     #expect(last.code == 1 && last.command == "false")
-    #expect(try item(5).lifecycle == .live(.host(.piAgent(session: "s1", try #require(item(5).agent)))))
-    #expect(try item(5).title == "Worker")
+    #expect(try item(5).lifecycle == .live(.host(.init(pane: .piAgent(.init(session: "s1", status: try #require(item(5).agent)))))))
+    #expect(try item(5).pane.label == "Worker")
     #expect(try item(6).shell?.phase == .unknown)
     let child = try item(7)
     #expect(shape(child.children) == ["8"])
     let ended = try item(9)
     #expect(ended.lifecycle == .ended(try #require(recorded().panes.first { $0.id.number == 9 }?.dead?.cause)))
-    #expect(try [1, 2, 4].map { try item($0).mark } == [.running, .waiting, .none_], "the core's mark; an exit before the connection is no news")
-    #expect(try !item(5).inbox && !item(5).isMessageable, "a pi agent without an inbox takes no prompt")
+    #expect(try [1, 2, 4].map { try item($0).pane.mark } == [.running, .waiting, .none_], "the core's mark; an exit before the connection is no news")
+    #expect(try (item(5).pane.inbox != true) && !item(5).isMessageable, "a pi agent without an inbox takes no prompt")
 }
 
 private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void) throws -> Item {
@@ -178,12 +178,12 @@ private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void)
     model.panes[at].parent = .init(number: 5)
     try nest(&model, [4], under: 5, window: 3)
     let snapshot = try #require(Snapshot(model: model))
-    #expect(shape(snapshot.sessions[0].nodes) == ["build[1,2]", "3", "5>4,7>8", "9"])
+    #expect(shape(snapshot.sessions[0].nodes) == ["1[1,2]", "3", "5>4,7>8", "9"])
 }
 
 @Test func theInboxDotReadsTheRow() throws {
-    #expect(try !edited(5) { _ in }.inbox)
-    #expect(try edited(5) { $0.inbox = true }.inbox)
+    #expect(try (edited(5) { _ in }.pane.inbox != true))
+    #expect(try edited(5) { $0.inbox = true }.pane.inbox == true)
 }
 
 @Test func aDeadPaneThatClosesOnExitLingersByItsCauseAndAKeptPaneDoesNot() throws {
@@ -207,6 +207,18 @@ private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void)
     let rows = sidebarRows(snapshot)
     #expect(rows.filter { $0.target != nil }.count == 9)
     #expect(rows.filter(\.focused).map(\.title) == ["claude-code"])
+}
+
+@Test func aPaneWithoutStatusRemainsAnUnknownHostTerminal() throws {
+    let item = try edited(5) { $0.status = nil; $0.inbox = true; $0.mark = .none_ }
+    #expect(item.pane.status == nil)
+    #expect(item.lifecycle == .live(.host(.init(pane: .terminal(.init(phase: .unknown))))))
+    #expect(item.rowTitle == "Worker")
+    #expect(item.caption == "")
+    #expect(!item.isMessageable)
+    #expect(!item.closesQuietly)
+    let rows = sidebarRows(makeSnapshot([.item(item)]))
+    #expect(rows.filter { if case .program = $0.id { true } else { false } }.isEmpty)
 }
 
 @Test func aModelWithoutPanesHasNoSidebarTree() throws {

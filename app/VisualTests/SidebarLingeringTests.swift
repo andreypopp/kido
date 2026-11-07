@@ -8,20 +8,20 @@ import XCTest
     func testJobRecordsAlignWithSubagent() throws {
         SidebarView.visualNow = 3720_000_000_000
         defer { SidebarView.visualNow = nil }
-        var child = fixtureItem(2, "subagent", piLifecycle(.running(progress: nil)), mark: .running)
-        child.started = 3708_000_000_000
-        child.parent = .init(number: 1)
+        var child = fixtureItem(2, "subagent", piLifecycle(.running(.init())), mark: .running)
+        child.pane.started = 3708_000_000_000
+        child.pane.parent = .init(number: 1)
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.close() }
         let list = SidebarView()
         window.contentView = list
         list.update(fixtureSnapshot(window: 1, pane: 1, [("main", [
-            .item(fixtureItem(1, "parent", piLifecycle(.running(progress: nil)), records: [
-                programRecord("job/42", .working, title: "Build app", started: 3535_000_000_000),
-                programRecord("job/43", .done, title: "Run tests", started: 0),
-                programRecord("review", .blocked, title: "Review", started: 0),
-                programRecord("review/missing/check", .working, title: "Check guides", started: 3710_000_000_000),
+            .item(fixtureItem(1, "parent", piLifecycle(.running(.init())), records: [
+                .working(.init(id: "job/42", started: 3535_000_000_000, title: "Build app")),
+                .done(.init(id: "job/43", started: 0, title: "Run tests")),
+                .blocked(.init(id: "review", started: 0, title: "Review")),
+                .working(.init(id: "review/missing/check", started: 3710_000_000_000, title: "Check guides")),
             ], serial: 1, mark: .running, children: [
                 .item(child),
             ])),
@@ -34,9 +34,9 @@ import XCTest
 
     func testClockWidthChangeInvalidatesTitle() throws {
         defer { SidebarView.visualNow = nil }
-        var child = fixtureItem(2, String(repeating: "Long title ", count: 20), piLifecycle(.running(progress: nil), msg: "Activity"))
-        child.started = 0
-        child.parent = .init(number: 1)
+        var child = fixtureItem(2, String(repeating: "Long title ", count: 20), piLifecycle(.running(.init()), msg: "Activity"))
+        child.pane.started = 0
+        child.pane.parent = .init(number: 1)
         let snapshot = fixtureSnapshot(window: 1, pane: 1, [("main", [
             fixtureNode(1, "parent", piLifecycle(), children: [.item(child)]),
         ])])

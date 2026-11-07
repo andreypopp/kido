@@ -199,7 +199,7 @@ private func marked(_ node: SidebarFeed.Node, _ runtime: RuntimeMark?) -> Sideba
 }
 
 private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind: KoSchema.RuntimeKind = .ssh, routed: Bool = false) -> RuntimeMark {
-    RuntimeMark(KoSchema.ClientRuntime(kind: kind, name: name, source: .config, state: state), routed: routed)
+    RuntimeMark.known(KoSchema.ClientRuntime(kind: kind, name: name, source: .config, state: state), routed: routed)
 }
 
 // rows and routed: the sidebar's suffix in every case, and a routed pi agent's row.
@@ -220,18 +220,18 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
         let routed = runtimeMark("buildbox", routed: true)
         let tree: [SidebarFeed.Node] = [
             fixtureNode(1, "Terminal", shellLifecycle()),
-            marked(fixtureNode(2, "make verify", shellLifecycle(.running(.init(command: "make verify", startedAt: fixtureSince), fullscreen: false)), mark: .running), buildbox),
+            marked(fixtureNode(2, "make verify", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "make verify", startedAt: fixtureSince))))), mark: .running), buildbox),
             marked(fixtureNode(3, "kido-app", piLifecycle(session: "s3"), children: [
-                marked(fixtureNode(4, "make test", shellLifecycle(.running(.init(command: "make test", startedAt: fixtureSince), fullscreen: false)), mark: .running), buildbox),
+                marked(fixtureNode(4, "make test", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "make test", startedAt: fixtureSince))))), mark: .running), buildbox),
                 marked(fixtureNode(5, "pi-review", piLifecycle(session: "s5"), children: [
                     marked(fixtureNode(11, "pi-review-notes", piLifecycle(session: "s11")), routed),
                 ]), routed),
-                marked(fixtureNode(6, "pytest -x", shellLifecycle(.running(.init(command: "pytest -x", startedAt: fixtureSince), fullscreen: false)), mark: .running), py311),
+                marked(fixtureNode(6, "pytest -x", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "pytest -x", startedAt: fixtureSince))))), mark: .running), py311),
             ]), routed),
             marked(fixtureNode(7, "trainer", piLifecycle(session: "s7")), runtimeMark("py311", routed: true)),
             marked(fixtureNode(8, "nvidia-smi", shellLifecycle(shellExit(1, command: "nvidia-smi")), mark: .failed), runtimeMark("gpu-1", .failed(.init(message: runtimeGapWithMessage)))),
             marked(fixtureNode(9, "Terminal", shellLifecycle()), runtimeMark("e2e", .starting, kind: .command)),
-            marked(fixtureNode(10, "a very long title that truncates before the suffix does", shellLifecycle(.running(.init(command: "a very long title that truncates before the suffix does", startedAt: fixtureSince), fullscreen: false)), mark: .running), py311),
+            marked(fixtureNode(10, "a very long title that truncates before the suffix does", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "a very long title that truncates before the suffix does", startedAt: fixtureSince))))), mark: .running), py311),
         ]
         for dark in [false, true] {
             let (list, window) = list(dark: dark)
@@ -243,7 +243,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
 
     func testRuntimeRoutedRow() throws {
         let tree: [SidebarFeed.Node] = [
-            marked(fixtureNode(3, "kido-app", piLifecycle(.running(progress: nil), msg: "Running the e2e suite", session: "s3"), mark: .running), runtimeMark("buildbox", routed: true)),
+            marked(fixtureNode(3, "kido-app", piLifecycle(.running(.init()), msg: "Running the e2e suite", session: "s3"), mark: .running), runtimeMark("buildbox", routed: true)),
         ]
         for dark in [false, true] {
             let (list, window) = list(dark: dark)
@@ -280,7 +280,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
             owner.window.setFrame(NSRect(origin: owner.window.frame.origin, size: NSSize(width: 1100, height: 740)), display: false)
             defer { app.closePalette(); owner.close() }
             let tree: [SidebarFeed.Node] = [
-                marked(fixtureNode(1, "make verify", shellLifecycle(.running(.init(command: "make verify", startedAt: fixtureSince), fullscreen: false)), mark: .running), RuntimeMark(runtimes[0])),
+                marked(fixtureNode(1, "make verify", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "make verify", startedAt: fixtureSince))))), mark: .running), RuntimeMark.known(runtimes[0], routed: false)),
                 fixtureNode(2, "kido-app", piLifecycle(session: "s2")),
             ]
             var snapshot = fixtureSnapshot(window: 1, pane: 1, [(name: "main", nodes: tree)])
@@ -305,7 +305,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
                            ["this Mac", "ssh · up", "container · up", "ssh · failed · \(runtimeGapWithMessage)", "command · starting"])
             image("palette-root")
             func step(_ name: String?, _ state: KoSchema.LinkState = .up) -> RuntimeMark? {
-                name.map { RuntimeMark(KoSchema.ClientRuntime(kind: .ssh, name: $0, source: .config, state: state)) }
+                name.map { RuntimeMark.known(KoSchema.ClientRuntime(kind: .ssh, name: $0, source: .config, state: state), routed: false) }
             }
             palette.enter(.runtime(step("buildbox")))
             XCTAssertEqual(palette.shown.map(\.entry.title), ["New Window", "Split Right", "Split Down", "Shut Down Runtime"])
@@ -345,12 +345,12 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
             }
             change(.failed(.init(message: "boom")))
             XCTAssertEqual(palette.error, "e2e failed: boom. The new pane starts it again.")
-            XCTAssertEqual(palette.mode, .runtime(RuntimeMark(KoSchema.ClientRuntime(kind: .command, name: "e2e", source: .config, state: .failed(.init(message: "boom"))))))
+            XCTAssertEqual(palette.mode, .runtime(RuntimeMark.known(KoSchema.ClientRuntime(kind: .command, name: "e2e", source: .config, state: .failed(.init(message: "boom"))), routed: false)))
             XCTAssertEqual(palette.field.stringValue, "split")
             XCTAssertEqual(palette.selectedEntry?.id, before)
             change(.up)
             XCTAssertNil(palette.error)
-            XCTAssertEqual(palette.mode, .runtime(RuntimeMark(KoSchema.ClientRuntime(kind: .command, name: "e2e", source: .config, state: .up))))
+            XCTAssertEqual(palette.mode, .runtime(RuntimeMark.known(KoSchema.ClientRuntime(kind: .command, name: "e2e", source: .config, state: .up), routed: false)))
         }
     }
 }

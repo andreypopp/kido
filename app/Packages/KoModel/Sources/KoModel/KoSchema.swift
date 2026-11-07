@@ -2069,6 +2069,17 @@ public enum KoSchema {
         }
     }
 
+    public struct Version: Codable, Equatable, Sendable {
+        public var build: String
+        public var `protocol`: String
+        public var vt: String
+        public init(build: String, `protocol`: String, vt: String) {
+            self.build = build
+            self.`protocol` = `protocol`
+            self.vt = vt
+        }
+    }
+
     public struct Window: Codable, Equatable, Sendable {
         public var cellPx: CellPixels?
         public var cols: Cells

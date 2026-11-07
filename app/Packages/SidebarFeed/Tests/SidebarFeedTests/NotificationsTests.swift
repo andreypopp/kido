@@ -134,16 +134,18 @@ private func paneGroup() -> Node {
     var state = try notifier()
     let nodes = [pane(1, lifecycle: terminal(exited(130)), mark: .failed), pane(2, lifecycle: terminal(exited(0)), mark: .done),
                  pane(3, lifecycle: agent(idle(outcome(1, .success))), mark: .done),
-                 pane(5, lifecycle: terminal(running()), mark: .running), pane(6, lifecycle: terminal(.unknown))]
+                 pane(5, lifecycle: terminal(running()), mark: .running), pane(6, lifecycle: terminal(.unknown)),
+                 pane(7, lifecycle: terminal(.pending(.init(last: .init(code: 130, command: "cancel", endedAt: since + 1_000_000_000, startedAt: since)))), mark: .failed)]
     #expect(try step(&state, nodes).post.isEmpty)
     #expect(sidebarRows(makeSnapshot(nodes)).contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 1)) && $0.status == .error })
 }
 
-@Test(arguments: ["unknown", "idle", "running", "fullscreen"])
+@Test(arguments: ["unknown", "idle", "pending", "running", "fullscreen"])
 func notificationReportsFollowIndicator(phaseName: String) throws {
-    let phase: ShellStatus.Phase = switch phaseName {
+    let phase: KoSchema.Phase = switch phaseName {
     case "unknown": .unknown
     case "idle": exited(0)
+    case "pending": .pending(.init(last: .init(code: 130, command: "cancel", endedAt: since + 1_000_000_000, startedAt: since)))
     case "fullscreen": running(nil, fullscreen: true)
     default: running()
     }
@@ -196,14 +198,16 @@ func notificationReportsFollowIndicator(phaseName: String) throws {
     let pi = piAgent(waiting(), msg: "Allow access")
     let nodes = [pane(1, title: "worker", lifecycle: pi, mark: .waiting), pane(2, title: "@named", lifecycle: pi, mark: .waiting),
                  pane(3, title: "raw", lifecycle: terminal(exited(2)), mark: .failed),
-                 pane(4, title: "remote worker", lifecycle: remote(.agent(name: "pi", report(waiting()))), mark: .waiting),
-                 pane(5, title: "raw", lifecycle: remote(.terminal(interactive: true, shell(exited(1)))), mark: .failed)]
+                 pane(4, title: "remote worker", lifecycle: remote(.agent(.init(name: "pi", status: report(waiting())))), mark: .waiting),
+                 pane(5, title: "raw", lifecycle: remote(.terminal(.init(interactive: true, status: shell(exited(1))))), mark: .failed),
+                 pane(6, title: "remote agent", lifecycle: .live(.ssh(.init(destination: "@host", pane: .agent(.init(name: "pi", status: report(waiting())))))), mark: .waiting)]
     let posts = try step(&state, nodes).post
-    #expect(posts.map(\.title) == ["@worker", "@named", "Terminal", "remote worker", "ssh alice@devbox"])
+    #expect(posts.map(\.title) == ["@worker", "@named", "Terminal", "remote worker", "ssh alice@devbox", "remote agent"])
     #expect(posts[0].body == "Waiting: Allow access")
     #expect(posts[2].body == "Exit 2: false")
     #expect(posts[3].subtitle == "session-0 · alice@devbox")
     #expect(posts[4].subtitle == "session-0")
+    #expect(posts[5].subtitle == "session-0 · @host")
     #expect(try JSONDecoder().decode(NoticeTarget.self, from: JSONEncoder().encode(posts[0].target)) == posts[0].target)
     _ = try step(&state, [], owner: "remote", host: "ssh:dev", fresh: true)
     let remotePosts = try step(&state, nodes, owner: "remote", host: "ssh:dev", identity: "bob@machine").post
@@ -211,10 +215,11 @@ func notificationReportsFollowIndicator(phaseName: String) throws {
     #expect(remotePosts[0].target.host == "ssh:dev")
 }
 
-@Test func notificationFullCommand() throws {
+@Test(arguments: [false, true]) func notificationFullCommand(pending: Bool) throws {
     var state = try notifier()
     let command = "line\n" + String(repeating: "x", count: 130)
-    let phase = ShellStatus.Phase.idle(last: .init(code: 2, command: command, startedAt: since, endedAt: since + 1))
+    let last = KoSchema.CommandExit(code: 2, command: command, endedAt: since + 1_000_000_000, startedAt: since)
+    let phase: KoSchema.Phase = pending ? .pending(.init(last: last)) : .idle(.init(last: last))
     #expect(try step(&state, [pane(1, lifecycle: terminal(phase), mark: .failed)]).post.first?.body == "Exit 2: " + command)
 }
 

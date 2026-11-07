@@ -11,7 +11,7 @@ import json
 import re
 import sys
 
-ROOTS = ['ModelJson', 'Edit', 'Edited', 'Candidate']
+ROOTS = ['ModelJson', 'Edit', 'Edited', 'Candidate', 'Version']
 CONFIG_ROOTS = ['App']
 # ko's ids decode as the typed IDs of ID.swift, which validate them.
 IDS = {'PaneId': 'PaneID', 'WindowId': 'WindowID', 'SessionId': 'SessionID'}

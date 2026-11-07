@@ -50,38 +50,58 @@ public func sidebarTitle(_ title: String, messageable: Bool) -> String {
     messageable && !title.hasPrefix("@") ? "@" + title : title
 }
 
+fileprivate extension KoSchema.Shell {
+    var commandTitle: String? {
+        guard report == nil, case .running(let running) = phase, !running.fullscreen,
+              case .command(let command) = running.origin, !command.command.isEmpty else { return nil }
+        return command.command
+    }
+}
+
+extension KoSchema.ProgramRecord {
+    fileprivate var id: String {
+        switch self {
+        case .idle(let r): r.id
+        case .working(let r): r.id
+        case .done(let r): r.id
+        case .blocked(let r): r.id
+        case .error(let r): r.id
+        }
+    }
+}
+
 extension Item {
     var isAgent: Bool { agent != nil }
     var isMessageable: Bool {
-        if case .live(let kind) = lifecycle, case .piAgent = kind.local { inbox } else { false }
+        if case .live(let kind) = lifecycle, case .piAgent = kind.local { pane.inbox == true } else { false }
     }
-    var agent: Report? {
+    var agent: KoSchema.Agent? {
         guard case .live(let kind) = lifecycle else { return nil }
-        if case .ssh(_, .agent(_, let status)) = kind { return status }
+        if case .ssh(let ssh) = kind, case .agent(let agent) = ssh.pane { return agent.status }
         switch kind.local {
-        case .someAgent(_, let status), .piAgent(_, let status): return status
+        case .someAgent(let agent): return agent.status
+        case .piAgent(let agent): return agent.status
         default: return nil
         }
     }
 
-    var shell: ShellStatus? {
+    var shell: KoSchema.Shell? {
         guard case .live(let kind) = lifecycle else { return nil }
-        if case .ssh(_, .terminal(_, let status)) = kind { return status }
+        if case .ssh(let ssh) = kind, case .terminal(let terminal) = ssh.pane { return terminal.status }
         if case .terminal(let status) = kind.local { return status }
         return nil
     }
 
     var label: String {
-        guard case .live(let kind) = lifecycle else { return title }
-        if case .ssh(let destination, .terminal(let interactive, let status)) = kind {
-            if status.report == nil, interactive, case .running(let command?, fullscreen: false) = status.phase, !command.command.isEmpty {
-                return "ssh \(destination): \(command.command)"
+        guard case .live(let kind) = lifecycle else { return pane.label }
+        if case .ssh(let ssh) = kind, case .terminal(let terminal) = ssh.pane {
+            if terminal.interactive, let command = terminal.status.commandTitle {
+                return "ssh \(ssh.destination): \(command)"
             }
-            return "ssh \(destination)"
+            return "ssh \(ssh.destination)"
         }
-        if case .terminal(let status) = kind.local, status.report == nil,
-           case .running(let command?, fullscreen: false) = status.phase, !command.command.isEmpty { return command.command }
-        return title
+        if case .terminal(let status) = kind.local, let command = status.commandTitle { return command }
+        return pane.label
     }
 
     var departure: (status: SidebarRow.Status, caption: String)? {
@@ -102,17 +122,19 @@ extension Item {
         if case .ended = lifecycle, let departure { return departure.caption }
         guard let report = agent ?? shell?.report else { return "" }
         let progress: Int? = switch report.state {
-        case .running(let progress), .waiting(_, let progress): progress
+        case .running(let running): running.progress
+        case .waiting(let waiting): waiting.progress
         case .idle: nil
         }
         return [report.msg ?? "", progress.map { "\($0)%" } ?? ""].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     // The last command of a plain shell, which neither an agent nor a report covers.
-    var lastCommand: ShellStatus.Exit? {
+    var lastCommand: KoSchema.CommandExit? {
         guard agent == nil, let shell, shell.report == nil else { return nil }
         switch shell.phase {
-        case .idle(let exit), .pending(let exit): return exit
+        case .idle(let idle): return idle.last
+        case .pending(let pending): return pending.last
         case .unknown, .running: return nil
         }
     }
@@ -129,7 +151,7 @@ extension Item {
         guard case .live(let kind) = lifecycle, case .idle = shell?.phase,
               [.quiet, .done, .error].contains(indicator.status) else { return false }
         if case .terminal = kind.local { return true }
-        if case .ssh(_, .terminal(interactive: true, _)) = kind { return true }
+        if case .ssh(let ssh) = kind, case .terminal(let terminal) = ssh.pane { return terminal.interactive }
         return false
     }
 
@@ -145,7 +167,7 @@ extension Item {
             } else { departure.status }
             return (status, departure.status == .done ? "gone, exited" : "gone, \(departure.caption)")
         }
-        switch mark {
+        switch pane.mark {
         case .running: return (.running, "running")
         case .waiting: return (.waiting, "waiting")
         case .done: return (.done, "done")
@@ -180,7 +202,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                 let multiPane = panes.count > 1
                 for item in panes {
                     let (status, description) = item.indicator
-                    let target = Snapshot.Position(session: session.id, window: item.window, pane: item.pane)
+                    let target = Snapshot.Position(session: session.id, window: item.window, pane: item.id)
                     let tail = item.caption
                     let agent = item.isAgent
                     let title = item.rowTitle
@@ -193,8 +215,8 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                                            status: status, indicatorDescription: description,
                                            focused: target == snapshot.client,
                                            quietShell: item.quietShell,
-                                           agent: agent, root: root, started: { if case .live = item.lifecycle, item.parent != nil { item.started } else { nil } }()))
-                    let records = item.program_status.records.filter { !$0.id.isEmpty }.sorted { a, b in
+                                           agent: agent, root: root, started: { if case .live = item.lifecycle, item.pane.parent != nil { item.pane.started } else { nil } }()))
+                    let records = (item.pane.status?.programStatus.records ?? []).filter { !$0.id.isEmpty }.sorted { a, b in
                         let left = a.id.split(separator: "/", omittingEmptySubsequences: false)
                         let right = b.id.split(separator: "/", omittingEmptySubsequences: false)
                         for (a, b) in zip(left, right) {
@@ -205,26 +227,26 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                     let recordIDs = Set(records.map { Array($0.id.utf8) })
                     let recordStart = rows.count
                     for record in records {
-                        let status: SidebarRow.Status = switch record.state {
-                        case .working: .running
-                        case .blocked: .waiting
-                        case .done: .done
-                        case .error: .error
-                        case .idle: .quiet
+                        let (status, description, title, msg, started): (SidebarRow.Status, String, String?, String?, Int?) = switch record {
+                        case .working(let r): (.running, "working", r.title, r.msg, r.started)
+                        case .blocked(let r): (.waiting, "blocked", r.title, r.msg, r.started)
+                        case .done(let r): (.done, "done", r.title, r.msg, nil)
+                        case .error(let r): (.error, "error", r.title, r.msg, nil)
+                        case .idle(let r): (.quiet, "idle", r.title, r.msg, nil)
                         }
-                        let caption = record.msg ?? ""
+                        let caption = msg ?? ""
                         let height = caption.isEmpty ? 32.0 : 48.0
                         let ancestors = record.id.utf8.indices.count {
                             record.id.utf8[$0] == UInt8(ascii: "/") && recordIDs.contains(Array(record.id.utf8[..<$0]))
                         }
-                        rows.append(SidebarRow(id: .program(session.id, item.pane, Data(record.id.utf8)),
+                        rows.append(SidebarRow(id: .program(session.id, item.id, Data(record.id.utf8)),
                                                kind: .pane(nil),
                                                indent: depth + 1 + ancestors, height: height,
-                                               title: record.title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
-                                               tail: caption, status: [.done, .error].contains(status) && item.recordsSeen ? .quiet : status,
-                                               indicatorDescription: record.state.rawValue,
+                                               title: title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
+                                               tail: caption, status: [.done, .error].contains(status) && item.pane.recordsSeen ? .quiet : status,
+                                               indicatorDescription: description,
                                                focused: false, agent: true, root: root,
-                                               started: [.working, .blocked].contains(record.state) ? record.started : nil))
+                                               started: started))
                     }
                     if !records.isEmpty {
                         for (index, record) in records.enumerated() {

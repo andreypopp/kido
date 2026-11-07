@@ -97,7 +97,7 @@ typealias AppWindow = StressWindow
             if nested, case .item(let item) = node, case .live(let kind) = item.lifecycle,
                case .terminal = kind.local, childWindows.insert(item.window).inserted {
                 counts["child-window-seen", default: 0] += 1
-                log(["event": "child-window-seen", "window": item.window.description, "pane": item.pane.description])
+                log(["event": "child-window-seen", "window": item.window.description, "pane": item.id.description])
             }
         }
         guard waiting == nil else {

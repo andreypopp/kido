@@ -7,55 +7,34 @@ final class RuntimeSection: NSView {
         case runtime(RuntimeKey)
     }
 
-    enum State: Equatable {
-        case up, down, starting, stopping
-        case failed(String)
-
-        var spins: Bool {
-            switch self {
-            case .starting, .stopping: true
-            case .up, .down, .failed: false
-            }
-        }
-
-        var canStart: Bool {
-            switch self {
-            case .down, .failed: true
-            case .up, .starting, .stopping: false
-            }
-        }
-    }
-
     struct Row: Equatable {
         let runtime: KoSchema.ClientRuntime
         let panes: Int
-        let state: State
-        let mark: RuntimeMark
-        let detail: String
-        var stopping: Bool { state == .stopping }
+        let stopping: Bool
 
-        init(runtime: KoSchema.ClientRuntime, panes: Int, stopping: Bool) {
-            self.runtime = runtime
-            self.panes = panes
-            mark = RuntimeMark(runtime)
-            if stopping {
-                state = .stopping
-            } else {
-                state = switch runtime.state {
-                case .up: .up
-                case .down: .down
-                case .starting: .starting
-                case .failed: .failed(mark.failure ?? "")
-                }
+        var spins: Bool {
+            if stopping { return true }
+            if case .starting = runtime.state { return true }
+            return false
+        }
+
+        var canStart: Bool {
+            guard !stopping else { return false }
+            switch runtime.state {
+            case .down, .failed: return true
+            case .up, .starting: return false
             }
-            var text = runtime.kind.rawValue + " · " + (stopping ? "stopping" : mark.stateWord)
-            if case .failed(let message) = state {
-                text += ": " + message
-            }
-            if state == .up, panes > 0 {
+        }
+
+        var failure: String? { stopping ? nil : runtime.state.failure }
+
+        var detail: String {
+            var text = runtime.kind.rawValue + " · " + (stopping ? "stopping" : runtime.state.stateWord)
+            if let failure { text += ": " + failure }
+            if !stopping, case .up = runtime.state, panes > 0 {
                 text += " · \(panes) pane" + (panes == 1 ? "" : "s")
             }
-            detail = text
+            return text
         }
     }
 
@@ -145,10 +124,10 @@ final class RuntimeSection: NSView {
     private func rebuild() {
         var up = 0, starting = 0, stopping = 0, failed = 0
         for row in rows {
-            switch row.state {
+            if row.stopping { stopping += 1; continue }
+            switch row.runtime.state {
             case .up: up += 1
             case .starting: starting += 1
-            case .stopping: stopping += 1
             case .failed: failed += 1
             case .down: break
             }
@@ -159,7 +138,7 @@ final class RuntimeSection: NSView {
         narrowAggregate = [(failed, "failed"), (stopping, "stopping"), (starting, "starting"), (up, "up")]
             .first { $0.0 > 0 }.map { "\($0.0) \($0.1)" } ?? aggregate
         failedPart = failed > 0 ? "\(failed) failed" : nil
-        let spinning = collapsed ? [] : rows.filter { $0.state.spins }.map { $0.runtime.key }
+        let spinning = collapsed ? [] : rows.filter { $0.spins }.map { $0.runtime.key }
         for spinner in spinners where !spinning.contains(spinner.key) {
             spinner.view.removeFromSuperview()
         }
@@ -199,7 +178,7 @@ final class RuntimeSection: NSView {
 
     private func updateHover(_ index: Int?, button: Bool, tooltip: String?) {
         guard hover != index || buttonHover != button || toolTip != tooltip else { return }
-        if hover != index, [hover, index].contains(where: { $0.map { rows.indices.contains($0) && rows[$0].state.spins } ?? false }) {
+        if hover != index, [hover, index].contains(where: { $0.map { rows.indices.contains($0) && rows[$0].spins } ?? false }) {
             needsLayout = true
         }
         hover = index
@@ -215,8 +194,8 @@ final class RuntimeSection: NSView {
         var tooltip: String?
         if let index {
             let row = rows[index]
-            if case .failed(let message) = row.state { tooltip = message }
-            if button, !row.stopping { tooltip = (row.state.canStart ? "Start " : "Shut Down ") + row.runtime.name }
+            tooltip = row.failure
+            if button, !row.stopping { tooltip = (row.canStart ? "Start " : "Shut Down ") + row.runtime.name }
         }
         if configError != nil, point.y >= 29.5, point.y < rowsTop { tooltip = configError }
         updateHover(index, button: button, tooltip: tooltip)
@@ -256,7 +235,7 @@ final class RuntimeSection: NSView {
 
     private func act(_ row: Row) {
         guard enabled, !row.stopping else { return }
-        if row.state.canStart { start(row.runtime.key) } else { stop(row.runtime.key) }
+        if row.canStart { start(row.runtime.key) } else { stop(row.runtime.key) }
     }
 
     private func copy(_ key: RuntimeKey) {
@@ -277,8 +256,8 @@ final class RuntimeSection: NSView {
         let menu = NSMenu()
         menu.autoenablesItems = false
         let items = [
-            ("Start", #selector(startItem), enabled && row.state.canStart),
-            ("Shut Down…", #selector(stopItem), enabled && !row.stopping && !row.state.canStart),
+            ("Start", #selector(startItem), enabled && row.canStart),
+            ("Shut Down…", #selector(stopItem), enabled && !row.stopping && !row.canStart),
             ("Copy Name", #selector(copyItem), true),
         ]
         for (title, action, enabled) in items {
@@ -402,14 +381,15 @@ final class RuntimeSection: NSView {
                 (selected ? Chrome.rowSelection : Chrome.rowHover).setFill()
                 NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
             }
-            Chrome.drawRuntimeSwatch(row.mark, at: NSPoint(x: 28, y: rect.midY), dark: dark)
+            Chrome.drawRuntimeSwatch(RuntimeMark.known(row.runtime, routed: false), at: NSPoint(x: 28, y: rect.midY), dark: dark)
             let nameWidth = nameWidth(row)
             text(row.runtime.name, rect: NSRect(x: 44, y: rect.minY + 5, width: nameWidth, height: 18), font: titleFont, color: Chrome.ink)
             let x = 44 + nameWidth + 6
-            let right = rect.maxX - 12 - (hover == index ? 24 : 0) - (row.state.spins ? 14 : 0)
-            let detailText = NSMutableAttributedString(string: row.detail, attributes: [.font: titleFont, .foregroundColor: Chrome.inkSecondary, .paragraphStyle: paragraph])
-            if case .failed = row.state, let range = row.detail.range(of: "failed:") {
-                let start = NSRange(range, in: row.detail).location
+            let right = rect.maxX - 12 - (hover == index ? 24 : 0) - (row.spins ? 14 : 0)
+            let detail = row.detail
+            let detailText = NSMutableAttributedString(string: detail, attributes: [.font: titleFont, .foregroundColor: Chrome.inkSecondary, .paragraphStyle: paragraph])
+            if row.failure != nil, let range = detail.range(of: "failed:") {
+                let start = NSRange(range, in: detail).location
                 detailText.addAttribute(.foregroundColor, value: Chrome.errorText, range: NSRange(location: start, length: detailText.length - start))
             }
             detailText.draw(in: NSRect(x: x, y: rect.minY + 5, width: max(0, right - x), height: 18))
@@ -419,7 +399,7 @@ final class RuntimeSection: NSView {
                     Chrome.closeHover.setFill()
                     NSBezierPath(roundedRect: action, xRadius: 4, yRadius: 4).fill()
                 }
-                symbol(row.state.canStart ? "play.fill" : "stop.fill", rect: action.insetBy(dx: 3, dy: 3), configuration: .init(pointSize: 10, weight: .regular).applying(.init(hierarchicalColor: buttonHover ? Chrome.ink : Chrome.inkSecondary)))
+                symbol(row.canStart ? "play.fill" : "stop.fill", rect: action.insetBy(dx: 3, dy: 3), configuration: .init(pointSize: 10, weight: .regular).applying(.init(hierarchicalColor: buttonHover ? Chrome.ink : Chrome.inkSecondary)))
             }
         }
     }

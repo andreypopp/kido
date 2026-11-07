@@ -67,9 +67,9 @@ import XCTest
             var nodes = owner.snapshot?.sessions.flatMap(\.nodes) ?? []
             while let node = nodes.popLast() {
                 nodes += node.children
-                if case .item(let item) = node, item.pane == pane,
-                   case .live(.host(.terminal(let shell))) = item.lifecycle,
-                   case .idle(let exit?) = shell.phase, exit.code == 130 { return true }
+                if case .item(let item) = node, item.id == pane,
+                   case .live(let kind) = item.lifecycle, case .terminal(let shell) = kind.local,
+                   case .idle(let idle) = shell.phase, idle.last?.code == 130 { return true }
             }
             return false
         }

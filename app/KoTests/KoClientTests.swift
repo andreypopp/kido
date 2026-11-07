@@ -111,7 +111,7 @@ import XCTest
         let printed = output.fileHandleForReading.readDataToEndOfFile()
         let bundled: [String: String]
         do { bundled = try JSONDecoder().decode([String: String].self, from: printed) } catch { return XCTFail("version: \(String(decoding: printed, as: UTF8.self)) \(error)") }
-        XCTAssertEqual([bundled["protocol"], bundled["vt"]], [KoClient.version.protocolVersion, KoClient.version.vt], "the core and the bundled ko share one terminal revision")
+        XCTAssertEqual([bundled["protocol"], bundled["vt"]], [KoClient.version.`protocol`, KoClient.version.vt], "the core and the bundled ko share one terminal revision")
 
         do { try offMain("the stop") { try KoClient.stopServer(dir: dir) } } catch { return XCTFail("stop: \(type(of: error)) \(error)") }
         XCTAssertFalse(FileManager.default.fileExists(atPath: socket))
@@ -122,7 +122,7 @@ import XCTest
         let own = KoClient.version
         let cases: [(code: ko_code, version: String)] = [
             (KO_ERR_PROTOCOL_MISMATCH, #"{"protocol":"2.0","vt":"\#(own.vt)","build":"theirs"}"#),
-            (KO_ERR_VT_MISMATCH, #"{"protocol":"\#(own.protocolVersion)","vt":"abc","build":"theirs"}"#),
+            (KO_ERR_VT_MISMATCH, #"{"protocol":"\#(own.`protocol`)","vt":"abc","build":"theirs"}"#),
         ]
         for (code, version) in cases {
             let dir = try stateDir()
@@ -138,7 +138,7 @@ import XCTest
             client.close { closed = true }
             wait("the close returned") { closed }
             let theirs = try JSONDecoder().decode([String: String].self, from: Data(version.utf8))
-            XCTAssertEqual(events, [.mismatch(code: code, server: KoVersion(protocolVersion: theirs["protocol"]!, vt: theirs["vt"]!, build: "theirs"), own: own)])
+            XCTAssertEqual(events, [.mismatch(code: code, server: KoSchema.Version(build: "theirs", protocol: theirs["protocol"]!, vt: theirs["vt"]!), own: own)])
         }
     }
 }

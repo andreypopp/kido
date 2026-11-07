@@ -3,12 +3,12 @@ import Testing
 import KoModel
 @testable import SidebarFeed
 
-private func windowsFixture(_ state: Report.State = waiting(), mark: KoSchema.Mark = .waiting, group: Bool = false) -> Snapshot {
-    func item(_ n: Int, window: Int? = nil, children: [Node] = [], state: Report.State = idle(), mark: KoSchema.Mark = .none_) -> Node {
+private func windowsFixture(_ state: KoSchema.AgentState = waiting(), mark: KoSchema.Mark = .waiting, group: Bool = false) -> Snapshot {
+    func item(_ n: Int, window: Int? = nil, children: [Node] = [], state: KoSchema.AgentState = idle(), mark: KoSchema.Mark = .none_) -> Node {
         pane(n, window: window, title: "Pane \(n)", lifecycle: agent(state), mark: mark, children: children)
     }
     let parent = item(0, children: [item(1, children: [item(2, state: state, mark: mark)])])
-    let nodes: [Node] = group ? [SidebarFeedTests.group(0, name: "Group", [parent, item(3, window: 0)])] : [parent, item(3)]
+    let nodes: [Node] = group ? [SidebarFeedTests.group(0, [parent, item(3, window: 0)])] : [parent, item(3)]
     return makeSnapshot(nodes, client: 2)
 }
 
@@ -34,7 +34,7 @@ private func windowsFixture(_ state: Report.State = waiting(), mark: KoSchema.Ma
 }
 
 @Test func projectionSharesRowStatus() throws {
-    let cases: [(Report.State, KoSchema.Mark)] = [(idle(outcome(1, .failure)), .failed), (waiting(), .waiting), (idle(outcome(1, .success)), .done),
+    let cases: [(KoSchema.AgentState, KoSchema.Mark)] = [(idle(outcome(1, .failure)), .failed), (waiting(), .waiting), (idle(outcome(1, .success)), .done),
                                                  (working(), .running), (idle(), .none_)]
     for (state, mark) in cases {
         let snapshot = windowsFixture(state, mark: mark)
@@ -47,7 +47,7 @@ private func windowsFixture(_ state: Report.State = waiting(), mark: KoSchema.Ma
 @Test func tabLabelsShareSidebarAgentRule() throws {
     let cases: [(Lifecycle, Bool, Bool)] = [(piAgent(idle()), true, true),
         (agent(idle()), true, false),
-        (remote(.agent(name: "pi", report(idle()))), true, false),
+        (remote(.agent(.init(name: "pi", status: report(idle())))), true, false),
         (terminal(), false, false)]
     for (lifecycle, isAgent, messageable) in cases {
         for title in ["name", "@name"] {
@@ -83,7 +83,7 @@ private func windowsFixture(_ state: Report.State = waiting(), mark: KoSchema.Ma
 }
 
 @Test func nestedTabStatusPrecedence() throws {
-    let states: [Report.State] = [idle(), idle(outcome(1, .success)), working(), waiting(), idle(outcome(1, .failure))]
+    let states: [KoSchema.AgentState] = [idle(), idle(outcome(1, .success)), working(), waiting(), idle(outcome(1, .failure))]
     let marks: [KoSchema.Mark] = [.none_, .done, .running, .waiting, .failed]
     let expected: [SidebarRow.Status] = [.quiet, .done, .running, .waiting, .error]
     for first in states.indices {
@@ -108,7 +108,7 @@ private struct Step: Sendable, CustomTestStringConvertible {
 
 private func adjacent(_ step: Step) -> UInt32? {
     let snapshot = Snapshot(clock: .init(now: 0, local: 0), client: .init(session: SessionID(number: 0), window: WindowID(number: 0), pane: PaneID(number: 0)), serverInstance: ServerInstance("12345/1780000000"),
-                            sessions: step.sessions.enumerated().map { SessionNodes(id: SessionID(number: UInt32($0.offset)), name: "s", current: $0.offset == 0, nodes: $0.element) })
+                            sessions: step.sessions.enumerated().map { SessionNodes(id: SessionID(number: UInt32($0.offset)), name: "s", nodes: $0.element) })
     let surviving = Dictionary(uniqueKeysWithValues: step.sessions.indices.map { index in
         (SessionID(number: UInt32(index)), Set((step.surviving?[index] ?? step.sessions[index].map(\.window.number)).map(WindowID.init(number:))))
     })
@@ -166,8 +166,8 @@ private let chain = [pane(0, children: [pane(1, children: [pane(2)])]), pane(3)]
 
 @Test func navigationFollowsAPendingReorder() {
     let snapshot = Snapshot(clock: .init(now: 0, local: 0), client: .init(session: SessionID(number: 0), window: WindowID(number: 0), pane: PaneID(number: 0)), serverInstance: ServerInstance("12345/1780000000"),
-                            sessions: [SessionNodes(id: SessionID(number: 0), name: "a", current: true, nodes: [pane(0), pane(1), pane(2)]),
-                                       SessionNodes(id: SessionID(number: 1), name: "b", current: false, nodes: [pane(3), pane(4)])])
+                            sessions: [SessionNodes(id: SessionID(number: 0), name: "a", nodes: [pane(0), pane(1), pane(2)]),
+                                       SessionNodes(id: SessionID(number: 1), name: "b", nodes: [pane(3), pane(4)])])
     let surviving: [SessionID: Set<WindowID>] = [SessionID(number: 0): [WindowID(number: 0), WindowID(number: 1), WindowID(number: 2)],
                                                  SessionID(number: 1): [WindowID(number: 3), WindowID(number: 4)]]
     var windows = ReorderState()

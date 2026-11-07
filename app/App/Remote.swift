@@ -1,6 +1,7 @@
 import Foundation
 import GhosttyKit
 import KoClient
+import KoModel
 
 // Why a remote host is not connected, with the text of its banner.
 enum RemoteFailure: Error {
@@ -10,7 +11,7 @@ enum RemoteFailure: Error {
     case start(String)
     case refused(String)
     case badSocket(String)
-    case mismatch(code: ko_code, server: KoVersion)
+    case mismatch(code: ko_code, server: KoSchema.Version)
 
     func banner(_ host: String) -> (title: String, detail: String) {
         switch self {

@@ -5,34 +5,58 @@ import PaneGeometry
 
 // The sidebar tree of a live session list: five sessions, nested child panes, window groups.
 
-let fixtureSince = Date(timeIntervalSince1970: 1791131000)
+let fixtureSince = 1_791_131_000_000_000_000
 
-func piLifecycle(_ state: Report.State = .idle(nil), msg: String? = nil, session: String = "session") -> Lifecycle {
-    .live(.host(.piAgent(session: session, Report(since: fixtureSince, msg: msg, state: state))))
+func piLifecycle(_ state: KoSchema.AgentState = .idle(.init()), msg: String? = nil, session: String = "session") -> Lifecycle {
+    .live(.host(.init(pane: .piAgent(.init(session: session, status: .init(msg: msg, since: fixtureSince, state: state))))))
 }
 
-func agentLifecycle(_ state: Report.State, msg: String? = nil, name: String = "claude-code") -> Lifecycle {
-    .live(.host(.someAgent(name: name, Report(since: fixtureSince, msg: msg, state: state))))
+func agentLifecycle(_ state: KoSchema.AgentState, msg: String? = nil, name: String = "claude-code") -> Lifecycle {
+    .live(.host(.init(pane: .someAgent(.init(name: name, status: .init(msg: msg, since: fixtureSince, state: state))))))
 }
 
-func shellLifecycle(_ phase: ShellStatus.Phase = .idle(last: nil), report: Report? = nil) -> Lifecycle {
-    .live(.host(.terminal(ShellStatus(phase: phase, report: report))))
+func shellLifecycle(_ phase: KoSchema.Phase = .idle(.init()), report: KoSchema.Agent? = nil) -> Lifecycle {
+    .live(.host(.init(pane: .terminal(.init(phase: phase, report: report)))))
 }
 
-func shellExit(_ code: Int, command: String = "true") -> ShellStatus.Phase {
-    .idle(last: .init(code: code, command: command, startedAt: fixtureSince, endedAt: fixtureSince + 1))
+func shellExit(_ code: Int, command: String = "true") -> KoSchema.Phase {
+    .idle(.init(last: .init(code: code, command: command, endedAt: fixtureSince + 1_000_000_000, startedAt: fixtureSince)))
 }
 
-func programRecord(_ id: String, _ state: ProgramStatus.Record.State, app: String? = nil, kind: KoSchema.ProgramKind? = nil,
-                   title: String? = nil, msg: String? = nil, started: Int? = nil) -> ProgramStatus.Record {
-    ProgramStatus.Record(id: id, started: started, state: state, app: app, kind: kind, progress: nil, title: title, msg: msg)
+extension Item {
+    var fixtureLifecycle: Lifecycle {
+        get { lifecycle }
+        set {
+            switch newValue {
+            case .live(let kind):
+                pane.dead = nil
+                pane.status = .init(kind: kind, programStatus: pane.status?.programStatus ?? .init(records: [], serial: 0), since: 0, title: pane.label)
+            case .ended(let cause):
+                pane.dead = .init(at: 0, cause: cause)
+                pane.close = nil
+            case .lingering(let cause):
+                pane.dead = .init(at: 0, cause: cause)
+                pane.close = .onExit
+            }
+        }
+    }
 }
 
-func fixtureItem(_ pane: UInt32, window: UInt32? = nil, _ title: String, _ lifecycle: Lifecycle,
-                 records: [ProgramStatus.Record] = [], serial: Int = 0, mark: KoSchema.Mark = .none_, children: [SidebarFeed.Node] = []) -> Item {
-    Item(id: PaneID(number: pane), window: WindowID(number: window ?? pane), title: title, started: 0, parent: nil, lifecycle: lifecycle,
-         program_status: ProgramStatus(serial: serial, records: records),
-         children: children, mark: mark, inbox: { if case .live(.host(.piAgent)) = lifecycle { true } else { false } }())
+func fixtureItem(_ id: UInt32, window: UInt32? = nil, _ title: String, _ lifecycle: Lifecycle,
+                 records: [KoSchema.ProgramRecord] = [], serial: Int = 0, mark: KoSchema.Mark = .none_, children: [SidebarFeed.Node] = []) -> Item {
+    let live: KoSchema.Live?
+    let dead: KoSchema.Dead?
+    let close: KoSchema.Close?
+    switch lifecycle {
+    case .live(let kind): live = kind; dead = nil; close = nil
+    case .ended(let cause): live = nil; dead = .init(at: 0, cause: cause); close = nil
+    case .lingering(let cause): live = nil; dead = .init(at: 0, cause: cause); close = .onExit
+    }
+    let pi = if let live, case .piAgent = live.local { true } else { false }
+    return Item(pane: .init(close: close, command: [], cwd: "", dead: dead, id: PaneID(number: id), inbox: pi,
+                           label: title, mark: mark, recordsSeen: false, started: 0,
+                           status: live.map { .init(kind: $0, programStatus: .init(records: records, serial: serial), since: 0, title: title) },
+                           title: title, vars: [:]), window: WindowID(number: window ?? id), children: children)
 }
 
 func fixtureNode(_ pane: UInt32, window: UInt32? = nil, _ title: String, _ lifecycle: Lifecycle,
@@ -44,12 +68,12 @@ func fixtureNode(_ pane: UInt32, window: UInt32? = nil, _ title: String, _ lifec
 func fixtureSnapshot(window: UInt32, pane: UInt32, _ sessions: [(name: String, nodes: [SidebarFeed.Node])]) -> Snapshot {
     Snapshot(clock: .init(now: 0, local: 0), client: .init(session: SessionID(number: 0), window: WindowID(number: window), pane: PaneID(number: pane)),
              serverInstance: ServerInstance("4242/1791000000"),
-             sessions: sessions.enumerated().map { SessionNodes(id: SessionID(number: UInt32($0.offset)), name: $0.element.name, current: $0.offset == 0, nodes: $0.element.nodes) })
+             sessions: sessions.enumerated().map { SessionNodes(id: SessionID(number: UInt32($0.offset)), name: $0.element.name, nodes: $0.element.nodes) })
 }
 
 func sidebarFixture(_ edit: (inout Snapshot) -> Void = { _ in }) -> Snapshot {
     func session(_ id: UInt32, _ name: String, _ nodes: [SidebarFeed.Node]) -> SessionNodes {
-        SessionNodes(id: SessionID(number: id), name: name, current: id == 0, nodes: nodes)
+        SessionNodes(id: SessionID(number: id), name: name, nodes: nodes)
     }
     var snapshot = Snapshot(
         clock: .init(now: 0, local: 0),
@@ -59,25 +83,25 @@ func sidebarFixture(_ edit: (inout Snapshot) -> Void = { _ in }) -> Snapshot {
             session(0, "main", [
                 fixtureNode(0, "working-on-kido", piLifecycle(session: "session-0"), children: [
                     fixtureNode(892, window: 786, "main-watch",
-                                shellLifecycle(.running(.init(command: "main-watch", startedAt: Date(timeIntervalSince1970: 1791098646)), fullscreen: false)),
+                                shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "main-watch", startedAt: 1_791_098_646_000_000_000))))),
                                 mark: .running),
                 ]),
-                .window(.init(id: WindowID(number: 458), name: "kido-app", children: [
+                .window(.init(id: WindowID(number: 458), children: [
                     fixtureItem(502, window: 458, "kido-app", piLifecycle(session: "session-502"), children: [
-                        fixtureNode(936, window: 824, "sidebar-mockup", piLifecycle(.running(progress: nil), session: "session-936"),
+                        fixtureNode(936, window: 824, "sidebar-mockup", piLifecycle(.running(.init()), session: "session-936"),
                                     mark: .running),
                     ]),
                     fixtureItem(937, window: 458, "make -C ../kido-app/app demo", shellLifecycle()),
                 ])),
                 fixtureNode(905, window: 797, "pi-ui", piLifecycle(session: "session-905"), children: [
-                    fixtureNode(934, window: 822, "pi-ui-perf", piLifecycle(.running(progress: nil), session: "session-934"),
+                    fixtureNode(934, window: 822, "pi-ui-perf", piLifecycle(.running(.init()), session: "session-934"),
                                 mark: .running),
                 ]),
             ]),
             session(1, "visa", [fixtureNode(11, "main", piLifecycle(session: "session-11"))]),
             session(2, "pi", [fixtureNode(23, window: 17, "main", piLifecycle(session: "session-23"))]),
             session(3, "video", [
-                .window(.init(id: WindowID(number: 76), name: "node", children: [
+                .window(.init(id: WindowID(number: 76), children: [
                     fixtureItem(86, window: 76, "video", piLifecycle(session: "session-86")),
                     fixtureItem(783, window: 76, "zsh", shellLifecycle()),
                 ])),
@@ -86,7 +110,7 @@ func sidebarFixture(_ edit: (inout Snapshot) -> Void = { _ in }) -> Snapshot {
         ])
     edit(&snapshot)
     snapshot.mapItems { item in
-        item.inbox = if case .live(.host(.piAgent)) = item.lifecycle { true } else { false }
+        item.pane.inbox = if case .live(let kind) = item.lifecycle, case .piAgent = kind.local { true } else { false }
     }
     return snapshot
 }

@@ -207,7 +207,7 @@ import KoModel
         let pane = try createPane(#"{"runtime":"deb","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
         wait("the starting runtime") { owner.canShutDownRuntime(.init(name: "deb", source: .config)) && owner.runtimePaneCount(.init(name: "deb", source: .config)) == 1 }
         let menu = NSMenuItem(title: "Shut Down", action: nil, keyEquivalent: "")
-        menu.representedObject = RuntimeMark(try XCTUnwrap(owner.runtimes.first))
+        menu.representedObject = RuntimeMark.known(try XCTUnwrap(owner.runtimes.first), routed: false)
         owner.shutDownRuntimeItem(menu)
         let pending = try XCTUnwrap(owner.preparedAlert)
         XCTAssertEqual(pending.alert.messageText, "Shut down “deb”?")
@@ -218,7 +218,7 @@ import KoModel
         XCTAssertFalse(owner.canShutDownRuntime(.init(name: "deb", source: .config)))
         _ = try createPane(#"{"runtime":"deb","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
         wait("the runtime starts again") { owner.canShutDownRuntime(.init(name: "deb", source: .config)) && owner.runtimePaneCount(.init(name: "deb", source: .config)) == 1 }
-        let row = try XCTUnwrap(PaletteEntry.runtimeStep(owner.runtimes.first.map { RuntimeMark($0) }, owner: owner, responder: nil).first { $0.id == .runtimeDown })
+        let row = try XCTUnwrap(PaletteEntry.runtimeStep(owner.runtimes.first.map { RuntimeMark.known($0, routed: false) }, owner: owner, responder: nil).first { $0.id == .runtimeDown })
         if case .run(let run) = row.operation { run() } else { XCTFail("Not an action") }
         let sheet = try XCTUnwrap(owner.preparedAlert)
         XCTAssertEqual(sheet.alert.buttons.first?.title, "Shut Down")
@@ -293,7 +293,7 @@ import KoModel
     func testAServerOfAnotherTerminalRevisionOpensTheRestartSheetAndCloseKeepsTheBanner() throws {
         let own = KoClient.version
         let dir = try stateDir()
-        let server = try KoFakeServer(directory: dir, version: #"{"protocol":"\#(own.protocolVersion)","vt":"abc","build":"theirs"}"#)
+        let server = try KoFakeServer(directory: dir, version: #"{"protocol":"\#(own.`protocol`)","vt":"abc","build":"theirs"}"#)
         addTeardownBlock { server.stop() }
         let owner = try owner(dir)
         wait("the sheet") { owner.preparedAlert != nil }

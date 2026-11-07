@@ -339,10 +339,10 @@ import SidebarFeed
         if let owner {
             for runtime in owner.runtimes {
                 let count = owner.runtimePaneCount(runtime.key)
-                let title = "Shut Down “\(owner.runtimeLabel(runtime.key))” — \(RuntimeMark(runtime).stateWord), \(count) \(count == 1 ? "pane" : "panes")"
+                let title = "Shut Down “\(owner.runtimeLabel(runtime.key))” — \(runtime.state.stateWord), \(count) \(count == 1 ? "pane" : "panes")"
                 let entry = NSMenuItem(title: title, action: #selector(WindowOwner.shutDownRuntimeItem(_:)), keyEquivalent: "")
                 entry.target = owner
-                entry.representedObject = RuntimeMark(runtime)
+                entry.representedObject = RuntimeMark.known(runtime, routed: false)
                 entry.isEnabled = owner.canShutDownRuntime(runtime.key)
                 menu.addItem(entry)
             }
@@ -428,7 +428,7 @@ import SidebarFeed
         }
         if case .runtime(let shown) = panel.palette.mode {
             if let shown, let runtime = paletteFocus?.owner.runtimes.first(where: { $0.key == shown.key }) {
-                panel.palette.refreshRuntime(RuntimeMark(runtime))
+                panel.palette.refreshRuntime(RuntimeMark.known(runtime, routed: false))
             }
             return
         }

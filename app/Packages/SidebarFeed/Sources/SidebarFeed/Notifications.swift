@@ -77,23 +77,23 @@ public struct NotifierState: Equatable, Sendable {
             defer {
                 node.children.forEach { visit($0, session: session) }
             }
-            guard case .item(let item) = node, present.insert(item.pane).inserted else { return }
-            let key = NoticeKey(owner: owner, pane: item.pane)
+            guard case .item(let item) = node, present.insert(item.id).inserted else { return }
+            let key = NoticeKey(owner: owner, pane: item.id)
             let status = item.indicator.status
-            let reason: Reason? = switch (item.lifecycle, item.mark) {
+            let reason: Reason? = switch (item.lifecycle, item.pane.mark) {
             case (.live, .waiting): .waiting
             case (.live, .failed): item.lastCommand?.code == 130 ? nil : .failed
             default: nil
             }
-            let previous = state.entries[item.pane]
+            let previous = state.entries[item.id]
             guard let reason else {
                 if case .posted = previous { effects.withdraw.append(key) }
-                state.entries[item.pane] = nil
+                state.entries[item.id] = nil
                 return
             }
             if baseline || shown.contains(item.window) || (appActive && previous?.reason != reason) {
                 if case .posted = previous { effects.withdraw.append(key) }
-                state.entries[item.pane] = .acknowledged(reason)
+                state.entries[item.id] = .acknowledged(reason)
                 return
             }
             guard previous?.reason != reason else { return }
@@ -106,11 +106,11 @@ public struct NotifierState: Equatable, Sendable {
             }
             var subtitle = session.name
             if host != "local" { subtitle = "\(identity ?? String(host.dropFirst(4))) · \(subtitle)" }
-            else if case .live(.ssh(let destination, .agent)) = item.lifecycle { subtitle += " · \(destination)" }
+            else if case .live(.ssh(let ssh)) = item.lifecycle, case .agent = ssh.pane { subtitle += " · \(ssh.destination)" }
             effects.post.append(Notice(kind: status == .waiting ? .waiting : .failed, key: key, target: NoticeTarget(host: host, instance: snapshot.serverInstance,
-                position: Snapshot.Position(session: session.id, window: item.window, pane: item.pane)),
+                position: Snapshot.Position(session: session.id, window: item.window, pane: item.id)),
                 title: item.rowTitle, subtitle: subtitle, body: body))
-            state.entries[item.pane] = .posted(reason)
+            state.entries[item.id] = .posted(reason)
         }
         for session in sessions { session.nodes.forEach { visit($0, session: session) } }
         for pane in state.entries.keys.sorted(by: { $0.number < $1.number }) where !present.contains(pane) {

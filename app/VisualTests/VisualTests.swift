@@ -799,7 +799,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let row = try XCTUnwrap(self.terminal?.panes.first)
         let shown = try XCTUnwrap(currentModel.window)
         sidebar.list.update(Snapshot(clock: .init(now: 0, local: 0), client: .init(session: SessionID(number: 0), window: shown, pane: row.pane), serverInstance: ServerInstance("4242/1791000000"),
-                                     sessions: [SessionNodes(id: SessionID(number: 0), name: "visual", current: true,
+                                     sessions: [SessionNodes(id: SessionID(number: 0), name: "visual",
                                                              nodes: [.item(fixtureItem(row.pane.number, window: shown.number, "Terminal", shellLifecycle()))])]))
         let menu = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "View" }?.submenu)
         let entries = Array(menu.items.prefix(2))
@@ -1502,7 +1502,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
     func testCaptionDisplayDelay() async throws {
         func fixture(_ caption: String) -> Snapshot {
-            sidebarFixture { $0.sessions[0].nodes[0].item.lifecycle = piLifecycle(.running(progress: nil), msg: caption); $0.sessions[0].nodes[0].item.mark = .running }
+            sidebarFixture { $0.sessions[0].nodes[0].item.fixtureLifecycle = piLifecycle(.running(.init()), msg: caption); $0.sessions[0].nodes[0].item.pane.mark = .running }
         }
         let initial = fixture("")
         let changed = fixture("Delayed caption")
@@ -1544,7 +1544,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     func testNestedSidebarRowHeightsAndNavigation() throws {
         let live = sidebarFixture { snapshot in
             var sibling = snapshot.sessions[0].nodes[0].item.children[0].item
-            sibling.id = PaneID(number: 999); sibling.window = WindowID(number: 999)
+            sibling.pane.id = PaneID(number: 999); sibling.window = WindowID(number: 999)
             snapshot.sessions[0].nodes[0].item.children.append(.item(sibling))
         }
         let rows = sidebarRows(live)
@@ -1589,12 +1589,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let list = SidebarView()
         window.contentView = list
         let fixture = sidebarFixture { snapshot in
-            snapshot.sessions[0].nodes.insert(.item(fixtureItem(2000, "Claude Code", agentLifecycle(.running(progress: nil)), records: [
-                programRecord("", .working, app: "claude-code"),
-                programRecord("agent-c", .working, title: "Review accessibility"),
-                programRecord("agent-a/permission", .blocked, kind: .permission, title: "Approve test command", msg: "May I run the integration tests?"),
-                programRecord("agent-b", .working, title: "Check toolbar geometry"),
-                programRecord("agent-a", .working, title: "Investigate sidebar layout", msg: "Comparing native row measurements"),
+            snapshot.sessions[0].nodes.insert(.item(fixtureItem(2000, "Claude Code", agentLifecycle(.running(.init())), records: [
+                .working(.init(app: "claude-code", id: "")),
+                .working(.init(id: "agent-c", title: "Review accessibility")),
+                .blocked(.init(id: "agent-a/permission", kind: .permission, msg: "May I run the integration tests?", title: "Approve test command")),
+                .working(.init(id: "agent-b", title: "Check toolbar geometry")),
+                .working(.init(id: "agent-a", msg: "Comparing native row measurements", title: "Investigate sidebar layout")),
             ], serial: 7, mark: .running)), at: 0)
             snapshot.client = .init(session: SessionID(number: 0), window: WindowID(number: 2000), pane: PaneID(number: 2000))
         }
@@ -1638,16 +1638,16 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
         let nested = sidebarFixture { snapshot in
             snapshot.client = .init(session: SessionID(number: 0), window: WindowID(number: 458), pane: PaneID(number: 502))
-            snapshot.sessions[0].nodes[0].item.lifecycle = piLifecycle(.idle(Outcome(serial: 1, result: .success)))
-            snapshot.sessions[0].nodes[0].item.mark = .done
-            snapshot.sessions[0].nodes[0].item.children[0].item.lifecycle = .ended(.exited(.init(code: 0)))
-            snapshot.sessions[0].nodes[1].group.children[0].lifecycle = piLifecycle(.waiting(nil, progress: nil),
+            snapshot.sessions[0].nodes[0].item.fixtureLifecycle = piLifecycle(.idle(.init(outcome: KoSchema.Outcome(result: .success, serial: 1))))
+            snapshot.sessions[0].nodes[0].item.pane.mark = .done
+            snapshot.sessions[0].nodes[0].item.children[0].item.fixtureLifecycle = .ended(.exited(.init(code: 0)))
+            snapshot.sessions[0].nodes[1].group.children[0].fixtureLifecycle = piLifecycle(.waiting(.init()),
                                                                                   msg: "Rebuilding the sidebar cards and testing nested window corners")
-            snapshot.sessions[0].nodes[1].group.children[0].mark = .waiting
-            snapshot.sessions[0].nodes[1].group.children[0].children[0].item.lifecycle = piLifecycle(.idle(Outcome(serial: 1, result: .failure)))
-            snapshot.sessions[0].nodes[1].group.children[0].children[0].item.mark = .failed
-            snapshot.sessions[0].nodes[1].group.children[1].lifecycle = shellLifecycle(shellExit(0, command: "make -C ../kido-app/app demo"))
-            snapshot.sessions[0].nodes[1].group.children[1].mark = .done
+            snapshot.sessions[0].nodes[1].group.children[0].pane.mark = .waiting
+            snapshot.sessions[0].nodes[1].group.children[0].children[0].item.fixtureLifecycle = piLifecycle(.idle(.init(outcome: KoSchema.Outcome(result: .failure, serial: 1))))
+            snapshot.sessions[0].nodes[1].group.children[0].children[0].item.pane.mark = .failed
+            snapshot.sessions[0].nodes[1].group.children[1].fixtureLifecycle = shellLifecycle(shellExit(0, command: "make -C ../kido-app/app demo"))
+            snapshot.sessions[0].nodes[1].group.children[1].pane.mark = .done
         }
         list.update(nested)
         sidebarSnapshot(list, "active-parent-dark")
@@ -1660,12 +1660,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         sidebarSnapshot(list, "child-active-light")
         let subtree = sidebarFixture { snapshot in
             let zsh = fixtureNode(1991, "zsh", shellLifecycle(shellExit(0)), mark: .done)
-            let notes = fixtureNode(1990, "review-notes", piLifecycle(.running(progress: nil), msg: "Checking nested activity"),
+            let notes = fixtureNode(1990, "review-notes", piLifecycle(.running(.init()), msg: "Checking nested activity"),
                                     mark: .running, children: [zsh])
             var child = snapshot.sessions[0].nodes[1].group.children[0].children[0].item
             child.children = [notes]
             snapshot.sessions[0].nodes[1].group.children[0].children[0] = .item(child)
-            snapshot.client = .init(session: SessionID(number: 0), window: child.window, pane: child.pane)
+            snapshot.client = .init(session: SessionID(number: 0), window: child.window, pane: child.id)
         }
         XCTAssertEqual(sidebarRows(subtree).filter { $0.focused && $0.target != nil }.map { $0.target!.window },
                        [WindowID(number: 824)])
@@ -1678,10 +1678,10 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             let first = snapshot.sessions[0].nodes[0].item
             var second = snapshot.sessions[0].nodes[1].group.children[0], third = first
             second.window = first.window
-            second.lifecycle = piLifecycle(msg: "Grouped pane activity")
-            third.id = PaneID(number: 999); third.children = []; third.title = "terminal"; third.lifecycle = shellLifecycle()
-            snapshot.sessions[0].nodes = [.window(.init(id: first.window, name: "group", children: [first, second, third]))]
-            snapshot.client = .init(session: SessionID(number: 0), window: first.window, pane: first.pane)
+            second.fixtureLifecycle = piLifecycle(msg: "Grouped pane activity")
+            third.pane.id = PaneID(number: 999); third.children = []; third.pane.label = "terminal"; third.fixtureLifecycle = shellLifecycle()
+            snapshot.sessions[0].nodes = [.window(.init(id: first.window, children: [first, second, third]))]
+            snapshot.client = .init(session: SessionID(number: 0), window: first.window, pane: first.id)
         }
         list.update(grouped)
         list.focus()

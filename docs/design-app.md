@@ -973,8 +973,10 @@ run in one, shows where it runs (design-runtimes.md, "Clients"; the
 approved mockup is `app/design/runtime/`, `mockup.html` with its
 `NOTES.md`). `RuntimeMark` (`KoModel/Runtime.swift`) is derived for
 each pane from the model's `place` and the runtimes list once for each
-model, and never stored: the name, the kind, the configured colour,
-the link state and whether the pane is routed. The app turns it into
+model, and never stored: the runtime's record from the list and
+whether the pane is routed, or, when the list does not have the
+runtime, only its key (name and source) and whether the pane is
+routed. The app turns it into
 a colour (`App/RuntimeTint.swift`). A change of the panes that have a
 mark moves grids and lays the window out again; a change of a mark's
 state or colour only redraws its chrome and pill. A pane whose runtime is not in the list keeps the
@@ -1395,14 +1397,23 @@ source-list sections. A window with one pane is a pane item, a window with
 more panes is a group, and a child window is nested under the pane that
 its panes' `parent` names, at any depth. The order and the parent edges
 are the core's `outline` (each item carries its window; design.md, "The
-sidebar tree"); the app only groups it by window. A pane item's title is
-the core's label, its lifecycle comes from the pane's status and, for a
-dead pane, its `close` (below), `mark` is the core's seen mark and
-`inbox` tells whether the row's `inbox` is true (its message stream is
-open). The snapshot's
+sidebar tree"); the app only groups it by window. A pane item holds the
+core's pane record as decoded and adds only what the app derives: its
+window group, its children, its runtime mark and its lifecycle, which
+comes from the pane's status and, for a dead pane, its `close` (below).
+A live pane without a status is a terminal of the host in an unknown
+phase. The title is the core's label, the indicator its seen mark, and
+only a pane whose `inbox` is true (its message stream is open) takes a
+prompt. The snapshot's
 `ServerInstance` is the model's instance string. The Swift types of the
 model are generated from the schemas (see [Testing](#testing)), so the app
-has no hand-written decoder and no unknown values. Ko ids (`pane_N`,
+has no hand-written decoder and no unknown values. The app keeps no
+hand-written copy of a generated type: the sidebar, the palette's prompt
+candidates, the probe's version and the cell size read the `KoSchema`
+values themselves, and a conversion for display happens where the value
+is shown. The configuration's C results (`App/AppConfig.swift`) are the
+exception: their envelope has no schema, and their payload is
+`KoSchema.App`. Ko ids (`pane_N`,
 `window_N`, `session_N`) decode straight into `PaneID`, `WindowID` and
 `SessionID` (`KoModel/ID.swift`), which the generator uses for the id
 schemas; their string form is the ko id. `KoModel` also holds the session,
@@ -1611,8 +1622,9 @@ rules leave raw pane labels and tab/window titles unchanged.
 The app composes the row from the core's label. The label is the core's title,
 except that a local shell without a program report shows a
 non-empty running non-fullscreen command, and a remote terminal shows
-`ssh user@host`, adding `: command` only for an interactive, report-free,
-non-fullscreen running command. The caption is the agent's or report's `msg`
+`ssh <destination>`, adding `: command` only for an interactive, report-free,
+non-fullscreen running command. The destination is the core's string as
+it is, in the title, in the notification subtitle and for an upload. The caption is the agent's or report's `msg`
 and progress percentage, joined by a space; an Ended row of a failure
 shows its cause (`exited with code 2`, the signal, the start failure),
 and a completed one shows none: the green check alone marks

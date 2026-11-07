@@ -3,7 +3,7 @@ import Testing
 import KoModel
 @testable import SidebarFeed
 
-private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = false, descendants: Bool = false, records: [ProgramStatus.Record] = [], serial: Int = 7) -> Snapshot {
+private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = false, descendants: Bool = false, records: [KoSchema.ProgramRecord] = [], serial: Int = 7) -> Snapshot {
     func item(_ id: Int, _ window: Int, tail: String = "", lifecycle: Lifecycle? = nil, children: [Node] = []) -> Node {
         let lifecycle = lifecycle ?? agent(id == 2 ? waiting() : working(), msg: tail.isEmpty ? nil : tail)
         return pane(id, window: window, title: "pane-\(id)", lifecycle: lifecycle,
@@ -104,10 +104,11 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
         (piAgent(idle()), "Ada", "@Ada", "Ada", true),
         (agent(idle()), "Ada", "Ada", "Ada", true),
         (agent(), "@Ada", "@Ada", "@Ada", true),
-        (remote(.agent(name: "pi", report(idle()))), "Ada", "Ada", "Ada", true),
+        (remote(.agent(.init(name: "pi", status: report(idle())))), "Ada", "Ada", "Ada", true),
         (.ended(.exited(.init(code: 0))), "Ada", "Ada", "Ada", false),
         (terminal(.unknown), "zsh", "zsh", "zsh", false),
-        (remote(.terminal(interactive: true, shell())), "ssh", "ssh alice@devbox", "ssh alice@devbox", false),
+        (remote(.terminal(.init(interactive: true, status: shell()))), "ssh", "ssh alice@devbox", "ssh alice@devbox", false),
+        (.live(.ssh(.init(destination: "@host", pane: .terminal(.init(interactive: true, status: shell()))))), "ssh", "ssh @host", "ssh @host", false),
         (.ended(.exited(.init(code: 2))), "monitor", "monitor", "monitor", false)
     ]
     for (lifecycle, title, expected, tab, agent) in cases {
@@ -124,8 +125,8 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
     let failedReport = report(idle(outcome(4, .failure)), msg: "Build failed")
     let cases: [(Lifecycle, String, Bool, SidebarRow.Status, KoSchema.Mark, String, String)] = [
         (terminal(), "Terminal", true, .quiet, .none_, "idle", ""),
-        (terminal(.pending(last: nil)), "Terminal", true, .quiet, .none_, "idle", ""),
-        (terminal(.pending(last: .init(code: 130, command: "false", startedAt: since, endedAt: since + 1))), "Terminal", true, .error, .failed, "failed", ""),
+        (terminal(.pending(.init(last: nil))), "Terminal", true, .quiet, .none_, "idle", ""),
+        (terminal(.pending(.init(last: .init(code: 130, command: "false", endedAt: since + 1, startedAt: since)))), "Terminal", true, .error, .failed, "failed", ""),
         (terminal(exited(0)), "Terminal", true, .done, .done, "done", ""),
         (terminal(exited(130)), "Terminal", true, .error, .failed, "failed", ""),
         (terminal(report: report(idle())), "Terminal", true, .quiet, .none_, "idle", ""),
@@ -133,15 +134,18 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
         (terminal(.unknown), "zsh", false, .quiet, .none_, "idle", ""),
         (terminal(.unknown, report: report(idle(outcome(2, .success)), msg: "Built")), "zsh", false, .done, .done, "done", "Built"),
         (terminal(running(nil, fullscreen: true)), "zsh", false, .quiet, .none_, "idle", ""),
+        (terminal(running(nil)), "zsh", false, .running, .running, "running", ""),
+        (remote(.terminal(.init(interactive: true, status: shell(running(nil))))), "ssh alice@devbox", false, .running, .running, "running", ""),
+        (remote(.terminal(.init(interactive: true, status: shell(running("nvim", fullscreen: true))))), "ssh alice@devbox", false, .running, .running, "running", ""),
         (terminal(running("nvim", fullscreen: true), report: report(waiting(.auth), msg: "Login required")), "zsh", false, .waiting, .waiting, "waiting", "Login required"),
         (terminal(running()), "make", false, .running, .running, "running", ""),
         (terminal(running("")), "zsh", false, .running, .running, "running", ""),
         (terminal(running(), report: report(working(42), msg: "Building")), "zsh", false, .running, .running, "running", "Building 42%"),
         (terminal(exited(1), report: report(waiting(.auth), msg: "Login required")), "zsh", false, .waiting, .waiting, "waiting", "Login required"),
-        (remote(.terminal(interactive: true, shell(running()))), "ssh alice@devbox: make", false, .running, .running, "running", ""),
-        (remote(.terminal(interactive: false, shell(running()))), "ssh alice@devbox", false, .running, .running, "running", ""),
-        (remote(.terminal(interactive: true, shell(running(), report: report(working())))), "ssh alice@devbox", false, .running, .running, "running", ""),
-        (remote(.terminal(interactive: true, shell(exited(2)))), "ssh alice@devbox", false, .error, .failed, "failed", ""),
+        (remote(.terminal(.init(interactive: true, status: shell(running())))), "ssh alice@devbox: make", false, .running, .running, "running", ""),
+        (remote(.terminal(.init(interactive: false, status: shell(running())))), "ssh alice@devbox", false, .running, .running, "running", ""),
+        (remote(.terminal(.init(interactive: true, status: shell(running(), report: report(working()))))), "ssh alice@devbox", false, .running, .running, "running", ""),
+        (remote(.terminal(.init(interactive: true, status: shell(exited(2))))), "ssh alice@devbox", false, .error, .failed, "failed", ""),
         (agent(working(42), msg: "Thinking"), "zsh", false, .running, .running, "running", "Thinking 42%"),
         (agent(waiting(.permission), msg: "Approve deployment"), "zsh", false, .waiting, .waiting, "waiting", "Approve deployment"),
         (agent(idle(outcome(17, .success)), msg: "Finished"), "zsh", false, .done, .done, "done", "Finished"),
@@ -159,7 +163,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
         #expect(row.quietShell == quiet)
         if case .live(let kind) = lifecycle, case .terminal(let shell) = kind.local, case .pending(let exit) = shell.phase,
            case .item(let item) = snapshot.sessions[0].nodes[0] {
-            #expect(item.lastCommand == exit)
+            #expect(item.lastCommand == exit.last)
         }
         #expect(row.status == status)
         #expect(row.indicatorDescription == description)
@@ -178,14 +182,14 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
 }
 
 @Test func programRowsOrderingGeometryAndNavigation() throws {
-    let records: [ProgramStatus.Record] = [
-        record("z", .idle, title: ""),
-        record("a-", .error),
-        record("a/missing/leaf", .blocked, msg: "Record-only caption"),
-        record("a", .working, title: "Record-only title"),
-        record("a/child", .done),
-        record("é", .idle), record("é", .idle),
-        record("", .working, title: "Root")
+    let records: [KoSchema.ProgramRecord] = [
+        .idle(.init(id: "z", title: "")),
+        .error(.init(id: "a-")),
+        .blocked(.init(id: "a/missing/leaf", msg: "Record-only caption")),
+        .working(.init(id: "a", title: "Record-only title")),
+        .done(.init(id: "a/child")),
+        .idle(.init(id: "é")), .idle(.init(id: "é")),
+        .working(.init(id: "", title: "Root"))
     ]
     let snapshot = fixture(grouped: true, descendants: true, records: records)
     let rows = sidebarRows(snapshot)
@@ -210,9 +214,9 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
 }
 
 @Test func recordGuidesGrowFromPaneAndRecordIndicators() throws {
-    let records: [ProgramStatus.Record] = [
-        record("a", .working, msg: "Activity"),
-        record("a/b", .working)
+    let records: [KoSchema.ProgramRecord] = [
+        .working(.init(id: "a", msg: "Activity")),
+        .working(.init(id: "a/b"))
     ]
     let rows = sidebarRows(fixture(records: records))
     #expect(rows[1].guides == [.init(x: 20, top: 22, bottom: 32)])
@@ -222,7 +226,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
 
 @Test func recordIndentsCountOnlyPresentAncestors() throws {
     let records = ["a/b/c", "a/b", "a", "a/d/e", "a/", "a//b", "/", "/b", "", "e\u{301}", "z", "\u{e9}/child"]
-        .map { record($0, .working) }
+        .map { KoSchema.ProgramRecord.working(.init(id: $0)) }
     let snapshot = makeSnapshot([pane(0, children: [pane(1, records: records)])])
     let rows = sidebarRows(snapshot).filter { if case .program = $0.id { true } else { false } }
     #expect(rows.map(\.title) == ["/", "/b", "a", "a/", "a//b", "a/b", "a/b/c", "a/d/e", "e\u{301}", "z", "\u{e9}/child"])
@@ -230,10 +234,10 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
 }
 
 @Test func programIDsOrderBySlashComponents() throws {
-    let records: [ProgramStatus.Record] = [
-        record("a-b", .working),
-        record("a/b", .working),
-        record("a", .working)
+    let records: [KoSchema.ProgramRecord] = [
+        .working(.init(id: "a-b")),
+        .working(.init(id: "a/b")),
+        .working(.init(id: "a"))
     ]
     let rows = sidebarRows(fixture(records: records)).filter { if case .program = $0.id { true } else { false } }
     #expect(rows.map(\.title) == ["a", "a/b", "a-b"])
@@ -241,9 +245,9 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
 
 // The core's mark decides an outcome's status; seen records read their done and error as idle.
 @Test func theSeenMarkQuietsTheOutcomeAndTheFinishedRecords() throws {
-    let records: [ProgramStatus.Record] = [
-        record("done", .done), record("error", .error),
-        record("working", .working), record("blocked", .blocked)
+    let records: [KoSchema.ProgramRecord] = [
+        .done(.init(id: "done")), .error(.init(id: "error")),
+        .working(.init(id: "working")), .blocked(.init(id: "blocked"))
     ]
     let snapshot: Snapshot = makeSnapshot([pane(0, lifecycle: agent(idle(outcome(7, .failure))), records: records, serial: 7, mark: .failed),
                                                         pane(5, lifecycle: terminal(exited(1)), mark: .failed)])
@@ -256,11 +260,11 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
 }
 
 @Test func contentChangesAndServerIdentity() throws {
-    let records: [ProgramStatus.Record] = [record("done", .done), record("error", .error)]
+    let records: [KoSchema.ProgramRecord] = [.done(.init(id: "done")), .error(.init(id: "error"))]
     let base = fixture(client: 5, records: records)
     #expect(base != fixture(client: 5, records: records, serial: 8))
     var changed = records
-    changed[0] = record("done", .done, title: "New title")
+    changed[0] = .done(.init(id: "done", title: "New title"))
     let edited = fixture(client: 5, records: changed)
     #expect(base != edited)
     let before = sidebarRows(base), after = sidebarRows(edited)
@@ -272,7 +276,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool, _ activity: Bool) thr
 
 @Test func aNestedRowOmitsItsRuntimeWhenItIsTheOneOfThePaneRowAboveAndTheTopLevelAlwaysShowsIt() {
     func mark(_ name: String, routed: Bool = false, state: KoSchema.LinkState = .up) -> RuntimeMark {
-        RuntimeMark(key: .init(name: name, source: .config), kind: .ssh, color: nil, state: state, routed: routed)
+        RuntimeMark.known(.init(kind: .ssh, name: name, source: .config, state: state), routed: routed)
     }
     func item(_ id: Int, _ runtime: RuntimeMark?, _ children: [Node] = []) -> Node {
         guard case .item(var item) = pane(id, title: "pane-\(id)", children: children) else { preconditionFailure() }

@@ -68,12 +68,12 @@ import XCTest
         wait("the second owner shows the layout") { second.snapshot != nil }
         FileManager.default.createFile(atPath: dir + "/go", contents: nil)
         for owner in [first, second] {
-            wait("the failure is unseen") { self.items(owner).first?.mark == .failed }
+            wait("the failure is unseen") { self.items(owner).first?.pane.mark == .failed }
         }
         XCTAssertEqual(sidebarRows(second.snapshot).first { $0.target != nil }?.status, .error)
         first.testAttended = true
         for owner in [first, second] {
-            wait("the failure is seen") { self.items(owner).first?.mark == KoSchema.Mark.none_ }
+            wait("the failure is seen") { self.items(owner).first?.pane.mark == KoSchema.Mark.none_ }
         }
         XCTAssertEqual(sidebarRows(second.snapshot).first { $0.target != nil }?.status, .quiet,
                        "the other window of the host agrees without a shared record")
@@ -82,7 +82,7 @@ import XCTest
     func testAPromptResolvesItsCandidatesAndSendsThroughTheCore() throws {
         let agent = shell("printf '\\033]7501;state=idle:app=claude-code\\007'; " + cat)
         let (_, owner) = try shown(#"[{"name":"w","tree":{"split":"h","children":[\#(shell(cat)),\#(agent)]}}]"#)
-        wait("the agent") { self.items(owner).contains { if case .live(.host(.someAgent)) = $0.lifecycle { true } else { false } } }
+        wait("the agent") { self.items(owner).contains { if case .live(.host(let host)) = $0.lifecycle, case .someAgent = host.pane { true } else { false } } }
         var candidates: WindowOwner.PromptReply?
         owner.prompt(.resolve(from: PaneID(number: 1))) { candidates = try? $0.get() }
         wait("the candidates") { candidates != nil }

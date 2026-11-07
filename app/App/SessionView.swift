@@ -3,11 +3,6 @@ import GhosttyKit
 import KoModel
 import PaneGeometry
 
-struct CellPixels: Equatable {
-    let width: UInt32
-    let height: UInt32
-}
-
 final class SessionView: NSView {
     // The client whose views feed the panes.
     weak var client: KoClient?
@@ -16,11 +11,11 @@ final class SessionView: NSView {
     var editing: () -> Bool = { false }
     var selectPane: (PaneID) -> Void = { _ in }
     var paneCommand: (PaneCommand, PaneID) -> Void = { _, _ in }
-    var sizeClient: (Int, Int, CellPixels?) -> Void = { _, _, _ in }
+    var sizeClient: (Int, Int, KoSchema.CellPixels?) -> Void = { _, _, _ in }
     private struct Size: Equatable {
         let cols: Int
         let rows: Int
-        let cell: CellPixels?
+        let cell: KoSchema.CellPixels?
     }
     private var requestedSize: Size?
     private var sentSize: Size?
@@ -189,11 +184,11 @@ final class SessionView: NSView {
         return cell
     }
 
-    var cellPixels: CellPixels? {
+    var cellPixels: KoSchema.CellPixels? {
         guard let pane = panes.first else { return nil }
         let size = ghostty_surface_size(pane.surface)
         guard size.cell_width_px > 0, size.cell_height_px > 0 else { return nil }
-        return CellPixels(width: size.cell_width_px, height: size.cell_height_px)
+        return KoSchema.CellPixels(height: Int(size.cell_height_px), width: Int(size.cell_width_px))
     }
 
     var font: Float { panes.first?.font ?? 0 }

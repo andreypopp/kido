@@ -202,12 +202,12 @@ import KoModel
                 }
                 if state == "config-error" { section.configError = "/Users/me/.config/ko/config.yaml: runtimes: gpu-1: unknown field \"prot\"" }
                 var tree: [Node] = [
-                    .window(.init(id: WindowID(number: 1), name: "make verify", children: [
-                        fixtureItem(1, window: 1, "make verify", shellLifecycle(.running(.init(command: "make verify", startedAt: fixtureSince), fullscreen: false)), mark: .running),
+                    .window(.init(id: WindowID(number: 1), children: [
+                        fixtureItem(1, window: 1, "make verify", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "make verify", startedAt: fixtureSince))))), mark: .running),
                         fixtureItem(2, window: 1, "Terminal", shellLifecycle()),
                         fixtureItem(3, window: 1, "kido-app", piLifecycle(session: "s3"), children: [
-                            fixtureNode(4, "make e2e", shellLifecycle(.running(.init(command: "make e2e", startedAt: fixtureSince), fullscreen: false)), mark: .running),
-                            fixtureNode(5, "pi-review", piLifecycle(.waiting(nil, progress: nil), session: "s5"), mark: .waiting),
+                            fixtureNode(4, "make e2e", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "make e2e", startedAt: fixtureSince))))), mark: .running),
+                            fixtureNode(5, "pi-review", piLifecycle(.waiting(.init()), session: "s5"), mark: .waiting),
                         ]),
                     ])),
                     fixtureNode(6, "nvidia-smi", shellLifecycle(.unknown), mark: .failed),
@@ -220,7 +220,7 @@ import KoModel
                 var snapshot = fixtureSnapshot(window: 1, pane: 1, sessions)
                 snapshot.mapItems { item in
                     let index: Int? = switch item.id.number { case 1, 3, 4, 5: 0; case 6: 2; case 7: 3; default: nil }
-                    if let index { item.runtime = RuntimeMark(runtimes[index], routed: item.id.number == 3) }
+                    if let index { item.runtime = RuntimeMark.known(runtimes[index], routed: item.id.number == 3) }
                 }
                 list.update(snapshot)
                 list.layoutSubtreeIfNeeded()

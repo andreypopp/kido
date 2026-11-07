@@ -9,7 +9,7 @@ enum KoEvent: Equatable {
     case failed(code: ko_code, message: String)
     case model
     case selected(session: SessionID?, window: WindowID?, pane: PaneID?)
-    case mismatch(code: ko_code, server: KoVersion, own: KoVersion)
+    case mismatch(code: ko_code, server: KoSchema.Version, own: KoSchema.Version)
     case clipboardWrite(pane: PaneID, contents: [KoClipboardContent])
     case clipboardRead(KoClipboardRead)
 }
@@ -26,25 +26,11 @@ enum KoImage {
     case body(Data)
 }
 
-struct KoVersion: Equatable, Decodable {
-    let protocolVersion: String
-    let vt: String
-    let build: String
-
-    private enum CodingKeys: String, CodingKey {
-        case protocolVersion = "protocol", vt, build
-    }
-
-    var major: Int? { protocolVersion.split(separator: ".").first.flatMap { Int($0) } }
+extension KoSchema.Version {
+    var major: Int? { `protocol`.split(separator: ".").first.flatMap { Int($0) } }
 
     init(_ version: ko_version) {
-        self.init(protocolVersion: String(cString: version.protocol), vt: String(cString: version.vt), build: String(cString: version.build))
-    }
-
-    init(protocolVersion: String, vt: String, build: String) {
-        self.protocolVersion = protocolVersion
-        self.vt = vt
-        self.build = build
+        self.init(build: String(cString: version.build), protocol: String(cString: version.protocol), vt: String(cString: version.vt))
     }
 }
 
@@ -237,7 +223,7 @@ private final class ClientHandle: @unchecked Sendable {
             break
         case KO_EVENT_MISMATCH:
             let mismatch = event.mismatch
-            sink(.mismatch(code: mismatch.code, server: KoVersion(mismatch.server), own: KoVersion(mismatch.own)))
+            sink(.mismatch(code: mismatch.code, server: KoSchema.Version(mismatch.server), own: KoSchema.Version(mismatch.own)))
         case KO_EVENT_VIEW_RESTORED:
             let restored = event.view_restored
             KoView.of(restored.view).sink(.restored(generation: restored.generation, result: ghosttyResult(restored.result)))
@@ -275,8 +261,8 @@ private final class ClientHandle: @unchecked Sendable {
 
     // The remote host's steps. The probe blocks until the server answered: run it off the main queue.
     enum Probe {
-        case compatible(KoVersion)
-        case mismatch(code: ko_code, server: KoVersion)
+        case compatible(KoSchema.Version)
+        case mismatch(code: ko_code, server: KoSchema.Version)
         case unreachable(code: ko_code, detail: String)
     }
 
@@ -286,7 +272,7 @@ private final class ClientHandle: @unchecked Sendable {
         let text = String(decoding: owned(&buffer), as: UTF8.self)
         switch code {
         case KO_OK, KO_ERR_PROTOCOL_MISMATCH, KO_ERR_VT_MISMATCH:
-            guard let server = try? JSONDecoder().decode(KoVersion.self, from: Data(text.utf8)) else { return .unreachable(code: KO_ERR_PROTOCOL, detail: text) }
+            guard let server = try? JSONDecoder().decode(KoSchema.Version.self, from: Data(text.utf8)) else { return .unreachable(code: KO_ERR_PROTOCOL, detail: text) }
             return code == KO_OK ? .compatible(server) : .mismatch(code: code, server: server)
         default: return .unreachable(code: code, detail: text)
         }
@@ -311,10 +297,10 @@ private final class ClientHandle: @unchecked Sendable {
         return KoError(code: code, detail: String(decoding: owned(&buffer), as: UTF8.self))
     }
 
-    static var version: KoVersion {
+    static var version: KoSchema.Version {
         var version = ko_version()
         precondition(ko_client_version(&version) == KO_OK)
-        return KoVersion(version)
+        return KoSchema.Version(version)
     }
 
     // A snapshot of the core's model: read it again after an event.
@@ -329,7 +315,7 @@ private final class ClientHandle: @unchecked Sendable {
     }
 
     // The cell's pixel size answers a program's size queries; the C call takes 0 and 0 for unknown.
-    func size(cols: Int, rows: Int, cell: CellPixels?) throws {
+    func size(cols: Int, rows: Int, cell: KoSchema.CellPixels?) throws {
         try handle.call { try check(ko_client_size($0, UInt16(cols), UInt16(rows), UInt16(clamping: cell?.width ?? 0), UInt16(clamping: cell?.height ?? 0))) }
     }
 

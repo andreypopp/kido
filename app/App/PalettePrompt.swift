@@ -35,20 +35,6 @@ struct PromptSource: Equatable {
     }
 }
 
-struct PromptCandidate: Equatable {
-    let pane: PaneID
-    let session: SessionID
-    let window: WindowID
-    let title: String
-
-    init(_ candidate: KoSchema.Candidate) {
-        pane = candidate.pane
-        session = candidate.session
-        window = candidate.window
-        title = candidate.title
-    }
-}
-
 struct PromptDraft {
     struct Key: Hashable {
         let host: Host
@@ -108,8 +94,8 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
     private let warning = NSImageView()
     private let fieldRule = NSBox()
     private let footRule = NSBox()
-    private(set) var candidates: [PromptCandidate] = []
-    private(set) var target: PromptCandidate?
+    private(set) var candidates: [KoSchema.Candidate] = []
+    private(set) var target: KoSchema.Candidate?
     private(set) var state = State.noAgent
     private(set) var sourceGone = false
     private let editingUndoManager = UndoManager()
@@ -241,8 +227,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
             resolving = nil
             resolveTimer?.cancel()
             switch result {
-            case .success(.candidates(let found)):
-                let list = found.map(PromptCandidate.init)
+            case .success(.candidates(let list)):
                 candidates = list
                 target = list.first { $0.pane == source.preselect } ?? list.first { $0.pane == source.pane } ?? list.first { $0.window == source.window } ?? list.first
                 restoreTarget(key.flatMap(load), selection: source.quote)
@@ -269,7 +254,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
         }
     }
 
-    private func place(_ candidate: PromptCandidate) -> String {
+    private func place(_ candidate: KoSchema.Candidate) -> String {
         candidate.window == source.window ? (sourceGone ? "window \(source.windowName) (pane closed)" : "this window") : "window \(source.owner.windowName(candidate.window))"
     }
 

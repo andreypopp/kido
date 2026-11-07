@@ -248,18 +248,18 @@ import XCTest
     }
 
     func testTheMismatchSheetOfARemoteHostNamesTheSideThatUpdates() {
-        let own = KoVersion(protocolVersion: "1.2", vt: "aaaaaaaaaaaa", build: "mine")
+        let own = KoSchema.Version(build: "mine", protocol: "1.2", vt: "aaaaaaaaaaaa")
         let host = Host.remote("devbox")
         let recovery = "\n\nOn devbox, stop the server with the command below, then run ko server. All sessions and panes on that server will end."
-        func alert(_ code: ko_code, _ server: KoVersion) -> NSAlert { WindowOwner.mismatchAlert(host: host, code: code, server: server, own: own, serverDir: "/tmp/remote-ko") }
+        func alert(_ code: ko_code, _ server: KoSchema.Version) -> NSAlert { WindowOwner.mismatchAlert(host: host, code: code, server: server, own: own, serverDir: "/tmp/remote-ko") }
 
-        let older = alert(KO_ERR_PROTOCOL_MISMATCH, KoVersion(protocolVersion: "0.9", vt: own.vt, build: "theirs"))
+        let older = alert(KO_ERR_PROTOCOL_MISMATCH, KoSchema.Version(build: "theirs", protocol: "0.9", vt: own.vt))
         XCTAssertEqual(older.messageText, "Update ko on devbox")
         XCTAssertEqual(older.informativeText, "This app speaks ko protocol 1.2. The server speaks 0.9. Update ko on the host, then reconnect. The server is build theirs; this app is build mine." + recovery)
-        let newer = alert(KO_ERR_PROTOCOL_MISMATCH, KoVersion(protocolVersion: "2.0", vt: own.vt, build: "theirs"))
+        let newer = alert(KO_ERR_PROTOCOL_MISMATCH, KoSchema.Version(build: "theirs", protocol: "2.0", vt: own.vt))
         XCTAssertEqual(newer.messageText, "Update Kido.app to connect to devbox")
         XCTAssertEqual(newer.informativeText, "The server speaks ko protocol 2.0; this app speaks 1.2. Update Kido.app on this Mac. The server is build theirs; this app is build mine." + recovery)
-        let revision = alert(KO_ERR_VT_MISMATCH, KoVersion(protocolVersion: "1.2", vt: "bbbbbbbbbbbb", build: "theirs"))
+        let revision = alert(KO_ERR_VT_MISMATCH, KoSchema.Version(build: "theirs", protocol: "1.2", vt: "bbbbbbbbbbbb"))
         XCTAssertEqual(revision.messageText, "Kido.app and ko on devbox are from different releases")
         XCTAssertEqual(revision.informativeText, "This app runs terminal revision aaaaaaaaa; the server runs bbbbbbbbb. Install the ko release of this Kido.app on the host, or update Kido.app. The server is build theirs; this app is build mine." + recovery)
         for sheet in [older, newer, revision] {

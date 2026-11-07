@@ -73,7 +73,7 @@ import KoModel
         XCTAssertEqual(tabs.addWindow.frame.width, 28)
 
         let snapshot = fixtureSnapshot(window: 7, pane: 4, [("s", [.item(fixtureItem(4, window: 7, "shell", shellLifecycle(.unknown),
-                                                                                       records: [programRecord("child", .working)]))])])
+                                                                                       records: [.working(.init(id: "child"))]))])])
         let list = SidebarView()
         list.frame = NSRect(x: 0, y: 0, width: 300, height: 110)
         window.contentView!.addSubview(list)
@@ -125,9 +125,9 @@ import KoModel
         try await wait("new window receives terminal focus") { owner.window.firstResponder === pane }
         func status(_ running: Bool, pane: PaneView, created: WindowID) async throws {
             try await wait("the snapshot has the pane") { sidebarRows(owner.snapshot).contains { $0.target?.pane == pane.pane } }
-            let phase: ShellStatus.Phase = running ? .running(.init(command: "sleep 60", startedAt: Date()), fullscreen: false) : .idle(last: nil)
+            let phase: KoSchema.Phase = running ? .running(.init(fullscreen: false, origin: .command(.init(command: "sleep 60", startedAt: fixtureSince)))) : .idle(.init())
             let snapshot = withLifecycle(try XCTUnwrap(owner.snapshot), pane: pane.pane,
-                .live(.host(.terminal(ShellStatus(phase: phase, report: nil)))), mark: running ? .running : .none_)
+                .live(.host(.init(pane: .terminal(KoSchema.Shell(phase: phase, report: nil))))), mark: running ? .running : .none_)
             owner.testReceive(snapshot)
         }
         try await status(true, pane: pane, created: created)

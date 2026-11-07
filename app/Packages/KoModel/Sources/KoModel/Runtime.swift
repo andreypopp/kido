@@ -21,33 +21,44 @@ extension KoSchema.Place {
     }
 }
 
-public struct RuntimeMark: Equatable, Sendable {
-    public let key: RuntimeKey
+public enum RuntimeMark: Equatable, Sendable {
+    case known(KoSchema.ClientRuntime, routed: Bool)
+    case unavailable(RuntimeKey, routed: Bool)
+
+    public var key: RuntimeKey {
+        switch self {
+        case .known(let runtime, _): runtime.key
+        case .unavailable(let key, _): key
+        }
+    }
     public var name: String { key.name }
-    public let kind: KoSchema.RuntimeKind?
-    public let color: String?
-    public let state: KoSchema.LinkState
-    public let routed: Bool
-
-    public init(key: RuntimeKey, kind: KoSchema.RuntimeKind?, color: String?, state: KoSchema.LinkState, routed: Bool) {
-        self.key = key
-        self.kind = kind
-        self.color = color
-        self.state = state
-        self.routed = routed
+    public var kind: KoSchema.RuntimeKind? {
+        if case .known(let runtime, _) = self { runtime.kind } else { nil }
+    }
+    public var color: String? {
+        if case .known(let runtime, _) = self { runtime.color } else { nil }
+    }
+    public var state: KoSchema.LinkState {
+        if case .known(let runtime, _) = self { runtime.state } else { .down }
+    }
+    public var routed: Bool {
+        switch self {
+        case .known(_, let routed), .unavailable(_, let routed): routed
+        }
     }
 
-    public init(_ runtime: KoSchema.ClientRuntime, routed: Bool = false) {
-        self.init(key: runtime.key, kind: runtime.kind, color: runtime.color, state: runtime.state, routed: routed)
-    }
+    public var failure: String? { state.failure }
+    public var stateWord: String { state.stateWord }
+}
 
+extension KoSchema.LinkState {
     public var failure: String? {
-        guard case .failed(let failed) = state else { return nil }
+        guard case .failed(let failed) = self else { return nil }
         return failed.message.split(whereSeparator: \.isNewline).joined(separator: " ")
     }
 
     public var stateWord: String {
-        switch state {
+        switch self {
         case .down: "down"
         case .starting: "starting"
         case .up: "up"
@@ -62,8 +73,8 @@ extension KoSchema.ModelJson {
     public func runtimeMark(_ pane: KoSchema.PaneJson) -> RuntimeMark? {
         guard let place = pane.place else { return nil }
         let routed: Bool = if case .routed = place { true } else { false }
-        return runtime(place.key).map { RuntimeMark($0, routed: routed) }
-            ?? RuntimeMark(key: place.key, kind: nil, color: nil, state: .down, routed: routed)
+        return runtime(place.key).map { .known($0, routed: routed) }
+            ?? .unavailable(place.key, routed: routed)
     }
 
     public var runtimeMarks: [PaneID: RuntimeMark] {

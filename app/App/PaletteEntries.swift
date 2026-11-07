@@ -57,8 +57,8 @@ struct PaletteEntry {
             PaletteEntry(id: .hostRuntime, title: "Host", detail: "this Mac", symbol: "desktopcomputer", operation: .enter(.runtime(nil)))
         ]
         return host + owner.runtimes.map { runtime in
-            let mark = RuntimeMark(runtime)
-            let detail = ["\(runtime.kind.rawValue)", mark.stateWord, mark.failure].compactMap { $0 }.joined(separator: " · ")
+            let mark = RuntimeMark.known(runtime, routed: false)
+            let detail = ["\(runtime.kind.rawValue)", runtime.state.stateWord, runtime.state.failure].compactMap { $0 }.joined(separator: " · ")
             return PaletteEntry(id: .runtime(runtime.key), title: "Runtime: " + owner.runtimeLabel(runtime.key), detail: detail, swatch: mark, operation: .enter(.runtime(mark)))
         }
     }
@@ -67,7 +67,7 @@ struct PaletteEntry {
     @MainActor static func runtimeStep(_ mark: RuntimeMark?, owner: WindowOwner?, responder: NSResponder?) -> [PaletteEntry] {
         guard let owner, owner.canNavigate else { return [] }
         let target: NewPaneRuntime = mark.map { .named($0.name) } ?? .host
-        var rows = [PaletteEntry(id: .runtimeOpen(0), title: "New Window", detail: "in session " + (owner.snapshot?.sessions.first { $0.current }?.name ?? ""),
+        var rows = [PaletteEntry(id: .runtimeOpen(0), title: "New Window", detail: "in session " + (owner.snapshot.flatMap { s in s.sessions.first { $0.id == s.client.session } }?.name ?? ""),
                                  check: { [weak owner] in owner?.canNavigate == true ? nil : "Not available now" },
                                  operation: .run { [weak owner] in owner?.newWindow(in: nil, target) })]
         if let pane = livePane(owner, responder) {

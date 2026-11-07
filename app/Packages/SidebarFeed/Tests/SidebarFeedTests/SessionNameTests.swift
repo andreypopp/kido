@@ -4,8 +4,8 @@ import KoModel
 @testable import SidebarFeed
 
 @Test func sessionNameValidation() throws {
-    let sessions = [SessionNodes(id: SessionID(number: 0), name: "main", current: true, nodes: []),
-                    SessionNodes(id: SessionID(number: 1), name: "work", current: false, nodes: [])]
+    let sessions = [SessionNodes(id: SessionID(number: 0), name: "main", nodes: []),
+                    SessionNodes(id: SessionID(number: 1), name: "work", nodes: [])]
     for (text, expected) in [
         ("", SessionName.revert), ("   ", .revert), ("main", .revert),
         ("work", .reject("A session named “work” already exists.")),
