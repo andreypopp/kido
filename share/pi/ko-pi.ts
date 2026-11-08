@@ -44,6 +44,7 @@ import { type WriteStream, accessSync, constants, createWriteStream, mkdirSync, 
 import os from "node:os";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { webview, type Webview } from "../webview/index.ts";
+import { transcript, contentText, mintId, respond, utf8Prefix, utf8Suffix } from "./transcript.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
@@ -324,10 +325,6 @@ const MAX_TASK_BYTES = 1044480;
 
 const MAX_MESSAGE_BYTES = 1000000;
 
-const MAX_WEBVIEW_WINDOW_ITEMS = 40;
-const MAX_WEBVIEW_WINDOW_BYTES = 256 * 1024;
-const MAX_WEBVIEW_ARGS_BYTES = 4 * 1024;
-const MAX_WEBVIEW_RESULT_BYTES = 16 * 1024;
 const WEBVIEW_FLUSH_MS = 50;
 
 const MAX_DEPTH = 2;
@@ -353,7 +350,6 @@ const reply = (text: string, details: unknown = {}) => ({ content: [{ type: "tex
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-const mintId = (): string => randomBytes(16).toString("base64url");
 
 type AgentRow = {
   id: string;
@@ -452,38 +448,6 @@ type ShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
 // pi /reload keeps the process, its message stream and its received-id ring.
 type ReceiverHold = { child: ChildProcess; partial: Buffer };
 type WebviewWish = { terminal: boolean };
-type WebviewText = { text: string; cut: number };
-type WebviewToolState = { type: "pending" } | { type: "running"; result?: WebviewText } | { type: "done"; result: WebviewText; error: boolean } | { type: "not_run" };
-type WebviewBlock = { type: "text" | "thinking"; text: string; redacted?: boolean } | { type: "tool"; id: string; name: string; args: WebviewText; state: WebviewToolState };
-type WebviewItem = { seq: number; final: boolean } & (
-  { kind: "user"; text: string; images: number } |
-  { kind: "assistant"; blocks: WebviewBlock[]; stop: string; error: string; lifecycle: "streaming" | "ended" } |
-  { kind: "notice"; customType: string; from: string; text: string } |
-  { kind: "bash"; command: string; output: WebviewText; exit?: number } |
-  { kind: "summary"; text: string }
-);
-type WebviewAssistant = Extract<WebviewItem, { kind: "assistant" }>;
-
-function contentText(value: string | readonly { type: string; text?: string }[], separator = "\n"): string {
-  return typeof value === "string" ? value : value.flatMap((block) => block.type === "text" ? [block.text ?? ""] : []).join(separator);
-}
-
-function webviewCap(text: string, limit: number): WebviewText {
-  const bytes = Buffer.byteLength(text);
-  const prefix = utf8Prefix(text, limit);
-  return { text: prefix, cut: bytes - Buffer.byteLength(prefix) };
-}
-
-function webviewWireItem(item: WebviewItem) {
-  if (item.kind !== "assistant") return item;
-  const { lifecycle, ...wire } = item;
-  return wire;
-}
-
-function webviewFinal(item: WebviewAssistant): boolean {
-  return item.lifecycle === "ended" && item.blocks.every((b) => b.type !== "tool" || b.state.type === "done" || b.state.type === "not_run");
-}
-
 type JobEnd = { type: "exit"; code: number } | { type: "signal"; signal: NodeJS.Signals } | { type: "failed"; message: string } | { type: "stopped" } | { type: "timeout"; seconds: number };
 type JobCall = {
   forward(bytes: Buffer): void;
@@ -1012,27 +976,6 @@ function agentCompletionItems(agents: AgentRow[], all: AgentRow[], token: string
     ].filter(Boolean).join(", ");
     return { value: completionValue(all, a), label: `@${a.name}`, description };
   });
-}
-
-function utf8Prefix(text: string, max: number): string {
-  if (Buffer.byteLength(text, "utf8") <= max) return text;
-  let out = "";
-  let used = 0;
-  for (const ch of text) {
-    const n = Buffer.byteLength(ch, "utf8");
-    if (used + n > max) break;
-    out += ch;
-    used += n;
-  }
-  return out;
-}
-
-function utf8Suffix(text: string, max: number): string {
-  const bytes = Buffer.from(text, "utf8");
-  if (bytes.length <= max) return text;
-  let start = bytes.length - max;
-  while (start < bytes.length && ((bytes[start] ?? 0) & 0xc0) === 0x80) start++;
-  return bytes.subarray(start).toString("utf8");
 }
 
 // Go-style %q: escapes quotes, backslashes and control characters but keeps
@@ -2266,229 +2209,49 @@ export default function (pi: ExtensionAPI) {
   let webviewActive = false;
   let webviewDialogs = 0;
   let webviewPage: string | undefined;
-  let webviewEpoch = mintId();
-  let webviewItems: WebviewItem[] = [];
-  let webviewAssistant: number | undefined;
+  const transcriptView = transcript({ flushMs: WEBVIEW_FLUSH_MS });
   let webviewWorking = false;
   let webviewCompacting = false;
-  const MAX_WEBVIEW_OUTPUT_BYTES = 1 << 20;
-  const webviewSubscribers = new Set<ServerResponse>();
-  const webviewTools = new Map<string, { item: WebviewAssistant; block: Extract<WebviewBlock, { type: "tool" }> }>();
-  const webviewDirty = new Set<number>();
-  const webviewSent = new Map<number, WebviewAssistant>();
-  const webviewPending = new Map<number, { message: Extract<AgentMessage, { role: "assistant" }>; phase: "update" | "end" }>();
-  const webviewPendingTools = new Map<string, { type: "running"; result: { content: Parameters<typeof contentText>[0] } } | { type: "done"; result: { content: Parameters<typeof contentText>[0] }; error: boolean }>();
-  let webviewFlushTimer: NodeJS.Timeout | null = null;
-
-  const webviewBody = (req: ServerResponse, text: string, more = false): void => {
-    if (req.destroyed || req.writableEnded) return;
-    if (text) req.write(text);
-    if (!more || req.writableLength > MAX_WEBVIEW_OUTPUT_BYTES) {
-      req.end();
-      webviewSubscribers.delete(req);
-    }
-  };
-  const webviewResponse = (req: ServerResponse, status: number, text: string, contentType = "application/json"): void => {
-    req.writeHead(status, { "Content-Type": contentType });
-    req.end(text);
-  };
-  const webviewBroadcast = (record: unknown): void => {
-    const line = JSON.stringify(record) + "\n";
-    for (const req of webviewSubscribers) webviewBody(req, line, true);
-  };
-  const webviewState = (): void => webviewBroadcast({ type: "state", working: webviewWorking, name: pi.getSessionName() ?? "", model: session?.model?.id ?? "" });
+  const webviewState = (): void => transcriptView.state({ working: webviewWorking, name: pi.getSessionName() ?? "", model: session?.model?.id ?? "" });
   const webviewWish = (): void => {
     if (!webviewActive) return;
     const wv = globalThis.__koPiExtensionWebview?.wv;
     if (wv) void (wv.supported && !webviewDialogs && !webviewWishState.terminal ? wv.show() : wv.hide()).catch(() => {});
   };
-  const webviewWindow = (before: number): string => {
-    let start = Math.min(before, webviewItems.length);
-    const items: string[] = [];
-    let bytes = 0;
-    while (start > 0 && items.length < MAX_WEBVIEW_WINDOW_ITEMS) {
-      const item = JSON.stringify(webviewWireItem(webviewItems[start - 1]));
-      const size = Buffer.byteLength(item);
-      if (items.length && bytes + size > MAX_WEBVIEW_WINDOW_BYTES) break;
-      bytes += size;
-      items.push(item);
-      start--;
-    }
-    return '"items":[' + items.reverse().join(",") + '],"more":' + (start > 0);
-  };
-  const webviewSchedule = (): void => {
-    if (!webviewFlushTimer) webviewFlushTimer = setTimeout(webviewFlush, WEBVIEW_FLUSH_MS);
-  };
-  const webviewPublish = (item: WebviewItem): void => { webviewDirty.add(item.seq); };
-  const webviewApplyAssistant = (item: WebviewAssistant, message: Extract<AgentMessage, { role: "assistant" }>, ended: boolean): void => {
-    item.blocks = message.content.flatMap((block): WebviewBlock[] => {
-      if (block.type === "text") return [{ type: "text", text: block.text }];
-      if (block.type === "thinking") return [{ type: "thinking", text: block.thinking, redacted: !!block.redacted }];
-      if (block.type !== "toolCall") return [];
-      const existing = webviewTools.get(block.id)?.block;
-      const next: Extract<WebviewBlock, { type: "tool" }> = { type: "tool", id: block.id, name: block.name, args: existing && existing.state.type !== "pending" ? existing.args : webviewCap(JSON.stringify(block.arguments), MAX_WEBVIEW_ARGS_BYTES), state: existing?.state ?? { type: "pending" } };
-      webviewTools.set(block.id, { item, block: next });
-      return [next];
-    });
-    item.stop = message.stopReason;
-    item.error = message.errorMessage ?? "";
-    item.lifecycle = ended ? "ended" : "streaming";
-    if (ended && (message.stopReason === "error" || message.stopReason === "aborted")) {
-      for (const block of item.blocks) if (block.type === "tool" && block.state.type === "pending") block.state = { type: "not_run" };
-    }
-    webviewPublish(item);
-  };
-  const sameText = (a: WebviewText | undefined, b: WebviewText | undefined): boolean => a?.text === b?.text && a?.cut === b?.cut;
-  const sameBlock = (a: WebviewBlock, b: WebviewBlock): boolean => {
-    if (a.type !== b.type) return false;
-    if (a.type !== "tool" && b.type !== "tool") return a.text === b.text && a.redacted === b.redacted;
-    if (a.type !== "tool" || b.type !== "tool") return false;
-    return a.id === b.id && a.name === b.name && sameText(a.args, b.args) && a.state.type === b.state.type
-      && sameText("result" in a.state ? a.state.result : undefined, "result" in b.state ? b.state.result : undefined)
-      && (a.state.type !== "done" || b.state.type === "done" && a.state.error === b.state.error);
-  };
-  function webviewFlush(publish = true): void {
-    if (webviewFlushTimer) clearTimeout(webviewFlushTimer);
-    webviewFlushTimer = null;
-    for (const [seq, held] of webviewPending) {
-      const item = webviewItems[seq];
-      if (item?.kind === "assistant") webviewApplyAssistant(item, held.message, held.phase === "end");
-    }
-    webviewPending.clear();
-    for (const [id, held] of webviewPendingTools) {
-      const found = webviewTools.get(id);
-      if (!found) continue;
-      const result = webviewCap(contentText(held.result.content), MAX_WEBVIEW_RESULT_BYTES);
-      found.block.state = held.type === "done" ? { type: "done", result, error: held.error } : { type: "running", result };
-      webviewPublish(found.item);
-    }
-    webviewPendingTools.clear();
-    if (!publish) { webviewDirty.clear(); return; }
-    for (const seq of webviewDirty) {
-      const item = webviewItems[seq];
-      if (!item) continue;
-      const previous = webviewSent.get(seq);
-      if (item.kind === "assistant" && previous && item.blocks.length === previous.blocks.length) {
-        const blocks = item.blocks.flatMap<{ index: number; suffix: string } | { index: number; block: WebviewBlock }>((block, index) => {
-          const old = previous.blocks[index];
-          if (sameBlock(block, old)) return [];
-          if (block.type !== "tool" && old.type === block.type && block.redacted === old.redacted && block.text.startsWith(old.text)) return [{ index, suffix: block.text.slice(old.text.length) }];
-          return [{ index, block }];
-        });
-        if (blocks.length || item.final !== previous.final || item.stop !== previous.stop || item.error !== previous.error) {
-          webviewBroadcast({ type: "patch", seq, blocks, final: item.final, stop: item.stop, error: item.error });
-        }
-      } else webviewBroadcast({ type: "item", item: webviewWireItem(item) });
-      if (item.kind === "assistant" && !item.final) webviewSent.set(seq, { ...item, blocks: item.blocks.map((block) => ({ ...block })) });
-      else webviewSent.delete(seq);
-    }
-    webviewDirty.clear();
-  }
-  const webviewMessage = (message: AgentMessage, phase: "start" | "update" | "end" | "branch"): void => {
-    const branch = phase === "branch";
-    if (message.role === "toolResult") {
-      if (phase === "end" || branch) {
-        webviewPendingTools.set(message.toolCallId, { type: "done", result: message, error: message.isError });
-        if (!branch) webviewFlush();
-      }
-      return;
-    }
-    if (message.role === "assistant") {
-      let item = !branch && webviewAssistant !== undefined ? webviewItems[webviewAssistant] : undefined;
-      if (phase === "start" || branch || item?.kind !== "assistant") {
-        item = { seq: webviewItems.length, get final() { return webviewFinal(this); }, kind: "assistant", blocks: [], stop: "", error: "", lifecycle: "streaming" };
-        webviewItems.push(item);
-        if (!branch) webviewAssistant = item.seq;
-      }
-      if (item.kind !== "assistant") return;
-      if (branch || phase === "start") webviewApplyAssistant(item, message, branch);
-      else webviewPending.set(item.seq, { message, phase });
-      if (phase === "end") webviewAssistant = undefined;
-      if (!branch) { if (phase === "update") webviewSchedule(); else webviewFlush(); }
-      return;
-    }
-    if (phase !== "end" && !branch) return;
-    const seq = webviewItems.length;
-    let item: WebviewItem;
-    switch (message.role) {
-      case "user": item = { seq, final: true, kind: "user", text: contentText(message.content), images: typeof message.content === "string" ? 0 : message.content.filter(b => b.type === "image").length }; break;
-      case "custom":
-        if (!message.display) return;
-        item = { seq, final: true, kind: "notice", customType: message.customType, from: isRecord(message.details) ? str(message.details.from) : "", text: contentText(message.content) }; break;
-      case "bashExecution": item = { seq, final: true, kind: "bash", command: message.command, output: webviewCap(message.output, MAX_WEBVIEW_RESULT_BYTES), ...(message.exitCode === undefined ? {} : { exit: message.exitCode }) }; break;
-      case "branchSummary": case "compactionSummary": item = { seq, final: true, kind: "summary", text: message.summary }; break;
-      default: return;
-    }
-    webviewItems.push(item);
-    if (!branch) { webviewPublish(item); webviewFlush(); }
-  };
   const webviewRebuild = (): void => {
-    webviewEpoch = mintId();
-    webviewItems = [];
-    webviewAssistant = undefined;
-    webviewSent.clear();
-    webviewDirty.clear();
-    webviewPending.clear();
-    webviewPendingTools.clear();
-    webviewTools.clear();
+    const messages: AgentMessage[] = [];
     for (const entry of session?.sessionManager.getBranch() ?? []) {
-      if (entry.type === "message") webviewMessage(entry.message, "branch");
-      else if (entry.type === "custom_message") webviewMessage({ role: "custom", customType: entry.customType, content: entry.content, display: entry.display, details: entry.details, timestamp: Date.parse(entry.timestamp) }, "branch");
-      else if (entry.type === "compaction") webviewMessage({ role: "compactionSummary", summary: entry.summary, tokensBefore: entry.tokensBefore, timestamp: Date.parse(entry.timestamp) }, "branch");
-      else if (entry.type === "branch_summary") webviewMessage({ role: "branchSummary", summary: entry.summary, fromId: entry.fromId, timestamp: Date.parse(entry.timestamp) }, "branch");
+      if (entry.type === "message") messages.push(entry.message);
+      else if (entry.type === "custom_message") messages.push({ role: "custom", customType: entry.customType, content: entry.content, display: entry.display, details: entry.details, timestamp: Date.parse(entry.timestamp) });
+      else if (entry.type === "compaction") messages.push({ role: "compactionSummary", summary: entry.summary, tokensBefore: entry.tokensBefore, timestamp: Date.parse(entry.timestamp) });
+      else if (entry.type === "branch_summary") messages.push({ role: "branchSummary", summary: entry.summary, fromId: entry.fromId, timestamp: Date.parse(entry.timestamp) });
     }
-    const subscribers = [...webviewSubscribers];
-    webviewSubscribers.clear();
-    webviewFlush(false);
-    for (const item of webviewItems) if (item.kind === "assistant") {
-      for (const block of item.blocks) if (block.type === "tool" && block.state.type === "pending") block.state = { type: "not_run" };
-      }
-    webviewSent.clear();
-    const reset = '{"type":"reset","epoch":' + JSON.stringify(webviewEpoch) + ',' + webviewWindow(webviewItems.length) + '}' + "\n";
-    for (const req of subscribers) { webviewSubscribers.add(req); webviewBody(req, reset, true); }
+    transcriptView.rebuild(messages);
     webviewState();
   };
   const webviewPost = (req: ServerResponse, path: string, bytes: Buffer): void => {
-    if (path === "/abort") { session?.abort(); webviewResponse(req, 200, "{}"); return; }
-    if (path === "/terminal") { webviewWishState.terminal = true; webviewWish(); webviewResponse(req, 200, "{}"); return; }
+    if (path === "/abort") { session?.abort(); respond(req, 200, "{}"); return; }
+    if (path === "/terminal") { webviewWishState.terminal = true; webviewWish(); respond(req, 200, "{}"); return; }
     let value: unknown;
     try { value = JSON.parse(bytes.toString()); } catch {}
-    if (!isRecord(value) || typeof value.text !== "string" || !value.text.trim() || value.mode !== "steer" && value.mode !== "follow_up") { webviewResponse(req, 400, JSON.stringify({ error: "A non-empty text and steer or follow_up mode are required" })); return; }
+    if (!isRecord(value) || typeof value.text !== "string" || !value.text.trim() || value.mode !== "steer" && value.mode !== "follow_up") { respond(req, 400, JSON.stringify({ error: "A non-empty text and steer or follow_up mode are required" })); return; }
     let refusal: string | undefined;
     if (webviewCompacting) refusal = "Wait for compaction to finish";
     else if (!webviewWorking && !session?.isIdle()) refusal = "Wait for the current operation to finish";
     else if (!session?.model) refusal = "Select a model in the terminal first";
     else if (!session.modelRegistry.hasConfiguredAuth(session.model)) refusal = "Configure authentication for the selected model in the terminal first";
-    if (refusal) { webviewResponse(req, 409, JSON.stringify({ error: refusal })); return; }
+    if (refusal) { respond(req, 409, JSON.stringify({ error: refusal })); return; }
     try {
       pi.sendUserMessage(value.text, { expandPromptTemplates: true, ...(webviewWorking ? { deliverAs: value.mode === "steer" ? "steer" as const : "followUp" as const } : {}) });
-      webviewResponse(req, 200, "{}");
-    } catch (error) { webviewResponse(req, 409, JSON.stringify({ error: errorText(error) })); }
+      respond(req, 200, "{}");
+    } catch (error) { respond(req, 409, JSON.stringify({ error: errorText(error) })); }
   };
   const webviewHandle = (request: IncomingMessage, req: ServerResponse): void => {
-    req.once("close", () => { webviewSubscribers.delete(req); });
+    if (transcriptView.handle(request, req)) return;
     const url = new URL(request.url ?? "/", "http://ko");
     if (request.method === "GET" && url.pathname === "/") {
       webviewPage ??= readFileSync(join(dirname(fileURLToPath(import.meta.url)), "ko-pi-page.html"), "utf8");
-      webviewResponse(req, 200, webviewPage, "text/html; charset=utf-8");
-    } else if (request.method === "GET" && url.pathname === "/items") {
-      const before = Number(url.searchParams.get("before"));
-      if (!Number.isSafeInteger(before) || before < 0) webviewResponse(req, 400, "{}");
-      else webviewResponse(req, 200, '{"epoch":' + JSON.stringify(webviewEpoch) + ',' + webviewWindow(before) + '}');
-    } else if (request.method === "GET" && url.pathname === "/events") {
-      webviewFlush();
-      req.writeHead(200, { "Content-Type": "application/x-ndjson" });
-      if (url.searchParams.get("epoch") === webviewEpoch) {
-        const after = Number(url.searchParams.get("after") ?? -1);
-        if (!Number.isSafeInteger(after) || after < -1) { webviewBody(req, ""); return; }
-        for (const item of webviewItems.slice(after + 1)) {
-          webviewBody(req, JSON.stringify({ type: "item", item }) + "\n", true);
-          if (req.writableEnded || req.destroyed) break;
-        }
-      } else webviewBody(req, '{"type":"reset","epoch":' + JSON.stringify(webviewEpoch) + ',' + webviewWindow(webviewItems.length) + '}' + "\n", true);
-      if (req.writableEnded || req.destroyed) return;
-      webviewSubscribers.add(req);
-      webviewState();
+      respond(req, 200, webviewPage, "text/html; charset=utf-8");
     } else if (request.method === "POST" && ["/prompt", "/abort", "/terminal"].includes(url.pathname)) {
       const chunks: Buffer[] = [];
       let size = 0;
@@ -2497,10 +2260,10 @@ export default function (pi: ExtensionAPI) {
         if (size <= 1 << 20) chunks.push(chunk);
       });
       request.on("end", () => {
-        if (size > 1 << 20) webviewResponse(req, 413, "{}");
+        if (size > 1 << 20) respond(req, 413, "{}");
         else webviewPost(req, url.pathname, Buffer.concat(chunks));
       });
-    } else webviewResponse(req, 404, "{}");
+    } else respond(req, 404, "{}");
   };
   const webviewStart = async (): Promise<void> => {
     webviewRebuild();
@@ -2525,10 +2288,7 @@ export default function (pi: ExtensionAPI) {
     webviewWish();
   };
   const webviewStop = async (park: boolean): Promise<void> => {
-    if (webviewFlushTimer) clearTimeout(webviewFlushTimer);
-    webviewFlushTimer = null;
-    for (const req of webviewSubscribers) req.end();
-    webviewSubscribers.clear();
+    transcriptView.close();
     const hold = globalThis.__koPiExtensionWebview;
     if (park) {
       globalThis.__koPiExtensionWebviewWish = webviewWishState;
@@ -2548,12 +2308,12 @@ export default function (pi: ExtensionAPI) {
   };
   pi.on("ui_prompt_start", () => { webviewDialogs++; webviewWish(); });
   pi.on("ui_prompt_end", () => { webviewDialogs = Math.max(0, webviewDialogs - 1); webviewWish(); });
-  pi.on("message_start", (event) => { if (webviewActive && event.message.role === "assistant") webviewMessage(event.message, "start"); });
-  pi.on("message_update", (event) => { if (webviewActive) webviewMessage(event.message, "update"); });
-  pi.on("message_end", (event) => { if (webviewActive) webviewMessage(event.message, "end"); });
-  pi.on("tool_execution_start", (event) => { if (!webviewActive) return; webviewFlush(); const found = webviewTools.get(event.toolCallId); if (found) { found.block.state = { type: "running" }; webviewPublish(found.item); webviewFlush(); } });
-  pi.on("tool_execution_update", (event) => { if (!webviewActive) return; webviewPendingTools.set(event.toolCallId, { type: "running", result: event.partialResult }); webviewSchedule(); });
-  pi.on("tool_execution_end", (event) => { if (!webviewActive) return; webviewPendingTools.set(event.toolCallId, { type: "done", result: event.result, error: event.isError }); webviewFlush(); });
+  pi.on("message_start", (event) => { if (webviewActive && event.message.role === "assistant") transcriptView.message(event.message, "start"); });
+  pi.on("message_update", (event) => { if (webviewActive) transcriptView.message(event.message, "update"); });
+  pi.on("message_end", (event) => { if (webviewActive) transcriptView.message(event.message, "end"); });
+  pi.on("tool_execution_start", (event) => { if (webviewActive) transcriptView.toolRunning(event.toolCallId, Date.now()); });
+  pi.on("tool_execution_update", (event) => { if (webviewActive) transcriptView.toolPartial(event.toolCallId, event.partialResult.content); });
+  pi.on("tool_execution_end", (event) => { if (webviewActive) transcriptView.toolDone(event.toolCallId, event.result.content, event.isError, Date.now(), event.durationMs); });
   pi.on("session_tree", () => { if (webviewActive) webviewRebuild(); });
   pi.on("session_before_compact", () => { webviewCompacting = true; });
   pi.on("session_compact_failed", () => { webviewCompacting = false; });

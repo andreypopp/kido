@@ -330,34 +330,16 @@ basename>`, and again on `session_info_changed`.
 
 ## 3. The page and program protocol
 
-**The shared transcript module**, `share/pi/transcript.ts`, takes
-from `ko-pi.ts` the types `WebviewItem`, `WebviewBlock`,
-`WebviewText` and `WebviewToolState` (renamed `Item`, `Block`, `Text`
-and `ToolState`), the caps (`MAX_WEBVIEW_*`), `webviewCap`, the window
-(`webviewWindow`), the patch diff (`sameBlock`, the suffix rule), the
-`/events` and `/items` handlers and the response cap, and the flush
-timer. Its interface is a `Transcript` class:
-
-```ts
-export class Transcript {
-  constructor(options: { flushMs: number; outputCap: number });
-  readonly epoch: string;
-  readonly items: readonly Item[];
-  rebuild(): void;                                  // new epoch, clears, resets subscribers
-  user(text: string, images: number, at: number): Item;
-  assistantStart(at: number): Assistant;             // the streaming item
-  assistantApply(item: Assistant, message: AssistantMessage, ended: boolean): void;
-  toolRunning(id: string, at: number): void;
-  toolPartial(id: string, content: Content[]): void;
-  toolDone(id: string, content: Content[], error: boolean, at: number, durationMs?: number): void;
-  notice(from: string, customType: string, text: string, at: number): Item;
-  bash(command: string, output: string, exit: number | undefined, at: number): Item;
-  summary(text: string, at: number): Item;
-  state(record: object): void;                      // broadcast as {type:"state", ...}
-  send(record: object): void;                       // any other record to every page
-  handle(request: IncomingMessage, response: ServerResponse): boolean; // /events and /items
-}
-```
+**The shared transcript module**, `share/pi/transcript.ts`, exists
+(unit 2). Its `transcript({ flushMs })` takes whole pi messages, so the conversion
+to items is in one place and a replay and the live stream share it:
+`message(message, phase)` with the phases `start`, `update` and `end`,
+`rebuild(messages)`, `toolRunning`, `toolPartial` and
+`toolDone` with explicit times, and `state`, `send`, `handle` (the
+`/events` and `/items` routes) and `close`. koa feeds it whole
+messages on `message_start` and `message_end`, the partial assistant
+message that it builds from the deltas on each `message_update`, and
+`get_messages` for a rebuild.
 
 The module adds what the mockup needs and ko-pi's page lacked: `at`
 on every item (pi's message timestamp, ms; the user message's
@@ -406,9 +388,8 @@ type State = { type: "state"; working: boolean; since?: number; aborted: boolean
   context?: { tokens: number | null; window: number; percent: number | null };
   cwd: string; branch?: string; dirty?: boolean;
   queue: { steering: string[]; followUp: string[] };
-  pi?: { exited: number } | { signal: string } };
-type Dialog = { type: "dialog"; request: RpcExtensionUIRequest };   // dialog methods only
-type DialogEnd = { type: "dialog_end"; id: string };
+  pi?: { exited: number } | { signal: string };
+  dialogs: RpcExtensionUIRequest[] };                                // open dialog requests, oldest first
 type Notice = { type: "notify"; message: string; level: "info" | "warning" | "error" };
 type Editor = { type: "editor"; text: string };                      // set_editor_text
 type Metrics = { type: "flush"; t: number };                          // with --metrics only
@@ -454,8 +435,11 @@ deadline of 2 s; a failure leaves them absent.
 
 **Extension UI.** A dialog request shows as a card above the composer
 with its title, options or field and the `timeout` when present. The
-page answers once; koa sends the `extension_ui_response` and a
-`dialog_end`. A second dialog while one is open queues behind it.
+open dialogs are part of `state`, because `state` is the one record
+that a page gets again when it loads: a reload during a dialog shows
+the dialog again. The page answers once; koa sends the
+`extension_ui_response` and a new `state` without the request. A
+second dialog while one is open queues behind it.
 `notify` shows for 4 s in the status bar's flexible segment.
 `setStatus` shows as a status segment under its key. `setWidget`,
 `setTitle` and the other fire-and-forget methods are ignored.

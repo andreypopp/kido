@@ -49,6 +49,7 @@ test("a second copy of the extension at another path registers nothing, and a re
   try {
     mkdirSync(join(dir, "pi"));
     copyFileSync(join(here, "ko-pi.ts"), join(dir, "pi", "ko-pi.ts"));
+    copyFileSync(join(here, "transcript.ts"), join(dir, "pi", "transcript.ts"));
     cpSync(join(here, "..", "webview"), join(dir, "webview"), { recursive: true });
     const copy = await import(pathToFileURL(join(dir, "pi", "ko-pi.ts")).href);
     const registered = createFakePi();

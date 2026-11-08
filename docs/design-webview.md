@@ -322,8 +322,9 @@ results and command output are capped, with the count of cut bytes;
 an image is a count. Jobs and subagent reports are the notices that
 ko-pi already puts in the session; the page has no live list of jobs.
 A rebuild (a new runtime, `session_tree`,
-`session_compact`) mints a new epoch. The types are `WebviewItem` and
-`WebviewBlock` in `share/pi/ko-pi.ts`.
+`session_compact`) mints a new epoch. The model, its caps, its window
+and its delivery are `Transcript` in `share/pi/transcript.ts`, which
+koa will share; ko-pi feeds it from pi's events.
 
 **Incremental delivery.** A long session must not cost its whole
 size on each page load, and a stream of tokens must not cost the
@@ -332,11 +333,11 @@ square of its size:
 - `/events` streams JSON lines and stays open. A page with the
   current epoch gives its last final item and gets only the items
   after it. Any other page gets `reset`: the newest items, under the window
-  caps of `share/pi/ko-pi.ts`, and whether older items exist.
+  caps of `share/pi/transcript.ts`, and whether older items exist.
 - `/items?before=N` gives older items under the same caps, when the
   page's top comes into view.
 - While an item streams, ko-pi keeps only the newest raw message and
-  converts it once for each flush (`WEBVIEW_FLUSH_MS`). A flush sends
+  converts it once for each flush (`WEBVIEW_FLUSH_MS` in `ko-pi.ts`). A flush sends
   `patch` records: for each changed block its new suffix when the
   block only grew, else the block whole, and the item's changed
   metadata.
