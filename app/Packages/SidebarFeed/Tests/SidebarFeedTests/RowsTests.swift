@@ -34,21 +34,50 @@ import KoModel
     } else { Issue.record("missing folded children") }
 }
 
+@Test func foldedCirclesOrderReducedStatusesAndKeepSidebarTies() {
+    let children = (1...6).map { pane($0, title: "idle-\($0)", lifecycle: agent(idle())) } + [
+        pane(7, title: "running-7", lifecycle: agent(working()), mark: .running),
+        pane(8, title: "error-8", lifecycle: agent(idle(outcome(1, .failure))), mark: .failed),
+        pane(9, title: "running-9", lifecycle: agent(working()), mark: .running)
+    ]
+    let row = sidebarRows(makeSnapshot([pane(0, children: children)])).rows[1]
+    #expect(row.children == .folded([
+        .init(title: "error-8", status: .error),
+        .init(title: "running-7", status: .running),
+        .init(title: "running-9", status: .running),
+        .init(title: "idle-1", status: .quiet),
+        .init(title: "idle-2", status: .quiet),
+        .init(title: "idle-3", status: .quiet),
+        .init(title: "idle-4", status: .quiet),
+        .init(title: "idle-5", status: .quiet),
+        .init(title: "idle-6", status: .quiet)
+    ]))
+}
+
 @Test func foldedCirclesSummarizePaneSubtrees() {
     func runningChild(_ id: Int) -> Node { pane(id, lifecycle: agent(working()), mark: .running) }
     let children = [
-        pane(1, lifecycle: agent(idle(outcome(1, .success))), mark: .done),
-        pane(2, lifecycle: .lingering(.exited(.init(code: 2)))),
-        pane(3, children: [runningChild(30)]),
-        pane(4, lifecycle: .ended(.exited(.init(code: 0))), children: [runningChild(40)]),
-        pane(5, lifecycle: .lingering(.exited(.init(code: 0))), children: [runningChild(50)]),
-        pane(6, records: [.working(.init(id: "task"))]),
-        pane(7, children: [runningChild(70), pane(10, lifecycle: agent(idle(outcome(1, .failure))), mark: .failed)]),
-        pane(8, records: [.error(.init(id: "seen"))], recordsSeen: true)
+        pane(1, title: "done", lifecycle: agent(idle(outcome(1, .success))), mark: .done),
+        pane(2, title: "failed", lifecycle: .lingering(.exited(.init(code: 2)))),
+        pane(3, title: "live subtree", lifecycle: agent(idle()), children: [runningChild(30)]),
+        pane(4, title: "ended subtree", lifecycle: .ended(.exited(.init(code: 0))), children: [runningChild(40)]),
+        pane(5, title: "lingering subtree", lifecycle: .lingering(.exited(.init(code: 0))), children: [runningChild(50)]),
+        pane(6, title: "working record", lifecycle: agent(idle()), records: [.working(.init(id: "task"))]),
+        pane(7, title: "failed subtree", lifecycle: agent(idle()), children: [runningChild(70), pane(10, lifecycle: agent(idle(outcome(1, .failure))), mark: .failed)]),
+        pane(8, title: "seen record", lifecycle: agent(idle()), records: [.error(.init(id: "seen"))], recordsSeen: true)
     ]
     let row = sidebarRows(makeSnapshot([pane(0, children: children)])).rows[1]
     guard case .folded(let hidden) = row.children else { Issue.record("missing circles"); return }
-    #expect(hidden.map(\.status) == [.quiet, .error, .running, .running, .running, .running, .error, .quiet])
+    #expect(hidden == [
+        .init(title: "failed", status: .error),
+        .init(title: "failed subtree", status: .error),
+        .init(title: "live subtree", status: .running),
+        .init(title: "ended subtree", status: .running),
+        .init(title: "lingering subtree", status: .running),
+        .init(title: "working record", status: .running),
+        .init(title: "done", status: .quiet),
+        .init(title: "seen record", status: .quiet)
+    ])
     #expect(row.status == .quiet)
 }
 
@@ -61,7 +90,11 @@ import KoModel
     let row = rows[2]
     #expect(row.status == .done)
     guard case .folded(let hidden) = row.children else { Issue.record("missing circles"); return }
-    #expect(hidden.map(\.status) == [.running, .quiet, .error])
+    #expect(hidden == [
+        .init(title: "a/e", status: .error),
+        .init(title: "a/b", status: .running),
+        .init(title: "a/d", status: .quiet)
+    ])
 }
 
 @Test func waitOnlyParentsKeepExplicitPaneAndRecordFolds() {

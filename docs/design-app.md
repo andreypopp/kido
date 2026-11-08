@@ -1934,7 +1934,11 @@ children leaves the slot empty, so titles align.
 The children of a folded row that do not show as rows appear as circles
 on the row's second line, right-aligned so that the last one ends under
 the trailing indicator: 6pt status indicators on 10pt centres, one for
-each such direct child in the children's order. A circle summarises the
+each such direct child. The circles are in the order of their status:
+error, then running, then idle; children of one status keep their
+sidebar order. The order applies always, before the cut to `+N`, so
+the line summarises the progress of the work and a running or failed
+child never hides in `+N` behind idle ones. A circle summarises the
 child's whole subtree: the child, its descendant panes at any depth and
 the program records of all of them, reduced by the order error > running
 > idle (`SidebarRow.Status.folded`). A circle has no done: a clean end

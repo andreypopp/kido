@@ -223,7 +223,9 @@ public func sidebarRows(_ snapshot: Snapshot?, expanded: Set<SidebarRow.ID> = []
         let open = expanded.contains(row.id)
         let hidden = open ? [] : children.filter { !$0.waiting }
         let disclosure: SidebarRow.Children = children.isEmpty ? .leaf
-            : open ? .expanded : .folded(hidden.map { .init(title: $0.row.title, status: $0.summary) })
+            : open ? .expanded : .folded(hidden.enumerated().sorted {
+                ($0.element.summary, $0.offset) < ($1.element.summary, $1.offset)
+            }.map { .init(title: $0.element.row.title, status: $0.element.summary) })
         switch row.kind {
         case .pane(let position, _): row.kind = .pane(position, disclosure)
         case .program: row.kind = .program(disclosure)
