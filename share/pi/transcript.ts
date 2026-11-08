@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
 
 const MAX_WEBVIEW_WINDOW_ITEMS = 40;
 const MAX_WEBVIEW_WINDOW_BYTES = 256 * 1024;
@@ -27,12 +28,35 @@ export function promptBody(value: unknown): { text: string; mode: "prompt" | "st
   return { error: "A non-empty text and prompt, steer or follow_up mode are required" };
 }
 
+export function idBody(value: unknown): { id: string } | { error: string } {
+  return value && typeof value === "object" && "id" in value && typeof value.id === "string" ? { id: value.id } : { error: "An id is required" };
+}
+
+export function modelBody(value: unknown): { provider: string; modelId: string } | { error: string } {
+  return value && typeof value === "object" && "provider" in value && typeof value.provider === "string" && "modelId" in value && typeof value.modelId === "string" ? { provider: value.provider, modelId: value.modelId } : { error: "A provider and modelId are required" };
+}
+
+export function thinkingBody(value: unknown, levels: readonly ThinkingLevel[]): { level: ThinkingLevel } | { error: string } {
+  const available = (level: unknown): level is ThinkingLevel => levels.some(value => value === level);
+  return value && typeof value === "object" && "level" in value && available(value.level) ? { level: value.level } : { error: "An available thinking level is required" };
+}
+
+export function dialogBody(value: unknown, dialog: Extract<RpcExtensionUIRequest, { method: "select" | "confirm" | "input" | "editor" }>): RpcExtensionUIResponse | { error: string } {
+  if (value && typeof value === "object") {
+    if ("cancelled" in value && value.cancelled === true) return { type: "extension_ui_response", id: dialog.id, cancelled: true };
+    if (dialog.method === "confirm" && "confirmed" in value && typeof value.confirmed === "boolean") return { type: "extension_ui_response", id: dialog.id, confirmed: value.confirmed };
+    if (dialog.method !== "confirm" && "value" in value && typeof value.value === "string" && (dialog.method !== "select" || dialog.options.includes(value.value))) return { type: "extension_ui_response", id: dialog.id, value: value.value };
+  }
+  return { error: "A valid dialog answer is required" };
+}
+
+const sameTiming = (a: Block, b: Block): boolean => a.started === b.started && a.ended === b.ended;
 type Text = { text: string; cut: number };
 type ToolState = { type: "pending" } | { type: "running"; result?: Text } | { type: "done"; result: Text; error: boolean } | { type: "not_run" };
-type Block = { type: "text" | "thinking"; text: string; redacted?: boolean } | { type: "tool"; id: string; name: string; args: Text; state: ToolState; started?: number; ended?: number; durationMs?: number; exit?: number };
+type Block = { type: "text" | "thinking"; text: string; redacted?: boolean; started?: number; ended?: number } | { type: "tool"; id: string; name: string; args: Text; state: ToolState; started?: number; ended?: number; durationMs?: number; exit?: number };
 type Item = { seq: number; at: number; final: boolean } & (
   { kind: "user"; text: string; images: number } |
-  { kind: "assistant"; blocks: Block[]; stop: string; error: string; lifecycle: "streaming" | "ended" } |
+  { kind: "assistant"; blocks: Block[]; stop: string; error: string; ended?: number; lifecycle: "streaming" | "ended" } |
   { kind: "notice"; customType: string; from: string; text: string } |
   { kind: "bash"; command: string; output: Text; exit?: number } |
   { kind: "summary"; text: string }
@@ -92,7 +116,7 @@ function notRun(item: Assistant): void {
 }
 
 export function transcript({ flushMs }: { flushMs: number }) {
-  let currentState: object = { type: "state" };
+  let currentState: object | undefined;
   let epoch = mintId();
   let items: Item[] = [];
   let assistant: number | undefined;
@@ -103,18 +127,31 @@ export function transcript({ flushMs }: { flushMs: number }) {
   const pending = new Map<number, { message: Extract<AgentMessage, { role: "assistant" }>; phase: "update" | "end" }>();
   const pendingTools = new Map<string, { type: "running"; content: Content } | { type: "done"; content: Content; error: boolean; at?: number; durationMs?: number; structuredContent?: unknown }>();
   let flushTimer: NodeJS.Timeout | null = null;
+  let quietTimer: NodeJS.Timeout | undefined;
+  let written = false;
 
   const body = (req: ServerResponse, text: string, more = false): void => {
     if (req.destroyed || req.writableEnded) return;
-    if (text) req.write(text);
+    if (text) { req.write(text); if (text !== "\n") written = true; }
     if (!more || req.writableLength > MAX_WEBVIEW_OUTPUT_BYTES) {
       req.end();
       subscribers.delete(req);
     }
   };
+  const quiet = (): void => {
+    if (!written || quietTimer) return;
+    // WebKit can hold the last scheme-handler chunk until another write: testWebviewStreamingLastRecord.
+    quietTimer = setTimeout(() => {
+      quietTimer = undefined;
+      if (!written) return;
+      written = false;
+      for (const response of subscribers) body(response, "\n", true);
+    }, 4 * flushMs);
+  };
   const broadcast = (record: unknown): void => {
     const line = JSON.stringify(record) + "\n";
     for (const req of subscribers) body(req, line, true);
+    quiet();
   };
   const window = (before: number): string => {
     let start = Math.min(before, items.length);
@@ -136,9 +173,12 @@ export function transcript({ flushMs }: { flushMs: number }) {
   };
   const publish = (item: Item): void => { dirty.add(item.seq); };
   const applyAssistant = (item: Assistant, message: Extract<AgentMessage, { role: "assistant" }>, ended: boolean): void => {
-    item.blocks = message.content.flatMap((block): Block[] => {
+    item.blocks = message.content.flatMap((block, index): Block[] => {
       if (block.type === "text") return [{ type: "text", text: block.text }];
-      if (block.type === "thinking") return [{ type: "thinking", text: block.thinking, redacted: !!block.redacted }];
+      if (block.type === "thinking") {
+        const previous = item.blocks[index];
+        return [{ type: "thinking", text: block.thinking, redacted: !!block.redacted, ...(previous?.type === "thinking" ? { started: previous.started, ended: previous.ended } : {}) }];
+      }
       if (block.type !== "toolCall") return [];
       const existing = tools.get(block.id)?.block;
       const next: Extract<Block, { type: "tool" }> = { ...existing, type: "tool", id: block.id, name: block.name, args: existing && existing.state.type !== "pending" ? existing.args : cap(JSON.stringify(block.arguments), MAX_WEBVIEW_ARGS_BYTES), state: existing?.state ?? { type: "pending" } };
@@ -156,9 +196,9 @@ export function transcript({ flushMs }: { flushMs: number }) {
   const sameText = (a: Text | undefined, b: Text | undefined): boolean => a?.text === b?.text && a?.cut === b?.cut;
   const sameBlock = (a: Block, b: Block): boolean => {
     if (a.type !== b.type) return false;
-    if (a.type !== "tool" && b.type !== "tool") return a.text === b.text && a.redacted === b.redacted;
+    if (a.type !== "tool" && b.type !== "tool") return a.text === b.text && a.redacted === b.redacted && (a.type !== "thinking" || sameTiming(a, b));
     if (a.type !== "tool" || b.type !== "tool") return false;
-    return a.started === b.started && a.ended === b.ended && a.durationMs === b.durationMs && a.exit === b.exit && a.id === b.id && a.name === b.name && sameText(a.args, b.args) && a.state.type === b.state.type
+    return sameTiming(a, b) && a.durationMs === b.durationMs && a.exit === b.exit && a.id === b.id && a.name === b.name && sameText(a.args, b.args) && a.state.type === b.state.type
       && sameText("result" in a.state ? a.state.result : undefined, "result" in b.state ? b.state.result : undefined)
       && (a.state.type !== "done" || b.state.type === "done" && a.state.error === b.state.error);
   };
@@ -201,11 +241,11 @@ export function transcript({ flushMs }: { flushMs: number }) {
         const blocks = item.blocks.flatMap<{ index: number; suffix: string } | { index: number; block: Block }>((block, index) => {
           const old = previous.blocks[index];
           if (sameBlock(block, old)) return [];
-          if (block.type !== "tool" && old.type === block.type && block.redacted === old.redacted && block.text.startsWith(old.text)) return [{ index, suffix: block.text.slice(old.text.length) }];
+          if (block.type !== "tool" && old.type === block.type && block.redacted === old.redacted && (block.type !== "thinking" || sameTiming(block, old)) && block.text.startsWith(old.text)) return [{ index, suffix: block.text.slice(old.text.length) }];
           return [{ index, block }];
         });
-        if (blocks.length || item.final !== previous.final || item.stop !== previous.stop || item.error !== previous.error) {
-          broadcast({ type: "patch", seq, blocks, final: item.final, stop: item.stop, error: item.error });
+        if (blocks.length || item.final !== previous.final || item.stop !== previous.stop || item.error !== previous.error || item.ended !== previous.ended) {
+          broadcast({ type: "patch", seq, blocks, final: item.final, stop: item.stop, error: item.error, ended: item.ended });
         }
       } else broadcast({ type: "item", item: wireItem(item) });
       if (item.kind === "assistant" && !item.final) sent.set(seq, { ...item, blocks: item.blocks.map((block) => ({ ...block })) });
@@ -213,7 +253,7 @@ export function transcript({ flushMs }: { flushMs: number }) {
     }
     dirty.clear();
   };
-  const applyMessage = (message: AgentMessage, phase: "start" | "update" | "end" | "branch"): void => {
+  const applyMessage = (message: AgentMessage, phase: "start" | "update" | "end" | "branch", ended?: number): void => {
     const branch = phase === "branch";
     if (message.role === "toolResult") {
       if (phase === "end" || branch) {
@@ -234,7 +274,7 @@ export function transcript({ flushMs }: { flushMs: number }) {
         applyAssistant(item, message, branch);
         if (branch) for (const block of item.blocks) if (block.type === "tool") block.started ??= message.timestamp;
       } else pending.set(item.seq, { message, phase });
-      if (phase === "end") assistant = undefined;
+      if (phase === "end") { item.ended = ended; assistant = undefined; }
       if (!branch) { if (phase === "update") schedule(); else flush(); }
       return;
     }
@@ -272,7 +312,13 @@ export function transcript({ flushMs }: { flushMs: number }) {
     for (const req of responses) { subscribers.add(req); body(req, record, true); }
   };
 
-  const message: (message: AgentMessage, phase: "start" | "update" | "end") => void = applyMessage;
+  const message: (message: AgentMessage, phase: "start" | "update" | "end", ended?: number) => void = applyMessage;
+  const thinking = (index: number, edge: "started" | "ended", at: number): void => {
+    flush();
+    const item = assistant === undefined ? undefined : items[assistant];
+    const block = item?.kind === "assistant" ? item.blocks[index] : undefined;
+    if (block?.type === "thinking" && item) { block[edge] = at; publish(item); schedule(); }
+  };
   const state = (record: object): void => { currentState = { ...record, type: "state" }; broadcast(currentState); };
   const toolRunning = (id: string, at: number): void => {
     flush();
@@ -286,6 +332,7 @@ export function transcript({ flushMs }: { flushMs: number }) {
     pendingTools.set(id, { type: "done", content, error, at, durationMs, structuredContent }); flush();
   };
   const close = (): void => {
+    clearTimeout(quietTimer); quietTimer = undefined; written = false;
     if (flushTimer) clearTimeout(flushTimer);
     flushTimer = null;
     for (const response of subscribers) response.end();
@@ -311,9 +358,10 @@ export function transcript({ flushMs }: { flushMs: number }) {
       } else body(req, reset(), true);
       if (req.writableEnded || req.destroyed) return true;
       subscribers.add(req);
-      broadcast(currentState);
+      if (currentState) broadcast(currentState);
+      quiet();
     } else return false;
     return true;
   };
-  return { message, rebuild, toolRunning, toolPartial, toolDone, state, send: broadcast, handle, close };
+  return { message, thinking, rebuild, toolRunning, toolPartial, toolDone, state, send: broadcast, handle, close };
 }

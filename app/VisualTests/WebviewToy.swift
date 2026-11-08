@@ -9,6 +9,14 @@ final class WebviewToy: @unchecked Sendable {
     private var starting: CheckedContinuation<Void, Error>?
     private var delayed: [NWConnection] = []
     private var opened = Set<ObjectIdentifier>()
+    private var eventStream: NWConnection?
+
+    func writeLaterRecord() {
+        queue.async { [self] in
+            guard let eventStream else { return }
+            eventStream.send(content: Self.chunk(96), completion: .contentProcessed { _ in })
+        }
+    }
     var delayedCount: Int { queue.sync { delayed.count } }
     var socketCount: Int { queue.sync { opened.count } }
     let path: String
@@ -77,6 +85,13 @@ final class WebviewToy: @unchecked Sendable {
                 return
             }
             let text = String(decoding: data[..<end.upperBound], as: UTF8.self)
+            if text.hasPrefix("GET /events ") {
+                eventStream = connection
+                connection.send(content: Data("HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\n\r\n".utf8), completion: .contentProcessed { [weak self] error in
+                    if error == nil { self?.events(connection, 0) }
+                })
+                return
+            }
             if text.hasPrefix("POST /body ") {
                 let length = text.components(separatedBy: "\r\n").first(where: { $0.lowercased().hasPrefix("content-length:") })?.split(separator: ":", maxSplits: 1).last.flatMap { Int($0.trimmingCharacters(in: .whitespaces)) } ?? 0
                 body(connection, Data(data[end.upperBound...]), length)
@@ -98,6 +113,21 @@ final class WebviewToy: @unchecked Sendable {
                 let response = Data("HTTP/1.1 200 OK\r\nContent-Type: \(type)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body
                 connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
             }
+        }
+    }
+
+    private static func chunk(_ index: Int) -> Data {
+        let record = "{\"record\":\(index)}\n"
+        return Data("\(String(record.utf8.count, radix: 16))\r\n\(record)\r\n".utf8)
+    }
+
+    private func events(_ connection: NWConnection, _ index: Int) {
+        guard index < 96 else { return }
+        let gap = [0, 2, 0, 7, 1][index % 5]
+        queue.asyncAfter(deadline: .now() + .milliseconds(gap)) { [weak self] in
+            connection.send(content: Self.chunk(index), completion: .contentProcessed { [weak self] error in
+                if error == nil { self?.events(connection, index + 1) }
+            })
         }
     }
 

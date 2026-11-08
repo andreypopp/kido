@@ -166,6 +166,78 @@ a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in 
 .status .k{color:var(--faint)}
 .narrow .status .hide-n,html[data-width=narrow] .status .hide-n{display:none}
 
+/* ---- dialogs from extensions (pi's select / confirm / input / editor) ---- */
+.dialogs{flex-shrink:0;max-width:720px;width:100%;margin:0 auto;padding:0 24px 10px}
+.narrow .dialogs,html[data-width=narrow] .dialogs{padding:0 14px 8px}
+.dialog{position:relative;border:1px solid var(--hair2);border-radius:9px;background:var(--bg);padding:11px 12px 10px;overflow:hidden}
+.dialog .head{display:flex;align-items:baseline;gap:12px;margin-bottom:4px}
+.dialog .title{font-weight:600;flex:1;min-width:0}
+.dialog .count{font:.8em/1.4 var(--mono);color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+.dialog .msg2{color:var(--muted);margin:0 0 8px}
+.dialog .fuse{position:absolute;left:0;top:0;height:2px;background:var(--accent);opacity:.7;width:62%}
+.opts{margin:2px 0 6px;display:flex;flex-direction:column;gap:1px}
+.opt{display:flex;align-items:baseline;gap:9px;padding:4px 8px;border-radius:6px;font:.95em/1.5 var(--prose)}
+.opt .k{font:.85em var(--mono);color:var(--faint);width:12px;text-align:center}
+.opt.cur{background:var(--well2)}
+.opt.cur .k{color:var(--accent)}
+.opt .d{color:var(--muted);font-size:.9em;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dialog .in{border:1px solid var(--hair2);border-radius:7px;padding:6px 9px;margin:2px 0 8px;color:var(--fg);min-height:1.6em;background:var(--bg)}
+.dialog .in.focus{border-color:color-mix(in srgb,var(--ko-fg) 40%,var(--ko-bg))}
+.dialog .in.multi{min-height:calc(4*1.6em + 12px);white-space:pre-wrap}
+.dialog .in .ph{color:var(--faint)}
+.dialog .foot{display:flex;align-items:center;gap:8px;margin-top:2px;font:.8em/1.4 var(--mono);color:var(--faint)}
+.dialog .foot .sp{flex:1}
+.btn{border:1px solid var(--hair2);border-radius:7px;background:var(--bg);color:var(--fg);padding:3px 11px;font:.95em/1.5 var(--prose);cursor:pointer}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+.btn:hover{background:var(--well)}
+.btn.primary:hover{background:color-mix(in srgb,var(--accent) 85%,var(--ko-fg))}
+.dialog .btn kbd{font:.8em var(--mono);opacity:.6;margin-left:6px}
+.queued-next{display:flex;align-items:baseline;gap:8px;margin:6px 2px 0;font:.8em/1.4 var(--mono);color:var(--faint)}
+.queued-next b{font-weight:500;color:var(--muted)}
+
+/* ---- the queue: steering and follow-ups pi holds while it works ---- */
+.queue{margin:6px 2px 0;font:.85em/1.5 var(--prose);color:var(--muted)}
+.queue .q{display:flex;align-items:baseline;gap:9px;padding:2px 0}
+.queue .tag{font:.8em var(--mono);color:var(--faint);width:62px;flex-shrink:0;text-transform:lowercase}
+.queue .q .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.queue .take{display:flex;align-items:center;gap:8px;margin-top:3px;font:.8em/1.4 var(--mono);color:var(--faint)}
+.queue .take .btn{font:1em var(--mono);padding:1px 8px;color:var(--muted)}
+
+/* ---- pickers from the status bar ---- */
+.pane{position:relative}
+.picker{position:absolute;bottom:30px;z-index:3;min-width:220px;max-width:calc(100% - 24px);background:var(--bg);border:1px solid var(--hair2);border-radius:9px;box-shadow:0 8px 28px color-mix(in srgb,var(--ko-fg) 14%,transparent);padding:6px;font:.88em/1.5 var(--mono);color:var(--fg)}
+.picker .ph{padding:2px 8px 6px;color:var(--faint);font-size:.9em}
+.picker .row{display:flex;align-items:baseline;gap:10px;padding:3px 8px;border-radius:6px;white-space:nowrap}
+.picker .row .tick{width:10px;color:var(--accent);flex-shrink:0}
+.picker .row .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.picker .row .p{color:var(--faint);font-size:.9em}
+.picker .row.cur{background:var(--well2)}
+.picker .hints{margin-top:4px;padding:5px 8px 0;border-top:1px solid var(--hair);color:var(--faint);font-size:.85em}
+.status .seg.pick{color:var(--fg);background:var(--well2);border-radius:5px;height:20px;margin:0 4px 0 -6px;padding:0 10px 0 6px;border-right:0}
+.status .seg.pick+.seg{padding-left:6px}
+
+/* ---- toast and extension status in the bar ---- */
+.status .seg.grow{display:flex;align-items:center;gap:7px}
+.toast{display:inline-flex;align-items:center;gap:7px;min-width:0}
+.toast .i{display:inline-grid;place-items:center;width:12px;height:12px;border-radius:50%;font:700 9px/1 var(--mono);color:var(--bg);flex-shrink:0}
+.toast.info .i{background:var(--accent)}.toast.warn .i{background:var(--warn)}.toast.error .i{background:var(--err)}
+.toast .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+.toast .t.m{color:var(--muted)}
+.ext{color:var(--muted)}
+.ext .k{color:var(--faint)}
+
+/* ---- pi exited ---- */
+.exited{flex-shrink:0;max-width:720px;width:100%;margin:0 auto;padding:0 24px 12px}
+.narrow .exited,html[data-width=narrow] .exited{padding:0 14px 10px}
+.exited .card{border:1px solid color-mix(in srgb,var(--ko-color-1) 35%,var(--ko-bg));border-radius:9px;padding:10px 12px 10px;background:var(--bg)}
+.exited .head{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
+.exited .title{font-weight:600;flex:1}
+.exited .title .err{font-weight:500}
+.exited pre{margin:0 0 10px;max-height:140px;color:var(--muted);font-size:.86em}
+.exited .acts{display:flex;align-items:center;gap:10px;font:.8em/1.4 var(--mono);color:var(--faint)}
+.exited .acts .sp{flex:1}
+.status .dot.off{background:var(--err)}
+
 /* idle empty */
 .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--faint);gap:8px;font:.95em var(--prose)}
 .empty .wordmark{font:500 1.2em var(--mono);color:var(--muted);letter-spacing:.02em}
@@ -219,6 +291,30 @@ a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in 
 <section id="s-narrow"><h2>9 · The narrow pane (60 columns)</h2>
 <p>Same page at 60 terminal cells. The transcript loses its centring margin, tables scroll inside their block, the run lines ellipsize their summary before the time, the status bar drops its optional segments.</p>
 <div class="grid"><div class="pane narrow" data-state="stream"></div><div class="pane narrow" data-state="run-details"></div></div></section>
+
+<section id="s-dialog"><h2>10 · A dialog from an extension</h2>
+<p>pi's extension UI (<code>select</code>, <code>confirm</code>, <code>input</code>, <code>editor</code>) is a card above the composer, in the content column: the title in 600 weight, the optional message muted, the countdown at the right of the title with a 2pt accent fuse along the card's top edge that shrinks to zero. The composer stays visible but inert under it; the status bar says "waiting for you". A second queued dialog is a one-line note under the card.</p>
+<div class="grid"><div class="pane" data-state="dialog-select"></div><div class="pane short" data-state="dialog-confirm"></div><div class="pane short" data-state="dialog-input"></div><div class="pane" data-state="dialog-editor"></div></div></section>
+
+<section id="s-queue"><h2>11 · The queue while koa works</h2>
+<p>Steering and follow-up messages pi holds are listed under the field, one line each, tagged in the terminal font; "take back" (pi's <code>clear_queue</code>) empties the queue into the composer, every message on its own paragraph, and leaves the caret at the end.</p>
+<div class="grid"><div class="pane short" data-state="queue"></div><div class="pane short narrow" data-state="queue"></div></div></section>
+
+<section id="s-pickers"><h2>12 · The model and thinking pickers</h2>
+<p>Clicking the model or the thinking segment opens a popover above it; the segments are buttons, so Tab from the composer reaches them and Return or Space opens. The popover is a list in the terminal font, the current entry ticked, the highlighted row filled, the provider faint at the right. Arrows move, Return applies and closes, Escape closes without a change. The opened segment is filled while its popover is up.</p>
+<div class="grid"><div class="pane short" data-state="picker-model"></div><div class="pane short" data-state="picker-thinking"></div><div class="pane short narrow" data-state="picker-model"></div></div></section>
+
+<section id="s-toast"><h2>13 · Notifications and extension status in the bar</h2>
+<p>An extension's <code>notify</code> is a toast in the bar's flexible segment for 4 s: a 12pt badge (i, !, ✕ in accent, warning, error) and the message, ellipsized, replaced by a newer one. An extension's <code>setStatus</code> adds a segment under its key, between the context segment and the toast, in key order; an empty value removes it.</p>
+<div class="grid"><div class="pane short" data-state="toast-info"></div><div class="pane short" data-state="toast-warn"></div><div class="pane short" data-state="toast-error"></div><div class="pane short narrow" data-state="toast-warn"></div></div></section>
+
+<section id="s-exited"><h2>14 · pi has exited</h2>
+<p>The transcript stays. The composer's place holds a card with a red-tinted hairline: the exit cause, the last lines of pi's stderr in a well, and "Start pi again"; Return starts it. The status bar's dot is red and reads "pi exited · code 1" (or "signal SIGKILL"), the model and context segments keep their last values.</p>
+<div class="grid"><div class="pane" data-state="exited"></div><div class="pane narrow" data-state="exited"></div></div></section>
+
+<section id="s-times"><h2>15 · Step and run times</h2>
+<p>Every step shows its own time at the right, the thinking step included (<code>✓ 6s</code>); an aborted run shows its elapsed time like any other run, and its aborted step shows the time it ran before the abort.</p>
+<div class="pane" data-state="times"></div></section>
 
 <p class="note">Open questions and the data each part needs are in NOTES.md beside this file.</p>
 
@@ -330,6 +426,37 @@ FAIL unit 40.2s`}),
   'status-working':()=>transcript('')+composer('working')+status('working'),
   'status-waiting':()=>transcript(`<div class="msg assistant"><p>Two readings of "linger grace" differ. Which one: the server's <code>linger</code> key, or the pane's own value?</p></div>`)+composer('empty')+status('waiting'),
 };
+
+const dialogCard=(o)=>`<div class="dialogs"><div class="dialog">${o.timeout?'<span class="fuse" style="width:'+o.timeout.pct+'%"></span>':''}<div class="head"><span class="title">${o.title}</span>${o.timeout?'<span class="count">'+o.timeout.left+'</span>':''}</div>${o.message?'<div class="msg2">'+o.message+'</div>':''}${o.body||''}<div class="foot">${o.hint}<span class="sp"></span>${o.buttons}</div></div>${o.next?'<div class="queued-next">+1 queued <b>·</b> <b>'+o.next+'</b></div>':''}</div>`;
+const sel=(opts,cur)=>`<div class="opts">${opts.map((o,i)=>`<div class="opt${i===cur?' cur':''}"><span class="k">${i===cur?'›':''}</span><span>${o[0]}</span><span class="d">${o[1]||''}</span></div>`).join('')}</div>`;
+const inertComposer=()=>`<div class="composer"><div class="field"><div class="text ph">Message koa…</div><div class="foot"><span class="sp"></span><button class="act off" aria-label="Send"><svg viewBox="0 0 16 16"><path d="M3 8h9.5M8.3 3.8 12.5 8l-4.2 4.2"/></svg></button></div></div></div>`;
+const userDialog=()=>transcript(userMsg('Release 0.32 and write the notes')+run({sum:`<span class="spin"></span> running <b>release</b> <span class="delta">· step 2 of 2</span>`,res:`<span class="time">8s</span>`,steps:[]}));
+const queueBlock=()=>`<div class="queue"><div class="q"><span class="tag">steer</span><span class="t">skip the Linux check, I'll run it in CI</span></div><div class="q"><span class="tag">steer</span><span class="t">use the tap's revision from the last release, not HEAD</span></div><div class="q"><span class="tag">follow-up</span><span class="t">then draft the release notes from the commits since 0.31</span></div><div class="take">3 queued<span class="sp" style="flex:1"></span><button class="btn">take back</button></div></div>`;
+const statusWith=(kind,extra)=>status(kind).replace('<span class="seg grow"></span>',extra);
+const picker=(o)=>`<div class="picker" style="left:${o.left}px"><div class="ph">${o.ph}</div>${o.rows.map(r=>`<div class="row${r.cur?' cur':''}"><span class="tick">${r.on?'✓':''}</span><span class="n">${r.n}</span>${r.p?'<span class="p">'+r.p+'</span>':''}</div>`).join('')}<div class="hints">↑↓ move · ↩ choose · ⎋ close</div></div>`;
+const toast=(k,t)=>`<span class="seg grow"><span class="toast ${k}"><span class="i">${k==='info'?'i':k==='warn'?'!':'✕'}</span><span class="t">${t}</span></span></span>`;
+const ext=(pairs)=>pairs.map(([k,v])=>`<span class="seg ext"><span class="k">${k}</span>${v}</span>`).join('');
+Object.assign(states,{
+  'dialog-select':()=>userDialog()+dialogCard({title:'Which tap revision?',message:'release.sh found three candidates for 0.32.',timeout:{left:'12s',pct:62},body:sel([['0.31.1 · 20857320','current main'],['0.31.0 · 6153fce8','last release'],['custom…','type a revision']],0),hint:'↑↓ choose',buttons:'<button class="btn">Cancel<kbd>⎋</kbd></button><button class="btn primary">Select<kbd>↩</kbd></button>',next:'Confirm the force-push'})+inertComposer()+status('waiting'),
+  'dialog-confirm':()=>transcript('')+dialogCard({title:'Force-push main?',message:'origin/main moves from 20857320 to 88bdb070. Other clones need a reset.',buttons:'<button class="btn">No<kbd>⎋</kbd></button><button class="btn primary">Yes<kbd>↩</kbd></button>',hint:''})+inertComposer()+status('waiting'),
+  'dialog-input':()=>transcript('')+dialogCard({title:'Version for the tap',timeout:{left:'43s',pct:88},body:'<div class="in focus">0.32.0<span class="caret"></span></div>',hint:'',buttons:'<button class="btn">Cancel<kbd>⎋</kbd></button><button class="btn primary">Submit<kbd>↩</kbd></button>'})+inertComposer()+status('waiting'),
+  'dialog-editor':()=>transcript('')+dialogCard({title:'Release notes',message:'Edit the draft; empty cancels.',body:'<div class="in multi focus">## 0.32\n\n- The sidebar shows status at the right and folds children\n- A program can show a webview page in its pane<span class="caret"></span></div>',hint:'⇧↩ newline',buttons:'<button class="btn">Cancel<kbd>⎋</kbd></button><button class="btn primary">Submit<kbd>⌃↩</kbd></button>'})+inertComposer()+status('waiting'),
+  queue:()=>transcript(userMsg('Release 0.32')+run({sum:`<span class="spin"></span> running <b>make verify</b> <span class="delta">· step 3 of 3</span>`,res:`<span class="time">1m02s</span>`,steps:[]}))+`<div class="composer"><div class="field working"><div class="text ph">Steer koa…</div><div class="foot"><span class="hint">↩ steers while koa works</span><span class="sp"></span><button class="act stop" aria-label="Abort"><svg viewBox="0 0 16 16"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5" fill="currentColor" stroke="none"/></svg></button></div></div>${queueBlock()}</div>`+status('working'),
+  'picker-model':()=>transcript('')+composer('empty')+picker({left:84,ph:'Model',rows:[{n:'claude-opus-5-5',p:'anthropic',on:true},{n:'claude-sonnet-5-5',p:'anthropic',cur:true},{n:'claude-fable-5-1',p:'claude-bridge'},{n:'gpt-6.1-sol',p:'openai-codex'},{n:'gpt-6-astra',p:'openai-codex'}]})+status('idle').replace('<span class="seg">claude-opus-5-5','<span class="seg pick">claude-opus-5-5'),
+  'picker-thinking':()=>transcript('')+composer('empty')+picker({left:196,ph:'Thinking',rows:[{n:'off'},{n:'minimal'},{n:'low'},{n:'medium',cur:true},{n:'high',on:true},{n:'xhigh'}]})+status('idle'),
+  'toast-info':()=>transcript('')+composer('empty')+statusWith('idle',ext([['git','↑2'],['tests','3 failing']])+toast('info','Worktree ~/Workspace/kido-release created')),
+  'toast-warn':()=>transcript('')+composer('empty')+statusWith('working',ext([['git','↑2']])+toast('warn','Context at 78%, compaction soon')),
+  'toast-error':()=>transcript('')+composer('empty')+statusWith('idle',toast('error','extension release: tap checkout is dirty, refusing to commit')),
+  exited:()=>transcript(userMsg('Release 0.32')+run({sum:`<span class="ok">✓</span> 3 steps <span class="delta">· 1 read, 2 commands</span>`,res:`<span class="time">48s</span>`,steps:[]})+`<div class="msg assistant"><p>The tap formula is updated; pushing now.</p></div>`)+`<div class="exited"><div class="card"><div class="head"><span class="title">pi exited <span class="err">· code 1</span></span><span class="count" style="font:.8em/1.4 var(--mono);color:var(--faint)">14:41</span></div><pre>node:internal/process/esm_loader:108
+    throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@kido/webview'
+    at packageResolve (node:internal/modules/esm/resolve:873:9)
+    at moduleResolve (node:internal/modules/esm/resolve:946:18)</pre><div class="acts">last 5 lines of pi's stderr · the whole output is in the pane's terminal<span class="sp"></span><button class="btn primary">Start pi again<kbd style="font:.8em var(--mono);opacity:.6;margin-left:6px">↩</kbd></button></div></div></div>`+status('idle').replace('<span class="dot"></span>idle','<span class="dot off"></span>pi exited <span class="k">· code 1</span>'),
+  times:()=>transcript(userMsg('Make the sweep keep a start failure, then run the whole unit stage')+run({open:true,sum:`<span class="ok">✓</span> 4 steps <span class="delta">· thinking, 1 read, 1 edit, 1 command</span>`,res:`<span class="time">10s</span>`,steps:runSteps()})+`<div class="msg assistant"><p>Done. Now the unit stage.</p></div>`+run({open:true,sum:`<span class="warn">⊘</span> aborted <span class="delta">· 2 steps, you pressed Escape</span>`,res:`<span class="time">27s</span>`,steps:[
+    step.think({sum:'thinking <span class="delta">· which stages the unit stage runs</span>',res:ok('4s')}),
+    step.bash({cmd:'make verify STAGES=unit',res:`<span class="time"><span class="warn">aborted</span> 23s</span>`,out:''}),
+  ]}))+composer('empty')+status('aborted'),
+});
 
 for(const pane of document.querySelectorAll('.pane')){pane.innerHTML=states[pane.dataset.state]();
   if(pane.dataset.state!=='stream'){}}

@@ -259,7 +259,14 @@ lifecycle").
 **pi exits by itself.** koa keeps the pane: the transcript stays, the
 status bar says `pi exited N` or `pi died by SIGNAL`, the composer
 shows the last 20 lines of pi's stderr, and a "Start pi again" action
-spawns pi with `--session <sessionFile>` from the last `get_state`.
+spawns pi again with the original arguments minus the session flags
+(`--session`, `--session-id`, `--fork`, `--continue`, `--no-session`)
+and minus `--model` and `--thinking`, plus `--session <sessionFile>`
+from the last `get_state`: the session file's model and thinking
+changes are the selection, so a picker change survives the restart.
+Without a known session file (`--no-session`, or pi died before
+`get_state`), the original arguments run unchanged and the exit view
+says that the session starts fresh.
 The reason: a pane with the default `close: exit` vanishes with koa,
 and the user must see the failure. A crash of koa itself is a loud
 stop, as everywhere in ko.
@@ -381,7 +388,7 @@ panes"):
 | `/model` | `{ provider, modelId }` | `set_model`; `GET /models` lists `get_available_models` |
 | `/thinking` | `{ level }` | `set_thinking_level`; the levels come in `state` |
 | `/dialog` | `{ id, value? , confirmed?, cancelled? }` | `extension_ui_response` |
-| `/session/new` | `{}` | `new_session` |
+| `/editor/ack` | `{ id }` | none: clears `state.editor` when its id matches, after the page applied the text |
 | `/pi/start` | `{}` | spawns pi again after an exit |
 | `/quit` | `{}` | koa ends |
 | `/metrics` | a batch of samples | written to the metrics file |
@@ -661,7 +668,7 @@ unit. The order is fixed, because each unit builds on the one before.
    messages carry no thinking times. koa also stamps a live assistant
    item's end at `message_end`, so an aborted run, whose pending tools
    have no times, shows its elapsed time. `/queue/clear`, `/model`,
-   `/models`, `/thinking`, `/dialog`, `/session/new`, `/pi/start`, the
+   `/models`, `/thinking`, `/dialog`, `/editor/ack`, `/pi/start`, the
    dialog card, the queue under the composer, `notify`, `setStatus`
    and `set_editor_text`, and the exit view with "Start pi again".
    Tests: the composer and the restart tests of section 5.

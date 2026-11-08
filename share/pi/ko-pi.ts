@@ -1473,6 +1473,7 @@ async function routedGrep(r: Routed, params: GrepToolInput, signal: AbortSignal 
 
 export default function (pi: ExtensionAPI) {
   if (!isFirstCopy()) return;
+  pi.registerFlag("harness", { description: "Use the koa harness for child agents", type: "string" });
   pi.registerFlag("webview", { description: "Show the session in a webview when supported", type: "boolean" });
   pi.registerFlag("webview-browser", { description: "Show the session in a browser, served on localhost", type: "boolean" });
   pi.registerFlag("runtime", { description: "Run the built-in tools and ! commands in a configured runtime or an ad-hoc runtime of this session by name", type: "string" });
@@ -2787,7 +2788,8 @@ export default function (pi: ExtensionAPI) {
       trusted = "error" in info ? undefined : mapHostPath(info.paths, trusted) ?? info.cwd;
     }
     const argv = [
-      inside ? "ko" : ko, "shell", "--", "ko-pi",
+      inside ? "ko" : ko, "shell", "--", pi.getFlag("harness") === undefined ? "ko-pi" : "koa",
+      ...(pi.getFlag("harness") === "koa-browser" ? ["--browser"] : []),
       ...(plan.runtime?.mode === "routed" ? ["--runtime", plan.runtime.name] : []),
       ...(plan.mode.kind === "continue" ? ["--session", plan.mode.file] : ["--session-id", plan.session]),
       "--name", plan.name,
@@ -3473,6 +3475,8 @@ export default function (pi: ExtensionAPI) {
   let startupCancelled = false;
 
   pi.on("session_start", async (_event, ctx) => {
+    const flag = pi.getFlag("harness");
+    if (flag !== undefined && flag !== "koa" && flag !== "koa-browser") throw new Error("--harness must be koa or koa-browser");
     ko = insideKo() ? findKo() : null;
     session = ctx;
     ownSessionId = ctx.sessionManager.getSessionId() || null;

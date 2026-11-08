@@ -421,7 +421,8 @@ environment and the request's. A pi that the user starts in a pane
 runs under `ko shell`, which read the user's dotfiles: EDITOR, PATH
 additions, API keys, LANG. So that every agent gets the same
 environment, the extension starts each pi, child or top-level, new or
-restarted, as `<its ko path> shell -- ko-pi ...`. A job runs its
+restarted, as `<its ko path> shell -- ko-pi ...` (or `-- koa ...`
+under `--harness`, design-subagents.md). A job runs its
 command through pi's shell configuration, as pi's `bash` does,
 because its command is not an agent.
 

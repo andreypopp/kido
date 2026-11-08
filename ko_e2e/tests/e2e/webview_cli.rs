@@ -8,7 +8,8 @@ use serde_json::json;
 use tungstenite::Message;
 
 use crate::harness::{
-    DEADLINE, Run, Server, ko, poll, quote, run_ko, start, test_env, text_of, within,
+    DEADLINE, Run, Server, chunk, dechunk, ko, poll, quote, run_ko, start, test_env, text_of,
+    within,
 };
 
 fn webview(s: &Server, pane: Option<&str>, args: &[&str], stdin: &str) -> Run {
@@ -39,6 +40,99 @@ fn accept(listener: &UnixListener) -> UnixStream {
     let (stream, _) = listener.accept().unwrap();
     within(&stream, Instant::now() + DEADLINE);
     stream
+}
+
+fn read_head(stream: &mut UnixStream) -> Vec<u8> {
+    let deadline = Instant::now() + DEADLINE;
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        within(stream, deadline);
+        let mut byte = [0];
+        stream.read_exact(&mut byte).unwrap();
+        head.push(byte[0]);
+        assert!(head.len() <= 16384);
+    }
+    head
+}
+
+#[test]
+fn webview_cli_streams_irregular_chunks_without_a_later_write() {
+    let s = start(&[]);
+    let socket = s.scratch.join("events.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let pane = s.token_pane(&format!(
+        "{} webview enter; exec {} webview serve --socket {}",
+        quote(text_of(&ko())),
+        quote(text_of(&ko())),
+        quote(text_of(&socket))
+    ));
+    s.wait_row(&pane, "webview bridge", |row| {
+        row["webview"]["serving"] == true
+    });
+    let (_client, welcome) = s.client(None);
+    let headers = s.client_headers(welcome["client"].as_str().unwrap());
+    let mut response = s.send_request(
+        "GET",
+        &format!("/panes/{pane}/webview/events"),
+        &headers,
+        b"",
+    );
+    let records: Vec<_> = (0..96)
+        .map(|i| {
+            format!(
+                "{{\"record\":{i},\"pad\":\"{}\"}}\n",
+                "x".repeat([0, 71, 4093, 60000][(i + 1) % 4])
+            )
+        })
+        .collect();
+    let expected = records.concat();
+    let (stop, stopped) = mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        let mut stream = accept(&listener);
+        read_head(&mut stream);
+        stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: application/x-ndjson\r\n\r\n").unwrap();
+        for (i, record) in records.iter().enumerate() {
+            assert!(
+                stopped
+                    .recv_timeout(std::time::Duration::from_micros(
+                        [170, 2300, 490, 7100, 40][i % 5]
+                    ))
+                    .is_err()
+            );
+            write!(stream, "{:x}\r\n{record}\r\n", record.len()).unwrap();
+        }
+        stopped.recv_timeout(DEADLINE).unwrap();
+    });
+    let mut body = Vec::new();
+    let mut raw = Vec::new();
+    let head = s.read_head(&mut response, &mut raw);
+    assert_eq!(head.status, 200);
+    raw.drain(..head.size);
+    let deadline = Instant::now() + DEADLINE;
+    while body.len() < expected.len() {
+        while let Some((used, bytes)) = chunk(&raw) {
+            assert!(!bytes.is_empty());
+            body.extend_from_slice(bytes);
+            raw.drain(..used);
+        }
+        if body.len() == expected.len() {
+            break;
+        }
+        within(&response, deadline);
+        let mut bytes = [0; 4096];
+        let count = response.read(&mut bytes).unwrap_or_else(|error| {
+            panic!(
+                "stream stalled: received {} of {} bytes: {error}",
+                body.len(),
+                expected.len()
+            )
+        });
+        assert_ne!(count, 0);
+        raw.extend_from_slice(&bytes[..count]);
+    }
+    assert_eq!(body, expected.as_bytes());
+    stop.send(()).unwrap();
+    writer.join().unwrap();
 }
 
 #[test]
@@ -92,15 +186,7 @@ fn webview_cli_closing_socket_drains_a_blocked_program_writer() {
     assert!(matches!(page.read().unwrap(), Message::Close(_)));
     let response = s.send_request("GET", &format!("/panes/{pane}/webview/marker"), &plain, b"");
     let mut marker = accept(&listener);
-    let mut request = Vec::new();
-    let mut byte = [0; 1];
-    let deadline = Instant::now() + DEADLINE;
-    while !request.ends_with(b"\r\n\r\n") {
-        within(&marker, deadline);
-        assert_eq!(marker.read(&mut byte).unwrap(), 1);
-        request.push(byte[0]);
-        assert!(request.len() < 16384);
-    }
+    let request = read_head(&mut marker);
     assert!(request.starts_with(b"GET /marker HTTP/1.1\r\n"));
     marker
         .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
@@ -324,22 +410,7 @@ fn webview_cli_escapes_and_unix_http_websocket_bridge() {
         assert!(n > 0);
         bytes.extend_from_slice(&chunk[..n]);
     }
-    let mut raw = &bytes[head.size..];
-    let mut body = Vec::new();
-    loop {
-        let httparse::Status::Complete((start, count)) = httparse::parse_chunk_size(raw).unwrap()
-        else {
-            panic!("short chunk");
-        };
-        let count = usize::try_from(count).unwrap();
-        if count == 0 {
-            break;
-        }
-        body.extend_from_slice(&raw[start..start + count]);
-        assert_eq!(&raw[start + count..start + count + 2], b"\r\n");
-        raw = &raw[start + count + 2..];
-    }
-    assert_eq!(body, b"<p>page");
+    assert_eq!(dechunk(&bytes[head.size..]).unwrap(), b"<p>page");
     let plain_headers = headers.clone();
     headers.extend([
         ("Upgrade".into(), "websocket".into()),

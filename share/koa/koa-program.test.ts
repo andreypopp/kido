@@ -10,13 +10,13 @@ import timers from "node:timers/promises";
 import { Readable } from "node:stream";
 import { assistant, ndjson } from "../pi/ko-pi-fixture.ts";
 
-async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv = {}, pi?: string) {
+async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv = {}, pi?: string, startup = true, args: string[] = []) {
   const dir = await mkdtemp(join(tmpdir(), "koa-test-"));
   const script = join(dir, "script");
   const log = join(dir, "log");
   await writeFile(join(dir, process.platform === "darwin" ? "open" : "xdg-open"), '#!/bin/sh\nprintf "%s\\n" "$1" >> "$OPEN_LOG"\n', { mode: 0o700 });
   await writeFile(script, steps.map(value => JSON.stringify(value)).join("\n"));
-  const child = spawn(process.execPath, [resolve("../koa/koa.ts"), "--browser", "--pi", pi ?? resolve("../koa/koa-fake-pi.ts"), "--no-session"], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, OPEN_LOG: join(dir, "urls"), KOA_FAKE_SCRIPT: script, KOA_FAKE_LOG: log, KOA_PI_EXIT_MS: "30", ...env }, stdio: "pipe" });
+  const child = spawn(process.execPath, [resolve("../koa/koa.ts"), "--browser", "--pi", pi ?? resolve("../koa/koa-fake-pi.ts"), "--no-session", ...args], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, OPEN_LOG: join(dir, "urls"), KOA_FAKE_SCRIPT: script, KOA_FAKE_LOG: log, KOA_PI_EXIT_MS: "30", ...env }, stdio: "pipe" });
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", bytes => { stdout += bytes; });
@@ -32,9 +32,66 @@ async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv =
   assert.ok(response.body);
   const { state: stream, until } = ndjson(Readable.from(response.body));
   const post = (path: string, body: object = {}) => fetch(base + path, { method: "POST", body: JSON.stringify(body) });
-  await until(record => record.type === "state" && (pi ? !!record.pi : Array.isArray(record.levels) && record.levels.length === 3));
+  if (startup) await until(record => record.type === "state" && (pi ? record.pi?.type === "exited" : Array.isArray(record.levels) && record.levels.length === 3));
   return { post, until, count: () => stream.records.length, close, stdout: () => stdout, stderr: () => stderr, log: async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line)), base };
 }
+test("startup refuses prompts until the snapshot response is applied", { timeout: 10000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), "koa-startup-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const gate = join(dir, "gate");
+  const server = createServer();
+  await new Promise<void>(resolve => server.listen(gate, resolve));
+  t.after(() => server.close());
+  const connected = once(server, "connection");
+  const pi = join(dir, "pi.mjs");
+  await writeFile(pi, `#!/usr/bin/env node
+import { connect } from 'node:net';
+let buffer = '', snapshot, answered = false, released = false;
+const complete = () => { if (snapshot && answered && released) { send(snapshot, {messages:[{role:'user',content:'snapshot',timestamp:1}]}); snapshot = undefined; } };
+const send = (v, data) => process.stdout.write(JSON.stringify({type:'response',command:v.type,id:v.id,success:true,data})+'\\n');
+process.stdin.on('data', bytes => {
+  buffer += bytes;
+  let end;
+  while ((end = buffer.indexOf('\\n')) >= 0) {
+    const v = JSON.parse(buffer.slice(0,end)); buffer = buffer.slice(end+1);
+    if (v.type === 'get_messages') {
+      snapshot = v;
+      process.stdout.write(JSON.stringify({type:'extension_ui_request',method:'select',id:'startup-dialog',title:'Continue?',options:['Yes','No']})+'\\n');
+      const socket = connect(process.env.KOA_STARTUP_GATE);
+      socket.on('data', () => { released = true; complete(); socket.end(); });
+    } else if (v.type === 'extension_ui_response') { answered = v.id === 'startup-dialog' && v.value === 'Yes'; complete(); }
+    else send(v, v.type === 'get_available_thinking_levels' ? {levels:['off','low','high']} : {});
+  }
+});
+process.stdin.on('end', () => process.exit(0));
+`, { mode: 0o700 });
+  const app = await fixture(t, [], { KOA_STARTUP_GATE: gate }, pi, false);
+  const [socket] = await connected;
+  t.after(() => socket.destroy());
+  const early = await app.post("prompt", { text: "too early", mode: "prompt" });
+  assert.equal(early.status, 409);
+  assert.match((await early.json()).error, /starting/);
+  for (const [route, body] of [["model", {provider:"test",modelId:"early"}], ["thinking", {level:"high"}], ["queue/clear", {}], ["abort", {}], ["editor/ack", {id:"early"}]] as const) {
+    const result = await app.post(route, body);
+    assert.equal(result.status, 409, route);
+    assert.match((await result.json()).error, /starting/, route);
+  }
+  const models = await fetch(app.base + "models");
+  assert.equal(models.status, 409);
+  assert.match((await models.json()).error, /starting/);
+  const startup = await app.until(record => record.type === "state" && record.dialogs?.[0]?.id === "startup-dialog");
+  assert.equal(startup.pi.type, "starting");
+  const afterDialog = app.count();
+  assert.equal((await app.post("dialog", {id:"startup-dialog",value:"Yes"})).status, 200);
+  assert.equal((await app.post("prompt", {text:"still starting",mode:"prompt"})).status, 409);
+  socket.write("ready");
+  const ready = await app.until(record => record.type === "state" && record.pi?.type === "ready", afterDialog);
+  assert.equal(ready.dialogs.length, 0);
+  const page = await (await fetch(app.base + "items?before=99")).json();
+  assert.equal(page.items[0].text, "snapshot");
+  assert.equal((await app.post("prompt", { text: "ready", mode: "prompt" })).status, 200);
+});
+
 const assistantMessage = { ...assistant("stop"), api: "test", provider: "test", model: "test", usage: {}, timestamp: 42 };
 
 test("RPC deltas, authoritative ends, tools, state, status and command correlation", { timeout: 10000 }, async t => {
@@ -109,6 +166,13 @@ test("tool deltas, end replacement, timing and compaction rebuild", { timeout: 1
   assert.match(text, /durationMs":17/);
   assert.match(text, /started":\d+/);
   assert.match(text, /ended":\d+/);
+  const timed = await (await fetch(app.base + "items?before=99")).json();
+  const thinking = timed.items[0].blocks[0];
+  assert.equal(thinking.type, "thinking");
+  assert.equal(typeof thinking.started, "number");
+  assert.equal(typeof thinking.ended, "number");
+  assert.ok(thinking.ended >= thinking.started);
+  assert.equal(typeof timed.items[0].ended, "number");
   await app.until(record => record.type === "patch" && JSON.stringify(record).includes("final thought"));
   await app.until(record => record.type === "state" && record.working === false && record.aborted === false);
   assert.match(app.stdout(), /\x1b\]7501;state=done:app=pi/);
@@ -123,23 +187,116 @@ test("a rebuild response is applied before later records in the same byte chunk"
   assert.deepEqual(page.items.map((item: { text: string }) => item.text), ["before", "after"]);
 });
 
+test("queue, model, thinking and dialog routes carry RPC state", { timeout: 10000 }, async t => {
+  const dialog = { type: "extension_ui_request", method: "select", id: "dialog-1", title: "Pick", options: ["Yes", "No"] };
+  const app = await fixture(t, [
+    { type: "wait", command: "prompt", events: [
+      { type: "agent_start" },
+      { type: "queue_update", steering: ["steer"], followUp: ["later"] },
+      dialog,
+      { ...dialog, id: "dialog-2", method: "confirm", message: "Really?" },
+      { type: "extension_ui_request", method: "notify", id: "notify", message: "Notice", notifyType: "warning" },
+      { type: "extension_ui_request", method: "setStatus", id: "status", statusKey: "check", statusText: "Checking" },
+      { type: "extension_ui_request", method: "set_editor_text", id: "editor", text: "Draft" },
+    ] },
+    { type: "wait", command: "clear_queue", data: { steering: ["steer"], followUp: ["later"] } },
+    { type: "wait", command: "get_available_models", data: { models: [{ id: "new", provider: "test" }] } },
+    { type: "wait", command: "set_model", data: { id: "new", provider: "test" } },
+    { type: "wait", command: "set_thinking_level", events: [{ type: "thinking_level_changed", level: "high" }] },
+    { type: "wait", command: "extension_ui_response" },
+    { type: "wait", command: "extension_ui_response", events: [{ ...dialog, id: "dialog-3", method: "input" }] },
+    { type: "wait", command: "extension_ui_response", events: [{ ...dialog, id: "dialog-4", method: "editor" }] },
+    { type: "wait", command: "extension_ui_response" },
+
+  ]);
+  assert.equal((await app.post("prompt", { text: "go", mode: "prompt" })).status, 200);
+  const state = await app.until(record => record.type === "state" && record.dialogs?.length === 2);
+  assert.deepEqual(state.dialogs, [dialog, { ...dialog, id: "dialog-2", method: "confirm", message: "Really?" }]);
+  await app.until(record => record.type === "notify" && record.message === "Notice" && record.level === "warning");
+  await app.until(record => record.type === "state" && record.editor?.text === "Draft");
+  await app.until(record => record.type === "state" && record.statuses?.check === "Checking");
+  assert.match(app.stdout(), /state=blocked:app=pi:kind=question/);
+  const controller = new AbortController();
+  const reloaded = await fetch(app.base + "events", { signal: controller.signal });
+  assert.ok(reloaded.body);
+  const reload = ndjson(Readable.from(reloaded.body));
+  const reloadedState = await reload.until(record => record.type === "state");
+  assert.deepEqual(reloadedState.dialogs, state.dialogs);
+  assert.deepEqual(reloadedState.editor, { id: "editor", text: "Draft" });
+  controller.abort();
+  assert.equal((await app.post("editor/ack", { id: "old" })).status, 200);
+  const editorAfter = app.count();
+  assert.equal((await app.post("editor/ack", { id: "editor" })).status, 200);
+  await app.until(record => record.type === "state" && !record.editor, editorAfter);
+  assert.deepEqual(await (await app.post("queue/clear")).json(), { steering: ["steer"], followUp: ["later"] });
+  assert.deepEqual(await (await fetch(app.base + "models")).json(), { models: [{ id: "new", provider: "test" }] });
+  assert.equal((await app.post("model", { provider: "test", modelId: "new" })).status, 200);
+  await app.until(record => record.type === "state" && record.model?.provider === "test" && record.model.id === "new");
+  assert.equal((await app.post("thinking", { level: "max" })).status, 409);
+  assert.equal((await app.post("thinking", { level: "high" })).status, 200);
+  assert.equal((await app.post("dialog", { id: "dialog-1", value: "Yes" })).status, 200);
+  assert.equal((await app.post("dialog", { id: "dialog-1", value: "Yes" })).status, 409);
+  assert.equal((await app.post("dialog", { id: "dialog-2", confirmed: true })).status, 200);
+  await app.until(record => record.type === "state" && record.dialogs[0]?.id === "dialog-3");
+  assert.equal((await app.post("dialog", { id: "dialog-3", value: "typed" })).status, 200);
+  await app.until(record => record.type === "state" && record.dialogs[0]?.id === "dialog-4");
+  assert.equal((await app.post("dialog", { id: "dialog-4", cancelled: true })).status, 200);
+  const commands = await app.log();
+  assert.deepEqual(commands.find(record => record.type === "set_model"), { type: "set_model", provider: "test", modelId: "new", id: commands.find(record => record.type === "set_model").id });
+  assert.deepEqual(commands.filter(record => record.type === "extension_ui_response").map(({ id, value, confirmed }) => ({ id, value, confirmed })), [{ id: "dialog-1", value: "Yes", confirmed: undefined }, { id: "dialog-2", value: undefined, confirmed: true }, { id: "dialog-3", value: "typed", confirmed: undefined }, { id: "dialog-4", value: undefined, confirmed: undefined }]);
+});
+
+test("restart keeps the saved picker selection, harness and runtime", { timeout: 10000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), "koa-restart-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const session = join(dir, "last.jsonl");
+  await writeFile(session, JSON.stringify({ cwd: dir }) + "\n");
+  const selection = join(dir, "selection");
+  await writeFile(selection, JSON.stringify({}));
+  const app = await fixture(t, [
+    { type: "respond", command: "get_state", data: { sessionFile: session } },
+    { type: "wait", command: "set_model", data: { provider: "test", id: "picked" } },
+    { type: "wait", command: "set_thinking_level", events: [{ type: "thinking_level_changed", level: "high" }] },
+    { type: "wait", command: "prompt" }, { type: "exit", code: 7 },
+  ], { KOA_FAKE_SELECTION_FILE: selection }, undefined, true, ["--runtime", "remote", "--session", "old.jsonl", "--fork", "source.jsonl", "--model", "test/original", "--thinking", "low"]);
+  assert.equal((await app.post("pi/start")).status, 409);
+  assert.equal((await app.post("model", { provider: "test", modelId: "picked" })).status, 200);
+  assert.equal((await app.post("thinking", { level: "high" })).status, 200);
+  await app.post("prompt", { text: "exit", mode: "prompt" });
+  await app.until(record => record.type === "state" && record.pi?.type === "exited");
+  const after = app.count();
+  assert.equal((await app.post("pi/start")).status, 200);
+  const restarted = await app.until(record => record.type === "state" && record.pi?.type === "ready" && record.levels?.length === 3, after);
+  assert.deepEqual(restarted.model, {provider:"test",id:"picked"});
+  assert.equal(restarted.thinking, "high");
+  const argv = (await app.log()).filter(record => record.type === "argv").map(record => record.args);
+  assert.equal(argv.length, 2);
+  assert.deepEqual(argv[1], ["--mode", "rpc", "--extension", resolve("ko-pi.ts"), "--harness", "koa-browser", "--runtime", "remote", "--session", session]);
+});
+
 test("spawn failure is distinct from an exit code", { timeout: 10000 }, async t => {
   const app = await fixture(t, [], {}, "/koa-no-such-pi");
-  const state = await app.until(record => record.type === "state" && !!record.pi);
+  const state = await app.until(record => record.type === "state" && record.pi?.type === "exited");
   assert.match(state.pi.failed, /ENOENT/);
   assert.equal("exited" in state.pi, false);
   assert.equal((await app.post("abort")).status, 409);
 });
 
 test("pi crash keeps koa serving its transcript and exit state", { timeout: 10000 }, async t => {
-  const app = await fixture(t, [{ type: "wait", command: "prompt" }, { type: "raw", text: "not json\r\n" }, { type: "exit", code: 7 }]);
+  const app = await fixture(t, [{ type: "wait", command: "prompt" }, { type: "raw", text: "not json\r\n" }, { type: "stderr", text: "old1\nold2\na\nb\nc\npar" }, { type: "stderr", text: "tial\nlast\n" }, { type: "exit", code: 7 }]);
   await app.post("prompt", { text: "go", mode: "prompt" });
-  const state = await app.until(record => record.type === "state" && !!record.pi);
-  assert.deepEqual(state.pi, { exited: 7 });
+  const state = await app.until(record => record.type === "state" && record.pi?.type === "exited");
+  assert.equal(state.pi.exited, 7);
+  assert.equal(typeof state.pi.at, "number");
+  assert.equal(state.pi.stderr, "a\nb\nc\npartial\nlast");
   assert.match(app.stdout(), /\x1b\]7501;state=clear\x1b\\/);
   assert.match(app.stderr(), /koa: pi stdout: not json/);
   assert.equal((await app.post("abort")).status, 409);
   assert.equal((await fetch(app.base)).status, 200);
+  assert.equal(state.sessionFile, undefined);
+  assert.equal((await app.post("pi/start")).status, 200);
+  const args = (await app.log()).filter(record => record.type === "argv").map(record => record.args);
+  assert.deepEqual(args[1], args[0]);
 });
 
 test("concurrent large commands cross pipe back-pressure without lost ids or bytes", { timeout: 10000 }, async t => {

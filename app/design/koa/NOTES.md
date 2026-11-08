@@ -155,3 +155,134 @@ the status bar drops the segments above. Nothing hides otherwise.
 3. The status bar is at the bottom, under the composer.
 4. The context bar always shows.
 5. A user message carries a timestamp, no label.
+
+## Dialogs from extensions (unit 5)
+
+pi's extension UI requests (`select`, `confirm`, `input`, `editor`)
+are one card above the composer, in the content column: a 9pt
+radius, the 18% hairline, 11pt 12pt padding. The title is 600
+weight; the message, when there is one, muted under it. A request
+with a timeout shows the seconds left in the terminal font at the
+right of the title and a 2pt accent fuse along the card's top edge
+that shrinks to zero; at zero the request is cancelled as pi does.
+The buttons sit at the bottom right, secondary (hairline) then
+primary (accent fill): Cancel / Select, No / Yes, Cancel / Submit,
+each with its key in a faint kbd. The hint at the bottom left is
+the terminal font at 80%.
+
+- `select`: the options as rows, the current one filled (8% well)
+  with a `›` in the accent colour; an option's description, when pi
+  gives one, muted after it. ↑↓ move, ↩ selects, ⎋ cancels, a digit
+  jumps.
+- `confirm`: no field. ↩ is Yes, ⎋ is No.
+- `input`: one line in a 7pt-radius hairline field, focused on
+  arrival, prefilled when pi says so. ↩ submits, ⎋ cancels.
+- `editor`: the same field at four lines, growing to ten; ↩ and ⇧↩
+  are newlines (the text is multi-line), ⌃↩ submits, ⎋ cancels. Not
+  ⌘↩: every Command key goes to Kido's menu first (⇧⌘↩ is Zoom Pane,
+  ⌘↩ is unused today, but the page should not depend on that), and
+  ⌃↩ has no Cocoa text binding.
+
+One card at a time, in request order. A second queued request is a
+one-line note under the card, "+1 queued · its title", and takes
+the card when the first is answered. While a card is up the composer
+stays visible, inert (the field keeps its text, the button is off),
+the status bar says "waiting for you" with the orange dot, and focus
+is in the card; ⎋ in the card cancels the request, not the run.
+
+## The queue while koa works
+
+Steering and follow-up messages that pi holds are listed under the
+field, inside the composer column: one line each, a tag in the
+terminal font (`steer`, `follow-up`) in a 62pt column, the text
+ellipsized. Under them, the count and a "take back ⌥⌫" button, the
+hairline button style, no key of its own (⌥⌫ is delete-word in the
+field; Tab from the field reaches the button, ↩ or Space presses
+it): it calls pi's `clear_queue` and puts every message into the
+composer, each on its own paragraph in queue order, caret at the
+end, the queue line gone. The composer's own hint line stays as it
+is while working (↩ steers, ⌥↩ queues a follow-up).
+
+## The model and thinking pickers
+
+A click on the model segment or the thinking segment of the status
+bar opens a popover above that segment. The two segments are
+buttons: Tab from the composer reaches them (after the queue's
+button when it shows), ↩ or Space opens. No key inside the field
+opens them: ⌃M and ⌃T are Cocoa text bindings (newline, transpose)
+that WebKit fields honour. The popover is
+anchored at the segment's left edge, 30pt above the bar's top, 220pt
+minimum, a 9pt radius, the 18% hairline, a soft shadow (fg 14%, 8pt
+down, 28pt blur), 6pt padding, the terminal font at 88%. A faint
+caption (Model, Thinking), then the rows: a 10pt tick column (✓ in
+the accent colour on the current entry), the name, and for a model
+the provider faint at the right. The highlighted row is the 8% well.
+The bottom hint row reads "↑↓ move · ↩ choose · ⎋ close". While the
+popover is up, its segment is filled (8% well, 5pt corners). ↩
+applies through pi's `set_model` / `set_thinking_level` and closes;
+⎋ closes with no change; a click outside closes. The model list is
+what pi reports as available, grouped in pi's order.
+
+## Notifications and extension status in the bar
+
+An extension's `notify` is a toast in the bar's flexible segment:
+a 12pt round badge with `i`, `!` or `✕` in the accent, warning or
+error colour and the message in the fg colour, ellipsized. It stays
+4 s; a newer one replaces it at once; a click dismisses it. An
+extension's `setStatus(key, text)` adds a segment, "key text" with
+the key faint, between the context segment and the flexible one, in
+key order; an empty text removes it. In the narrow pane the
+extension segments hide before the toast does.
+
+## pi has exited
+
+When pi exits (a code, or a signal), the transcript stays as it was.
+The composer's place holds a card with a hairline in the error
+colour at 35%: "pi exited · code N" (or "· signal SIGKILL") in the
+title line with the time at the right, the last five lines of pi's
+stderr in a muted well cut to 140pt, a faint line that names where
+the whole log is, and the primary button "Start pi again"; ↩ presses
+it. The stderr lines are the last five koa received; the whole
+output is in the pane's terminal (koa writes pi's stderr to its own
+stderr and keeps no log file). The status bar's dot turns to the error colour and its word is
+"pi exited · code N"; the model, thinking and context segments keep
+their last values. A start replaces the card with the composer and
+continues the session.
+
+## Times
+
+Every step shows its own time at the right of its line, the thinking
+step included (`✓ 6s`); a run's time is from its first step's start
+to its last step's end. An aborted run shows its elapsed time like
+any other, and its aborted step shows the time it ran before the
+abort (`aborted 23s`).
+
+## Keyboard
+
+Everything works without a mouse. Command keys go to Kido first. In
+the page: ↩ sends or steers, ⇧↩ newline, ⌥↩ queues a follow-up,
+⎋ aborts (twice: clears the field); in a dialog ↑↓ ↩ ⎋ as above, ⌃↩
+submits an editor, and ⎋ cancels the dialog, not the run; ↑↓ ↩ ⎋
+inside a picker; ↩ on the exit card starts pi again. Tab moves from
+the field to the dialog's controls, the queue's button, and the
+model and thinking segments, in that order; ↩ or Space presses the
+focused one. No Command key and no Control-letter key is bound in
+the page: Command keys go to Kido first, Control letters are Cocoa
+text bindings.
+
+## Open questions (unit 5)
+
+1. The `editor` submit key: ⌃↩ (mockup) or ↩ with ⇧↩ for newlines
+   as in the composer? Recommendation: ⌃↩, because an editor's text
+   is multi-line by nature and ↩ as submit loses text; ⌘↩ would go
+   to Kido first.
+2. Where the queue list sits: under the field (mockup) or above it,
+   where the built page has `#queue`? Recommendation: under, so the
+   field keeps its place and the queue reads as what follows the
+   current message.
+3. Pickers from the bar only, or also a `/model` style command in the
+   composer? Recommendation: bar and keys only for now.
+4. Toast replace or stack? Recommendation: replace; the bar has one
+   line, and the log has every message.
+5. On exit, start pi again automatically after a crash (code ≠ 0)
+   once? Recommendation: no; the card makes the restart one key.

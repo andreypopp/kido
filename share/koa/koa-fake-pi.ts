@@ -1,12 +1,20 @@
 #!/usr/bin/env node
-import { readFileSync, appendFileSync } from "node:fs";
+import { readFileSync, appendFileSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
 
-type Step = { type: "respond"; command: "get_state" | "get_messages" | "get_session_stats" | "get_available_thinking_levels"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[] };
+type Step = { type: "respond"; command: "get_state" | "get_messages" | "get_session_stats" | "get_available_thinking_levels"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "stderr"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[] };
 const script: Step[] = process.env.KOA_FAKE_SCRIPT ? readFileSync(process.env.KOA_FAKE_SCRIPT, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
 let next = 0;
 let working = false;
+const selectionFile = process.env.KOA_FAKE_SELECTION_FILE;
+const selection: { model?: { id: string; provider: string }; thinkingLevel?: string } = selectionFile ? JSON.parse(readFileSync(selectionFile, "utf8")) : {};
+if (selectionFile) {
+  const model = process.argv[process.argv.indexOf("--model") + 1];
+  const thinking = process.argv[process.argv.indexOf("--thinking") + 1];
+  if (process.argv.includes("--model") && model) { const slash = model.indexOf("/"); selection.model = { provider: model.slice(0, slash), id: model.slice(slash + 1) }; }
+  if (process.argv.includes("--thinking") && thinking) selection.thinkingLevel = thinking;
+}
 const responses = new Map<string, { data: object; after?: object[] }>();
 let output = Promise.resolve();
 const write = (text: string) => {
@@ -27,11 +35,12 @@ async function advance(): Promise<void> {
     if (step.type === "respond") responses.set(step.command, { data: step.data, after: step.after });
     else if (step.type === "emit") await emit(step.event);
     else if (step.type === "raw") await write(step.text);
+    else if (step.type === "stderr") process.stderr.write(step.text);
     else if (step.type === "repeat") { for (let i = 0; i < step.count; i++) for (const event of step.events) await emit(event); }
     else { await output; process.exit(step.code); }
   }
 }
-async function command(value: { type: string; id: string; message?: string; streamingBehavior?: string }): Promise<void> {
+async function command(value: { type: string; id: string; message?: string; streamingBehavior?: string; provider?: string; modelId?: string; level?: string }): Promise<void> {
   log(value);
   if (value.type === "prompt" && working && !["steer", "followUp"].includes(value.streamingBehavior ?? "")) {
     await emit({ type: "response", command: value.type, id: value.id, success: false, error: "prompt requires streamingBehavior while working" });
@@ -45,6 +54,11 @@ async function command(value: { type: string; id: string; message?: string; stre
   else if (value.type === "get_session_stats") data = { contextUsage: { tokens: 123, contextWindow: 1000, percent: 12.3 } };
   const configured = responses.get(value.type);
   if (configured) data = configured.data;
+  if (selectionFile) {
+    if (value.type === "get_state") data = { ...data, ...selection };
+    if (value.type === "set_model" && value.provider && value.modelId) { selection.model = { provider: value.provider, id: value.modelId }; writeFileSync(selectionFile, JSON.stringify(selection)); }
+    if (value.type === "set_thinking_level" && value.level) { selection.thinkingLevel = value.level; writeFileSync(selectionFile, JSON.stringify(selection)); }
+  }
   const step = script[next];
   if (step?.type === "wait" && step.command === value.type) {
     next++;

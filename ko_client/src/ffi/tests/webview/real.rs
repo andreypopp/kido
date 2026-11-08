@@ -152,6 +152,60 @@ fn webview_ffi_uses_the_real_proxy_and_cancels_the_program_request() {
     assert_eq!(next(&events), WebviewSeen::Body(b"two".to_vec()));
     assert_eq!(next(&events), WebviewSeen::End(Code::Ok, String::new()));
     cancel_fetch(handle);
+    let handle = fetch(client, &probe, c"/events");
+    let req = event(&mut program, "request")["req"].clone();
+    send(
+        &mut program,
+        &serde_json::json!({"type":"response","req":req,"status":200,"headers":[["content-type","application/x-ndjson"]]}).to_string(),
+    );
+    let records: Vec<_> = (0..96)
+        .map(|i| {
+            format!(
+                "{{\"record\":{i},\"pad\":\"{}\"}}\n",
+                "x".repeat([0, 71, 4093, 60000][(i + 1) % 4])
+            )
+        })
+        .collect();
+    let expected = records.concat();
+    let (stop, stopped) = channel();
+    let writer = std::thread::spawn(move || {
+        for (i, record) in records.into_iter().enumerate() {
+            assert!(
+                stopped
+                    .recv_timeout(Duration::from_micros([170, 2300, 490, 7100, 40][i % 5]))
+                    .is_err()
+            );
+            let data = ko_server::protocol::webview::Data::new(record.into_bytes()).unwrap();
+            send(
+                &mut program,
+                &serde_json::json!({"type":"body","req":req,"data":data,"more":true}).to_string(),
+            );
+        }
+        stopped.recv_timeout(WAIT).unwrap();
+        program
+    });
+    assert!(matches!(next(&events), WebviewSeen::Response(200, _)));
+    let mut received = Vec::new();
+    let deadline = std::time::Instant::now() + WAIT;
+    while received.len() < expected.len() {
+        match events
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "FFI stream stalled: received {} of {} bytes: {error}",
+                    received.len(),
+                    expected.len()
+                )
+            }) {
+            (WebviewSeen::Body(bytes), true) => received.extend(bytes),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(received, expected.as_bytes());
+    stop.send(()).unwrap();
+    let mut program = writer.join().unwrap();
+    cancel_fetch(handle);
+    event(&mut program, "cancel");
     let handle = fetch(client, &probe, c"/missing");
     let req = event(&mut program, "request")["req"].clone();
     send(

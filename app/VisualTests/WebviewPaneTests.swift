@@ -67,6 +67,54 @@ extension VisualTests {
         try await snapshot(name, testName: testName)
     }
 
+    func testWebviewStreamingLastRecord() async throws {
+        let toy = try WebviewToy(path: directory.appendingPathComponent("webview.sock").path)
+        let pane = try await webviewStart(toy: toy)
+        let web = try XCTUnwrap(pane.webviewView?.browser)
+        let result = try await webviewJS(web, """
+        (async()=>{
+          const response=await fetch('/events');
+          window.streamReader=response.body.getReader();
+          const decoder=new TextDecoder();let pending='',count=0,ended=false;
+          let timeout;
+          const deadline=new Promise(resolve=>timeout=setTimeout(()=>resolve({count,ended,pending,timeout:true}),5000));
+          let arrived;
+          const first=new Promise(resolve=>arrived=resolve);
+          window.streamRecords=[];
+          window.stream97=(async()=>{
+            while(count<97){
+              const {value,done}=await streamReader.read();
+              if(done){ended=true;break}
+              pending+=decoder.decode(value,{stream:true});
+              let newline;
+              while((newline=pending.indexOf('\\n'))!==-1){
+                const record=JSON.parse(pending.slice(0,newline));pending=pending.slice(newline+1);
+                window.streamRecords.push(record.record);
+                count++;
+                if(count===96)arrived({count,ended,pending,timeout:false});
+              }
+            }
+            return {count,ended,pending,timeout:false};
+          })();
+          const result=await Promise.race([first,deadline]);clearTimeout(timeout);return result;
+        })()
+        """)
+        let state = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
+        let count = try XCTUnwrap(state["count"] as? Int)
+        let expected: Int
+        let records: String
+        if count < 96 {
+            // WebKit can hold the last stream record until the next write.
+            toy.writeLaterRecord()
+            expected = 97
+            records = try await webviewJS(web, "Promise.race([stream97.then(()=>streamRecords),new Promise(resolve=>setTimeout(()=>resolve(streamRecords),5000))])")
+        } else {
+            expected = 96
+            records = try await webviewJS(web, "streamRecords")
+        }
+        XCTAssertEqual(try JSONSerialization.jsonObject(with: Data(records.utf8)) as? [Int], Array(0..<expected))
+    }
+
     func testWebviewPostBodies() async throws {
         let pane = try await webviewStart()
         let view = try XCTUnwrap(pane.webviewView)

@@ -217,6 +217,15 @@ the cell size, with a `ko-theme` event on a change. It has no method
 that reaches the program or the server: the app is not a message bus
 between a page and ko.
 
+A streaming response can hold its last chunk in Kido.app until the
+program writes again. Our layers pass the chunk on at once (tests of
+the bridge, the proxy and the ffi), and a later write releases it, so
+the hold is after the scheme handler's `didReceive`, most likely in
+WebKit; a counter there hides it, so it is not proven.
+`testWebviewStreamingLastRecord` pins that nothing is lost. A program
+that streams therefore sends one harmless write after its last record;
+the transcript module does it for koa and ko-pi.
+
 ## The sandbox
 
 A page is untrusted code, local or remote, behind WebKit's process

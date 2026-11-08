@@ -162,7 +162,10 @@ in a resumed session's own directory. Then the harness reads
 `/layout` and checks the depth: the child's depth, the length of the
 caller's `parent` chain over the rows plus one, is at most 2. Then
 `createPane` in `ko-pi.ts` sends one `POST /panes` (protocol.md,
-section 7). The pane's command is `ko shell -- ko-pi` with the
+section 7). The pane's command is `ko shell -- ko-pi`, or `ko shell
+-- koa` when ko-pi runs inside koa (`--harness koa`, with
+`--browser` for `--harness koa-browser`), so a child takes its
+parent's harness, with the
 session (`--session-id` for a fresh or copied session, `--session`
 for a continued one), the name, the model, for a copy `--fork`, for a
 routed child `--runtime` and, except for an inside child,

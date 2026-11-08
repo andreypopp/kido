@@ -706,23 +706,30 @@ pub(crate) enum Framing {
     Close,
 }
 
-fn dechunk(mut data: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn chunk(data: &[u8]) -> Option<(usize, &[u8])> {
+    let httparse::Status::Complete((used, size)) = httparse::parse_chunk_size(data).ok()? else {
+        return None;
+    };
+    let size = usize::try_from(size).ok()?;
+    if size == 0 {
+        return Some((used, &[]));
+    }
+    let end = used.checked_add(size)?;
+    if data.get(end..end.checked_add(2)?)? != b"\r\n" {
+        return None;
+    }
+    Some((end + 2, &data[used..end]))
+}
+
+pub(crate) fn dechunk(mut data: &[u8]) -> Option<Vec<u8>> {
     let mut body = Vec::new();
     loop {
-        let httparse::Status::Complete((used, size)) = httparse::parse_chunk_size(data).ok()?
-        else {
-            return None;
-        };
-        let size = usize::try_from(size).ok()?;
-        data = &data[used..];
-        if size == 0 {
+        let (used, bytes) = chunk(data)?;
+        if bytes.is_empty() {
             return Some(body);
         }
-        if data.len() < size + 2 {
-            return None;
-        }
-        body.extend_from_slice(&data[..size]);
-        data = &data[size + 2..];
+        body.extend_from_slice(bytes);
+        data = &data[used..];
     }
 }
 

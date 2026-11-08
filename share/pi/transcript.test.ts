@@ -21,6 +21,28 @@ function assistant(text: string, stopReason: "stop" | "error" = "stop"): Extract
   return { role: "assistant", content: [{ type: "text", text }], api: "openai-responses", provider: "openai", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason, timestamp: 123 };
 }
 
+test("a quiet event burst gets one trailing empty line", t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const view = transcript({ flushMs: 10 });
+  const lines = request(view, "/events");
+  view.state({ name: "first" });
+  t.mock.timers.tick(9);
+  view.state({ name: "last" });
+  t.mock.timers.tick(30);
+  assert.equal(lines.filter(line => line === "\n").length, 0);
+  t.mock.timers.tick(1);
+  assert.equal(lines.filter(line => line === "\n").length, 1);
+  t.mock.timers.tick(100);
+  assert.equal(lines.filter(line => line === "\n").length, 1);
+  view.message({ role: "user", content: "next burst", timestamp: 1 }, "end");
+  t.mock.timers.tick(40);
+  assert.equal(lines.filter(line => line === "\n").length, 2);
+  view.state({ name: "closed" });
+  view.close();
+  t.mock.timers.tick(10);
+  assert.equal(lines.filter(line => line === "\n").length, 2);
+});
+
 test("caps preserve UTF-8 and windows retain the newest forty items", () => {
   const view = transcript({ flushMs: 1 });
   view.message({ role: "bashExecution", command: "test", output: "a".repeat(16383) + "😀", exitCode: 0, cancelled: false, truncated: false, timestamp: 12 }, "end");
