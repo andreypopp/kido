@@ -760,7 +760,7 @@ maps the coordinator's modules.
                         tree; zig-cc-musl, the musl linker wrapper of
                         .cargo/config.toml, under its names
                         zig-cc-<arch>-linux-musl; verus.sh, nightly.sh,
-                        fuzz.sh, miri.sh, bindgen.sh; quiet-limit
+                        fuzz.sh, miri.sh, bindgen.sh
     third_party/ghostty the Ghostty fork, a git submodule ("One Ghostty")
     website/            the kido.tools site
 
@@ -1325,9 +1325,8 @@ delegates as its brief says and does not write code.
   (`cp -Rc app/build/ghosttykit/<pin>-*` into the worktree's
   `app/build/ghosttykit/`): the directory's name is the pin, the
   submodule's diff and the flags, so a match is the same build. A unit
-  that runs app targets first runs `make build` under
-  `scripts/quiet-limit 600`, because the app's ko phase hides the
-  build's output and a cold build there trips a 60 s limit. Agents
+  that runs app targets first runs `make build`, because the app's ko
+  phase hides the build's output. Agents
   start in that worktree and stay there. The top-level session merges
   the result, pushes, and removes the worktree only after every agent
   that ran in it has stopped. `.pi/extensions/no-git-writes/policy.ts`
@@ -1337,15 +1336,11 @@ delegates as its brief says and does not write code.
   prune`.
 - **Every wait has a deadline.**
   Do not poll without a deadline in code or your shell.
-  macOS has no `timeout` command.
-  Give the wait its deadline another way: a build or test run that
-  can take more than 10 seconds runs through `async_bash` under
-  `scripts/quiet-limit 60 -- <command>`, which kills the command's
-  process group and exits 124 when the command prints nothing for
-  60 seconds, so a stuck test or a deadlock ends instead of hanging
-  the agent. The one exception is the cold GhosttyKit build,
-  `app/scripts/build-ghosttykit.sh`, which prints nothing for about a
-  minute, so it runs under `scripts/quiet-limit 600`.
+  A build or test run that can take more than 10 seconds runs through
+  `async_bash`. Its notice arrives when it ends; read its log while
+  it runs, and stop it with `stop_async_bash` when it is stuck. A demo
+  runs through `async_bash` with `service: true`: it runs until the
+  user closes it, and no one stops it.
 - **Do not block on `sleep`.**
   While a background run works, end your turn.
   Continue when its notice arrives.
