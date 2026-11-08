@@ -346,6 +346,20 @@ impl State {
         Some(result)
     }
 
+    pub(crate) fn set_status(
+        &mut self,
+        poll: &mut Poll,
+        id: PaneId,
+        report: crate::protocol::StatusReport,
+    ) {
+        let now = ko_sys::clock::Mono::now();
+        if let Some(pane) = self.panes.find_mut(id)
+            && pane.telemetry_mut().records.apply(report, now)
+        {
+            self.model.mark(poll, pane);
+        }
+    }
+
     pub(crate) fn dispatch(&mut self, poll: &mut Poll, id: PaneId, mut events: Vec<Event>) {
         for event in events.drain(..) {
             self.event(poll, id, event);
@@ -1009,14 +1023,7 @@ impl State {
                     self.model.mark(poll, pane);
                 }
             }
-            Event::Record(report) => {
-                let now = ko_sys::clock::Mono::now();
-                if let Some(pane) = self.panes.find_mut(id)
-                    && pane.telemetry_mut().records.apply(report, now)
-                {
-                    self.model.mark(poll, pane);
-                }
-            }
+            Event::Record(report) => self.set_status(poll, id, report),
             Event::Foreground(foreground) => {
                 if let Some(pane) = self.panes.find_mut(id)
                     && pane.telemetry_mut().foreground(foreground.clone())

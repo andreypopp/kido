@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::ids::StatusId;
 use crate::pane_kind::{self, Kind, LocalKind, RemoteKind};
 use crate::program_status::{app, root};
 use crate::protocol::{
@@ -20,13 +21,13 @@ enum Shown {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Retained {
     outcome: Outcome,
-    id: String,
+    id: StatusId,
     at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Episode {
-    finals: BTreeMap<String, OutcomeResult>,
+    finals: BTreeMap<StatusId, OutcomeResult>,
     retained: Option<Retained>,
     shown: Option<Shown>,
     since: u64,
@@ -132,11 +133,11 @@ fn core(
     e: &Episode,
 ) -> (Episode, Agent) {
     let blocked = records.iter().find_map(|record| match record.state {
-        ProgramState::Blocked { kind, progress } => Some((kind, progress)),
+        ProgramState::Blocked { kind, progress } => Some((kind, progress.map(u8::from))),
         _ => None,
     });
     let working = records.iter().find_map(|record| match record.state {
-        ProgramState::Working { progress } => Some(progress),
+        ProgramState::Working { progress } => Some(progress.map(u8::from)),
         _ => None,
     });
     let activity = match (blocked, working) {
@@ -494,7 +495,7 @@ mod tests {
 
     fn rec(id: &str, state: ProgramState, app: Option<&str>, msg: Option<&str>) -> ProgramRecord {
         ProgramRecord {
-            id: id.to_owned(),
+            id: id.to_owned().try_into().unwrap(),
             started: None,
             state,
             app: app.map(str::to_owned),
@@ -651,11 +652,16 @@ mod tests {
     }
 
     fn working(progress: Option<u8>) -> ProgramState {
-        ProgramState::Working { progress }
+        ProgramState::Working {
+            progress: progress.map(|value| value.try_into().unwrap()),
+        }
     }
 
     fn blocked(kind: Option<ProgramKind>, progress: Option<u8>) -> ProgramState {
-        ProgramState::Blocked { kind, progress }
+        ProgramState::Blocked {
+            kind,
+            progress: progress.map(|value| value.try_into().unwrap()),
+        }
     }
 
     fn agent(

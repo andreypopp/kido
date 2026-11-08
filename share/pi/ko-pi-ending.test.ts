@@ -141,7 +141,7 @@ test("stop_agent stops a peer with a stop message and then the pane, and says so
     assert.match(stop!.id, /^[A-Za-z0-9_-]{22}$/);
     assert.deepEqual(fx.posts("/panes/pane_3/stop"), [{ wait_ms: 5000 }]);
     assert.equal(fx.row("pane_3"), undefined, "the pane is gone");
-    const order = fx.apiCalls().filter((call) => call.method === "POST").map((call) => call.path);
+    const order = fx.apiCalls().filter((call) => call.method === "POST" && call.path.startsWith("/panes/pane_3/")).map((call) => call.path);
     assert.deepEqual(order, ["/panes/pane_3/messages", "/panes/pane_3/stop"]);
   } finally {
     await fx.restore();

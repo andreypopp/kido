@@ -17,7 +17,10 @@ use serde_json::Value;
 use crate::api::WaitMs;
 use crate::config::BUILD;
 use crate::http::Status;
-use crate::ids::{ClientId, Instance, MessageId, Name, PaneId, SessionId, VarName, WindowId};
+use crate::ids::{
+    ClientId, Instance, MAX_STATUS_MESSAGE, MAX_STATUS_TITLE, MessageId, Name, PaneId, SessionId,
+    StatusApp, StatusId, StatusText, VarName, WindowId,
+};
 use crate::pane_proc::{self, Death};
 use crate::route::{Body, Invalid};
 use crate::vars::{Loose, Vars};
@@ -256,27 +259,82 @@ pub enum ProgramKind {
     Auth,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u8", into = "u8")]
+pub struct StatusProgress(u8);
+
+impl TryFrom<u8> for StatusProgress {
+    type Error = &'static str;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        if value <= 100 {
+            Ok(Self(value))
+        } else {
+            Err("status progress exceeds 100")
+        }
+    }
+}
+
+impl From<StatusProgress> for u8 {
+    fn from(value: StatusProgress) -> Self {
+        value.0
+    }
+}
+
+impl JsonSchema for StatusProgress {
+    fn schema_name() -> Cow<'static, str> {
+        "StatusProgress".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type":"integer", "minimum":0, "maximum":100})
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ProgramState {
     Idle,
     Working {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        progress: Option<u8>,
+        progress: Option<StatusProgress>,
     },
     Done,
     Blocked {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<ProgramKind>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        progress: Option<u8>,
+        progress: Option<StatusProgress>,
     },
     Error,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum StatusReport {
+    Set {
+        #[serde(flatten)]
+        record: StatusRecord,
+    },
+    Clear {
+        id: StatusId,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StatusRecord {
+    pub(crate) id: StatusId,
+    #[serde(flatten)]
+    pub(crate) state: ProgramState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) app: Option<StatusApp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) title: Option<StatusText<MAX_STATUS_TITLE>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) msg: Option<StatusText<MAX_STATUS_MESSAGE>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProgramRecord {
-    pub id: String,
+    pub id: StatusId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// The server's monotonic start time in nanoseconds for a child record; absent on the root.
     pub started: Option<u64>,
@@ -2260,6 +2318,50 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
     use serde::de::DeserializeOwned;
+
+    #[test]
+    fn status_reports_validate_ids_and_decoded_text() {
+        for id in [
+            String::new(),
+            "a_.+-/b".to_owned(),
+            vec!["x".repeat(15); 8].join("/"),
+        ] {
+            assert!(StatusId::try_from(id).is_ok());
+        }
+        for id in [
+            "a//b".to_owned(),
+            "/a".to_owned(),
+            "a/".to_owned(),
+            "é".to_owned(),
+            "x".repeat(33),
+            ["x"; 9].join("/"),
+            vec!["x".repeat(32); 4].join("/"),
+        ] {
+            assert!(StatusId::try_from(id).is_err());
+        }
+        let body = serde_json::json!({"type":"set", "id":"", "state":"blocked", "progress":100, "app":"pi", "title":"λ".repeat(96), "msg":"λ".repeat(1024)});
+        let valid = decode::<StatusReport>(&serde_json::to_vec(&body).unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(valid).unwrap()["app"], "pi");
+        for (key, value) in [
+            ("title", serde_json::json!("λ".repeat(97))),
+            ("msg", serde_json::json!("λ".repeat(1025))),
+            ("app", serde_json::json!("bad/app")),
+            ("title", serde_json::json!("bad\u{85}text")),
+            ("progress", serde_json::json!(101)),
+        ] {
+            let mut invalid = body.clone();
+            invalid[key] = value;
+            assert!(
+                decode::<StatusReport>(&serde_json::to_vec(&invalid).unwrap()).is_err(),
+                "{invalid}"
+            );
+        }
+        for key in ["app", "title", "msg"] {
+            let mut invalid = serde_json::json!({"type":"set","id":"","state":"idle"});
+            invalid[key] = serde_json::json!("");
+            assert!(decode::<StatusReport>(&serde_json::to_vec(&invalid).unwrap()).is_err());
+        }
+    }
 
     #[test]
     fn window_size_reports_are_complete_and_reject_duplicate_windows() {

@@ -3140,9 +3140,7 @@
           {
             "properties": {
               "progress": {
-                "maximum": 255,
-                "minimum": 0,
-                "type": "integer"
+                "$ref": "#/components/schemas/StatusProgress"
               },
               "state": {
                 "const": "working",
@@ -3172,9 +3170,7 @@
                 "$ref": "#/components/schemas/ProgramKind"
               },
               "progress": {
-                "maximum": 255,
-                "minimum": 0,
-                "type": "integer"
+                "$ref": "#/components/schemas/StatusProgress"
               },
               "state": {
                 "const": "blocked",
@@ -3204,7 +3200,7 @@
             "type": "string"
           },
           "id": {
-            "type": "string"
+            "$ref": "#/components/schemas/StatusId"
           },
           "msg": {
             "type": "string"
@@ -4050,6 +4046,12 @@
           }
         ]
       },
+      "StatusApp": {
+        "maxLength": 32,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9_.+-]+$",
+        "type": "string"
+      },
       "StatusChange": {
         "properties": {
           "now": {
@@ -4069,6 +4071,146 @@
           "now"
         ],
         "type": "object"
+      },
+      "StatusId": {
+        "maxLength": 128,
+        "pattern": "^(?:[A-Za-z0-9_.+-]{1,32}(?:/[A-Za-z0-9_.+-]{1,32}){0,7})?$",
+        "type": "string"
+      },
+      "StatusProgress": {
+        "maximum": 100,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "StatusReport": {
+        "oneOf": [
+          {
+            "oneOf": [
+              {
+                "properties": {
+                  "state": {
+                    "const": "idle",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "progress": {
+                    "$ref": "#/components/schemas/StatusProgress"
+                  },
+                  "state": {
+                    "const": "working",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "state": {
+                    "const": "done",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "kind": {
+                    "$ref": "#/components/schemas/ProgramKind"
+                  },
+                  "progress": {
+                    "$ref": "#/components/schemas/StatusProgress"
+                  },
+                  "state": {
+                    "const": "blocked",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state"
+                ],
+                "type": "object"
+              },
+              {
+                "properties": {
+                  "state": {
+                    "const": "error",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "state"
+                ],
+                "type": "object"
+              }
+            ],
+            "properties": {
+              "app": {
+                "$ref": "#/components/schemas/StatusApp"
+              },
+              "id": {
+                "$ref": "#/components/schemas/StatusId"
+              },
+              "msg": {
+                "$ref": "#/components/schemas/StatusText2048"
+              },
+              "title": {
+                "$ref": "#/components/schemas/StatusText192"
+              },
+              "type": {
+                "const": "set",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "id": {
+                "$ref": "#/components/schemas/StatusId"
+              },
+              "type": {
+                "const": "clear",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "StatusText192": {
+        "description": "One to 192 UTF-8 bytes, without control characters.",
+        "maxLength": 192,
+        "minLength": 1,
+        "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+        "type": "string"
+      },
+      "StatusText2048": {
+        "description": "One to 2048 UTF-8 bytes, without control characters.",
+        "maxLength": 2048,
+        "minLength": 1,
+        "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+        "type": "string"
       },
       "StopPane": {
         "properties": {
@@ -5410,6 +5552,73 @@
           },
           "send": {
             "$ref": "#/components/schemas/Empty"
+          }
+        }
+      }
+    },
+    "/panes/{id}/status": {
+      "post": {
+        "description": "Sets or clears one program status record of a pane.",
+        "operationId": "SetStatus",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusReport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Empty"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
           }
         }
       }

@@ -221,10 +221,136 @@ impl From<MessageId> for String {
     }
 }
 
+const MAX_STATUS_ID: usize = 128;
+const MAX_STATUS_NAME: usize = 32;
+const MAX_STATUS_DEPTH: usize = 8;
+pub(crate) const MAX_STATUS_TITLE: usize = 192;
+pub(crate) const MAX_STATUS_MESSAGE: usize = 2048;
+
+fn status_name(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= MAX_STATUS_NAME
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_.+-".contains(&byte))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct StatusId(String);
+
+impl StatusId {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+    pub(crate) fn is_root(&self) -> bool {
+        self.0.is_empty()
+    }
+    pub(crate) fn is_within(&self, parent: &Self) -> bool {
+        parent.is_root()
+            || self == parent
+            || self
+                .0
+                .strip_prefix(&parent.0)
+                .is_some_and(|rest| rest.starts_with('/'))
+    }
+}
+
+impl TryFrom<String> for StatusId {
+    type Error = &'static str;
+    fn try_from(id: String) -> Result<Self, Self::Error> {
+        if id.len() > MAX_STATUS_ID
+            || (!id.is_empty()
+                && (id.split('/').count() > MAX_STATUS_DEPTH || !id.split('/').all(status_name)))
+        {
+            return Err("invalid status id");
+        }
+        Ok(Self(id))
+    }
+}
+
+impl From<StatusId> for String {
+    fn from(id: StatusId) -> Self {
+        id.0
+    }
+}
+
+impl JsonSchema for StatusId {
+    fn schema_name() -> Cow<'static, str> {
+        "StatusId".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type":"string", "maxLength":MAX_STATUS_ID,
+            "pattern":format!("^(?:[A-Za-z0-9_.+-]{{1,{MAX_STATUS_NAME}}}(?:/[A-Za-z0-9_.+-]{{1,{MAX_STATUS_NAME}}}){{0,{}}})?$", MAX_STATUS_DEPTH - 1)})
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct StatusApp(String);
+
+impl TryFrom<String> for StatusApp {
+    type Error = &'static str;
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        if status_name(&text) {
+            Ok(Self(text))
+        } else {
+            Err("invalid status app")
+        }
+    }
+}
+
+impl From<StatusApp> for String {
+    fn from(text: StatusApp) -> Self {
+        text.0
+    }
+}
+
+impl JsonSchema for StatusApp {
+    fn schema_name() -> Cow<'static, str> {
+        "StatusApp".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type":"string", "minLength":1, "maxLength":MAX_STATUS_NAME, "pattern":"^[A-Za-z0-9_.+-]+$"})
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct StatusText<const MAX: usize>(String);
+
+impl<const MAX: usize> TryFrom<String> for StatusText<MAX> {
+    type Error = &'static str;
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        if !text.is_empty() && plain(&text, MAX) {
+            Ok(Self(text))
+        } else {
+            Err("invalid status text")
+        }
+    }
+}
+
+impl<const MAX: usize> From<StatusText<MAX>> for String {
+    fn from(text: StatusText<MAX>) -> Self {
+        text.0
+    }
+}
+
+impl<const MAX: usize> JsonSchema for StatusText<MAX> {
+    fn schema_name() -> Cow<'static, str> {
+        format!("StatusText{MAX}").into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type":"string", "minLength":1, "maxLength":MAX,
+            "pattern":"^[^\\u0000-\\u001f\\u007f-\\u009f]+$",
+            "description":format!("One to {MAX} UTF-8 bytes, without control characters.")})
+    }
+}
+
 const MAX_NAME: usize = 256;
 
-fn plain(text: &str) -> bool {
-    text.len() <= MAX_NAME && !text.chars().any(char::is_control)
+fn plain(text: &str, max: usize) -> bool {
+    text.len() <= max && !text.chars().any(char::is_control)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -255,7 +381,7 @@ impl TryFrom<String> for Name {
     type Error = &'static str;
 
     fn try_from(text: String) -> Result<Name, &'static str> {
-        if plain(&text) {
+        if plain(&text, MAX_NAME) {
             Ok(Name(text))
         } else {
             Err("invalid name")
@@ -284,7 +410,7 @@ impl fmt::Display for InvalidName {
 
 impl VarName {
     pub fn new(name: &str) -> Result<VarName, InvalidName> {
-        if !name.is_empty() && plain(name) {
+        if !name.is_empty() && plain(name, MAX_NAME) {
             Ok(VarName(Cow::Owned(name.to_owned())))
         } else {
             Err(InvalidName)

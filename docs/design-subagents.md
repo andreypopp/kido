@@ -698,7 +698,8 @@ flag: a `bash` call that moves is never a service.
 
 ## A job's row
 
-Each job is an OSC 7501 child record of pi's pane, so Kido.app
+Each job is an OSC 7501 child record of pi's pane, which ko-pi writes
+through the status route (protocol.md, section 6), so Kido.app
 draws it as a child row under the pane row (design-program-status.md,
 "The record set"). A foreground `bash` call has no record. It gets
 one when it moves. A routed job has one as a local job does.
@@ -716,18 +717,26 @@ one when it moves. A routed job has one as a local job does.
   of its notice (`exit 3`, `signal SIGTERM`).
 - The title and the message are sanitized by ko-pi's own rule:
   pi-tui's control character replacement, then whitespace collapses
-  to one space. The text is cut at a UTF-8 boundary and sent as
-  base64.
+  to one space. The text is cut at a UTF-8 boundary to the route's
+  limits. An empty title or message is omitted.
 - A finished record lingers for `KO_JOB_RECORD_LINGER_MS` (5000).
   Then ko-pi clears its id. A job's record never changes the pane's
   status: an agent's status comes from its root record alone
   (design-program-status.md, "Reduction").
 
-**The writer.** ko-pi writes each record as one `process.stdout.write`
-of the whole sequence. pi's TUI writes from the same Node process, so
-a record never splits a frame of pi. ko-pi writes only with a UI and
-inside a ko pane (`KO_PANE`), because pi's own query result
-(`programStatusSupported`) is private to pi-tui.
+**The writer.** ko-pi writes each record as one `ko api POST
+/panes/$KO_PANE/status`, never on its stdout, so a record reaches the
+server in every mode of pi with a UI: the TUI, RPC mode, a routed pi in a
+runtime and a pi on a remote server. A record needs no OSC 7501
+support of the outer terminal. ko-pi writes only while it is active in
+the pane, as for its message stream: a headless pi that a tool starts
+inherits `KO_PANE`, and it must not touch its parent's rows. The posts go through one queue, one
+after another, in the order of the changes; a failed post is dropped,
+and the next change of the job writes it again. A shutdown waits for
+the queue, so a post of the old instance never follows the clear of a
+`/reload`'s new instance. The queue is ordered only against itself: a
+post in flight can land after pi's root clear ("pi's clears") and
+bring that row back early.
 
 **At most 32 records.** The server's set has a limit, and a new record
 over the limit removes the oldest record. That can be pi's root
@@ -759,6 +768,9 @@ cap, so a job that had no slot before can get one. A job that ended
 before or during the reload gets no record, only its notice. Every
 other shutdown, and the registry's exit handler, clears `job` before
 it stops the jobs, so a stopped job writes no record after the clear.
+The exit handler's clear is a synchronous `ko api` call, because Node
+runs no asynchronous work in an `exit` handler; a post that is in
+flight at the exit can land after it.
 
 ## Stopping a job
 

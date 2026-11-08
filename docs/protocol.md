@@ -580,6 +580,14 @@ its removal (section 15), and this client's
 own state when a `switch` or a removal moved it. The OSC 133 steps
 and the OSC 7501 records reach a client only through `status`.
 
+`POST /panes/pane_N/status` writes one record of the pane's OSC 7501
+record set: a `set` or a `clear` of an id, the root included. It is the
+second edge of the set beside the terminal's OSC 7501, under the same
+rules (design-program-status.md, "The record set"), and a change
+follows as a `status` event. A pane writes only its own records (409
+`refused` for another pane), and the user writes any pane's. On a
+runtime connection only the visit's own pane writes.
+
 The first message after the welcome is the full layout with every
 pane's row, and the second is the client's `selected`. There is no event replay; a client that reconnects gets
 the state again from its new welcome's layout event and reopens its
@@ -607,7 +615,7 @@ Pane state and pane events:
 - Each row field that can change has its own event of `ClientEvent`
   in `ko_server/src/protocol.rs`, and none moves the revision. A
   report that changes nothing
-  sends no event: an unchanged OSC 7501 record, an equal `PUT` of a
+  sends no event: an unchanged OSC 7501 record from either edge, an equal `PUT` of a
   variable, a `DELETE` of an absent name, an unchanged progress.
 - Variables always travel with their pane (decided 2026-11-03): the
   welcome's layout event carries every pane's row, and a later
@@ -1162,7 +1170,8 @@ sends one frame for each recorded report after the write that carried
 it, so a report frame follows the ring record of its bytes. `ko-pane`
 forwards OSC 133 `A` (primary prompts only), `C` and `D`; `B` and
 the other prompt kinds have no reader and stay in `ko-pane`. The
-coordinator keeps the OSC 7501 record set and applies its rules
+coordinator keeps the OSC 7501 record set, which the status route
+also writes (section 6), and applies its rules
 (design-program-status.md, "The record set"); `ko-pane` parses nothing that libghostty-vt has
 validated. An OSC 7501 report has no flag for an absent title or
 message, so an empty string is absent. RIS needs no frame of its own:

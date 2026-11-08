@@ -179,6 +179,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/panes/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Sets or clears one program status record of a pane. */
+        post: operations["SetStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/panes/{id}/stop": {
         parameters: {
             query?: never;
@@ -1305,7 +1322,7 @@ export interface components {
         ProgramKind: "permission" | "question" | "auth";
         ProgramRecord: {
             app?: string;
-            id: string;
+            id: components["schemas"]["StatusId"];
             msg?: string;
             /** @description The server's monotonic start time in nanoseconds for a child record; absent on the root. */
             started?: number;
@@ -1314,7 +1331,7 @@ export interface components {
             /** @constant */
             state: "idle";
         } | {
-            progress?: number;
+            progress?: components["schemas"]["StatusProgress"];
             /** @constant */
             state: "working";
         } | {
@@ -1322,7 +1339,7 @@ export interface components {
             state: "done";
         } | {
             kind?: components["schemas"]["ProgramKind"];
-            progress?: number;
+            progress?: components["schemas"]["StatusProgress"];
             /** @constant */
             state: "blocked";
         } | {
@@ -1554,11 +1571,48 @@ export interface components {
             ssh_args?: components["schemas"]["ConnectionArgs"];
         };
         SshAgent: "none" | "forward";
+        StatusApp: string;
         StatusChange: {
             now: number;
             pane: components["schemas"]["PaneId"];
             status: components["schemas"]["PaneStatus"];
         };
+        StatusId: string;
+        StatusProgress: number;
+        StatusReport: ({
+            app?: components["schemas"]["StatusApp"];
+            id: components["schemas"]["StatusId"];
+            msg?: components["schemas"]["StatusText2048"];
+            title?: components["schemas"]["StatusText192"];
+            /** @constant */
+            type: "set";
+        } & ({
+            /** @constant */
+            state: "idle";
+        } | {
+            progress?: components["schemas"]["StatusProgress"];
+            /** @constant */
+            state: "working";
+        } | {
+            /** @constant */
+            state: "done";
+        } | {
+            kind?: components["schemas"]["ProgramKind"];
+            progress?: components["schemas"]["StatusProgress"];
+            /** @constant */
+            state: "blocked";
+        } | {
+            /** @constant */
+            state: "error";
+        })) | {
+            id: components["schemas"]["StatusId"];
+            /** @constant */
+            type: "clear";
+        };
+        /** @description One to 192 UTF-8 bytes, without control characters. */
+        StatusText192: string;
+        /** @description One to 2048 UTF-8 bytes, without control characters. */
+        StatusText2048: string;
         StopPane: {
             /**
              * @description Milliseconds to wait for the pane to end by itself before ko removes it.
@@ -2243,6 +2297,47 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    SetStatus: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StatusReport"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Empty"];
+                };
             };
             /** @description The common error body. */
             default: {

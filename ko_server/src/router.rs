@@ -362,6 +362,13 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             format,
             history,
         } => state.screen(poll, index, id, format, history),
+        Request::SetStatus { id, body } => {
+            if let Err(refused) = acts_as(caller, id, "change only its own status") {
+                return reply::<routes::SetStatus>(&mut state.conns[index], Err(refused));
+            }
+            state.set_status(poll, id, body);
+            ok::<routes::SetStatus>(&mut state.conns[index], &Empty {});
+        }
         Request::SetVar { id, name, body } => {
             if let Err(refused) = acts_as(caller, id, "change only its own variables") {
                 return reply::<routes::SetVar>(&mut state.conns[index], Err(refused));

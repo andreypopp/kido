@@ -98,7 +98,9 @@ The extension uses only these interfaces of ko:
 - `ko api`: `GET /layout` and `GET /version`; `POST /panes` for a
   child and a top-level agent; `POST /panes/pane_N/messages` and
   `POST /panes/pane_N/stop`; `GET /panes/pane_N/screen?history=all`;
-  `PUT` and `DELETE` on `/panes/$KO_PANE/vars`.
+  `PUT` and `DELETE` on `/panes/$KO_PANE/vars`; `POST
+  /panes/$KO_PANE/status` for its job rows (design-subagents.md, "A
+  job's row").
 - `ko api --stream` for its own message stream,
   `/panes/$KO_PANE/messages` (protocol.md, section 7), and, in a
   top-level host pi, `/client` for its peers (design-subagents.md,

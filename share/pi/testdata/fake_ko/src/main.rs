@@ -915,6 +915,12 @@ fn api(argv: &[String]) -> ExitCode {
             }
             return stop_pane(pane);
         }
+        ("POST", ["", "panes", _, "status"]) => {
+            if protocol::decode::<StatusReport>(body.as_bytes()).is_err() {
+                return http_error(400, ErrorKind::Invalid, "not a StatusReport");
+            }
+            println!("{}", protocol::json(&Empty {}));
+        }
         ("POST", ["", "panes", pane, "messages"]) => return send_message(pane, &body),
         ("GET", ["", "panes", _, "screen"]) => return screen(&path),
         ("PUT", ["", "panes", pane, "vars", name]) => return put_var(pane, name, &body),

@@ -1,23 +1,8 @@
 use ko_sys::clock::Mono;
 
-use crate::protocol::{ProgramRecord, ProgramState, ProgramStatus};
+use crate::protocol::{ProgramRecord, ProgramState, ProgramStatus, StatusReport};
 
 const MAX_RECORDS: usize = 64;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Report {
-    Clear { id: String },
-    Set(Record),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Record {
-    pub(crate) id: String,
-    pub(crate) state: ProgramState,
-    pub(crate) app: Option<String>,
-    pub(crate) title: Option<String>,
-    pub(crate) msg: Option<String>,
-}
 
 #[derive(Debug, Default)]
 pub(crate) struct Set {
@@ -41,20 +26,16 @@ impl Set {
         self.records.len() != before && self.changed()
     }
 
-    pub(crate) fn apply(&mut self, report: Report, now: Mono) -> bool {
+    pub(crate) fn apply(&mut self, report: StatusReport, now: Mono) -> bool {
         let report = match report {
-            Report::Clear { id } if id.is_empty() => return self.clear(),
-            Report::Clear { id } => {
-                let child = format!("{id}/");
-                return self.remove(|record| record.id != id && !record.id.starts_with(&child));
+            StatusReport::Clear { id } => {
+                return self.remove(|record| !record.id.is_within(&id));
             }
-            Report::Set(record) => record,
+            StatusReport::Set { record } => record,
         };
-        let stored = self
-            .records
-            .iter()
-            .position(|record| record.id == report.id);
-        let started = if report.id.is_empty() {
+        let id = report.id;
+        let stored = self.records.iter().position(|record| record.id == id);
+        let started = if id.is_root() {
             None
         } else {
             stored
@@ -62,11 +43,11 @@ impl Set {
                 .or(Some(now.nanos()))
         };
         let record = ProgramRecord {
-            id: report.id,
+            id,
             state: report.state,
-            app: report.app,
-            title: report.title,
-            msg: report.msg,
+            app: report.app.map(String::from),
+            title: report.title.map(String::from),
+            msg: report.msg.map(String::from),
             started,
         };
         if let Some(index) = stored {
@@ -98,12 +79,12 @@ impl Set {
                 !matches!(
                     record,
                     ProgramRecord {
-                        state: ProgramState::Working { progress: Some(0) },
+                        state: ProgramState::Working { progress: Some(progress) },
                         app: None,
                         title: None,
                         msg: None,
                         ..
-                    }
+                    } if u8::from(*progress) == 0
                 )
             })
             .cloned()
@@ -117,7 +98,7 @@ impl Set {
 }
 
 pub(crate) fn root(records: &[ProgramRecord]) -> Option<&ProgramRecord> {
-    records.iter().find(|record| record.id.is_empty())
+    records.iter().find(|record| record.id.is_root())
 }
 
 pub(crate) fn app<'a>(records: &'a [ProgramRecord], record: &ProgramRecord) -> Option<&'a str> {
@@ -125,7 +106,7 @@ pub(crate) fn app<'a>(records: &'a [ProgramRecord], record: &ProgramRecord) -> O
     loop {
         if let Some(app) = records
             .iter()
-            .find(|found| found.id == id)
+            .find(|found| found.id.as_str() == id)
             .and_then(|found| found.app.as_deref())
         {
             return Some(app);
@@ -141,14 +122,16 @@ pub(crate) fn app<'a>(records: &'a [ProgramRecord], record: &ProgramRecord) -> O
 mod tests {
     use super::*;
 
-    fn set(id: &str, state: ProgramState, app: &str) -> Report {
-        Report::Set(Record {
-            id: id.to_owned(),
-            state,
-            app: (!app.is_empty()).then(|| app.to_owned()),
-            title: None,
-            msg: None,
-        })
+    fn set(id: &str, state: ProgramState, app: &str) -> StatusReport {
+        StatusReport::Set {
+            record: crate::protocol::StatusRecord {
+                id: id.to_owned().try_into().unwrap(),
+                state,
+                app: (!app.is_empty()).then(|| app.to_owned().try_into().unwrap()),
+                title: None,
+                msg: None,
+            },
+        }
     }
 
     #[test]
@@ -169,15 +152,17 @@ mod tests {
         assert_eq!(found.published().records[0].started, Some(7));
     }
 
-    fn clear(id: &str) -> Report {
-        Report::Clear { id: id.to_owned() }
+    fn clear(id: &str) -> StatusReport {
+        StatusReport::Clear {
+            id: id.to_owned().try_into().unwrap(),
+        }
     }
 
-    fn working(id: &str, progress: u8) -> Report {
+    fn working(id: &str, progress: u8) -> StatusReport {
         set(
             id,
             ProgramState::Working {
-                progress: Some(progress),
+                progress: Some(progress.try_into().unwrap()),
             },
             "",
         )
@@ -187,7 +172,7 @@ mod tests {
         set.published()
             .records
             .into_iter()
-            .map(|record| record.id)
+            .map(|record| String::from(record.id))
             .collect()
     }
 
@@ -248,17 +233,25 @@ mod tests {
         let mut found = Set::default();
         found.apply(working("bare", 0), Mono::from_nanos(1));
         found.apply(
-            Report::Set(Record {
-                msg: Some("A".to_owned()),
-                ..match working("msg", 0) {
-                    Report::Set(record) => record,
-                    Report::Clear { .. } => unreachable!(),
-                }
-            }),
+            StatusReport::Set {
+                record: crate::protocol::StatusRecord {
+                    msg: Some("A".to_owned().try_into().unwrap()),
+                    ..match working("msg", 0) {
+                        StatusReport::Set { record } => record,
+                        StatusReport::Clear { .. } => unreachable!(),
+                    }
+                },
+            },
             Mono::from_nanos(1),
         );
         found.apply(
-            set("app", ProgramState::Working { progress: Some(0) }, "tool"),
+            set(
+                "app",
+                ProgramState::Working {
+                    progress: Some(0.try_into().unwrap()),
+                },
+                "tool",
+            ),
             Mono::from_nanos(1),
         );
         found.apply(working("one", 1), Mono::from_nanos(1));

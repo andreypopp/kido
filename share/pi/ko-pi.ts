@@ -37,7 +37,7 @@ import {
   truncateTail,
   truncateLine,
 } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, type ProgramStatus, replaceControlCharacters, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Key, matchesKey, type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, replaceControlCharacters, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { type WriteStream, accessSync, constants, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
@@ -138,6 +138,10 @@ async function apiCall(method: string, path: string, body?: unknown, timeoutMs =
   const status = /ko api: HTTP (\d+)/.exec(res.err)?.[1];
   return status ? { status: Number(status), body: res.out.trim() } : { error: res.error };
 }
+
+const apiCallSync = (method: string, path: string, body: unknown): void => {
+  spawnSync("ko", apiArgs(method, path, body), { timeout: 1000, input: JSON.stringify(body), stdio: ["pipe", "ignore", "ignore"] });
+};
 
 const apiBody = (reply: Reply): string | undefined => ("error" in reply || reply.status !== 200 ? undefined : reply.body);
 
@@ -308,6 +312,8 @@ const MIN_ID_PREFIX = 8;
 const MAX_AGENT_COMPLETIONS = 10;
 
 const MAX_NOTICE_BYTES = 4000;
+const MAX_JOB_TITLE_BYTES = 192;
+const MAX_JOB_MESSAGE_BYTES = 2048;
 
 const MAX_REPORT_BYTES = 1000;
 
@@ -1536,7 +1542,7 @@ export default function (pi: ExtensionAPI) {
   // leaves a killed process (SIGKILL, SIGTERM) with the variables still set.
   const unsetVarsSync = (): void => {
     if (!pane || !ownSessionId) return;
-    spawnSync("ko", apiArgs("DELETE", varsPath(), unsetVarsBody()), { timeout: 1000, input: JSON.stringify(unsetVarsBody()), stdio: ["pipe", "ignore", "ignore"] });
+    apiCallSync("DELETE", varsPath(), unsetVarsBody());
   };
 
   // ---- the registry: custom entries of the own session ----
@@ -2206,13 +2212,20 @@ export default function (pi: ExtensionAPI) {
   };
 
   const jobRecords = new Map<string, { type: "running" } | { type: "finished"; timer: NodeJS.Timeout }>();
-  const writeJobRecord = (id: string | undefined, state: Extract<ProgramStatus["state"], "idle" | "working" | "done" | "error" | "clear">, title?: string, message?: string): boolean => {
-    if (!session?.hasUI || !process.env.KO_PANE) return false;
-    const encode = (text: string, bytes: number): string => Buffer.from(utf8Prefix(replaceControlCharacters(text).replace(/\s+/g, " ").trim(), bytes)).toString("base64");
-    let record = `\x1b]7501;state=${state}:id=${id === undefined ? "job" : `job/${id}`}`;
-    if (title !== undefined) record += `:title=${encode(title, 192)}`;
-    if (message !== undefined) record += `:msg=${encode(message, 2048)}`;
-    process.stdout.write(`${record}\x1b\\`);
+  let jobRecordQueue = Promise.resolve();
+  const writeJobRecord = (id: string | undefined, state: "idle" | "working" | "done" | "error" | "clear", title?: string, message?: string): boolean => {
+    if (!active) return false;
+    const clean = (text: string, bytes: number): string => utf8Prefix(replaceControlCharacters(text).replace(/\s+/g, " ").trim(), bytes);
+    const recordId = id === undefined ? "job" : `job/${id}`;
+    const cleanedTitle = title === undefined ? undefined : clean(title, MAX_JOB_TITLE_BYTES);
+    const cleanedMessage = message === undefined ? undefined : clean(message, MAX_JOB_MESSAGE_BYTES);
+    const report: Api["StatusReport"] = state === "clear" ? { type: "clear", id: recordId } : {
+      type: "set", id: recordId, state,
+      ...(cleanedTitle ? { title: cleanedTitle } : {}),
+      ...(cleanedMessage ? { msg: cleanedMessage } : {}),
+    };
+    const path = `/panes/${pane}/status`;
+    jobRecordQueue = jobRecordQueue.then(async () => { await apiCall("POST", path, report); }).catch(() => {});
     return true;
   };
   const clearJobRecord = (id: string): void => {
@@ -2333,7 +2346,9 @@ export default function (pi: ExtensionAPI) {
     clearJobRecords();
     owner.owner = {
       onStart: reportJob,
-      clearRecords: clearJobRecords,
+      clearRecords: () => {
+        if (active) apiCallSync("POST", `/panes/${pane}/status`, { type: "clear", id: "job" } satisfies Api["StatusReport"]);
+      },
       onLines(job) { if (streams(job)) scheduleFlush(job); },
       onEnd(job) {
         if (jobRecords.has(job.id)) reportJob(job);
@@ -3555,6 +3570,7 @@ export default function (pi: ExtensionAPI) {
         globalThis.__koPiExtensionExit = undefined;
       }
     }
+    await jobRecordQueue;
     active = false;
     session = null;
   });

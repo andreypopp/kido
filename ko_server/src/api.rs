@@ -13,8 +13,8 @@ use crate::protocol::{
     Candidate, ClientEvent, ClientRequest, DeleteVars, DownRuntime, Empty, ExecClient, ExecServer,
     HistoryDef, Images, Input, InputResult, LayoutPanes, Listing, Message, NewWindow, PanePatch,
     Placement, Posted, PutLayout, RuntimeInfo, RuntimeWait, SearchEvent, SendMessage, SendPrompt,
-    Sent, ServerVersion, Snapshot, StopPane, StreamRequest, VarValue, ViewEvent, ViewRequest,
-    VisitClient, VisitServer,
+    Sent, ServerVersion, Snapshot, StatusReport, StopPane, StreamRequest, VarValue, ViewEvent,
+    ViewRequest, VisitClient, VisitServer,
 };
 use crate::route::{Invalid, Param, binary, pixels, routes, text};
 
@@ -666,6 +666,14 @@ routes! {
         query: { needle: Needle },
         send: Empty,
         recv: SearchEvent,
+    }
+    /// Sets or clears one program status record of a pane.
+    SetStatus {
+        method: POST,
+        path: /panes/{id: PaneId}/status,
+        body: StatusReport,
+        caller: optional,
+        reply: Empty,
     }
     /// Sets one variable of a pane.
     SetVar {

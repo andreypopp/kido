@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { makeFixture, selfPane, startSession, notices, pollUntil, text, gatedCommand, movedId, logHas, captureStatusRecords, jobRecords } from "./ko-pi-fixture.ts";
+import { makeFixture, selfPane, startSession, notices, pollUntil, text, gatedCommand, movedId, logHas, captureStatusRecords } from "./ko-pi-fixture.ts";
 
 const listed = async (s: Awaited<ReturnType<typeof startSession>>) => JSON.parse(text(await s.tools.get("list_async_bash").execute("l", {})));
 const capture = (updates: string[]) => (result: any) => updates.push(result.content.map((part: any) => part.text ?? "").join(""));
@@ -141,10 +141,11 @@ test("a reload moves a running bash call and preserves its output without an old
     const updates: string[] = [];
     const work = s.tools.get("bash").execute("b", { command: `printf 'before\\n'; ${gatedCommand(gate, "", "after\n")}` }, undefined, capture(updates));
     await pollUntil(() => updates.some((u) => u?.includes("before")));
-    const records = () => jobRecords(output, undefined, "working");
+    const records = () => fx.posts(`/panes/${process.env.KO_PANE}/status`).filter(record => record.type === "set" && record.state === "working");
     assert.equal(records().length, 0);
     await s.emit("session_shutdown", { reason: "reload" });
     assert.equal(records().length, 1);
+    assert.deepEqual(output, []);
     const id = movedId(await work);
     const row = (await listed(s)).find((row: any) => row.job === id);
     assert.equal(s.terminalListeners.size, 0);

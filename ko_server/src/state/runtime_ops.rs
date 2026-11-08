@@ -571,6 +571,7 @@ impl State {
             | Route::NewPane {}
             | Route::StopPane { .. }
             | Route::PatchPane { .. }
+            | Route::SetStatus { .. }
             | Route::SetVar { .. }
             | Route::DeleteVar { .. }
             | Route::DeleteVars { .. }

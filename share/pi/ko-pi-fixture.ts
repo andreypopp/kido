@@ -35,11 +35,6 @@ export function captureStatusRecords(t: TestContext): string[] {
   return statusRecords;
 }
 
-export function jobRecords(output: string[], id?: string, state?: string): string[] {
-  const pattern = new RegExp(`^\x1b\\]7501;state=${state ?? "[a-z]+"}:id=job/${id ?? "[^:]+?"}(?=:|\x1b\\\\)`);
-  return output.filter((record) => pattern.test(record));
-}
-
 interface PaneRow {
   id: string;
   session?: string;

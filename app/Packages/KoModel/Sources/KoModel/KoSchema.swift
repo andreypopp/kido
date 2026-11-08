@@ -1654,13 +1654,13 @@ public enum KoSchema {
 
     public struct ProgramRecordBlocked: Codable, Equatable, Sendable {
         public var app: String?
-        public var id: String
+        public var id: StatusId
         public var kind: ProgramKind?
         public var msg: String?
-        public var progress: Int?
+        public var progress: StatusProgress?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: String, kind: ProgramKind? = nil, msg: String? = nil, progress: Int? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, id: StatusId, kind: ProgramKind? = nil, msg: String? = nil, progress: StatusProgress? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.id = id
             self.kind = kind
@@ -1672,14 +1672,14 @@ public enum KoSchema {
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.app = try container.decodeIfPresent(String.self, forKey: .app)
-            self.id = try container.decode(String.self, forKey: .id)
+            self.id = try container.decode(StatusId.self, forKey: .id)
             self.kind = try container.decodeIfPresent(ProgramKind.self, forKey: .kind)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
-            self.progress = try container.decodeIfPresent(Int.self, forKey: .progress)
+            self.progress = try container.decodeIfPresent(StatusProgress.self, forKey: .progress)
             self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
             if let value = self.progress {
-                guard 0 <= value, value <= 255 else { throw DecodingError.dataCorruptedError(forKey: .progress, in: container, debugDescription: "progress is 0...255, not \(value)") }
+                guard 0 <= value, value <= 100 else { throw DecodingError.dataCorruptedError(forKey: .progress, in: container, debugDescription: "progress is 0...100, not \(value)") }
             }
             if let value = self.started {
                 guard 0 <= value else { throw DecodingError.dataCorruptedError(forKey: .started, in: container, debugDescription: "started is at least 0, not \(value)") }
@@ -1698,11 +1698,11 @@ public enum KoSchema {
 
     public struct ProgramRecordDone: Codable, Equatable, Sendable {
         public var app: String?
-        public var id: String
+        public var id: StatusId
         public var msg: String?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: String, msg: String? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, id: StatusId, msg: String? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.id = id
             self.msg = msg
@@ -1712,7 +1712,7 @@ public enum KoSchema {
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.app = try container.decodeIfPresent(String.self, forKey: .app)
-            self.id = try container.decode(String.self, forKey: .id)
+            self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
             self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
@@ -1731,11 +1731,11 @@ public enum KoSchema {
 
     public struct ProgramRecordError: Codable, Equatable, Sendable {
         public var app: String?
-        public var id: String
+        public var id: StatusId
         public var msg: String?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: String, msg: String? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, id: StatusId, msg: String? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.id = id
             self.msg = msg
@@ -1745,7 +1745,7 @@ public enum KoSchema {
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.app = try container.decodeIfPresent(String.self, forKey: .app)
-            self.id = try container.decode(String.self, forKey: .id)
+            self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
             self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
@@ -1764,11 +1764,11 @@ public enum KoSchema {
 
     public struct ProgramRecordIdle: Codable, Equatable, Sendable {
         public var app: String?
-        public var id: String
+        public var id: StatusId
         public var msg: String?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: String, msg: String? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, id: StatusId, msg: String? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.id = id
             self.msg = msg
@@ -1778,7 +1778,7 @@ public enum KoSchema {
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.app = try container.decodeIfPresent(String.self, forKey: .app)
-            self.id = try container.decode(String.self, forKey: .id)
+            self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
             self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
@@ -1797,12 +1797,12 @@ public enum KoSchema {
 
     public struct ProgramRecordWorking: Codable, Equatable, Sendable {
         public var app: String?
-        public var id: String
+        public var id: StatusId
         public var msg: String?
-        public var progress: Int?
+        public var progress: StatusProgress?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: String, msg: String? = nil, progress: Int? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, id: StatusId, msg: String? = nil, progress: StatusProgress? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.id = id
             self.msg = msg
@@ -1813,13 +1813,13 @@ public enum KoSchema {
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.app = try container.decodeIfPresent(String.self, forKey: .app)
-            self.id = try container.decode(String.self, forKey: .id)
+            self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
-            self.progress = try container.decodeIfPresent(Int.self, forKey: .progress)
+            self.progress = try container.decodeIfPresent(StatusProgress.self, forKey: .progress)
             self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
             if let value = self.progress {
-                guard 0 <= value, value <= 255 else { throw DecodingError.dataCorruptedError(forKey: .progress, in: container, debugDescription: "progress is 0...255, not \(value)") }
+                guard 0 <= value, value <= 100 else { throw DecodingError.dataCorruptedError(forKey: .progress, in: container, debugDescription: "progress is 0...100, not \(value)") }
             }
             if let value = self.started {
                 guard 0 <= value else { throw DecodingError.dataCorruptedError(forKey: .started, in: container, debugDescription: "started is at least 0, not \(value)") }
@@ -2030,6 +2030,10 @@ public enum KoSchema {
             case revision
         }
     }
+
+    public typealias StatusId = String
+
+    public typealias StatusProgress = Int
 
     public enum Theme: Codable, Equatable, Sendable {
         case themeName(ThemeName)

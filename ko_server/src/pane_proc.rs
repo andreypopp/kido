@@ -23,11 +23,10 @@ use ko_sys::signal::Signal;
 
 use crate::config::Config;
 use crate::delivery::{self, Delivery, Done, Handle, Stamps};
-use crate::ids::PaneId;
-use crate::program_status::{Record, Report};
+use crate::ids::{PaneId, StatusId};
 use crate::protocol::{
     ClipboardContent, ClipboardLocation, ClipboardServed, Foreground, ImageShm, ProgramKind,
-    ProgramState, Progress, ProgressState, SearchMatch, Text,
+    ProgramState, Progress, ProgressState, SearchMatch, StatusRecord, StatusReport, Text,
 };
 use crate::telemetry::Prompt;
 
@@ -92,7 +91,7 @@ pub(crate) enum Event {
         message: String,
     },
     Prompt(Prompt),
-    Record(Report),
+    Record(StatusReport),
     Ready,
     Foreground(Foreground),
     Alternate(bool),
@@ -126,7 +125,8 @@ pub(crate) enum Event {
     },
 }
 
-fn report_of(record: &frame::Record<'_>) -> Report {
+fn report_of(record: &frame::Record<'_>) -> Option<StatusReport> {
+    let id = StatusId::try_from(lossy(record.id)).ok()?;
     let text = |bytes: &[u8]| (!bytes.is_empty()).then(|| lossy(bytes));
     let kind = match record.kind {
         frame::ProgramKind::None => None,
@@ -134,12 +134,10 @@ fn report_of(record: &frame::Record<'_>) -> Report {
         frame::ProgramKind::Question => Some(ProgramKind::Question),
         frame::ProgramKind::Auth => Some(ProgramKind::Auth),
     };
-    let progress = record.progress;
+    let progress = record.progress.map(TryInto::try_into).transpose().ok()?;
     let state = match record.state {
         frame::ProgramState::Clear => {
-            return Report::Clear {
-                id: lossy(record.id),
-            };
+            return Some(StatusReport::Clear { id });
         }
         frame::ProgramState::Idle => ProgramState::Idle,
         frame::ProgramState::Working => ProgramState::Working { progress },
@@ -147,12 +145,14 @@ fn report_of(record: &frame::Record<'_>) -> Report {
         frame::ProgramState::Blocked => ProgramState::Blocked { kind, progress },
         frame::ProgramState::Error => ProgramState::Error,
     };
-    Report::Set(Record {
-        id: lossy(record.id),
-        state,
-        app: text(record.app),
-        title: text(record.title),
-        msg: text(record.msg),
+    Some(StatusReport::Set {
+        record: StatusRecord {
+            id,
+            state,
+            app: text(record.app).map(TryInto::try_into).transpose().ok()?,
+            title: text(record.title).map(TryInto::try_into).transpose().ok()?,
+            msg: text(record.msg).map(TryInto::try_into).transpose().ok()?,
+        },
     })
 }
 
@@ -894,7 +894,11 @@ impl PaneProc {
                 at: prompt.at.nanos(),
                 command: lossy(prompt.command),
             })),
-            FromPane::Record(record) => io.events.push(Event::Record(report_of(&record))),
+            FromPane::Record(record) => {
+                if let Some(report) = report_of(&record) {
+                    io.events.push(Event::Record(report));
+                }
+            }
             FromPane::Foreground(foreground) => io.events.push(Event::Foreground(Foreground {
                 pid: foreground.pid,
                 name: lossy(foreground.name),

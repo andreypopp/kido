@@ -179,6 +179,61 @@ fn record<'a>(status: &'a Value, id: &str) -> &'a Value {
 }
 
 #[test]
+fn status_route_shares_records_and_restricts_the_caller() {
+    let s = start(&[]);
+    let pane = s.token_pane("stty raw -echo; exec cat");
+    let other = s.token_pane("exec cat");
+    s.wait_row(&other, "the other cat", |row| {
+        row["status"]["title"] == "cat"
+    });
+    let mut probe = Probe::new(&s, pane.clone());
+    let path = format!("/panes/{pane}/status");
+    let body = json!({"type":"set", "id":"job/build", "state":"working", "title":"Build λ", "msg":"compiling", "progress":42});
+    crate::panes::post(&s, None, &path, &body);
+    let status = probe.next();
+    assert_eq!(record(&status, "job/build")["msg"], "compiling");
+    assert_eq!(record(&status, "job/build")["progress"], 42);
+    assert_eq!(
+        s.row(&pane)["status"]["program_status"],
+        status["program_status"]
+    );
+    crate::panes::refused(
+        crate::panes::api(
+            &s,
+            Some(&other),
+            "POST",
+            &path,
+            &json!({"type":"clear", "id":""}),
+        ),
+        409,
+        "refused",
+        "change only its own status",
+    );
+    assert_eq!(
+        s.row(&pane)["status"]["program_status"],
+        status["program_status"]
+    );
+    crate::panes::post(&s, Some(&pane), &path, &json!({"type":"clear", "id":"job"}));
+    assert!(records(&probe.next()).is_empty());
+    crate::panes::post(&s, None, &path, &body);
+    probe.next();
+    assert!(records(&probe.osc("state=clear")).is_empty());
+    for invalid in [
+        json!({"type":"set", "id":"bad//id", "state":"idle"}),
+        json!({"type":"set", "id":"", "state":"working", "progress":101}),
+        json!({"type":"set", "id":"", "state":"idle", "title":"bad\ntext"}),
+        json!({"type":"set", "id":"", "state":"idle", "msg":"m".repeat(2049)}),
+    ] {
+        crate::panes::refused(
+            crate::panes::api(&s, None, "POST", &path, &invalid),
+            400,
+            "invalid",
+            "",
+        );
+    }
+}
+
+#[test]
 fn program_status_records() {
     let s = start(&[]);
     let pane = s.echo_pane();

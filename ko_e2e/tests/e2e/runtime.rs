@@ -1597,6 +1597,45 @@ fn runtime_visit_keeps_the_host_pane_and_scopes_its_temporary_identity() {
         .0,
         409
     );
+    let status_body =
+        json!({"type":"set", "id":"job/visit", "state":"working", "title":"Visit job"});
+    assert_eq!(
+        via(
+            &s,
+            "dev",
+            ("POST", &format!("/panes/{pane}/status")),
+            Some((&pane, &token)),
+            &status_body
+        )
+        .0,
+        200
+    );
+    s.wait_row(&pane, "visit status record", |row| {
+        row["status"]["program_status"]["records"]
+            .as_array()
+            .is_some_and(|records| records.iter().any(|record| record["id"] == "job/visit"))
+    });
+    let other = s.token_pane("exec cat");
+    s.wait_row(&other, "the other cat", |row| {
+        row["status"]["title"] == "cat"
+    });
+    refuses(
+        via(
+            &s,
+            "dev",
+            ("POST", &format!("/panes/{other}/status")),
+            Some((&pane, &token)),
+            &status_body,
+        ),
+        "change only its own status",
+    );
+    assert!(
+        s.row(&other)["status"]["program_status"]["records"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    s.request("DELETE", &format!("/panes/{other}"), None, 200);
     o.line("ko run --name dev");
     o.contains("inside runtime dev; run it from a host pane");
     let duplicate = s.dial_ws(

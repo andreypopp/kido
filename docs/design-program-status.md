@@ -14,6 +14,8 @@ The sources:
   - OSC 133 ([semantic prompts](https://gitlab.freedesktop.org/Per_Bothner/specifications/-/blob/master/proposals/semantic-prompts.md)).
   - The pane title, OSC 0/2.
   - The foreground process of the pty and the active screen.
+- The status route `POST /panes/pane_N/status` (protocol.md,
+  section 6), the second edge of the OSC 7501 record set.
 - The pane variables `pi.session`, `pi.name` and
   `pi.activity` of pi's harness, only for local pi agents.
 - The pane variables `ssh.dest` and `ssh.args`, set by `ko ssh`.
@@ -26,8 +28,18 @@ no whole-second tie and no polling: a report is an event.
 ### The record set
 
 `ko_server/src/program_status.rs` keeps one record set for each pane
-under these rules. libghostty-vt validates a report before the
-callback; `ko-pane` and the coordinator parse nothing.
+under these rules. A report comes from one of two edges, and both
+produce the one report type, `StatusReport` in
+`ko_server/src/protocol.rs`. libghostty-vt validates an OSC 7501
+report before the callback; `ko-pane` and the coordinator parse
+nothing of it. The route decodes its body through that type, whose
+fields have the limits of Ghostty's parser. Where Ghostty drops an
+invalid option, the route refuses the whole body, and an absent field
+is omitted, not empty. The route's text is plain, not base64. An OSC
+report that a field type refuses after Ghostty accepted it is dropped,
+not a fault of the pane. Nothing in the set records the edge of a
+report, so every rule below applies to both, and an OSC `clear`
+removes a record that the route set.
 
 - A record has an id, a state, and optional app, title, message and
   progress. An empty string in a report is an absent field. The
