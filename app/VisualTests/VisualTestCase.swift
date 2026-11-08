@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import GhosttyKit
 import KoModel
 import SidebarFeed
@@ -159,6 +160,30 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
     }
 
     override func setUp() async throws {
+        let sources = TISCreateInputSourceList([kTISPropertyInputSourceID: "com.apple.keylayout.US"] as CFDictionary, true).takeRetainedValue() as! [TISInputSource]
+        let source = try XCTUnwrap(sources.first)
+        let property = try XCTUnwrap(TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData))
+        let data = Unmanaged<CFData>.fromOpaque(property).takeUnretainedValue()
+        let bytes = try XCTUnwrap(CFDataGetBytePtr(data))
+        let layout = UnsafeRawPointer(bytes).assumingMemoryBound(to: UCKeyboardLayout.self)
+        PaneView.visualKeyTranslation = { event, modifiers in
+            withExtendedLifetime(data) {
+                let flags = (modifiers.contains(.shift) ? shiftKey : 0)
+                    | (modifiers.contains(.control) ? controlKey : 0)
+                    | (modifiers.contains(.option) ? optionKey : 0)
+                    | (modifiers.contains(.command) ? cmdKey : 0)
+                    | (modifiers.contains(.capsLock) ? alphaLock : 0)
+                var deadKey: UInt32 = 0
+                var length = 0
+                var characters = [UniChar](repeating: 0, count: 8)
+                let status = UCKeyTranslate(layout, event.keyCode, UInt16(kUCKeyActionDown),
+                    UInt32(flags >> 8), UInt32(LMGetKbdType()), OptionBits(kUCKeyTranslateNoDeadKeysMask),
+                    &deadKey, characters.count, &length, &characters)
+                XCTAssertEqual(status, noErr)
+                return status == noErr ? String(utf16CodeUnits: characters, count: length) : nil
+            }
+        }
+        addTeardownBlock { @MainActor in PaneView.visualKeyTranslation = nil }
         serverEnvironment = tools.environment
         WindowOwner.clipboardConsent.reset()
         NSApp.appearance = NSAppearance(named: .aqua)

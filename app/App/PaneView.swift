@@ -2034,13 +2034,24 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         return flags
     }
 
+    #if KIDO_VISUAL
+    static var visualKeyTranslation: ((NSEvent, NSEvent.ModifierFlags) -> String?)?
+    #endif
+
+    private static func characters(_ event: NSEvent, modifiers: NSEvent.ModifierFlags) -> String? {
+        #if KIDO_VISUAL
+        if let visualKeyTranslation { return visualKeyTranslation(event, modifiers) }
+        #endif
+        return event.characters(byApplyingModifiers: modifiers)
+    }
+
     // Control characters are left to Ghostty's key encoder, and AppKit's
     // private-use function-key characters are not text.
     private static func text(_ event: NSEvent) -> String? {
         guard let characters = event.characters else { return nil }
         if characters.count == 1, let scalar = characters.unicodeScalars.first {
             if scalar.value < 0x20 {
-                return event.characters(byApplyingModifiers: event.modifierFlags.subtracting(.control))
+                return Self.characters(event, modifiers: event.modifierFlags.subtracting(.control))
             }
             if (0xF700...0xF8FF).contains(scalar.value) { return nil }
         }
@@ -2067,7 +2078,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         key.consumed_mods = Self.mods((translationMods ?? event.modifierFlags).subtracting([.control, .command]))
         key.composing = composing
         if event.type == .keyDown || event.type == .keyUp,
-           let scalar = event.characters(byApplyingModifiers: [])?.unicodeScalars.first {
+           let scalar = Self.characters(event, modifiers: [])?.unicodeScalars.first {
             key.unshifted_codepoint = scalar.value
         }
         guard let text, let first = text.utf8.first, first >= 0x20, first != 0x7F else {
@@ -2115,7 +2126,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             timestamp: event.timestamp,
             windowNumber: event.windowNumber,
             context: nil,
-            characters: event.characters(byApplyingModifiers: translationMods) ?? "",
+            characters: Self.characters(event, modifiers: translationMods) ?? "",
             charactersIgnoringModifiers: event.charactersIgnoringModifiers ?? "",
             isARepeat: event.isARepeat,
             keyCode: event.keyCode) ?? event
@@ -2210,7 +2221,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         key.action = GHOSTTY_ACTION_PRESS
         key.keycode = UInt32(event.keyCode)
         key.mods = Self.mods(event.modifierFlags)
-        key.unshifted_codepoint = event.characters(byApplyingModifiers: [])?.unicodeScalars.first?.value ?? 0
+        key.unshifted_codepoint = Self.characters(event, modifiers: [])?.unicodeScalars.first?.value ?? 0
         #if KIDO_VISUAL
         visualBindingQueries += 1
         #endif
