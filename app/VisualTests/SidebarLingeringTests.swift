@@ -49,7 +49,7 @@ import XCTest
             cell.configure(row, now: SidebarView.visualNow!)
             SidebarView.visualNow = after * 1_000_000_000
             cell.updateClock(now: SidebarView.visualNow!)
-            XCTAssertEqual(cell.visualClockDirtyRect.minX, 45)
+            XCTAssertEqual(cell.visualClockDirtyRect.minX, 38)
             XCTAssertEqual(cell.visualClockDirtyRect.minY, 5)
         }
         SidebarView.visualNow = 11_000_000_000

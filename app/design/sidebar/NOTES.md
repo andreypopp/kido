@@ -33,12 +33,41 @@ today.
   focused pane: with a child shown that is the child (and its window),
   through the same confirmation as today, and the slot returns to the
   parent.
-- **No pill in the pane.** A slot that shows a child draws nothing to
-  say so; the sidebar row is the only sign. The keys move in the
-  hierarchy: ⌘↑ shows the parent of the focused pane in its slot,
-  ⌘↓ shows the child the slot last showed, or the first child when it
-  never showed one; both do nothing at the end of the chain. Focus
-  follows the shown pane.
+- **A breadcrumb pill in the pane** (user, 2026-11-08, back after the
+  2026-11-07 rejection). A slot that shows a descendant draws a pill at
+  its top left, 8pt from the top and the left edges, in the COPY
+  pill's family: 22pt high, 8pt radius, the pane background mixed 8%
+  toward the foreground, a 0.5pt border, 11pt text. It holds the path
+  from the top-level pane to the shown one, `@kido-app › @sidebar-mockup`,
+  names separated by `›`. Each ancestor is a button in the muted
+  colour; clicking it shows that ancestor in the slot and focuses it.
+  The shown pane's own name ends the path, in the label colour, not a
+  button. A slot that shows its own top-level pane has no pill. The
+  pill sits above the pane's content like the COPY pill and behaves
+  like it: the toolbar and find do not hide it, and it moves down to
+  y 48 together with COPY when the find capsule would leave less than
+  72pt of clearance. In copy mode COPY keeps its place at (8, 8) and
+  the breadcrumb sits to its right, 6pt after COPY's right edge, on
+  the same line; they stay two capsules. Width: the pill takes what
+  its text needs up to the slot width minus 16pt, minus COPY's width
+  plus 6pt when COPY shows. Over that, it shortens in this order:
+  middle ancestors (all but the first and the last) collapse into one
+  "…" that is not a button; then each remaining ancestor name
+  ellipsizes at its end, down to about 60pt each; last, the shown
+  pane's name ellipsizes. While find or the hover toolbar shows on
+  the pill's line, the cap also ends 6pt before them, and the pill
+  shortens in the same order; it moves down to y 48 only when the
+  room that leaves is under 72pt. When even the shortest form does not
+  fit, with the shown pane's name down to about 40pt, the pill hides;
+  it never clips inside its capsule, and ⌘↑ still works. The runtime
+  pill at the slot's top right gives way: it hides when less than its width plus 6pt remains
+  after the breadcrumb at its shortest, because the stripe and the
+  sidebar suffix still name the runtime. The mockup does not show
+  these collisions; this paragraph is the spec for them.
+  The keys still move in the hierarchy: ⌘↑ shows the parent of the
+  focused pane in its slot, ⌘↓ shows the child the slot last showed,
+  or the first child when it never showed one; both do nothing at the
+  end of the chain. Focus follows the shown pane.
 - **Focus.** The focused row is the pane on screen in the focused slot,
   parent or child. No row marks a child that is on screen in an
   unfocused slot.
@@ -48,10 +77,13 @@ today.
   client reports, so a child gets its slot's size. ko_tui keeps
   showing child windows as windows.
 
-**2. Children are collapsed by default.** A pane row with children
+**2. Children are collapsed by default.** (The geometry of this
+paragraph, the 30pt circles, the 40/54pt rows, the trailing chevron
+and the hover fill, is the 2026-11-07 state; "Indicator on the right"
+below replaced it on 2026-11-08.) A pane row with children
 (child windows and Claude Code child records alike) shows them folded.
-The hidden children appear as a third line of the row, under the
-title and the activity text: a row of 6pt status indicators, one for
+The hidden children appear as a line of the row (the third line in
+this decision; the activity line since 2026-11-08, below): a row of 6pt status indicators, one for
 each direct child that is not shown as a row, in the children's
 order, 4pt apart, each in the
 child's own colour (the same dot or green check as its row would show;
@@ -95,6 +127,132 @@ is per pane, in memory, and goes with the pane.
   item's bottom minus 10pt, so it also spans the descendants shown
   under those panes. The nested-guide geometry below is historical.
 
+### Indicator on the right — approved 2026-11-08
+
+The row's status indicator moves from the leading slot to the
+trailing column, after the clock (the mockup's **Indicator: Right**):
+the same 6pt dot or check in the same 12pt slot, 9pt after the clock.
+The hover × replaces it there. The geometry (5pt padding, the leading
+chevron slot, text at 23pt, the indicator centre 11pt from the right
+edge) is below; it is implemented, and docs/design-app.md ("Sidebar",
+"Folded children", "Children in the slot") is the reference for the
+code.
+
+The folded circles line is on the row's second line, the activity
+line, not on a third line of its own: a row with folded children is
+42pt like any two-line row. The circles take their width first, right
+aligned; the activity text gets the rest and ends in an ellipsis
+before them, with 6pt between. Without activity text the line holds
+the circles alone. When the circles themselves do not fit between
+the text column's start (23pt plus the indent) and the trailing
+indicator, in a narrow sidebar or at deep nesting, the activity text
+is already gone (it hides once its width falls under 16pt, so no
+lone letter remains), and the line drops circles from the end into `+N`
+until it fits, down to one circle and `+N`; a single child's name
+ellipsizes instead. When one circle and `+N` still do not fit, the
+line shows `+N` alone, the count without a circle; when even that
+does not fit, the line is absent and the chevron alone says that
+children exist. Nothing clips. The trailing column is the same on
+every row: the elapsed clock, 9pt, then the 12pt indicator slot.
+
+In the folded circles line an idle child is a gray circle (the muted
+colour at 55%), unlike the row indicator, where idle is nothing: the
+line counts the children, so each one needs a mark. The line has no
+hover fill.
+
+With the indicator on the right, the folded children line is right
+aligned too: its last circle ends under the trailing indicator, and
+for a single hidden child the name comes first, then its circle
+(`main-watch ●`). The hit area is the circles and the name, as before.
+
+The collapse control is a disclosure chevron in the parent row's
+leading slot, the 12pt slot that the status indicator left. Rows and
+session headers have 5pt of horizontal padding (was 12pt), so the
+chevron starts 5pt from the row edge, the title, the activity text
+and the single-child name start at 23pt, the trailing indicator's
+centre is 11pt from the right edge, and the folded circles end under
+it. The header's plus is still centred 15pt from the edge, 4pt
+outside the indicator column. The nesting step stays 15pt. A row with children always
+shows it, folded (right) or open (down): a 10pt chevron with a
+1.75pt stroke (the one the title tabs use), muted at 70% with no
+hover or pressed state, like the other
+sidebar controls, but with the pointing-hand cursor, centred on the
+title line. A
+row without children has an empty slot. The chevron folds and unfolds
+the block; the folded circles line still unfolds it too, and so do
+Left/Right on the selected row.
+
+A Claude Code record row with child records folds like a pane row
+(2026-11-08, from the implementer's question): it has the chevron,
+its own fold state keyed by the record id (in memory beside the
+pane's, gone with the pane), and its own circles line on its activity
+line for the hidden child records. The same rules apply: folded by
+default, a waiting descendant forces its path open, failures stay
+circles, only children not shown as rows appear as circles. The
+record row itself stays display-only; its chevron and circles line
+are its only controls.
+
+The chevron shows the fold state, not what is visible. A folded
+parent whose every child is shown for a wait, so that it has no
+circles line, still shows the right-pointing chevron; a click sets
+the state to expanded and turns it down, and nothing else changes.
+The fixture "Claude Code · child records" shows this on the record
+"Investigate sidebar layout".
+
+Grouping is **Dividers + active fill** (decided, user, 2026-11-08;
+renders `dividers-{light,dark}.png`). Between
+two top-level windows of a session sits a 9pt divider row with a 1pt
+line in the separator colour, inset 5pt from both edges, like the row
+padding. No divider before the first window or after the last, and
+none between nested windows. The visible window of the focused
+client is one filled block (the window colour, labelColor at 7.5% in
+both appearances, 7pt corners, the block clips its rows) over all its
+rows, including its expanded descendants, the records among them and
+their circles lines; the focused pane row inside it gets the focus
+fill (labelColor at 10%, 7pt corners) on top, so it reads as a second
+step. The keyboard-selection fill is the same 10% layer. Rows have no
+hover fill, so nothing else stacks on the block. The separator is
+labelColor at 10% in both appearances. The session header is outside
+every block: no divider between it and the first window, and none
+after a session's last window; the 10pt session gap separates
+sessions. A single-pane window is filled the same way. The old
+bracket and the other variants stay in the Grouping control for
+comparison; nested hierarchy still has no guides.
+
+Renders: `right-{light,dark}-*.png`.
+
+### Grouping variants (exploration, not decided)
+
+The **Grouping** control switches how the panes of one top-level
+window read as a group, with the rest of the design unchanged. Renders
+in `/tmp/kido-sidebar-children/group-{light,dark}-*.png`, on the
+working session after one Split Right (a three-pane window).
+
+- **Bracket** (the current design): the 1pt line 5pt inside the item.
+- **Window row**: a 20pt header above the panes, the window's name in
+  11pt semibold muted with "N panes" after it. Explicit, and a place
+  for a rename and a close; costs 20pt per multi-pane window and a
+  third row kind that single-pane windows do not get.
+- **Card**: the item gets the 10% labelColor fill and a 0.5pt edge,
+  with 2pt above and 4pt below. Reads at a glance with no extra
+  height, but it is the same mark as the focused-row and the
+  keyboard-selection fills, which then sit on it as a darker step.
+- **Tight stack**: no ink; 8pt between window items, none between
+  the panes of one window. Quietest, and it depends on noticing the
+  gap; a two-line row next to one-line rows blurs it.
+- **Layout miniature**: a 14×10pt glyph before the clock on each pane
+  row of the window, N equal cells, the row's own cell filled (the
+  preview knows pane count, not the real split). Says which pane is
+  where, which nothing else does; costs trailing width and drawing
+  code.
+- **Position labels**: a 10pt muted word before the clock (left,
+  middle, right). Cheapest "where"; labels each pane without drawing
+  the group.
+- **Shared status column**: the indicators of the window's panes move
+  to the trailing column, with the bracket on the right edge. The
+  group reads from the right; status leaves the leading edge the
+  rest of the design uses.
+
 ### Decisions (user, 2026-11-07)
 
 - Children show in the parent's slot; layout edits act on top-level
@@ -104,28 +262,36 @@ is per pane, in memory, and goes with the pane.
 - Only a waiting child expands on its own. A failed child stays a red
   circle.
 - Claude Code child records fold under the same circles.
-- No pill in the pane. ⌘↑ and ⌘↓ move up and down the hierarchy in
-  the slot.
+- A breadcrumb pill in the pane when a slot shows a descendant
+  (2026-11-08; rejected on 2026-11-07, brought back). ⌘↑ and ⌘↓ move
+  up and down the hierarchy in the slot.
 - No mark on a child that is on screen in an unfocused slot.
-- Six circles, then `+N`, drawn as the row's third line under the
-  title and the activity text, not in the trailing column.
+- Six circles, then `+N`, drawn in the row under the title, not in
+  the trailing column (third line on 2026-11-07; on the activity
+  line, right aligned, since 2026-11-08).
 - A single hidden child shows its name after its circle, in the small
   muted font, on the same line (user, 2026-11-07).
 - No tree guides; nesting alone shows the hierarchy. The bracket that
-  groups the panes of a multi-pane window stays.
+  groups the panes of a multi-pane window stayed on 2026-11-07 and is
+  gone since 2026-11-08 (dividers and the active window fill replace it).
 - Condensed rows (user, "more condensed"): 13pt titles on an 18pt
   line with 5pt vertical padding, so 28pt one-line rows; the activity
   line is 11pt on 14pt, 23pt from the row's top, so 42pt; the circles
-  line is 12pt, so 40pt and 54pt. Session headers are 26pt with the
+  line is 12pt, so 40pt and 54pt (since 2026-11-08 the circles share
+  the activity line, so 28/42pt only). Session headers are 26pt with the
   label 5pt from the top, and the gap after a session is 10pt. These
   replace the 32/48pt rows, 29pt headers and 16pt session gap of the
   draft below.
-- No gray circle (user): an idle indicator draws nothing, in the row's
+- No gray circle (user, 2026-11-07; replaced on 2026-11-08 for the
+  circles line, where an idle child is a gray circle; the row's own
+  idle indicator still draws nothing): an idle indicator draws nothing, in the row's
   leading slot and in the circles line alike, but keeps its 6pt
   space, so nothing shifts: an idle row's title stays at 30pt, and an
   idle child in the circles line is a gap that still counts. The
   hover × still appears in the empty slot.
-- Tighter leading slot (user): the indicator slot is 12pt wide at the
+- Tighter leading slot (user, 2026-11-07; replaced on 2026-11-08 by
+  the trailing indicator, the leading chevron slot and 5pt padding):
+  the indicator slot is 12pt wide at the
   12pt inset, with a 6pt gap to the text, so the dot's centre is 18pt
   and the title, the activity text and the circles start at 30pt
   from the row's edge (was a 16pt slot, an 8pt gap and 36pt). The

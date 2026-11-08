@@ -60,7 +60,7 @@ import PaneGeometry
     private func expandedRows(_ snapshot: Snapshot) -> [SidebarRow] {
         var expansion = SidebarExpansion()
         expansion.expandAll(sidebarRows(snapshot))
-        return sidebarRows(snapshot, expanded: expansion.expanded).rows
+        return sidebarDividers(sidebarRows(snapshot, expanded: expansion.expanded).rows)
     }
 
     private func fixture(sessions count: UInt32? = nil) -> Snapshot {
@@ -314,7 +314,15 @@ import PaneGeometry
         let live = Drop(try drop(list, at: center(table, grabbed, dy: -20)).draggingPasteboard, center(table, grabbed, dy: -20), table.window, source: table)
         let scroll = list.visualScroll
         _ = scroll.draggingEntered(live)
-        XCTAssertEqual(list.visualRows.map(\.id), rows.indices.filter { !block.contains($0) }.map { rows[$0].id }, "the dragged window leaves the list")
+        XCTAssertEqual(list.visualRows.map(\.id), rows.indices.filter { !block.contains($0) && rows[$0].id != .divider(main, group) }.map { rows[$0].id }, "the dragged window leaves the list")
+        XCTAssertFalse(list.visualRows.contains { $0.id.session == main && $0.root == group }, "every pane and descendant of the dragged window is hidden")
+        let remaining = list.visualRows.filter { $0.id.session == main }
+        for index in remaining.indices where remaining[index].kind == .divider {
+            XCTAssertGreaterThan(index, 0)
+            XCTAssertLessThan(index + 1, remaining.count)
+            XCTAssertNotNil(remaining[index - 1].root)
+            if case .divider(_, let following) = remaining[index].id { XCTAssertEqual(remaining[index + 1].root, following) }
+        }
         let gap = try XCTUnwrap(list.visualRows.firstIndex { $0.id == .gap(main) })
         live.draggingLocation = center(table, gap)
         XCTAssertEqual(scroll.draggingUpdated(live), .move)
@@ -335,6 +343,33 @@ import PaneGeometry
         XCTAssertFalse(cancelled.1)
         XCTAssertEqual(list.visualRows, rows, "a cancel brings the rows back")
         XCTAssertEqual(requests.count, 1)
+    }
+
+    func testWindowDividersRemainValidDuringDrag() async throws {
+        let snapshot = sidebarFixture()
+        let owner = try owner(snapshot)
+        let list = owner.sidebar.list, table = list.visualTable
+        let main = SessionID(number: 0)
+        for root in snapshot.sessions[0].nodes.map(\.window) {
+            let row = try XCTUnwrap(list.visualRows.firstIndex { $0.id.session == main && $0.root == root })
+            _ = try await nativeDrop(list, start: row, cancel: true, midway: {
+                let rows = list.visualRows.filter { $0.id.session == main }
+                XCTAssertEqual(rows.filter { $0.kind == .divider }.count, 1)
+                for index in rows.indices where rows[index].kind == .divider {
+                    XCTAssertNotNil(rows[index - 1].root)
+                    XCTAssertNotNil(rows[index + 1].root)
+                }
+            }) { self.center(table, 0) }
+        }
+        let first = snapshot.sessions[0].nodes[0].window
+        let last = snapshot.sessions[0].nodes[2].window
+        let row = try XCTUnwrap(list.visualRows.firstIndex { $0.root == first && $0.id.session == main })
+        let result = try await nativeDrop(list, start: row) {
+            self.center(table, list.visualRows.firstIndex { $0.id == .divider(main, last) }!)
+        }
+        XCTAssertTrue(result.1)
+        XCTAssertEqual(requests, [.reorder(.window(main, first, relativeTo: last, .before))])
+        sent[0].reply(.reordered)
     }
 
     func testWindowDragKeepsTheKeyboardSelection() async throws {

@@ -300,6 +300,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
             case nil: break
             }
         }
+        items = sidebarDividers(items)
         if let edit = editing, !items.contains(where: { $0.id == edit.id }) { endRename() }
         if editing != nil {
             let changes = items.map(\.id).difference(from: previous.map(\.id))
@@ -490,6 +491,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
                 let block = blockRows(session, root)
                 let above = y < (table.rect(ofRow: block.lowerBound).minY + table.rect(ofRow: block.upperBound - 1).maxY) / 2
                 (row, slot) = above ? (block.lowerBound, at) : (block.upperBound, at + 1)
+            } else if case .divider(_, let following) = items[below].id, let at = roots.firstIndex(of: following) {
+                (row, slot) = (below, at)
             } else if case .header = items[below].kind {
                 (row, slot) = (roots.first.map { blockRows(session, $0).lowerBound } ?? below + 1, 0)
             } else { (row, slot) = (roots.last.map { blockRows(session, $0).upperBound } ?? below, roots.count) }
@@ -621,6 +624,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
             guard let self else { return }
             disclose(item.id, expanded: !expansion.expanded.contains(item.id))
         }
+        cell.children.invoke = { [weak self] in self?.disclose(item.id, expanded: true) }
         cell.addWindow.invoke = { [weak self] in self?.newWindow(item.id.session) }
         return cell
     }

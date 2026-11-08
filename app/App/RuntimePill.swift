@@ -70,12 +70,9 @@ final class RuntimePill: PaneCapsule {
         needsDisplay = true
     }
 
-    // A label draws its text 2pt inside its frame on each side; the frames below cancel that, so the
-    // visible gaps are 8pt before the swatch, 6pt after it and 9pt after the last text.
-    private static let labelInset: CGFloat = 2
-
+    // The frames keep visible gaps of 8pt before the swatch, 6pt after it and 9pt after the last text.
     private var textEnd: CGFloat {
-        let inset = Self.labelInset
+        let inset = PaneCapsule.labelInset
         let name = ceil(self.name.fittingSize.width)
         guard !state.isHidden else { return 18 + name - inset }
         return 18 + name - 2 * inset + ceil(state.fittingSize.width) - inset
@@ -104,7 +101,7 @@ final class RuntimePill: PaneCapsule {
         let nameSize = name.fittingSize
         name.frame = NSRect(x: 18, y: (bounds.height - nameSize.height) / 2, width: ceil(nameSize.width), height: nameSize.height)
         let spinnerWidth: CGFloat = spinner.isHidden ? 0 : 15
-        let stateX = name.frame.maxX - 2 * Self.labelInset
+        let stateX = name.frame.maxX - 2 * PaneCapsule.labelInset
         let stateSize = state.fittingSize
         state.frame = NSRect(x: stateX, y: (bounds.height - stateSize.height) / 2,
                              width: max(0, min(ceil(stateSize.width), bounds.width - stateX - 7 - spinnerWidth)), height: stateSize.height)

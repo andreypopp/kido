@@ -2,6 +2,16 @@ import Testing
 import KoModel
 @testable import SidebarFeed
 
+@Test func projectionPathsUseCurrentAncestry() {
+    let projection = PaneProjection(makeSnapshot([pane(0, children: [pane(1, children: [pane(2)])])]))
+    for (pane, expected) in [(0, [0]), (1, [0, 1]), (2, [0, 1, 2]), (9, [])] {
+        #expect(projection.path(to: .init(number: UInt32(pane))).map(\.pane.number) == expected.map(UInt32.init))
+    }
+    let removed = PaneProjection(makeSnapshot([pane(0), pane(2)]))
+    #expect(removed.path(to: .init(number: 2)).map(\.pane.number) == [2])
+    #expect(removed.path(to: .init(number: 1)).isEmpty)
+}
+
 @Test func independentSlotsRememberEachLevelAndRepairRemoval() {
     let first = pane(0, children: [pane(1, children: [pane(2)]), pane(3)])
     let second = pane(4, window: 0, children: [pane(5)])

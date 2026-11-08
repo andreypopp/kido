@@ -902,11 +902,10 @@ message or a notice.
 Both clients nest a subagent's window under the pane that spawns it,
 not after that agent's whole window (design.md, "The sidebar tree").
 The terminal client shows the nesting as one column of indentation
-for each level. Kido.app's sidebar (design-app.md, "Sidebar") draws it
-in full: the parent window's bracket continues beside the child as a
-`│` stem, children of one pane form a group with `├` and `└` on their
-first rows, and an only child also receives `└`, not its own dot. This
-makes ownership immediately visible.
+for each level. Kido.app's sidebar (design-app.md, "Sidebar" and
+"Folded children") indents each level by 15pt and folds a pane's
+children by default into circles on its row, with a chevron that opens
+them.
 
 The anchor is the `parent` of the child's pane row, which the server
 sets to the spawner's pane when it creates the pane. The edge stays

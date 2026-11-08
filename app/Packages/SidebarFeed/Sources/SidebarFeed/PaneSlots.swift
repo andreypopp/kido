@@ -34,6 +34,34 @@ public struct PaneProjection: Equatable, Sendable {
             session.nodes.forEach { visit($0, session: session.id, slot: nil, parent: nil) }
         }
     }
+    func path(to pane: PaneID) -> [Snapshot.Position] {
+        var result: [Snapshot.Position] = []
+        var current: PaneID? = pane
+        while let id = current, let placement = placements[id] {
+            result.append(placement.position)
+            current = placement.parent
+        }
+        return result.reversed()
+    }
+
+    public func shown(_ root: PaneID, slots: PaneSlots) -> ShownPane? {
+        guard let placement = placements[slots.shown(root)], placement.slot.pane == root,
+              let item = items[placement.position.pane]?.item else { return nil }
+        let ancestors = path(to: placement.position.pane).dropLast().compactMap { position in
+            items[position.pane].map { ShownPane.Entry(position: position, title: $0.item.rowTitle) }
+        }
+        return ShownPane(shown: .init(position: placement.position, title: item.rowTitle), ancestors: ancestors)
+    }
+}
+
+public struct ShownPane: Equatable, Sendable {
+    public struct Entry: Equatable, Sendable {
+        public let position: Snapshot.Position
+        public let title: String
+        public init(position: Snapshot.Position, title: String) { self.position = position; self.title = title }
+    }
+    public let shown: Entry
+    public let ancestors: [Entry]
 }
 
 public enum PaneDirection: Equatable, Sendable { case parent, child }

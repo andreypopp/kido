@@ -52,7 +52,7 @@ func expandedRows(_ snapshot: Snapshot?) -> [SidebarRow] {
     var expanded = SidebarExpansion()
     expanded.expandAll(sidebarRows(snapshot))
     var captions = SidebarCaptions()
-    return captions.apply(sidebarRows(snapshot, expanded: expanded.expanded).rows, now: 0, delay: 0)
+    return sidebarDividers(captions.apply(sidebarRows(snapshot, expanded: expanded.expanded).rows, now: 0, delay: 0))
 }
 
 func group(_ id: Int, _ children: [Node]) -> Node {

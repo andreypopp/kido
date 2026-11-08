@@ -1198,8 +1198,8 @@ private class AlertEscape: NSView {
             }
         }
         let roots = (model.session.flatMap { ko.layout.layout.session($0) }?.windows ?? []).filter { projection.rootWindows[$0.id] == $0.id }
-        let shown = Dictionary(uniqueKeysWithValues: projection.placements.values.filter { $0.position.pane == $0.slot.pane }.map { root in
-            (root.position.pane, projection.placements[paneSlots.shown(root.position.pane)]?.position ?? root.position)
+        let shown = Dictionary(uniqueKeysWithValues: projection.placements.values.filter { $0.position.pane == $0.slot.pane }.compactMap { root in
+            projection.shown(root.position.pane, slots: paneSlots).map { (root.position.pane, $0) }
         })
         let selected = ko.selection.pane.flatMap { pane -> PaneID? in
             guard let placement = projection.placements[pane] else { return nil }

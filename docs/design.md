@@ -643,7 +643,7 @@ alike. The tree and the chooser reach the children.
 The terminal client draws the list as session headers and pane rows,
 indented by depth (`ko_tui/src/sidebar.rs`); its chooser (`C-a s`)
 visits every row in that order. Kido.app draws its tree with
-brackets and group glyphs (design-app.md, "Sidebar").
+indentation and folded children (design-app.md, "Sidebar").
 
 Below the tree, pinned to the bottom of the sidebar, both clients
 list the runtimes of the configuration and of the current session

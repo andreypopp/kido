@@ -12,6 +12,25 @@ class MouseButton: NSButton {
     }
 }
 
+class ActionButton: MouseButton {
+    var invoke: () -> Void = {}
+    override var isFlipped: Bool { true }
+    init() {
+        super.init(frame: .zero)
+        title = ""
+        isBordered = false
+        focusRingType = .none
+        (cell as? NSButtonCell)?.highlightsBy = []
+        target = self
+        action = #selector(activate)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    @objc private func activate() { invoke() }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
+
 final class IconButton: MouseButton {
     static let sidebarSymbols = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular, scale: .small)
     var invoke: () -> Void = {}

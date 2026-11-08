@@ -3,9 +3,9 @@ import KoModel
 
 public struct SidebarRow: Equatable, Sendable {
     public enum ID: Hashable, Sendable {
-        case header(SessionID), pane(SessionID, PaneID), program(SessionID, PaneID, Data), gap(SessionID)
+        case divider(SessionID, WindowID), header(SessionID), pane(SessionID, PaneID), program(SessionID, PaneID, Data), gap(SessionID)
         public var session: SessionID {
-            switch self { case .header(let s), .pane(let s, _), .program(let s, _, _), .gap(let s): s }
+            switch self { case .divider(let s, _), .header(let s), .pane(let s, _), .program(let s, _, _), .gap(let s): s }
         }
     }
     public enum Status: Comparable, Sendable {
@@ -20,17 +20,12 @@ public struct SidebarRow: Equatable, Sendable {
         case leaf, folded([HiddenChild]), expanded
     }
     public enum Kind: Equatable, Sendable {
-        case header, pane(Snapshot.Position, Children), program(Children), gap
-    }
-    public struct Guide: Equatable, Sendable {
-        public let x: Double
-        public let top: Double
-        public let bottom: Double
+        case header, pane(Snapshot.Position, Children), program(Children), divider, gap
     }
     public let id: ID
     public internal(set) var kind: Kind
     public let indent: Int
-    public var height: Double { switch kind { case .header: 26; case .gap: 10; case .pane, .program: contentHeight } }
+    public var height: Double { switch kind { case .header: 26; case .divider: 9; case .gap: 10; case .pane, .program: contentHeight } }
     public let title: String
     public var tail: String
     // The runtime after the title; a nested row omits the one of the pane row above it.
@@ -38,23 +33,22 @@ public struct SidebarRow: Equatable, Sendable {
     public let status: Status
     public var indicatorDescription = ""
     public let focused: Bool
-    public var guides: [Guide] = []
+    public enum Block: Equatable, Sendable { case single, first, middle, last }
+    public var block: Block?
     public var quietShell = false
     public var agent = false
     public var root: WindowID?
     public var started: Int?
     public var padding: Double { 5 }
-    public var leading: Double { 30 + Double(indent) * 15 }
-    public var indicatorX: Double { 18 + Double(indent) * 15 }
+    public var leading: Double { 23 + Double(indent) * 15 }
     public var tailY: Double { 23 }
-    public var childrenY: Double { tail.isEmpty ? 23 : 37 }
     public var children: Children {
         switch kind { case .pane(_, let children), .program(let children): children; default: .leaf }
     }
     var contentHeight: Double {
-        let base = tail.isEmpty ? 28.0 : 42.0
-        if case .folded = children { return base + 12 }
-        return base
+        if !tail.isEmpty { return 42 }
+        if case .folded(let hidden) = children, !hidden.isEmpty { return 42 }
+        return 28
     }
     public var topLevel: Snapshot.Position? { indent == 0 ? target : nil }
     public var target: Snapshot.Position? {
@@ -216,11 +210,11 @@ public func sidebarRows(_ snapshot: Snapshot?, expanded: Set<SidebarRow.ID> = []
     var expandable: Set<SidebarRow.ID> = []
     func finish(_ raw: SidebarRow, children: [Branch]) -> Branch {
         ids.insert(raw.id)
-        if children.contains(where: { !$0.waiting }) { expandable.insert(raw.id) }
+        if !children.isEmpty { expandable.insert(raw.id) }
         var row = raw
         let open = expanded.contains(row.id)
         let hidden = open ? [] : children.filter { !$0.waiting }
-        let disclosure: SidebarRow.Children = children.isEmpty || (!open && hidden.isEmpty) ? .leaf
+        let disclosure: SidebarRow.Children = children.isEmpty ? .leaf
             : open ? .expanded : .folded(hidden.map { .init(title: $0.row.title, status: $0.row.status) })
         switch row.kind {
         case .pane(let position, _): row.kind = .pane(position, disclosure)
@@ -289,37 +283,32 @@ public func sidebarRows(_ snapshot: Snapshot?, expanded: Set<SidebarRow.ID> = []
         let header = SidebarRow(id: .header(session.id), kind: .header, indent: 0, title: session.name, tail: "", status: .quiet, focused: false)
         let gap = SidebarRow(id: .gap(session.id), kind: .gap, indent: 0, title: "", tail: "", status: .quiet, focused: false)
         rows.append(header)
-        rows.append(contentsOf: windows(session.nodes, session: session.id, depth: 0, root: nil).flatMap { [$0.row] + $0.following })
+        for node in session.nodes {
+            rows.append(contentsOf: windows([node], session: session.id, depth: 0, root: nil).flatMap { [$0.row] + $0.following })
+        }
         rows.append(gap)
+    }
+    let root = PaneProjection(snapshot).rootWindows[snapshot.client.window]
+    let block = rows.indices.filter { rows[$0].id.session == snapshot.client.session && root != nil && rows[$0].root == root }
+    for (offset, index) in block.enumerated() {
+        rows[index].block = block.count == 1 ? .single : offset == 0 ? .first : offset == block.count - 1 ? .last : .middle
     }
     return SidebarOutline(rows: rows, ids: ids, expandable: expandable)
 }
 
-private func sidebarBrackets(_ original: [SidebarRow]) -> [SidebarRow] {
-    var rows = original
-    var start = 0
-    while start < rows.count {
-        guard let root = rows[start].root else { start += 1; continue }
-        var end = start
-        var height = 0.0
-        var panes = 0
-        while end < rows.count, rows[end].root == root {
-            rows[end].guides = []
-            height += rows[end].height
-            if rows[end].indent == 0, rows[end].target != nil { panes += 1 }
-            end += 1
-        }
-        if panes > 1 {
-            var offset = 0.0
-            for index in start..<end {
-                let top = max(0, 10 - offset), bottom = min(rows[index].height, height - 10 - offset)
-                if bottom > top { rows[index].guides = [.init(x: 5, top: top, bottom: bottom)] }
-                offset += rows[index].height
+public func sidebarDividers(_ rows: [SidebarRow]) -> [SidebarRow] {
+    var result: [SidebarRow] = []
+    var previous: (SessionID, WindowID)?
+    for row in rows {
+        if let root = row.root {
+            if let prior = previous, prior.0 == row.id.session, prior.1 != root {
+                result.append(SidebarRow(id: .divider(row.id.session, root), kind: .divider, indent: 0, title: "", tail: "", status: .quiet, focused: false))
             }
-        }
-        start = end
+            previous = (row.id.session, root)
+        } else { previous = nil }
+        result.append(row)
     }
-    return rows
+    return result
 }
 
 public func visibleSidebarRow(for pane: PaneID, in rows: [SidebarRow], projection: PaneProjection) -> Int? {
@@ -365,6 +354,6 @@ public struct SidebarCaptions {
             row.tail = caption.shown
             return row
         }
-        return sidebarBrackets(updated)
+        return updated
     }
 }

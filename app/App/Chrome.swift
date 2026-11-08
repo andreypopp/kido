@@ -19,6 +19,10 @@ enum Chrome {
     static var hairline: NSColor { .separatorColor }
     static var defaultPaper: NSColor { .windowBackgroundColor }
     static var closeHover: NSColor { NSColor.labelColor.withAlphaComponent(0.1) }
+    static var windowSelection: NSColor { NSColor.labelColor.withAlphaComponent(0.075) }
+    static var sidebarIdleCircle: NSColor { inkSecondary.withAlphaComponent(inkSecondary.alphaComponent * 0.55) }
+    static var sidebarChevron: NSColor { inkSecondary.withAlphaComponent(inkSecondary.alphaComponent * 0.7) }
+    static var sidebarDivider: NSColor { ink.withAlphaComponent(0.1) }
     static var rowSelection: NSColor { NSColor.labelColor.withAlphaComponent(0.1) }
     static var rowHover: NSColor { NSColor.labelColor.withAlphaComponent(0.05) }
     static var iconHover: NSColor { NSColor.labelColor.withAlphaComponent(0.12) }
@@ -70,8 +74,4 @@ enum Chrome {
     static func runtimeStripe(_ tint: NSColor, focused: Bool) -> NSColor { tint.withAlphaComponent(focused ? 1 : 0.55) }
     static func runtimeStripeGap(_ stripe: NSColor) -> NSColor { stripe.withAlphaComponent(stripe.alphaComponent * 0.35) }
     static var runtimePillUnfocusedAlpha: CGFloat { 0.7 }
-    static func treeGuide(dark: Bool) -> NSColor {
-        dark ? NSColor(srgbRed: 79 / 255, green: 85 / 255, blue: 92 / 255, alpha: 1)
-             : NSColor(srgbRed: 191 / 255, green: 186 / 255, blue: 177 / 255, alpha: 1)
-    }
 }

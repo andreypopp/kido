@@ -8,6 +8,10 @@ import SnapshotTesting
 import XCTest
 @testable import Kido
 
+private extension PaneView {
+    var testBreadcrumb: PaneBreadcrumb { chromeViews.compactMap { $0 as? PaneBreadcrumb }.first! }
+}
+
 @MainActor final class SidebarChildrenTests: VisualTestCase {
     private func ownerFixture() async throws -> (dir: String, runtime: GhosttyRuntime, owner: WindowOwner, children: [Snapshot.Position]) {
         let dir = try await koLaunched(pane: koPane("stty raw -echo; printf '\\033[?25lparent'; exec cat"))
@@ -54,7 +58,7 @@ import XCTest
         SidebarView.visualNow = sidebarChildrenNow
         defer { SidebarView.visualNow = previousNow }
         enum Scenario: CaseIterable {
-            case collapsed, expanded, narrow, recordsCollapsed, recordsExpanded, waitCleared, foldedSelected, sixPlus, singleIdle, hover
+            case collapsed, expanded, narrow, recordsCollapsed, recordsExpanded, waitCleared, foldedSelected, sixPlus, singleIdle, hover, ellipsis, singleLong, narrowNine, paneWaitFolded, paneWaitExpanded, recordWaitFolded, recordWaitExpanded, closeHover, countOnly, summaryAbsent
             var configuration: (name: String, records: Bool, width: Int) {
                 switch self {
                 case .collapsed: ("stress-collapsed", false, 292)
@@ -67,6 +71,16 @@ import XCTest
                 case .sixPlus: ("six-plus", false, 292)
                 case .singleIdle: ("single-idle", false, 292)
                 case .hover: ("stress-hover", false, 292)
+                case .ellipsis: ("activity-ellipsis", false, 292)
+                case .singleLong: ("single-long-name", false, 236)
+                case .narrowNine: ("narrow-nine-hidden", false, 80)
+                case .countOnly: ("deep-count-only", false, 96)
+                case .summaryAbsent: ("deep-summary-absent", false, 80)
+                case .paneWaitFolded: ("pane-wait-folded", false, 292)
+                case .paneWaitExpanded: ("pane-wait-expanded", false, 292)
+                case .recordWaitFolded: ("record-wait-folded", true, 292)
+                case .recordWaitExpanded: ("record-wait-expanded", true, 292)
+                case .closeHover: ("trailing-close-hover", false, 292)
                 }
             }
         }
@@ -90,24 +104,65 @@ import XCTest
                 switch scenario {
                 case .waitCleared:
                     snapshot.mapItems { if $0.id.number == 940 { $0.fixtureLifecycle = piLifecycle(); $0.pane.mark = .none_ } }
-                case .foldedSelected:
+                case .expanded, .foldedSelected:
                     snapshot.client = .init(session: .init(number: 0), window: .init(number: 824), pane: .init(number: 936))
                 case .sixPlus, .singleIdle:
                     let count = scenario == .singleIdle ? 1 : 8
                     let children = (1...count).map { index in fixtureNode(UInt32(index), "child-\(index)", piLifecycle(index == 1 ? .idle(.init()) : .running(.init())), mark: index == 1 ? .none_ : .running) }
                     snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [fixtureNode(0, "Parent", piLifecycle(), children: children)])])
-                case .collapsed, .expanded, .narrow, .recordsCollapsed, .recordsExpanded, .hover: break
+                case .singleLong, .narrowNine, .countOnly, .summaryAbsent:
+                    let count = scenario == .singleLong ? 1 : 9
+                    let children = (1...count).map { fixtureNode(UInt32($0), "A very long hidden child name that must ellipsize", piLifecycle(.running(.init())), mark: .running) }
+                    snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [fixtureNode(0, "Parent", piLifecycle(.running(.init()), msg: "A very long activity caption that must ellipsize before the circles"), mark: .running, children: children)])])
+                    if scenario == .countOnly || scenario == .summaryAbsent {
+                        snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [fixtureNode(100, "Root", piLifecycle(), children: [fixtureNode(101, "Ancestor", piLifecycle(), children: snapshot.sessions[0].nodes)])])])
+                    }
+                case .ellipsis:
+                    snapshot.mapItems { if $0.id.number == 940 { $0.fixtureLifecycle = piLifecycle(.waiting(.init()), msg: "Allow running make test in the worktree before continuing?") } }
+                    snapshot.client = .init(session: .init(number: 0), window: .init(number: 824), pane: .init(number: 936))
+                case .paneWaitFolded, .paneWaitExpanded:
+                    snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [fixtureNode(0, "Parent", piLifecycle(), children: [fixtureNode(1, "Waiting child", piLifecycle(.waiting(.init(kind: .permission))), mark: .waiting)])])])
+                case .recordWaitFolded, .recordWaitExpanded:
+                    snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [.item(fixtureItem(0, "Claude Code", agentLifecycle(.running(.init())), records: [
+                        .working(.init(id: "a", msg: "Working", title: "Record parent")),
+                        .blocked(.init(id: "a/b", msg: "Approve command", title: "Waiting record"))
+                    ]))])])
+                case .collapsed, .narrow, .recordsCollapsed, .recordsExpanded, .hover, .closeHover: break
                 }
                 list.show(snapshot)
                 switch scenario {
-                case .expanded: list.visualSetExpanded(.pane(.init(number: 0), .init(number: 502)), true)
+                case .countOnly, .summaryAbsent:
+                    list.visualSetExpanded(.pane(.init(number: 0), .init(number: 100)), true)
+                    list.visualSetExpanded(.pane(.init(number: 0), .init(number: 101)), true)
+                    window.layoutIfNeeded()
+                    list.layoutSubtreeIfNeeded()
+                    list.visualTable.tile()
+                    list.visualTable.layoutSubtreeIfNeeded()
+                    let index = try XCTUnwrap(list.visualRows.firstIndex { $0.target?.pane.number == 0 })
+                    let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
+                    cell.layoutSubtreeIfNeeded()
+                    XCTAssertEqual(cell.children.isHidden, scenario == .summaryAbsent, "row width \(cell.bounds.width), leading \(list.visualRows[index].leading), children \(cell.children.frame)")
+                    XCTAssertLessThanOrEqual(cell.children.frame.maxX, cell.bounds.width - 5)
+                case .expanded, .ellipsis: list.visualSetExpanded(.pane(.init(number: 0), .init(number: 502)), true)
                 case .recordsExpanded: list.visualSetExpanded(.pane(.init(number: 0), .init(number: 3000)), true)
-                case .collapsed, .narrow, .recordsCollapsed, .waitCleared, .foldedSelected, .sixPlus, .singleIdle, .hover: break
+                case .paneWaitExpanded: list.visualSetExpanded(.pane(.init(number: 0), .init(number: 0)), true)
+                case .recordWaitFolded, .recordWaitExpanded:
+                    list.visualSetExpanded(.pane(.init(number: 0), .init(number: 0)), true)
+                    if scenario == .recordWaitExpanded { list.visualSetExpanded(.program(.init(number: 0), .init(number: 0), Data("a".utf8)), true) }
+                default: break
                 }
                 if scenario == .hover, let index = list.visualRows.firstIndex(where: { if case .folded = $0.children { true } else { false } }),
                    let cell = list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell {
                     let event = try XCTUnwrap(NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil))
                     cell.disclosure.mouseEntered(with: event)
+                }
+                if scenario == .closeHover,
+                   let index = list.visualRows.firstIndex(where: { $0.target != nil && $0.started != nil }),
+                   let cell = list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell {
+                    cell.layoutSubtreeIfNeeded()
+                    let point = cell.convert(NSPoint(x: cell.close.frame.midX, y: cell.close.frame.midY), to: nil)
+                    let event = try XCTUnwrap(NSEvent.enterExitEvent(with: .mouseEntered, location: point, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil))
+                    cell.mouseEntered(with: event)
                 }
                 sidebarSnapshot(list, "\(name)-\(side)")
                 window.close()
@@ -115,10 +170,15 @@ import XCTest
         }
         let fixture = try await ownerFixture()
         let owner = fixture.owner, child = fixture.children[0]
+        let titleInput = fixture.dir + "/breadcrumb-titles.json"
+        for (pane, title) in [(PaneID(number: 1), "@kido-app"), (child.pane, "@sidebar-mockup")] {
+            try JSONSerialization.data(withJSONObject: ["type": "text", "data": Data("\u{1b}]0;\(title)\u{7}".utf8).base64EncodedString()]).write(to: URL(fileURLWithPath: titleInput))
+            try await ko(["api", "--input", titleInput, "/panes/\(pane)/input"], dir: fixture.dir)
+        }
         owner.perform(.jump(.init(session: child.session, window: child.window, pane: child.pane)))
         try await wait("child shown for full-window snapshot") {
             guard let pane = owner.testSession?.pane(child.pane) else { return false }
-            return owner.testSession?.windows[WindowID(number: 1)]?.active == child.pane && self.surfaceText(pane).contains("Designing session cards")
+            return owner.testSession?.windows[WindowID(number: 1)]?.active == child.pane && self.surfaceText(pane).contains("Designing session cards") && pane.testBreadcrumb.entries.map(\.title) == ["@kido-app", "@sidebar-mockup"]
         }
         func feed(split: Bool) -> Snapshot {
             var snapshot = sidebarChildrenFixture()
@@ -173,6 +233,230 @@ import XCTest
         }
     }
 
+    func testWindowBlockLayers() throws {
+        let previousNow = SidebarView.visualNow
+        SidebarView.visualNow = sidebarChildrenNow
+        defer { SidebarView.visualNow = previousNow }
+        for dark in [false, true] {
+            for name in ["single", "records-and-children", "folded-focus", "keyboard-other", "keyboard-focused", "scroll-clipped"] {
+                let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: name == "scroll-clipped" ? 150 : 640), styleMask: [.titled], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                let list = SidebarView()
+                list.captionDelay = 0
+                window.contentView = list
+                var snapshot = sidebarChildrenFixture(records: name == "records-and-children")
+                if name == "single" { snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [fixtureNode(0, "One pane", piLifecycle())])]) }
+                if name == "folded-focus" { snapshot.client = .init(session: .init(number: 0), window: .init(number: 824), pane: .init(number: 936)) }
+                list.show(snapshot)
+                if name == "records-and-children" || name == "scroll-clipped" { list.visualExpandAll() }
+                if name.hasPrefix("keyboard") {
+                    list.focus()
+                    let row = try XCTUnwrap(list.visualRows.firstIndex { name == "keyboard-focused" ? $0.focused : $0.target?.pane.number == 905 })
+                    list.visualTable.selectRowIndexes([row], byExtendingSelection: false)
+                    (list.visualTable as? Table)?.keyboardSelection = true
+                }
+                if name == "scroll-clipped" {
+                    list.layoutSubtreeIfNeeded()
+                    let row = try XCTUnwrap(list.visualRows.firstIndex { $0.target?.pane.number == 502 })
+                    list.visualScroll.contentView.scroll(to: NSPoint(x: 0, y: list.visualTable.rect(ofRow: row).minY + 8))
+                }
+                sidebarSnapshot(list, "\(name)-\(dark ? "dark" : "light")")
+                window.close()
+            }
+        }
+    }
+
+    func testBreadcrumbCompression() async throws {
+        let board = NSPasteboard(name: .init("breadcrumb-compression-" + UUID().uuidString))
+        defer { board.releaseGlobally() }
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+        let entries = ["@working-on-a-long-project", "first-middle", "second-middle", "third-middle", "@shown-pane-with-a-long-name"].enumerated().map { index, title in
+            ShownPane.Entry(position: .init(session: .init(number: 0), window: .init(number: UInt32(index)), pane: .init(number: UInt32(index))), title: title)
+        }
+        for dark in [false, true] {
+            try await theme(runtime, dark: dark)
+            for width in [560, 340, 180, 100] {
+                let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: width, height: 64), styleMask: [], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                let host = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 64))
+                host.wantsLayer = true
+                host.layer?.backgroundColor = runtime.background.cgColor
+                window.contentView = host
+                let crumb = PaneBreadcrumb(runtime: runtime)
+                crumb.show(entries)
+                host.addSubview(crumb)
+                XCTAssertEqual(crumb.fit(crumb.minimumWidth - 1), 0)
+                XCTAssertGreaterThan(crumb.fit(crumb.minimumWidth), 0)
+                let fitted = crumb.fit(CGFloat(width - 16))
+                crumb.isHidden = fitted == 0
+                crumb.frame = NSRect(x: 8, y: 24, width: fitted, height: 22)
+                XCTAssertEqual(crumb.isHidden, width == 100)
+                window.displayIfNeeded()
+                checkSnapshot { verifySnapshot(of: host, as: .image, named: "path-\(width)-\(dark ? "dark" : "light")", record: $0) }
+                XCTAssertLessThanOrEqual(crumb.frame.maxX, CGFloat(width - 8))
+                if width < 560 && width != 100 { XCTAssertEqual(crumb.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }.count, 1) }
+                window.close()
+            }
+        }
+    }
+
+    func testBreadcrumbHierarchyAndOverlays() async throws {
+        let fixture = try await ownerFixture()
+        let owner = fixture.owner, child = fixture.children[0]
+        let input = fixture.dir + "/grandchild.json"
+        let body = KoSchema.CreatePane(command: .shell(.init(command: "stty raw -echo; printf '\\033[?25lgrandchild'; exec cat")), parent: child.pane)
+        try JSONEncoder().encode(body).write(to: URL(fileURLWithPath: input))
+        let reply = try await ko(["api", "-X", "POST", "--input", input, "/panes"], dir: fixture.dir)
+        let grandchild = try JSONDecoder().decode(Snapshot.Position.self, from: Data(reply.utf8))
+        owner.perform(.jump(fixture.children[1]))
+        try await wait("sibling slot shows its child") { owner.testModel?.selection.pane == fixture.children[1].pane }
+        owner.perform(.jump(grandchild))
+        try await wait("grandchild breadcrumb") { owner.testSession?.pane(grandchild.pane)?.testBreadcrumb.entries.count == 3 }
+        let pane = try XCTUnwrap(owner.testSession?.pane(grandchild.pane))
+        let root = try XCTUnwrap(pane.testBreadcrumb.entries.first?.position)
+        let titleInput = fixture.dir + "/breadcrumb-title.json"
+        let other = try XCTUnwrap(owner.testSession?.pane(fixture.children[1].pane))
+        let otherRoot = try XCTUnwrap(other.testBreadcrumb.entries.first?.position)
+        for (position, name) in [(root, "Root"), (child, "Parent"), (grandchild, "Renamed child"), (otherRoot, "Other root"), (fixture.children[1], "Other child")] {
+            try JSONSerialization.data(withJSONObject: ["type": "text", "data": Data("\u{1b}]0;\(name)\u{7}".utf8).base64EncodedString()]).write(to: URL(fileURLWithPath: titleInput))
+            try await ko(["api", "--input", titleInput, "/panes/\(position.pane)/input"], dir: fixture.dir)
+        }
+        try await wait("breadcrumb names change without topology changes") { pane.testBreadcrumb.entries.map(\.title) == ["Root", "Parent", "Renamed child"] && other.testBreadcrumb.entries.map(\.title) == ["Other root", "Other child"] }
+        try await wait("grandchild surface fits root slot") {
+            guard let window = owner.testModel?.layout.layout.window(root.window),
+                  let slot = Layout(window, visible: true).root.panes.first(where: { $0.id == root.pane }) else { return false }
+            return Int(pane.geometry.columns) == slot.geometry.width && Int(pane.geometry.rows) == slot.geometry.height
+        }
+        let sibling = try XCTUnwrap(owner.testSession?.pane(fixture.children[1].pane))
+        XCTAssertEqual(sibling.testBreadcrumb.entries.count, 2)
+        func capture(_ name: String) async throws {
+            try await wait("visible panes restored before \(name)") {
+                owner.testSession?.windows.values.flatMap(\.panes).filter { !$0.isHidden }.allSatisfy { !$0.restoring && $0.visualRestores > 0 } == true
+            }
+            for pane in owner.testSession?.windows.values.flatMap(\.panes) ?? [] where !pane.isHidden { await presentedFrame(pane) }
+            owner.window.layoutIfNeeded()
+            owner.window.contentView?.layoutSubtreeIfNeeded()
+            owner.window.displayIfNeeded()
+            let content = try XCTUnwrap(owner.window.contentView?.superview)
+            checkSnapshot { verifySnapshot(of: content, as: .image, named: name, record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
+            let fullscreen = try fullscreenHostImage(owner, root: content)
+            checkSnapshot { verifySnapshot(of: fullscreen, as: .image, named: name + "-fullscreen", record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
+        }
+        func setBreadcrumbTitles(_ entries: [ShownPane.Entry]) async throws {
+            for entry in entries {
+                try JSONSerialization.data(withJSONObject: ["type": "text", "data": Data("\u{1b}]0;\(entry.title)\u{7}".utf8).base64EncodedString()]).write(to: URL(fileURLWithPath: titleInput))
+                try await ko(["api", "--input", titleInput, "/panes/\(entry.position.pane)/input"], dir: fixture.dir)
+            }
+            try await wait("real breadcrumb titles updated") { pane.breadcrumbPath == entries }
+        }
+        for dark in [false, true] {
+            try await theme(fixture.runtime, dark: dark)
+            let side = dark ? "dark" : "light"
+            try await capture("grandchild-" + side)
+            let grid = pane.geometry
+            pane.toggleCopyMode(nil)
+            try await wait("copy mode shows with breadcrumb") { if case .cursor = pane.copyMode { true } else { false } }
+            try await capture("copy-breadcrumb-" + side)
+            pane.endCopy()
+            try await wait("copy mode restores pane") { !pane.restoring }
+            pane.showFind()
+            pane.layoutSubtreeIfNeeded()
+            try await capture("find-breadcrumb-" + side)
+            XCTAssertFalse(pane.testBreadcrumb.isHidden)
+            pane.find?.close()
+            let chrome = try XCTUnwrap(pane.testBreadcrumb.superview as? PaneChrome)
+            chrome.hover(chrome, NSPoint(x: chrome.hotZone.midX, y: chrome.hotZone.midY))
+            XCTAssertTrue(chrome.subviews.contains { $0 is PaneToolbar && !$0.isHidden })
+            try await capture("toolbar-breadcrumb-" + side)
+            XCTAssertFalse(pane.testBreadcrumb.isHidden)
+            chrome.hover(chrome, nil)
+            XCTAssertEqual(pane.geometry.columns, grid.columns)
+            XCTAssertEqual(pane.geometry.rows, grid.rows)
+            let path = pane.testBreadcrumb.entries
+            let longPath = path.enumerated().map { index, entry in
+                ShownPane.Entry(position: entry.position, title: index == path.count - 1 ? "@shown-pane-with-a-long-current-name" : "@ancestor-with-a-long-name-\(index)")
+            }
+            try await setBreadcrumbTitles(longPath)
+            pane.showFind()
+            try await capture("long-path-find-" + side)
+            XCTAssertFalse(pane.testBreadcrumb.frame.intersects(try XCTUnwrap(pane.find).frame))
+            pane.toggleCopyMode(nil)
+            try await wait("copy mode beside long path") { if case .cursor = pane.copyMode { true } else { false } }
+            try await capture("long-path-find-copy-" + side)
+            XCTAssertFalse(pane.testBreadcrumb.frame.intersects(try XCTUnwrap(pane.find).frame))
+            XCTAssertFalse(pane.testBreadcrumb.frame.intersects(try XCTUnwrap(pane.chromeViews.first { $0.subviews.contains { ($0 as? NSTextField)?.stringValue == "COPY" } }).frame))
+            pane.endCopy()
+            try await wait("long path exits copy") { !pane.restoring }
+            owner.window.setContentSize(NSSize(width: 1600, height: 720))
+            pane.showFind()
+            try await capture("long-path-find-same-line-" + side)
+            XCTAssertEqual(pane.testBreadcrumb.frame.minY, 8)
+            XCTAssertFalse(pane.testBreadcrumb.isHidden)
+            XCTAssertFalse(pane.testBreadcrumb.frame.intersects(try XCTUnwrap(pane.find).frame))
+            pane.find?.close()
+            chrome.hover(chrome, NSPoint(x: chrome.hotZone.midX, y: chrome.hotZone.midY))
+            try await capture("long-path-toolbar-" + side)
+            let toolbar = try XCTUnwrap(chrome.subviews.first { $0 is PaneToolbar && !$0.isHidden })
+            XCTAssertFalse(pane.testBreadcrumb.frame.intersects(toolbar.frame))
+            chrome.hover(chrome, nil)
+            pane.runtimeMark = .known(.init(kind: .ssh, name: "long-runtime-name", source: .config, state: .up), routed: false)
+            try await capture("collapsed-middle-runtime-kept-" + side)
+            XCTAssertFalse(try XCTUnwrap(pane.chromeViews.first { $0 is RuntimePill }).isHidden)
+            owner.window.setContentSize(NSSize(width: 700, height: 720))
+            try await capture("collapsed-middle-runtime-hidden-" + side)
+            XCTAssertTrue(try XCTUnwrap(pane.chromeViews.first { $0 is RuntimePill }).isHidden)
+            pane.showFind()
+            try await capture("narrow-find-clearance-" + side)
+            XCTAssertEqual(pane.testBreadcrumb.frame.minY, 48)
+            pane.find?.close()
+            owner.window.setContentSize(NSSize(width: 1040, height: 720))
+            pane.runtimeMark = nil
+            try await setBreadcrumbTitles(path)
+        }
+        let floating = KoSchema.Edit.float(.init(cols: 35, pane: root.pane, rows: 12, x: 3, y: 2))
+        try await ko(["layout", "edit", String(decoding: JSONEncoder().encode(floating), as: UTF8.self)], dir: fixture.dir)
+        try await wait("breadcrumb follows floating slot") { owner.testModel?.layout.layout.window(root.window)?.floats.contains { $0.pane == root.pane } == true }
+        for dark in [false, true] {
+            try await theme(fixture.runtime, dark: dark)
+            try await capture("floating-descendant-\(dark ? "dark" : "light")")
+        }
+        pane.layoutSubtreeIfNeeded()
+        let crumb = pane.testBreadcrumb
+        XCTAssertNil(crumb.hitTest(NSPoint(x: crumb.frame.minX + 2, y: crumb.frame.minY + 2)))
+        let button = try XCTUnwrap(crumb.subviews.compactMap { $0 as? NSButton }.last { !$0.isHidden })
+        let location = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+        let host = try XCTUnwrap(owner.window.contentView?.superview)
+        XCTAssertTrue(host.hitTest(host.convert(location, from: nil)) === button)
+        let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: location, modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        NSApp.postEvent(try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: location, modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0)), atStart: true)
+        button.mouseDown(with: down)
+        try await wait("ancestor click shows parent in same slot") { owner.testModel?.selection.pane == child.pane }
+        XCTAssertTrue(owner.testSession?.pane(fixture.children[1].pane) === sibling)
+        XCTAssertEqual(owner.testSession?.windows[WindowID(number: 1)]?.panes.count, 2)
+        let parent = try XCTUnwrap(owner.testSession?.pane(child.pane))
+        XCTAssertEqual(parent.testBreadcrumb.entries.map(\.position), [root, child])
+        for dark in [false, true] {
+            try await theme(fixture.runtime, dark: dark)
+            try await capture("returned-parent-\(dark ? "dark" : "light")")
+        }
+        parent.layoutSubtreeIfNeeded()
+        let rootButton = try XCTUnwrap(parent.testBreadcrumb.subviews.compactMap { $0 as? NSButton }.first)
+        try click(rootButton)
+        try await wait("root removes breadcrumb") { owner.testModel?.selection.pane == root.pane && owner.testSession?.pane(root.pane)?.testBreadcrumb.entries.isEmpty == true }
+        for dark in [false, true] {
+            try await theme(fixture.runtime, dark: dark)
+            try await capture("returned-root-\(dark ? "dark" : "light")")
+        }
+        owner.perform(.jump(grandchild))
+        try await wait("grandchild shown before removal") { owner.testModel?.selection.pane == grandchild.pane }
+        try await ko(["api", "-X", "DELETE", "/panes/\(grandchild.pane)"], dir: fixture.dir)
+        try await wait("removed child restores root without a breadcrumb") {
+            owner.testModel?.selection.pane == root.pane && owner.testSession?.pane(root.pane)?.testBreadcrumb.entries.isEmpty == true
+        }
+    }
+
     func testServerRestartResetsSlotsExpansionsAndSurfaces() async throws {
         let fixture = try await ownerFixture()
         let owner = fixture.owner
@@ -218,13 +502,56 @@ import XCTest
         let host = NSView(frame: NSRect(x: 0, y: 0, width: 44, height: 12))
         window.contentView = host
         for (index, content) in [parent.children, waiting.children].enumerated() {
-            let control = SidebarDisclosure(SidebarFonts())
-            control.content = content
+            let control = SidebarChildren(SidebarFonts())
+            if case .folded(let hidden) = content { control.content = hidden }
             control.frame = NSRect(x: index * 24, y: 0, width: 20, height: 12)
             host.addSubview(control)
         }
         host.displayIfNeeded()
-        checkSnapshot { verifySnapshot(of: host, as: .image, named: "done-check-and-idle-gap", record: $0) }
+        checkSnapshot { verifySnapshot(of: host, as: .image, named: "done-check-and-idle-dot", record: $0) }
+    }
+
+    private func click(_ control: NSView) throws {
+        let window = try XCTUnwrap(control.window)
+        window.orderBack(nil)
+        window.contentView?.superview?.layoutSubtreeIfNeeded()
+        control.superview?.layoutSubtreeIfNeeded()
+        let point = NSPoint(x: control.bounds.midX, y: control.bounds.midY)
+        let location = control.convert(point, to: nil)
+        let host = try XCTUnwrap(window.contentView?.superview)
+        let hit = host.hitTest(host.convert(location, from: nil))
+        XCTAssertTrue(hit === control, "expected \(control), hit \(String(describing: hit))")
+        let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: location, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        let up = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: location, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0))
+        NSApp.postEvent(up, atStart: true)
+        control.mouseDown(with: down)
+    }
+
+    func testWaitOnlyDisclosureClicks() throws {
+        for records in [false, true] {
+            let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            defer { window.close() }
+            let list = SidebarView()
+            window.contentView = list
+            let snapshot = records
+                ? fixtureSnapshot(window: 0, pane: 0, [("main", [.item(fixtureItem(0, "Claude", agentLifecycle(.running(.init())), records: [.working(.init(id: "a")), .blocked(.init(id: "a/b"))]))])])
+                : fixtureSnapshot(window: 0, pane: 0, [("main", [fixtureNode(0, "Parent", piLifecycle(), children: [fixtureNode(1, "Wait", piLifecycle(.waiting(.init())), mark: .waiting)])])])
+            list.show(snapshot)
+            let id: SidebarRow.ID = records ? .program(.init(number: 0), .init(number: 0), Data("a".utf8)) : .pane(.init(number: 0), .init(number: 0))
+            let ids = list.visualRows.map(\.id)
+            var navigations = 0
+            list.navigate = { _, _ in navigations += 1 }
+            for expanded in [true, false] {
+                let index = try XCTUnwrap(list.visualRows.firstIndex { $0.id == id })
+                let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
+                XCTAssertTrue(cell.children.isHidden)
+                try click(cell.disclosure)
+                XCTAssertEqual(list.visualRows.map(\.id), ids)
+                XCTAssertEqual(list.visualRows[index].children, expanded ? .expanded : .folded([]))
+            }
+            XCTAssertEqual(navigations, 0)
+        }
     }
 
     func testDisclosureControlsAndProgramRowsDoNotNavigate() throws {
@@ -241,14 +568,14 @@ import XCTest
         list.navigate = { _, _ in navigations += 1 }
         let root = try XCTUnwrap(list.visualRows.firstIndex { $0.target?.pane.number == 3000 })
         let rootCell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: root, makeIfNecessary: true) as? SidebarCell)
-        rootCell.disclosure.performClick(nil)
+        try click(rootCell.children)
         let record = try XCTUnwrap(list.visualRows.firstIndex { if case .program(_, _, let id) = $0.id { id == Data("agent-b".utf8) } else { false } })
         let recordCell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: record, makeIfNecessary: true) as? SidebarCell)
         XCTAssertFalse(list.tableView(list.visualTable, shouldSelectRow: record))
         XCTAssertTrue(recordCell.close.isHidden)
         XCTAssertEqual(recordCell.accessibilityRole(), .group)
         XCTAssertTrue(recordCell.disclosure.isAccessibilityElement())
-        recordCell.disclosure.performClick(nil)
+        try click(recordCell.disclosure)
         XCTAssertTrue(list.visualRows.contains { $0.title == "Nested record" })
         list.visualJump(list.visualRows[record])
         XCTAssertEqual(navigations, 0)

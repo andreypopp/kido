@@ -92,7 +92,7 @@ final class SessionView: NSView {
     }
 
     // The windows of the current session, the ids of every window of the server, and the client's selected pane.
-    func update(_ listing: [KoSchema.Window], alive: Set<WindowID>, selected: PaneID?, marks: [PaneID: RuntimeMark], shown positions: [PaneID: Snapshot.Position] = [:]) {
+    func update(_ listing: [KoSchema.Window], alive: Set<WindowID>, selected: PaneID?, marks: [PaneID: RuntimeMark], shown: [PaneID: ShownPane] = [:]) {
         updating = true
         defer { updating = false }
         let marked = self.marks
@@ -112,13 +112,13 @@ final class SessionView: NSView {
             }
             windows[id] = view
             let active = selected.flatMap { w.panes.contains($0) ? $0 : nil }
-            view.update(Layout(w, active: active), Layout(w, visible: true, active: active), shown: positions)
+            view.update(Layout(w, active: active), Layout(w, visible: true, active: active), shown: shown)
         }
         others = old.filter { windows[$0.key] == nil && $0.value.hot && alive.contains($0.key) }
         for (id, gone) in old where windows[id] == nil && others[id] == nil { gone.close() }
         recent.removeAll { windows[$0] == nil && others[$0] == nil }
         if !changed.isEmpty { (Array(windows.values) + Array(others.values)).forEach { $0.marksChanged(changed, banded: Set(marked.keys) != Set(marks.keys)) } }
-        if sentSize == nil { shown?.sizeClient() }
+        if sentSize == nil { self.shown?.sizeClient() }
     }
 
     func editsSettled() {

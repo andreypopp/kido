@@ -1177,7 +1177,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 let kido = firstMouse.filter { !$0.hasPrefix("NS") && !$0.hasPrefix("_") }
                 let toolbarButtons = PaneToolbar(runtime: runtime).subviews.compactMap { $0 as? IconButton }
                 XCTAssertTrue(toolbarButtons.allSatisfy { !$0.acceptsFirstMouse(for: nil) }, "a first click on a hover toolbar button only activates the window")
-                XCTAssertEqual(kido, ["IconButton", "MouseButton", "PaneView", "Table", "RuntimeSection", "SidebarDisclosure"], "pane chrome, dividers, tabs and sidebar rows never take first mouse; PaneView, Table and RuntimeSection answer true only in the visual build")
+                XCTAssertEqual(kido, ["IconButton", "MouseButton", "PaneView", "Table", "RuntimeSection", "SidebarDisclosure", "SidebarChildren"], "pane chrome, dividers, tabs and sidebar rows never take first mouse; PaneView, Table and RuntimeSection answer true only in the visual build")
             }
             var image = try capture()
             let textRect = root.convert(CGRect(x: 20, y: active.bounds.maxY - 80, width: 240, height: 75), from: active)
@@ -1481,23 +1481,23 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         list.show(changed)
         let index = try XCTUnwrap(list.visualRows.firstIndex { $0.id == id })
         XCTAssertEqual(list.visualRows[index].tail, "")
-        XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 40)
+        XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 42)
         try await wait("caption deadline") { list.visualRows[index].tail == "Delayed caption" }
         XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - shownAt, 0.2)
-        XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 54)
+        XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 42)
         let hiddenAt = ProcessInfo.processInfo.systemUptime
         list.show(initial)
         XCTAssertEqual(list.visualRows[index].tail, "Delayed caption")
-        XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 54)
+        XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 42)
         try await wait("caption hide deadline") { list.visualRows[index].tail.isEmpty }
         XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - hiddenAt, 0.2)
-        XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 40)
+        XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 42)
         list.show(changed)
         XCTAssertEqual(list.visualRows[index].tail, "")
         list.show(nil)
         list.show(changed)
         XCTAssertEqual(list.visualRows[index].tail, "Delayed caption", "identical reconnect snapshot must show its caption immediately")
-        XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 54)
+        XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 42)
         list.show(nil)
         list.show(changed, pin: id)
         list.show(fixture("Reconnected caption"))
@@ -1510,7 +1510,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             sibling.pane.id = PaneID(number: 999); sibling.window = WindowID(number: 999)
             snapshot.sessions[0].nodes[0].item.children.append(.item(sibling))
         }
-        let rows = sidebarRows(live, expanded: Set(PaneProjection(live).placements.values.map { .pane($0.position.session, $0.position.pane) })).rows
+        let rows = sidebarDividers(sidebarRows(live, expanded: Set(PaneProjection(live).placements.values.map { .pane($0.position.session, $0.position.pane) })).rows)
         XCTAssertTrue(rows.contains { $0.indent > 0 && $0.target != nil })
         let invalid = rows.filter { $0.height <= 0 }
         XCTAssertTrue(invalid.isEmpty, "NSTableView requires positive row heights: \(invalid.map(\.id))")
@@ -1543,6 +1543,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             windowNumber: window.windowNumber, context: nil, characters: "\u{f700}", charactersIgnoringModifiers: "\u{f700}", isARepeat: false, keyCode: 126))
         table.keyDown(with: up)
         XCTAssertEqual(table.selectedRow, previous)
+        let divider = try XCTUnwrap(rows.firstIndex { $0.kind == .divider })
+        let after = try XCTUnwrap(rows.indices.dropFirst(divider + 1).first { rows[$0].target != nil })
+        let before = try XCTUnwrap(rows[..<divider].lastIndex { $0.target != nil })
+        list.select(try XCTUnwrap(rows[after].target))
+        table.keyDown(with: up)
+        XCTAssertEqual(table.selectedRow, before, "navigation skips the divider")
         XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
     }
 
@@ -1576,7 +1582,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             XCTAssertFalse(list.tableView(list.visualTable, shouldSelectRow: index))
             list.visualJump(list.visualRows[index])
             let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
-            XCTAssertEqual(cell.accessibilityRole(), .staticText)
+            XCTAssertEqual(cell.accessibilityRole(), list.visualRows[index].children == .leaf ? .staticText : .group)
             XCTAssertTrue(cell.accessibilityLabel()?.contains(list.visualRows[index].indicatorDescription) == true)
             XCTAssertTrue(cell.addWindow.isHidden)
         }

@@ -154,6 +154,22 @@ import XCTest
             sidebar.viewDidLayout()
             sidebar.list.layoutSubtreeIfNeeded()
             table.scrollRowToVisible(0)
+            let parentID = SidebarRow.ID.pane(.init(number: 0), .init(number: 502))
+            sidebar.list.visualSetExpanded(parentID, false)
+            if let index = sidebar.list.visualRows.firstIndex(where: { $0.id == parentID }),
+               let cell = table.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell {
+                cell.layoutSubtreeIfNeeded()
+                XCTAssertFalse(cell.children.isHidden)
+                try mouse(cell.children, NSPoint(x: cell.children.bounds.midX, y: 6))
+                XCTAssertTrue(window.firstResponder === pane)
+                let expandedCell = try XCTUnwrap(table.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
+                expandedCell.layoutSubtreeIfNeeded()
+                XCTAssertEqual(expandedCell.disclosure.accessibilityValue() as? String, "expanded")
+                try mouse(expandedCell.disclosure, NSPoint(x: 6, y: 6))
+                XCTAssertTrue(window.firstResponder === pane)
+                let foldedCell = try XCTUnwrap(table.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
+                XCTAssertEqual(foldedCell.disclosure.accessibilityValue() as? String, "folded")
+            } else { XCTFail("missing folded pane control") }
             for index in 0..<table.numberOfRows where table.visibleRect.contains(NSPoint(x: table.rect(ofRow: index).midX, y: table.rect(ofRow: index).midY)) {
                 let rect = table.rect(ofRow: index)
                 let count = jumps.count

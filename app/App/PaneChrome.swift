@@ -145,6 +145,8 @@ final class PaneDropPreview: NSView {
 }
 
 class PaneCapsule: NSView {
+    // A label draws its text 2pt inside its frame on each side.
+    static let labelInset: CGFloat = 2
     weak var pane: PaneView?
     let runtime: GhosttyRuntime
     private let radius: CGFloat

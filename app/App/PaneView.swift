@@ -5,6 +5,7 @@ import IOSurface
 import KoClient
 import PaneGeometry
 import KoModel
+import SidebarFeed
 
 private final class TerminalView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -87,7 +88,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var canPrompt: () -> Bool = { false }
     var selectionQuote: String? { hasSelection ? readSelection() : nil }
     var onPrompt: (PaneView, String?) -> Void = { _, _ in }
-    var chromeViews: [NSView] { [copyLabel, runtimePill] + [find].compactMap { $0 } }
+    var chromeViews: [NSView] { [copyLabel, breadcrumb, runtimePill] + [find].compactMap { $0 } }
     enum CopyMode { case entering(DispatchWorkItem), cursor, selecting, lines(anchor: (x: Int, y: Int), cursor: (x: Int, y: Int)) }
     private(set) var copyMode: CopyMode?
     private enum MouseDrag {
@@ -176,6 +177,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     private let terminal = TerminalView()
     private let copyLabel: Overlay
     private let runtimePill: RuntimePill
+    private let breadcrumb: PaneBreadcrumb
+    var breadcrumbPath: [ShownPane.Entry] = [] { didSet { breadcrumb.show(breadcrumbPath) } }
+    var onShowAncestor: (Snapshot.Position) -> Void = { _ in }
     // Where the pane runs, from the model; the pill shows it and the chrome draws its stripe.
     var runtimeMark: RuntimeMark? { didSet { if runtimeMark != oldValue { showRuntime() } } }
     var runtimeFocused = true { didSet { if runtimeFocused != oldValue { showRuntime() } } }
@@ -465,17 +469,27 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         terminal.frame = NSRect(x: 0, y: bounds.height - height, width: drawn.width, height: height)
         rowHeight = cell.height
         presentScroll()
-        guard let chrome = copyLabel.superview?.bounds else { return }
+        guard let parent = copyLabel.superview else { return }
+        let chrome = parent.bounds
         let capsule = min(420, max(200, chrome.width - 16))
         find?.frame = NSRect(x: chrome.width - 8 - capsule, y: 8, width: capsule, height: 32)
-        let y: CGFloat = find != nil && chrome.width - 16 - capsule < 72 ? 48 : 8
         let copy = copyLabel.subviews[0]
         copy.frame = NSRect(origin: NSPoint(x: 7, y: 4), size: copy.fittingSize)
-        copyLabel.frame = NSRect(x: 8, y: y, width: copy.frame.width + 14, height: 22)
+        let copyWidth = copy.frame.width + 14
+        let crumbX = copyMode == nil ? 8 : 8 + copyWidth + 6
+        let obstacles = parent.subviews.filter { ($0 is PaneFind || ($0 is PaneToolbar && toolbarShown)) && !$0.isHidden }
+        let right = obstacles.map { $0.frame.minX - 6 }.min() ?? chrome.width - 8
+        let y: CGFloat = !obstacles.isEmpty && right - crumbX < 72 ? 48 : 8
+        copyLabel.frame = NSRect(x: 8, y: y, width: copyWidth, height: 22)
         let width = runtimePill.fittingWidth
         runtimePill.frame = NSRect(x: chrome.width - 8 - width, y: 8, width: width, height: RuntimePill.height)
+        let available = max(0, (y == 48 ? chrome.width - 8 : right) - crumbX)
         runtimePill.isHidden = runtimeMark == nil || find != nil || toolbarShown
             || (copyMode != nil && runtimePill.frame.minX < copyLabel.frame.maxX + 8)
+            || (!breadcrumbPath.isEmpty && available - breadcrumb.minimumWidth < width + 6)
+        let crumbWidth = breadcrumb.fit(max(0, available - (runtimePill.isHidden ? 0 : width + 6)))
+        breadcrumb.isHidden = crumbWidth == 0
+        breadcrumb.frame = NSRect(x: crumbX, y: y, width: crumbWidth, height: 22)
     }
 
     private func showRuntime() {
@@ -639,6 +653,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         self.host = host
         copyLabel = Overlay(runtime: runtime, radius: 8)
         runtimePill = RuntimePill(runtime: runtime)
+        breadcrumb = PaneBreadcrumb(runtime: runtime)
         super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         wantsLayer = true
         layer?.masksToBounds = true
@@ -693,6 +708,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         scroller.jump = { [weak self] in self?.requestScroll($0) }
         copyLabel.addSubview(NSTextField(labelWithString: ""))
         copyLabel.isHidden = true
+        breadcrumb.pane = self
+        breadcrumb.showAncestor = { [weak self] in self?.onShowAncestor($0) }
+        breadcrumb.isHidden = true
         runtimePill.pane = self
         runtimePill.isHidden = true
         ghostty_surface_set_color_scheme(surface, runtime.colorScheme)

@@ -35,9 +35,9 @@ final class WindowView: NSView {
         let chrome: PaneChrome
     }
     private var slots: [PaneID: Slot] = [:]
-    private var shownPanes: [PaneID: Snapshot.Position] = [:]
+    private var shownPanes: [PaneID: ShownPane] = [:]
     var activeSlot: PaneID? {
-        shown?.layout.root.panes.first { $0.id == active || shownPanes[$0.id]?.pane == active }?.id
+        shown?.layout.root.panes.first { $0.id == active || shownPanes[$0.id]?.shown.position.pane == active }?.id
     }
     var paneIDs: [PaneID] {
         guard let shown else { return [] }
@@ -137,9 +137,9 @@ final class WindowView: NSView {
 
     private var session: SessionView? { superview as? SessionView }
 
-    func update(_ layout: Layout, _ visible: Layout, shown selected: [PaneID: Snapshot.Position] = [:]) {
+    func update(_ layout: Layout, _ visible: Layout, shown selected: [PaneID: ShownPane] = [:]) {
         shownPanes = selected
-        let replacements = layout.root.panes.contains { slots[$0.id]?.view.pane != (shownPanes[$0.id]?.pane ?? $0.id) }
+        let replacements = layout.root.panes.contains { slots[$0.id]?.view.pane != (shownPanes[$0.id]?.shown.position.pane ?? $0.id) }
         let changed = replacements || (shown.map { $0.layout != layout || $0.visible != visible } ?? true)
         func sameTopology(_ a: PaneGeometry.Node, _ b: PaneGeometry.Node) -> Bool {
             switch (a, b) {
@@ -168,10 +168,10 @@ final class WindowView: NSView {
         // Hiding the focused pane gives the focus to the next key view, so read it before the relayout.
         let paneFocused = (window?.firstResponder as? PaneView).map { focused in panes.contains { $0 === focused } } == true
         let previous = active
-        active = visible.root.panes.first { $0.active }.map { shownPanes[$0.id]?.pane ?? $0.id } ?? active
+        active = visible.root.panes.first { $0.active }.map { shownPanes[$0.id]?.shown.position.pane ?? $0.id } ?? active
         guard hot else { return }
         let known = panes.contains { $0.pane == active }
-        if changed, !isHidden { relayout() }
+        if changed, !isHidden { relayout() } else { updateBreadcrumbs() }
         if paneFocused && active != previous { focusActive(force: true) }
         else if !known { focusActive(force: false) }
     }
@@ -227,7 +227,7 @@ final class WindowView: NSView {
         let existing = Dictionary(uniqueKeysWithValues: slots.values.map { ($0.view.pane, $0.view) })
         var views: [PaneID: PaneView] = [:]
         for pane in layoutPanes {
-            let actual = shownPanes[pane.id]?.pane ?? pane.id
+            let actual = shownPanes[pane.id]?.shown.position.pane ?? pane.id
             views[pane.id] = existing[actual] ?? makePane(actual)
         }
         let actual = Set(views.values.lazy.map(\.pane))
@@ -294,10 +294,18 @@ final class WindowView: NSView {
         preview.autoresizingMask = [.width, .height]
         subviews = dividers + tiled + floating.sorted { $0.z < $1.z }.flatMap(\.views) + [preview]
         slots = nextSlots
+        updateBreadcrumbs()
         updateFocusTreatment()
         invalidateCursorRects()
         needsReconcile = false
         sizeClient()
+    }
+
+    private func updateBreadcrumbs() {
+        for (root, slot) in slots {
+            let shown = shownPanes[root]
+            slot.view.breadcrumbPath = shown.flatMap { $0.ancestors.isEmpty ? nil : $0.ancestors + [$0.shown] } ?? []
+        }
     }
 
     private func place() {
@@ -476,13 +484,14 @@ final class WindowView: NSView {
         view.onSelect = { [weak self] in
             guard let self else { return }
             session?.selectPane(id)
-            let slot = shownPanes.first { $0.value.pane == id }?.key ?? id
+            let slot = shownPanes.first { $0.value.shown.position.pane == id }?.key ?? id
             let floats = shown?.visible.root.panes.filter { $0.layer != .tiled } ?? []
             if case .floating(let z) = floats.first(where: { $0.id == slot })?.layer, z < floats.count - 1 {
                 session?.edit(.float(KoSchema.EditFloat(pane: slot, z: floats.count)), nil)
             }
         }
         view.onCommand = { [weak self] command in self?.session?.paneCommand(command, id) }
+        view.onShowAncestor = { [weak self] in self?.session?.selectPane($0.pane) }
         view.onAlternateChange = { [weak self] in self?.place() }
         view.onFindChange = { [weak self] in self?.place(); self?.invalidateCursorRects() }
         view.onCellChange = { [weak self] in self?.session?.cellChanged() }
@@ -918,7 +927,7 @@ final class WindowView: NSView {
         guard let windowID, let shown else { return [] }
         var result = [KoWindowSize(window: windowID, size: viewport)]
         for pane in shown.visible.root.panes {
-            guard let position = shownPanes[pane.id], position.pane != pane.id, position.window != windowID else { continue }
+            guard let position = shownPanes[pane.id]?.shown.position, position.pane != pane.id, position.window != windowID else { continue }
             result.append(KoWindowSize(window: position.window, size: KoSize(cols: pane.geometry.width, rows: pane.geometry.height, cell: viewport.cell)))
         }
         return result.sorted { $0.window.number < $1.window.number }

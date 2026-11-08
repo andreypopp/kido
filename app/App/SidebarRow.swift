@@ -2,10 +2,11 @@ import AppKit
 import KoModel
 import SidebarFeed
 
-func drawStatusMark(_ status: SidebarRow.Status, at center: NSPoint, flipped: Bool) {
-    guard status != .quiet else { return }
+func drawStatusMark(_ status: SidebarRow.Status, at center: NSPoint, flipped: Bool, idle: Bool = false) {
+    guard status != .quiet || idle else { return }
     let color: NSColor = switch status {
-    case .quiet, .endedClean, .endedFailed: Chrome.inkSecondary
+    case .quiet: Chrome.sidebarIdleCircle
+    case .endedClean, .endedFailed: Chrome.inkSecondary
     case .running, .done: Chrome.statusRunning
     case .waiting: Chrome.statusWaiting
     case .error: Chrome.statusError
@@ -42,65 +43,69 @@ struct SidebarFonts {
     let clock = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
 }
 
-final class SidebarDisclosure: MouseButton {
-    var invoke: () -> Void = {}
+final class SidebarDisclosure: ActionButton {
     var content = SidebarRow.Children.leaf { didSet { needsDisplay = true } }
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath()
+        switch content {
+        case .leaf: return
+        case .folded:
+            path.move(to: NSPoint(x: 4.5, y: 3))
+            path.line(to: NSPoint(x: 7.5, y: 6))
+            path.line(to: NSPoint(x: 4.5, y: 9))
+        case .expanded:
+            path.move(to: NSPoint(x: 3, y: 4.5))
+            path.line(to: NSPoint(x: 6, y: 7.5))
+            path.line(to: NSPoint(x: 9, y: 4.5))
+        }
+        path.lineWidth = 1.75
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        Chrome.sidebarChevron.setStroke()
+        path.stroke()
+    }
+}
+
+final class SidebarChildren: ActionButton {
+    var content: [SidebarRow.HiddenChild] = [] { didSet { needsDisplay = true } }
     private let fonts: SidebarFonts
     private let limit = 6
-    private var hovered = false
-    private var caption: (text: String, x: CGFloat, font: NSFont)? {
-        guard case .folded(let children) = content else { return nil }
-        if children.count == 1 { return (children[0].title, 14, fonts.tail) }
-        if children.count > limit { return ("+\(children.count - limit)", CGFloat(limit * 10 + 4), fonts.clock) }
-        return nil
-    }
-    var naturalWidth: CGFloat {
-        if let caption { return caption.x + 2 + (caption.text as NSString).size(withAttributes: [.font: caption.font]).width }
-        if case .folded(let children) = content { return CGFloat(min(limit, children.count) * 10) }
-        return 12
-    }
-    override var isFlipped: Bool { true }
-    init(_ fonts: SidebarFonts) {
-        self.fonts = fonts
-        super.init(frame: .zero)
-        isBordered = false
-        title = ""
-        focusRingType = .none
-        target = self
-        action = #selector(activate)
-        setAccessibilityElement(true)
-        setAccessibilityRole(.button)
-        setAccessibilityLabel("Show child panes")
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
-    }
+    init(_ fonts: SidebarFonts) { self.fonts = fonts; super.init() }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    @objc private func activate() { invoke() }
-    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
-    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
-    override func draw(_ dirtyRect: NSRect) {
-        if hovered {
-            Chrome.closeHover.setFill()
-            NSBezierPath(roundedRect: bounds, xRadius: 4, yRadius: 4).fill()
+    private func width(showing count: Int) -> CGFloat {
+        if content.isEmpty { return 0 }
+        if content.count == 1, count == 1 { return ceil((content[0].title as NSString).size(withAttributes: [.font: fonts.tail]).width) + 14 }
+        let extra = content.count - count
+        return CGFloat(count * 10) + (extra > 0 ? (count > 0 ? 4 : 0) + ceil(("+\(extra)" as NSString).size(withAttributes: [.font: fonts.clock]).width) : 0)
+    }
+    func fittingWidth(_ available: CGFloat) -> CGFloat {
+        guard !content.isEmpty else { return 0 }
+        if content.count == 1 { return available >= 8 ? min(available, width(showing: 1)) : 0 }
+        for count in stride(from: min(limit, content.count), through: 0, by: -1) {
+            let width = width(showing: count)
+            if width <= available { return width }
         }
-        NSGraphicsContext.saveGraphicsState()
-        defer { NSGraphicsContext.restoreGraphicsState() }
-        let opacity: CGFloat = if hovered { 1 } else if case .expanded = content { 0.75 } else { 0.9 }
-        NSGraphicsContext.current?.cgContext.setAlpha(opacity)
-        switch content {
-        case .folded(let children):
-            for (index, child) in children.prefix(limit).enumerated() {
-                drawStatusMark(child.status, at: NSPoint(x: 5 + index * 10, y: 6), flipped: true)
-            }
-            guard let caption else { return }
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.lineBreakMode = .byTruncatingTail
-            (caption.text as NSString).draw(in: NSRect(x: caption.x, y: -1, width: max(0, bounds.width - caption.x - 2), height: 14), withAttributes: [.font: caption.font, .foregroundColor: Chrome.inkSecondary, .paragraphStyle: paragraph])
-        case .expanded:
-            let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold).applying(.init(hierarchicalColor: Chrome.inkSecondary))
-            if let image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?.withSymbolConfiguration(configuration) {
-                image.draw(in: NSRect(x: bounds.midX - image.size.width / 2, y: bounds.midY - image.size.height / 2, width: image.size.width, height: image.size.height), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
-            }
-        case .leaf: break
+        return 0
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        guard !content.isEmpty else { return }
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        func caption(_ text: String, x: CGFloat, width: CGFloat, font: NSFont) {
+            guard width >= ceil(("…" as NSString).size(withAttributes: [.font: font]).width) else { return }
+            (text as NSString).draw(in: NSRect(x: x, y: -1, width: max(0, width), height: 14),
+                                   withAttributes: [.font: font, .foregroundColor: Chrome.inkSecondary, .paragraphStyle: paragraph])
+        }
+        var count = min(limit, content.count)
+        if content.count != 1 { while count > 0 && width(showing: count) > bounds.width { count -= 1 } }
+        for (index, child) in content.prefix(count).enumerated() {
+            let center = NSPoint(x: content.count == 1 ? bounds.width - 5 : CGFloat(5 + index * 10), y: 6)
+            drawStatusMark(child.status, at: center, flipped: true, idle: true)
+        }
+        if content.count == 1 { caption(content[0].title, x: 0, width: bounds.width - 14, font: fonts.tail) }
+        else if content.count > count {
+            let x = CGFloat(count * 10 + (count > 0 ? 4 : 0))
+            caption("+\(content.count - count)", x: x, width: bounds.width - x, font: fonts.clock)
         }
     }
 }
@@ -119,7 +124,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
 
     override func mouseDown(with event: NSEvent) {
         if case .header = row?.kind, event.clickCount == 2,
-           NSRect(x: 12, y: 5, width: max(0, bounds.width - 42), height: 18).contains(convert(event.locationInWindow, from: nil)) {
+           NSRect(x: 5, y: 5, width: max(0, bounds.width - 35), height: 18).contains(convert(event.locationInWindow, from: nil)) {
             beginRename()
         } else { super.mouseDown(with: event) }
     }
@@ -135,7 +140,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     var errorHeight: CGFloat {
         guard !renameError.isHidden else { return 0 }
         return ceil((renameError.stringValue as NSString).boundingRect(
-            with: NSSize(width: max(1, bounds.width - 42), height: 1000), options: [.usesLineFragmentOrigin],
+            with: NSSize(width: max(1, bounds.width - 35), height: 1000), options: [.usesLineFragmentOrigin],
             attributes: [.font: renameError.font!]).height) + 6
     }
     static let id = NSUserInterfaceItemIdentifier("cell")
@@ -143,7 +148,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     private var row: SidebarRow?
     private var clock = ""
     private var clockWidth: CGFloat = 0
-    private var trailing: CGFloat { if case .expanded? = row?.children { 30 } else { 12 } }
+    private var trailing: CGFloat { 26 }
     private var clockRect: NSRect {
         guard let row else { return .zero }
         return NSRect(x: bounds.width - trailing - clockWidth, y: row.padding + 2, width: clockWidth, height: fonts.clock.boundingRectForFont.height)
@@ -155,6 +160,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     private var runtimeText: NSAttributedString?
     let close = IconButton("xmark", "Close pane", size: 8, hoverStyle: .close)
     let disclosure: SidebarDisclosure
+    let children: SidebarChildren
     private var hovered = false
     override func mouseEntered(with event: NSEvent) { hovered = close.frame.contains(convert(event.locationInWindow, from: nil)); updateClose() }
     override func mouseExited(with event: NSEvent) { hovered = false; updateClose() }
@@ -164,7 +170,8 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
 
     init(_ fonts: SidebarFonts) {
         self.fonts = fonts
-        disclosure = SidebarDisclosure(fonts)
+        disclosure = SidebarDisclosure()
+        children = SidebarChildren(fonts)
         super.init(frame: .zero)
         identifier = Self.id
         autoresizingMask = [.width, .height]
@@ -172,6 +179,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
         addSubview(addWindow)
         addSubview(close)
         addSubview(disclosure)
+        addSubview(children)
         nameField.cell = SessionNameCell(textCell: "")
         nameField.isEditable = true
         nameField.isSelectable = true
@@ -197,17 +205,29 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     func configure(_ row: SidebarRow, now: Int) {
         self.row = row
         disclosure.content = row.children
+        children.content = []
+        children.isHidden = true
         switch row.children {
-        case .folded: disclosure.isHidden = false; disclosure.setAccessibilityLabel("Show children of " + row.title)
-        case .expanded: disclosure.isHidden = false; disclosure.setAccessibilityLabel("Hide children of " + row.title)
-        case .leaf: disclosure.isHidden = true
+        case .folded(let hidden):
+            children.content = hidden
+            children.isHidden = hidden.isEmpty
+            children.setAccessibilityLabel("Show \(hidden.count) hidden children of " + row.title)
+            disclosure.isHidden = false
+            disclosure.setAccessibilityLabel("Show children of " + row.title)
+            disclosure.setAccessibilityValue("folded")
+        case .expanded:
+            disclosure.isHidden = false
+            disclosure.setAccessibilityLabel("Hide children of " + row.title)
+            disclosure.setAccessibilityValue("expanded")
+        case .leaf:
+            disclosure.isHidden = true
         }
         updateClose()
         close.setAccessibilityLabel("Close pane: " + row.title)
         addWindow.isHidden = { if case .header = row.kind { return false }; return true }()
         addWindow.toolTip = nil
         addWindow.setAccessibilityLabel("New window in " + row.title)
-        setAccessibilityElement(true)
+        setAccessibilityElement(row.kind != .divider && row.kind != .gap)
         setAccessibilityRole(disclosure.isHidden ? .staticText : .group)
         toolTip = row.runtime?.failure
         runtimeText = row.runtime.map(Self.suffixText)
@@ -238,22 +258,23 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: close.frame, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
+        if row?.target != nil {
+            addTrackingArea(NSTrackingArea(rect: close.frame, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
+        }
     }
 
     override func layout() {
         super.layout()
-        close.frame = NSRect(x: CGFloat(row?.indicatorX ?? 18) - 6, y: CGFloat(row?.padding ?? 5) + 3, width: 12, height: 12)
+        close.frame = NSRect(x: bounds.width - 17, y: CGFloat(row?.padding ?? 5) + 3, width: 12, height: 12)
         if let row {
-            switch row.children {
-            case .folded:
-                disclosure.frame = NSRect(x: row.leading - 2, y: row.childrenY, width: min(disclosure.naturalWidth, max(0, bounds.width - row.leading - 10)), height: 12)
-            default: disclosure.frame = NSRect(x: bounds.width - 24, y: row.padding + 3, width: 12, height: 12)
-            }
+            disclosure.frame = NSRect(x: row.leading - 18, y: row.padding + 3, width: 12, height: 12)
+            let width = children.fittingWidth(max(0, bounds.width - row.leading - 6))
+            children.isHidden = children.content.isEmpty || width == 0
+            children.frame = NSRect(x: bounds.width - 6 - width, y: row.tailY, width: width, height: 12)
         }
-        addWindow.frame = NSRect(x: bounds.width - 33, y: 0, width: 26, height: 26)
-        nameField.frame = NSRect(x: 10, y: 5, width: max(0, bounds.width - 40), height: 18)
-        renameError.frame = NSRect(x: 12, y: 26.5, width: max(0, bounds.width - 42), height: max(1, errorHeight - 6))
+        addWindow.frame = NSRect(x: bounds.width - 28, y: 0, width: 26, height: 26)
+        nameField.frame = NSRect(x: 3, y: 5, width: max(0, bounds.width - 33), height: 18)
+        renameError.frame = NSRect(x: 5, y: 26.5, width: max(0, bounds.width - 35), height: max(1, errorHeight - 6))
         updateTrackingAreas()
     }
 
@@ -268,8 +289,21 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             NSGraphicsContext.saveGraphicsState()
             defer { NSGraphicsContext.restoreGraphicsState() }
             NSBezierPath(rect: bounds).addClip()
+            if let block = row.block {
+                let top: CGFloat = block == .last || block == .middle ? -7 : 0
+                let bottom: CGFloat = block == .first || block == .middle ? 7 : 0
+                let slice = NSBezierPath(roundedRect: NSRect(x: 0, y: top, width: bounds.width, height: bounds.height - top + bottom), xRadius: 7, yRadius: 7)
+                slice.addClip()
+                Chrome.windowSelection.setFill()
+                bounds.fill()
+            }
+            if case .divider = row.kind {
+                Chrome.sidebarDivider.setFill()
+                NSRect(x: 5, y: 4, width: max(0, bounds.width - 10), height: 1).fill()
+                return
+            }
             let pane: Bool = switch row.kind { case .pane, .program: true; default: false }
-            let leading = pane ? CGFloat(row.leading) : 12
+            let leading = pane ? CGFloat(row.leading) : 5
             let selected = row.target != nil && (superview as? NSTableRowView)?.isSelected == true
                 && (enclosingScrollView?.documentView as? Table)?.keyboardSelection == true
                 && window?.firstResponder === enclosingScrollView?.documentView
@@ -277,21 +311,13 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
                 Chrome.rowSelection.setFill()
                 NSBezierPath(roundedRect: NSRect(x: CGFloat(row.indent) * 15, y: 0,
                                                width: bounds.width - CGFloat(row.indent) * 15, height: bounds.height),
-                             xRadius: 4, yRadius: 4).fill()
-            }
-            let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            Chrome.treeGuide(dark: dark).setFill()
-            for guide in row.guides {
-                let rect = NSRect(x: guide.x - 0.5, y: guide.top, width: 1, height: guide.bottom - guide.top)
-                let pixels = convertToBacking(rect)
-                convertFromBacking(NSRect(x: pixels.minX.rounded(), y: pixels.minY.rounded(),
-                                          width: pixels.width.rounded(), height: pixels.height.rounded())).fill()
+                             xRadius: 7, yRadius: 7).fill()
             }
             if case .gap = row.kind { return }
             let header = { if case .header = row.kind { return true }; return false }()
             let y: CGFloat = header ? 5 : row.padding
-            let dotX = CGFloat(row.indicatorX)
-            let end = header ? bounds.width - 28 : bounds.width - trailing - (clock.isEmpty ? 0 : clockWidth + 6)
+            let dotX = bounds.width - 11
+            let end = header ? bounds.width - 28 : bounds.width - (clock.isEmpty ? 23 : trailing + clockWidth + 6)
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byTruncatingTail
             var titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: 18)
@@ -305,7 +331,8 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
                 titleRect.size.width = max(0, min(titleNatural, titleRect.width - width))
                 suffix = NSRect(x: titleRect.maxX, y: y, width: width, height: 18)
             }
-            if dirtyRect.intersects(titleRect), !header || nameField.isHidden {
+            if titleRect.width >= ceil(("…" as NSString).size(withAttributes: [.font: titleFont]).width),
+               dirtyRect.intersects(titleRect), !header || nameField.isHidden {
                 (row.title as NSString).draw(in: titleRect,
                                        withAttributes: [.font: titleFont,
                                                         .foregroundColor: header || row.quietShell ? Chrome.inkSecondary : Chrome.ink,
@@ -315,8 +342,9 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
                 Chrome.drawRuntimeSwatch(mark, at: NSPoint(x: suffix.minX + 9, y: y + 9), dark: terminalDark)
                 text.draw(in: NSRect(x: suffix.minX + 16, y: y, width: max(0, suffix.width - 16), height: 18))
             }
-            let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, bounds.width - leading - 12), height: 14)
-            if dirtyRect.intersects(tailRect) {
+            let tailEnd = children.isHidden ? bounds.width - 5 : children.frame.minX - 6
+            let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, tailEnd - leading), height: 14)
+            if tailRect.width >= 16, dirtyRect.intersects(tailRect) {
                 (row.tail.split(whereSeparator: \.isNewline).joined(separator: " ") as NSString).draw(in: tailRect,
                                           withAttributes: [.font: fonts.tail, .foregroundColor: Chrome.inkSecondary, .paragraphStyle: paragraph])
             }
