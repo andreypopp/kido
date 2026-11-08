@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-width="wide">
+<head>
+<meta charset="utf-8">
+<title>koa — webview harness reference</title>
+<style>
+/* Fallback themes: kido-light and kido-dark (app/Resources/ghostty/themes).
+   In Kido.app the --ko-* properties on :root override every value here. */
+:root{
+  --ko-bg:#FFF9EC;--ko-fg:#424242;--ko-cursor:#AAAAAA;
+  --ko-selection-bg:#d9d1bd;--ko-selection-fg:#222;
+  --ko-color-0:#222222;--ko-color-1:#a4002e;--ko-color-2:#008550;--ko-color-3:#dc682a;
+  --ko-color-4:#014ca6;--ko-color-5:#950c93;--ko-color-6:#128399;--ko-color-7:#acacac;
+  --ko-color-8:#848484;--ko-color-9:#ad1d1d;--ko-color-10:#178258;--ko-color-11:#f0da4a;
+  --ko-color-12:#3382e1;--ko-color-13:#da21d8;--ko-color-14:#008ec4;--ko-color-15:#929292;
+  --ko-font-family:"SF Mono",Menlo,monospace;--ko-font-size:13px;--ko-cell-width:7.8px;--ko-cell-height:17px;
+  --ko-appearance:light;
+}
+html[data-theme=dark]{
+  --ko-bg:#171717;--ko-fg:#C9C9C9;--ko-cursor:#999999;
+  --ko-selection-bg:#3a3a3a;--ko-selection-fg:#eee;
+  --ko-color-0:#EEEEEE;--ko-color-1:#d4003c;--ko-color-2:#05ab69;--ko-color-3:#ccbc00;
+  --ko-color-4:#2466b5;--ko-color-5:#950c93;--ko-color-6:#2099b0;--ko-color-7:#cccccc;
+  --ko-color-8:#8f8f8f;--ko-color-9:#fa084c;--ko-color-10:#04d682;--ko-color-11:#ccbc00;
+  --ko-color-12:#3382e1;--ko-color-13:#da21d8;--ko-color-14:#63a9b5;--ko-color-15:#aaaaaa;
+  --ko-appearance:dark;
+}
+
+/* ---- derived tones: every colour below is a mix of --ko-fg, --ko-bg and the palette ---- */
+:root{
+  --fg:var(--ko-fg);--bg:var(--ko-bg);
+  --muted:color-mix(in srgb,var(--ko-fg) 55%,var(--ko-bg));
+  --faint:color-mix(in srgb,var(--ko-fg) 35%,var(--ko-bg));
+  --hair:color-mix(in srgb,var(--ko-fg) 12%,var(--ko-bg));
+  --hair2:color-mix(in srgb,var(--ko-fg) 18%,var(--ko-bg));
+  --well:color-mix(in srgb,var(--ko-fg) 5%,var(--ko-bg));
+  --well2:color-mix(in srgb,var(--ko-fg) 8%,var(--ko-bg));
+  --accent:var(--ko-color-4);
+  --ok:var(--ko-color-2);--err:var(--ko-color-1);--warn:var(--ko-color-3);
+  --mono:var(--ko-font-family);
+  --prose:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;
+}
+
+*{box-sizing:border-box}
+body{margin:0;background:color-mix(in srgb,var(--ko-fg) 6%,var(--ko-bg));color:var(--fg);font:13px/1.5 var(--prose);padding:24px 28px 60px}
+h1{font:600 15px/1.2 var(--prose);margin:0 0 4px}
+.lede{color:var(--muted);margin:0 0 18px;max-width:900px}
+.controls{position:sticky;top:0;z-index:5;display:flex;gap:14px;align-items:center;padding:10px 0 14px;background:color-mix(in srgb,var(--ko-fg) 6%,var(--ko-bg));font-size:12px}
+.controls label{display:flex;gap:6px;align-items:center;color:var(--muted)}
+select{font:inherit}
+section{margin:30px 0 0}
+section>h2{font:600 12px/1.3 var(--prose);color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:0 0 10px}
+section>p{margin:-4px 0 12px;color:var(--muted);max-width:900px}
+.grid{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
+
+/* ---- the pane: one webview, the page owns its whole content area ---- */
+.pane{width:980px;height:560px;background:var(--bg);color:var(--fg);border:1px solid var(--hair2);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;font:var(--ko-font-size)/1.6 var(--prose);box-shadow:0 1px 2px color-mix(in srgb,var(--ko-fg) 10%,transparent)}
+.pane.narrow{width:calc(60*var(--ko-cell-width) + 2px)}
+.pane.short{height:300px}
+html[data-width=narrow] .pane{width:calc(60*var(--ko-cell-width) + 2px)}
+
+/* transcript */
+.scroll{flex:1;overflow:auto;scrollbar-gutter:stable}
+.transcript{max-width:720px;margin:0 auto;padding:22px 24px 10px}
+.narrow .transcript,html[data-width=narrow] .transcript{padding:16px 14px 8px}
+.msg{margin:0 0 22px}
+.msg.user{border-left:2px solid var(--accent);padding:1px 0 1px 12px;color:var(--fg);display:flex;gap:14px;align-items:baseline}
+.msg.user .t{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.msg.user time{color:var(--faint);font:.8em/1.6 var(--mono);white-space:nowrap;font-variant-numeric:tabular-nums}
+.msg.user .who{display:none}
+.assistant p{margin:0 0 .9em}
+.assistant p:last-child{margin-bottom:0}
+.assistant h1,.assistant h2,.assistant h3{font:600 1em/1.35 var(--prose);margin:1.3em 0 .5em}
+.assistant h2{font-size:1.15em}
+.assistant h1{font-size:1.3em}
+.assistant ul,.assistant ol{margin:.2em 0 .9em;padding-left:1.4em}
+.assistant li{margin:.15em 0}
+.assistant li::marker{color:var(--muted)}
+code{font:.92em var(--mono);background:var(--well2);border-radius:4px;padding:1px 5px}
+pre{font:.9em/1.5 var(--mono);background:var(--well);border:1px solid var(--hair);border-radius:7px;padding:10px 12px;margin:.3em 0 1em;overflow:auto;position:relative}
+pre code{background:none;padding:0;font-size:1em}
+pre .lang{position:absolute;top:6px;right:10px;font-size:.8em;color:var(--faint);text-transform:lowercase}
+table{border-collapse:collapse;margin:.3em 0 1em;font-size:.95em}
+th,td{text-align:left;padding:4px 12px 4px 0;border-bottom:1px solid var(--hair);vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:.85em;text-transform:uppercase;letter-spacing:.05em}
+tr:last-child td{border-bottom:0}
+blockquote{margin:.3em 0 .9em;padding-left:12px;border-left:2px solid var(--hair2);color:var(--muted)}
+a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent) 35%,transparent)}
+.caret{display:inline-block;width:2px;height:1em;background:var(--ko-cursor);vertical-align:-.15em;margin-left:1px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* ---- the run: a collapsed line of tool calls and thinking ---- */
+.run{margin:0 0 22px;font:.92em/1.6 var(--mono);color:var(--muted)}
+.run>.line,.step>.line{display:flex;align-items:baseline;gap:9px;cursor:pointer;user-select:none;padding:2px 0;border-radius:4px}
+.run>.line:hover,.step>.line:hover{color:var(--fg)}
+.chev{width:9px;flex-shrink:0;color:var(--faint);transition:transform .12s;font-size:.9em}
+.open>.line .chev{transform:rotate(90deg)}
+.sum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sum b{font-weight:600;color:var(--fg)}
+.time{color:var(--faint);font-variant-numeric:tabular-nums;flex-shrink:0}
+.spin{display:inline-block;width:8px;height:8px;border-radius:50%;border:1.5px solid var(--faint);border-top-color:var(--accent);animation:spin .8s linear infinite;vertical-align:-1px;margin-right:1px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.ok{color:var(--ok)}.err{color:var(--err)}.warn{color:var(--warn)}
+.steps{display:none;margin:2px 0 0 18px;border-left:1px solid var(--hair);padding-left:12px}
+.open>.steps{display:block}
+.step{margin:1px 0}
+.step .mark{width:12px;text-align:center;flex-shrink:0}
+.step .cmd{color:var(--fg)}
+.step .path{color:var(--fg)}
+.step .delta{color:var(--faint)}
+.step .delta .plus{color:var(--ok)}.step .delta .minus{color:var(--err)}
+.detail{display:none;margin:4px 0 8px 21px;font-size:.98em}
+.step.open>.detail{display:block}
+.detail pre{margin:4px 0 6px;max-height:260px;font-size:1em;color:var(--fg)}
+.detail .kv{color:var(--faint);margin:2px 0}
+.detail .kv b{color:var(--muted);font-weight:500}
+.detail .think{font:1.02em/1.55 var(--prose);color:var(--muted);white-space:pre-wrap;max-height:260px;overflow:auto;padding:2px 0 2px 0}
+.diff{font:1em/1.5 var(--mono);margin:4px 0 6px;border:1px solid var(--hair);border-radius:7px;overflow:hidden}
+.diff .h{padding:4px 10px;background:var(--well);color:var(--muted);border-bottom:1px solid var(--hair);font-size:.92em}
+.diff .l{padding:0 10px;white-space:pre;color:var(--fg)}
+.diff .l.add{background:color-mix(in srgb,var(--ko-color-2) 12%,var(--ko-bg))}
+.diff .l.del{background:color-mix(in srgb,var(--ko-color-1) 11%,var(--ko-bg))}
+.diff .l.ctx{color:var(--muted)}
+.diff .l .g{display:inline-block;width:14px;color:var(--faint)}
+.diff .l.add .g{color:var(--ok)}.diff .l.del .g{color:var(--err)}
+.exit{color:var(--err)}
+
+/* ---- composer ---- */
+.composer{flex-shrink:0;padding:0 24px 12px;max-width:720px;width:100%;margin:0 auto}
+.narrow .composer,html[data-width=narrow] .composer{padding:0 14px 10px}
+.field{border:1px solid var(--hair2);border-radius:9px;background:var(--bg);padding:9px 12px 8px;position:relative;transition:border-color .12s}
+.field.focus{border-color:color-mix(in srgb,var(--ko-fg) 40%,var(--ko-bg))}
+.field .text{min-height:1.6em;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--fg);max-height:calc(6*1.6em);overflow:auto}
+.field .text:empty::before,.field .text.ph{content:attr(data-ph);color:var(--faint)}
+.field .text.ph{color:var(--faint)}
+.field .foot{display:flex;align-items:center;gap:12px;margin-top:4px;font:.8em/1.4 var(--mono);color:var(--faint);min-height:24px}
+.field .foot .sp{flex:1}
+.field .foot kbd{font:inherit;color:var(--muted)}
+.field .foot .hint{opacity:0;transition:opacity .15s}
+.field.focus .foot .hint,.field.working .foot .hint{opacity:1}
+/* the one button: send (accent, arrow right) or stop (fg, square). 26pt rounded square, 8pt radius, like the palette's Send; no border, no text. */
+.act{width:26px;height:26px;border-radius:8px;border:0;padding:0;display:grid;place-items:center;cursor:pointer;color:var(--bg);background:var(--accent);margin-right:-5px;margin-bottom:-2px;transition:background .12s,color .12s}
+.act svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.act:hover{background:color-mix(in srgb,var(--accent) 85%,var(--ko-fg))}
+.act.off{background:var(--hair2);color:var(--bg);cursor:default}
+.act.off:hover{background:var(--hair2)}
+.act.stop{background:var(--fg);color:var(--bg)}
+.act.stop:hover{background:var(--err)}
+.field.working{border-color:color-mix(in srgb,var(--accent) 45%,var(--ko-bg))}
+.field.working::after{content:"";position:absolute;left:12px;right:12px;top:-1px;height:1px;background:linear-gradient(90deg,transparent,var(--accent),transparent);background-size:40% 100%;animation:sweep 1.6s linear infinite;opacity:.8}
+@keyframes sweep{from{background-position:-40% 0}to{background-position:140% 0}}
+.narrow .field.working::after,html[data-width=narrow] .field.working::after{left:8px;right:8px}
+
+/* ---- status bar: one line ---- */
+.status{flex-shrink:0;height:24px;display:flex;align-items:center;gap:0;padding:0 12px;border-top:1px solid var(--hair);font:.82em/1 var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden}
+.status .seg{display:flex;align-items:center;gap:6px;padding:0 10px;border-right:1px solid var(--hair);height:100%}
+.status .seg:first-child{padding-left:0}
+.status .seg:last-child{border-right:0;padding-right:0;margin-left:auto}
+.status .seg.grow{flex:1;min-width:0;border-right:0;overflow:hidden;text-overflow:ellipsis;display:block;line-height:24px;padding-right:10px}
+.status .dot{width:6px;height:6px;border-radius:50%;background:var(--faint);flex-shrink:0}
+.status .dot.on{background:var(--ok)}
+.status .dot.wait{background:var(--warn)}
+.status .ctx{display:inline-block;width:44px;height:4px;border-radius:2px;background:var(--hair2);position:relative;top:0}
+.status .ctx i{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--faint)}
+.status .ctx.high i{background:var(--warn)}
+.status .k{color:var(--faint)}
+.narrow .status .hide-n,html[data-width=narrow] .status .hide-n{display:none}
+
+/* idle empty */
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--faint);gap:8px;font:.95em var(--prose)}
+.empty .wordmark{font:500 1.2em var(--mono);color:var(--muted);letter-spacing:.02em}
+.empty .wordmark::before{content:"›";color:var(--accent);margin-right:8px}
+
+.note{font-size:12px;color:var(--muted);max-width:980px;margin:10px 0 0}
+.note code{font-size:.9em}
+</style>
+</head>
+<body>
+<h1>koa — reference for the webview harness</h1>
+<p class="lede">One pane, one page. The page uses only the <code>--ko-*</code> properties the app sets from the pane's theme and font; the <code>:root</code> block at the top is the fallback for a plain browser (kido-light / kido-dark). Every tone is a <code>color-mix</code> of <code>--ko-fg</code>, <code>--ko-bg</code> and the ANSI palette. Prose is the system font at the terminal's size; tool lines, code, the composer footer and the status bar are the terminal font.</p>
+<div class="controls">
+  <label>Theme <select id="theme"><option value="light">kido-light</option><option value="dark">kido-dark</option></select></label>
+  <label>Pane width <select id="width"><option value="wide">wide (980pt)</option><option value="narrow">narrow (60 columns)</option></select></label>
+  <span style="color:var(--faint)">Click a run line or a step line to fold or unfold it.</span>
+</div>
+
+<section id="s-idle"><h2>1 · Idle, empty session</h2>
+<p>No header. The pane's own chrome already names the agent; the page starts with its wordmark, the composer focused, and the status bar.</p>
+<div class="pane short" data-state="idle"></div></section>
+
+<section id="s-stream"><h2>2 · Streaming assistant answer with markdown</h2>
+<p>The user message is a left-barred block in the accent colour, its time of sending in the terminal font at the right of its first line (<code>14:32</code> today, <code>Nov 7 14:32</code> on an earlier day). The answer renders as it streams, with a blinking caret in <code>--ko-cursor</code> at the end of the text.</p>
+<div class="pane" data-state="stream"></div></section>
+
+<section id="s-run"><h2>3 · A run of tool calls and thinking, collapsed</h2>
+<p>A run is every consecutive thinking block and tool call between two texts. Collapsed it is one terminal-font line: a spinner or a check, a summary of what is in it, the elapsed time. While running, the summary names the current step.</p>
+<div class="grid"><div class="pane short" data-state="run-running"></div><div class="pane short" data-state="run-done"></div></div></section>
+
+<section id="s-lines"><h2>4 · The run expanded to one line per step</h2>
+<p>Each step is one line: a mark for its kind, the command or path, the result on the right. Marks: <code>$</code> bash, <code>✎</code> edit, <code>◇</code> read, <code>∴</code> thinking. Results: a green check with the time, a red <code>exit N</code>, a muted <code>aborted</code>.</p>
+<div class="pane" data-state="run-lines"></div></section>
+
+<section id="s-details"><h2>5 · One step expanded to its details</h2>
+<p>Bash: the command, then output in a well, cut to 260pt and scrollable. Edit: a diff with tinted added and removed lines. Thinking: the full text in muted prose.</p>
+<div class="pane" data-state="run-details"></div></section>
+
+<section id="s-error"><h2>6 · A failed tool and an aborted run</h2>
+<p>A failed step keeps the red result inline and the run's own line turns red with the count. An abort (Escape while working) leaves the last step marked <code>aborted</code> and the run's line says so.</p>
+<div class="pane" data-state="error"></div></section>
+
+<section id="s-composer"><h2>7 · The composer</h2>
+<p>Empty and focused; multiline up to six lines, then scrolling; while the agent works. One 26pt rounded square (8pt radius, the palette's Send control) at the bottom right of the field, no border and no text: send (accent, arrow right) while there is text, dimmed to the 18% hairline tone while the field is empty, and stop (fg square with a stop glyph; red on hover) while koa works. The key hints are faint terminal-font text at the left, shown only while the field is focused or koa works.</p>
+<div class="grid"><div class="pane short" data-state="composer-empty"></div><div class="pane short" data-state="composer-multi"></div><div class="pane short" data-state="composer-working"></div></div></section>
+
+<section id="s-status"><h2>8 · The status bar</h2>
+<p>One terminal-font line, 24pt: state · model · thinking level · context use (bar and percent) · cwd and branch at the right. In the narrow pane the numbers behind the context bar and the thinking label go first.</p>
+<div class="grid"><div class="pane short" data-state="status-idle"></div><div class="pane short" data-state="status-working"></div><div class="pane short" data-state="status-waiting"></div></div></section>
+
+<section id="s-narrow"><h2>9 · The narrow pane (60 columns)</h2>
+<p>Same page at 60 terminal cells. The transcript loses its centring margin, tables scroll inside their block, the run lines ellipsize their summary before the time, the status bar drops its optional segments.</p>
+<div class="grid"><div class="pane narrow" data-state="stream"></div><div class="pane narrow" data-state="run-details"></div></div></section>
+
+<p class="note">Open questions and the data each part needs are in NOTES.md beside this file.</p>
+
+<script>
+const $=(s,r=document)=>r.querySelector(s);
+const html=document.documentElement;
+$('#theme').onchange=e=>html.dataset.theme=e.target.value;
+$('#width').onchange=e=>html.dataset.width=e.target.value;
+
+const md=`<h2>What the sweep does</h2>
+<p>The sweep reads the pane rows, never a process. It removes a pane with the default <code>close: exit</code> as soon as its program exits, and keeps three other kinds for a while:</p>
+<ul><li>a start failure, so the error stays readable;</li><li>a <code>close: on_exit</code> pane, for the linger grace;</li><li>a pane whose parent is gone, until no focused client shows it.</li></ul>
+<table><thead><tr><th>Cause</th><th>Removed</th><th>Keeps descendants</th></tr></thead><tbody><tr><td>exit</td><td>at once</td><td>no</td></tr><tr><td>failed</td><td>linger grace</td><td>no</td></tr><tr><td>parent gone</td><td>when unfocused</td><td>cascade</td></tr></tbody></table>
+<p>The cascade is the server's: every removal takes the pane's descendants in the same change.</p>
+<pre><span class="lang">rust</span><code>fn sweep(&amp;mut self, now: Instant) -> Vec&lt;PaneId&gt; {
+    let gone = self.rows.iter()
+        .filter(|row| row.due(now))
+        .map(|row| row.id)
+        .collect::&lt;Vec&lt;_&gt;&gt;();
+    gone.iter().for_each(|id| self.remove(*id));
+    gone
+}</code></pre>
+<p>Next I would check how <code>linger</code> interacts with a focused client that is itself`;
+
+const user1=`Explain how the sweep decides what to remove, with a table`;
+
+function status(kind){
+  const map={
+    idle:`<span class="seg"><span class="dot"></span>idle</span>`,
+    working:`<span class="seg"><span class="dot on"></span>working <span class="k">12s</span></span>`,
+    waiting:`<span class="seg"><span class="dot wait"></span>waiting for you</span>`,
+    aborted:`<span class="seg"><span class="dot"></span>aborted</span>`};
+  return `<div class="status">${map[kind]||map.idle}<span class="seg">claude-opus-5-5<span class="hide-n k"> · thinking high</span></span><span class="seg"><span class="ctx${kind==='waiting'?' high':''}"><i style="width:${kind==='waiting'?78:42}%"></i></span><span class="hide-n k">${kind==='waiting'?'156k / 200k':'84k / 200k'}</span>${kind==='waiting'?'78%':'42%'}</span><span class="seg grow"></span><span class="seg"><span class="hide-n">~/Workspace/</span>kido <span class="k">·</span> main<span class="warn">*</span></span></div>`}
+
+function composer(kind){
+  const icon={send:'<svg viewBox="0 0 16 16"><path d="M3 8h9.5M8.3 3.8 12.5 8l-4.2 4.2"/></svg>',stop:'<svg viewBox="0 0 16 16"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5" fill="currentColor" stroke="none"/></svg>'};
+  const btn=(k,label,extra='')=>`<button class="act ${k}${extra}" aria-label="${label}" title="${label}">${icon[k==='stop'?'stop':'send']}</button>`;
+  const foot=(hint,buttons)=>`<div class="foot"><span class="hint">${hint}</span><span class="sp"></span>${buttons}</div>`;
+  if(kind==='multi')return `<div class="composer"><div class="field focus"><div class="text">Three things, in order:
+1. make the sweep keep a start failure for the linger grace
+2. add the e2e test \`sweep_keeps_a_start_failure\` beside the linger test
+3. then update docs/design.md, "Window lifecycle"
+
+Do not touch the cascade.<span class="caret"></span></div>${foot('<kbd>⇧↩</kbd> newline',btn('send','Send ↩'))}</div></div>`;
+  if(kind==='working')return `<div class="composer"><div class="field working"><div class="text ph">Steer koa…</div>${foot('<kbd>↩</kbd> steers while koa works',btn('stop','Abort ⎋'))}</div></div>`;
+  return `<div class="composer"><div class="field focus"><div class="text ph">Message koa…</div>${foot('',btn('send','Send ↩',' off'))}</div></div>`}
+const step={
+  bash:(o)=>`<div class="step${o.open?' open':''}"><div class="line"><span class="chev">›</span><span class="mark">$</span><span class="sum"><span class="cmd">${o.cmd}</span></span>${o.res}</div><div class="detail"><div class="kv"><b>cwd</b> ~/Workspace/kido</div><pre>${o.out}</pre></div></div>`,
+  edit:(o)=>`<div class="step${o.open?' open':''}"><div class="line"><span class="chev">›</span><span class="mark">✎</span><span class="sum"><span class="path">${o.path}</span> <span class="delta"><span class="plus">+${o.plus}</span> <span class="minus">−${o.minus}</span></span></span>${o.res}</div><div class="detail">${o.diff||''}</div></div>`,
+  read:(o)=>`<div class="step"><div class="line"><span class="chev">›</span><span class="mark">◇</span><span class="sum"><span class="path">${o.path}</span> <span class="delta">${o.lines} lines</span></span>${o.res}</div></div>`,
+  think:(o)=>`<div class="step${o.open?' open':''}"><div class="line"><span class="chev">›</span><span class="mark">∴</span><span class="sum">${o.sum}</span>${o.res}</div><div class="detail"><div class="think">${o.text||''}</div></div></div>`};
+const ok=(t)=>`<span class="time"><span class="ok">✓</span> ${t}</span>`;
+const diff=`<div class="diff"><div class="h">ko_server/src/sweep.rs</div><div class="l ctx"><span class="g">  </span>    fn due(&amp;self, now: Instant) -> bool {</div><div class="l del"><span class="g">−</span>        self.exited &amp;&amp; self.close == Close::Exit</div><div class="l add"><span class="g">+</span>        match self.close {</div><div class="l add"><span class="g">+</span>            Close::Exit => self.exited &amp;&amp; !self.failed,</div><div class="l add"><span class="g">+</span>            Close::OnExit => self.dead_since.is_some_and(|t| now - t > self.linger),</div><div class="l add"><span class="g">+</span>        }</div><div class="l ctx"><span class="g">  </span>    }</div></div>`;
+const bashOut=`running 3 tests
+test sweep::tests::removes_on_exit ... ok
+test sweep::tests::keeps_a_start_failure ... ok
+test sweep::tests::linger_waits_for_focus ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; finished in 0.41s`;
+const thinkText=`The sweep's rule for a failed start is the odd one: it is "exited" from the pane's view but the row has cause = failed, so Close::Exit must not fire. The cleanest place is due(), not the caller.
+
+I should check whether linger is read from the row or from the server config; the doc says the row. Then the test wants the linger shortened through the server: key, not an env var.`;
+
+function run(o){
+  const steps=o.steps.join('');
+  return `<div class="run${o.open?' open':''}"><div class="line"><span class="chev">›</span><span class="sum">${o.sum}</span>${o.res}</div><div class="steps">${steps}</div></div>`}
+
+const runSteps=(detail)=>[
+  step.think({sum:'thinking <span class="delta">· where the rule belongs</span>',res:ok('6s'),open:detail==='think',text:thinkText}),
+  step.read({path:'ko_server/src/sweep.rs',lines:212,res:ok('0.1s')}),
+  step.edit({path:'ko_server/src/sweep.rs',plus:5,minus:1,res:ok('0.2s'),open:detail==='edit',diff}),
+  step.bash({cmd:'make cargo ARGS=\'test -p ko_server sweep\'',res:ok('3.2s'),open:detail==='bash',out:bashOut}),
+];
+
+const transcript=(inner)=>`<div class="scroll"><div class="transcript">${inner}</div></div>`;
+const userMsg=(t,when='14:32')=>`<div class="msg user"><div class="t">${t}</div><time datetime="2026-11-08T14:32">${when}</time></div>`;
+
+const states={
+  idle:()=>`<div class="empty"><div class="wordmark">koa</div><div>Session <code>2026-11-08-a3f1</code> · nothing yet</div></div>${composer('empty')}${status('idle')}`,
+  stream:()=>transcript(userMsg(user1)+`<div class="msg assistant">${md}<span class="caret"></span></div>`)+composer('working')+status('working'),
+  'run-running':()=>transcript(userMsg('Make the sweep keep a start failure for the linger grace, then test it')+run({sum:`<span class="spin"></span> running <b>make cargo ARGS='test -p ko_server sweep'</b> <span class="delta">· step 4 of 4</span>`,res:`<span class="time">9s</span>`,steps:runSteps()}))+composer('working')+status('working'),
+  'run-done':()=>transcript(userMsg('Make the sweep keep a start failure for the linger grace, then test it')+run({sum:`<span class="ok">✓</span> 4 steps <span class="delta">· thinking, 1 read, 1 edit, 1 command</span>`,res:`<span class="time">10s</span>`,steps:runSteps()})+`<div class="msg assistant"><p>Done. <code>due()</code> now matches on <code>close</code>, a start failure never fires <code>Close::Exit</code>, and the three sweep tests pass.</p></div>`)+composer('empty')+status('idle'),
+  'run-lines':()=>transcript(userMsg('Make the sweep keep a start failure for the linger grace, then test it')+run({open:true,sum:`<span class="ok">✓</span> 4 steps <span class="delta">· thinking, 1 read, 1 edit, 1 command</span>`,res:`<span class="time">10s</span>`,steps:runSteps()})+`<div class="msg assistant"><p>Done. <code>due()</code> now matches on <code>close</code>, a start failure never fires <code>Close::Exit</code>, and the three sweep tests pass.</p></div>`)+composer('empty')+status('idle'),
+  'run-details':()=>transcript(userMsg('Make the sweep keep a start failure for the linger grace, then test it')+run({open:true,sum:`<span class="ok">✓</span> 4 steps <span class="delta">· thinking, 1 read, 1 edit, 1 command</span>`,res:`<span class="time">10s</span>`,steps:[
+    step.think({sum:'thinking <span class="delta">· where the rule belongs</span>',res:ok('6s'),open:true,text:thinkText}),
+    step.read({path:'ko_server/src/sweep.rs',lines:212,res:ok('0.1s')}),
+    step.edit({path:'ko_server/src/sweep.rs',plus:5,minus:1,res:ok('0.2s'),open:true,diff}),
+    step.bash({cmd:'make cargo ARGS=\'test -p ko_server sweep\'',res:ok('3.2s'),open:true,out:bashOut}),
+  ]}))+composer('empty')+status('idle'),
+  error:()=>transcript(userMsg('Run the whole unit stage')+run({open:true,sum:`<span class="err">✕</span> 2 steps <span class="delta">· 1 command failed</span>`,res:`<span class="time">41s</span>`,steps:[
+    step.read({path:'Makefile',lines:388,res:ok('0.1s')}),
+    step.bash({cmd:'make verify STAGES=unit',res:`<span class="time"><span class="exit">exit 101</span> 40s</span>`,open:true,out:`test sweep::tests::linger_waits_for_focus ... FAILED
+
+failures:
+---- sweep::tests::linger_waits_for_focus stdout ----
+assertion \`left == right\` failed
+  left: Some(%7)
+ right: None
+
+FAIL unit 40.2s`}),
+  ]})+`<div class="msg assistant"><p>The linger test fails because <code>dead_since</code> is set before the focus check. Looking at the order in <code>sweep()</code>.</p></div>`+run({open:true,sum:`<span class="warn">⊘</span> aborted <span class="delta">· 2 steps, you pressed Escape</span>`,res:`<span class="time">3s</span>`,steps:[
+    step.think({sum:'thinking <span class="delta">· the order in sweep()</span>',res:ok('2s')}),
+    step.edit({path:'ko_server/src/sweep.rs',plus:0,minus:0,res:`<span class="time"><span class="warn">aborted</span></span>`}),
+  ]}))+composer('empty')+status('aborted'),
+  'composer-empty':()=>transcript('')+composer('empty')+status('idle'),
+  'composer-multi':()=>transcript('')+composer('multi')+status('idle'),
+  'composer-working':()=>transcript(userMsg('Make the sweep keep a start failure')+run({sum:`<span class="spin"></span> running <b>make cargo ARGS='test -p ko_server sweep'</b>`,res:`<span class="time">9s</span>`,steps:[]}))+composer('working')+status('working'),
+  'status-idle':()=>transcript('')+composer('empty')+status('idle'),
+  'status-working':()=>transcript('')+composer('working')+status('working'),
+  'status-waiting':()=>transcript(`<div class="msg assistant"><p>Two readings of "linger grace" differ. Which one: the server's <code>linger</code> key, or the pane's own value?</p></div>`)+composer('empty')+status('waiting'),
+};
+
+for(const pane of document.querySelectorAll('.pane')){pane.innerHTML=states[pane.dataset.state]();
+  if(pane.dataset.state!=='stream'){}}
+document.addEventListener('click',e=>{const line=e.target.closest('.line');if(!line)return;const host=line.parentElement;if(host.classList.contains('run')||host.classList.contains('step')){if(host.classList.contains('step')&&!host.querySelector('.detail'))return;host.classList.toggle('open')}});
+// scroll streaming panes to the bottom, like the live page
+for(const pane of document.querySelectorAll('.pane')){const s=pane.querySelector('.scroll');if(s)s.scrollTop=s.scrollHeight}
+</script>
+</body>
+</html>
