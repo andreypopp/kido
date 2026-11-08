@@ -443,7 +443,9 @@ to its parent pane. The text is the whole last message, up to about
 mark is its own entry, so a late ack after new work does not count as
 a report on that work. A `delivered`, `queued` or `io` reply leaves
 the report pending, and every tick of the parent watch resends each
-pending report, oldest first, with its own id until its mark. The server delivers each id once (protocol.md,
+pending report, oldest first, with its own id until its mark. A
+report has at most one send in flight: a tick skips a report whose
+send has no reply yet, so one reply appends one mark. The server delivers each id once (protocol.md,
 section 7, "Ids"), so the parent never reads a report twice, also
 after a `/reload`. An empty last message sends `subagent "<name>"
 ended its turn with no message`.

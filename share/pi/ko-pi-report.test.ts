@@ -86,7 +86,7 @@ test("a report whose ack is lost is sent again with its id, by the parent watch,
   }
 });
 
-test("concurrent settle and parent-watch sends record one report ack", async () => {
+test("the parent watch skips a report while its settle send is active", async () => {
   const fx = makeFixture();
   try {
     asChild(fx);
@@ -95,14 +95,18 @@ test("concurrent settle and parent-watch sends record one report ack", async () 
       await withEnv({ KO_FAKE_SEND_GATE: `${fx.dir}/send-gate` }, async () => {
         const turn = idleTurn(s, "done");
         try {
-          await pollUntil(() => fx.posts(NOTICES).length >= 2, 2000, "both report sends to reach the gate");
+          await pollUntil(() => fx.posts(NOTICES).length === 1, 2000, "the settle send to reach the gate");
+          const layouts = fx.apiCalls().filter((c) => c.path === "/layout").length;
+          await pollUntil(() => fx.posts(NOTICES).length > 1 || fx.apiCalls().filter((c) => c.path === "/layout").length > layouts + 2, 2000, "parent-watch ticks during the send");
+          assert.equal(fx.posts(NOTICES).length, 1, "the active report is not sent again");
         } finally {
           writeFileSync(`${fx.dir}/send-gate`, "");
           await turn;
         }
         const layouts = fx.apiCalls().filter((c) => c.path === "/layout").length;
         await pollUntil(() => fx.apiCalls().filter((c) => c.path === "/layout").length > layouts + 1, 2000, "a completed tick");
-        assert.equal(entriesOf(s, "ko-pi.sent").length, 1, "concurrent sends record the ack once");
+        assert.equal(entriesOf(s, "ko-pi.sent").length, 1);
+        assert.equal(fx.posts(NOTICES).length, 1, "the acked report is not sent again");
         assert.equal(new Set(fx.posts(NOTICES).map((post) => post.id)).size, 1);
       });
     }, fx));

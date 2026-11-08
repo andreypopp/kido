@@ -2476,12 +2476,19 @@ export default function (pi: ExtensionAPI) {
       .map((entry) => ({ id: str(entry.data.id), text: str(entry.data.text) }));
   };
 
+  const sendingReports = new Set<string>();
+
   const sendReport = async (report: OwnReport, once: boolean): Promise<void> => {
-    if (!parentPane) return;
-    const result = await sendIntent(parentPane, "notice", report.text, { id: report.id, data: { report: true }, once });
+    if (!parentPane || sendingReports.has(report.id)) return;
     if (entries().some((entry) => entry.customType === ENTRY_SENT && entry.data.id === report.id)) return;
-    if (result.state === "acked") append(ENTRY_SENT, { id: report.id });
-    else if (result.state === "refused") append(ENTRY_SENT, { id: report.id, refused: true });
+    sendingReports.add(report.id);
+    try {
+      const result = await sendIntent(parentPane, "notice", report.text, { id: report.id, data: { report: true }, once });
+      if (result.state === "acked") append(ENTRY_SENT, { id: report.id });
+      else if (result.state === "refused") append(ENTRY_SENT, { id: report.id, refused: true });
+    } finally {
+      sendingReports.delete(report.id);
+    }
   };
 
   const watchParent = async (): Promise<void> => {
