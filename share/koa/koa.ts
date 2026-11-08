@@ -3,12 +3,14 @@ import { once } from "node:events";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename } from "node:path";
+import { homedir } from "node:os";
 import timers from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { RpcCommand, RpcResponse, JsonAgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { transcript, respond, readBody, promptBody, errorText, replaceControlCharacters, utf8Prefix } from "../pi/transcript.ts";
 import { webview } from "../webview/index.ts";
+import { assemblePage } from "./koa-assemble.ts";
 
 const RPC_RESPONSE_MS = 10000;
 const FLUSH_MS = 50;
@@ -16,7 +18,7 @@ const QUIT_REPLY_MS = 1000;
 
 type Assistant = Extract<AgentMessage, { role: "assistant" }>;
 type Exit = { exited: number } | { signal: string } | { failed: string };
-type State = { working: boolean; since?: number; aborted: boolean; name: string; model?: string; thinking?: string; levels: string[]; context?: { tokens: number | null; window: number; percent: number | null }; cwd: string; branch?: string; dirty?: boolean; queue: { steering: readonly string[]; followUp: readonly string[] }; pi?: Exit; dialogs: [] };
+type State = { working: boolean; since?: number; aborted: boolean; name: string; model?: string; thinking?: string; levels: string[]; context?: { tokens: number | null; window: number; percent: number | null }; cwd: string; home: string; branch?: string; dirty?: boolean; queue: { steering: readonly string[]; followUp: readonly string[] }; pi?: Exit; dialogs: [] };
 type Root = { value: "idle" | "working" | "done" | "error"; message: string };
 
 function signalPi(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
@@ -97,11 +99,11 @@ async function main(): Promise<void> {
   }
   const configured = Number(process.env.KOA_PI_EXIT_MS ?? 5000);
   const exitMs = Number.isFinite(configured) && configured > 0 ? configured : 5000;
-  const page = await readFile(new URL("../pi/ko-pi-page.html", location), "utf8");
+  const page = await assemblePage(location);
   const view = await webview({ target: browser ? "browser" : "pane" });
   if (!view) throw new Error("koa requires a Kido pane or --browser");
   const feed = transcript({ flushMs: FLUSH_MS });
-  const state: State = { working: false, aborted: false, name: "pi", levels: [], cwd: process.cwd(), queue: { steering: [], followUp: [] }, dialogs: [] };
+  const state: State = { working: false, aborted: false, name: "pi", levels: [], cwd: process.cwd(), home: homedir(), queue: { steering: [], followUp: [] }, dialogs: [] };
   let stopping = false;
   let root: Root = { value: "idle", message: state.name };
   const publish = () => feed.state(state);
@@ -217,7 +219,7 @@ async function main(): Promise<void> {
         break;
       case "tool_execution_start": feed.toolRunning(event.toolCallId, Date.now()); break;
       case "tool_execution_update": feed.toolPartial(event.toolCallId, event.partialResult.content); break;
-      case "tool_execution_end": feed.toolDone(event.toolCallId, event.result.content, event.isError, Date.now(), event.durationMs); break;
+      case "tool_execution_end": feed.toolDone(event.toolCallId, event.result.content, event.isError, Date.now(), event.durationMs, event.result.structuredContent); break;
       case "agent_start": state.working = true; state.since = Date.now(); state.aborted = false; outcome = { type: "done" }; status("working"); publish(); break;
       case "compaction_start": compaction = { root, working: state.working, since: state.since }; state.working = true; state.since ??= Date.now(); status("working"); publish(); break;
       case "agent_settled": state.working = false; delete state.since; state.aborted = event.aborted; status(event.aborted ? "idle" : outcome.type, outcome.type === "error" ? outcome.message : state.name); publish(); background(stats()); background(branch()); break;

@@ -29,7 +29,7 @@ export function promptBody(value: unknown): { text: string; mode: "prompt" | "st
 
 type Text = { text: string; cut: number };
 type ToolState = { type: "pending" } | { type: "running"; result?: Text } | { type: "done"; result: Text; error: boolean } | { type: "not_run" };
-type Block = { type: "text" | "thinking"; text: string; redacted?: boolean } | { type: "tool"; id: string; name: string; args: Text; state: ToolState; started?: number; ended?: number; durationMs?: number };
+type Block = { type: "text" | "thinking"; text: string; redacted?: boolean } | { type: "tool"; id: string; name: string; args: Text; state: ToolState; started?: number; ended?: number; durationMs?: number; exit?: number };
 type Item = { seq: number; at: number; final: boolean } & (
   { kind: "user"; text: string; images: number } |
   { kind: "assistant"; blocks: Block[]; stop: string; error: string; lifecycle: "streaming" | "ended" } |
@@ -101,7 +101,7 @@ export function transcript({ flushMs }: { flushMs: number }) {
   const dirty = new Set<number>();
   const sent = new Map<number, Assistant>();
   const pending = new Map<number, { message: Extract<AgentMessage, { role: "assistant" }>; phase: "update" | "end" }>();
-  const pendingTools = new Map<string, { type: "running"; content: Content } | { type: "done"; content: Content; error: boolean; at?: number; durationMs?: number }>();
+  const pendingTools = new Map<string, { type: "running"; content: Content } | { type: "done"; content: Content; error: boolean; at?: number; durationMs?: number; structuredContent?: unknown }>();
   let flushTimer: NodeJS.Timeout | null = null;
 
   const body = (req: ServerResponse, text: string, more = false): void => {
@@ -158,7 +158,7 @@ export function transcript({ flushMs }: { flushMs: number }) {
     if (a.type !== b.type) return false;
     if (a.type !== "tool" && b.type !== "tool") return a.text === b.text && a.redacted === b.redacted;
     if (a.type !== "tool" || b.type !== "tool") return false;
-    return a.started === b.started && a.ended === b.ended && a.durationMs === b.durationMs && a.id === b.id && a.name === b.name && sameText(a.args, b.args) && a.state.type === b.state.type
+    return a.started === b.started && a.ended === b.ended && a.durationMs === b.durationMs && a.exit === b.exit && a.id === b.id && a.name === b.name && sameText(a.args, b.args) && a.state.type === b.state.type
       && sameText("result" in a.state ? a.state.result : undefined, "result" in b.state ? b.state.result : undefined)
       && (a.state.type !== "done" || b.state.type === "done" && a.state.error === b.state.error);
   };
@@ -173,7 +173,17 @@ export function transcript({ flushMs }: { flushMs: number }) {
     for (const [id, held] of pendingTools) {
       const found = tools.get(id);
       if (!found) continue;
-      const result = cap(contentText(held.content), MAX_WEBVIEW_RESULT_BYTES);
+      let text = contentText(held.content);
+      if (held.type === "done" && found.block.name === "bash") {
+        const footer = text.match(/\n*Command exited with code (\d+)\s*$/);
+        const structured = held.structuredContent;
+        const code = structured && typeof structured === "object" && "exit_code" in structured ? structured.exit_code : footer ? Number(footer[1]) : undefined;
+        if (typeof code === "number" && Number.isInteger(code) && code >= 0) {
+          found.block.exit = code;
+          if (footer && code !== 0 && code === Number(footer[1])) text = text.slice(0, footer.index);
+        }
+      }
+      const result = cap(text, MAX_WEBVIEW_RESULT_BYTES);
       found.block.state = held.type === "done" ? { type: "done", result, error: held.error } : { type: "running", result };
       if (held.type === "done") {
         if (held.at !== undefined) found.block.ended = held.at;
@@ -272,8 +282,8 @@ export function transcript({ flushMs }: { flushMs: number }) {
   const toolPartial = (id: string, content: Content): void => {
     pendingTools.set(id, { type: "running", content }); schedule();
   };
-  const toolDone = (id: string, content: Content, error: boolean, at: number, durationMs?: number): void => {
-    pendingTools.set(id, { type: "done", content, error, at, durationMs }); flush();
+  const toolDone = (id: string, content: Content, error: boolean, at: number, durationMs?: number, structuredContent?: unknown): void => {
+    pendingTools.set(id, { type: "done", content, error, at, durationMs, structuredContent }); flush();
   };
   const close = (): void => {
     if (flushTimer) clearTimeout(flushTimer);

@@ -2307,7 +2307,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_end", (event) => { if (webviewActive) transcriptView.message(event.message, "end"); });
   pi.on("tool_execution_start", (event) => { if (webviewActive) transcriptView.toolRunning(event.toolCallId, Date.now()); });
   pi.on("tool_execution_update", (event) => { if (webviewActive) transcriptView.toolPartial(event.toolCallId, event.partialResult.content); });
-  pi.on("tool_execution_end", (event) => { if (webviewActive) transcriptView.toolDone(event.toolCallId, event.result.content, event.isError, Date.now(), event.durationMs); });
+  pi.on("tool_execution_end", (event) => { if (webviewActive) transcriptView.toolDone(event.toolCallId, event.result.content, event.isError, Date.now(), event.durationMs, event.result.structuredContent); });
   pi.on("session_tree", () => { if (webviewActive) webviewRebuild(); });
   pi.on("session_before_compact", () => { webviewCompacting = true; });
   pi.on("session_compact_failed", () => { webviewCompacting = false; });

@@ -96,6 +96,21 @@ test("tool timing survives assistant updates and reaches patches", () => {
   view.close();
 });
 
+test("bash exit codes come from structured results or the status footer", () => {
+  const view = transcript({ flushMs: 1000 });
+  const message = assistant("");
+  message.content = [{ type: "toolCall", id: "call", name: "bash", arguments: { command: "make verify" } }];
+  const block = () => JSON.parse(request(view, "/items?before=100").join("")).items[0].blocks[0];
+  view.message(message, "start");
+  view.toolDone("call", [{ type: "text", text: "failed\n\nCommand exited with code 101" }], true, 250, 49, { exit_code: 101 });
+  assert.equal(block().exit, 101);
+  assert.equal(block().state.result.text, "failed");
+  view.rebuild([message, { role: "toolResult", toolCallId: "call", toolName: "bash", content: [{ type: "text", text: "saved\n\nCommand exited with code 7" }], isError: true, timestamp: 300 }]);
+  assert.equal(block().exit, 7);
+  assert.equal(block().state.result.text, "saved");
+  view.close();
+});
+
 test("rebuild sends reset then exactly one caller-supplied state and keeps the epoch format", () => {
   const view = transcript({ flushMs: 1000 });
   view.state({ working: false, name: "before", model: "test" });

@@ -97,6 +97,8 @@ Non-goals, for this plan:
       koa-page.css        its style
       koa-page.js         its script, an ES module
       koa-markdown.js     the block memoization over marked and remend
+      koa-assemble.ts     the one HTML response: the page with its script,
+                          koa-markdown.js and vendor/ inlined
       vendor/             marked and remend as ES modules, with their
                           license files and README.md ("Vendored code")
       koa-fake-pi.ts      the scripted pi of the tests and the stress runs
@@ -276,40 +278,9 @@ a TUI pane. Its own webview starts only with `ctx.mode === "tui"`, so
 it does not serve a second page. A message that arrives on the stream
 goes through `pi.sendUserMessage` into the RPC pi, and its custom
 message reaches koa as a `message_start` and `message_end` event.
-ko-pi's job rows are OSC 7501 child records that `writeJobRecord`
-writes to `process.stdout`, which is the RPC stream in this mode.
-The user decided on 2026-11-08 (an approved new route) that an
-explicit status route replaces that writer, in every mode of ko-pi:
-unit 1, "The status route". With it a koa pane has its job rows as a
-TUI pane has.
-
-**The status route.** `POST /panes/{id}/status`, declared in the
-`routes!` block of `ko_server/src/api.rs` as `SetStatus` with `caller:
-optional` and the reply `Empty`, as `SetVar` is. Its body is one
-report, the wire type `StatusReport` in `ko_server::protocol` with
-its schema: a tagged enum with the two cases of
-`program_status::Report`, a set with the fields of an OSC 7501 report
-(`id`, `state` with its kind and progress, `app`, `title`, `msg`) and
-a clear of an `id`. `pane_proc.rs`'s `report_of` and the route's
-handler both produce `program_status::Report`, so the OSC edge and
-the HTTP edge agree by construction; the plan's shape is that
-`program_status::Report` becomes that wire type, and `pane_proc.rs`
-converts the frame into it. The handler calls `Set::apply` of the
-pane's one record set in `ko_server/src/program_status.rs`, under
-every rule of the set: the cap of 64 and its eviction, the `started`
-stamp, the id nesting and the subtree clear, the reduction, and the
-removal on pane death, RIS and a primary prompt start. There is no
-second store, and a `status` event follows as for an OSC report. The
-caller rule is `SetVar`'s: a pane identity writes only its own pane's
-records (`acts_as`), the user writes any pane's, and on a runtime
-connection only the visit's own pane may write (the runtime gate
-lists the route). Every id is accepted, the root included. koa keeps
-its root record on OSC 7501, because the root is the pane program's
-own report; jobs use the route. ko-pi writes a job row only through
-`ko api POST /panes/$KO_PANE/status`, in the TUI, in koa's RPC pi, in
-a routed runtime pi and on a remote server, and its OSC writer goes.
-The fake ko of `share/pi/testdata/fake_ko` gets the route through
-`ko_server::protocol`'s types and records each report for the suite.
+ko-pi writes its job rows through the status route (`SetStatus`,
+docs/protocol.md), not to its stdout, so in koa's RPC pi a koa pane
+has its job rows as a TUI pane has, with no work in koa.
 
 **Status.** pi reports OSC 7501 only in interactive mode
 (docs/design.md, "The pi extension, ko-pi": after terminal feature
@@ -460,7 +431,7 @@ inlines them into the one HTML document that it serves for `/`: the
 style in a `<style>`, the modules and the script in `<script
 type="module">` elements, in dependency order, with their `import`
 and `export` statements rewritten to one module scope by a small
-assembly function in `koa.ts` that the suite tests. koa does the
+assembly function in `koa-assemble.ts` that the suite tests. koa does the
 assembly once at start and keeps the result; a page load is one
 request. The server's CSP permits the inline script and style. The
 page escapes every text that it did not write. marked produces an HTML string for one
@@ -633,10 +604,10 @@ the scripted pi and the fake ko, in under a second each:
 - The composer: `prompt` idle and `steer` while working, a refused
   `prompt` while streaming without a behaviour, `abort`,
   `clear_queue`, the dialog round trip, `set_editor_text`.
-- The markdown: `koa-markdown.js` has two layers, a pure function
-  from a source and the kept blocks to the per-block HTML strings and
-  the reuse decisions, and a thin DOM applier. The Node test drives
-  the pure layer; no DOM shim. For every prefix of a
+- The markdown: `koa-markdown.js` is a pure function from a source
+  and the kept blocks to the per-block HTML strings and the reuse
+  decisions; `koa-page.js` applies them to the DOM. The Node test
+  drives `koa-markdown.js`; no DOM shim. For every prefix of a
   fixture that holds each GFM construct, the incremental render equals
   the full render of the same prefix (the memoization adds nothing and
   loses nothing); the healing cases (an open `**`, `_`, `` ` ``, `[`,
@@ -664,45 +635,17 @@ which prints one table and writes the metrics file; they never run in
 Each unit is one implementer. The manager writes the docs of each
 unit. The order is fixed, because each unit builds on the one before.
 
-1. **The status route.** The route `SetStatus` of section 2 with its
-   wire type and schema (`make schemas`), the router arm with the
-   caller rule and the runtime gate entry, `pane_proc.rs` on the
-   shared type, ko-pi's `writeJobRecord` on `ko api` with the OSC
-   writer deleted, and the fake ko's route. Tests: e2e, the route sets
-   and clears a child record that the row's `program_status` shows, a
-   pane identity is refused for another pane, the runtime gate
-   refuses a pane that is not the visit's own, and an OSC clear of the
-   root removes a record that the route set (the two edges share the
-   set); TS, ko-pi's job rows arrive as reports on the fake ko's route
-   in the TUI fixture and in an RPC-mode fixture, and no OSC 7501
-   child record reaches stdout. Docs: protocol.md (the route),
-   design-program-status.md "Sources" (the second edge of the record
-   set), design-subagents.md "A job's row" and design.md "The pi
-   extension, ko-pi" (the interface list).
-2. **The shared transcript module.** Move the item model, the caps,
-   the window, the patch diff and the `/events` and `/items` handlers
-   from `ko-pi.ts` into `share/pi/transcript.ts`, with `at`,
-   `started`, `ended` and `durationMs`. ko-pi calls it; its page is
-   unchanged. Tests: the existing `ko-pi-webview.test.ts` passes
-   unchanged; new unit tests for the cap, the window and the patch
-   diff.
-3. **koa, the program.** `koa.ts`: the spawn, the framing, the
-   command correlation, the shutdown and `signalPi`, the feed into the
-   transcript, OSC 7501 and OSC 0, the SDK with both targets, the HTTP
-   server with `/`, `/events`, `/items`, `/prompt`, `/abort`, `/quit`,
-   and the `state` record with the model, the thinking level, the
-   context usage, the queue, `cwd`, the branch and the dirty flag.
-   `koa-fake-pi.ts`. The shim, the Makefile, `tsconfig.json`,
-   `test-ts.sh` and `lint.sh` changes. Tests: the feed, the protocol,
-   the status bytes and the process tests of section 5. The page of
-   this unit is ko-pi's page copied, so the unit is testable in a
-   browser; unit 4 replaces it.
+1. **The status route.** Done on main (c6a1f242): `POST
+   /panes/{id}/status`; ko-pi writes its job rows through it in every
+   mode.
+2. **The shared transcript module.** Done (d8a68f83).
+3. **koa, the program.** Done (e86bd4ac).
 4. **The page.** The page files after the mockup: the transcript with
    runs, steps and details, the composer as NOTES.md "The composer"
    describes it, the status bar with its segments and the narrow
    rules, the browser fallback theme; `koa-markdown.js` over the
    vendored `marked` and `remend`, with `vendor/README.md` and the
-   license files, and the one-response assembly in `koa.ts`. Tests:
+   license files, and the one-response assembly in `koa-assemble.ts`. Tests:
    the assembly test (the served document holds each source once, in
    order, with no `import` left) and
    `KoaWebviewTests` in the app's visual suite with the fixture
@@ -710,7 +653,14 @@ unit. The order is fixed, because each unit builds on the one before.
    The markdown tests of section 5 run under Node against
    `koa-markdown.js` directly, which is why it is a module of its own
    and not part of the page's script.
-5. **Dialogs, queue and pickers.** `/queue/clear`, `/model`,
+5. **Dialogs, queue and pickers.** Thinking times: koa stamps `thinking_start`
+   and `thinking_end` with its own clock into `started` and `ended` of
+   a thinking block (the transcript module's block gets the two fields
+   for thinking as it has them for tools), so a live run shows a
+   thinking step's time; a replayed session shows none, because pi's
+   messages carry no thinking times. koa also stamps a live assistant
+   item's end at `message_end`, so an aborted run, whose pending tools
+   have no times, shows its elapsed time. `/queue/clear`, `/model`,
    `/models`, `/thinking`, `/dialog`, `/session/new`, `/pi/start`, the
    dialog card, the queue under the composer, `notify`, `setStatus`
    and `set_editor_text`, and the exit view with "Start pi again".

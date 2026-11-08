@@ -44,7 +44,8 @@ extension VisualTests {
         try await wait("real ko-pi webview page", within: 20) { (pane.webviewView?.visualDocuments ?? 0) > 0 }
         let screen = pane.webviewView == nil ? try await ko(["api", "/panes/pane_1/screen"], dir: directory.path) : ""
         let web = try XCTUnwrap(pane.webviewView?.browser, screen)
-        let ready = try await webviewJS(web, "new Promise(resolve=>{const observer=new MutationObserver(check);function check(){if(document.querySelector('.notice')&&document.querySelector('#status').textContent==='Ready'){observer.disconnect();resolve(document.querySelector('#items').innerText)}}observer.observe(document.body,{childList:true,characterData:true,subtree:true});check()})")
+        try await webviewUntil(web, "document.querySelector('.notice')&&document.querySelector('#status').textContent==='Ready'")
+        let ready = try await webviewJS(web, "document.querySelector('#items').innerText")
         XCTAssertTrue(ready.contains("A small, clear change"), ready)
         XCTAssertTrue(ready.lowercased().contains("builder"), ready)
         let fonts = try await webviewJS(web, "({theme:window.ko.theme['--ko-font-family'],code:getComputedStyle(document.querySelector('pre')).fontFamily,tool:getComputedStyle(document.querySelector('.tool summary')).fontFamily})")
@@ -58,7 +59,7 @@ extension VisualTests {
         try await webviewSnapshot(pane, "light")
         try await darken()
         pane.webviewView?.updateTheme()
-        _ = try await webviewJS(web, "new Promise(resolve=>{const observer=new MutationObserver(check);function check(){if(getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'){observer.disconnect();resolve(true)}}observer.observe(document.documentElement,{attributes:true,attributeFilter:['style']});check()})")
+        try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'")
         try await webviewSnapshot(pane, "dark")
         XCTAssertEqual(pane.webviewView?.visualDocuments, 1)
     }

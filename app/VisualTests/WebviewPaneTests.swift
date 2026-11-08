@@ -22,6 +22,10 @@ extension VisualTests {
         return try XCTUnwrap(try XCTUnwrap(answer).get() as? String)
     }
 
+    func webviewUntil(_ web: WKWebView, _ condition: String) async throws {
+        _ = try await webviewJS(web, "new Promise(resolve=>{const observer=new MutationObserver(check);function check(){if(\(condition)){observer.disconnect();removeEventListener('resize',check);resolve(true)}}observer.observe(document.documentElement,{attributes:true,childList:true,characterData:true,subtree:true});addEventListener('resize',check);check()})")
+    }
+
     private func webviewEqual(_ web: WKWebView, _ script: String, _ expected: String) async throws {
         let actual = try await webviewJS(web, script)
         XCTAssertEqual(actual, expected, script)

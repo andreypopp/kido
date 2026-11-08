@@ -66,7 +66,7 @@ miri:
 
 preview-pi unpreview-pi:
 	@set -eu; prefix="$${KO_PREVIEW_PREFIX:-$$(brew --prefix ko)}"; dir=$$(cd "$$prefix/share/ko" && pwd -P); \
-	for file in pi/ko-pi.ts pi/transcript.ts pi/ko-pi-page.html pi/ko-api.d.ts pi/skills webview koa/koa.ts; do \
+	for file in pi/ko-pi.ts pi/transcript.ts pi/ko-pi-page.html pi/ko-api.d.ts pi/skills webview $(addprefix koa/,$(KOA_FILES)); do \
 	  dst="$$dir/$$file"; \
 	  if test '$@' = preview-pi; then mkdir -p "$$(dirname "$$dst")"; \
 	    if ! test -e "$$dst.orig" && ! test -e "$$dst.orig.absent"; then \
@@ -91,6 +91,7 @@ website:
 # zig keeps its caches in the KO_ZIG_CACHE of .cargo/config.toml.
 KO := build/ko
 SHARE := bin pi webview koa shim.sh terminfo
+KOA_FILES := koa.ts koa-assemble.ts koa-page.html koa-page.css koa-page.js koa-markdown.js package.json vendor
 ZIG_CACHE := $(CURDIR)/target/zig-cache
 TERMINFO := $(KO)/share/ko/terminfo
 build: $(TERMINFO)/x/xterm-ghostty
@@ -104,7 +105,7 @@ build: $(TERMINFO)/x/xterm-ghostty
 	cp -R share/pi/skills $(KO)/share/ko/pi/skills
 	cp -R share/webview $(KO)/share/ko/webview
 	mkdir -p $(KO)/share/ko/koa
-	cp share/koa/koa.ts $(KO)/share/ko/koa/
+	cp -R $(addprefix share/koa/,$(KOA_FILES)) $(KO)/share/ko/koa/
 	cp share/ko/shim.sh $(KO)/share/ko/shim.sh
 
 # The static Linux ko under share/ko/linux/<arch>: bin/ko and share/ko, which has the SHARE files of

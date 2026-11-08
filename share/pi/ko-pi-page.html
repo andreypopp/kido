@@ -257,7 +257,10 @@
         summary.append(node('span', oneLine.slice(0, 100) + (oneLine.length > 100 ? '…' : ''), 'args'));
         details.append(summary);
         if (shortened) capped(details, block.args, 'args');
-        if (state.type === 'running' || state.type === 'done') capped(details, state.result, error ? 'error' : undefined);
+        if (state.type === 'running' || state.type === 'done') {
+          if (block.exit !== undefined) details.append(node('div', 'exit ' + block.exit, error ? 'error' : 'muted'));
+          capped(details, state.result, error ? 'error' : undefined);
+        }
         if (state.type === 'not_run') details.append(node('div', 'Not run', 'muted'));
         details.open = running || error || (previous?.dataset.state !== 'running' && (previous?.open ?? false));
         details.dataset.state = state.type;

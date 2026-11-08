@@ -3,10 +3,11 @@ import { readFileSync, appendFileSync } from "node:fs";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
 
-type Step = { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[] };
+type Step = { type: "respond"; command: "get_state" | "get_messages" | "get_session_stats" | "get_available_thinking_levels"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[] };
 const script: Step[] = process.env.KOA_FAKE_SCRIPT ? readFileSync(process.env.KOA_FAKE_SCRIPT, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
 let next = 0;
 let working = false;
+const responses = new Map<string, { data: object; after?: object[] }>();
 let output = Promise.resolve();
 const write = (text: string) => {
   output = output.then(async () => { if (!process.stdout.write(text)) await once(process.stdout, "drain"); });
@@ -23,7 +24,8 @@ async function advance(): Promise<void> {
     const step = script[next];
     if (!step || step.type === "wait") return;
     next++;
-    if (step.type === "emit") await emit(step.event);
+    if (step.type === "respond") responses.set(step.command, { data: step.data, after: step.after });
+    else if (step.type === "emit") await emit(step.event);
     else if (step.type === "raw") await write(step.text);
     else if (step.type === "repeat") { for (let i = 0; i < step.count; i++) for (const event of step.events) await emit(event); }
     else { await output; process.exit(step.code); }
@@ -41,6 +43,8 @@ async function command(value: { type: string; id: string; message?: string; stre
   else if (value.type === "get_messages") data = { messages: [] };
   else if (value.type === "get_available_thinking_levels") data = { levels: ["off", "low", "high"] };
   else if (value.type === "get_session_stats") data = { contextUsage: { tokens: 123, contextWindow: 1000, percent: 12.3 } };
+  const configured = responses.get(value.type);
+  if (configured) data = configured.data;
   const step = script[next];
   if (step?.type === "wait" && step.command === value.type) {
     next++;
@@ -52,7 +56,10 @@ async function command(value: { type: string; id: string; message?: string; stre
     const introspection = ["get_state", "get_messages", "get_available_thinking_levels", "get_session_stats"].includes(value.type);
     if (!introspection && (step?.type === "wait" || !["prompt", "abort", "steer", "follow_up"].includes(value.type))) {
       await emit({ type: "response", command: value.type, id: value.id, success: false, error: step?.type === "wait" ? `expected ${step.command}` : `unsupported command ${value.type}` });
-    } else await emit({ type: "response", command: value.type, id: value.id, success: true, data });
+    } else {
+      await write([{ type: "response", command: value.type, id: value.id, success: true, data }, ...configured?.after ?? []].map(record => JSON.stringify(record) + "\n").join(""));
+      if (configured) delete configured.after;
+    }
   }
 }
 log({ type: "argv", args: process.argv.slice(2) });

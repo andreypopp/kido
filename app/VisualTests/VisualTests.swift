@@ -196,17 +196,17 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
     // A private server whose session "visual" has the window "zsh" of one pane that runs `pane`, or the
     // given windows, shown in a 700-point session view.
-    func start(height: CGFloat = 560, dark: Bool = false, configFile: String? = nil, pane: String = rawScript, windows: String? = nil) async throws {
+    func start(width: CGFloat = 700, height: CGFloat = 560, dark: Bool = false, configFile: String? = nil, pane: String = rawScript, windows: String? = nil) async throws {
         NSApp.appearance = NSAppearance(named: .aqua)
         try loadRuntime(configFile: configFile)
-        window = OwnerWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: height),
+        window = OwnerWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height),
                              styleMask: [.titled, .fullSizeContentView, .resizable], backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: .aqua)
         window.colorSpace = .displayP3
         session = SessionView(runtime: runtime)
         runtime.onConfigReload = { [weak self] font in self?.session.reloadConfig(font: font) }
         runtime.onConfigChange = { [weak self] in self?.session?.updateWebview() }
-        session.frame = NSRect(x: 0, y: 0, width: 700, height: height)
+        session.frame = NSRect(x: 0, y: 0, width: width, height: height)
         window.contentView = session
         _ = try await KoServer.launch(dir: directory.path)
         try await koPut(directory.path, #"[{"name":"visual","windows":\#(windows ?? #"[{"name":"zsh","tree":\#(koPane(pane))}]"#)}]"#)
@@ -560,11 +560,11 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertEqual(leaf.map { [$0.cols, $0.rows] }, [Int(after.columns), Int(after.rows)], "the server took the new grid")
     }
 
-    func darken() async throws {
+    func darken(_ appearance: NSAppearance.Name = .darkAqua) async throws {
         let changed = expectation(description: "appearance config changed")
         runtime.onConfigChange = { [weak self] in self?.session.updateColorScheme(); self?.session.updateBackground(); changed.fulfill() }
-        window.appearance = NSAppearance(named: .darkAqua)
-        NSApp.appearance = NSAppearance(named: .darkAqua)
+        window.appearance = NSAppearance(named: appearance)
+        NSApp.appearance = NSAppearance(named: appearance)
         await fulfillment(of: [changed], timeout: 20)
         try await settle()
     }

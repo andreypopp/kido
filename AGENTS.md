@@ -178,7 +178,7 @@ These requirements are fixed:
   and `koa` shims), `share/ko/shim.sh`, `share/pi/ko-pi.ts`,
   `share/pi/ko-pi-page.html`, `share/pi/ko-api.d.ts` and
   `share/pi/transcript.ts` and `share/pi/skills` (in
-  `share/ko/pi/`), `share/koa/koa.ts` (in `share/ko/koa/`), and the SDK
+  `share/ko/pi/`), koa's program, page and vendored modules (in `share/ko/koa/`), and the SDK
   `share/webview/` (in `share/ko/webview/`) beside `bin/ko` in
   `build/ko/`, the layout
   that `ko_shell/src/bin_dir.rs` finds as installed.
@@ -753,8 +753,12 @@ maps the coordinator's modules.
                         skill that ko-pi offers to pi; transcript.ts,
                         the transcript model that ko-pi and koa share
     share/koa/          koa.ts, the pi harness that renders through a
-                        webview (plans/koa.md); koa-fake-pi.ts, the
-                        scripted pi of its suite koa-*.test.ts
+                        webview (plans/koa.md); koa-page.html, .css and
+                        .js, its page; koa-markdown.js, the streaming
+                        markdown over vendor/ (marked and remend, pinned
+                        in vendor/README.md); koa-assemble.ts, the one
+                        HTML response; koa-fake-pi.ts, the scripted pi
+                        of its suite koa-*.test.ts
     share/webview/      @kido/webview, the Node SDK for webview pages
                         (index.ts, README.md), installed as share/ko/webview
     .pi/prompts/        gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed;
