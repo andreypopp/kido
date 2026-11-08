@@ -38,12 +38,12 @@ struct PaletteEntry {
         let host = if case .remote(let destination) = owner.host { [destination] } else { [String]() }
         let resolve: @MainActor (SidebarRow) -> WindowOwner? = { [weak owner] row in
             guard let owner, owner.canNavigate, owner.snapshot?.serverInstance == instance,
-                  sidebarRows(owner.snapshot).contains(where: { $0.id == row.id }) else { return nil }
+                  sidebarRows(owner.snapshot).rows.contains(where: { $0.id == row.id }) else { return nil }
             return owner
         }
         let reachable = Set(snapshot.promptPanes.filter(\.agent).map(\.pane))
         var session = ""
-        return sidebarRows(owner.snapshot).compactMap { row in
+        return sidebarRows(owner.snapshot).rows.compactMap { row in
             if case .header = row.id { session = row.title }
             guard let target = row.topLevel else { return nil }
             return PaletteEntry(id: .pane(target), title: row.title, detail: (host + [session]).joined(separator: " › "), status: row.status, agent: row.agent, promptable: reachable.contains(target.pane), check: { resolve(row) == nil ? "That pane is gone" : nil }, operation: .run { let owner = resolve(row); owner?.reveal(); owner?.perform(.jump(target)) })
@@ -108,8 +108,8 @@ struct PaletteEntry {
             else if action == #selector(SessionMenus.renameItem), let owner, let session = owner.currentSession, let instance = owner.snapshot?.serverInstance {
                 operation = .enter(.sessionName(owner, instance, .rename(session.id, original: session.name)))
             } else if action == #selector(PaneView.promptSelectionItem(_:)), let owner, let pane = livePane(owner, responder),
-                      let session = owner.currentSession, let window = pane.windowID,
-                      let source = owner.promptSource(session: session.id, window: window, pane: pane.pane, quote: pane.selectionQuote) {
+                      let position = owner.projection.placements[pane.pane]?.position,
+                      let source = owner.promptSource(position, quote: pane.selectionQuote) {
                 operation = .enter(.prompt(source))
             } else { operation = .run { NSApp.sendAction(action, to: item.target, from: item) } }
             return [PaletteEntry(id: .command(order), order: order, title: title, detail: path.joined(separator: " › "), shortcut: shortcut(item),

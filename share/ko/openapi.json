@@ -743,19 +743,18 @@
             "type": "object"
           },
           {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Size"
-              }
-            ],
             "properties": {
+              "sizing": {
+                "$ref": "#/components/schemas/Sizing"
+              },
               "type": {
                 "const": "size",
                 "type": "string"
               }
             },
             "required": [
-              "type"
+              "type",
+              "sizing"
             ],
             "type": "object"
           },
@@ -1739,10 +1738,6 @@
           "focused": {
             "type": "boolean"
           },
-          "ignore_size": {
-            "default": false,
-            "type": "boolean"
-          },
           "name": {
             "type": "string"
           },
@@ -1752,8 +1747,8 @@
           "session": {
             "$ref": "#/components/schemas/SessionId"
           },
-          "size": {
-            "$ref": "#/components/schemas/Size"
+          "sizing": {
+            "$ref": "#/components/schemas/Sizing"
           },
           "window": {
             "$ref": "#/components/schemas/WindowId"
@@ -1762,7 +1757,7 @@
         "required": [
           "name",
           "focused",
-          "size"
+          "sizing"
         ],
         "type": "object"
       },
@@ -3898,6 +3893,42 @@
         ],
         "type": "object"
       },
+      "Sizing": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "disabled",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "windows",
+                "type": "string"
+              },
+              "viewport": {
+                "$ref": "#/components/schemas/Size"
+              },
+              "windows": {
+                "$ref": "#/components/schemas/WindowSizes"
+              }
+            },
+            "required": [
+              "type",
+              "viewport",
+              "windows"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "Skipped": {
         "properties": {
           "from": {
@@ -4591,6 +4622,29 @@
           "true"
         ],
         "type": "string"
+      },
+      "WindowSize": {
+        "properties": {
+          "size": {
+            "$ref": "#/components/schemas/Size"
+          },
+          "window": {
+            "$ref": "#/components/schemas/WindowId"
+          }
+        },
+        "required": [
+          "window",
+          "size"
+        ],
+        "type": "object"
+      },
+      "WindowSizes": {
+        "description": "Window ids must be unique, including entries with different sizes.",
+        "items": {
+          "$ref": "#/components/schemas/WindowSize"
+        },
+        "type": "array",
+        "uniqueItems": true
       }
     }
   },

@@ -41,11 +41,11 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
 
 @Test func runClocksUseOnlyLiveChildrenAndActiveRecords() throws {
     var model = try recorded()
-    model.panes[0].parent = .init(number: 5)
-    model.panes[0].started = model.now - 12_000_000_000
+    let live = try #require(model.panes.firstIndex { $0.id.number == 7 })
+    model.panes[live].started = model.now - 12_000_000_000
     let ended = try #require(model.panes.firstIndex { $0.id.number == 9 })
-    model.panes[ended].parent = .init(number: 5)
-    model.panes[0].status?.programStatus = .init(records: [
+    model.panes[ended].parent = .init(number: 6)
+    model.panes[live].status?.programStatus = .init(records: [
         .working(.init(id: "job/1", started: model.now - 65_000_000_000)),
         .blocked(.init(id: "job/2", started: model.now - 125_000_000_000)),
         .done(.init(id: "job/3", started: model.now - 12_000_000_000)),
@@ -53,15 +53,16 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
         .error(.init(id: "job/5", started: model.now - 12_000_000_000)),
     ], serial: 1)
     let snapshot = try #require(Snapshot(model: model))
-    let rows = sidebarRows(snapshot)
-    let child = try #require(rows.first { $0.target?.pane.number == 1 })
+    let rows = expandedRows(snapshot)
+    let child = try #require(rows.first { $0.target?.pane.number == 7 })
     let started = try #require(child.started)
     #expect(started == model.now - 12_000_000_000)
     #expect(snapshot.clock.now == model.now)
     #expect(snapshot.clock.local > 0)
     model.now += 1_000_000_000
-    #expect(sidebarRows(try #require(Snapshot(model: model))) == rows)
-    let jobs = rows.filter { if case .program = $0.id { true } else { false } }
+    let advanced = try #require(Snapshot(model: model))
+    #expect(expandedRows(advanced) == rows)
+    let jobs = rows.filter { if case .program(_, let pane, _) = $0.id { pane.number == 7 } else { false } }
     #expect(jobs.prefix(5).map { $0.started != nil } == [true, true, false, false, false])
     #expect(rows.first { $0.target?.pane.number == 2 }?.started == nil)
     #expect(rows.first { $0.target?.pane.number == 9 }?.started == nil)
@@ -84,7 +85,7 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
         let snapshot = try #require(Snapshot(model: model))
         let item = try #require(items(snapshot)[PaneID(number: 4)])
         #expect(item.rowTitle == "Terminal")
-        #expect(!closeScope(snapshot, target: .pane(item.id)).ask)
+        #expect(!closeScope(PaneProjection(snapshot), target: .pane(item.id)).ask)
     }
 }
 
@@ -104,7 +105,7 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     let snapshot = try #require(Snapshot(model: runtime))
     let item = try #require(items(snapshot)[PaneID(number: 4)])
     #expect(item.rowTitle == "Terminal")
-    #expect(!closeScope(snapshot, target: .pane(item.id)).ask)
+    #expect(!closeScope(PaneProjection(snapshot), target: .pane(item.id)).ask)
 }
 
 @Test func runtimePiProjectsAsAMessageableAgent() throws {
@@ -122,18 +123,17 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     #expect(item.lifecycle == .live(.runtime(.init(pane: .piAgent(.init(session: "s1", status: try #require(item.agent)))))))
 }
 
-private func nest(_ model: inout KoModel, _ moved: [UInt32], under parentNumber: UInt32, window: UInt32) throws {
-    let gone = Set(moved.map { PaneID(number: $0) })
-    model.outline.removeAll { if case .pane(let pane) = $0 { gone.contains(pane.id) } else { false } }
-    let parent = try #require(model.outline.firstIndex { if case .pane(let pane) = $0 { pane.id == .init(number: parentNumber) } else { false } })
-    model.outline.insert(contentsOf: moved.map { .pane(.init(depth: 1, id: .init(number: $0), window: .init(number: window))) }, at: parent + 1)
-}
-
-@Test func theTwoPanesOfAChildWindowAreOneGroupUnderTheParentPane() throws {
+@Test func distinctChildWindowsAndAGrandchildKeepTheirPaneAncestry() throws {
     var model = try recorded()
-    try nest(&model, [3, 4], under: 5, window: 2)
+    model.outline.removeAll { if case .pane(let pane) = $0 { [3, 4, 8].contains(pane.id.number) } else { false } }
+    let parent = try #require(model.outline.firstIndex { if case .pane(let pane) = $0 { pane.id.number == 5 } else { false } })
+    model.outline.insert(contentsOf: [
+        .pane(.init(depth: 1, id: .init(number: 3), window: .init(number: 2))),
+        .pane(.init(depth: 2, id: .init(number: 8), window: .init(number: 8))),
+        .pane(.init(depth: 1, id: .init(number: 4), window: .init(number: 4))),
+    ], at: parent + 1)
     let snapshot = try #require(Snapshot(model: model))
-    #expect(shape(snapshot.sessions[0].nodes) == ["1[1,2]", "5>2[3,4],7>8", "9"])
+    #expect(shape(snapshot.sessions[0].nodes) == ["1[1,2]", "5>3>8,4,7", "9"])
 }
 
 @Test func statusesAndEndedPanesKeepTheirMeaning() throws {
@@ -176,7 +176,9 @@ private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void)
     var model = try recorded()
     let at = try #require(model.panes.firstIndex { $0.id == .init(number: 4) })
     model.panes[at].parent = .init(number: 5)
-    try nest(&model, [4], under: 5, window: 3)
+    model.outline.removeAll { if case .pane(let pane) = $0 { pane.id.number == 4 } else { false } }
+    let parent = try #require(model.outline.firstIndex { if case .pane(let pane) = $0 { pane.id.number == 5 } else { false } })
+    model.outline.insert(.pane(.init(depth: 1, id: .init(number: 4), window: .init(number: 3))), at: parent + 1)
     let snapshot = try #require(Snapshot(model: model))
     #expect(shape(snapshot.sessions[0].nodes) == ["1[1,2]", "3", "5>4,7>8", "9"])
 }
@@ -202,9 +204,9 @@ private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void)
     #expect(try edited(9) { $0.close = .onExit }.indicator == (.endedFailed, "gone, exited with code 3"))
 }
 
-@Test func theProjectedTreeDrawsOneRowForEachPane() throws {
+@Test func theExpandedTreeDrawsOneRowForEachPane() throws {
     let snapshot = try #require(Snapshot(model: recorded()))
-    let rows = sidebarRows(snapshot)
+    let rows = expandedRows(snapshot)
     #expect(rows.filter { $0.target != nil }.count == 9)
     #expect(rows.filter(\.focused).map(\.title) == ["claude-code"])
 }
@@ -217,7 +219,7 @@ private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void)
     #expect(item.caption == "")
     #expect(!item.isMessageable)
     #expect(!item.closesQuietly)
-    let rows = sidebarRows(makeSnapshot([.item(item)]))
+    let rows = sidebarRows(makeSnapshot([.item(item)])).rows
     #expect(rows.filter { if case .program = $0.id { true } else { false } }.isEmpty)
 }
 

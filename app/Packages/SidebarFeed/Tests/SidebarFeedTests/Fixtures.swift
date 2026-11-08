@@ -31,7 +31,7 @@ func remote(_ pane: KoSchema.Remote, user: String = "alice", host: String = "dev
     .live(.ssh(.init(destination: user.isEmpty ? host : user + "@" + host, pane: pane)))
 }
 
-func pane(_ id: Int, window: Int? = nil, title: String = "", lifecycle: Lifecycle = terminal(),
+func pane(_ id: Int, window: Int? = nil, parent: Int? = nil, title: String = "", lifecycle: Lifecycle = terminal(),
           records: [KoSchema.ProgramRecord] = [], serial: Int = 0, recordsSeen: Bool = false, mark: KoSchema.Mark = .none_, children: [Node] = []) -> Node {
     let live: KoSchema.Live?
     let dead: KoSchema.Dead?
@@ -43,9 +43,16 @@ func pane(_ id: Int, window: Int? = nil, title: String = "", lifecycle: Lifecycl
     }
     let pi = if case .host(let host) = live, case .piAgent = host.pane { true } else { false }
     return .item(Item(pane: .init(close: close, command: [], cwd: "", dead: dead, id: PaneID(number: UInt32(id)), inbox: pi,
-                                 label: title, mark: mark, recordsSeen: recordsSeen, started: 0,
+                                 label: title, mark: mark, parent: parent.map { PaneID(number: UInt32($0)) }, recordsSeen: recordsSeen, started: 0,
                                  status: live.map { .init(kind: $0, programStatus: .init(records: records, serial: serial), since: 0, title: title) },
                                  title: title, vars: [:]), window: WindowID(number: UInt32(window ?? id)), children: children))
+}
+
+func expandedRows(_ snapshot: Snapshot?) -> [SidebarRow] {
+    var expanded = SidebarExpansion()
+    expanded.expandAll(sidebarRows(snapshot))
+    var captions = SidebarCaptions()
+    return captions.apply(sidebarRows(snapshot, expanded: expanded.expanded).rows, now: 0, delay: 0)
 }
 
 func group(_ id: Int, _ children: [Node]) -> Node {

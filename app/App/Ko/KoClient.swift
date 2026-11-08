@@ -34,12 +34,24 @@ extension KoSchema.Version {
     }
 }
 
+struct KoSize: Equatable {
+    let cols: Int
+    let rows: Int
+    let cell: KoSchema.CellPixels?
+    var raw: ko_size {
+        ko_size(cols: UInt16(cols), rows: UInt16(rows), cell_width: UInt16(clamping: cell?.width ?? 0), cell_height: UInt16(clamping: cell?.height ?? 0))
+    }
+}
+
+struct KoWindowSize: Equatable {
+    let window: WindowID
+    let size: KoSize
+}
+
 struct KoHello {
     var name = "app"
-    var cols = 80
-    var rows = 24
     var focused = false
-    var sizesWindows = false
+    var viewport: KoSize?
 }
 
 // The core's restore results and Ghostty's, matched by name. ko_restore_result is a closed C enum,
@@ -160,7 +172,7 @@ private final class ClientHandle: @unchecked Sendable {
         let user = Unmanaged.passRetained(self)
         var pointer: OpaquePointer?
         let code = hello.name.withCString { name in
-            var hello = ko_hello(cols: UInt16(hello.cols), rows: UInt16(hello.rows), focused: hello.focused, sizes_windows: hello.sizesWindows, name: name)
+            var hello = ko_hello(cols: UInt16(hello.viewport?.cols ?? 80), rows: UInt16(hello.viewport?.rows ?? 24), focused: hello.focused, sizes_windows: hello.viewport != nil, name: name)
             return ko_client_connect(socket, .main, { user, event in
                 let client = Unmanaged<KoClient>.fromOpaque(user!).takeUnretainedValue()
                 let event = event!.pointee
@@ -315,8 +327,19 @@ private final class ClientHandle: @unchecked Sendable {
     }
 
     // The cell's pixel size answers a program's size queries; the C call takes 0 and 0 for unknown.
-    func size(cols: Int, rows: Int, cell: KoSchema.CellPixels?) throws {
-        try handle.call { try check(ko_client_size($0, UInt16(cols), UInt16(rows), UInt16(clamping: cell?.width ?? 0), UInt16(clamping: cell?.height ?? 0))) }
+    func size(viewport: KoSize, windows: [KoWindowSize]) throws {
+        var names: [CChar] = []
+        let entries = windows.map { entry in
+            let offset = names.count
+            names.append(contentsOf: entry.window.description.utf8CString)
+            return (offset: offset, size: entry.size.raw)
+        }
+        try names.withUnsafeBufferPointer { names in
+            let windows = entries.map { entry in ko_window_size(window: names.baseAddress?.advanced(by: entry.offset), size: entry.size) }
+            try windows.withUnsafeBufferPointer { windows in
+                try handle.call { try check(ko_client_size($0, viewport.raw, windows.baseAddress, windows.count)) }
+            }
+        }
     }
 
     func switchOver(_ over: Int, _ direction: Int) throws {

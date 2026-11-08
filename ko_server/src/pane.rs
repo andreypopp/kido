@@ -207,11 +207,6 @@ impl Pane {
     }
 
     #[cfg(test)]
-    pub(crate) fn size(&self) -> Size {
-        self.size
-    }
-
-    #[cfg(test)]
     pub(crate) fn focused(&self) -> bool {
         self.focused
     }

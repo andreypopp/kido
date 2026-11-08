@@ -374,10 +374,14 @@ class Ko:
         return 0, 0
 
     def claim(self, pane):
-        self.sizing = WebSocket(self.dir, self.vt, "/client")
-        self.sizing.send({"type": "hello", "kind": "terminal", "name": "bench", "pane": pane, "focused": True, "size": {"cols": PANE_COLS, "rows": ROWS, "cell_px": {"width": 8, "height": 16}}})
-        self.sizing.receive()
-        self.sizing.receive()
+        document = json.loads(self.request("GET", "/layout"))
+        window = next(window["id"] for session in document["layout"]["sessions"] for window in session["windows"] if window["tree"] == {"pane": pane})
+        sizing = WebSocket(self.dir, self.vt, "/client")
+        size = {"cols": PANE_COLS, "rows": ROWS, "cell_px": {"width": 8, "height": 16}}
+        sizing.send({"type": "hello", "name": "bench", "pane": pane, "focused": True, "sizing": {"type": "windows", "viewport": size, "windows": [{"window": window, "size": size}]}})
+        sizing.receive()
+        sizing.receive()
+        self.sizing = sizing, window
 
     def pids(self):
         return self.server.pid, children(self.server.pid)
@@ -549,7 +553,9 @@ def resize_row():
             for n in range(20):
                 cols = 60 if n % 2 == 0 else PANE_COLS
                 began = time.monotonic()
-                ko.sizing.send({"type": "size", "cols": cols, "rows": ROWS, "cell_px": {"width": 8, "height": 16}})
+                sizing, window = ko.sizing
+                size = {"cols": cols, "rows": ROWS, "cell_px": {"width": 8, "height": 16}}
+                sizing.send({"type": "size", "sizing": {"type": "windows", "viewport": size, "windows": [{"window": window, "size": size}]}})
                 if history == "none":
                     view.snapshot()
                 else:

@@ -97,11 +97,12 @@ fn hostile_clients_do_not_affect_others() {
             selection: serde_json::json!({}),
             focused: true,
             size: grid(cols, rows),
+            windows: Vec::new(),
         })
     };
     let mut c = hello(4096, 4096);
     c.welcome();
-    c.send(&size_request(grid(4097, 24)));
+    c.send(&size_request("window_1", grid(4097, 24)));
     c.closed("size 4097 accepted");
     let mut c = hello(4097, 24);
     c.closed("hello 4097 accepted");

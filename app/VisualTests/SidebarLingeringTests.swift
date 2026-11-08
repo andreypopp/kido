@@ -26,6 +26,7 @@ import XCTest
                 .item(child),
             ])),
         ])]))
+        list.visualExpandAll()
         for dark in [false, true] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             sidebarSnapshot(list, dark ? "dark" : "light")
@@ -40,7 +41,7 @@ import XCTest
         let snapshot = fixtureSnapshot(window: 1, pane: 1, [("main", [
             fixtureNode(1, "parent", piLifecycle(), children: [.item(child)]),
         ])])
-        let row = try XCTUnwrap(sidebarRows(snapshot).first { $0.started != nil })
+        let row = try XCTUnwrap(sidebarRows(snapshot, expanded: [.pane(snapshot.client.session, PaneID(number: 1))]).rows.first { $0.started != nil })
         let cell = SidebarCell(SidebarFonts())
         cell.frame = NSRect(x: 0, y: 0, width: 292, height: row.height)
         for (before, after) in [(9, 10), (59, 60), (3599, 3600)] {
@@ -48,8 +49,8 @@ import XCTest
             cell.configure(row, now: SidebarView.visualNow!)
             SidebarView.visualNow = after * 1_000_000_000
             cell.updateClock(now: SidebarView.visualNow!)
-            XCTAssertEqual(cell.visualClockDirtyRect.minX, 51)
-            XCTAssertEqual(cell.visualClockDirtyRect.minY, 7)
+            XCTAssertEqual(cell.visualClockDirtyRect.minX, 45)
+            XCTAssertEqual(cell.visualClockDirtyRect.minY, 5)
         }
         SidebarView.visualNow = 11_000_000_000
         cell.configure(row, now: SidebarView.visualNow!)
@@ -73,6 +74,7 @@ import XCTest
             fixtureNode(6, "exit 0, keep", .ended(.exited(.init(code: 0)))),
             fixtureNode(7, "exit 2, keep", .ended(.exited(.init(code: 2)))),
         ])]))
+        list.visualExpandAll()
         let rows = list.visualRows.filter { $0.target != nil }
         XCTAssertEqual(rows.map(\.indent), [0, 1, 0, 0, 0, 0, 0])
         XCTAssertEqual(rows.map(\.status), [.quiet, .quiet, .endedClean, .endedFailed, .endedFailed, .done, .error])

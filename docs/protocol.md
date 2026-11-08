@@ -219,17 +219,34 @@ does not pass unseen.
 
 `GET /client` upgrades to the client connection, one per native window
 or terminal client process. The client's first message is its hello:
-name, what it currently shows, focus, size and
-whether it takes part in sizing. The server answers with the
+name, what it currently shows, focus and its sizing: `disabled`, or
+the viewport and the windows that it displays with their sizes. The server answers with the
 `Welcome` event, which carries the client's id, the terminal
 limits and the runtimes with their link states (section 15), then the
 full layout document with every pane's row (section 7), then events
-(section 6). Later the client sends a selection, a relative switch, a size, a
-focus change or a clipboard answer, all on this connection.
+(section 6). Later the client sends a selection, a relative switch, a size
+report, a focus change or a clipboard answer, all on this connection.
 A size has at least one column and row and at most
 `MAX_DIMENSION` (`ko_pane_wire/src/frame.rs`) of each; the server refuses
-a hello or a size outside that range. A larger grid is never useful,
-and one 65535x65535 grid takes gigabytes.
+a hello or a size outside that range, and a report that names a window
+twice. A larger grid is never useful, and one 65535x65535 grid takes
+gigabytes.
+
+A size report is complete: it replaces the client's whole sizing, so
+a window that the report no longer names is withdrawn. The viewport
+is the size of the client's area for a window; the server uses it
+only for a new window (below). Each window entry is the size of the
+area where the client displays that window: Kido.app names the
+window of its tab at the viewport's size and, for each slot that shows
+a child pane, the child's window at the slot's size; the terminal
+client names its one current window. A report is independent of the
+selection: a client can size a window that it does not select, and a
+selection does not add a window to the report. An entry for a window
+that no longer exists is ignored, so a report that crosses a removal
+is not a fault; the server also drops a removed window from every
+client's report. A client sends its report again after each
+`Welcome`, never in the hello of a reconnect: window ids belong to one
+server instance, and a hello cannot know which instance answers.
 
 A message that the server refuses on this connection (a hello that does
 not decode or that breaks a rule above, a request before the hello, a
@@ -243,8 +260,8 @@ connects again. A refusal after the `Welcome` is a client fault; the
 client treats it as a lost connection and connects again with a new
 hello.
 
-A size can carry `cell_px`, the pixel size of one cell of the client's
-font. The window keeps the last `cell_px` that its sizing client sent;
+A size, the viewport or a window entry, can carry `cell_px`, the
+pixel size of one cell of the client's font. The window keeps the last `cell_px` that its sizing client sent;
 a size without it keeps the earlier one. Each pane of the window gets
 its own cell count times that cell size as the pixel size of its pty
 (`TIOCSWINSZ`, each side saturated at 65535), and its terminal answers
@@ -262,27 +279,28 @@ A pane starts at its initial size: `ko-pane` sets the pty's cells and
 pixels before the program starts, and its terminal answers `CSI 18t`
 from that first size, and `CSI 14t` and `16t` when the window has a
 `cell_px`, so a program that asks at startup gets the answer. A new window of a `PUT` that does not give
-`cols`, `rows` or `cell_px` takes them from the size of a client that
+`cols`, `rows` or `cell_px` takes them from the viewport of a client that
 sizes windows: the client whose terminal has focus, else the first
 such client. Without one (the first pane of an empty server, a
 `PUT` with no client connected), the window is 80x24 with no
-`cell_px`. A client that later selects the window as its sizing
-client resizes it.
+`cell_px`. A client that later claims the window resizes it.
 
 The client exists from the hello to the close. There is no
 registration request, no linger and no delete: detach is a close, and
 a crash, a network loss or a ping timeout is a close too. On close the
 server deletes the client and closes its views; a view or request that
 names a closed client gets `gone`. The server keeps the client's
-current session, window, pane, size, focus and sizing flag, and prompt
+current session, window, pane, sizing and focus, and prompt
 scope uses them. The current pane is per client and is not in the
 layout document. Each window's `focus` in the document is the pane
 that a client focused most recently in that window; a client that
 enters a window where it has no current pane gets that pane
 (section 7). When a removal takes a client's current pane, the
 client stays in its window while the window has panes; when the
-window goes too, the client moves to the removed pane's `parent`
-pane, in any session, while that pane exists, else to the window of
+window goes too, the client moves to the nearest ancestor of the
+removed pane (its `parent`, else that pane's `parent`, and so on;
+a removal can take several levels, section 7) that survives, in any
+session, else to the window of
 that session that the client visited most recently and that
 survives, else to the nearest surviving window before it in
 document order, else to the nearest after it. Each client keeps its
@@ -292,10 +310,10 @@ session without a window also takes that client's most recent window
 of the session. The death of a pane moves
 no client, except through the removal of an `exit` pane (section 10):
 a dead pane that lingers stays current, so its last
-screen stays readable until the removal. When a `switch` or a removal
+screen stays readable until the removal. When a removal
 moves a client, the client gets a `selected` event. A client gets
-`selected` for each of its own `select` requests, also for one that
-names its current pane, and for each hello, as the third message after
+`selected` for each of its own `select` and `switch` requests, also
+for one that names its current pane or does not move, and for each hello, as the third message after
 `welcome` and `layout`, so a client never derives its selection itself.
 A reconnecting client names its last selection in its hello, so the
 reconnect does not move it.
@@ -304,7 +322,9 @@ A client's selection names a session, a window or a pane; a pane
 implies its window and session, a window implies its session, and a
 session implies the client's last current window in it, else its
 first window. A relative switch moves over windows or sessions in
-document order, next or previous, and wraps. A client selects only
+document order, next or previous, and wraps. A window switch visits
+only top-level windows (design.md, "The sidebar tree") and, from a
+child window, starts at the child's top-level window. A client selects only
 over its own connection: there is no route that moves another client
 (decided 2026-11-03).
 
@@ -314,9 +334,17 @@ its current pane. On a change the server sends focus in or out to the
 pane (CSI I, CSI O under mode 1004), so a pane that two focused
 clients show sees no transition when one of them leaves.
 
-The window that a client shows is sized by the client that claims it
+Each window is sized by the client that claims it
 (design-ko.md, "The layout document, panes and clients"), by the same
-rule for every client and every window. A reconnecting client sends a new hello with the
+rule for every client and every window. A client claims the windows
+of its report at its hello and when its terminal gets focus, a window
+that a new report adds, and the window that it selects or switches
+to when its report names it. A report entry for a window that the
+client already reported resizes the window only while that client
+owns it, so an ordinary resize never steals a window. A withdrawal,
+a `disabled` report or a close gives up ownership: the window keeps
+its last size, and no other client takes it over until that client
+claims it. A reconnecting client sends a new hello with the
 state it shows and gets a new id; the client owns that state, not the
 server. Messages on one client connection are applied in order.
 
@@ -618,6 +646,15 @@ invariants.
   must name a pane that is not dead: an unknown one is `not_found`, a
   dead one `gone`; a caller that acts as a pane may name only itself.
   No cycle can form, because the parent exists before the child.
+  A pane with a `parent` is a child pane, in every session: its
+  window holds that one tiled pane and nothing else. A document in
+  which a child pane shares its window, as a leaf or a float, is
+  `invalid`, with the document unchanged and no pane started, so a
+  split, a float, a move or a swap that puts a second pane beside a
+  child, or a child beside another pane, is refused for every
+  client. A window is a child window because of its pane, not its
+  id: a child that moves alone to a new or empty window, or a swap of
+  two single-pane windows, is valid.
   `runtime` names the runtime that the pane is born in, for its
   life; absent is the host. The row's `runtime` is the runtime that
   runs the pane's program now, which a visit changes without a
@@ -644,7 +681,11 @@ invariants.
 - `DELETE /panes/pane_N` removes the pane from its window; an empty
   window or session goes with it. `DELETE /windows/window_N` and
   `DELETE /sessions/session_N` remove a window or a session with all
-  its panes as one change: one revision and one layout event, which
+  its panes. Every removal also takes each descendant of a removed
+  pane through the `parent` links, in any session, live, dead,
+  focused or not; a removal never takes the parent or the siblings of
+  the pane that it names. All of it is one change: one revision and
+  one layout event, which
   also carries the new sizes that the moved clients' claims give, so a
   `PUT` made from the document before it gets `409` and a pane that
   it creates cannot survive in a half-closed window. A session goes
@@ -925,11 +966,12 @@ with any code, or a signal), at once; a pane with `close: on_exit`
 that has been dead for longer than the linger grace (`server:
 linger_seconds` of the configuration file, in seconds with an
 optional fraction); and a pane whose `parent` is gone or dead, live
-or dead itself, at once (the orphan rule). An `exit` pane whose
+or dead itself, at once (the orphan rule). A removal by the sweep is
+a removal of section 7, so it takes the pane's descendants with it. An `exit` pane whose
 program failed to start (cause `failed`: an exec or `cwd` failure of
 `ko-pane`) stays dead, so its error stays
 readable on its screen; `keep` keeps every dead pane. It keeps no record of a
-removed pane. The sweep never removes an `on_exit` or orphaned pane
+removed pane. The sweep never chooses an `on_exit` or orphaned pane
 that is focused: shown by a client whose terminal has focus (section
 3); it tries again when the focus changes. The `exit` rule ignores
 the focus, because the user ended the program in that pane.
@@ -993,20 +1035,25 @@ error, 4 no agent in scope, 5 several); its `--window` sends
 
 ## 12. Flow of an app window
 
-1. Open `/client` with a hello that carries the window, size and
-   focus. The welcome's layout event, with every pane's row,
-   is the tree's input; the later events keep it current.
+1. Open `/client` with a hello that carries the window, the
+   viewport with no windows, and focus. The welcome's layout event,
+   with every pane's row, is the tree's input; the later events keep
+   it current. Then send the size report of every window that the
+   app window displays (section 3).
 2. For each visible pane, open a view with `history=all` and
    `images=none`, and fetch the images with placements on screen in
    parallel.
 3. Send input events as text messages on the focused pane's view.
 4. On a window switch, close the old views and open the new ones, and
-   send the selection on `/client`. On a resize, send the size.
+   send the selection on `/client`. When a resize or a slot change
+   changes what the app window displays or a size, send the complete
+   size report.
 5. On a split, close, drag, zoom or rename, edit the last layout
    received and `PUT` it with its revision; on `409` reapply the edit
    to the body and `PUT` again.
 6. On reconnect, send a new hello with the last selection, take the
-   state from the new welcome's layout and `selected` events, and reopen
+   state from the new welcome's layout and `selected` events, send the
+   size report again, and reopen
    the views with the last offset seen:
    bytes and markers resume if inside the ring, else a snapshot. An
    offset is reused only when the `Welcome`'s instance equals the one

@@ -70,12 +70,12 @@ import XCTest
         for owner in [first, second] {
             wait("the failure is unseen") { self.items(owner).first?.pane.mark == .failed }
         }
-        XCTAssertEqual(sidebarRows(second.snapshot).first { $0.target != nil }?.status, .error)
+        XCTAssertEqual(sidebarRows(second.snapshot).rows.first { $0.target != nil }?.status, .error)
         first.testAttended = true
         for owner in [first, second] {
             wait("the failure is seen") { self.items(owner).first?.pane.mark == KoSchema.Mark.none_ }
         }
-        XCTAssertEqual(sidebarRows(second.snapshot).first { $0.target != nil }?.status, .quiet,
+        XCTAssertEqual(sidebarRows(second.snapshot).rows.first { $0.target != nil }?.status, .quiet,
                        "the other window of the host agrees without a shared record")
     }
 
@@ -173,9 +173,11 @@ import XCTest
         owner.perform(.switchWindow(next: true))
         wait("the first window again") { owner.navigation.window == top[0] }
         let session = try XCTUnwrap(owner.navigation.session)
-        owner.perform(.selectWindow(session, nested))
-        wait("the nested child window") { owner.navigation.window == nested }
+        let child = try XCTUnwrap(owner.testModel?.layout.layout.window(nested)?.panes.first)
+        owner.perform(.jump(.init(session: session, window: nested, pane: child)))
+        wait("the child shown in its root slot") { owner.navigation.window == top[0] && owner.testModel?.selection.window == nested }
+        XCTAssertNil(owner.testSession?.windows[nested])
         owner.perform(.switchWindow(next: false))
-        wait("its parent") { owner.navigation.window == top[0] }
+        wait("previous root tab from a child") { owner.navigation.window == top[1] }
     }
 }

@@ -308,18 +308,56 @@ unsafe impl Sync for User {}
 #[derive(Debug)]
 enum Command {
     Request(ClientRequest),
+    Size(protocol::Sizing),
     Open(Arc<View>),
     Close(u64),
     Resync(u64, protocol::ViewOptions),
     Input(u64, Input),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct Size {
+    cols: u16,
+    rows: u16,
+    cell_width: u16,
+    cell_height: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct WindowSize {
+    window: *const c_char,
+    size: Size,
+}
+
+impl TryFrom<Size> for protocol::Size {
+    type Error = ();
+
+    fn try_from(size: Size) -> Result<Self, Self::Error> {
+        let cols = frame::Dim::new(size.cols).ok_or(())?;
+        let rows = frame::Dim::new(size.rows).ok_or(())?;
+        let cell_px = match (
+            NonZeroU16::new(size.cell_width),
+            NonZeroU16::new(size.cell_height),
+        ) {
+            (Some(width), Some(height)) => Some(frame::CellPx { width, height }),
+            (None, None) => None,
+            _ => return Err(()),
+        };
+        Ok(Self(frame::Size {
+            cols,
+            rows,
+            cell_px,
+        }))
+    }
+}
+
 #[derive(Debug)]
 struct Greeting {
     name: String,
     focused: bool,
-    size: protocol::Size,
-    ignore_size: bool,
+    sizing: protocol::Sizing,
 }
 
 #[derive(Debug)]
@@ -730,11 +768,17 @@ unsafe fn slice_of<T>(data: *const T, len: usize, _scope: &()) -> Option<&[T]> {
     Some(unsafe { std::slice::from_raw_parts(data, len) })
 }
 
-fn request(client: &Client, request: ClientRequest) -> Code {
+fn request(client: &Client, command: Command) -> Code {
     if !client.shared.up.load(Ordering::SeqCst) {
         return Code::Closed;
     }
-    client.shared.command(Command::Request(request));
+    if let Command::Size(protocol::Sizing::Windows { viewport, .. }) = &command {
+        locked(&client.shared.hello).sizing = protocol::Sizing::Windows {
+            viewport: *viewport,
+            windows: protocol::WindowSizes::default(),
+        };
+    }
+    client.shared.command(command);
     Code::Ok
 }
 
@@ -795,12 +839,18 @@ pub unsafe extern "C" fn ko_client_connect(
     let hello = Greeting {
         name,
         focused: hello.focused,
-        size: protocol::Size(frame::Size {
-            cols,
-            rows,
-            cell_px: None,
-        }),
-        ignore_size: !hello.sizes_windows,
+        sizing: if hello.sizes_windows {
+            protocol::Sizing::Windows {
+                viewport: protocol::Size(frame::Size {
+                    cols,
+                    rows,
+                    cell_px: None,
+                }),
+                windows: protocol::WindowSizes::default(),
+            }
+        } else {
+            protocol::Sizing::Disabled
+        },
     };
     match start(
         socket,
@@ -1095,7 +1145,7 @@ pub unsafe extern "C" fn ko_client_select(
             return Code::NotFound;
         }
     }
-    request(&client, ClientRequest::Select(selection))
+    request(&client, Command::Request(ClientRequest::Select(selection)))
 }
 
 /// # Safety
@@ -1117,7 +1167,10 @@ pub unsafe extern "C" fn ko_client_switch(
         (2, 2) => (Over::Window, Direction::Previous),
         _ => return Code::Argument,
     };
-    request(&client, ClientRequest::Switch(Switch { over, direction }))
+    request(
+        &client,
+        Command::Request(ClientRequest::Switch(Switch { over, direction })),
+    )
 }
 
 /// # Safety
@@ -1126,30 +1179,45 @@ pub unsafe extern "C" fn ko_client_switch(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_size(
     client_: *const Client,
-    cols: u16,
-    rows: u16,
-    cell_width: u16,
-    cell_height: u16,
+    viewport: Size,
+    windows: *const WindowSize,
+    count: usize,
 ) -> Code {
-    let (Some(client), Some(cols), Some(rows)) = (
-        client(client_),
-        frame::Dim::new(cols),
-        frame::Dim::new(rows),
-    ) else {
+    let Some(client) = client(client_) else {
         return Code::Argument;
     };
-    let cell_px = match (NonZeroU16::new(cell_width), NonZeroU16::new(cell_height)) {
-        (Some(width), Some(height)) => Some(frame::CellPx { width, height }),
-        (None, None) => None,
-        _ => return Code::Argument,
+    let Ok(viewport) = protocol::Size::try_from(viewport) else {
+        return Code::Argument;
     };
-    let size = frame::Size {
-        cols,
-        rows,
-        cell_px,
+    if matches!(
+        locked(&client.shared.hello).sizing,
+        protocol::Sizing::Disabled
+    ) {
+        return Code::Argument;
+    }
+    let scope = ();
+    // SAFETY: ko_client.h requires count readable entries for the duration of this call.
+    let Some(windows) = (unsafe { slice_of(windows, count, &scope) }) else {
+        return Code::Argument;
     };
-    locked(&client.shared.hello).size = protocol::Size(size);
-    request(&client, ClientRequest::Size(protocol::Size(size)))
+    let mut entries = Vec::with_capacity(windows.len());
+    for entry in windows {
+        // SAFETY: ko_client.h requires each window to be a readable NUL-terminated string for this call.
+        let Some(window) = (unsafe { text_of(entry.window, &scope) }) else {
+            return Code::Argument;
+        };
+        let (Ok(window), Ok(size)) = (window.parse(), protocol::Size::try_from(entry.size)) else {
+            return Code::Argument;
+        };
+        entries.push(protocol::WindowSize { window, size });
+    }
+    let Ok(windows) = protocol::WindowSizes::try_from(entries) else {
+        return Code::Argument;
+    };
+    request(
+        &client,
+        Command::Size(protocol::Sizing::Windows { viewport, windows }),
+    )
 }
 
 /// # Safety
@@ -1212,7 +1280,10 @@ pub unsafe extern "C" fn ko_client_clipboard_answer(
             available: available.into_iter().map(str::to_owned).collect(),
         })
     };
-    request(&client, ClientRequest::ClipboardAnswer { id, served })
+    request(
+        &client,
+        Command::Request(ClientRequest::ClipboardAnswer { id, served }),
+    )
 }
 
 #[repr(C)]
@@ -1293,7 +1364,10 @@ pub unsafe extern "C" fn ko_client_focus(client_: *const Client, focused: bool) 
         return Code::Argument;
     };
     locked(&client.shared.hello).focused = focused;
-    request(&client, ClientRequest::Focused { focused })
+    request(
+        &client,
+        Command::Request(ClientRequest::Focused { focused }),
+    )
 }
 
 /// # Safety
@@ -1576,6 +1650,7 @@ mod tests {
         links: Sender<Seen>,
         client: AtomicPtr<Client>,
         on_welcome: Box<dyn Fn(&Probe) + Send + Sync>,
+        welcome_reports: Mutex<Option<Sender<Code>>>,
     }
 
     // SAFETY: pointer is readable and NUL-terminated through this call.
@@ -1600,8 +1675,29 @@ mod tests {
         let (probe, event) = unsafe { (&*user.cast::<Probe>(), &*event) };
         let seen = match event.kind {
             EVENT_WELCOME => {
-                // SAFETY: this arm matches the event kind for this union member.
-                let welcome = unsafe { event.body.welcome };
+                // SAFETY: the event kind selects welcome; the local array and its NUL-terminated id stay valid through ko_client_size, and the fixture keeps its client live.
+                let welcome = unsafe {
+                    let welcome = event.body.welcome;
+                    if let Some(results) = locked(&probe.welcome_reports).as_ref() {
+                        let size = Size {
+                            cols: 91,
+                            rows: 31,
+                            cell_width: 0,
+                            cell_height: 0,
+                        };
+                        let windows = [WindowSize {
+                            window: c"window_1".as_ptr(),
+                            size,
+                        }];
+                        let _ = results.send(ko_client_size(
+                            probe.client.load(Ordering::SeqCst),
+                            size,
+                            windows.as_ptr(),
+                            windows.len(),
+                        ));
+                    }
+                    welcome
+                };
                 Seen::Welcome(
                     // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
                     unsafe { owned(welcome.client) },
@@ -1773,6 +1869,7 @@ mod tests {
                     links,
                     client: AtomicPtr::new(std::ptr::null_mut()),
                     on_welcome: Box::new(on_welcome),
+                    welcome_reports: Mutex::new(None),
                 })),
                 events: receiver,
                 links: link_events,
@@ -1792,12 +1889,7 @@ mod tests {
             let hello = hello.unwrap_or(Greeting {
                 name: "app".to_owned(),
                 focused: false,
-                ignore_size: true,
-                size: protocol::Size(frame::Size {
-                    cols: frame::Dim::new(80).unwrap(),
-                    rows: frame::Dim::new(24).unwrap(),
-                    cell_px: None,
-                }),
+                sizing: protocol::Sizing::Disabled,
             });
             let handle = start(
                 socket.dir.join("socket"),
@@ -2446,7 +2538,7 @@ mod tests {
             hello,
             json!({
                 "type": "hello", "name": "app", "focused": false,
-                "size": {"cols": 80, "rows": 24}, "ignore_size": true
+                "sizing": {"type": "disabled"}
             }),
             "a client without a hello struct neither sizes windows nor has focus"
         );
@@ -2528,7 +2620,19 @@ mod tests {
         let returned_early = closed.recv_timeout(Duration::from_millis(100)).is_ok();
         let closing_id = fixture.probe.client.load(Ordering::SeqCst);
         // SAFETY: closing_id is an opaque id that the entry only looks up; all scalar arguments are valid.
-        let during_close = unsafe { ko_client_size(closing_id, 80, 24, 0, 0) };
+        let during_close = unsafe {
+            ko_client_size(
+                closing_id,
+                Size {
+                    cols: 80,
+                    rows: 24,
+                    cell_width: 0,
+                    cell_height: 0,
+                },
+                std::ptr::null(),
+                0,
+            )
+        };
         drop(decoders);
         let view = std::ptr::without_provenance_mut(calling.join().unwrap());
         closing.join().unwrap();
@@ -2595,7 +2699,19 @@ mod tests {
         );
         assert_eq!(second_fixture.next(), Seen::Restored(1, Restored::Ok));
         // SAFETY: first is an opaque closed id that the entry only looks up; all scalar arguments are valid.
-        let stale_client = unsafe { ko_client_size(first, 18, 25, 0, 0) };
+        let stale_client = unsafe {
+            ko_client_size(
+                first,
+                Size {
+                    cols: 18,
+                    rows: 25,
+                    cell_width: 0,
+                    cell_height: 0,
+                },
+                std::ptr::null(),
+                0,
+            )
+        };
         // SAFETY: first_view is an opaque closed id that the entry only looks up; the input bytes remain live.
         let stale_input = unsafe { ko_view_input(first_view, b"bad".as_ptr(), 3) };
         // SAFETY: first_view is an opaque closed id that the entry only looks up.
@@ -3193,6 +3309,54 @@ mod tests {
     }
 
     #[test]
+    fn a_welcome_callback_can_report_windows_on_initial_join_and_reconnect() {
+        let (release, gate) = channel();
+        let (sent, requests) = channel();
+        let first = sent.clone();
+        let server = serve(
+            "welcome-report",
+            client_script(move |socket, _| {
+                gate.recv_timeout(WAIT).unwrap();
+                welcomed(socket);
+                first.send(text_messages(socket, 1).remove(0)).unwrap();
+                let _ = socket.close(None);
+                let _ = socket.flush();
+            })
+            .client(move |socket, _| {
+                welcomed(socket);
+                sent.send(text_messages(socket, 1).remove(0)).unwrap();
+                wait_for_hangup(socket);
+            }),
+        );
+        let fixture = Fixture::new();
+        let (results, codes) = channel();
+        *locked(&fixture.probe.welcome_reports) = Some(results);
+        let client = fixture.connect_as(
+            &server,
+            Some(Greeting {
+                name: "app".to_owned(),
+                focused: false,
+                sizing: protocol::Sizing::Windows {
+                    viewport: protocol::Size(frame::Size::DEFAULT),
+                    windows: protocol::WindowSizes::default(),
+                },
+            }),
+            crate::wire::WATCHDOG,
+        );
+        release.send(()).unwrap();
+        for _ in 0..2 {
+            assert_eq!(codes.recv_timeout(WAIT).unwrap(), Code::Ok);
+            let request: Value =
+                serde_json::from_str(&requests.recv_timeout(WAIT).unwrap()).unwrap();
+            assert_eq!(
+                request["sizing"]["windows"],
+                json!([{"window": "window_1", "size": {"cols": 91, "rows": 31}}])
+            );
+        }
+        close(client);
+    }
+
+    #[test]
     fn selection_switch_size_and_focus_reach_the_server_and_a_reconnect_greets_with_the_latest() {
         let (sent, requests) = channel();
         let (greeted, hellos) = channel();
@@ -3222,13 +3386,15 @@ mod tests {
         let client = fixture.connect_as(
             &server,
             Some(Greeting {
-                size: protocol::Size(frame::Size {
-                    cols: frame::Dim::new(90).unwrap(),
-                    rows: frame::Dim::new(28).unwrap(),
-                    cell_px: None,
-                }),
+                sizing: protocol::Sizing::Windows {
+                    viewport: protocol::Size(frame::Size {
+                        cols: frame::Dim::new(90).unwrap(),
+                        rows: frame::Dim::new(28).unwrap(),
+                        cell_px: None,
+                    }),
+                    windows: protocol::WindowSizes::default(),
+                },
                 focused: false,
-                ignore_size: false,
                 name: "window_7".to_owned(),
             }),
             crate::wire::WATCHDOG,
@@ -3239,14 +3405,14 @@ mod tests {
                 &hello["type"],
                 &hello["name"],
                 &hello["focused"],
-                &hello["ignore_size"],
-                &hello["size"]
+                &hello["sizing"]["type"],
+                &hello["sizing"]["viewport"]
             ),
             (
                 &json!("hello"),
                 &json!("window_7"),
                 &json!(false),
-                &json!(false),
+                &json!("windows"),
                 &json!({"cols": 90, "rows": 28})
             )
         );
@@ -3267,7 +3433,20 @@ mod tests {
                 Code::Ok
             );
             assert_eq!(ko_client_switch(client, 2, 1), Code::Ok);
-            assert_eq!(ko_client_size(client, 100, 30, 9, 18), Code::Ok);
+            assert_eq!(
+                ko_client_size(
+                    client,
+                    Size {
+                        cols: 100,
+                        rows: 30,
+                        cell_width: 9,
+                        cell_height: 18
+                    },
+                    std::ptr::null(),
+                    0
+                ),
+                Code::Ok
+            );
             assert_eq!(ko_client_focus(client, true), Code::Ok);
             assert_eq!(
                 ko_client_select(client, SELECT_PANE, c"nonsense".as_ptr()),
@@ -3278,8 +3457,77 @@ mod tests {
                 Code::Argument
             );
             assert_eq!(ko_client_switch(client, 3, 1), Code::Argument);
-            assert_eq!(ko_client_size(client, 0, 30, 0, 0), Code::Argument);
-            assert_eq!(ko_client_size(client, 100, 30, 9, 0), Code::Argument);
+            assert_eq!(
+                ko_client_size(
+                    client,
+                    Size {
+                        cols: 0,
+                        rows: 30,
+                        cell_width: 0,
+                        cell_height: 0
+                    },
+                    std::ptr::null(),
+                    0
+                ),
+                Code::Argument
+            );
+            assert_eq!(
+                ko_client_size(
+                    client,
+                    Size {
+                        cols: 100,
+                        rows: 30,
+                        cell_width: 9,
+                        cell_height: 0
+                    },
+                    std::ptr::null(),
+                    0
+                ),
+                Code::Argument
+            );
+            let viewport = Size {
+                cols: 100,
+                rows: 30,
+                cell_width: 0,
+                cell_height: 0,
+            };
+            let duplicate = [WindowSize {
+                window: c"window_1".as_ptr(),
+                size: viewport,
+            }; 2];
+            assert_eq!(
+                ko_client_size(client, viewport, duplicate.as_ptr(), duplicate.len()),
+                Code::Argument
+            );
+            let invalid = [WindowSize {
+                window: c"bad".as_ptr(),
+                size: viewport,
+            }];
+            assert_eq!(
+                ko_client_size(client, viewport, invalid.as_ptr(), invalid.len()),
+                Code::Argument
+            );
+            assert_eq!(
+                ko_client_size(client, viewport, std::ptr::null(), 1),
+                Code::Argument
+            );
+            let null = [WindowSize {
+                window: std::ptr::null(),
+                size: viewport,
+            }];
+            assert_eq!(
+                ko_client_size(client, viewport, null.as_ptr(), null.len()),
+                Code::Argument
+            );
+            let name = [0xffu8, 0];
+            let utf8 = [WindowSize {
+                window: name.as_ptr().cast(),
+                size: viewport,
+            }];
+            assert_eq!(
+                ko_client_size(client, viewport, utf8.as_ptr(), utf8.len()),
+                Code::Argument
+            );
             assert_eq!(
                 ko_client_select(client, SELECT_PANE, c"pane_9".as_ptr()),
                 Code::NotFound
@@ -3295,7 +3543,7 @@ mod tests {
                 r#"{"type":"select","window":"window_1"}"#,
                 r#"{"type":"select","session":"session_1"}"#,
                 r#"{"type":"switch","over":"window","direction":"next"}"#,
-                r#"{"type":"size","cols":100,"rows":30,"cell_px":{"width":9,"height":18}}"#,
+                r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":100,"rows":30,"cell_px":{"width":9,"height":18}},"windows":[]}}"#,
                 r#"{"type":"focused","focused":true}"#,
             ]
         );
@@ -3306,16 +3554,17 @@ mod tests {
             (
                 hello["session"].clone(),
                 hello["focused"].clone(),
-                hello["ignore_size"].clone(),
-                hello["size"].clone()
+                hello["sizing"]["type"].clone(),
+                hello["sizing"]["viewport"].clone()
             ),
             (
                 json!("session_1"),
                 json!(true),
-                json!(false),
+                json!("windows"),
                 json!({"cols": 100, "rows": 30, "cell_px": {"width": 9, "height": 18}})
             )
         );
+        assert_eq!(hello["sizing"]["windows"], json!([]));
         close(client);
     }
 
@@ -4306,7 +4555,20 @@ mod tests {
                 Code::Argument
             );
             assert_eq!(ko_client_switch(std::ptr::null(), 1, 1), Code::Argument);
-            assert_eq!(ko_client_size(std::ptr::null(), 1, 1, 0, 0), Code::Argument);
+            assert_eq!(
+                ko_client_size(
+                    std::ptr::null(),
+                    Size {
+                        cols: 1,
+                        rows: 1,
+                        cell_width: 0,
+                        cell_height: 0
+                    },
+                    std::ptr::null(),
+                    0
+                ),
+                Code::Argument
+            );
             assert_eq!(ko_client_focus(std::ptr::null(), true), Code::Argument);
             assert_eq!(
                 ko_client_observe(std::ptr::null(), std::ptr::null(), 0, true),

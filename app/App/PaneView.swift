@@ -1921,7 +1921,6 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         if copyMode != nil { endCopy() } else { _ = ghostty_surface_set_selection(surface, nil) }
     }
 
-    var windowID: WindowID? { (superview as? WindowView)?.windowID }
 
     #if KIDO_VISUAL
     var visualAcceptsFirstMouse = true

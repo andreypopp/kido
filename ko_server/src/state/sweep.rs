@@ -69,7 +69,7 @@ impl State {
             self.config.linger()
         });
         for pane in swept.removed {
-            self.delete_pane(poll, pane);
+            self.delete(poll, crate::layout::Remove::Pane(pane));
         }
         match swept.next {
             Some(next) => {

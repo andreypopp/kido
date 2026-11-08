@@ -1,0 +1,523 @@
+import AppKit
+import GhosttyKit
+import KoModel
+import KoClient
+import PaneGeometry
+import SidebarFeed
+import SnapshotTesting
+import XCTest
+@testable import Kido
+
+@MainActor final class SidebarChildrenTests: VisualTestCase {
+    private func ownerFixture() async throws -> (dir: String, runtime: GhosttyRuntime, owner: WindowOwner, children: [Snapshot.Position]) {
+        let dir = try await koLaunched(pane: koPane("stty raw -echo; printf '\\033[?25lparent'; exec cat"))
+        let split = KoSchema.Edit.split(.init(axis: .h, new: .init(command: .shell(.init(command: "stty raw -echo; printf '\\033[?25l~/Workspace/kido\\r\\n$ '; exec cat"))), pane: .init(number: 1)))
+        try await ko(["layout", "edit", String(decoding: JSONEncoder().encode(split), as: UTF8.self)], dir: dir)
+        var children: [Snapshot.Position] = []
+        for parent in [1, 2] {
+            let cwd = dir + "/child-work-\(parent)"
+            try FileManager.default.createDirectory(atPath: cwd, withIntermediateDirectories: true)
+            let body = KoSchema.CreatePane(command: .shell(.init(command: "stty raw -echo; printf '\\033[?25lpi · ~/Workspace/kido\\r\\n\\r\\n› Designing session cards and pane states\\r\\n\\r\\nReading App/SidebarView.swift\\r\\n\\r\\n› '; exec cat")), cwd: .absPath(cwd), parent: .init(number: UInt32(parent)))
+            let input = dir + "/child-\(parent).json"
+            try JSONEncoder().encode(body).write(to: URL(fileURLWithPath: input))
+            let text = try await ko(["api", "-X", "POST", "--input", input, "/panes"], dir: dir)
+            children.append(try JSONDecoder().decode(Snapshot.Position.self, from: Data(text.utf8)))
+        }
+        let board = NSPasteboard(name: .init("children-" + UUID().uuidString))
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        owner.testServerDir = dir
+        runtime.onConfigChange = { [weak owner] in owner?.updateAppearance() }
+        runtime.onConfigReload = { [weak owner] font in owner?.testSession?.reloadConfig(font: font) }
+        owner.window.setContentSize(NSSize(width: 1040, height: 720))
+        owner.window.colorSpace = .displayP3
+        PaneView.renderOffscreen = true
+        addTeardownBlock { @MainActor in
+            owner.close()
+            board.releaseGlobally()
+            PaneView.renderOffscreen = false
+        }
+        owner.start()
+        try await wait("root and child panes") { owner.testModel?.panes.count == 4 && owner.testSession?.windows.values.first?.panes.count == 2 }
+        return (dir, runtime, owner, children)
+    }
+
+    private func theme(_ runtime: GhosttyRuntime, dark: Bool) async throws {
+        runtime.previewTheme(dark ? "kido-dark" : "kido-light")
+        runtime.flushTheme()
+        try await drain(runtime)
+        XCTAssertEqual(runtime.background.isDark, dark)
+    }
+
+    func testSidebarChildren() async throws {
+        let previousNow = SidebarView.visualNow
+        SidebarView.visualNow = sidebarChildrenNow
+        defer { SidebarView.visualNow = previousNow }
+        enum Scenario: CaseIterable {
+            case collapsed, expanded, narrow, recordsCollapsed, recordsExpanded, waitCleared, foldedSelected, sixPlus, singleIdle, hover
+            var configuration: (name: String, records: Bool, width: Int) {
+                switch self {
+                case .collapsed: ("stress-collapsed", false, 292)
+                case .expanded: ("stress-expanded", false, 292)
+                case .narrow: ("stress-collapsed-236", false, 236)
+                case .recordsCollapsed: ("records-collapsed", true, 292)
+                case .recordsExpanded: ("records-expanded", true, 292)
+                case .waitCleared: ("stress-wait-cleared", false, 292)
+                case .foldedSelected: ("stress-folded-selected", false, 292)
+                case .sixPlus: ("six-plus", false, 292)
+                case .singleIdle: ("single-idle", false, 292)
+                case .hover: ("stress-hover", false, 292)
+                }
+            }
+        }
+        for dark in [false, true] {
+            let side = dark ? "dark" : "light"
+            let board = NSPasteboard(name: .init("children-colors-" + UUID().uuidString))
+            let colors = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+            try await theme(colors, dark: dark)
+            defer { board.releaseGlobally() }
+            for scenario in Scenario.allCases {
+                let (name, records, width) = scenario.configuration
+                let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: width, height: 780), styleMask: [.titled], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                window.colorSpace = .displayP3
+                let list = SidebarView()
+                list.captionDelay = 0
+                window.contentView = list
+                list.layer?.backgroundColor = colors.background.shifted(colors.sidebarShade).cgColor
+                var snapshot = sidebarChildrenFixture(records: records)
+                switch scenario {
+                case .waitCleared:
+                    snapshot.mapItems { if $0.id.number == 940 { $0.fixtureLifecycle = piLifecycle(); $0.pane.mark = .none_ } }
+                case .foldedSelected:
+                    snapshot.client = .init(session: .init(number: 0), window: .init(number: 824), pane: .init(number: 936))
+                case .sixPlus, .singleIdle:
+                    let count = scenario == .singleIdle ? 1 : 8
+                    let children = (1...count).map { index in fixtureNode(UInt32(index), "child-\(index)", piLifecycle(index == 1 ? .idle(.init()) : .running(.init())), mark: index == 1 ? .none_ : .running) }
+                    snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [fixtureNode(0, "Parent", piLifecycle(), children: children)])])
+                case .collapsed, .expanded, .narrow, .recordsCollapsed, .recordsExpanded, .hover: break
+                }
+                list.show(snapshot)
+                switch scenario {
+                case .expanded: list.visualSetExpanded(.pane(.init(number: 0), .init(number: 502)), true)
+                case .recordsExpanded: list.visualSetExpanded(.pane(.init(number: 0), .init(number: 3000)), true)
+                case .collapsed, .narrow, .recordsCollapsed, .waitCleared, .foldedSelected, .sixPlus, .singleIdle, .hover: break
+                }
+                if scenario == .hover, let index = list.visualRows.firstIndex(where: { if case .folded = $0.children { true } else { false } }),
+                   let cell = list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell {
+                    let event = try XCTUnwrap(NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil))
+                    cell.disclosure.mouseEntered(with: event)
+                }
+                sidebarSnapshot(list, "\(name)-\(side)")
+                window.close()
+            }
+        }
+        let fixture = try await ownerFixture()
+        let owner = fixture.owner, child = fixture.children[0]
+        owner.perform(.jump(.init(session: child.session, window: child.window, pane: child.pane)))
+        try await wait("child shown for full-window snapshot") {
+            guard let pane = owner.testSession?.pane(child.pane) else { return false }
+            return owner.testSession?.windows[WindowID(number: 1)]?.active == child.pane && self.surfaceText(pane).contains("Designing session cards")
+        }
+        func feed(split: Bool) -> Snapshot {
+            var snapshot = sidebarChildrenFixture()
+            snapshot.mapItems { item in
+                let original = item.id.number
+                if original == 502 { item.pane.id = PaneID(number: 1) }
+                if original == 937 { item.pane.id = PaneID(number: 2) }
+                if original == 936 { item.pane.id = child.pane; item.window = child.window; item.pane.parent = PaneID(number: 1) }
+                if item.window.number == 458 { item.window = WindowID(number: 1) }
+            }
+            for index in snapshot.sessions.indices { snapshot.sessions[index].id = index == 0 ? child.session : SessionID(number: UInt32(100 + index)) }
+            snapshot.sessions[0].nodes[1].group.id = WindowID(number: 1)
+            if split, let selected = owner.testModel?.selection.pane {
+                snapshot.sessions[0].nodes[1].group.children.insert(fixtureItem(selected.number, window: 1, "zsh", shellLifecycle()), at: 1)
+                snapshot.client = .init(session: child.session, window: WindowID(number: 1), pane: selected)
+            } else { snapshot.client = .init(session: child.session, window: child.window, pane: child.pane) }
+            return snapshot
+        }
+        for split in [false, true] {
+            if split {
+                owner.paneCommand(.split(.right), child.pane)
+                try await wait("new split is selected as a third root pane") {
+                    guard let model = owner.testModel, let selected = model.selection.pane, let panes = model.layout.layout.window(WindowID(number: 1))?.panes else { return false }
+                    return panes.count == 3 && panes.contains(selected) && selected.number > 2
+                }
+                let selected = try XCTUnwrap(owner.testModel?.selection.pane)
+                let input = fixture.dir + "/snapshot-input.json"
+                let text = "stty raw -echo; printf '\\033[2J\\033[H\\033[?25l~/Workspace/kido\\r\\n$ '; exec cat\n"
+                try JSONSerialization.data(withJSONObject: ["type": "paste", "text": text, "check_safe": false]).write(to: URL(fileURLWithPath: input))
+                try await ko(["api", "--input", input, "/panes/\(selected)/input"], dir: fixture.dir)
+                try JSONSerialization.data(withJSONObject: ["type": "text", "data": Data("\r".utf8).base64EncodedString()]).write(to: URL(fileURLWithPath: input))
+                try await ko(["api", "--input", input, "/panes/\(selected)/input"], dir: fixture.dir)
+                try await wait("split terminal executed the pasted command") {
+                    owner.testSession?.pane(selected).map { self.surfaceText($0).trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("~/Workspace/kido\n$") } == true
+                }
+            }
+            for dark in [false, true] {
+                try await theme(fixture.runtime, dark: dark)
+                for pane in owner.testSession?.windows.values.flatMap(\.panes) ?? [] where !pane.isHidden { await presentedFrame(pane) }
+                owner.testReceive(feed(split: split))
+                owner.sidebar.list.visualSetExpanded(.pane(child.session, .init(number: 1)), true)
+                owner.window.layoutIfNeeded()
+                owner.window.contentView?.layoutSubtreeIfNeeded()
+                owner.window.displayIfNeeded()
+                CATransaction.flush()
+                let content = try XCTUnwrap(owner.window.contentView?.superview)
+                let name = "\(split ? "split-adds-top-level-pane" : "stress-child-in-place")-\(dark ? "dark" : "light")"
+                checkSnapshot { verifySnapshot(of: content, as: .image, named: name, record: $0) }
+                let fullscreen = try fullscreenHostImage(owner, root: content)
+                checkSnapshot { verifySnapshot(of: fullscreen, as: .image, named: name + "-fullscreen", record: $0) }
+            }
+        }
+    }
+
+    func testServerRestartResetsSlotsExpansionsAndSurfaces() async throws {
+        let fixture = try await ownerFixture()
+        let owner = fixture.owner
+        let root = PaneID(number: 1), window = WindowID(number: 1)
+        let child = fixture.children[0]
+        try await ko(["api", "-X", "DELETE", "/panes/pane_2"], dir: fixture.dir)
+        try await wait("one root remains") { owner.testModel?.layout.layout.window(window)?.panes == [root] }
+        owner.perform(.jump(child))
+        try await wait("child shown before restart") { owner.testModel?.selection.pane == child.pane }
+        owner.paneCommand(.parent, child.pane)
+        try await wait("parent shown before restart") { owner.testModel?.selection.pane == root && (owner.testSession?.pane(root)?.visualRestores ?? 0) > 0 }
+        owner.sidebar.list.visualSetExpanded(.pane(child.session, root), true)
+        let old = try XCTUnwrap(owner.testSession?.pane(root))
+        let instance = try XCTUnwrap(owner.snapshot?.serverInstance)
+        try await ko(["kill-server"], dir: fixture.dir)
+        try await wait("fresh server root restored") {
+            owner.snapshot?.serverInstance != instance && owner.testModel?.selection.pane == root && owner.testSession?.pane(root) != nil
+        }
+        XCTAssertFalse(owner.testSession?.pane(root) === old)
+        for index in 0..<3 {
+            let input = fixture.dir + "/restart-child-\(index).json"
+            let body = KoSchema.CreatePane(command: .shell(.init(command: rawScript)), parent: root)
+            try JSONEncoder().encode(body).write(to: URL(fileURLWithPath: input))
+            try await ko(["api", "-X", "POST", "--input", input, "/panes"], dir: fixture.dir)
+        }
+        try await wait("new children in semantic snapshot") { owner.projection.items[root]?.item.children.count == 3 }
+        XCTAssertFalse(owner.sidebar.list.visualRows.contains { $0.target?.pane == PaneID(number: 4) })
+        owner.paneCommand(.child, root)
+        try await wait("restart uses first child rather than a reused remembered id") { owner.testModel?.selection.pane == PaneID(number: 4) }
+    }
+
+    func testFoldedDoneUsesTheRowCheckAndQuietKeepsItsSpace() throws {
+        let rows = sidebarRows(sidebarChildrenFixture()).rows
+        let parent = try XCTUnwrap(rows.first { $0.target?.pane == PaneID(number: 502) })
+        let waiting = try XCTUnwrap(rows.first { $0.target?.pane == PaneID(number: 940) })
+        guard case .folded(let first) = parent.children, case .folded(let second) = waiting.children else { return XCTFail("missing folded indicators") }
+        XCTAssertEqual(first.map(\.status), [.running, .done])
+        XCTAssertEqual(second.map(\.status), [.done, .quiet])
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 44, height: 12), styleMask: [], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .aqua)
+        defer { window.close() }
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 44, height: 12))
+        window.contentView = host
+        for (index, content) in [parent.children, waiting.children].enumerated() {
+            let control = SidebarDisclosure(SidebarFonts())
+            control.content = content
+            control.frame = NSRect(x: index * 24, y: 0, width: 20, height: 12)
+            host.addSubview(control)
+        }
+        host.displayIfNeeded()
+        checkSnapshot { verifySnapshot(of: host, as: .image, named: "done-check-and-idle-gap", record: $0) }
+    }
+
+    func testDisclosureControlsAndProgramRowsDoNotNavigate() throws {
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let list = SidebarView()
+        list.captionDelay = 0
+        window.contentView = list
+        var snapshot = sidebarChildrenFixture(records: true)
+        snapshot.mapItems { if $0.id.number == 3000 { $0.pane.status?.programStatus.records.append(.working(.init(id: "agent-b/nested", title: "Nested record"))) } }
+        list.show(snapshot)
+        var navigations = 0
+        list.navigate = { _, _ in navigations += 1 }
+        let root = try XCTUnwrap(list.visualRows.firstIndex { $0.target?.pane.number == 3000 })
+        let rootCell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: root, makeIfNecessary: true) as? SidebarCell)
+        rootCell.disclosure.performClick(nil)
+        let record = try XCTUnwrap(list.visualRows.firstIndex { if case .program(_, _, let id) = $0.id { id == Data("agent-b".utf8) } else { false } })
+        let recordCell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: record, makeIfNecessary: true) as? SidebarCell)
+        XCTAssertFalse(list.tableView(list.visualTable, shouldSelectRow: record))
+        XCTAssertTrue(recordCell.close.isHidden)
+        XCTAssertEqual(recordCell.accessibilityRole(), .group)
+        XCTAssertTrue(recordCell.disclosure.isAccessibilityElement())
+        recordCell.disclosure.performClick(nil)
+        XCTAssertTrue(list.visualRows.contains { $0.title == "Nested record" })
+        list.visualJump(list.visualRows[record])
+        XCTAssertEqual(navigations, 0)
+        list.visualSetExpanded(.pane(SessionID(number: 0), PaneID(number: 3000)), false)
+        XCTAssertFalse(list.visualRows.contains { $0.title == "Nested record" })
+        XCTAssertTrue(list.visualRows.contains { $0.title == "Approve test command" })
+        list.focus()
+        list.select(snapshot.client)
+        for (code, visible) in [(124, true), (123, false)] {
+            let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: UInt16(code)))
+            list.visualTable.keyDown(with: key)
+            XCTAssertEqual(list.visualRows.contains { $0.title == "Nested record" }, visible)
+            XCTAssertTrue(list.visualRows.contains { $0.title == "Approve test command" })
+        }
+        var hierarchy: [String] = []
+        list.paneCommand = { command, pane in
+            XCTAssertEqual(pane, snapshot.client.pane)
+            switch command { case .parent: hierarchy.append("parent"); case .child: hierarchy.append("child"); default: XCTFail("not a hierarchy command") }
+        }
+        for code: UInt16 in [125, 126] {
+            let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code))
+            list.visualTable.keyDown(with: key)
+        }
+        XCTAssertEqual(hierarchy, ["child", "parent"])
+        XCTAssertEqual(navigations, 0)
+    }
+
+    func testQueuedWindowSwitchesRestoreChildrenAndYieldToJumpsAndDisconnect() async throws {
+        let fixture = try await ownerFixture()
+        let owner = fixture.owner
+        func add(parent: PaneID? = nil) async throws -> Snapshot.Position {
+            var request: [String: Any] = ["session": fixture.children[0].session.description, "command": ["type": "shell", "command": "stty raw -echo; exec cat"]]
+            if let parent { request["parent"] = parent.description }
+            let input = fixture.dir + "/navigation-pane.json"
+            try JSONSerialization.data(withJSONObject: request).write(to: URL(fileURLWithPath: input))
+            let text = try await ko(["api", "-X", "POST", "--input", input, "/panes"], dir: fixture.dir)
+            return try JSONDecoder().decode(Snapshot.Position.self, from: Data(text.utf8))
+        }
+        let a = try await add(), b = try await add()
+        let childA = try await add(parent: a.pane), childB = try await add(parent: b.pane)
+        try await wait("three roots and their children", within: 5) { owner.navigation.windows.count == 3 && owner.testModel?.panes.count == 8 }
+        let order = owner.navigation.windows.map(\.id)
+        guard order.count == 3 else { return XCTFail("missing root tabs") }
+        let choices = [WindowID(number: 1): fixture.children[0], a.window: childA, b.window: childB]
+        let first = try XCTUnwrap(choices[order[0]]), middle = try XCTUnwrap(choices[order[1]]), last = try XCTUnwrap(choices[order[2]])
+        for target in [middle, last, first] {
+            owner.perform(.jump(target))
+            try await wait("remember child \(target.pane)", within: 5) { owner.testModel?.selection.pane == target.pane && owner.testNavigationIdle }
+            guard owner.testNavigationIdle, owner.testModel?.selection.pane == target.pane else { return }
+        }
+        owner.perform(.switchWindow(next: true))
+        owner.perform(.switchWindow(next: false))
+        try await wait("rapid next/previous restores the first tab's child", within: 5) { owner.testNavigationIdle && owner.testModel?.selection.pane == first.pane && owner.navigation.window == order[0] }
+        guard owner.testNavigationIdle, owner.testModel?.selection.pane == first.pane else { return }
+        let middleWindow = try XCTUnwrap(owner.testModel?.layout.layout.window(order[1]))
+        let middleRoot = Snapshot.Position(session: middle.session, window: order[1], pane: middleWindow.focus)
+        owner.perform(.switchWindow(next: true))
+        owner.perform(.jump(middleRoot))
+        owner.perform(.switchWindow(next: true))
+        try await wait("switch/jump/switch drains the canceled answer and restores the final child", within: 5) { owner.testNavigationIdle && owner.testModel?.selection.pane == last.pane && owner.navigation.window == order[2] }
+        guard owner.testNavigationIdle, owner.testModel?.selection.pane == last.pane else { return }
+        for target in [middle, first] {
+            owner.perform(.jump(target))
+            try await wait("restore child choice \(target.pane)", within: 5) { owner.testNavigationIdle && owner.testModel?.selection.pane == target.pane }
+            guard owner.testNavigationIdle, owner.testModel?.selection.pane == target.pane else { return }
+        }
+        owner.perform(.switchWindow(next: true))
+        owner.perform(.switchWindow(next: true))
+        try await wait("rapid double switch finishes on the third tab's child", within: 5) { owner.testNavigationIdle && owner.testModel?.selection.pane == last.pane && owner.navigation.window == order[2] }
+        guard owner.testNavigationIdle, owner.testModel?.selection.pane == last.pane else { return }
+        owner.perform(.switchWindow(next: true))
+        owner.perform(.switchWindow(next: true))
+        owner.perform(.jump(middle))
+        try await wait("jump cancels a pending switch and its queued direction", within: 5) { owner.testNavigationIdle && owner.testModel?.selection.pane == middle.pane }
+        guard owner.testNavigationIdle, owner.testModel?.selection.pane == middle.pane else { return }
+        var restored = false
+        owner.testRestoringChild = { [weak owner] pane in
+            guard let owner else { return }
+            owner.testRestoringChild = nil
+            XCTAssertEqual(pane, last.pane)
+            restored = true
+            owner.perform(.switchWindow(next: true))
+            owner.perform(.jump(first))
+        }
+        owner.perform(.switchWindow(next: true))
+        try await wait("jump during restoration wins", within: 5) { restored && owner.testNavigationIdle && owner.testModel?.selection.pane == first.pane }
+        guard restored, owner.testNavigationIdle, owner.testModel?.selection.pane == first.pane else { return }
+        var disconnected = false
+        owner.testRestoringChild = { [weak owner] pane in
+            guard let owner else { return }
+            owner.testRestoringChild = nil
+            XCTAssertEqual(pane, middle.pane)
+            disconnected = true
+            owner.testReceive(KoEvent.failed(code: KO_ERR_CLOSED, message: "test disconnect"))
+            XCTAssertTrue(owner.testNavigationIdle)
+            owner.testReceive(KoEvent.welcome(client: "client_1", fresh: false))
+            owner.testReceive(KoEvent.model)
+        }
+        owner.perform(.switchWindow(next: true))
+        owner.perform(.switchWindow(next: true))
+        try await wait("same-instance reconnect restores the child and drops queued switches", within: 5) { disconnected && owner.testNavigationIdle && owner.testModel?.selection.pane == middle.pane }
+    }
+
+    func testSelectingAChildRaisesItsOverlappingRootFloat() async throws {
+        let fixture = try await ownerFixture()
+        let owner = fixture.owner, child = fixture.children[1], root = WindowID(number: 1)
+        owner.perform(.jump(child))
+        try await wait("second slot shows its child") { owner.testModel?.selection.pane == child.pane }
+        owner.perform(.jump(fixture.children[0]))
+        try await wait("first child selected") { owner.testModel?.selection.pane == fixture.children[0].pane }
+        owner.paneCommand(.split(.right), fixture.children[0].pane)
+        try await wait("third root created") { owner.testModel?.layout.layout.window(root)?.panes.count == 3 && (owner.testModel?.selection.pane?.number ?? 0) > 4 }
+        let upper = try XCTUnwrap(owner.testModel?.selection.pane)
+        for (pane, x, y) in [(PaneID(number: 2), 5, 2), (upper, 8, 4)] {
+            let edit = KoSchema.Edit.float(.init(cols: 35, pane: pane, rows: 10, x: x, y: y))
+            try await ko(["layout", "edit", String(decoding: JSONEncoder().encode(edit), as: UTF8.self)], dir: fixture.dir)
+        }
+        try await wait("two overlapping root floats") { owner.testModel?.layout.layout.window(root)?.floats.map(\.pane) == [PaneID(number: 2), upper] }
+        let view = try XCTUnwrap(owner.testSession?.pane(child.pane))
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: view.convert(NSPoint(x: 4, y: 4), to: nil), modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        view.mouseDown(with: event)
+        try await wait("the child is selected and its root float is raised") {
+            owner.testModel?.selection.pane == child.pane && owner.testModel?.layout.layout.window(root)?.floats.last?.pane == PaneID(number: 2)
+        }
+        XCTAssertEqual(owner.testModel?.layout.layout.window(child.window)?.panes, [child.pane])
+    }
+
+    func testSlotNavigationSizingAndClose() async throws {
+        let fixture = try await ownerFixture()
+        let owner = fixture.owner
+        let first = fixture.children[0], second = fixture.children[1]
+        let root = WindowID(number: 1)
+        let inheritedDirectory = URL(fileURLWithPath: fixture.dir + "/child-work-2").resolvingSymlinksInPath().path
+        func directory(_ pane: PaneID) -> String? { owner.testModel?.pane(pane).map { URL(fileURLWithPath: $0.cwd).resolvingSymlinksInPath().path } }
+        for child in [first, second] {
+            owner.perform(.jump(.init(session: child.session, window: child.window, pane: child.pane)))
+            try await wait("child selected in its root slot") {
+                owner.testModel?.selection.pane == child.pane && owner.testSession?.windows[root]?.panes.contains { $0.pane == child.pane } == true
+            }
+        }
+        XCTAssertEqual(owner.navigation.window, root)
+        XCTAssertEqual(owner.testSession?.windows.count, 1)
+        func fitted() -> Bool {
+            guard let model = owner.testModel, let window = model.layout.layout.window(root), let view = owner.testSession?.windows[root] else { return false }
+            let layout = Layout(window, visible: true)
+            return zip([PaneID(number: 1), PaneID(number: 2)], fixture.children).allSatisfy { root, child in
+                guard let slot = layout.root.panes.first(where: { $0.id == root }), let server = model.layout.layout.window(child.window), let pane = view.panes.first(where: { $0.pane == child.pane }) else { return false }
+                return server.cols == slot.geometry.width && server.rows == slot.geometry.height && Int(pane.geometry.columns) == server.cols && Int(pane.geometry.rows) == server.rows
+            }
+        }
+        try await wait("both child ptys and surfaces fit their own slots") { fitted() }
+        let display = try XCTUnwrap(owner.testSession)
+        let sendSize = display.sizeClient
+        var reports: [[WindowID]] = []
+        display.sizeClient = { viewport, windows in reports.append(windows.map(\.window)); return sendSize(viewport, windows) }
+        defer { display.sizeClient = sendSize }
+        display.resetSizeReport()
+        let rename = KoSchema.Edit.renameSession(.init(name: "resumed", session: first.session))
+        try await ko(["layout", "edit", String(decoding: JSONEncoder().encode(rename), as: UTF8.self)], dir: fixture.dir)
+        try await wait("unchanged layout resends complete sizing after Welcome reset") { !reports.isEmpty }
+        XCTAssertEqual(Set(try XCTUnwrap(reports.last)), Set([root, first.window, second.window]))
+        XCTAssertTrue(owner.testSession?.windows[root]?.panes.contains { $0.pane == first.pane } == true)
+        owner.perform(.jump(first))
+        try await wait("first child selected before command source changes") { owner.testModel?.selection.pane == first.pane }
+        owner.perform(.jump(second))
+        owner.paneCommand(.newWindow, second.pane)
+        try await wait("new tab from shown child") { owner.navigation.window != root && owner.testModel?.selection.pane != second.pane }
+        let createdWindow = try XCTUnwrap(owner.navigation.window)
+        let createdPane = try XCTUnwrap(owner.testModel?.selection.pane)
+        XCTAssertEqual(directory(createdPane), inheritedDirectory)
+        let cold = try XCTUnwrap(owner.testSession?.windows[root])
+        cold.evict()
+        reports.removeAll()
+        owner.perform(.selectWindow(first.session, root))
+        try await wait("tab return restores focused slot and both cold choices") {
+            owner.testModel?.selection.pane == second.pane && owner.testSession?.windows[root]?.panes.count == 2 && reports.contains { $0.contains(root) }
+        }
+        XCTAssertEqual(Set(try XCTUnwrap(reports.first { $0.contains(root) })), Set([root, first.window, second.window]))
+        XCTAssertTrue(owner.testSession?.windows[root]?.panes.contains { $0.pane == first.pane } == true)
+        try await ko(["api", "-X", "DELETE", "/windows/\(createdWindow)"], dir: fixture.dir)
+        try await wait("temporary tab removed") { owner.testModel?.layout.layout.window(createdWindow) == nil }
+        owner.window.setContentSize(NSSize(width: 1140, height: 780))
+        try await wait("children follow slot resize") { fitted() }
+        let peer = try KoClient(socket: fixture.dir + "/socket", hello: KoHello(focused: true, viewport: KoSize(cols: 80, rows: 24, cell: nil))) { _ in }
+        addTeardownBlock { @MainActor in peer.close() }
+        try await wait("competing sizing client joined") { (try? peer.model()) != nil }
+        try peer.size(viewport: KoSize(cols: 127, rows: 57, cell: nil), windows: [KoWindowSize(window: first.window, size: KoSize(cols: 127, rows: 57, cell: nil))])
+        try await wait("nonowner surface keeps the competing authoritative grid") {
+            guard let pane = owner.testSession?.pane(first.pane), let model = owner.testModel else { return false }
+            return model.layout.layout.window(first.window)?.cols == 127 && Int(pane.geometry.columns) == 127 && Int(pane.geometry.rows) == 57
+        }
+        let previousColumns = owner.testModel?.layout.layout.window(root)?.cols
+        owner.window.setContentSize(NSSize(width: 1160, height: 790))
+        try await wait("root resizes without stealing the child") { owner.testModel?.layout.layout.window(root)?.cols != previousColumns && owner.testModel?.layout.layout.window(first.window)?.cols == 127 }
+        peer.close()
+        try owner.testClient?.focus(true)
+        try await wait("focus reclaims the released child at its slot size") { fitted() }
+        let pixels = owner.testModel?.layout.layout.window(root)?.cellPx
+        let session = try XCTUnwrap(owner.testSession)
+        session.fontChanged(session.font + 1)
+        try await wait("font changes report both child grids and cell pixels") {
+            guard let model = owner.testModel, let rootPixels = model.layout.layout.window(root)?.cellPx, rootPixels != pixels else { return false }
+            return fitted() && fixture.children.allSatisfy { model.layout.layout.window($0.window)?.cellPx == rootPixels }
+        }
+        owner.paneCommand(.zoom, second.pane)
+        try await wait("zoom addresses the root slot and withdraws the hidden child") {
+            owner.testModel?.layout.layout.window(root)?.zoom == PaneID(number: 2) && reports.last.map { Set($0) == Set([root, second.window]) } == true
+        }
+        owner.paneCommand(.zoom, second.pane)
+        try await wait("unzoom restores the independent child memberships") {
+            owner.testModel?.layout.layout.window(root)?.zoom == nil && fitted() && reports.last.map { Set($0) == Set([root, first.window, second.window]) } == true
+        }
+        XCTAssertFalse(owner.sidebar.list.visualRows.contains { $0.target?.pane == second.pane })
+        owner.sidebar.list.visualSetExpanded(.pane(second.session, PaneID(number: 2)), true)
+        XCTAssertTrue(owner.sidebar.list.visualRows.contains { $0.target?.pane == second.pane && $0.focused })
+        owner.sidebar.list.visualSetExpanded(.pane(first.session, PaneID(number: 1)), true)
+        XCTAssertTrue(owner.sidebar.list.visualRows.contains { $0.target?.pane == first.pane && !$0.focused })
+        for dark in [false, true] {
+            try await theme(fixture.runtime, dark: dark)
+            for pane in owner.testSession?.windows[root]?.panes ?? [] { await presentedFrame(pane) }
+            owner.window.layoutIfNeeded()
+            owner.window.contentView?.layoutSubtreeIfNeeded()
+            owner.window.displayIfNeeded()
+            CATransaction.flush()
+            let content = try XCTUnwrap(owner.window.contentView?.superview)
+            checkSnapshot { verifySnapshot(of: content, as: .image, named: "unfocused-shown-child-\(dark ? "dark" : "light")", record: $0) }
+        }
+        owner.sidebar.list.visualSetExpanded(.pane(second.session, PaneID(number: 2)), false)
+        XCTAssertFalse(owner.sidebar.list.visualRows.contains { $0.target?.pane == second.pane })
+        XCTAssertEqual(owner.testModel?.selection.pane, second.pane)
+        let replaced = try XCTUnwrap(owner.testSession?.pane(second.pane))
+        owner.paneCommand(.parent, second.pane)
+        try await wait("up restores second root") { owner.testModel?.selection.pane == PaneID(number: 2) }
+        XCTAssertTrue(replaced.chromeViews.allSatisfy { $0.superview == nil })
+        XCTAssertNil(replaced.scroller.superview)
+        owner.paneCommand(.child, PaneID(number: 2))
+        try await wait("down restores remembered second child") { owner.testModel?.selection.pane == second.pane }
+        let previousRoots = Set(owner.testModel?.layout.layout.window(root)?.panes ?? [])
+        owner.paneCommand(.split(.right), second.pane)
+        try await wait("split adds a root pane and keeps both child windows singleton") {
+            guard let model = owner.testModel else { return false }
+            guard let selected = model.selection.pane, !previousRoots.contains(selected), model.layout.layout.window(root)?.panes.contains(selected) == true else { return false }
+            return model.layout.layout.window(root)?.panes.count == 3 && model.layout.layout.window(second.window)?.panes == [second.pane] && owner.testSession?.windows[root]?.panes.contains { $0.pane == second.pane } == true
+        }
+        let splitPane = try XCTUnwrap(owner.testModel?.selection.pane)
+        XCTAssertEqual(directory(splitPane), inheritedDirectory)
+        let body = KoSchema.CreatePane(command: .shell(.init(command: rawScript)), parent: first.pane)
+        let input = fixture.dir + "/grandchild.json"
+        try JSONEncoder().encode(body).write(to: URL(fileURLWithPath: input))
+        let reply = try await ko(["api", "-X", "POST", "--input", input, "/panes"], dir: fixture.dir)
+        let grandchild = try JSONDecoder().decode(Snapshot.Position.self, from: Data(reply.utf8))
+        try await wait("grandchild in semantic snapshot") { PaneProjection(owner.snapshot).placements[grandchild.pane] != nil }
+        owner.perform(.jump(grandchild))
+        try await wait("grandchild focused in the same root slot") { owner.testModel?.selection.pane == grandchild.pane && owner.testSession?.windows[root]?.active == grandchild.pane }
+        let shown = try XCTUnwrap(owner.testSession?.pane(grandchild.pane))
+        try await wait("grandchild view restored") { shown.visualRestores > 0 && shown.visualReady }
+        shown.paste("CHILD-INPUT-TARGET")
+        try await wait("paste reaches the shown grandchild") { self.surfaceText(shown).contains("CHILD-INPUT-TARGET") }
+        XCTAssertFalse(owner.testSession?.pane(second.pane).map { surfaceText($0).contains("CHILD-INPUT-TARGET") } == true)
+        owner.paneCommand(.close, first.pane)
+        XCTAssertTrue(owner.preparedAlert?.alert.informativeText.contains("2 panes") == true)
+        owner.respondToAlert(.alertSecondButtonReturn)
+        try await wait("close cancelled") { owner.window.attachedSheet == nil }
+        XCTAssertNotNil(owner.testModel?.pane(first.pane))
+        XCTAssertNotNil(owner.testModel?.pane(grandchild.pane))
+        owner.paneCommand(.close, first.pane)
+        owner.respondToAlert(.alertFirstButtonReturn)
+        try await wait("closed child restores its root slot") {
+            owner.testModel?.pane(first.pane) == nil && owner.testModel?.pane(grandchild.pane) == nil && owner.testSession?.windows[root]?.panes.contains { $0.pane == PaneID(number: 1) } == true
+        }
+    }
+}

@@ -370,6 +370,7 @@ pub(crate) struct Hello {
     pub(crate) selection: Value,
     pub(crate) focused: bool,
     pub(crate) size: Value,
+    pub(crate) windows: Vec<Value>,
 }
 
 pub(crate) fn tagged(text: &str) -> Option<(String, Value)> {
@@ -379,10 +380,8 @@ pub(crate) fn tagged(text: &str) -> Option<(String, Value)> {
 
 pub(crate) const PROTOCOL: &str = "1.0";
 
-pub(crate) fn size_request(size: Value) -> Value {
-    let mut request = size;
-    request["type"] = json!("size");
-    request
+pub(crate) fn size_request(window: &str, size: Value) -> Value {
+    json!({"type": "size", "sizing": {"type": "windows", "viewport": size, "windows": [{"window": window, "size": size}]}})
 }
 
 #[derive(Debug)]
@@ -1136,7 +1135,7 @@ impl Server {
             "type": "hello",
             "name": "test",
             "focused": hello.focused,
-            "size": hello.size,
+            "sizing": {"type": "windows", "viewport": hello.size, "windows": hello.windows.iter().map(|window| json!({"window": window, "size": hello.size})).collect::<Vec<_>>() },
         });
         if let Value::Object(fields) = hello.selection {
             for (name, value) in fields {
@@ -1153,6 +1152,7 @@ impl Server {
             selection,
             focused: true,
             size: size(80, 24),
+            windows: Vec::new(),
         })
     }
 
@@ -1166,12 +1166,19 @@ impl Server {
             selection,
             focused,
             size: size(cols, rows),
+            windows: Vec::new(),
         })
     }
 
     fn joined(&self, hello: Hello) -> (Ws, Value) {
+        let viewport = hello.size.clone();
         let mut ws = self.hello(hello);
-        let welcome = ws.welcome();
+        let welcome = ws.event("welcome");
+        ws.event("layout");
+        let selected = ws.event("selected");
+        if let Some(window) = selected["window"].as_str() {
+            ws.send(&size_request(window, viewport));
+        }
         (ws, welcome)
     }
 

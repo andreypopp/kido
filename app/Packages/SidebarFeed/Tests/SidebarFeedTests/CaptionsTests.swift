@@ -1,17 +1,36 @@
 import Testing
 @testable import SidebarFeed
 
+@Test func captionDebounceKeepsTheFoldedLineAndRebuildsTheBracket() {
+    func rows(_ text: String) -> [SidebarRow] {
+        sidebarRows(makeSnapshot([group(0, [pane(0, lifecycle: agent(working(), msg: text), mark: .running, children: [pane(1, parent: 0)]), pane(2, window: 0)])])).rows
+    }
+    var captions = SidebarCaptions()
+    let initial = captions.apply(rows("busy"), now: 0, delay: 1)
+    #expect(initial[1].height == 54)
+    #expect(initial[1].childrenY == 37)
+    #expect(initial[1].guides == [.init(x: 5, top: 10, bottom: 54)])
+    let held = captions.apply(rows(""), now: 0.1, delay: 1)
+    #expect(held[1].height == 54)
+    #expect(held[1].childrenY == 37)
+    let cleared = captions.apply(rows(""), now: 1.2, delay: 1)
+    #expect(cleared[1].height == 40)
+    #expect(cleared[1].childrenY == 23)
+    #expect(cleared[1].guides == [.init(x: 5, top: 10, bottom: 40)])
+    #expect(cleared[2].guides == [.init(x: 5, top: 0, bottom: 18)])
+}
+
 @Test func captionTransitions() {
     var captions = SidebarCaptions()
     func rows(_ text: String) -> [SidebarRow] {
-        [SidebarRow(id: .pane(.init(number: 0), .init(number: 0)), kind: .pane(nil), indent: 0,
-                    height: text.isEmpty ? 32 : 48, title: "Title", tail: text,
+        [SidebarRow(id: .pane(.init(number: 0), .init(number: 0)), kind: .program(.leaf), indent: 0,
+                    title: "Title", tail: text,
                     status: .running, focused: false)]
     }
     func check(_ raw: String, _ time: Double, _ shown: String) {
         let row = captions.apply(rows(raw), now: time, delay: 0.2)[0]
         #expect(row.tail == shown)
-        #expect(row.height == (shown.isEmpty ? 32 : 48))
+        #expect(row.height == (shown.isEmpty ? 28 : 42))
     }
     check("A", 0, "A")
     check("", 1, "A")

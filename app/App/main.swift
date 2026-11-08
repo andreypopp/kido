@@ -159,7 +159,7 @@ import SidebarFeed
             guard let pending = pendingJumps[host] else { return }
             if pending.deadline <= Date() || snapshot.serverInstance != pending.target.instance {
                 pendingJumps.removeValue(forKey: host)
-            } else if sidebarRows(snapshot).contains(where: { $0.target?.pane == pending.target.position.pane }) {
+            } else if owner.projection.placements[pending.target.position.pane] != nil {
                 pendingJumps.removeValue(forKey: host)
                 route(pending.target)
             }
@@ -186,7 +186,7 @@ import SidebarFeed
         else { return }
         let candidates = owners.filter { $0.alive && $0.host == host }
         let containing = candidates.filter {
-            $0.snapshot?.serverInstance == target.instance && sidebarRows($0.snapshot).contains { $0.target?.pane == target.position.pane }
+            $0.snapshot?.serverInstance == target.instance && $0.projection.placements[target.position.pane] != nil
         }
         let inSession = containing.filter { $0.snapshot?.client.session == target.position.session }
         let owner = inSession.first { $0.window.isKeyWindow } ?? inSession.first
@@ -476,7 +476,7 @@ import SidebarFeed
             guard let self, let panel else { return }
             if let entry = panel.palette.selectedEntry, entry.promptable, entry.check() == nil, case .pane(let position) = entry.id,
                let owner = paletteFocus?.owner,
-               let source = owner.promptSource(session: position.session, window: position.window, pane: position.pane, quote: nil, preselect: position.pane) {
+               let source = owner.promptSource(position, quote: nil, preselect: position.pane) {
                 panel.palette.enter(.prompt(source))
             } else if let pane = PaneView.owner(paletteFocus?.responder) {
                 pane.openPrompt()
@@ -588,8 +588,8 @@ import SidebarFeed
     }
 
     func openPrompt(owner: WindowOwner, pane: PaneView, quote: String?) {
-        guard let session = owner.currentSession, let window = pane.windowID,
-              let source = owner.promptSource(session: session.id, window: window, pane: pane.pane, quote: quote) else { return }
+        guard let position = owner.projection.placements[pane.pane]?.position,
+              let source = owner.promptSource(position, quote: quote) else { return }
         resolvePrompt(source, panel: palettePanel, responder: pane)
     }
 

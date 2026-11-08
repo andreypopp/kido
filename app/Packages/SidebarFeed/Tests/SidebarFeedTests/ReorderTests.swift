@@ -28,9 +28,9 @@ private func tree(instance: Int = 12345, sessions: [Int] = [0, 1]) -> Snapshot {
 
 @Test func rootMovesWithItsWholeSubtree() throws {
     let snapshot = tree()
-    let rows = sidebarRows(snapshot).filter { $0.id.session == s0 }
+    let rows = expandedRows(snapshot).filter { $0.id.session == s0 }
     let moved = try #require(snapshot.reordered(.window(s0, w(0), relativeTo: w(6), .after)))
-    let after = sidebarRows(moved).filter { $0.id.session == s0 }
+    let after = expandedRows(moved).filter { $0.id.session == s0 }
     func block(_ rows: [SidebarRow], _ root: UInt32) -> [SidebarRow] { rows.filter { $0.root == w(root) } }
     #expect(block(rows, 0).count == 4, "pane, its program record, and two nested runs")
     #expect(block(rows, 3).count == 3, "both group panes and the group's nested run")
@@ -127,9 +127,11 @@ private func tree(instance: Int = 12345, sessions: [Int] = [0, 1]) -> Snapshot {
 
 @Test func navigationFollowsSnapshotRoots() throws {
     let snapshot = tree()
-    let projection = sidebarWindows(snapshot, session: s0, surviving: Set(([0, 1, 2, 3, 6, 8] as [UInt32]).map(w)))
+    let projection = sidebarWindows(snapshot, projection: PaneProjection(snapshot), session: s0, surviving: Set(([0, 1, 2, 3, 6, 8] as [UInt32]).map(w)))
     #expect(projection.order == [w(0), w(3), w(6)])
-    let orphan = sidebarWindows(snapshot, session: s0, surviving: [w(1), w(6)])
+    var orphaned = snapshot
+    orphaned.sessions[0].nodes = [snapshot.sessions[0].nodes[0].children[0], snapshot.sessions[0].nodes[2]]
+    let orphan = sidebarWindows(orphaned, projection: PaneProjection(orphaned), session: s0, surviving: [w(1), w(6)])
     #expect(orphan.order == [w(1), w(6)], "an orphaned run is ordered where its subtree sits")
     #expect(arranged([w(6), w(8), w(3), w(0)], by: projection.order, \.self) == [w(0), w(8), w(3), w(6)],
             "a window the snapshot has not reported keeps its inventory slot")

@@ -94,7 +94,7 @@ fn lifecycle_logs_rotate_and_input_logs_contain_only_counts() {
 fn a_bad_client_hello_reports_the_decode_error_before_closing() {
     let s = start(&[]);
     let mut client = s.ws("/client");
-    client.send(&json!({"type": "hello", "focused": false, "size": {"cols": 80, "rows": 24}}));
+    client.send(&json!({"type": "hello", "focused": false, "sizing": {"type": "disabled"}}));
     let refusal = client.event("refused");
     assert_eq!(refusal["message"], "missing field `name`");
     client.closed("the refused hello");
@@ -121,7 +121,7 @@ fn a_tree_scaled_down_to_one_column_for_each_pane_and_back() {
     assert_eq!(tree(&smallest), "h[1:1x3 2:1x3 v[3:1x1 4:1x1] 5:1x3]");
     ptys_follow(&s, &smallest);
 
-    c.send(&size_request(size(100, 30)));
+    c.send(&size_request("window_1", size(100, 30)));
     wait_doc("the window at 100x30", &s, |d| {
         window_size(d, 0) == (100, 30)
     });
@@ -129,7 +129,7 @@ fn a_tree_scaled_down_to_one_column_for_each_pane_and_back() {
     assert_eq!(consistent(&windows(&grown)[0]["tree"]), (100, 30));
     ptys_follow(&s, &grown);
 
-    c.send(&size_request(size(1, 1)));
+    c.send(&size_request("window_1", size(1, 1)));
     wait_doc("the window at its smallest size again", &s, |d| {
         window_size(d, 0) == (7, 3)
     });
@@ -209,6 +209,135 @@ fn a_connected_client_learns_the_pid_of_a_pane_when_it_becomes_ready() {
 }
 
 #[test]
+fn one_client_sizes_each_reported_window_independently_of_its_selection() {
+    let s = start(&[]);
+    let parent = crate::panes::post(
+        &s,
+        None,
+        "/panes",
+        &json!({"command": {"type": "shell", "command": "exec /bin/sh"}}),
+    );
+    let child = crate::panes::post(
+        &s,
+        None,
+        "/panes",
+        &json!({"parent": parent["pane"], "command": {"type": "shell", "command": "exec /bin/sh"}}),
+    );
+    let sibling = crate::panes::post(
+        &s,
+        None,
+        "/panes",
+        &json!({"parent": parent["pane"], "command": {"type": "shell", "command": "exec /bin/sh"}}),
+    );
+    let mut client = s.ws("/client");
+    client.send(&json!({"type": "hello", "name": "test", "pane": child["pane"], "focused": true, "sizing": {"type": "windows", "viewport": size(120, 40), "windows": []}}));
+    client.welcome();
+    let before = s.doc()["revision"].as_u64().unwrap();
+    let mut report = json!({"type": "size", "sizing": {"type": "windows", "viewport": size(120, 40), "windows": [
+        {"window": parent["window"], "size": size(120, 40)},
+        {"window": child["window"], "size": size(35, 12)},
+        {"window": sibling["window"], "size": size(60, 20)}
+    ]}});
+    client.send(&report);
+    let event = client.event("layout");
+    assert_eq!(event["revision"], before + 1);
+    let dimensions = |doc: &Value, id: &Value| {
+        let window = windows(doc)
+            .into_iter()
+            .find(|window| window["id"] == *id)
+            .unwrap();
+        (
+            window["cols"].as_u64().unwrap(),
+            window["rows"].as_u64().unwrap(),
+        )
+    };
+    wait_doc("all reported sizes", &s, |doc| {
+        dimensions(doc, &parent["window"]) == (120, 40)
+            && dimensions(doc, &child["window"]) == (35, 12)
+            && dimensions(doc, &sibling["window"]) == (60, 20)
+    });
+    assert_eq!(
+        s.sttys(&[
+            parent["pane"].as_str().unwrap(),
+            child["pane"].as_str().unwrap(),
+            sibling["pane"].as_str().unwrap()
+        ]),
+        vec![(40, 120), (12, 35), (20, 60)]
+    );
+    report["sizing"]["windows"][1]["size"] = size(39, 14);
+    client.send(&report);
+    wait_doc("only the child resize", &s, |doc| {
+        dimensions(doc, &parent["window"]) == (120, 40)
+            && dimensions(doc, &child["window"]) == (39, 14)
+            && dimensions(doc, &sibling["window"]) == (60, 20)
+    });
+    let mut peer = s.ws("/client");
+    peer.send(&json!({"type": "hello", "name": "peer", "pane": sibling["pane"], "focused": true, "sizing": {"type": "windows", "viewport": size(90, 30), "windows": [{"window": child["window"], "size": size(51, 21)}]}}));
+    peer.welcome();
+    wait_doc("peer claims its reported child", &s, |doc| {
+        dimensions(doc, &child["window"]) == (51, 21)
+    });
+    report["sizing"]["windows"][0]["size"] = size(121, 41);
+    report["sizing"]["windows"][1]["size"] = size(40, 15);
+    client.send(&report);
+    let deadline = std::time::Instant::now() + crate::harness::DEADLINE;
+    let event = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no retained report resize"
+        );
+        let event = client.event("layout");
+        if dimensions(&event, &parent["window"]) == (121, 41) {
+            break event;
+        }
+    };
+    assert_eq!(dimensions(&event, &parent["window"]), (121, 41));
+    assert_eq!(dimensions(&event, &child["window"]), (51, 21));
+    peer.send(&json!({"type": "size", "sizing": {"type": "disabled"}}));
+    peer.send(&json!({"type": "select", "pane": sibling["pane"]}));
+    peer.event("selected");
+    report["sizing"]["windows"][0]["size"] = size(122, 42);
+    client.send(&report);
+    let event = client.event("layout");
+    assert_eq!(dimensions(&event, &parent["window"]), (122, 42));
+    assert_eq!(dimensions(&event, &child["window"]), (51, 21));
+    client.send(&json!({"type": "focused", "focused": true}));
+    wait_doc("focus reclaims the released child", &s, |doc| {
+        dimensions(doc, &child["window"]) == (40, 15)
+    });
+    report["sizing"]["windows"][0]["size"] = size(123, 43);
+    report["sizing"]["windows"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"window": "window_999999", "size": size(2, 2)}));
+    client.send(&report);
+    client.send(&json!({"type": "select", "pane": parent["pane"]}));
+    assert_eq!(client.event("selected")["pane"], parent["pane"]);
+    assert_eq!(dimensions(&s.doc(), &parent["window"]), (123, 43));
+    let mut invalid = s.ws("/client");
+    invalid.send(&json!({"type": "hello", "name": "invalid", "focused": true, "sizing": {"type": "disabled"}}));
+    invalid.welcome();
+    let before = s.doc();
+    invalid.send(&json!({"type": "size", "sizing": {"type": "windows", "viewport": size(1, 1), "windows": [
+        {"window": parent["window"], "size": size(1, 1)}, {"window": parent["window"], "size": size(2, 2)}
+    ]}}));
+    invalid.closed("duplicate window ids were accepted");
+    let after = s.doc();
+    assert_eq!(after["layout"], before["layout"]);
+    assert_eq!(after["revision"], before["revision"]);
+    client.send(&json!({"type": "select", "pane": child["pane"]}));
+    client.event("selected");
+    let created = crate::panes::post(
+        &s,
+        None,
+        "/panes",
+        &json!({"command": {"type": "shell", "command": "exec /bin/sh"}}),
+    );
+    assert_eq!(dimensions(&s.doc(), &created["window"]), (120, 40));
+    assert_eq!(s.stty(created["pane"].as_str().unwrap()), (40, 120));
+}
+
+#[test]
 fn two_clients_on_one_window_follow_the_focused_one_and_the_window_keeps_its_size() {
     let s = start(&[]);
     one_window(&s, new());
@@ -217,7 +346,7 @@ fn two_clients_on_one_window_follow_the_focused_one_and_the_window_keeps_its_siz
         window_size(d, 0) == (100, 30)
     });
     let (mut b, _) = s.app_client(json!({"pane": "pane_1"}), false, (60, 20));
-    b.send(&size_request(size(61, 21)));
+    b.send(&size_request("window_1", size(61, 21)));
     assert_eq!(
         s.stty("pane_1"),
         (30, 100),
@@ -232,7 +361,7 @@ fn two_clients_on_one_window_follow_the_focused_one_and_the_window_keeps_its_siz
     assert_eq!(s.stty("pane_1"), (21, 61));
 
     drop(a);
-    b.send(&size_request(size(70, 22)));
+    b.send(&size_request("window_1", size(70, 22)));
     wait_doc("the sizing client's new size", &s, |d| {
         window_size(d, 0) == (70, 22)
     });
@@ -251,15 +380,16 @@ fn two_clients_on_one_window_follow_the_focused_one_and_the_window_keeps_its_siz
         selection: json!({"pane": "pane_1"}),
         focused: true,
         size: size(50, 10),
+        windows: vec![json!("window_1")],
     });
     terminal.welcome();
-    terminal.send(&size_request(size(51, 11)));
+    terminal.send(&size_request("window_1", size(51, 11)));
     wait_doc("the terminal client sizes the split window", &s, |d| {
         window_size(d, 0) == (51, 11)
     });
     assert_eq!(consistent(&windows(&s.doc())[0]["tree"]), (51, 11));
     let (mut late, _) = s.app_client(json!({"pane": "pane_1"}), true, (90, 40));
-    late.send(&size_request(size(91, 41)));
+    late.send(&size_request("window_1", size(91, 41)));
     wait_doc("the app client's size", &s, |d| {
         window_size(d, 0) == (91, 41)
     });
@@ -329,7 +459,7 @@ fn a_swept_child_selects_its_parent_or_the_existing_window_fallback() {
         {"name": "children", "windows": [{"name": "fallback", "tree": new()}]},
         {"name": "parent", "windows": [{"name": "parent", "tree": new()}]}
     ]}}));
-    let child = |parent| {
+    let exiting = |parent: Option<&str>| {
         json!({"pane": {"new": {
             "command": {"type": "argv", "argv": ["/bin/sh", "-c", "printf READY; read line; exit 0"]},
             "parent": parent, "close": "on_exit"
@@ -339,7 +469,7 @@ fn a_swept_child_selects_its_parent_or_the_existing_window_fallback() {
         layout["sessions"][0]["windows"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"name": "child", "tree": child("pane_2")}));
+            .push(json!({"name": "child", "tree": exiting(Some("pane_2"))}));
     });
     let (mut c, _) = s.app_client(json!({"pane": "pane_3"}), true, (80, 24));
     poll("the child is ready", || {
@@ -359,11 +489,11 @@ fn a_swept_child_selects_its_parent_or_the_existing_window_fallback() {
         layout["sessions"][0]["windows"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"name": "split child", "tree": split("h", vec![child("pane_2"), new()])}));
+            .push(json!({"name": "fallback", "tree": split("h", vec![exiting(None), new()])}));
     });
     c.send(&json!({"type": "select", "pane": "pane_4"}));
     assert_eq!(c.event("selected")["pane"], "pane_4");
-    poll("the split child is ready", || {
+    poll("the root pane is ready", || {
         s.request("GET", "/panes/pane_4/screen", None, 200)
             .contains("READY")
     });
@@ -380,14 +510,13 @@ fn a_swept_child_selects_its_parent_or_the_existing_window_fallback() {
         layout["sessions"][0]["windows"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"name": "orphan", "tree": child("pane_2")}));
+            .push(json!({"name": "orphan", "tree": exiting(Some("pane_2"))}));
     });
     c.send(&json!({"type": "focused", "focused": true}));
     c.send(&json!({"type": "select", "pane": "pane_6"}));
     assert_eq!(c.event("selected")["pane"], "pane_6");
     s.delete("/panes/pane_2").ok();
-    assert!(s.has_pane("pane_6"));
-    c.send(&json!({"type": "focused", "focused": false}));
+    assert!(!s.has_pane("pane_6"));
     assert_eq!(
         c.event("selected"),
         json!({"type": "selected", "session": "session_1", "window": "window_1", "pane": "pane_1"})
@@ -593,6 +722,7 @@ fn a_pane_knows_its_pixel_size_from_the_cell_size_of_the_sizing_client() {
         selection: json!({"pane": first}),
         focused: true,
         size: json!({"cols": 100, "rows": 30, "cell_px": {"width": 16, "height": 35}}),
+        windows: vec![json!("window_1")],
     });
     client.welcome();
     wait_doc("the client's size", &s, |d| window_size(d, 0) == (100, 30));
@@ -614,6 +744,7 @@ fn a_pane_knows_its_pixel_size_from_the_cell_size_of_the_sizing_client() {
     probe(&s, &first, 2, (panes[0].2, panes[0].1), (16, 35));
 
     client.send(&size_request(
+        "window_1",
         json!({"cols": 100, "rows": 30, "cell_px": {"width": 9, "height": 20}}),
     ));
     wait_doc("the new cell size", &s, |d| {
@@ -632,6 +763,7 @@ fn a_new_pane_reports_its_size_to_a_program_that_asks_at_startup() {
         selection: json!({"pane": first}),
         focused: true,
         size: json!({"cols": 69, "rows": 28, "cell_px": {"width": 16, "height": 35}}),
+        windows: vec![json!("window_1")],
     });
     client.welcome();
     wait_doc("the client's size", &s, |d| window_size(d, 0) == (69, 28));

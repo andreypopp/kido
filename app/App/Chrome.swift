@@ -13,7 +13,6 @@ enum Chrome {
     static var statusWaiting: NSColor { .systemOrange }
     static var statusError: NSColor { .systemRed }
     static var errorText: NSColor { .systemRed }
-    static var statusQuiet: NSColor { NSColor.secondaryLabelColor.withAlphaComponent(NSColor.secondaryLabelColor.alphaComponent * 0.45) }
     static var ink: NSColor { .labelColor }
     static var inkSecondary: NSColor { .secondaryLabelColor }
     static var inkTertiary: NSColor { .tertiaryLabelColor }

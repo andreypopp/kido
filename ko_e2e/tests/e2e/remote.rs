@@ -191,7 +191,7 @@ fn remote_forward_attach_reconnect_and_cleanup() {
 }
 
 #[test]
-fn remote_a_reconnected_client_selects_its_pane_again_so_the_pane_follows_its_size() {
+fn remote_a_reconnected_client_reports_its_window_without_a_later_resize() {
     if !enabled("KO_E2E_HOST_SSH") {
         return;
     }
@@ -205,12 +205,11 @@ fn remote_a_reconnected_client_selects_its_pane_again_so_the_pane_follows_its_si
     std::fs::write(&remote.block, "").unwrap();
     signal_descendant(outer.client_pid(), master, Signal::Kill).unwrap();
     outer.contains(&format!("reconnecting to {HOST}"));
+    outer.resize(100, 35);
     std::fs::remove_file(&remote.block).unwrap();
     outer.gone("reconnecting to");
-
-    outer.resize(100, 30);
-    poll("the pane to follow the reconnected client", || {
-        s.stty(&pane) != before
+    poll("the pane to follow the reconnected client's report", || {
+        s.stty(&pane) == (before.0 + 5, before.1 - 20)
     });
 }
 

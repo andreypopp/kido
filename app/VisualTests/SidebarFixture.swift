@@ -42,7 +42,7 @@ extension Item {
     }
 }
 
-func fixtureItem(_ id: UInt32, window: UInt32? = nil, _ title: String, _ lifecycle: Lifecycle,
+func fixtureItem(_ id: UInt32, window: UInt32? = nil, parent: UInt32? = nil, _ title: String, _ lifecycle: Lifecycle,
                  records: [KoSchema.ProgramRecord] = [], serial: Int = 0, mark: KoSchema.Mark = .none_, children: [SidebarFeed.Node] = []) -> Item {
     let live: KoSchema.Live?
     let dead: KoSchema.Dead?
@@ -54,7 +54,7 @@ func fixtureItem(_ id: UInt32, window: UInt32? = nil, _ title: String, _ lifecyc
     }
     let pi = if let live, case .piAgent = live.local { true } else { false }
     return Item(pane: .init(close: close, command: [], cwd: "", dead: dead, id: PaneID(number: id), inbox: pi,
-                           label: title, mark: mark, recordsSeen: false, started: 0,
+                           label: title, mark: mark, parent: parent.map(PaneID.init(number:)), recordsSeen: false, started: 0,
                            status: live.map { .init(kind: $0, programStatus: .init(records: records, serial: serial), since: 0, title: title) },
                            title: title, vars: [:]), window: WindowID(number: window ?? id), children: children)
 }
@@ -149,4 +149,57 @@ extension Snapshot {
         let original = sessions[0]
         sessions = numbers.map { var session = original; session.id = SessionID(number: $0); session.name = "session-\($0)"; return session }
     }
+}
+
+let sidebarChildrenNow = 2_951_768_000_000_000
+
+func sidebarChildrenFixture(records: Bool = false) -> Snapshot {
+    var snapshot = sidebarFixture()
+    snapshot.client = .init(session: .init(number: 0), window: .init(number: 458), pane: .init(number: 502))
+    snapshot.sessions[0].nodes[0].item.pane.mark = .done
+    var parent = snapshot.sessions[0].nodes[1].group.children[0]
+    parent.fixtureLifecycle = piLifecycle(.running(.init()), msg: "Refining the native sidebar")
+    parent.pane.mark = .running
+    parent.children[0].item.fixtureLifecycle = piLifecycle(.running(.init()), msg: "Designing session cards and pane states")
+    parent.children[0].item.pane.parent = parent.id
+    parent.children[0].item.pane.started = 184_000_000_000
+    var notes = fixtureItem(941, parent: 940, "review-notes", .ended(.exited(.init(code: 0))), mark: .done, children: [
+        .item(fixtureItem(942, parent: 941, "lint", shellLifecycle(.running(.init(fullscreen: false, origin: .command(.init(command: "lint", startedAt: 0))))), mark: .running)),
+        .item(fixtureItem(943, parent: 941, "zsh", shellLifecycle())),
+    ])
+    notes.pane.started = 0
+    var tests = fixtureItem(940, parent: 502, "sidebar-tests", piLifecycle(.waiting(.init()), msg: "Allow running make test?"), mark: .waiting, children: [
+        .item(notes), .item(fixtureItem(944, parent: 940, "perf-notes", agentLifecycle(.idle(.init()), name: "pi"))),
+    ])
+    tests.pane.started = 41_000_000_000
+    parent.children += [.item(tests), .item(fixtureItem(945, parent: 502, "make test", .ended(.exited(.init(code: 0))), mark: .done))]
+    snapshot.sessions[0].nodes[1].group.children[0] = parent
+    snapshot.sessions[0].nodes[1].group.children[1].pane.mark = .done
+    snapshot.sessions[0].nodes[2].item.children[0].item.fixtureLifecycle = piLifecycle(.idle(.init(outcome: .init(result: .failure, serial: 1))), msg: "Profiling long sidebar updates")
+    snapshot.sessions[0].nodes[2].item.children[0].item.pane.mark = .failed
+    snapshot.sessions[1].name = "work"
+    snapshot.sessions[1].nodes = [
+        .window(.init(id: .init(number: 2000), children: [
+            fixtureItem(2001, window: 2000, "cargo build --release", shellLifecycle(.unknown), mark: .failed),
+            fixtureItem(2002, window: 2000, "ssh devbox: tail -f /var/log/system.log", .live(.ssh(.init(destination: "devbox", pane: .terminal(.init(interactive: true, status: .init(phase: .running(.init(fullscreen: false, origin: .command(.init(command: "tail -f /var/log/system.log", startedAt: 0)))))))))), mark: .running),
+        ])),
+        .item(fixtureItem(2003, "pi-review on devbox", agentLifecycle(.running(.init()), msg: "Reviewing the remote checkout", name: "pi"), mark: .running)),
+        .item(fixtureItem(2004, "review the sidebar implementation and accessibility changes", piLifecycle(.waiting(.init()), msg: "Needs your review before continuing"), mark: .waiting)),
+    ]
+    snapshot.mapItems { $0.pane.started += sidebarChildrenNow - 368_000_000_000 }
+    snapshot.sessions[0].nodes[2].item.children[0].item.pane.parent = PaneID(number: 905)
+    snapshot.sessions[0].nodes[2].item.children[0].item.pane.started = 368_000_000_000
+    snapshot.sessions[1].nodes[2].item.pane.parent = PaneID(number: 502)
+    snapshot.sessions[1].nodes[2].item.pane.started = sidebarChildrenNow - 143_000_000_000
+    if records {
+        snapshot.sessions[0].nodes.insert(.item(fixtureItem(3000, "Claude Code", agentLifecycle(.running(.init())), records: [
+            .working(.init(app: "claude-code", id: "")),
+            .working(.init(id: "agent-c", title: "Review accessibility")),
+            .blocked(.init(id: "agent-a/permission", kind: .permission, msg: "May I run the integration tests?", title: "Approve test command")),
+            .working(.init(id: "agent-b", title: "Check toolbar geometry")),
+            .working(.init(id: "agent-a", msg: "Comparing native row measurements", title: "Investigate sidebar layout")),
+        ], serial: 7, mark: .running)), at: 0)
+        snapshot.client = .init(session: .init(number: 0), window: .init(number: 3000), pane: .init(number: 3000))
+    }
+    return snapshot
 }

@@ -16,7 +16,7 @@ import XCTest
     @MainActor final class Layouts {
         var connection: KoClient?
         var seen: [Seen] = []
-        var selected = false
+        var selected: PaneID?
 
         func record() {
             guard let connection, let model = try? connection.model() else { return }
@@ -25,9 +25,9 @@ import XCTest
     }
 
     private func connectRecording(_ dir: String, panes: Int, sizes: Bool, _ layouts: Layouts) throws -> KoClient {
-        let connection = try connect(dir, hello: KoHello(cols: 100, rows: 30, sizesWindows: sizes), panes: panes) { event in
+        let connection = try connect(dir, hello: KoHello(viewport: sizes ? KoSize(cols: 100, rows: 30, cell: nil) : nil), panes: panes) { event in
             if case .layout = event { layouts.record() }
-            if case .selected = event { layouts.selected = true }
+            if case .selected(_, _, let pane) = event { layouts.selected = pane }
         }
         layouts.connection = connection
         layouts.record()
@@ -37,9 +37,10 @@ import XCTest
     // The events of a client arrive in the server's order, and the server answers each select with a
     // selected event: that event of a select that changes nothing follows every earlier event.
     private func barrier(_ connection: KoClient, _ layouts: Layouts) throws {
-        layouts.selected = false
-        try connection.select(KO_SELECT_PANE, try XCTUnwrap(connection.model().selection.pane))
-        wait("the selected event of the barrier") { layouts.selected }
+        let pane = try XCTUnwrap(connection.model().selection.pane)
+        layouts.selected = nil
+        try connection.select(KO_SELECT_PANE, pane)
+        wait("the selected event of the barrier") { layouts.selected == pane }
     }
 
     func testAFocusEventMovesTheFocusInTheModelAndKeepsTheRevision() throws {
@@ -61,7 +62,19 @@ import XCTest
         let dir = try serverWithWindows([1, 2])
         let layouts = Layouts()
         let connection = try connectRecording(dir, panes: 3, sizes: true, layouts)
+        try connection.select(KO_SELECT_PANE, PaneID(number: 1))
+        wait("the initial selected pane") { layouts.selected == PaneID(number: 1) }
+        let size = KoSize(cols: 100, rows: 30, cell: nil)
+        let report = [KoWindowSize(window: WindowID(number: 2), size: size)]
+        try connection.size(viewport: size, windows: report)
         try connection.focus(true)
+        wait("the reported window is sized") { (try? connection.model().layout.layout.window(WindowID(number: 2))?.cols) == 100 }
+        let small = KoSize(cols: 80, rows: 24, cell: nil)
+        let peer = try connect(dir, hello: KoHello(focused: true, viewport: small), panes: 3) { _ in }
+        try peer.size(viewport: small, windows: [KoWindowSize(window: WindowID(number: 2), size: small)])
+        wait("the peer owns the reported window") { (try? connection.model().layout.layout.window(WindowID(number: 2))?.cols) == 80 }
+        try connection.size(viewport: size, windows: report)
+        try barrier(connection, layouts)
         let before = try XCTUnwrap(layouts.seen.last)
         XCTAssertEqual(before.focus, [PaneID(number: 1), PaneID(number: 2)])
         layouts.seen = []

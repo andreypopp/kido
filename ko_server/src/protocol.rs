@@ -1410,9 +1410,85 @@ pub struct Hello {
     #[serde(flatten)]
     pub selection: Selection,
     pub focused: bool,
+    pub sizing: Sizing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Sizing {
+    Disabled,
+    Windows {
+        viewport: Size,
+        windows: WindowSizes,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WindowSize {
+    pub window: WindowId,
     pub size: Size,
-    #[serde(default)]
-    pub ignore_size: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<WindowSize>", into = "Vec<WindowSize>")]
+pub struct WindowSizes(Vec<WindowSize>);
+
+impl JsonSchema for WindowSizes {
+    fn schema_name() -> Cow<'static, str> {
+        "WindowSizes".into()
+    }
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "array", "items": generator.subschema_for::<WindowSize>(), "uniqueItems": true,
+            "description": "Window ids must be unique, including entries with different sizes."})
+    }
+}
+
+impl From<Option<WindowSize>> for WindowSizes {
+    fn from(window: Option<WindowSize>) -> Self {
+        Self(window.into_iter().collect())
+    }
+}
+
+impl TryFrom<Vec<WindowSize>> for WindowSizes {
+    type Error = &'static str;
+
+    fn try_from(windows: Vec<WindowSize>) -> Result<Self, Self::Error> {
+        let mut ids = std::collections::BTreeSet::new();
+        if windows.iter().any(|entry| !ids.insert(entry.window)) {
+            return Err("duplicate window size");
+        }
+        Ok(Self(windows))
+    }
+}
+
+impl From<WindowSizes> for Vec<WindowSize> {
+    fn from(windows: WindowSizes) -> Self {
+        windows.0
+    }
+}
+
+impl WindowSizes {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &WindowSize> {
+        self.0.iter()
+    }
+}
+
+impl Sizing {
+    pub(crate) fn size(&self, window: WindowId) -> Option<frame::Size> {
+        match self {
+            Self::Disabled => None,
+            Self::Windows { windows, .. } => windows
+                .iter()
+                .find(|entry| entry.window == window)
+                .map(|entry| entry.size.0),
+        }
+    }
+
+    pub(crate) fn retain(&mut self, keep: impl FnMut(&WindowSize) -> bool) {
+        if let Self::Windows { windows, .. } = self {
+            windows.0.retain(keep);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1451,7 +1527,9 @@ pub enum ClientRequest {
     Hello(Hello),
     Select(Selection),
     Switch(Switch),
-    Size(Size),
+    Size {
+        sizing: Sizing,
+    },
     Focused {
         focused: bool,
     },
@@ -2133,6 +2211,26 @@ mod tests {
     use serde::de::DeserializeOwned;
 
     #[test]
+    fn window_size_reports_are_complete_and_reject_duplicate_windows() {
+        same::<ClientRequest>(
+            r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":120,"rows":40},"windows":[{"window":"window_1","size":{"cols":35,"rows":12}},{"window":"window_2","size":{"cols":60,"rows":20}}]}}"#,
+        );
+        same::<ClientRequest>(r#"{"type":"size","sizing":{"type":"disabled"}}"#);
+        for invalid in [
+            r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":120,"rows":40},"windows":[{"window":"window_1","size":{"cols":35,"rows":12}},{"window":"window_1","size":{"cols":60,"rows":20}}]}}"#,
+            r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":120,"rows":40},"windows":[{"window":"bad","size":{"cols":35,"rows":12}}]}}"#,
+            r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":120,"rows":40},"windows":[{"window":"window_1","size":{"cols":4097,"rows":12}}]}}"#,
+            r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":120,"rows":40},"windows":[["window_1",{"cols":35,"rows":12}]]}}"#,
+            r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":120,"rows":40},"windows":[{"window":"window_1","size":[35,12]}]}}"#,
+        ] {
+            assert!(
+                decode::<ClientRequest>(invalid.as_bytes()).is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
     fn every_wire_type_round_trips_its_json() {
         same::<Version>(
             r#"{"protocol":"1.0","vt":"0123456789abcdef0123456789abcdef01234567","build":"abc-dirty"}"#,
@@ -2186,13 +2284,13 @@ mod tests {
             same::<PasteResult>(json);
         }
         for json in [
-            r#"{"type":"hello","name":"test","focused":true,"size":{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}},"ignore_size":false}"#,
-            r#"{"type":"hello","name":"app","pane":"pane_3","focused":false,"size":{"cols":4096,"rows":1},"ignore_size":true}"#,
-            r#"{"type":"hello","name":"app","session":"session_1","window":"window_2","pane":"pane_3","focused":false,"size":{"cols":80,"rows":24},"ignore_size":false}"#,
+            r#"{"type":"hello","name":"test","focused":true,"sizing":{"type":"windows","viewport":{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}},"windows":[]}}"#,
+            r#"{"type":"hello","name":"app","pane":"pane_3","focused":false,"sizing":{"type":"disabled"}}"#,
+            r#"{"type":"hello","name":"app","session":"session_1","window":"window_2","pane":"pane_3","focused":false,"sizing":{"type":"windows","viewport":{"cols":80,"rows":24},"windows":[]}}"#,
             r#"{"type":"select","pane":"pane_3"}"#,
             r#"{"type":"select","session":"session_1"}"#,
             r#"{"type":"switch","over":"window","direction":"previous"}"#,
-            r#"{"type":"size","cols":80,"rows":24,"cell_px":{"width":8,"height":16}}"#,
+            r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}},"windows":[]}}"#,
             r#"{"type":"focused","focused":true}"#,
         ] {
             same::<ClientRequest>(json);
@@ -2329,16 +2427,16 @@ mod tests {
 
     #[test]
     fn decoders_take_defaults_and_nulls_and_refuse_bad_shapes() {
-        let hello = r#"{"type":"hello","name":"x","focused":true,"size":{"cols":1,"rows":1},"ignore_size":false}"#;
+        let hello = r#"{"type":"hello","name":"x","focused":true,"sizing":{"type":"windows","viewport":{"cols":1,"rows":1},"windows":[]}}"#;
         assert_eq!(
             decoded::<ClientRequest>(
-                r#"{"type":"hello","name":"x","focused":true,"size":{"cols":1,"rows":1},"extra":1}"#
+                r#"{"type":"hello","name":"x","focused":true,"extra":1,"sizing":{"type":"windows","viewport":{"cols":1,"rows":1},"windows":[]}}"#
             ),
             Ok(hello.to_owned())
         );
         assert_eq!(
             decoded::<ClientRequest>(
-                r#"{"type":"hello","name":"x","focused":true,"size":{"cols":1,"rows":1,"cell_px":null},"pane":null}"#
+                r#"{"type":"hello","name":"x","focused":true,"pane":null,"sizing":{"type":"windows","viewport":{"cols":1,"rows":1,"cell_px":null},"windows":[]}}"#
             ),
             Ok(hello.to_owned())
         );
@@ -2505,7 +2603,9 @@ mod tests {
             "cell_px",
             "width",
             "height",
-            "ignore_size",
+            "sizing",
+            "viewport",
+            "windows",
             "cwd",
             "command",
             "env",
@@ -2550,9 +2650,9 @@ mod tests {
             ),
             (
                 decoded::<ClientRequest>(
-                    r#"{"type":"size","cols":80,"rows":24,"cell_px":{"width":8,"height":16}}"#,
+                    r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}},"windows":[]}}"#,
                 ),
-                r#"{"type":"size","cols":80,"rows":24,"cell_px":{"width":8,"height":16}}"#,
+                r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}},"windows":[]}}"#,
             ),
             (
                 decoded::<ViewRequest>(
@@ -2574,9 +2674,11 @@ mod tests {
             decoded::<CreatePane>(r#"{"command":["argv",["/bin/sh"]]}"#),
             decoded::<ClientRequest>(r#"["size",{"cols":80,"rows":24}]"#),
             decoded::<ClientRequest>(r#"["focused",true]"#),
-            decoded::<ClientRequest>(r#"{"type":"size","cols":80,"rows":24,"cell_px":[8,16]}"#),
             decoded::<ClientRequest>(
-                r#"{"type":"hello","name":"t","focused":true,"size":[80,24]}"#,
+                r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":80,"rows":24,"cell_px":[8,16]},"windows":[]}}"#,
+            ),
+            decoded::<ClientRequest>(
+                r#"{"type":"hello","name":"t","focused":true,"sizing":{"type":"windows","viewport":[80,24],"windows":[]}}"#,
             ),
             decoded::<ViewRequest>(r#"{"type":"resync","history":"all","images":["x"]}"#),
             decoded::<ViewRequest>(r#"{"type":"input","input":["paste",["x",true]]}"#),

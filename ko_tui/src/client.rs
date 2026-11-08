@@ -476,6 +476,7 @@ impl Client {
         };
         client.client(wire::buffered(client.link_token), Instant::now())?;
         client.show_first()?;
+        client.resize()?;
         Ok(client)
     }
 
@@ -610,7 +611,20 @@ impl Client {
 
     fn resize(&mut self) -> Result<(), String> {
         let size = pane_size(self.geometry, self.panel, self.sidebar_width);
-        self.client_send(&ClientRequest::Size(protocol::Size(size)))
+        let windows = self
+            .model
+            .selection
+            .window
+            .map(|window| protocol::WindowSize {
+                window,
+                size: protocol::Size(size),
+            });
+        self.client_send(&ClientRequest::Size {
+            sizing: protocol::Sizing::Windows {
+                viewport: protocol::Size(size),
+                windows: windows.into(),
+            },
+        })
     }
 
     fn request(&self, route: &Route) -> Result<Vec<u8>, String> {
@@ -1858,7 +1872,7 @@ impl Client {
         self.client(wire::buffered(token), Instant::now())
             .map_err(JoinError::Protocol)?;
         let outage = self.reconnecting.take();
-        if let Err(error) = self.restore(restore) {
+        if let Err(error) = self.restore(restore).and_then(|()| self.resize()) {
             self.reconnecting = outage;
             return Err(JoinError::Protocol(error));
         }
@@ -1959,6 +1973,7 @@ impl Client {
                             Applied::Layout => {}
                             Applied::Notice(notice) => self.notice(notice)?,
                             Applied::Selected => {
+                                self.resize()?;
                                 self.pending_selection = None;
                                 if !matches!(
                                     self.keys.state(),
@@ -2033,8 +2048,10 @@ fn hello(geometry: Geometry, panel: Panel, width: usize, focused: bool) -> Hello
         name: "ko".to_owned(),
         selection: Selection::default(),
         focused,
-        size: protocol::Size(pane_size(geometry, panel, width)),
-        ignore_size: false,
+        sizing: protocol::Sizing::Windows {
+            viewport: protocol::Size(pane_size(geometry, panel, width)),
+            windows: protocol::WindowSizes::default(),
+        },
     }
 }
 

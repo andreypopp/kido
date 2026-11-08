@@ -629,10 +629,11 @@ export interface components {
         } & components["schemas"]["Selection"]) | ({
             /** @constant */
             type: "switch";
-        } & components["schemas"]["Switch"]) | ({
+        } & components["schemas"]["Switch"]) | {
+            sizing: components["schemas"]["Sizing"];
             /** @constant */
             type: "size";
-        } & components["schemas"]["Size"]) | {
+        } | {
             focused: boolean;
             /** @constant */
             type: "focused";
@@ -931,12 +932,10 @@ export interface components {
         Generation: number;
         Hello: {
             focused: boolean;
-            /** @default false */
-            ignore_size?: boolean;
             name: string;
             pane?: components["schemas"]["PaneId"];
             session?: components["schemas"]["SessionId"];
-            size: components["schemas"]["Size"];
+            sizing: components["schemas"]["Sizing"];
             window?: components["schemas"]["WindowId"];
         };
         /** @enum {string} */
@@ -1514,6 +1513,15 @@ export interface components {
             cols: number;
             rows: number;
         };
+        Sizing: {
+            /** @constant */
+            type: "disabled";
+        } | {
+            /** @constant */
+            type: "windows";
+            viewport: components["schemas"]["Size"];
+            windows: components["schemas"]["WindowSizes"];
+        };
         Skipped: {
             from: number;
             offset: number;
@@ -1699,6 +1707,12 @@ export interface components {
         WindowId: string;
         /** @enum {string} */
         WindowOnly: "true";
+        WindowSize: {
+            size: components["schemas"]["Size"];
+            window: components["schemas"]["WindowId"];
+        };
+        /** @description Window ids must be unique, including entries with different sizes. */
+        WindowSizes: components["schemas"]["WindowSize"][];
     };
     responses: never;
     parameters: never;

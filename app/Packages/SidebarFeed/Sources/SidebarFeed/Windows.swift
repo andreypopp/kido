@@ -4,32 +4,33 @@ public enum CloseTarget: Equatable, Sendable {
     case pane(PaneID), window(WindowID), session(SessionID)
 }
 
-public func closeScope(_ snapshot: Snapshot?, target: CloseTarget) -> (ask: Bool, descendants: [WindowID]) {
-    var roots: [Node] = []
-    func find(_ node: Node) {
-        let matches: Bool = switch (target, node) {
-        case (.pane(let id), .item(let item)): id == item.id
-        case (.window(let id), .item(let item)): id == item.window
-        case (.window(let id), .window(let window)): id == window.window
-        default: false
+public struct CloseScope: Equatable, Sendable {
+    public let panes: Int
+    public let running: Int
+    public var ask: Bool { running > 0 }
+}
+
+public func closeScope(_ projection: PaneProjection, target: CloseTarget) -> CloseScope {
+    let items = projection.items
+    var children: [PaneID: [PaneID]] = [:]
+    var pending: [PaneID] = []
+    for (id, entry) in items {
+        if let parent = entry.item.pane.parent { children[parent, default: []].append(id) }
+        let matches = switch target {
+        case .pane(let pane): id == pane
+        case .window(let window): entry.item.window == window
+        case .session(let session): entry.session == session
         }
-        if matches { roots.append(node) } else { node.children.forEach(find) }
+        if matches { pending.append(id) }
     }
-    snapshot?.sessions.forEach {
-        if case .session(let id) = target, $0.id == id { roots += $0.nodes }
-        else { $0.nodes.forEach(find) }
+    var seen: Set<PaneID> = []
+    var running = 0
+    while let id = pending.popLast() {
+        guard seen.insert(id).inserted, let entry = items[id] else { continue }
+        if case .live = entry.item.lifecycle, !entry.item.closesQuietly { running += 1 }
+        pending.append(contentsOf: children[id] ?? [])
     }
-    var ask = false, descendants: [WindowID] = []
-    func collect(_ node: Node, rootWindow: WindowID) {
-        if case .item(let item) = node, case .live = item.lifecycle, !item.closesQuietly {
-            ask = true
-        }
-        node.children.forEach { collect($0, rootWindow: rootWindow) }
-        if node.window != rootWindow, !descendants.contains(node.window) { descendants.append(node.window) }
-    }
-    for root in roots { collect(root, rootWindow: root.window) }
-    if case .session = target { descendants = [] }
-    return (ask, descendants)
+    return CloseScope(panes: seen.count, running: running)
 }
 
 public struct WindowProjection: Equatable, Sendable {
@@ -38,57 +39,22 @@ public struct WindowProjection: Equatable, Sendable {
         public let agent: Bool
         public let messageable: Bool
     }
-    public var ancestors: [WindowID: WindowID] = [:]
     public var statuses: [WindowID: SidebarRow.Status] = [:]
     public var labels: [WindowID: Label] = [:]
     public var order: [WindowID] = []
-    public var children: [WindowID: [WindowID]] = [:]
     public init() {}
 }
 
-public func sidebarWindows(_ snapshot: Snapshot?, session: SessionID?, surviving: Set<WindowID>, activePanes: [WindowID: PaneID] = [:]) -> WindowProjection {
+public func sidebarWindows(_ snapshot: Snapshot?, projection: PaneProjection, session: SessionID?, surviving: Set<WindowID>, activePanes: [WindowID: PaneID] = [:]) -> WindowProjection {
     var result = WindowProjection()
-    func collect(_ node: Node, ancestor: WindowID?, enclosing: WindowID?) {
-        let window = node.window
-        if case .item(let item) = node, activePanes[window] == item.id {
-            result.labels[window] = .init(title: item.label, agent: item.isAgent, messageable: item.isMessageable)
+    result.order = snapshot?.sessions.first { $0.id == session }?.nodes.map(\.window).filter { surviving.contains($0) } ?? []
+    for (id, entry) in projection.items where entry.session == session {
+        let item = entry.item
+        if activePanes[item.window] == id {
+            result.labels[item.window] = .init(title: item.label, agent: item.isAgent, messageable: item.isMessageable)
         }
-        let root = ancestor ?? (surviving.contains(window) ? window : nil)
-        if ancestor == nil, root != nil, !result.order.contains(window) { result.order.append(window) }
-        if ancestor != nil, let enclosing, enclosing != window, !result.children.values.contains(where: { $0.contains(window) }) {
-            result.children[enclosing, default: []].append(window)
-        }
-        if let root {
-            result.ancestors[window] = root
-            let previous = result.statuses[root] ?? .quiet
-            if previous != .error {
-                let status: SidebarRow.Status = if case .item(let item) = node { item.indicator.status } else { .quiet }
-                result.statuses[root] = previous.mergingTabStatus(status)
-            }
-        }
-        node.children.forEach { collect($0, ancestor: root, enclosing: window) }
+        guard let root = projection.rootWindows[item.window], surviving.contains(root) else { continue }
+        result.statuses[root] = (result.statuses[root] ?? .quiet).mergingTabStatus(item.indicator.status)
     }
-    snapshot?.sessions.first { $0.id == session }?.nodes.forEach { collect($0, ancestor: nil, enclosing: nil) }
     return result
-}
-
-extension KoSchema.Layout {
-    public var survivingWindows: [SessionID: Set<WindowID>] {
-        Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, Set($0.windows.map(\.id))) })
-    }
-}
-
-public func adjacentWindow(_ snapshot: Snapshot?, surviving: [SessionID: Set<WindowID>], from current: WindowID, next: Bool) -> WindowID? {
-    let projections = (snapshot?.sessions ?? []).map { sidebarWindows(snapshot, session: $0.id, surviving: surviving[$0.id] ?? []) }
-    let step = next ? 1 : -1
-    guard let top = projections.lazy.compactMap({ $0.ancestors[current] }).first else { return nil }
-    let children = projections.reduce(into: [WindowID: [WindowID]]()) { $0.merge($1.children) { first, _ in first } }
-    if let (parent, siblings) = children.first(where: { $0.value.contains(current) }), let at = siblings.firstIndex(of: current) {
-        if siblings.indices.contains(at + step) { return siblings[at + step] }
-        if !next { return parent }
-    }
-    let roots = projections.flatMap(\.order)
-    guard let at = roots.firstIndex(of: top) else { return nil }
-    let target = roots[(at + step + roots.count) % roots.count]
-    return target == current ? nil : target
 }

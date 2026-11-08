@@ -137,7 +137,7 @@ import XCTest
                     XCTAssertEqual(cell.renameError.stringValue, "A session named “work” already exists.")
                     XCTAssertFalse(cell.nameField.isHidden)
                     XCTAssertEqual(cell.accessibilityLabel(), "main")
-                    XCTAssertEqual(cell.frame.height, 29 + cell.errorHeight)
+                    XCTAssertEqual(cell.frame.height, 26 + cell.errorHeight)
                     XCTAssertEqual((cell.nameField.currentEditor() as? NSTextView)?.selectedRange(), NSRange(location: 0, length: 4))
                 }
                 window.layoutIfNeeded()

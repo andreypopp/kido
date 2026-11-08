@@ -57,6 +57,13 @@ pub(crate) struct Document {
     ids: Ids,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Remove {
+    Pane(PaneId),
+    Window(WindowId),
+    Session(SessionId),
+}
+
 #[derive(Debug)]
 pub(crate) struct Removal {
     pub(crate) panes: Vec<PaneId>,
@@ -95,7 +102,7 @@ impl Document {
         request: PutLayout,
         new_window: Option<Size>,
     ) -> Result<Vec<(PaneId, CreatePane, Vars)>, PutError> {
-        self.put_with_shell(request, new_window, &|| base_name("sh"))
+        self.put_with_shell(request, new_window, &|| base_name("sh"), &|_| None)
     }
 
     pub(crate) fn layout(&self) -> &Layout {
@@ -118,6 +125,7 @@ impl Document {
         request: PutLayout,
         new_window: Option<Size>,
         shell: &dyn Fn() -> Option<Name>,
+        parent_of: &dyn Fn(PaneId) -> Option<PaneId>,
     ) -> Result<Vec<(PaneId, CreatePane, Vars)>, PutError> {
         if request.revision != self.revision {
             return Err(PutError::Stale);
@@ -127,6 +135,7 @@ impl Document {
             &self.layout,
             self.ids,
             shell,
+            parent_of,
             new_window.unwrap_or(UNSIZED_WINDOW),
         )
         .map_err(PutError::Invalid)?;
@@ -143,31 +152,56 @@ impl Document {
         Removal { panes, before }
     }
 
-    pub(crate) fn remove_pane(&mut self, pane: PaneId) -> Option<Removal> {
-        self.layout.locate(pane)?;
-        Some(self.removal(vec![pane], |layout| remove_pane(layout, pane)))
-    }
-
-    pub(crate) fn remove_window(&mut self, window: WindowId) -> Option<Removal> {
-        let panes = self.layout.window(window)?.1.panes();
-        Some(self.removal(panes, |layout| {
-            for session in &mut layout.sessions {
-                session.windows.retain(|found| found.id != window);
+    pub(crate) fn remove(
+        &mut self,
+        target: Remove,
+        parent_of: &dyn Fn(PaneId) -> Option<PaneId>,
+    ) -> Option<Removal> {
+        let mut pending: Vec<_> = match target {
+            Remove::Pane(pane) => {
+                self.layout.locate(pane)?;
+                vec![(pane, false)]
             }
-            prune(layout);
-        }))
-    }
-
-    pub(crate) fn remove_session(&mut self, session: SessionId) -> Option<Removal> {
-        let panes = self
-            .layout
-            .session(session)?
-            .windows
-            .iter()
-            .flat_map(Window::panes)
-            .collect();
-        Some(self.removal(panes, |layout| {
-            layout.sessions.retain(|found| found.id != session);
+            Remove::Window(window) => self
+                .layout
+                .window(window)?
+                .1
+                .panes()
+                .into_iter()
+                .map(|pane| (pane, false))
+                .collect(),
+            Remove::Session(session) => self
+                .layout
+                .session(session)?
+                .windows
+                .iter()
+                .flat_map(Window::panes)
+                .map(|pane| (pane, false))
+                .collect(),
+        };
+        pending.reverse();
+        let mut children: BTreeMap<PaneId, Vec<PaneId>> = BTreeMap::new();
+        for pane in self.layout.windows().flat_map(|(_, window)| window.panes()) {
+            if let Some(parent) = parent_of(pane) {
+                children.entry(parent).or_default().push(pane);
+            }
+        }
+        let mut seen = BTreeSet::new();
+        let mut panes = Vec::new();
+        while let Some((pane, complete)) = pending.pop() {
+            if complete {
+                panes.push(pane);
+            } else if seen.insert(pane) {
+                pending.push((pane, true));
+                if let Some(descendants) = children.get(&pane) {
+                    pending.extend(descendants.iter().rev().map(|child| (*child, false)));
+                }
+            }
+        }
+        Some(self.removal(panes.clone(), |layout| {
+            for pane in panes {
+                remove_pane(layout, pane);
+            }
         }))
     }
 
@@ -617,6 +651,8 @@ fn remove_pane(layout: &mut Layout, pane: PaneId) {
 struct Claims<'a> {
     current: &'a Layout,
     shell: &'a dyn Fn() -> Option<Name>,
+    parent_of: &'a dyn Fn(PaneId) -> Option<PaneId>,
+    parented: Option<PaneId>,
     shell_name: OnceCell<Option<Name>>,
     live: &'a BTreeSet<PaneId>,
     seen: BTreeSet<PaneId>,
@@ -644,18 +680,22 @@ impl Claims<'_> {
     }
 
     fn pane(&mut self, reference: PaneRef) -> Result<PaneId, String> {
-        let pane = match reference {
-            PaneRef::Existing(pane) if self.live.contains(&pane) => pane,
+        let (pane, parent) = match reference {
+            PaneRef::Existing(pane) if self.live.contains(&pane) => (pane, (self.parent_of)(pane)),
             PaneRef::Existing(pane) => return Err(format!("{pane} is not a live pane")),
             PaneRef::New { mut new } => {
                 let vars = Vars::checked(std::mem::take(&mut new.vars))?;
                 let pane = self.ids.pane();
+                let parent = new.parent;
                 self.created.push((pane, new, vars));
-                pane
+                (pane, parent)
             }
         };
         if !self.seen.insert(pane) {
             return Err(format!("{pane} is in the layout twice"));
+        }
+        if parent.is_some() {
+            self.parented = Some(pane);
         }
         Ok(pane)
     }
@@ -696,6 +736,7 @@ fn window(
             .and_then(|leaf| claims.default_name(&leaf.pane))
             .ok_or("the window needs a name")?,
     };
+    claims.parented = None;
     let tree = claims.node(draft.tree)?;
     let focus = first_leaf(&tree).ok_or("a window needs a pane")?.pane;
     let mut floats = vec![];
@@ -720,6 +761,13 @@ fn window(
             border,
             title,
         });
+    }
+    if let Some(pane) = claims.parented
+        && (!matches!(tree, Node::Leaf(_)) || !floats.is_empty())
+    {
+        return Err(format!(
+            "child pane {pane} must be the only pane in its window"
+        ));
     }
     let wanted = |given: Option<Cells>, old: Option<Cells>, default: Dim| {
         usize::from(given.or(old).map_or(default.get(), Cells::get))
@@ -763,12 +811,15 @@ fn normalize(
     current: &Layout,
     ids: Ids,
     shell: &dyn Fn() -> Option<Name>,
+    parent_of: &dyn Fn(PaneId) -> Option<PaneId>,
     new_window: Size,
 ) -> Result<Normalized, String> {
     let live = current.panes();
     let mut claims = Claims {
         current,
         shell,
+        parent_of,
+        parented: None,
         shell_name: OnceCell::new(),
         live: &live,
         seen: BTreeSet::new(),
@@ -1367,15 +1418,31 @@ mod tests {
         tree_window["rows"] = json!(80);
         let mut document = document_of(tree_window);
         let revision = document.snapshot().revision;
-        assert!(document.remove_pane(PaneId::new(1)).is_some());
+        assert!(
+            document
+                .remove(crate::layout::Remove::Pane(PaneId::new(1)), &|_| None)
+                .is_some()
+        );
         assert_eq!(tree_shape(&document), "v[2:200x20 3:200x59]");
         assert_eq!(document.snapshot().revision, revision);
         document.publish();
         assert_eq!(document.snapshot().revision, revision.next());
-        assert!(document.remove_pane(PaneId::new(1)).is_none());
-        assert!(document.remove_pane(PaneId::new(3)).is_some());
+        assert!(
+            document
+                .remove(crate::layout::Remove::Pane(PaneId::new(1)), &|_| None)
+                .is_none()
+        );
+        assert!(
+            document
+                .remove(crate::layout::Remove::Pane(PaneId::new(3)), &|_| None)
+                .is_some()
+        );
         assert_eq!(tree_shape(&document), "2:200x80");
-        assert!(document.remove_pane(PaneId::new(2)).is_some());
+        assert!(
+            document
+                .remove(crate::layout::Remove::Pane(PaneId::new(2)), &|_| None)
+                .is_some()
+        );
         assert_eq!(document.snapshot().layout.sessions, vec![]);
     }
 
@@ -1393,7 +1460,7 @@ mod tests {
         ));
         tree_window["cols"] = json!(80);
         let mut document = document_of(tree_window);
-        document.remove_pane(PaneId::new(1));
+        document.remove(crate::layout::Remove::Pane(PaneId::new(1)), &|_| None);
         assert_eq!(tree_shape(&document), "v[2:80x12 3:80x11]");
         let mut tree_window = window(split(
             "h",
@@ -1407,7 +1474,7 @@ mod tests {
         ));
         tree_window["cols"] = json!(80);
         let mut document = document_of(tree_window);
-        document.remove_pane(PaneId::new(3));
+        document.remove(crate::layout::Remove::Pane(PaneId::new(3)), &|_| None);
         assert_eq!(tree_shape(&document), "h[1:40x24 2:39x24]");
     }
 
@@ -1417,9 +1484,17 @@ mod tests {
         tree_window["floats"] = json!([{"pane": new_pane()}, {"pane": new_pane(), "z": 5}]);
         tree_window["zoom"] = Value::Null;
         let mut document = document_of(tree_window);
-        assert!(document.remove_pane(PaneId::new(2)).is_some());
+        assert!(
+            document
+                .remove(crate::layout::Remove::Pane(PaneId::new(2)), &|_| None)
+                .is_some()
+        );
         assert_eq!(first_window(&document).floats.len(), 1);
-        assert!(document.remove_pane(PaneId::new(1)).is_some());
+        assert!(
+            document
+                .remove(crate::layout::Remove::Pane(PaneId::new(1)), &|_| None)
+                .is_some()
+        );
         let window = first_window(&document);
         assert_eq!(shape(&window.tree), "3:80x24");
         assert_eq!(window.floats, vec![]);
@@ -1442,9 +1517,9 @@ mod tests {
                 None,
             )
             .unwrap();
-        document.remove_pane(PaneId::new(1));
+        document.remove(crate::layout::Remove::Pane(PaneId::new(1)), &|_| None);
         assert_eq!(first_window(&document).zoom, None);
-        document.remove_pane(PaneId::new(2));
+        document.remove(crate::layout::Remove::Pane(PaneId::new(2)), &|_| None);
         let remaining = &document.snapshot().layout.sessions[0].windows;
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id.to_string(), "window_2");
@@ -1567,7 +1642,7 @@ mod tests {
         ));
         initial["cols"] = json!(46);
         let mut document = document_of(initial);
-        document.remove_pane(PaneId::new(1));
+        document.remove(crate::layout::Remove::Pane(PaneId::new(1)), &|_| None);
         assert_eq!(tree_shape(&document), "h[h[2:12x24 3:10x24] 4:22x24]");
     }
 
@@ -1645,20 +1720,20 @@ mod tests {
         let revision = document.revision();
         assert_eq!(
             document
-                .remove_window(WindowId::new(9))
+                .remove(crate::layout::Remove::Window(WindowId::new(9)), &|_| None)
                 .map(|removed| removed.panes),
             None
         );
         assert_eq!(
             document
-                .remove_session(SessionId::new(9))
+                .remove(crate::layout::Remove::Session(SessionId::new(9)), &|_| None)
                 .map(|removed| removed.panes),
             None
         );
         assert_eq!(document.revision(), revision);
         assert_eq!(
             document
-                .remove_window(WindowId::new(1))
+                .remove(crate::layout::Remove::Window(WindowId::new(1)), &|_| None)
                 .map(|removed| removed.panes),
             Some(vec![PaneId::new(1), PaneId::new(2)])
         );
@@ -1667,7 +1742,7 @@ mod tests {
         assert_eq!(document.layout().sessions[0].windows.len(), 1);
         assert_eq!(
             document
-                .remove_window(WindowId::new(3))
+                .remove(crate::layout::Remove::Window(WindowId::new(3)), &|_| None)
                 .map(|removed| removed.panes),
             Some(vec![PaneId::new(4)])
         );
@@ -1676,7 +1751,7 @@ mod tests {
         assert_eq!(document.layout().sessions.len(), 1);
         assert_eq!(
             document
-                .remove_window(WindowId::new(2))
+                .remove(crate::layout::Remove::Window(WindowId::new(2)), &|_| None)
                 .map(|removed| removed.panes),
             Some(vec![PaneId::new(3)])
         );
@@ -1684,7 +1759,7 @@ mod tests {
         let mut document = two_sessions();
         assert_eq!(
             document
-                .remove_session(SessionId::new(1))
+                .remove(crate::layout::Remove::Session(SessionId::new(1)), &|_| None)
                 .map(|removed| removed.panes),
             Some(vec![PaneId::new(1), PaneId::new(2), PaneId::new(3)])
         );
@@ -1731,7 +1806,7 @@ mod tests {
         for (focused, gone, expected) in [(2, 2, 3), (3, 3, 2), (1, 1, 2), (2, 3, 2)] {
             let mut document = source.clone();
             document.focus(WindowId::new(1), PaneId::new(focused));
-            document.remove_pane(PaneId::new(gone));
+            document.remove(crate::layout::Remove::Pane(PaneId::new(gone)), &|_| None);
             assert_eq!(
                 first_window(&document).focus,
                 PaneId::new(expected),
@@ -2012,7 +2087,7 @@ mod tests {
                 let before = document.snapshot().layout;
                 let panes: Vec<_> = before.panes().into_iter().collect();
                 let victim = panes[pick.index(panes.len())];
-                prop_assert!(document.remove_pane(victim).is_some());
+                prop_assert!(document.remove(crate::layout::Remove::Pane(victim), &|_| None).is_some());
                 let after = document.snapshot().layout;
                 check(&after);
                 let mut expected = before.panes();

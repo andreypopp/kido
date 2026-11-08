@@ -64,7 +64,7 @@ public struct NotifierState: Equatable, Sendable {
     }
 
     public mutating func step(owner: String, host: String, identity: String? = nil, snapshot: Snapshot,
-                              fresh: Bool, shown: Set<WindowID>, appActive: Bool) -> NotifierEffects {
+                              fresh: Bool, shown: Set<PaneID>, appActive: Bool) -> NotifierEffects {
         let changed = owners[owner]?.instance != snapshot.serverInstance || owners[owner]?.host != host
         var effects = changed ? forget(owner: owner) : NotifierEffects()
         var state = owners[owner] ?? WindowState(host: host, instance: snapshot.serverInstance)
@@ -91,7 +91,7 @@ public struct NotifierState: Equatable, Sendable {
                 state.entries[item.id] = nil
                 return
             }
-            if baseline || shown.contains(item.window) || (appActive && previous?.reason != reason) {
+            if baseline || shown.contains(item.id) || (appActive && previous?.reason != reason) {
                 if case .posted = previous { effects.withdraw.append(key) }
                 state.entries[item.id] = .acknowledged(reason)
                 return

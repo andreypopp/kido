@@ -1650,7 +1650,7 @@ export default function (pi: ExtensionAPI) {
       };
       const child = openStream(ko, "/client", "pipe");
       peerClient = child;
-      const hello: Api["ClientRequest"] = { type: "hello", name: "ko-pi", focused: false, ignore_size: true, size: { cols: 80, rows: 24 } };
+      const hello: Api["ClientRequest"] = { type: "hello", name: "ko-pi", focused: false, sizing: { type: "disabled" } };
       child.stdin?.write(JSON.stringify(hello) + "\n");
       child.stdout?.on("data", lineReader({ partial: Buffer.alloc(0) }, (line) => {
         try { receive(JSON.parse(line)); } catch {}

@@ -317,6 +317,14 @@ pub(crate) fn snapshot(lines: &str) -> Result<(), String> {
     let argv = vec![produce()?, "--lines".to_owned(), count.to_string()];
     let (_, results) = drive(Timing::DEFAULT, move |socket, tx| {
         let pane = create_pane(socket, &argv).map_err(failed)?;
+        let response = exchange(socket, &Route::GetLayout {}, "").map_err(failed)?;
+        let layout: protocol::LayoutPanes = protocol::decode(&response.body).map_err(failed)?;
+        let window = layout
+            .snapshot
+            .layout
+            .locate(pane)
+            .map(|(_, window)| window.id)
+            .ok_or("missing pane")?;
         let mut view = open_view(socket, pane, History::None).map_err(failed)?;
         while let Some(message) = view.next().map_err(failed)? {
             if dead(&message) {
@@ -341,8 +349,14 @@ pub(crate) fn snapshot(lines: &str) -> Result<(), String> {
                 ..protocol::Selection::default()
             },
             focused: true,
-            size: protocol::Size(size),
-            ignore_size: false,
+            sizing: protocol::Sizing::Windows {
+                viewport: protocol::Size(size),
+                windows: Some(protocol::WindowSize {
+                    window,
+                    size: protocol::Size(size),
+                })
+                .into(),
+            },
         });
         client.send_text(&json(&hello)).map_err(failed)?;
         results.push(("resize+screen", slices(&mut view, started)?));

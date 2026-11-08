@@ -379,7 +379,7 @@ impl State {
             .panes
             .find(pane)
             .is_some_and(|pane| pane.proc().dead().is_none());
-        self.delete_pane(poll, pane);
+        self.delete(poll, crate::layout::Remove::Pane(pane));
         if lives {
             self.stops
                 .doomed

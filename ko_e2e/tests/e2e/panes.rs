@@ -101,6 +101,56 @@ fn tuned() -> Server {
     )
 }
 
+#[test]
+fn deleting_a_child_removes_its_focused_subtree_in_one_revision() {
+    let s = crate::harness::start(&[]);
+    let parent = new_pane(&s, &json!({"command": cat()}));
+    let child = new_pane(&s, &json!({"parent": parent, "command": cat()}));
+    let grandchild = new_pane(
+        &s,
+        &json!({"parent": child, "command": cat(), "close": "keep"}),
+    );
+    let sibling = new_pane(&s, &json!({"parent": parent, "command": cat()}));
+    let grandchild_window = s.doc()["layout"]["sessions"][0]["windows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|window| window["tree"]["pane"] == grandchild)
+        .unwrap()
+        .clone();
+    s.edit(|layout| {
+        layout["sessions"][0]["windows"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|window| window["id"] != grandchild_window["id"]);
+        layout["sessions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"name": "other", "windows": [grandchild_window]}));
+    });
+    let mut client = s.ws("/client");
+    client.send(&json!({"type": "hello", "name": "test", "pane": grandchild, "focused": true, "sizing": {"type": "disabled"}}));
+    client.welcome();
+    let before = s.doc();
+    s.delete(&format!("/panes/{child}")).ok();
+    let after = s.doc();
+    assert_eq!(
+        after["revision"].as_u64().unwrap(),
+        before["revision"].as_u64().unwrap() + 1
+    );
+    let panes: Vec<_> = s
+        .rows()
+        .into_iter()
+        .map(|row| row["id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(panes, vec![parent.clone(), sibling]);
+    assert_eq!(client.event("selected")["pane"], parent);
+    let before = s.doc()["revision"].as_u64().unwrap();
+    s.delete(&format!("/panes/{parent}")).ok();
+    assert_eq!(s.doc()["revision"], before + 1);
+    assert_eq!(s.rows(), Vec::<Value>::new());
+}
+
 pub(crate) fn api(s: &Server, who: Option<&str>, method: &str, path: &str, body: &Value) -> Run {
     let args = ["api", "-X", method, "--input", "-", path];
     s.ko_as(who, &args, &body.to_string())

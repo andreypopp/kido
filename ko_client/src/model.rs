@@ -575,20 +575,11 @@ impl Model {
                 .iter()
                 .flat_map(|window| window.panes().into_iter().map(|pane| (pane, window.id)))
                 .collect();
-            let mut window_parent = BTreeMap::new();
-            for window in &session.windows {
-                let own = window.panes();
-                if let Some(parent) = own.iter().find_map(|pane| parents.get(pane))
-                    && !own.contains(parent)
-                {
-                    window_parent.insert(window.id, *parent);
-                }
-            }
             items.extend(
                 tree::order(
                     panes,
                     |(pane, _)| *pane,
-                    |(_, window)| window_parent.get(window).copied(),
+                    |(pane, _)| parents.get(pane).copied(),
                 )
                 .into_iter()
                 .map(|((id, window), depth)| Item::Pane { id, window, depth }),
@@ -942,28 +933,6 @@ mod tests {
         );
         assert_eq!(model.step(Some(pane(1)), 1), Some(pane(3)));
         assert_eq!(model.step(Some(pane(4)), 1), Some(pane(2)));
-    }
-
-    #[test]
-    fn the_first_pane_with_a_parent_decides_for_every_pane_of_its_window() {
-        let windows = vec![
-            (Shape::Leaf, 0),
-            (Shape::Split(true, vec![Shape::Leaf, Shape::Leaf]), 0),
-        ];
-        let mut model = model(layout_of(&[windows]));
-        model.panes = rows_of(&model.layout.layout);
-        set_parent(&mut model, 3, Some(1));
-        assert_eq!(
-            outline_of(&model),
-            ["0pane_1", "1pane_2", "1pane_3"],
-            "the split beside the pane with a parent nests under the same parent"
-        );
-        set_parent(&mut model, 2, Some(3));
-        assert_eq!(
-            outline_of(&model),
-            ["0pane_1", "0pane_2", "0pane_3"],
-            "the first pane's parent is in its own window, so the window is a root"
-        );
     }
 
     #[test]

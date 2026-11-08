@@ -4,6 +4,77 @@ use std::time::Duration;
 
 use crate::harness::{Message, Server, Ws, poll, sh, start, tagged, wait_gone};
 
+#[test]
+fn child_windows_refuse_a_second_pane_without_changing_the_document() {
+    let s = start(&[]);
+    let parent = crate::panes::post(
+        &s,
+        None,
+        "/panes",
+        &json!({"command": {"type": "shell", "command": "exec cat"}}),
+    );
+    let child = crate::panes::post(
+        &s,
+        None,
+        "/panes",
+        &json!({"parent": parent["pane"], "command": {"type": "shell", "command": "exec cat"}}),
+    );
+    let before = s.doc();
+    let edit = json!({"type": "split", "pane": child["pane"], "axis": "h", "new": shell()});
+    assert!(
+        s.ko(&["layout", "edit", &edit.to_string()], "")
+            .error(1)
+            .contains("must be the only pane")
+    );
+    for case in 0..4 {
+        let mut draft = before.clone();
+        let windows = draft["layout"]["sessions"][0]["windows"]
+            .as_array_mut()
+            .unwrap();
+        let root_at = windows
+            .iter()
+            .position(|window| window["id"] == parent["window"])
+            .unwrap();
+        let child_at = windows
+            .iter()
+            .position(|window| window["id"] == child["window"])
+            .unwrap();
+        match case {
+            0 => {
+                windows[child_at]["tree"] =
+                    split("h", vec![old(child["pane"].as_str().unwrap()), new()])
+            }
+            1 => windows[child_at]["floats"] = json!([{"pane": {"new": shell()}}]),
+            2 => {
+                windows[root_at]["tree"] = split(
+                    "h",
+                    vec![
+                        old(parent["pane"].as_str().unwrap()),
+                        json!({"pane": {"new": {"parent": parent["pane"], "command": {"type": "shell", "command": "exec cat"}}}}),
+                    ],
+                )
+            }
+            3 => {
+                windows[root_at]["floats"] = json!([{"pane": child["pane"]}]);
+                windows.remove(child_at);
+            }
+            _ => unreachable!(),
+        }
+        let response = crate::panes::api(&s, None, "PUT", "/layout", &draft);
+        crate::panes::refused(response, 400, "invalid", "must be the only pane");
+        let after = s.doc();
+        assert_eq!(after["layout"], before["layout"]);
+        assert_eq!(after["revision"], before["revision"]);
+        assert_eq!(
+            s.rows()
+                .iter()
+                .map(|row| row["id"].clone())
+                .collect::<Vec<_>>(),
+            vec![parent["pane"].clone(), child["pane"].clone()]
+        );
+    }
+}
+
 pub(crate) fn put_edit(s: &Server, edit: &Value) -> Value {
     s.ko(&["layout", "edit", &edit.to_string()], "").json()["snapshot"].take()
 }
@@ -657,7 +728,7 @@ fn assert_one_event_for_one_revision(s: &Server, client: &mut Ws, before: &Value
 }
 
 #[test]
-fn deleting_the_window_of_a_sizing_client_sizes_its_next_window_in_the_same_change() {
+fn deleting_a_reported_window_keeps_the_successor_size_until_an_explicit_report() {
     let s = start(&[]);
     let mut client = two_windows_and_a_wide_client(&s);
     let before = s.doc();
@@ -667,16 +738,36 @@ fn deleting_the_window_of_a_sizing_client_sizes_its_next_window_in_the_same_chan
     let moved = windows(&event)[0];
     assert_eq!(
         (&moved["id"], &moved["cols"], &moved["rows"]),
-        (&json!("window_2"), &json!(100), &json!(30))
+        (&json!("window_2"), &json!(80), &json!(24))
+    );
+    let before_report = s.doc();
+    client.send(&crate::harness::size_request(
+        "window_2",
+        crate::harness::size(100, 30),
+    ));
+    let sized = layout_at(&mut client, |event| {
+        revision(event) > revision(&before_report)
+    });
+    assert_eq!(
+        (&windows(&sized)[0]["cols"], &windows(&sized)[0]["rows"]),
+        (&json!(100), &json!(30))
     );
 }
 
 #[test]
-fn selecting_another_window_sizes_it_in_the_same_change_as_the_focus() {
+fn selecting_an_unreported_window_does_not_size_it() {
     let s = start(&[]);
     let mut client = two_windows_and_a_wide_client(&s);
     let before = s.doc();
     client.send(&json!({"type": "select", "pane": "pane_2"}));
+    assert_eq!(client.event("selected")["window"], "window_2");
+    let after = s.doc();
+    assert_eq!(after["layout"], before["layout"]);
+    assert_eq!(after["revision"], before["revision"]);
+    client.send(&crate::harness::size_request(
+        "window_2",
+        crate::harness::size(100, 30),
+    ));
     let event = assert_one_event_for_one_revision(&s, &mut client, &before);
     let moved = windows(&event)[1];
     assert_eq!((&moved["cols"], &moved["rows"]), (&json!(100), &json!(30)));

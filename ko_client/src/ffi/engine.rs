@@ -199,8 +199,7 @@ impl Engine<'_> {
             Hello {
                 name: greeting.name.clone(),
                 focused: greeting.focused,
-                size: greeting.size,
-                ignore_size: greeting.ignore_size,
+                sizing: greeting.sizing.clone(),
                 selection: locked(&shared.model)
                     .as_ref()
                     .map(|model| model.selection)
@@ -229,18 +228,17 @@ impl Engine<'_> {
             limits: model.limits,
         };
         *locked(&shared.client) = Some(model.client);
-        post(
-            shared,
-            Posted::Welcome {
-                client: string(&model.client.to_string()),
-                instance: string(&model.instance.to_string()),
-                fresh,
-            },
-        );
-        post(shared, Posted::Layout(layout_of(&model)));
+        let welcome = Posted::Welcome {
+            client: string(&model.client.to_string()),
+            instance: string(&model.instance.to_string()),
+            fresh,
+        };
+        let layout = Posted::Layout(layout_of(&model));
         *locked(&shared.model) = Some(model);
         self.session = Some(session);
         shared.up.store(true, Ordering::SeqCst);
+        post(shared, welcome);
+        post(shared, layout);
         self.backoff = BACKOFF_FIRST;
         self.reported = None;
         let watch = WATCH.min(shared.watchdog);
@@ -282,6 +280,7 @@ impl Engine<'_> {
             session.link.unwatch(&mut self.poll);
         }
         self.shared.up.store(false, Ordering::SeqCst);
+        locked(&self.shared.commands).retain(|command| !matches!(command, Command::Size(_)));
         self.poll.stop(self.watch);
         for open in &mut self.views {
             if open.conn.is_some() {
@@ -413,6 +412,7 @@ impl Engine<'_> {
         for command in batch {
             match command {
                 Command::Request(request) => self.request(&request),
+                Command::Size(sizing) => self.request(&ClientRequest::Size { sizing }),
                 Command::Open(view) => {
                     let id = view.id;
                     self.views.push(Open {

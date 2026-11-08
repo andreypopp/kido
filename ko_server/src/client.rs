@@ -4,7 +4,9 @@ use ko_pane_wire::frame::Size;
 
 use crate::ids::{ClientId, PaneId, SessionId, WindowId};
 use crate::layout::nearest;
-use crate::protocol::{ClientRequest, ClipboardServed, Direction, Layout, Over, Selection, Switch};
+use crate::protocol::{
+    ClientRequest, ClipboardServed, Direction, Layout, Over, Selection, Sizing, Switch,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Current {
@@ -23,12 +25,11 @@ impl From<Current> for Selection {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Active {
     pub(crate) current: Option<Current>,
-    pub(crate) size: Size,
     pub(crate) focused: bool,
-    ignore_size: bool,
+    pub(crate) sizing: Sizing,
 }
 
 #[derive(Debug)]
@@ -44,7 +45,9 @@ pub(crate) enum Change {
     Select(Selection),
     Switch(Switch),
     Claim,
-    Resize,
+    Resize {
+        previous: Sizing,
+    },
     Nothing,
     Answer {
         id: u64,
@@ -54,24 +57,24 @@ pub(crate) enum Change {
 
 pub(crate) fn new_window_sizer<'a>(actives: impl Iterator<Item = &'a Active>) -> Option<Size> {
     actives
-        .filter(|active| !active.ignore_size)
-        .min_by_key(|active| !active.focused)
-        .map(|active| active.size)
+        .filter_map(|active| match &active.sizing {
+            Sizing::Disabled => None,
+            Sizing::Windows { viewport, .. } => Some((!active.focused, viewport.0)),
+        })
+        .min_by_key(|(unfocused, _)| *unfocused)
+        .map(|(_, viewport)| viewport)
 }
 
 pub(crate) fn claims<'a>(
     client: ClientId,
     active: &Active,
+    window: WindowId,
     others: impl IntoIterator<Item = (ClientId, &'a Active)>,
 ) -> bool {
-    let window = active.current.map(|current| current.window);
-    let focused_elsewhere = others.into_iter().any(|(id, peer)| {
-        id != client
-            && peer.focused
-            && !peer.ignore_size
-            && peer.current.map(|current| current.window) == window
-    });
-    window.is_some() && !active.ignore_size && (active.focused || !focused_elsewhere)
+    let focused_elsewhere = others
+        .into_iter()
+        .any(|(id, peer)| id != client && peer.focused && peer.sizing.size(window).is_some());
+    active.sizing.size(window).is_some() && (active.focused || !focused_elsewhere)
 }
 
 fn step(count: usize, from: Option<usize>, direction: Direction) -> usize {
@@ -97,9 +100,8 @@ impl Client {
             (None, ClientRequest::Hello(hello)) => {
                 self.active = Some(Active {
                     current: None,
-                    size: hello.size.0,
                     focused: hello.focused,
-                    ignore_size: hello.ignore_size,
+                    sizing: hello.sizing,
                 });
                 Ok(Change::Hello(hello.selection))
             }
@@ -109,9 +111,9 @@ impl Client {
             }
             (Some(_), ClientRequest::Select(selection)) => Ok(Change::Select(selection)),
             (Some(_), ClientRequest::Switch(switch)) => Ok(Change::Switch(switch)),
-            (Some(active), ClientRequest::Size(size)) => {
-                active.size = size.0;
-                Ok(Change::Resize)
+            (Some(active), ClientRequest::Size { sizing }) => {
+                let previous = std::mem::replace(&mut active.sizing, sizing);
+                Ok(Change::Resize { previous })
             }
             (Some(active), ClientRequest::Focused { focused }) => {
                 active.focused = focused;
@@ -129,7 +131,7 @@ impl Client {
     }
 
     pub(crate) fn current(&self) -> Option<Current> {
-        self.active.and_then(|active| active.current)
+        self.active.as_ref().and_then(|active| active.current)
     }
 
     pub(crate) fn set_current(&mut self, current: Option<Current>) {
@@ -173,13 +175,41 @@ impl Client {
         })
     }
 
-    pub(crate) fn switch(&self, layout: &Layout, switch: Switch) -> Option<Current> {
+    pub(crate) fn switch(
+        &self,
+        layout: &Layout,
+        switch: Switch,
+        parent_of: &dyn Fn(PaneId) -> Option<PaneId>,
+    ) -> Option<Current> {
         let current = self.current();
         let selection = match switch.over {
             Over::Window => {
-                let windows: Vec<WindowId> =
-                    layout.windows().map(|(_, window)| window.id).collect();
-                let from = current.and_then(|c| windows.iter().position(|w| *w == c.window));
+                let roots: Vec<(WindowId, WindowId)> = layout
+                    .windows()
+                    .map(|(session, window)| {
+                        let mut root = window;
+                        for _ in 0..session.windows.len() {
+                            let Some(parent) = root.panes().into_iter().find_map(parent_of) else {
+                                break;
+                            };
+                            let Some((owner, ancestor)) = layout.locate(parent) else {
+                                break;
+                            };
+                            if owner.id != session.id {
+                                break;
+                            }
+                            root = ancestor;
+                        }
+                        (window.id, root.id)
+                    })
+                    .collect();
+                let windows: Vec<WindowId> = roots
+                    .iter()
+                    .filter_map(|(id, root)| (id == root).then_some(*id))
+                    .collect();
+                let from = current
+                    .and_then(|c| roots.iter().find(|(id, _)| *id == c.window))
+                    .and_then(|(_, root)| windows.iter().position(|w| w == root));
                 if windows.is_empty() {
                     return None;
                 }
@@ -210,6 +240,11 @@ impl Client {
     }
 
     pub(crate) fn forget(&mut self, layout: &Layout) {
+        if let Some(active) = &mut self.active {
+            active
+                .sizing
+                .retain(|entry| layout.window(entry.window).is_some());
+        }
         self.window_history.retain(|session, history| {
             history.retain(|window| {
                 layout
@@ -239,10 +274,18 @@ impl Client {
             })
         })
         .or_else(|| {
-            named(Selection {
-                pane: Some(parents.iter().find(|(pane, _)| *pane == current.pane)?.1),
-                ..Selection::default()
-            })
+            let mut pane = current.pane;
+            let mut seen = std::collections::BTreeSet::new();
+            while seen.insert(pane) {
+                pane = parents.iter().find(|(child, _)| *child == pane)?.1;
+                if let Some(current) = named(Selection {
+                    pane: Some(pane),
+                    ..Selection::default()
+                }) {
+                    return Some(current);
+                }
+            }
+            None
         })
         .or_else(|| {
             named(Selection {
@@ -309,7 +352,7 @@ mod tests {
     fn without(document: &Document, panes: &[u64]) -> Layout {
         let mut document = document.clone();
         for pane in panes {
-            document.remove_pane(PaneId::new(*pane));
+            document.remove(crate::layout::Remove::Pane(PaneId::new(*pane)), &|_| None);
         }
         document.layout().clone()
     }
@@ -334,12 +377,67 @@ mod tests {
         let mut client = Client::new(ClientId::new(1));
         client.active = Some(Active {
             current: None,
-            size: Size::DEFAULT,
             focused: false,
-            ignore_size: false,
+            sizing: Sizing::Windows {
+                viewport: crate::protocol::Size(Size::DEFAULT),
+                windows: crate::protocol::WindowSizes::default(),
+            },
         });
         client.set_current(Some(current));
         client
+    }
+
+    #[test]
+    fn window_switches_skip_descendants_but_keep_cross_session_children() {
+        let source = document(json!([
+            {"name":"a","windows":[
+                {"tree":leaf()}, {"tree":leaf()}, {"tree":leaf()}, {"tree":leaf()}]},
+            {"name":"b","windows":[{"tree":leaf()}]}
+        ]));
+        let parent = |pane: PaneId| {
+            [(2, 1), (3, 2), (5, 2)]
+                .into_iter()
+                .find(|(id, _)| PaneId::new(*id) == pane)
+                .map(|(_, parent)| PaneId::new(parent))
+        };
+        let client = at(current(1, 3, 3));
+        assert_eq!(
+            client.switch(
+                source.layout(),
+                Switch {
+                    over: Over::Window,
+                    direction: Direction::Next
+                },
+                &parent
+            ),
+            Some(current(1, 4, 4))
+        );
+        assert_eq!(
+            client.switch(
+                source.layout(),
+                Switch {
+                    over: Over::Window,
+                    direction: Direction::Previous
+                },
+                &parent
+            ),
+            Some(current(2, 5, 5))
+        );
+        assert_eq!(
+            at(current(2, 5, 5)).switch(
+                source.layout(),
+                Switch {
+                    over: Over::Window,
+                    direction: Direction::Next
+                },
+                &parent
+            ),
+            Some(current(1, 1, 1))
+        );
+        assert_eq!(
+            client.select(source.layout(), selection(None, None, Some(2))),
+            Some(current(1, 2, 2))
+        );
     }
 
     #[test]
@@ -396,7 +494,7 @@ mod tests {
             client.active = at(current(1, 1, 1)).active;
             client.set_current(from);
             client
-                .switch(&layout, switch(Over::Window, direction))
+                .switch(&layout, switch(Over::Window, direction), &|_| None)
                 .map(|c| c.window.to_string())
         };
         assert_eq!(
@@ -418,17 +516,20 @@ mod tests {
         );
         let client = at(current(1, 2, 3));
         assert_eq!(
-            client.switch(&layout, switch(Over::Session, Direction::Next)),
+            client.switch(&layout, switch(Over::Session, Direction::Next), &|_| None),
             Some(current(2, 3, 4))
         );
         assert_eq!(
-            client.switch(&layout, switch(Over::Session, Direction::Previous)),
+            client.switch(&layout, switch(Over::Session, Direction::Previous), &|_| {
+                None
+            }),
             Some(current(2, 3, 4))
         );
         assert_eq!(
             at(current(1, 1, 1)).switch(
                 &Layout { sessions: vec![] },
-                switch(Over::Window, Direction::Next)
+                switch(Over::Window, Direction::Next),
+                &|_| None
             ),
             None
         );
@@ -547,23 +648,39 @@ mod tests {
 
     #[test]
     fn a_window_is_claimed_by_a_focused_client_or_by_one_that_no_focused_client_shares_it_with() {
-        let mine = at(current(1, 1, 1)).active.unwrap();
-        let peer = |window: u64, focused, ignore_size| Active {
-            current: Some(current(1, window, 1)),
+        let peer = |window: u64, focused, disabled| Active {
+            current: Some(current(1, 3, 3)),
             focused,
-            ignore_size,
-            ..mine
+            sizing: if disabled {
+                Sizing::Disabled
+            } else {
+                Sizing::Windows {
+                    viewport: crate::protocol::Size(Size::DEFAULT),
+                    windows: vec![crate::protocol::WindowSize {
+                        window: WindowId::new(window),
+                        size: crate::protocol::Size(Size::DEFAULT),
+                    }]
+                    .try_into()
+                    .unwrap(),
+                }
+            },
         };
+        let mine = peer(1, false, false);
         let me = ClientId::new(1);
         let others = [(ClientId::new(2), peer(1, true, false))];
         let claims = |active: &Active, others: &[(ClientId, Active)]| {
-            claims(me, active, others.iter().map(|(id, peer)| (*id, peer)))
+            claims(
+                me,
+                active,
+                WindowId::new(1),
+                others.iter().map(|(id, peer)| (*id, peer)),
+            )
         };
         assert!(!claims(&mine, &others));
         assert!(claims(
             &Active {
                 focused: true,
-                ..mine
+                ..mine.clone()
             },
             &others
         ));
@@ -572,12 +689,12 @@ mod tests {
         assert!(claims(&mine, &[(ClientId::new(2), peer(1, false, false))]));
         assert!(!claims(
             &Active {
-                ignore_size: true,
-                ..mine
+                sizing: Sizing::Disabled,
+                ..mine.clone()
             },
             &[]
         ));
-        assert!(!claims(
+        assert!(claims(
             &Active {
                 current: None,
                 ..mine
@@ -597,7 +714,7 @@ mod tests {
             Err("hello must be first")
         );
         let hello: ClientRequest = serde_json::from_str(
-            r#"{"type":"hello","name":"t","window":"window_2","focused":false,"size":{"cols":8,"rows":8}}"#,
+            r#"{"type":"hello","name":"t","window":"window_2","focused":false,"sizing":{"type":"windows","viewport":{"cols":8,"rows":8},"windows":[]}}"#,
         )
         .unwrap();
         assert_eq!(

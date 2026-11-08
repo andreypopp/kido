@@ -158,7 +158,7 @@ extension PaneCommand {
             return .select(panes[(at + step) % panes.count].id)
         case .zoom: return .edit(.toggleZoom(KoSchema.EditToggleZoom(pane: pane)))
         case .equalize: return .edit(.equalize(KoSchema.EditEqualize(pane: pane)))
-        case .window, .newWindow, .close: return nil
+        case .window, .newWindow, .close, .parent, .child: return nil
         }
     }
 }
@@ -171,20 +171,9 @@ extension KoModel {
     }
 
     // After `window` of the session, else after its last window.
-    func newWindow(in id: SessionID, after window: WindowID?, _ choice: NewPaneRuntime = .inherit) -> KoSchema.Edit? {
+    func newWindow(in id: SessionID, after window: WindowID?, _ choice: NewPaneRuntime = .inherit, from pane: PaneID? = nil) -> KoSchema.Edit? {
         guard let session = layout.layout.session(id),
               let current = session.windows.first(where: { $0.id == window }) ?? session.windows.last else { return nil }
-        return .addWindow(KoSchema.EditAddWindow(after: current.id, new: newPane(from: source(in: current), choice), session: session.id))
-    }
-}
-
-extension KoClient {
-    // Moves the client to the session or window that an edit made.
-    func select(made created: KoSchema.Created?) throws {
-        switch created {
-        case .session(let created)?: try select(KO_SELECT_SESSION, created.session)
-        case .window(let created)?: try select(KO_SELECT_WINDOW, created.window)
-        case .pane?, nil: break
-        }
+        return .addWindow(KoSchema.EditAddWindow(after: current.id, new: newPane(from: pane ?? source(in: current), choice), session: session.id))
     }
 }

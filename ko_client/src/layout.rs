@@ -57,6 +57,20 @@ impl Display for EditError {
     }
 }
 
+impl From<Rejected> for EditError {
+    fn from(rejected: Rejected) -> Self {
+        if let Rejected::Status {
+            status: 400, body, ..
+        } = &rejected
+            && let Ok(error) = protocol::decode::<protocol::Error>(body)
+            && error.kind == protocol::ErrorKind::Invalid
+        {
+            return Self::Refused(Refusal::Invalid(error.message));
+        }
+        Self::Rejected(rejected)
+    }
+}
+
 fn decoded<T: Serialize + serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Rejected> {
     protocol::decode(body).map_err(|error| Rejected::Io(text(error)))
 }
@@ -137,7 +151,7 @@ pub(crate) fn edit_from(
     for _ in 0..ATTEMPTS {
         let mut layout = DraftLayout::from(&current.layout);
         apply(&mut layout, edit).map_err(EditError::Refused)?;
-        match put(current.revision, layout.clone()).map_err(EditError::Rejected)? {
+        match put(current.revision, layout.clone()).map_err(EditError::from)? {
             Ok(done) => {
                 return Ok(Edited {
                     created: created(&layout, &done),
@@ -151,7 +165,7 @@ pub(crate) fn edit_from(
 }
 
 pub fn edit(socket: &Path, who: Who, edit: &Edit) -> Result<Edited, EditError> {
-    let first = fetch(socket, who.clone(), None).map_err(EditError::Rejected)?;
+    let first = fetch(socket, who.clone(), None).map_err(EditError::from)?;
     edit_from(first, edit, |revision, layout| {
         send(socket, who.clone(), revision, layout, None)
     })

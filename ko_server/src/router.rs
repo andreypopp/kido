@@ -331,15 +331,15 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             reply::<routes::PatchPane>(&mut state.conns[index], result);
         }
         Request::DeletePane { id } => {
-            state.delete_pane(poll, id);
+            state.delete(poll, crate::layout::Remove::Pane(id));
             ok::<routes::DeletePane>(&mut state.conns[index], &Empty {});
         }
         Request::DeleteWindow { id } => {
-            let deleted = state.delete_window(poll, id);
+            let deleted = state.delete(poll, crate::layout::Remove::Window(id));
             ok_or_missing::<routes::DeleteWindow>(&mut state.conns[index], deleted, "window");
         }
         Request::DeleteSession { id } => {
-            let deleted = state.delete_session(poll, id);
+            let deleted = state.delete(poll, crate::layout::Remove::Session(id));
             ok_or_missing::<routes::DeleteSession>(&mut state.conns[index], deleted, "session");
         }
         Request::Input { id, body } => {
@@ -879,7 +879,7 @@ mod tests {
         );
         let hello = r#"["hello",["t","pane_1",true,{"cols":7,"rows":7},false]]"#;
         let _array_hello = server.connect(&[upgrade("/client"), text(hello)].concat());
-        let size_hello = r#"{"type":"hello","name":"t","pane":"pane_1","focused":false,"ignore_size":true,"size":[80,24]}"#;
+        let size_hello = r#"{"type":"hello","name":"t","pane":"pane_1","focused":false,"sizing":{"type":"windows","viewport":[80,24],"windows":[]}}"#;
         let _array_size = server.connect(&[upgrade("/client"), text(size_hello)].concat());
         let key = r#"{"type":"input","input":["key",["press",20,0,97,"a",false]]}"#;
         let _array_key = server.connect(&[upgrade("/panes/pane_1/view"), text(key)].concat());
@@ -910,7 +910,7 @@ mod tests {
             pane: crate::ids::PaneId::new(1),
             title: "x".repeat(400_000),
         });
-        let hello = r#"{"type":"hello","name":"t","focused":false,"size":{"cols":80,"rows":24}}"#;
+        let hello = r#"{"type":"hello","name":"t","focused":false,"sizing":{"type":"disabled"}}"#;
         let client = server.connect(&[upgrade("/client"), text(hello)].concat());
         let registered = server.state.registered(ClientId::new(1));
         let closed_at = (1..400).find(|_| {
@@ -946,11 +946,11 @@ mod tests {
     fn message() -> impl Strategy<Value = Vec<u8>> {
         prop_oneof![
             4 => prop::sample::select(vec![
-                r#"{"type":"hello","name":"t","focused":true,"size":{"cols":80,"rows":24}}"#,
-                r#"{"type":"hello","name":"t","pane":"pane_1","focused":false,"size":{"cols":4097,"rows":24}}"#,
+                r#"{"type":"hello","name":"t","focused":true,"sizing":{"type":"disabled"}}"#,
+                r#"{"type":"hello","name":"t","pane":"pane_1","focused":false,"sizing":{"type":"windows","viewport":{"cols":4097,"rows":24},"windows":[]}}"#,
                 r#"{"type":"select","pane":"pane_1"}"#,
                 r#"{"type":"select","pane":"pane_99"}"#,
-                r#"{"type":"size","cols":50,"rows":10,"cell_px":{"width":8,"height":16}}"#,
+                r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":50,"rows":10,"cell_px":{"width":8,"height":16}},"windows":[]}}"#,
                 r#"{"type":"focused","focused":true}"#,
                 r#"{"type":"resync","history":"all","images":"none"}"#,
                 r#"{"type":"input","input":{"type":"text","data":"aGk="}}"#,
@@ -1148,7 +1148,7 @@ mod tests {
 
     fn hello(extra: &str, focused: bool, cols: u16, rows: u16) -> String {
         format!(
-            r#"{{"type":"hello","name":"t",{extra}"focused":{focused},"size":{{"cols":{cols},"rows":{rows}}}}}"#
+            r#"{{"type":"hello","name":"t",{extra}"focused":{focused},"sizing":{{"type":"windows","viewport":{{"cols":{cols},"rows":{rows}}},"windows":[]}}}}"#
         )
     }
 
@@ -1268,6 +1268,42 @@ mod tests {
             Vec::<String>::new(),
             "a pane that was never published has no event, not even its death in the cleanup"
         );
+    }
+
+    #[test]
+    fn a_switch_answers_selected_when_the_window_does_not_change_or_none_remain() {
+        let mut server = harness("switch-answer");
+        server.put(|layout| {
+            layout["sessions"] = json!([{"name":"s","windows":[{"tree":{"pane":{"new":cat()}}}]}])
+        });
+        let mut peer = server.peer(&hello("", false, 80, 24));
+        peer.events(&mut server);
+        peer.send(
+            &mut server,
+            r#"{"type":"switch","over":"window","direction":"next"}"#,
+        );
+        let selected = peer
+            .events(&mut server)
+            .into_iter()
+            .filter(|event| event["type"] == "selected")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            selected,
+            [json!({"type":"selected","session":"session_1","window":"window_1","pane":"pane_1"})]
+        );
+        let removed = server.reply("DELETE /panes/pane_1", "\r\n");
+        assert!(removed.starts_with("HTTP/1.1 200"), "{removed}");
+        peer.events(&mut server);
+        peer.send(
+            &mut server,
+            r#"{"type":"switch","over":"window","direction":"previous"}"#,
+        );
+        let selected = peer
+            .events(&mut server)
+            .into_iter()
+            .filter(|event| event["type"] == "selected")
+            .collect::<Vec<_>>();
+        assert_eq!(selected, [json!({"type":"selected"})]);
     }
 
     #[test]
@@ -1397,54 +1433,6 @@ mod tests {
             server.step(Mode::Wait);
         }
         assert_eq!(windows(&server).len(), 2);
-    }
-
-    #[test]
-    fn a_window_takes_the_size_of_the_client_that_shows_it_and_its_panes_follow() {
-        let mut server = harness("sizing");
-        three_windows(&mut server);
-        server.put(|layout| {
-            layout["sessions"][0]["windows"][0]["tree"] = json!({"split": "h", "children": [
-                {"pane": "pane_1"}, {"pane": {"new": cat()}}]});
-        });
-        let size = |server: &Harness, pane: u64| {
-            let size = server
-                .state
-                .panes
-                .find(crate::ids::PaneId::new(pane))
-                .unwrap()
-                .size();
-            (size.cols.get(), size.rows.get())
-        };
-        let window = |server: &Harness, id: &str| {
-            let layout = server.state.layout_panes().snapshot.layout;
-            let (_, window) = layout
-                .windows()
-                .find(|(_, w)| w.id.to_string() == id)
-                .unwrap();
-            (window.cols.get(), window.rows.get())
-        };
-        let mut a = server.peer(&hello(r#""pane":"pane_1","#, true, 100, 30));
-        a.events(&mut server);
-        assert_eq!(window(&server, "window_1"), (100, 30));
-        assert_eq!((size(&server, 1), size(&server, 4)), ((50, 30), (49, 30)));
-        let mut b = server.peer(&hello(r#""pane":"pane_1","#, false, 60, 20));
-        b.events(&mut server);
-        assert_eq!(window(&server, "window_1"), (100, 30));
-        b.send(&mut server, r#"{"type":"size","cols":61,"rows":21}"#);
-        assert_eq!(window(&server, "window_1"), (100, 30));
-        b.send(&mut server, r#"{"type":"focused","focused":true}"#);
-        assert_eq!(window(&server, "window_1"), (61, 21));
-        a.send(&mut server, r#"{"type":"size","cols":90,"rows":25}"#);
-        assert_eq!(window(&server, "window_1"), (61, 21));
-        a.send(&mut server, r#"{"type":"select","window":"window_2"}"#);
-        assert_eq!(window(&server, "window_2"), (90, 25));
-        assert_eq!(size(&server, 2), (90, 25));
-        drop(b);
-        for _ in 0..20 {
-            server.step(Mode::Peek);
-        }
-        assert_eq!(window(&server, "window_1"), (61, 21));
     }
 
     #[test]

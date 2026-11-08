@@ -462,7 +462,7 @@ fn stream_client() -> ExitCode {
     let request: Value = serde_json::from_str(&hello).unwrap_or(Value::Null);
     if request["type"] != "hello"
         || request["focused"] != false
-        || request["ignore_size"] != true
+        || request["sizing"] != json!({"type": "disabled"})
         || request.get("pane").is_some()
         || request.get("window").is_some()
         || request.get("session").is_some()

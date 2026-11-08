@@ -483,21 +483,26 @@ child's poll. It is the only available action outside the child, and
 it ends a `tail -f` that an exited parent started. A pane without a
 parent is a root that the sweep must not cancel.
 
-The sweep never closes an `on_exit` or orphaned pane that a client
+The sweep never chooses an `on_exit` or orphaned pane that a client
 with terminal focus shows (protocol.md, section 3); it tries again when the focus changes.
 Waiting loses nothing. It does not protect a session's last window: an
 empty session ends.
 
-**A split window is the user's window.** The collection unit is the
-pane, not its window. The sweep removes the pane with a pane delete;
-a window that loses its last pane goes with it in the same change,
-and an empty session with it (protocol.md, section 7). After the
-removal, the sidebar draws an ordinary window with the user's
-remaining panes. The pane stop and its escalation do the same.
+**A removal takes the subtree.** The collection unit is the pane,
+not its window. The sweep removes the pane with a pane delete, which,
+as every delete, also removes the pane's descendants through their
+`parent` links, focused or not, in the same change; a window that
+loses its last pane goes with it, and an empty session with it
+(protocol.md, section 7). The server owns this cascade, so a close in
+Kido.app, a `ko api` delete and the sweep remove the same panes, and
+no client sends a delete for each descendant. The focus guard above
+only defers the sweep's choice of a pane; it does not keep a
+descendant of a pane that is removed. The pane stop and its
+escalation do the same.
 
 **The selection after a removal.** When the child's window goes with
-the child, its client moves to the child's `parent` pane while that
-pane exists, because the user came from there (protocol.md, section
+the child, its client moves to the child's nearest surviving
+ancestor pane, because the user came from there (protocol.md, section
 3). The death of an `on_exit` or `keep` pane alone moves no client,
 so the last screen stays readable for the linger grace. The removal
 of an `exit` pane moves its clients by the same repair rules.
@@ -619,12 +624,21 @@ rows (`ko_client/src/model.rs`, with the walk of
 spawned it, one level deeper, not after the whole parent window: the
 subagents belong to the coordinating agent, not a shell sharing its
 window. The edge is the row's immutable `parent`, which the server
-sets at create: a child's pane gets its spawner's pane. A window nests
-under the pane that the `parent` of its first pane with one names, in
-document order, and every pane of the window follows it, so a user's
-split beside a child pane nests under the same parent. A parent that
-is absent, in another session or in the window itself leaves the
-window a root.
+sets at create: a child's pane gets its spawner's pane. A pane with a
+`parent` is alone in its window, which the server enforces for every
+client (protocol.md, section 7), so a child window is one pane and
+nests under the pane that its `parent` names. A parent that is absent
+or in another session leaves the window a root of its session's tree,
+but its pane is still a child: it stays alone in its window, and a
+removal of its parent still takes it.
+
+A **top-level window** is one whose pane has no parent pane in the
+same session; every other window is a child window of the pane that
+its pane's `parent` names. The server's window switch (protocol.md,
+section 3) steps over top-level windows only: from a child window it
+steps from the child's top-level ancestor, so Next and Previous Window
+never enter child windows, in the terminal client and in Kido.app
+alike. The tree and the chooser reach the children.
 
 The terminal client draws the list as session headers and pane rows,
 indented by depth (`ko_tui/src/sidebar.rs`); its chooser (`C-a s`)

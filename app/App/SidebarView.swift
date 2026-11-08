@@ -48,6 +48,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     private let insertion = Insertion()
     private let dragOwner = UUID().uuidString
     var navigate: (Navigation, SelectionFocus) -> Void = { _, _ in }
+    var paneCommand: (PaneCommand, PaneID) -> Void = { _, _ in }
     var onIntent: () -> Void = {}
     var commandTarget: () -> PaneView? = { nil }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
@@ -144,6 +145,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     private let table = Table()
     private let scroll = DropScroll()
     private var snapshot: Snapshot?
+    private var projection = PaneProjection(nil)
+    private var expansion = SidebarExpansion()
     private let fonts = SidebarFonts()
     private var captionTimer: Timer?
     private var tick: Timer?
@@ -256,7 +259,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         Sidebar.focusView(window?.firstResponder)?.isDescendant(of: self) == true
     }
 
-    func show(_ next: Snapshot?, pin: SidebarRow.ID? = nil, captionTick: Bool = false) {
+    func show(_ next: Snapshot?, projection supplied: PaneProjection? = nil, pin: SidebarRow.ID? = nil, captionTick: Bool = false) {
         if !captionTick, pin == nil, renderedCollapsed == collapsed, next == snapshot, seededCaptions != nil || next == nil {
             snapshot = next
             return
@@ -272,12 +275,15 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         let anchor = first == NSNotFound ? nil : entry(first).map { ($0.id, origin.y - table.rect(ofRow: first).minY) }
         let recenter = dragging == nil && next.map { $0.client != snapshot?.client } ?? false
         let previousInstance = snapshot?.serverInstance
+        projection = supplied ?? (next == snapshot ? projection : PaneProjection(next))
         snapshot = next
         clockNow = serverNow
         let previous = items
         if next == nil || next?.serverInstance != previousInstance { seededCaptions = nil }
         var renderedCaptions = seededCaptions ?? SidebarCaptions()
-        items = renderedCaptions.apply(sidebarRows(snapshot), now: ProcessInfo.processInfo.systemUptime, delay: captionDelay)
+        let outline = sidebarRows(snapshot, expanded: expansion.expanded)
+        expansion.reconcile(outline.ids)
+        items = renderedCaptions.apply(outline.rows, now: ProcessInfo.processInfo.systemUptime, delay: captionDelay)
         if next != nil, pin == nil || seededCaptions != nil { seededCaptions = renderedCaptions }
         captionTimer?.invalidate()
         captionTimer = nil
@@ -320,11 +326,16 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         if let row = items.firstIndex(where: { recenter ? $0.target == next?.client : $0.id == selected }) {
             table.selectRowIndexes([row], byExtendingSelection: false)
             if recenter { table.scrollRowToVisible(row) }
+        } else if let pane = (recenter ? next?.client.pane : previous.first { $0.id == selected }?.target?.pane), let row = visibleSidebarRow(for: pane, in: items, projection: projection) {
+            table.selectRowIndexes([row], byExtendingSelection: false)
         } else { table.deselectAll(nil) }
         if !recenter {
             var y = anchor.flatMap { key, offset in items.firstIndex { $0.id == key }.map { table.rect(ofRow: $0).minY + offset } } ?? origin.y
             if pin != nil {
                 let top = dragging == nil ? 0 : max(0, -y)
+                if dragging != nil {
+                    table.setFrameSize(NSSize(width: table.frame.width, height: max(table.frame.height, y + scroll.contentView.bounds.height)))
+                }
                 scroll.contentInsets.top = top
                 y = min(max(y, -top), max(-top, table.frame.height - scroll.contentView.bounds.height))
             }
@@ -372,8 +383,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     func focus() {
         onIntent()
         table.keyboardSelection = true
-        if table.selectedRow < 0, let current = snapshot?.client,
-            let index = items.firstIndex(where: { $0.target == current })
+        if table.selectedRow < 0, let pane = snapshot?.client.pane,
+            let index = visibleSidebarRow(for: pane, in: items, projection: projection)
         {
             table.selectRowIndexes([index], byExtendingSelection: false)
         }
@@ -401,20 +412,32 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     }
 
     func select(_ target: Snapshot.Position) {
-        if let index = items.firstIndex(where: { $0.target == target }) {
+        if let index = visibleSidebarRow(for: target.pane, in: items, projection: projection) {
             table.selectRowIndexes([index], byExtendingSelection: false)
             table.scrollRowToVisible(index)
         }
     }
 
     func refresh() { show(snapshot) }
+    func resetExpansion() { expansion = SidebarExpansion(); seededCaptions = nil }
+
+    private func disclose(_ id: SidebarRow.ID, expanded: Bool) {
+        expansion.set(id, expanded: expanded)
+        show(snapshot, pin: id)
+    }
 
     fileprivate func key(_ event: NSEvent) -> Bool {
         guard editing == nil else { return true }
         let mods = event.modifierFlags.intersection([.command, .control, .option])
         switch (Int(event.keyCode), event.charactersIgnoringModifiers ?? "", mods) {
+        case (125, _, .command), (126, _, .command):
+            if let pane = entry(table.selectedRow)?.target?.pane { paneCommand(event.keyCode == 125 ? .child : .parent, pane) }
         case (125, _, []), (_, "j", []), (_, "n", .control): move(1)
         case (126, _, []), (_, "k", []), (_, "p", .control): move(-1)
+        case (124, _, []):
+            if let row = entry(table.selectedRow) { disclose(row.id, expanded: true) }
+        case (123, _, []):
+            if let row = entry(table.selectedRow) { disclose(row.id, expanded: false) }
         case (36, _, []), (76, _, []): activate(table.selectedRow, focus: .pane)
         case (53, _, []):
             navigate(.releaseSideFocus, .pane)
@@ -594,6 +617,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         cell.terminalDark = terminalDark
         cell.configure(item, now: clockNow)
         cell.close.invoke = { [weak self] in self?.closePane(item) }
+        cell.disclosure.invoke = { [weak self] in
+            guard let self else { return }
+            disclose(item.id, expanded: !expansion.expanded.contains(item.id))
+        }
         cell.addWindow.invoke = { [weak self] in self?.newWindow(item.id.session) }
         return cell
     }
@@ -607,6 +634,11 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     var visualTable: NSTableView { table }
     var visualScroll: NSScrollView { scroll }
     var visualRows: [SidebarRow] { items }
+    func visualExpandAll() {
+        expansion.expandAll(sidebarRows(snapshot))
+        show(snapshot, pin: items.first?.id)
+    }
+    func visualSetExpanded(_ id: SidebarRow.ID, _ expanded: Bool) { disclose(id, expanded: expanded) }
     func visualJump(_ row: SidebarRow) { activate(items.firstIndex { $0.id == row.id } ?? -1, focus: .pane) }
     var visualDragging: String? { dragging.map { "\($0)" } }
     var visualInsertion: NSRect? { insertion.isHidden ? nil : insertion.frame }

@@ -155,6 +155,10 @@ impl Panes {
         self.panes.iter().find(|pane| pane.id() == id)
     }
 
+    pub(crate) fn parent(&self, id: PaneId) -> Option<PaneId> {
+        self.find(id).and_then(Pane::parent)
+    }
+
     pub(crate) fn find_mut(&mut self, id: PaneId) -> Option<&mut Pane> {
         self.panes.iter_mut().find(|pane| pane.id() == id)
     }

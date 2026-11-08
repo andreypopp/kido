@@ -910,7 +910,8 @@ import PaneGeometry
         defer { pane.onCommand = onCommand }
         try await wait("current session ready") { owner.currentSession != nil }
         let session = try XCTUnwrap(owner.currentSession)
-        let source = try XCTUnwrap(owner.promptSource(session: session.id, window: try XCTUnwrap(pane.windowID), pane: pane.pane, quote: nil))
+        let position = try XCTUnwrap(PaneProjection(owner.snapshot).placements[pane.pane]?.position)
+        let source = try XCTUnwrap(owner.promptSource(position, quote: nil))
         let keyUp = try XCTUnwrap(NSEvent.keyEvent(with: .keyUp, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: owner.window.windowNumber, context: nil, characters: "a", charactersIgnoringModifiers: "a", isARepeat: false, keyCode: 0))
         XCTAssertTrue(keyUp.window === owner.window)
         let beforeMonitor = pane.visualKeyUps
@@ -1326,9 +1327,10 @@ import PaneGeometry
             snapshot.sessions[0].nodes[0].item.pane.status?.programStatus = .init(records: [
                 .working(.init(app: "pi", id: "")), .working(.init(id: "review", title: "Review palette"))], serial: 1)
         }
-        XCTAssertTrue(sidebarRows(snapshot).contains { $0.title == "Review palette" })
-        XCTAssertTrue(sidebarRows(snapshot).contains { $0.title == "main-watch" })
-        XCTAssertTrue(sidebarRows(snapshot).contains { $0.title == "@sidebar-mockup" })
+        XCTAssertFalse(sidebarRows(snapshot).rows.contains { $0.title == "Review palette" })
+        XCTAssertFalse(sidebarRows(snapshot).rows.contains { $0.title == "main-watch" })
+        XCTAssertFalse(sidebarRows(snapshot).rows.contains { $0.title == "@sidebar-mockup" })
+        XCTAssertNotNil(PaneProjection(snapshot).placements[PaneID(number: 936)])
         local.testReceive(snapshot)
         remote.testReceive(sidebarFixture { snapshot in
             snapshot.sessions[0].name = "remote-main"
@@ -1553,7 +1555,7 @@ import PaneGeometry
         addTeardownBlock { @MainActor in app.closePalette(); owner.close(); board.releaseGlobally() }
         owner.start()
         let first = SessionID(number: 1), survivor = SessionID(number: 2)
-        try await wait("two sessions and a working agent") { owner.snapshot?.sessions.count == 2 && closeScope(owner.snapshot, target: .session(first)).ask }
+        try await wait("two sessions and a working agent") { owner.snapshot?.sessions.count == 2 && closeScope(PaneProjection(owner.snapshot), target: .session(first)).ask }
         owner.perform(.selectSession(first))
         try await wait("selected session") { owner.navigation.session == first && PaneView.owner(owner.window.firstResponder) != nil }
         let pane = try XCTUnwrap(PaneView.owner(owner.window.firstResponder))
@@ -1606,7 +1608,7 @@ import PaneGeometry
         try await wait("palette renames the key window's session") { app.palettePanel == nil && owner.snapshot?.sessions.first { $0.id == first }?.name == "renamed" }
         app.closeSession()
         let alert = try XCTUnwrap(owner.preparedAlert?.alert)
-        XCTAssertEqual(alert.informativeText, "Programs are still running in this session. Closing the session will end them.")
+        XCTAssertEqual(alert.informativeText, "A program is still running in this session. Closing the session will end it.")
         owner.respondToAlert(.alertSecondButtonReturn)
         XCTAssertEqual(owner.snapshot?.sessions.count, 2)
         app.closeSession()
@@ -1616,7 +1618,7 @@ import PaneGeometry
         let quiet = SessionID(number: 3)
         try await wait("quiet session appears") { owner.snapshot?.sessions.contains { $0.id == quiet } == true }
         var quietSnapshot = try XCTUnwrap(owner.snapshot)
-        let quietPanes = Set(sidebarRows(quietSnapshot).compactMap { $0.target?.session == quiet ? $0.target?.pane : nil })
+        let quietPanes = Set(sidebarRows(quietSnapshot).rows.compactMap { $0.target?.session == quiet ? $0.target?.pane : nil })
         XCTAssertFalse(quietPanes.isEmpty)
         quietSnapshot.mapItems {
             if quietPanes.contains($0.id) {

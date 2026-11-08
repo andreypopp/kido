@@ -1,5 +1,136 @@
 # Sidebar reference — macOS 27
 
+## Children in place, collapsed by default — approved 2026-11-07
+
+Two changes the user asked for, previewed in the mockup ("Working
+session + states" and "Claude Code · child records"; the **Split
+Right** control above the window shows the layout rule). It is
+implemented; docs/design-app.md ("Children in the slot", "Folded
+children") is the reference for the code. The user answered every open
+question ("Decisions" below).
+
+**1. A child shows in its parent's place.** The window layout holds
+top-level panes only. A child window (a subagent, a run, a Claude Code
+child) never has a layout of its own: it is one pane, and the app
+shows it inside the slot of its top-level ancestor pane. Clicking a
+child row (or Enter on it) swaps that slot to the child and focuses it;
+the other slots of the window do not change. Clicking the parent row
+swaps the slot back. A grandchild shows in the same top-level slot. The
+tab strip is unchanged: the tab is the top-level window, and it stays
+active while a child shows. Each slot remembers the pane it shows
+(per top-level pane, in memory): switching tabs and back, or focusing
+another slot, keeps the child in place. When the shown pane goes (the
+run ends, the subagent's window closes), the slot returns to the
+parent. When the parent goes, the slot goes with its subtree, as
+today.
+
+- **Layout edits act on the top-level window only.** Split Right/Down
+  on a slot that shows a child adds the new pane beside that slot in
+  the top-level window; the child stays in its slot. Zoom zooms the
+  slot. Resize and float edits address the top-level pane. The app
+  never sends a layout edit to a child window; nested layouts stop
+  existing in the app. Close Pane (⌘W, the ×, the menu) closes the
+  focused pane: with a child shown that is the child (and its window),
+  through the same confirmation as today, and the slot returns to the
+  parent.
+- **No pill in the pane.** A slot that shows a child draws nothing to
+  say so; the sidebar row is the only sign. The keys move in the
+  hierarchy: ⌘↑ shows the parent of the focused pane in its slot,
+  ⌘↓ shows the child the slot last showed, or the first child when it
+  never showed one; both do nothing at the end of the chain. Focus
+  follows the shown pane.
+- **Focus.** The focused row is the pane on screen in the focused slot,
+  parent or child. No row marks a child that is on screen in an
+  unfocused slot.
+- **The server** (decided during the implementation, user,
+  2026-11-07) keeps a child window to one pane for every client,
+  removes a pane's whole subtree with it, and sizes each window that a
+  client reports, so a child gets its slot's size. ko_tui keeps
+  showing child windows as windows.
+
+**2. Children are collapsed by default.** A pane row with children
+(child windows and Claude Code child records alike) shows them folded.
+The hidden children appear as a third line of the row, under the
+title and the activity text: a row of 6pt status indicators, one for
+each direct child that is not shown as a row, in the children's
+order, 4pt apart, each in the
+child's own colour (the same dot or green check as its row would show;
+gray for idle). The circles start at the title's x, 30pt from the
+row's edge, and the child rows come to them: the nesting step is 15pt,
+so a child row's indicator (6pt in a 12pt slot, 12pt inset) also
+starts at 30pt, and a folded and an expanded child line up under the
+parent's text. The rest follow at 10pt centres. More
+than six: the first six, then `+N` in 10pt muted tabular digits.
+Exactly one hidden child: its name follows its circle on the same
+line, in the activity text's 11pt muted style, cut with an ellipsis
+before the trailing column, so the row keeps its height and the
+common case (one subagent, one run) reads without expanding. The
+line is a 12pt line box, so the row is 40pt (title + circles) or 54pt
+(title + activity + circles); the title and activity keep their
+places. The circles are the toggle: clicking them (or → on the
+selected row) expands the children; the line goes, the row shrinks
+back to 28/42pt, and a 10pt chevron-down appears in the trailing
+column after the clock; clicking it (or ←) folds them again. Hover
+brightens the circles and gives them the 10% labelColor fill at a 4pt
+radius. Clicking the row's body still focuses the pane. Expanded state
+is per pane, in memory, and goes with the pane.
+
+- **Waiting expands only its child.** A collapsed parent whose
+  descendant waits for input (a live agent, or a blocked Claude Code
+  record) shows that descendant's row, and the rows on the path to
+  it, under the circles line. The expanded child has no circle: the
+  line lists only the children that are not shown as rows, so each
+  child appears once, as a circle or as a row, and the circles plus
+  the rows are the whole set. A parent whose every child is shown
+  this way has no circles line and, until the user expands it, no
+  chevron either. When the wait clears, the row folds
+  back unless the user expanded the parent. A failure does not expand
+  anything: its red circle shows it. Neither does a completion.
+- **No tree guides.** The hierarchy guides go (user, 2026-11-07).
+  Nesting alone shows the hierarchy: the 15pt step per level (so a
+  child's indicator starts at its parent's title x), and the circles
+  line under a folded parent. The multi-pane window bracket
+  stays: the 1pt line 5pt inside a top-level window item that holds
+  more than one pane, from the first pane row's top plus 10pt to the
+  item's bottom minus 10pt, so it also spans the descendants shown
+  under those panes. The nested-guide geometry below is historical.
+
+### Decisions (user, 2026-11-07)
+
+- Children show in the parent's slot; layout edits act on top-level
+  panes; no nested layout.
+- Children collapsed by default, a toggle on the parent row, the hidden
+  children as circles, a waiting child expanded alone.
+- Only a waiting child expands on its own. A failed child stays a red
+  circle.
+- Claude Code child records fold under the same circles.
+- No pill in the pane. ⌘↑ and ⌘↓ move up and down the hierarchy in
+  the slot.
+- No mark on a child that is on screen in an unfocused slot.
+- Six circles, then `+N`, drawn as the row's third line under the
+  title and the activity text, not in the trailing column.
+- A single hidden child shows its name after its circle, in the small
+  muted font, on the same line (user, 2026-11-07).
+- No tree guides; nesting alone shows the hierarchy. The bracket that
+  groups the panes of a multi-pane window stays.
+- Condensed rows (user, "more condensed"): 13pt titles on an 18pt
+  line with 5pt vertical padding, so 28pt one-line rows; the activity
+  line is 11pt on 14pt, 23pt from the row's top, so 42pt; the circles
+  line is 12pt, so 40pt and 54pt. Session headers are 26pt with the
+  label 5pt from the top, and the gap after a session is 10pt. These
+  replace the 32/48pt rows, 29pt headers and 16pt session gap of the
+  draft below.
+- No gray circle (user): an idle indicator draws nothing, in the row's
+  leading slot and in the circles line alike, but keeps its 6pt
+  space, so nothing shifts: an idle row's title stays at 30pt, and an
+  idle child in the circles line is a gap that still counts. The
+  hover × still appears in the empty slot.
+- Tighter leading slot (user): the indicator slot is 12pt wide at the
+  12pt inset, with a 6pt gap to the text, so the dot's centre is 18pt
+  and the title, the activity text and the circles start at 30pt
+  from the row's edge (was a 16pt slot, an 8pt gap and 36pt). The
+  hover × fits the 12pt slot. The nesting step is 15pt again.
+
 ## Current redesign draft: uniform rows and hierarchy guides
 
 This preview now explores a new direction requested by the user, superseding the older geometry and no-guide decisions below. Native window chrome remains unchanged.

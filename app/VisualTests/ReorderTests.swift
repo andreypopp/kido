@@ -57,6 +57,12 @@ import PaneGeometry
         try await super.tearDown()
     }
 
+    private func expandedRows(_ snapshot: Snapshot) -> [SidebarRow] {
+        var expansion = SidebarExpansion()
+        expansion.expandAll(sidebarRows(snapshot))
+        return sidebarRows(snapshot, expanded: expansion.expanded).rows
+    }
+
     private func fixture(sessions count: UInt32? = nil) -> Snapshot {
         sidebarFixture { snapshot in
             if let count { snapshot.repeatSession(Array(0..<count)) }
@@ -88,6 +94,7 @@ import PaneGeometry
             return try edit?.wait() ?? KoSchema.Edited(snapshot: KoSchema.Snapshot(layout: KoSchema.Layout(sessions: []), revision: 1))
         }
         owner.testReceive(snapshot)
+        owner.sidebar.list.visualExpandAll()
         owner.window.contentView?.superview?.layoutSubtreeIfNeeded()
         owner.sidebar.list.layoutSubtreeIfNeeded()
         XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || NSApp.isActive)
@@ -166,7 +173,7 @@ import PaneGeometry
         let grabbed = try drop(list, at: center(table, header))
         _ = list.visualScroll.draggingUpdated(grabbed)
         XCTAssertEqual(list.visualRows.map(\.id), snapshot.sessions.map { .header($0.id) }, "only headings remain once the drag moves")
-        for row in 0..<table.numberOfRows { XCTAssertEqual(list.tableView(table, heightOfRow: row), 29) }
+        for row in 0..<table.numberOfRows { XCTAssertEqual(list.tableView(table, heightOfRow: row), 26) }
         XCTAssertEqual(try XCTUnwrap(viewportY(list, .header(source))), pinned, accuracy: 0.5, "the dragged heading stays where it was grabbed")
         XCTAssertFalse(owner.reorder.claim(.tab))
         XCTAssertFalse(owner.reorder.claim(.pane))
@@ -187,7 +194,7 @@ import PaneGeometry
         list.tableView(table, draggingSession: drag.session, endedAt: .zero, operation: .move)
         XCTAssertNil(list.visualDragging)
         XCTAssertNil(list.visualInsertion)
-        XCTAssertEqual(list.visualRows.map(\.id), sidebarRows(moved).map(\.id))
+        XCTAssertEqual(list.visualRows.map(\.id), expandedRows(moved).map(\.id))
         XCTAssertEqual(try XCTUnwrap(viewportY(list, .header(source))), dropped, accuracy: 0.5, "children return around the dropped heading")
         XCTAssertEqual(list.visualRows[table.selectedRow].id, .pane(SessionID(number: 13), PaneID(number: 905)), "selection survives by id")
         XCTAssertEqual(requests.count, 1, "no activation from the drag")
@@ -200,10 +207,10 @@ import PaneGeometry
         sent[0].reply(.reordered)
         try await wait("the reply", within: 5) { owner.reorder.state.pending?.replied == true }
         owner.testReceive(snapshot)
-        XCTAssertEqual(list.visualRows.map(\.id), sidebarRows(moved).map(\.id), "a stale snapshot keeps the optimistic order")
+        XCTAssertEqual(list.visualRows.map(\.id), expandedRows(moved).map(\.id), "a stale snapshot keeps the optimistic order")
         owner.testReceive(moved)
         XCTAssertNil(owner.reorder.state.pending)
-        XCTAssertEqual(list.visualRows.map(\.id), sidebarRows(moved).map(\.id))
+        XCTAssertEqual(list.visualRows.map(\.id), expandedRows(moved).map(\.id))
         XCTAssertNotNil(list.tableView(table, pasteboardWriterForRow: row))
         XCTAssertTrue(owner.reorder.claim(.tab))
         XCTAssertTrue(owner.notices.testTransients.entries.isEmpty)
@@ -265,7 +272,8 @@ import PaneGeometry
         try await wait("the revert", within: 5) { owner.reorder.state.pending == nil }
 
         let upper = try await nativeDrop(list, start: header()) {
-            table.convert(NSPoint(x: table.bounds.midX, y: table.rect(ofRow: 0).minY + 4), to: nil)
+            table.scrollRowToVisible(0)
+            return table.convert(NSPoint(x: table.bounds.midX, y: table.rect(ofRow: 0).minY + 4), to: nil)
         }
         XCTAssertEqual(upper.0, .move)
         XCTAssertTrue(upper.1, "the first heading's upper half means before it")
@@ -318,7 +326,7 @@ import PaneGeometry
         XCTAssertTrue(scroll.prepareForDragOperation(live) && scroll.performDragOperation(live))
         table.draggingSession(session, endedAt: .zero, operation: .move)
         XCTAssertEqual(requests, [.reorder(.window(main, group, relativeTo: last, .after))])
-        XCTAssertEqual(list.visualRows.map(\.id), sidebarRows(try XCTUnwrap(snapshot.reordered(.window(main, group, relativeTo: last, .after)))).map(\.id))
+        XCTAssertEqual(list.visualRows.map(\.id), expandedRows(try XCTUnwrap(snapshot.reordered(.window(main, group, relativeTo: last, .after)))).map(\.id))
         sent[0].reply(.failure("no such top-level window in session"))
         try await wait("the failure", within: 5) { owner.reorder.state.pending == nil }
         XCTAssertEqual(list.visualRows.map(\.id), rows.map(\.id), "a failure brings the rows back")
@@ -392,7 +400,7 @@ import PaneGeometry
         let cancelled = try await nativeDrop(list, start: header, cancel: true) { self.center(table, 0, dy: -6) }
         XCTAssertEqual(cancelled.0, .move)
         XCTAssertEqual(requests, [], "a cancelled heading drag sends nothing")
-        XCTAssertEqual(list.visualRows.map(\.id), sidebarRows(snapshot).map(\.id), "a cancelled drag restores every row")
+        XCTAssertEqual(list.visualRows.map(\.id), expandedRows(snapshot).map(\.id), "a cancelled drag restores every row")
         let (operation, accepted) = try await nativeDrop(list, start: header, midway: { owner.testReceive(busy) }) {
             let first = list.visualRows.firstIndex { $0.id == .header(SessionID(number: 0)) }!
             return self.center(table, first, dy: -6)
@@ -462,7 +470,7 @@ import PaneGeometry
         XCTAssertEqual(requests, [.reorder(move)])
         let moved = try XCTUnwrap(snapshot.reordered(move))
         list.tableView(table, draggingSession: drag.session, endedAt: .zero, operation: .move)
-        XCTAssertEqual(list.visualRows.map(\.id), sidebarRows(moved).map(\.id), "the whole block moves, children included")
+        XCTAssertEqual(list.visualRows.map(\.id), expandedRows(moved).map(\.id), "the whole block moves, children included")
 
         sent[0].reply(.failure("no such top-level window in session"))
 
@@ -480,7 +488,7 @@ import PaneGeometry
         XCTAssertTrue(list.visualScroll.performDragOperation(retry))
         list.tableView(table, draggingSession: again.session, endedAt: .zero, operation: .move)
         XCTAssertEqual(owner.notices.testTransients.entries.count, 1, "the failure stays on its own clock")
-        XCTAssertEqual(list.visualRows.map(\.id), sidebarRows(moved).map(\.id))
+        XCTAssertEqual(list.visualRows.map(\.id), expandedRows(moved).map(\.id))
         sent[1].reply(.reordered)
         try await wait("the reply", within: 5) { owner.reorder.state.pending?.replied == true }
         owner.testReceive(moved)
@@ -816,14 +824,17 @@ import PaneGeometry
         let snapshot = fixture()
         var model = SessionModel(session: SessionID(number: 0),
                                  windows: [0, 786, 5].map { .init(id: WindowID(number: $0), name: "w\($0)") }, window: WindowID(number: 0))
-        XCTAssertEqual(model.navigation(snapshot).tabs.map(\.id.number), [0])
+        XCTAssertEqual(model.navigation(snapshot, panes: PaneProjection(snapshot)).tabs.map(\.id.number), [0])
+        model.window = WindowID(number: 786)
+        XCTAssertEqual(model.navigation(snapshot, panes: PaneProjection(snapshot)).model.window, WindowID(number: 0))
+        XCTAssertEqual(model.navigation(snapshot, panes: PaneProjection(snapshot)).model.title, "Kido — w0")
         model.window = WindowID(number: 5)
-        let navigation = model.navigation(snapshot)
+        let navigation = model.navigation(snapshot, panes: PaneProjection(snapshot))
         XCTAssertEqual(navigation.tabs.map(\.id.number), [0, 5])
         XCTAssertEqual(navigation.tabs.filter(\.active).map(\.id.number), [5])
         XCTAssertEqual(navigation.model.title, "Kido — w5")
         XCTAssertEqual(navigation.model.select(.number(2)), .selectWindow(SessionID(number: 0), WindowID(number: 5)))
-        XCTAssertEqual(model.navigation(nil).tabs.map(\.id.number), [0, 786, 5])
+        XCTAssertEqual(model.navigation(nil, panes: PaneProjection(nil)).tabs.map(\.id.number), [0, 786, 5])
     }
 
     func testNavigationFollowsProjectedRootOrder() throws {
@@ -833,16 +844,16 @@ import PaneGeometry
                                             SessionModel.Session(id: main, name: "main", window: WindowID(number: 0))],
                                  session: main,
                                  windows: [797, 0, 5, 458].map { .init(id: WindowID(number: $0), name: "w\($0)") }, window: WindowID(number: 0))
-        let navigation = model.navigation(snapshot).model
+        let navigation = model.navigation(snapshot, panes: PaneProjection(snapshot)).model
         XCTAssertEqual(navigation.windows.map(\.id.number), [0, 458, 797], "snapshot roots order the tabs; an unreported non-current window is hidden")
         XCTAssertEqual(navigation.sessions.map(\.id), [main, SessionID(number: 1)])
-        XCTAssertEqual(model.navigation(snapshot).tabs.map(\.id.number), [0, 458, 797])
+        XCTAssertEqual(model.navigation(snapshot, panes: PaneProjection(snapshot)).tabs.map(\.id.number), [0, 458, 797])
         XCTAssertEqual(navigation.select(.number(1)), .selectWindow(main, WindowID(number: 0)))
-        XCTAssertEqual(model.navigation(nil).model.windows.map(\.id.number), [797, 0, 5, 458], "inventory order before the first snapshot")
+        XCTAssertEqual(model.navigation(nil, panes: PaneProjection(nil)).model.windows.map(\.id.number), [797, 0, 5, 458], "inventory order before the first snapshot")
 
         var state = ReorderState()
         XCTAssertNotNil(state.submit(.window(main, WindowID(number: 797), relativeTo: WindowID(number: 0), .before), to: snapshot))
-        let projected = model.navigation(state.project(snapshot)).model
+        let projected = model.navigation(state.project(snapshot), panes: PaneProjection(state.project(snapshot))).model
         XCTAssertEqual(projected.windows.map(\.id.number), [797, 0, 458])
         let menus = SessionMenus()
         var sent: [Navigation] = []

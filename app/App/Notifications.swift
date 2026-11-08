@@ -150,7 +150,7 @@ import UserNotifications
 
     func update(host: Host, snapshotOwner: WindowOwner? = nil) {
         let windows = owners.allObjects.filter { $0.alive && $0.host == host }
-        let shown = Set(windows.filter(\.attended).compactMap { $0.snapshot?.client.window })
+        let shown = Set(windows.filter(\.attended).flatMap(\.shownPanes))
         for owner in windows {
             guard let snapshot = owner.snapshot, !owner.feedFresh || owner === snapshotOwner else { continue }
             let effects = state.step(owner: owner.notificationID, host: host.clipboardKey, identity: owner.identity,

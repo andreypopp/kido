@@ -169,6 +169,7 @@ fn unfocused_first_client_sizes_pane() {
         selection: json!({"pane": p}),
         focused: false,
         size: size(51, 13),
+        windows: vec![json!("window_1")],
     });
     unfocused.welcome();
     let mut v = s.ws(&format!("/panes/{p}/view?history=none"));
@@ -179,7 +180,7 @@ fn unfocused_first_client_sizes_pane() {
         "rows of a pane sized by its unfocused first client"
     );
     let (mut focused, _) = s.client(Some(&p));
-    focused.send(&size_request(size(51, 9)));
+    focused.send(&size_request("window_1", size(51, 9)));
     let deadline = Instant::now() + DEADLINE;
     while decode(&v.snapshot().0, false).rows != 9 {
         assert!(Instant::now() < deadline, "no snapshot with 9 rows");
@@ -200,7 +201,7 @@ fn stalled_view_learns_resize_after_ring_retention() {
     let mut stalled = s.ws(&format!("/panes/{p}/view?history=all"));
     let mut reader = s.ws(&format!("/panes/{p}/view?history=all"));
     reader.snapshot();
-    sizer.send(&size_request(size(61, 21)));
+    sizer.send(&size_request("window_1", size(61, 21)));
     reader.event("marked");
     let mut flood = s.ws(&format!("/panes/{p}/view?history=all"));
     flood.snapshot();
@@ -386,7 +387,7 @@ fn view_resume_resize_and_input() {
     v.type_text("BARRIER");
     v.output("BARRIER");
 
-    c.send(&size_request(size(62, 22)));
+    c.send(&size_request("window_1", size(62, 22)));
     let marker = v.event("marked").to_string();
     assert!(marker.contains(r#""cols":62"#), "marker: {marker}");
 
@@ -444,7 +445,7 @@ fn view_resume_resize_and_input() {
         "pty input: {input:?}"
     );
 
-    c.send(&size_request(size(60, 20)));
+    c.send(&size_request("window_1", size(60, 20)));
     let marker = v.event("marked").to_string();
     assert!(marker.contains(r#""cols":60"#), "marker: {marker}");
     v.send(&resync("none"));

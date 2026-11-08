@@ -172,7 +172,7 @@ impl State {
             .enumerate()
             .filter_map(|(index, conn)| {
                 let client = client_of(conn)?;
-                let active = client.active?;
+                let active = client.active.as_ref()?;
                 let current = active
                     .current
                     .filter(|current| current.window == window.id)?;

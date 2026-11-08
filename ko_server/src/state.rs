@@ -451,7 +451,7 @@ impl State {
         let shell = || layout::shell_name(&self.config.settings(&read.server()).shell);
         let created = self
             .document
-            .put_with_shell(request, new_window, &shell)
+            .put_with_shell(request, new_window, &shell, &|pane| self.panes.parent(pane))
             .map_err(|error| match error {
                 PutError::Stale => PutFailure::Stale(self.document.snapshot()),
                 PutError::Invalid(message) => PutFailure::Invalid(message),
@@ -571,28 +571,16 @@ impl State {
         self.broadcast(event);
     }
 
-    pub(crate) fn delete_pane(&mut self, poll: &mut Poll, id: PaneId) {
-        let removal = self.document.remove_pane(id);
-        self.delete(poll, removal);
-    }
-
-    pub(crate) fn delete_window(&mut self, poll: &mut Poll, id: WindowId) -> bool {
-        let removal = self.document.remove_window(id);
-        self.delete(poll, removal)
-    }
-
-    pub(crate) fn delete_session(&mut self, poll: &mut Poll, id: SessionId) -> bool {
-        let removal = self.document.remove_session(id);
-        self.delete(poll, removal)
-    }
-
-    fn delete(&mut self, poll: &mut Poll, removal: Option<Removal>) -> bool {
-        let Some(Removal { panes, before }) = removal else {
+    pub(crate) fn delete(&mut self, poll: &mut Poll, target: layout::Remove) -> bool {
+        let Some(Removal { panes, before }) = self
+            .document
+            .remove(target, &|pane| self.panes.parent(pane))
+        else {
             return false;
         };
         let parents: Vec<_> = panes
             .iter()
-            .filter_map(|id| Some((*id, self.panes.find(*id)?.parent()?)))
+            .filter_map(|id| Some((*id, self.panes.parent(*id)?)))
             .collect();
         for pane in panes {
             self.close_views(pane);
@@ -732,7 +720,7 @@ impl State {
         self.conns
             .iter()
             .filter_map(client_of)
-            .filter_map(|client| client.active.filter(|active| active.focused))
+            .filter_map(|client| client.active.as_ref().filter(|active| active.focused))
             .filter_map(|active| active.current.map(|current| current.pane))
             .collect()
     }
@@ -750,7 +738,7 @@ impl State {
             .conns
             .get(index)
             .and_then(client_of)
-            .and_then(|c| c.active)
+            .and_then(|c| c.active.as_ref())
             .filter(|active| active.focused)
         else {
             return false;
@@ -770,7 +758,7 @@ impl State {
                 .conns
                 .get(index)
                 .and_then(client_of)
-                .and_then(|client| client.active)
+                .and_then(|client| client.active.as_ref())
                 .and_then(|active| active.current)
         {
             self.broadcast(&ClientEvent::Focus {
@@ -996,7 +984,7 @@ impl State {
                     dead: (&death).into(),
                 }));
                 if let pane_proc::Cause::Failed(_) = death.cause {
-                    self.delete_pane(poll, id);
+                    self.delete(poll, crate::layout::Remove::Pane(id));
                 }
                 self.runtimes_changed(poll);
                 self.sweep_soon(poll);
@@ -1528,6 +1516,7 @@ impl State {
         };
         let current = match change {
             Change::Hello(selection) => {
+                client.forget(layout);
                 let current = client.select(layout, selection).or_else(|| {
                     client.select(
                         layout,
@@ -1551,28 +1540,25 @@ impl State {
                 wire.ws.send(wire.out, protocol::json(&welcome));
                 let announced = ClientEvent::Layout(layout_panes(document, panes, |_| true));
                 wire.ws.send(wire.out, protocol::json(&announced));
+                self.claim_sizes(poll, index, &protocol::Sizing::Disabled);
                 current
             }
             Change::Select(selection) => match client.select(layout, selection) {
                 Some(current) => Some(current),
                 None => return wire.ws.reject(wire.out, crate::ws::Rejection::Invalid),
             },
-            Change::Switch(switch) => match client.switch(layout, switch) {
-                Some(current) => Some(current),
-                None => return,
-            },
+            Change::Switch(switch) => {
+                client.switch(layout, switch, &|pane| self.panes.parent(pane))
+            }
             Change::Claim => {
+                self.claim_sizes(poll, index, &protocol::Sizing::Disabled);
                 self.arrive(poll, index);
                 return self.refocus(poll);
             }
-            Change::Resize => {
-                let Some(active) = client.active else {
-                    return;
-                };
-                if let Some(current) = active.current
-                    && self.sizers.get(&current.window) == Some(&id)
-                    && self.size_window(poll, current.window, active.size)
-                {
+            Change::Resize { previous } => {
+                client.forget(layout);
+                self.claim_sizes(poll, index, &previous);
+                if self.document.unpublished() {
                     self.publish();
                 }
                 return;
@@ -1586,14 +1572,23 @@ impl State {
     }
 
     fn claim(&mut self, poll: &mut Poll, index: usize) -> bool {
+        let Some(current) = self
+            .conns
+            .get(index)
+            .and_then(client_of)
+            .and_then(Client::current)
+        else {
+            return false;
+        };
+        self.claim_window(poll, index, current.window)
+    }
+
+    fn claim_window(&mut self, poll: &mut Poll, index: usize, window: WindowId) -> bool {
         let Some(client) = self.conns.get(index).and_then(client_of) else {
             return false;
         };
         let id = client.id;
-        let Some(active) = client.active else {
-            return false;
-        };
-        let Some(current) = active.current else {
+        let Some(active) = client.active.as_ref() else {
             return false;
         };
         let others = self
@@ -1601,11 +1596,38 @@ impl State {
             .iter()
             .filter_map(client_of)
             .filter_map(|client| client.active.as_ref().map(|peer| (client.id, peer)));
-        if client::claims(id, &active, others) {
-            self.sizers.insert(current.window, id);
-            return self.size_window(poll, current.window, active.size);
+        if client::claims(id, active, window, others)
+            && let Some(size) = active.sizing.size(window)
+        {
+            self.sizers.insert(window, id);
+            return self.size_window(poll, window, size);
         }
         false
+    }
+
+    fn claim_sizes(&mut self, poll: &mut Poll, index: usize, previous: &protocol::Sizing) {
+        let Some(client) = self.conns.get(index).and_then(client_of) else {
+            return;
+        };
+        let id = client.id;
+        let Some(active) = client.active.as_ref() else {
+            return;
+        };
+        self.sizers
+            .retain(|window, owner| *owner != id || active.sizing.size(*window).is_some());
+        let sizes: Vec<_> = match &active.sizing {
+            protocol::Sizing::Disabled => Vec::new(),
+            protocol::Sizing::Windows { windows, .. } => windows.iter().copied().collect(),
+        };
+        for entry in sizes {
+            if previous.size(entry.window).is_some() {
+                if self.sizers.get(&entry.window) == Some(&id) {
+                    self.size_window(poll, entry.window, entry.size.0);
+                }
+            } else {
+                self.claim_window(poll, index, entry.window);
+            }
+        }
     }
 
     fn view_text(&mut self, poll: &mut Poll, index: usize, text: &[u8]) {
@@ -1851,12 +1873,14 @@ mod tests {
             .inbox_mut()
             .clear();
         assert!(!told(&rig, died), "the id left the ring");
-        rig.state.delete_pane(&mut rig.poll, died);
+        rig.state
+            .delete(&mut rig.poll, crate::layout::Remove::Pane(died));
         assert!(
             !told(&rig, died),
             "a pane that died is not told again as gone"
         );
-        rig.state.delete_pane(&mut rig.poll, lives);
+        rig.state
+            .delete(&mut rig.poll, crate::layout::Remove::Pane(lives));
         assert!(told(&rig, lives), "a pane removed alive is told as gone");
     }
 }

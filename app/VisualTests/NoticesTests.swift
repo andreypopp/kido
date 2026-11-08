@@ -95,7 +95,7 @@ import XCTest
                 }
                 if let anchored = owner.notices.testConfigCard ?? owner.notices.testCards.last { XCTAssertEqual(anchored.frame.minY, 16) }
                 if state == "float" {
-                    let float = try XCTUnwrap(owner.testSession?.windows.values.first(where: { !$0.isHidden })?.panes.last)
+                    let float = try XCTUnwrap(owner.testSession?.windows.values.first(where: { !$0.isHidden })?.panes.first { $0.pane == leaves[2] })
                     XCTAssertFalse(float.convert(float.bounds, to: owner.sidebar.content).intersection(try XCTUnwrap(cards.first).frame).isEmpty)
                 }
                 try await ready(owner)
@@ -192,38 +192,6 @@ import XCTest
                 }
             }
             owner.runtime.testConfigError(nil)
-        }
-    }
-
-    private func fullscreenHostImage(_ owner: WindowOwner, root: NSView) throws -> NSImage {
-        let size = root.bounds.size
-        let header = fullscreenHeader(width: size.width, background: nil)
-        header.titlebarAppearsTransparent = true
-        header.appearance = owner.window.appearance
-        defer { header.close() }
-        let host = try XCTUnwrap(header.contentView)
-        host.wantsLayer = true
-        host.layer?.backgroundColor = owner.runtime.background.cgColor
-        let tabs = WindowTabs(frame: owner.sidebar.tabs.convert(owner.sidebar.tabs.bounds, to: root))
-        tabs.frame.origin.y = 8
-        tabs.sidebar = owner.sidebar
-        tabs.theme = owner.sidebar.tabs.theme
-        tabs.entries = owner.sidebar.tabs.entries
-        host.addSubview(tabs)
-        host.layoutSubtreeIfNeeded()
-        header.display()
-        let bodyBitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
-        root.cacheDisplay(in: root.bounds, to: bodyBitmap)
-        let body = NSImage(size: size)
-        body.addRepresentation(bodyBitmap)
-        let headerBitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-        host.cacheDisplay(in: host.bounds, to: headerBitmap)
-        let band = NSImage(size: host.bounds.size)
-        band.addRepresentation(headerBitmap)
-        return NSImage(size: size, flipped: false) { rect in
-            body.draw(in: rect)
-            band.draw(in: NSRect(x: 0, y: size.height - 52, width: size.width, height: 52))
-            return true
         }
     }
 

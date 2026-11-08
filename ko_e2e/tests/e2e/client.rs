@@ -19,7 +19,8 @@ fn the_client_lists_a_child_pane_under_its_parent_indented_one_column() {
     };
     let parent = s.new_pane(title("parent"));
     s.screen_has(&parent, "TOKEN<");
-    s.new_pane(title("other"));
+    let other = s.new_pane(title("other"));
+    s.screen_has(&other, "TOKEN<");
     let mut request = title("child");
     request["parent"] = serde_json::json!(parent);
     request["close"] = serde_json::json!("on_exit");
@@ -44,6 +45,27 @@ fn the_client_lists_a_child_pane_under_its_parent_indented_one_column() {
         "{lines:?}"
     );
     assert!(s.has_pane(&child));
+    o.click(5, at("2   child") + 1);
+    o.line("CHILD-SELECTED");
+    s.screen_has(&child, "CHILD-SELECTED");
+    let before = s.doc();
+    o.prefix("%");
+    o.line("CHILD-STILL-USABLE");
+    s.screen_has(&child, "CHILD-STILL-USABLE");
+    assert_eq!(s.doc()["layout"], before["layout"]);
+    assert_eq!(s.doc()["revision"], before["revision"]);
+    o.prefix("p");
+    o.contains(&format!("TOKEN<{}>", s.token(&other).unwrap()));
+    o.line("PREVIOUS-SKIPS-CHILD");
+    s.screen_has(&other, "PREVIOUS-SKIPS-CHILD");
+    o.prefix("n");
+    o.contains(&format!("TOKEN<{}>", s.token(&parent).unwrap()));
+    o.line("NEXT-WRAPS-TO-ROOT");
+    s.screen_has(&parent, "NEXT-WRAPS-TO-ROOT");
+    o.prefix("n");
+    o.contains(&format!("TOKEN<{}>", s.token(&other).unwrap()));
+    o.line("NEXT-SKIPS-CHILD");
+    s.screen_has(&other, "NEXT-SKIPS-CHILD");
     o.detach();
 }
 

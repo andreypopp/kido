@@ -12,8 +12,15 @@ public struct SidebarRow: Equatable, Sendable {
         case error, waiting, running, done, quiet, endedFailed, endedClean
         func mergingTabStatus(_ other: Self) -> Self { min(self, other) }
     }
+    public struct HiddenChild: Equatable, Sendable {
+        public let title: String
+        public let status: Status
+    }
+    public enum Children: Equatable, Sendable {
+        case leaf, folded([HiddenChild]), expanded
+    }
     public enum Kind: Equatable, Sendable {
-        case header, pane(Snapshot.Position?), gap
+        case header, pane(Snapshot.Position, Children), program(Children), gap
     }
     public struct Guide: Equatable, Sendable {
         public let x: Double
@@ -21,9 +28,9 @@ public struct SidebarRow: Equatable, Sendable {
         public let bottom: Double
     }
     public let id: ID
-    public let kind: Kind
+    public internal(set) var kind: Kind
     public let indent: Int
-    public var height: Double
+    public var height: Double { switch kind { case .header: 26; case .gap: 10; case .pane, .program: contentHeight } }
     public let title: String
     public var tail: String
     // The runtime after the title; a nested row omits the one of the pane row above it.
@@ -36,14 +43,33 @@ public struct SidebarRow: Equatable, Sendable {
     public var agent = false
     public var root: WindowID?
     public var started: Int?
-    public var padding: Double { 7 }
-    public var leading: Double { 36 + Double(indent) * 15 }
-    public var indicatorX: Double { 20 + Double(indent) * 15 }
-    public var tailY: Double { 26 }
+    public var padding: Double { 5 }
+    public var leading: Double { 30 + Double(indent) * 15 }
+    public var indicatorX: Double { 18 + Double(indent) * 15 }
+    public var tailY: Double { 23 }
+    public var childrenY: Double { tail.isEmpty ? 23 : 37 }
+    public var children: Children {
+        switch kind { case .pane(_, let children), .program(let children): children; default: .leaf }
+    }
+    var contentHeight: Double {
+        let base = tail.isEmpty ? 28.0 : 42.0
+        if case .folded = children { return base + 12 }
+        return base
+    }
     public var topLevel: Snapshot.Position? { indent == 0 ? target : nil }
     public var target: Snapshot.Position? {
-        if case .pane(let target) = kind { return target }; return nil
+        if case .pane(let target, _) = kind { return target }; return nil
     }
+}
+
+public struct SidebarExpansion: Equatable, Sendable {
+    public private(set) var expanded: Set<SidebarRow.ID> = []
+    public init() {}
+    public mutating func set(_ id: SidebarRow.ID, expanded: Bool) {
+        if expanded { self.expanded.insert(id) } else { self.expanded.remove(id) }
+    }
+    public mutating func reconcile(_ ids: Set<SidebarRow.ID>) { expanded.formIntersection(ids) }
+    public mutating func expandAll(_ outline: SidebarOutline) { expanded.formUnion(outline.expandable) }
 }
 
 public func sidebarTitle(_ title: String, messageable: Bool) -> String {
@@ -155,7 +181,7 @@ extension Item {
         return false
     }
 
-    var rowTitle: String {
+    public var rowTitle: String {
         quietShell ? "Terminal" : sidebarTitle(label, messageable: isMessageable)
     }
 
@@ -177,56 +203,67 @@ extension Item {
     }
 }
 
-public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
-    guard let snapshot else { return [] }
-    var rows: [SidebarRow] = []
-    for session in snapshot.sessions {
-        rows.append(SidebarRow(id: .header(session.id), kind: .header, indent: 0, height: 29,
-                               title: session.name, tail: "", status: .quiet, focused: false))
-        func guide(_ start: Int, end: Int? = nil, x: Double, topInset: Double = 10) {
-            let end = end ?? rows.count
-            let height = rows[start..<end].reduce(0) { $0 + $1.height }
-            var offset = 0.0
-            for index in start..<end {
-                let top = max(0, topInset - offset)
-                let bottom = min(rows[index].height, height - 10 - offset)
-                if bottom > top { rows[index].guides.append(.init(x: x, top: top, bottom: bottom)) }
-                offset += rows[index].height
-            }
+public struct SidebarOutline: Equatable, Sendable {
+    public let rows: [SidebarRow]
+    public let ids: Set<SidebarRow.ID>
+    let expandable: Set<SidebarRow.ID>
+}
+
+public func sidebarRows(_ snapshot: Snapshot?, expanded: Set<SidebarRow.ID> = []) -> SidebarOutline {
+    guard let snapshot else { return SidebarOutline(rows: [], ids: [], expandable: []) }
+    typealias Branch = (row: SidebarRow, following: [SidebarRow], waiting: Bool)
+    var ids: Set<SidebarRow.ID> = []
+    var expandable: Set<SidebarRow.ID> = []
+    func finish(_ raw: SidebarRow, children: [Branch]) -> Branch {
+        ids.insert(raw.id)
+        if children.contains(where: { !$0.waiting }) { expandable.insert(raw.id) }
+        var row = raw
+        let open = expanded.contains(row.id)
+        let hidden = open ? [] : children.filter { !$0.waiting }
+        let disclosure: SidebarRow.Children = children.isEmpty || (!open && hidden.isEmpty) ? .leaf
+            : open ? .expanded : .folded(hidden.map { .init(title: $0.row.title, status: $0.row.status) })
+        switch row.kind {
+        case .pane(let position, _): row.kind = .pane(position, disclosure)
+        case .program: row.kind = .program(disclosure)
+        default: break
         }
-        func windows(_ nodes: [Node], depth: Int, root: WindowID?, above: String? = nil) {
-            for node in nodes {
-                let root = root ?? node.window
-                let start = rows.count
-                let panes: [Item] = switch node { case .window(let group): group.children; case .item(let item): [item] }
-                let multiPane = panes.count > 1
-                for item in panes {
-                    let (status, description) = item.indicator
-                    let target = Snapshot.Position(session: session.id, window: item.window, pane: item.id)
-                    let tail = item.caption
-                    let agent = item.isAgent
-                    let title = item.rowTitle
-                    let height = tail.isEmpty ? 32.0 : 48.0
-                    let parent = rows.count
-                    rows.append(SidebarRow(id: .pane(session.id, item.id), kind: .pane(target), indent: depth,
-                                           height: height,
-                                           title: title,
-                                           tail: tail, runtime: item.runtime.flatMap { $0.name == above ? nil : $0 },
-                                           status: status, indicatorDescription: description,
-                                           focused: target == snapshot.client,
-                                           quietShell: item.quietShell,
-                                           agent: agent, root: root, started: { if case .live = item.lifecycle, item.pane.parent != nil { item.pane.started } else { nil } }()))
-                    let records = (item.pane.status?.programStatus.records ?? []).filter { !$0.id.isEmpty }.sorted { a, b in
-                        let left = a.id.split(separator: "/", omittingEmptySubsequences: false)
-                        let right = b.id.split(separator: "/", omittingEmptySubsequences: false)
-                        for (a, b) in zip(left, right) {
-                            if !a.utf8.elementsEqual(b.utf8) { return a.utf8.lexicographicallyPrecedes(b.utf8) }
-                        }
-                        return left.count < right.count
+        let following = children.filter { open || $0.waiting }.flatMap { [$0.row] + $0.following }
+        return (row, following, row.status == .waiting || children.contains { $0.waiting })
+    }
+    func windows(_ nodes: [Node], session: SessionID, depth: Int, root: WindowID?, above: String? = nil) -> [Branch] {
+        nodes.flatMap { node -> [Branch] in
+            let root = root ?? node.window
+            let panes: [Item] = switch node { case .window(let group): group.children; case .item(let item): [item] }
+            return panes.map { item -> Branch in
+                let (status, description) = item.indicator
+                let target = Snapshot.Position(session: session, window: item.window, pane: item.id)
+                let row = SidebarRow(id: .pane(session, item.id), kind: .pane(target, .leaf), indent: depth,
+                                     title: item.rowTitle, tail: item.caption,
+                                     runtime: item.runtime.flatMap { $0.name == above ? nil : $0 },
+                                     status: status, indicatorDescription: description, focused: target == snapshot.client,
+                                     quietShell: item.quietShell, agent: item.isAgent, root: root,
+                                     started: { if case .live = item.lifecycle, item.pane.parent != nil { item.pane.started } else { nil } }())
+                let records = (item.pane.status?.programStatus.records ?? []).filter { !$0.id.isEmpty }.sorted { a, b in
+                    let left = a.id.split(separator: "/", omittingEmptySubsequences: false)
+                    let right = b.id.split(separator: "/", omittingEmptySubsequences: false)
+                    for (a, b) in zip(left, right) {
+                        if !a.utf8.elementsEqual(b.utf8) { return a.utf8.lexicographicallyPrecedes(b.utf8) }
                     }
-                    let recordIDs = Set(records.map { Array($0.id.utf8) })
-                    let recordStart = rows.count
-                    for record in records {
+                    return left.count < right.count
+                }
+                let recordIDs = Set(records.map { Data($0.id.utf8) })
+                var byParent: [Data?: [KoSchema.ProgramRecord]] = [:]
+                for record in records {
+                    var prefix = Data(record.id.utf8)
+                    var parent: Data?
+                    while let slash = prefix.lastIndex(of: UInt8(ascii: "/")) {
+                        prefix = prefix.prefix(upTo: slash)
+                        if recordIDs.contains(prefix) { parent = prefix; break }
+                    }
+                    byParent[parent, default: []].append(record)
+                }
+                func recordRows(_ parent: Data?, depth: Int) -> [Branch] {
+                    (byParent[parent] ?? []).map { record in
                         let (status, description, title, msg, started): (SidebarRow.Status, String, String?, String?, Int?) = switch record {
                         case .working(let r): (.running, "working", r.title, r.msg, r.started)
                         case .blocked(let r): (.waiting, "blocked", r.title, r.msg, r.started)
@@ -234,45 +271,64 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                         case .error(let r): (.error, "error", r.title, r.msg, nil)
                         case .idle(let r): (.quiet, "idle", r.title, r.msg, nil)
                         }
-                        let caption = msg ?? ""
-                        let height = caption.isEmpty ? 32.0 : 48.0
-                        let ancestors = record.id.utf8.indices.count {
-                            record.id.utf8[$0] == UInt8(ascii: "/") && recordIDs.contains(Array(record.id.utf8[..<$0]))
-                        }
-                        rows.append(SidebarRow(id: .program(session.id, item.id, Data(record.id.utf8)),
-                                               kind: .pane(nil),
-                                               indent: depth + 1 + ancestors, height: height,
-                                               title: title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
-                                               tail: caption, status: [.done, .error].contains(status) && item.pane.recordsSeen ? .quiet : status,
-                                               indicatorDescription: description,
-                                               focused: false, agent: true, root: root,
-                                               started: started))
-                    }
-                    if !records.isEmpty {
-                        for (index, record) in records.enumerated() {
-                            let prefix = record.id + "/"
-                            let count = records[(index + 1)...].prefix { $0.id.utf8.starts(with: prefix.utf8) }.count
-                            if count > 0 {
-                                guide(recordStart + index, end: recordStart + index + count + 1,
-                                      x: rows[recordStart + index].indicatorX, topInset: 22)
-                            }
-                        }
-                    }
-                    if !item.children.isEmpty {
-                        windows(item.children, depth: depth + 1, root: root, above: item.runtime?.name)
-                    }
-                    if rows.count > parent + 1 {
-                        guide(parent, x: rows[parent].indicatorX, topInset: 22)
+                        let id = Data(record.id.utf8)
+                        let row = SidebarRow(id: .program(session, item.id, id), kind: .program(.leaf), indent: depth,
+                                             title: title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
+                                             tail: msg ?? "", status: [.done, .error].contains(status) && item.pane.recordsSeen ? .quiet : status,
+                                             indicatorDescription: description, focused: false, agent: true, root: root, started: started)
+                        return finish(row, children: recordRows(id, depth: depth + 1))
                     }
                 }
-                if depth == 0 && multiPane { guide(start, x: 5) }
+                return finish(row, children: recordRows(nil, depth: depth + 1)
+                    + windows(item.children, session: session, depth: depth + 1, root: root, above: item.runtime?.name))
             }
         }
-        windows(session.nodes, depth: 0, root: nil)
-        rows.append(SidebarRow(id: .gap(session.id), kind: .gap, indent: 0, height: 16,
-                               title: "", tail: "", status: .quiet, focused: false))
+    }
+    var rows: [SidebarRow] = []
+    for session in snapshot.sessions {
+        let header = SidebarRow(id: .header(session.id), kind: .header, indent: 0, title: session.name, tail: "", status: .quiet, focused: false)
+        let gap = SidebarRow(id: .gap(session.id), kind: .gap, indent: 0, title: "", tail: "", status: .quiet, focused: false)
+        rows.append(header)
+        rows.append(contentsOf: windows(session.nodes, session: session.id, depth: 0, root: nil).flatMap { [$0.row] + $0.following })
+        rows.append(gap)
+    }
+    return SidebarOutline(rows: rows, ids: ids, expandable: expandable)
+}
+
+private func sidebarBrackets(_ original: [SidebarRow]) -> [SidebarRow] {
+    var rows = original
+    var start = 0
+    while start < rows.count {
+        guard let root = rows[start].root else { start += 1; continue }
+        var end = start
+        var height = 0.0
+        var panes = 0
+        while end < rows.count, rows[end].root == root {
+            rows[end].guides = []
+            height += rows[end].height
+            if rows[end].indent == 0, rows[end].target != nil { panes += 1 }
+            end += 1
+        }
+        if panes > 1 {
+            var offset = 0.0
+            for index in start..<end {
+                let top = max(0, 10 - offset), bottom = min(rows[index].height, height - 10 - offset)
+                if bottom > top { rows[index].guides = [.init(x: 5, top: top, bottom: bottom)] }
+                offset += rows[index].height
+            }
+        }
+        start = end
     }
     return rows
+}
+
+public func visibleSidebarRow(for pane: PaneID, in rows: [SidebarRow], projection: PaneProjection) -> Int? {
+    var current: PaneID? = pane
+    while let id = current {
+        if let index = rows.firstIndex(where: { $0.target?.pane == id }) { return index }
+        current = projection.placements[id]?.parent
+    }
+    return nil
 }
 
 public func sidebarElapsed(started: Int, now: Int) -> String {
@@ -293,8 +349,8 @@ public struct SidebarCaptions {
     public mutating func apply(_ rows: [SidebarRow], now: TimeInterval, delay: TimeInterval) -> [SidebarRow] {
         let present = Set(rows.map(\.id))
         captions = captions.filter { present.contains($0.key) }
-        return rows.map { raw in
-            guard case .pane = raw.kind else { return raw }
+        let updated = rows.map { raw in
+            switch raw.kind { case .pane, .program: break; default: return raw }
             var caption = captions[raw.id] ?? Caption(shown: raw.tail)
             if raw.tail == caption.shown { caption.pending = nil }
             else {
@@ -307,11 +363,8 @@ public struct SidebarCaptions {
             captions[raw.id] = caption
             var row = raw
             row.tail = caption.shown
-            row.height = caption.shown.isEmpty ? 32 : 48
-            row.guides = raw.guides.map { guide in
-                .init(x: guide.x, top: guide.top, bottom: guide.bottom + row.height - raw.height)
-            }
             return row
         }
+        return sidebarBrackets(updated)
     }
 }

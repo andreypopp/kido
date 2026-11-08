@@ -331,9 +331,9 @@ typedef int (*ko_restore_fn)(void *user, const ko_snapshot *snapshot);
 
 /*
  * What the client tells the server in its hello. `sizes_windows` says that its
- * window takes part in sizing: the windows that it shows get its size. The core
- * sends the latest size and focus again in every later hello, but this flag
- * stays. `name` is NUL-terminated and tells the server's log which client
+ * window takes part in sizing. The core sends the latest viewport and focus in
+ * each later hello, with no window claims. Report displayed windows after Welcome.
+ * This flag stays fixed. `name` is NUL-terminated and tells the server's log which client
  * this is; NULL means "app".
  */
 typedef struct ko_hello {
@@ -527,11 +527,27 @@ enum {
 
 ko_code ko_client_switch(const ko_client *client, int over, int direction);
 
+typedef struct {
+    uint16_t cols;
+    uint16_t rows;
+    uint16_t cell_width;
+    uint16_t cell_height;
+} ko_size;
+
+typedef struct {
+    const char *window;
+    ko_size size;
+} ko_window_size;
+
 /*
- * The size of the window, and the pixel size of a cell for a program's size queries (0 and 0 when
- * unknown). It counts only for a client that said `sizes_windows`.
+ * Replace all window size claims. viewport supplies the initial size of new windows.
+ * Cell pixel dimensions are both zero when unknown. The client must have sizes_windows.
+ * windows points to count entries valid for this call, and is NULL only when count is zero.
+ * Each window is a NUL-terminated UTF-8 ID. The call copies and validates all data before
+ * it changes state. It keeps no pointers after return. Invalid data returns KO_ERR_ARGUMENT.
+ * After each Welcome, report the displayed windows again; reports are not replayed on reconnect.
  */
-ko_code ko_client_size(const ko_client *client, uint16_t cols, uint16_t rows, uint16_t cell_width, uint16_t cell_height);
+ko_code ko_client_size(const ko_client *client, ko_size viewport, const ko_window_size *windows, size_t count);
 
 ko_code ko_client_focus(const ko_client *client, bool focused);
 

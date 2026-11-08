@@ -78,6 +78,7 @@ import KoModel
         list.frame = NSRect(x: 0, y: 0, width: 300, height: 110)
         window.contentView!.addSubview(list)
         list.show(snapshot)
+        list.visualExpandAll()
         list.layoutSubtreeIfNeeded()
         let index = try XCTUnwrap(list.visualRows.firstIndex { $0.target != nil })
         let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
@@ -94,7 +95,7 @@ import KoModel
         cell.mouseEntered(with: mouse(.mouseEntered, at: cell.convert(NSPoint(x: cell.close.frame.midX, y: cell.close.frame.midY), to: nil), in: window))
         cell.layoutSubtreeIfNeeded()
         XCTAssertFalse(cell.close.isHidden)
-        XCTAssertEqual(cell.close.frame.midX, 20)
+        XCTAssertEqual(cell.close.frame.midX, 18)
         try click(cell.close)
         XCTAssertEqual(paneCloses, [PaneID(number: 4)])
         XCTAssertEqual(activations, 0)
@@ -124,7 +125,7 @@ import KoModel
         let pane = try XCTUnwrap(owner.testSession?.windows[created]?.panes.first)
         try await wait("new window receives terminal focus") { owner.window.firstResponder === pane }
         func status(_ running: Bool, pane: PaneView, created: WindowID) async throws {
-            try await wait("the snapshot has the pane") { sidebarRows(owner.snapshot).contains { $0.target?.pane == pane.pane } }
+            try await wait("the snapshot has the pane") { sidebarRows(owner.snapshot).rows.contains { $0.target?.pane == pane.pane } }
             let phase: KoSchema.Phase = running ? .running(.init(fullscreen: false, origin: .command(.init(command: "sleep 60", startedAt: fixtureSince)))) : .idle(.init())
             let snapshot = withLifecycle(try XCTUnwrap(owner.snapshot), pane: pane.pane,
                 .live(.host(.init(pane: .terminal(KoSchema.Shell(phase: phase, report: nil))))), mark: running ? .running : .none_)
@@ -137,7 +138,7 @@ import KoModel
         tabs.mouseEntered(with: mouse(.mouseEntered, at: tabPoint, in: owner.window))
         tabs.layoutSubtreeIfNeeded()
         try click(tabs.closeButton)
-        XCTAssertEqual(owner.preparedAlert?.alert.informativeText, "Programs are still running in this window. Closing the window will end them.")
+        XCTAssertEqual(owner.preparedAlert?.alert.informativeText, "A program is still running in this window. Closing the window will end it.")
         owner.respondToAlert(.alertSecondButtonReturn)
         try await wait("window confirmation dismissed") { owner.window.attachedSheet == nil }
         try await status(true, pane: pane, created: created)

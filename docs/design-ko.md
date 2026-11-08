@@ -294,13 +294,19 @@ the server applies it to the stored tree with tmux's rule (below).
 A **client** is one open `/client` WebSocket: it exists from the hello
 to the close, with no linger and no orphans. The client owns what it
 shows: a reconnect is a new client whose hello carries its state
-again. The window that a client shows is sized by the client that
-claims it: the one whose input focus is on the window, or the one
-that last switched to it. A size from another client never claims the
-window, because a second app window on a smaller monitor would
-otherwise steal the size on every resize of its own. When the sizing
-client disconnects, the window keeps its size until another client
-claims it.
+again. A client reports every window that it displays with the size
+of its area: Kido.app its tab's window and the window of each child
+pane that a slot shows, the terminal client its one window. Each
+window is sized by the client that claims it: the one whose input
+focus is on a client that displays the window, else the one that last
+switched to it or began to display it. A report from another client
+never claims the window, because a second app window on a smaller
+monitor would otherwise steal the size on every resize of its own.
+When the sizing client withdraws the window or disconnects, the
+window keeps its size until another client claims it. The rule is
+per window, not per client: one client can own the root window of its
+tab and the windows of the children in its slots, each at its own
+size, while another client owns a window that both display.
 Kido.app and the terminal client follow the same rule for every window,
 with splits and floats too. A client sends the size of the area where
 it shows the window, never a leaf size, and the server fits the tree

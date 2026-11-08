@@ -2,6 +2,7 @@ import AppKit
 import GhosttyKit
 import KoModel
 import PaneGeometry
+import SidebarFeed
 
 final class SessionView: NSView {
     // The client whose views feed the panes.
@@ -11,19 +12,20 @@ final class SessionView: NSView {
     var editing: () -> Bool = { false }
     var selectPane: (PaneID) -> Void = { _ in }
     var paneCommand: (PaneCommand, PaneID) -> Void = { _, _ in }
-    var sizeClient: (Int, Int, KoSchema.CellPixels?) -> Void = { _, _, _ in }
-    private struct Size: Equatable {
-        let cols: Int
-        let rows: Int
-        let cell: KoSchema.CellPixels?
+    var sizeClient: (KoSize, [KoWindowSize]) -> Bool = { _, _ in false }
+    private struct Report: Equatable {
+        let viewport: KoSize
+        let windows: [KoWindowSize]
     }
-    private var requestedSize: Size?
-    private var sentSize: Size?
+    private var requestedSize: KoSize?
+    private var sentSize: Report?
+
+    func resetSizeReport() { sentSize = nil }
 
     // The size for the server, sent at most once a frame and only when it or the cell's pixels changed.
     func requestSize(cols: Int, rows: Int, immediately: Bool = false) {
         let queued = requestedSize != nil
-        requestedSize = Size(cols: cols, rows: rows, cell: cellPixels)
+        requestedSize = KoSize(cols: cols, rows: rows, cell: cellPixels)
         if immediately { return sendRequestedSize() }
         guard !queued else { return }
         DispatchQueue.main.async { [weak self] in self?.sendRequestedSize() }
@@ -32,9 +34,10 @@ final class SessionView: NSView {
     private func sendRequestedSize() {
         guard let size = requestedSize else { return }
         requestedSize = nil
-        guard sentSize.map({ $0 != size }) ?? true else { return }
-        sentSize = size
-        sizeClient(size.cols, size.rows, size.cell)
+        let windows = shown?.sizeReport(viewport: size) ?? []
+        let report = Report(viewport: size, windows: windows)
+        guard sentSize != report else { return }
+        if sizeClient(size, windows) { sentSize = report }
     }
     #if KIDO_VISUAL
     var visualShown: (WindowID) -> Void = { _ in }
@@ -89,7 +92,7 @@ final class SessionView: NSView {
     }
 
     // The windows of the current session, the ids of every window of the server, and the client's selected pane.
-    func update(_ listing: [KoSchema.Window], alive: Set<WindowID>, selected: PaneID?, marks: [PaneID: RuntimeMark]) {
+    func update(_ listing: [KoSchema.Window], alive: Set<WindowID>, selected: PaneID?, marks: [PaneID: RuntimeMark], shown positions: [PaneID: Snapshot.Position] = [:]) {
         updating = true
         defer { updating = false }
         let marked = self.marks
@@ -109,12 +112,13 @@ final class SessionView: NSView {
             }
             windows[id] = view
             let active = selected.flatMap { w.panes.contains($0) ? $0 : nil }
-            view.update(Layout(w, active: active), Layout(w, visible: true, active: active))
+            view.update(Layout(w, active: active), Layout(w, visible: true, active: active), shown: positions)
         }
         others = old.filter { windows[$0.key] == nil && $0.value.hot && alive.contains($0.key) }
         for (id, gone) in old where windows[id] == nil && others[id] == nil { gone.close() }
         recent.removeAll { windows[$0] == nil && others[$0] == nil }
         if !changed.isEmpty { (Array(windows.values) + Array(others.values)).forEach { $0.marksChanged(changed, banded: Set(marked.keys) != Set(marks.keys)) } }
+        if sentSize == nil { shown?.sizeClient() }
     }
 
     func editsSettled() {
@@ -125,6 +129,9 @@ final class SessionView: NSView {
     var activePane: PaneView? { shown?.activePane }
 
     func show(_ window: WindowID?) {
+        let previousUpdate = updating
+        updating = true
+        defer { updating = previousUpdate }
         let start = DispatchTime.now(), before = shown, last = recent.first
         let focused = (self.window?.firstResponder as? PaneView)?.isDescendant(of: self) == true
         defer { DispatchQueue.main.async { [weak self] in self?.evict() } }
@@ -167,7 +174,9 @@ final class SessionView: NSView {
         shown?.focusActive(force: true)
     }
 
-    func pane(_ pane: PaneID) -> PaneView? { windows.values.lazy.flatMap(\.panes).first { $0.pane == pane } }
+    func pane(_ pane: PaneID) -> PaneView? {
+        shown?.panes.first { $0.pane == pane } ?? windows.values.lazy.flatMap(\.panes).first { $0.pane == pane }
+    }
 
     func windowName(_ window: WindowID) -> String? { windows[window]?.name }
 

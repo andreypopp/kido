@@ -86,7 +86,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         let tabs = owner.sidebar.tabs
         XCTAssertEqual(tabs.hostLabel()?.alias, "buildbox")
         XCTAssertFalse(try XCTUnwrap(tabs.hostLabel()).connected)
-        tabs.entries = SessionModel(session: SessionID(number: 0), windows: [.init(id: WindowID(number: 0), name: "Shell"), .init(id: WindowID(number: 1), name: "Editor")], window: WindowID(number: 0)).navigation(nil).tabs
+        tabs.entries = SessionModel(session: SessionID(number: 0), windows: [.init(id: WindowID(number: 0), name: "Shell"), .init(id: WindowID(number: 1), name: "Editor")], window: WindowID(number: 0)).navigation(nil, panes: PaneProjection(nil)).tabs
         owner.window.display()
         let root = try XCTUnwrap(owner.window.contentView?.superview)
         var selections = 0
@@ -187,7 +187,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             let owner = WindowOwner(host: .remote("header-\(UUID().uuidString)"), runtime: runtime, start: false)
             owner.sidebar.tabs.hostLabel = { nil }
             defer { owner.close() }
-            owner.sidebar.tabs.entries = SessionModel(session: SessionID(number: 0), windows: [.init(id: WindowID(number: 0), name: "Shell")], window: WindowID(number: 0)).navigation(nil).tabs
+            owner.sidebar.tabs.entries = SessionModel(session: SessionID(number: 0), windows: [.init(id: WindowID(number: 0), name: "Shell")], window: WindowID(number: 0)).navigation(nil, panes: PaneProjection(nil)).tabs
             let root = try XCTUnwrap(owner.window.contentView?.superview)
             let rgb = headerPaperRGB["\(hex)-shifted"]!
             let expected = NSColor(srgbRed: rgb[0] / 255, green: rgb[1] / 255, blue: rgb[2] / 255, alpha: 1)
@@ -687,11 +687,10 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
     }
 
     func testOrphanedTab() throws {
-        let snapshot = fixtureSnapshot(window: 1, pane: 1, [("s", [fixtureNode(0, "", shellLifecycle(.unknown), children: [
-            fixtureNode(1, "", shellLifecycle(.unknown)),
-        ])])])
+        var snapshot = fixtureSnapshot(window: 1, pane: 1, [("s", [fixtureNode(1, "", shellLifecycle(.unknown))])])
+        snapshot.mapItems { $0.pane.parent = PaneID(number: 0) }
         let model = SessionModel(session: SessionID(number: 0), windows: [.init(id: WindowID(number: 1), name: "Child")], window: WindowID(number: 1))
-        XCTAssertEqual(model.navigation(snapshot).tabs.map(\.id), [WindowID(number: 1)], "orphan child must retain a tab")
+        XCTAssertEqual(model.navigation(snapshot, panes: PaneProjection(snapshot)).tabs.map(\.id), [WindowID(number: 1)], "orphan child must retain a tab")
     }
 
     func testWindowSelectionTargetsSession() {
