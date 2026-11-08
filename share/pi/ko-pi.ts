@@ -1532,6 +1532,7 @@ async function routedGrep(r: Routed, params: GrepToolInput, signal: AbortSignal 
 export default function (pi: ExtensionAPI) {
   if (!isFirstCopy()) return;
   pi.registerFlag("webview", { description: "Show the session in a webview when supported", type: "boolean" });
+  pi.registerFlag("webview-browser", { description: "Show the session in a browser, served on localhost", type: "boolean" });
   pi.registerFlag("runtime", { description: "Run the built-in tools and ! commands in a configured runtime or an ad-hoc runtime of this session by name", type: "string" });
   pi.on("project_trust", async (event) => {
     const trusted = process.env.KO_AGENT_TRUSTED_CWD;
@@ -2506,7 +2507,7 @@ export default function (pi: ExtensionAPI) {
     webviewActive = true;
     let hold = globalThis.__koPiExtensionWebview;
     if (!hold) {
-      const wv = await webview({ ko: ko ?? undefined });
+      const wv = await webview({ ko: ko ?? undefined, target: pi.getFlag("webview-browser") === true ? "browser" : "pane" });
       if (!wv) return;
       const created = { wv, server: http.createServer(), handle: webviewHandle, supported: () => {} };
       hold = created;
@@ -3778,7 +3779,7 @@ export default function (pi: ExtensionAPI) {
     active = !!(ctx.hasUI && ownSessionId && ko && pane);
     if (active) {
       receiver.start();
-      if (ctx.mode === "tui" && pi.getFlag("webview") === true) await webviewStart();
+      if (ctx.mode === "tui" && (pi.getFlag("webview") === true || pi.getFlag("webview-browser") === true)) await webviewStart();
       await writeVars([
         [VAR_SESSION, ownSessionId ?? ""],
         [VAR_NAME, pi.getSessionName() ?? ""],

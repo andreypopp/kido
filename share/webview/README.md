@@ -35,6 +35,18 @@ a report from the app. `close()` hides the page, ends the
 bridge and removes its private socket directory. Use `off` to remove a
 `supported` listener. Pass `{ ko: "/path/to/ko" }` to select the executable.
 
+For development, `webview({ target: "browser" })` serves the same
+server on a free port of `127.0.0.1` and shows the page in your
+browser, in a Kido pane or not; it never returns `null` and needs no
+ko. `url` is the page's address, `show(path)` opens it once for each
+path, `hide()` does nothing and `supported` is always true. The SDK
+refuses a connection whose first request has a `Host` other than that
+address (421), which stops DNS rebinding; any local process can still
+call your routes. `show(path)` refuses a path that does not start with
+`/`. A browser
+has no `window.ko` and no `--ko-*` properties, so give `:root` a
+fallback theme.
+
 Kido.app shows the page in a sandbox with no network: the page reaches
 only your server, through `fetch` and `WebSocket`. Send a request body
 as a string or bytes. A `Blob` or `FormData` body reaches your server

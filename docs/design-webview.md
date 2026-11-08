@@ -149,12 +149,18 @@ import of `../pi/ko-api.d.ts`; Node's type stripping removes the
 import, so the SDK runs without the file.
 
 The decision is that a page's program is a plain `node:http` server.
-The author develops the page against a browser with `server.listen`
-on a port, and in Kido the same server listens on the SDK's socket. So
-the SDK does not take a handler and does not listen: `webview()`
-returns the socket path (or `null` outside a Kido pane), the program
-calls `server.listen(socketPath)` itself, and Express, `ws` and every
-other `node:http` stack work unchanged, WebSocket upgrades included.
+The SDK does not take a handler and does not listen: `webview()`
+returns a socket path, the program calls `server.listen(socketPath)`
+itself, and Express, `ws` and every other `node:http` stack work
+unchanged, WebSocket upgrades included.
+
+The SDK has two targets, and the program's code is the same for both.
+The pane target, the default, shows the page in the program's Kido
+pane and returns `null` outside one. The browser target is for
+development: the page shows in a regular browser, in a pane or not.
+It needs no ko. The program chooses the target; it is an option in
+code, which a program can expose as its own flag (ko-pi's
+`--webview-browser`).
 
 The README gives the calls; the rules that it does not state:
 
@@ -169,6 +175,27 @@ The README gives the calls; the rules that it does not state:
   shows by itself.
 - `close` removes the `supported` listeners before it leaves, so a
   listener that hides does not run during the close.
+
+The browser target's rules:
+
+- The SDK listens on `127.0.0.1` on a free port and forwards the bytes
+  of each connection to the socket, so streaming bodies and WebSockets
+  work as in Kido. It starts no `ko webview serve`.
+- A local port is open to every local process, and to every web page
+  through DNS rebinding. The SDK refuses a connection whose first
+  request has a `Host` other than `127.0.0.1:<port>` or
+  `localhost:<port>`: a browser's connection carries one origin, so
+  the first head decides for the connection. There is no token: the
+  user decided that a local process may call the page's routes.
+- `show` opens the URL in the browser, and refuses a path without a
+  leading `/`, which could name another host; `hide` does nothing, because a
+  program cannot close a tab, so a show after a hide opens no second
+  tab. `supported` is always true.
+- Nothing of Kido's page environment exists in a browser: no
+  `window.ko`, no `--ko-*` properties, no CSP from ko and no sandbox.
+  A page sets a fallback theme on `:root`. A page that passes in a
+  browser can still fail in Kido, for example with a `Blob` body
+  (design-app.md, "Webview panes").
 
 ## The live channel
 
@@ -247,10 +274,12 @@ reloadable: its state is its program's.
 
 ko-pi is a TUI. With `ko-pi --webview`, it keeps its TUI running
 under a page, serves the session's transcript and a prompt field, and
-shows the TUI whenever the TUI must be seen. Without the flag it
+shows the TUI whenever the TUI must be seen. With
+`--webview-browser`, it serves the same page through the SDK's browser
+target, and that flag wins over `--webview`. Without either flag it
 starts nothing of the webview.
 
-**Where it runs.** Only an active ko-pi with `--webview` serves a
+**Where it runs.** Only an active ko-pi with one of the flags serves a
 page: a TUI session with a pane identity, the condition of its message
 stream. A routed pi serves from its host pane. Print, JSON and RPC
 modes serve nothing.
