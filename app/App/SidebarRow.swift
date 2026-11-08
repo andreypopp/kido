@@ -74,9 +74,9 @@ final class SidebarChildren: ActionButton {
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     private func width(showing count: Int) -> CGFloat {
         if content.isEmpty { return 0 }
-        if content.count == 1, count == 1 { return ceil((content[0].title as NSString).size(withAttributes: [.font: fonts.tail]).width) + 14 }
+        if content.count == 1, count == 1 { return ceil((content[0].title as NSString).size(withAttributes: [.font: fonts.tail]).width) + 12 }
         let extra = content.count - count
-        return CGFloat(count * 10) + (extra > 0 ? (count > 0 ? 4 : 0) + ceil(("+\(extra)" as NSString).size(withAttributes: [.font: fonts.clock]).width) : 0)
+        return CGFloat(count * 10) + (extra > 0 ? (count > 0 ? 2 : 0) + ceil(("+\(extra)" as NSString).size(withAttributes: [.font: fonts.clock]).width) + 2 : 0)
     }
     func fittingWidth(_ available: CGFloat) -> CGFloat {
         guard !content.isEmpty else { return 0 }
@@ -102,10 +102,10 @@ final class SidebarChildren: ActionButton {
             let center = NSPoint(x: content.count == 1 ? bounds.width - 5 : CGFloat(5 + index * 10), y: 6)
             drawStatusMark(child.status, at: center, flipped: true, idle: true)
         }
-        if content.count == 1 { caption(content[0].title, x: 0, width: bounds.width - 14, font: fonts.tail) }
+        if content.count == 1 { caption(content[0].title, x: 0, width: bounds.width - 12, font: fonts.tail) }
         else if content.count > count {
-            let x = CGFloat(count * 10 + (count > 0 ? 4 : 0))
-            caption("+\(content.count - count)", x: x, width: bounds.width - x, font: fonts.clock)
+            let x = CGFloat(count > 0 ? count * 10 + 2 : 0)
+            caption("+\(content.count - count)", x: x, width: bounds.width - x - 2, font: fonts.clock)
         }
     }
 }
@@ -148,7 +148,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     private var row: SidebarRow?
     private var clock = ""
     private var clockWidth: CGFloat = 0
-    private var trailing: CGFloat { 26 }
+    private var trailing: CGFloat { 18 }
     private var clockRect: NSRect {
         guard let row else { return .zero }
         return NSRect(x: bounds.width - trailing - clockWidth, y: row.padding + 2, width: clockWidth, height: fonts.clock.boundingRectForFont.height)

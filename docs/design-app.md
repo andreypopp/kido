@@ -1584,8 +1584,9 @@ is regular. Rows and session headers have 5pt of horizontal padding.
 A row has a 12pt leading slot for its disclosure chevron and a 6pt gap,
 so the title and the caption start 23pt from the row's edge; there are no
 leading icons. The trailing column holds, on the title line, the 10pt
-tabular clock (`fonts.clock`, secondary ink), a 9pt gap and the 12pt slot
-of the status indicator, whose centre is 11pt from the row's right edge.
+tabular clock (`fonts.clock`, secondary ink) and the 6pt status indicator,
+whose centre is 11pt from the row's right edge. The clock ends 4pt before the
+indicator, the same gap as between the folded-child circles.
 A row shows the clock only while its
 run lives, and no final duration after the end: a pane row with a `parent`
 whose program lives counts from the pane's `started`, and a record row in
@@ -1932,9 +1933,10 @@ the trailing indicator: 6pt status indicators on 10pt centres, one for
 each such direct child in the children's order, each in the child's own
 colour; a quiet child is a gray circle (the secondary label colour at
 55%), unlike the row indicator, because the line counts the children.
-After six, the line shows `+N` in 10pt muted tabular digits. With exactly
-one hidden child, its title comes first, in the caption's style, then its
-circle. The caption keeps the rest of the line and ends in an ellipsis 6pt
+After six, the line shows `+N` in 10pt muted tabular digits, 4pt after the
+last circle; its right edge, like the last circle's, is the indicator's
+right edge. With exactly one hidden child, its title comes first, in the
+caption's style, ending in an ellipsis 4pt before its circle. The caption keeps the rest of the line and ends in an ellipsis 6pt
 before the circles; a row without a caption has the circles alone. The
 circles win the room: the caption shrinks and hides below 16pt, then
 circles go into `+N` from the end, down to one circle and `+N`, then
