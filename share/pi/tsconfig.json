@@ -8,7 +8,11 @@
     "target": "ES2024",
     "allowImportingTsExtensions": true,
     "erasableSyntaxOnly": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "@earendil-works/pi-coding-agent": ["./node_modules/@earendil-works/pi-coding-agent/dist/index.d.ts"],
+      "@earendil-works/pi-agent-core": ["./node_modules/@earendil-works/pi-agent-core/dist/index.d.ts"]
+    }
   },
-  "include": ["transcript.ts", "transcript.test.ts", "ko-pi.ts", "ko-pi-fixture.ts", "ko-pi-*.test.ts", "../webview/*.ts"]
+  "include": ["transcript.ts", "transcript.test.ts", "ko-pi.ts", "ko-pi-fixture.ts", "ko-pi-*.test.ts", "../webview/*.ts", "../koa/*.ts"]
 }

@@ -8,6 +8,7 @@ import { createServer, connect, type Socket, type Server } from "node:net";
 import type { components } from "../pi/ko-api.d.ts";
 
 type SupportedLine = Extract<components["schemas"]["ServeOut"], { type: "supported" }>;
+const BROWSER_CLOSE_MS = 1000;
 
 export type Webview = {
   readonly socketPath: string;
@@ -34,8 +35,8 @@ export async function webview(options: { ko?: string; target?: "pane" | "browser
   chmodSync(dir, 0o700);
   const socketPath = join(dir, "webview.sock");
   const events = new EventEmitter();
-  const transport: { kind: "browser"; listener: Server; sockets: Set<Socket>; url?: string } | { kind: "pane"; child?: ChildProcessWithoutNullStreams; restart?: ReturnType<typeof setTimeout> } = options.target === "browser"
-    ? { kind: "browser", listener: createServer({ allowHalfOpen: true }), sockets: new Set() }
+  const transport: { kind: "browser"; listener: Server; connections: Set<{ socket: Socket; app?: Socket }>; url?: string } | { kind: "pane"; child?: ChildProcessWithoutNullStreams; restart?: ReturnType<typeof setTimeout> } = options.target === "browser"
+    ? { kind: "browser", listener: createServer({ allowHalfOpen: true }), connections: new Set() }
     : { kind: "pane" };
   const ko = options.ko ?? "ko";
   let supported = transport.kind === "browser";
@@ -58,7 +59,7 @@ export async function webview(options: { ko?: string; target?: "pane" | "browser
     closed = true;
     if (transport.kind === "browser") {
       transport.listener.close();
-      for (const socket of transport.sockets) socket.destroy();
+      for (const { socket, app } of transport.connections) { socket.destroy(); app?.destroy(); }
     } else {
       if (transport.restart) clearTimeout(transport.restart);
       transport.child?.stdin.end();
@@ -69,11 +70,12 @@ export async function webview(options: { ko?: string; target?: "pane" | "browser
   };
   process.once("exit", cleanup);
   if (transport.kind === "browser") {
-    const { listener, sockets } = transport;
+    const { listener, connections } = transport;
     let port: number;
     listener.on("connection", socket => {
-      sockets.add(socket);
-      socket.once("close", () => sockets.delete(socket));
+      const connection: { socket: Socket; app?: Socket } = { socket };
+      connections.add(connection);
+      socket.once("close", () => connections.delete(connection));
       socket.on("error", () => socket.destroy());
       let head = Buffer.alloc(0);
       const reject = (status: string) => socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`, () => socket.destroy());
@@ -94,8 +96,11 @@ export async function webview(options: { ko?: string; target?: "pane" | "browser
         }
         socket.pause();
         const app = connect({ path: socketPath, allowHalfOpen: true });
-        sockets.add(app);
-        app.once("close", () => { sockets.delete(app); if (!app.writableFinished || !app.readableEnded) socket.destroy(); });
+        connection.app = app;
+        app.once("close", () => {
+          if (app.readableEnded) socket.end();
+          else socket.destroy();
+        });
         socket.once("close", () => { if (!socket.writableFinished || !socket.readableEnded) app.destroy(); });
         app.on("error", () => { app.destroy(); socket.destroy(); });
         socket.on("error", () => app.destroy());
@@ -202,9 +207,20 @@ export async function webview(options: { ko?: string; target?: "pane" | "browser
       closed = true;
       events.removeAllListeners();
       if (transport.kind === "browser") {
-        cleanup();
+        const browser = transport;
+        browser.listener.close();
         shown = undefined;
-        closing = Promise.resolve();
+        closing = (async () => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const drained = Promise.all([...browser.connections].map(({ socket, app }) => new Promise<void>(resolve => {
+            socket.once("close", () => resolve());
+            if (app) app.end();
+            else socket.destroy();
+          })));
+          try {
+            await Promise.race([drained, new Promise<void>(resolve => { timer = setTimeout(resolve, BROWSER_CLOSE_MS); })]);
+          } finally { clearTimeout(timer); cleanup(); }
+        })();
       } else {
         const pane = transport;
         if (pane.restart) clearTimeout(pane.restart);

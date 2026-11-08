@@ -174,10 +174,11 @@ These requirements are fixed:
   remote login shell, the ssh arguments, the bin directory lookup,
   and `ko enter`, with the exec session's supervisor (`session.rs`).
   It embeds the shell integrations of `share/ko/` with `include_str!`;
-  `make build` installs `share/ko/bin` (the `ko`, `ssh` and
-  `ko-pi` shims), `share/ko/shim.sh`, `share/pi/ko-pi.ts`,
+  `make build` installs `share/ko/bin` (the `ko`, `ssh`, `ko-pi`
+  and `koa` shims), `share/ko/shim.sh`, `share/pi/ko-pi.ts`,
   `share/pi/ko-pi-page.html`, `share/pi/ko-api.d.ts` and
-  `share/pi/skills` (in `share/ko/pi/`), and the SDK
+  `share/pi/transcript.ts` and `share/pi/skills` (in
+  `share/ko/pi/`), `share/koa/koa.ts` (in `share/ko/koa/`), and the SDK
   `share/webview/` (in `share/ko/webview/`) beside `bin/ko` in
   `build/ko/`, the layout
   that `ko_shell/src/bin_dir.rs` finds as installed.
@@ -583,8 +584,10 @@ Conventions:
   In Python, `bench/client.py` signals only through `signal_child`.
   In TypeScript, `share/pi/ko-pi.ts` signals only the process groups
   of the jobs that it spawned itself, through `signalJob`, which takes
-  a record of its job registry; `scripts/lint.sh` refuses
-  `process.kill(` anywhere else in `share/pi/` (docs/design-subagents.md, "Stopping a job").
+  a record of its job registry, and `share/koa/koa.ts` signals only
+  the process group of the pi that it spawned, through `signalPi`;
+  `scripts/lint.sh` refuses `process.kill(` anywhere else in
+  `share/pi/` and `share/koa/` (docs/design-subagents.md, "Stopping a job").
   `ko_e2e` signals a process that it
   spawned through its `Pid`, and any other process only through
   `ko_sys::pid::signal_descendant`, which refuses a pid that does not
@@ -737,7 +740,7 @@ and `app/` (Kido.app, docs/design-app.md). docs/design-ko.md, "Crates",
 maps the coordinator's modules.
 
     share/ko/           the source of share/ko as installed:
-      bin/              the bin directory's sh shims (ko, ssh, ko-pi)
+      bin/              the bin directory's sh shims (ko, ssh, ko-pi, koa)
       shim.sh           their shared helper
       bash/, zsh/       the OSC 133 integrations every primed shell sources
       openapi.json, client-model.json, config-schema.json   the generated schemas (make schemas)
@@ -747,7 +750,11 @@ maps the coordinator's modules.
                         the fake ko of testdata/fake_ko/; ko-api.d.ts,
                         generated from openapi.json; testdata/ko-prompts.txt,
                         the prompt snapshot; skills/ko/SKILL.md, the ko
-                        skill that ko-pi offers to pi
+                        skill that ko-pi offers to pi; transcript.ts,
+                        the transcript model that ko-pi and koa share
+    share/koa/          koa.ts, the pi harness that renders through a
+                        webview (plans/koa.md); koa-fake-pi.ts, the
+                        scripted pi of its suite koa-*.test.ts
     share/webview/      @kido/webview, the Node SDK for webview pages
                         (index.ts, README.md), installed as share/ko/webview
     .pi/prompts/        gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed;

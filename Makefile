@@ -66,13 +66,13 @@ miri:
 
 preview-pi unpreview-pi:
 	@set -eu; prefix="$${KO_PREVIEW_PREFIX:-$$(brew --prefix ko)}"; dir=$$(cd "$$prefix/share/ko" && pwd -P); \
-	for file in pi/ko-pi.ts pi/transcript.ts pi/ko-pi-page.html pi/ko-api.d.ts pi/skills webview; do \
+	for file in pi/ko-pi.ts pi/transcript.ts pi/ko-pi-page.html pi/ko-api.d.ts pi/skills webview koa/koa.ts; do \
 	  dst="$$dir/$$file"; \
-	  if test '$@' = preview-pi; then \
+	  if test '$@' = preview-pi; then mkdir -p "$$(dirname "$$dst")"; \
 	    if ! test -e "$$dst.orig" && ! test -e "$$dst.orig.absent"; then \
 	      if test -e "$$dst"; then cp -Rp "$$dst" "$$dst.orig"; else touch "$$dst.orig.absent"; fi; \
 	    fi; src="share/$$file"; \
-	  elif test -e "$$dst.orig.absent"; then rm -rf "$$dst" "$$dst.orig.absent"; continue; \
+	  elif test -e "$$dst.orig.absent"; then rm -rf "$$dst" "$$dst.orig.absent"; rmdir "$$(dirname "$$dst")" 2>/dev/null || true; continue; \
 	  elif test -e "$$dst.orig"; then src="$$dst.orig"; \
 	  else continue; fi; \
 	  tmp=$$(mktemp -d "$$dir/.preview.XXXXXX"); cp -Rp "$$src" "$$tmp/item"; \
@@ -90,19 +90,21 @@ website:
 # source by terminfo.zig; tic writes x/ or 78/ by platform, and both are shipped.
 # zig keeps its caches in the KO_ZIG_CACHE of .cargo/config.toml.
 KO := build/ko
-SHARE := bin pi webview shim.sh terminfo
+SHARE := bin pi webview koa shim.sh terminfo
 ZIG_CACHE := $(CURDIR)/target/zig-cache
 TERMINFO := $(KO)/share/ko/terminfo
 build: $(TERMINFO)/x/xterm-ghostty
 	$(CARGO) build --locked --release --bin ko --bin ko-pane
 	rm -f $(KO)/bin/ko $(KO)/bin/ko-pane
 	cp target/release/ko target/release/ko-pane $(KO)/bin/
-	rm -rf $(KO)/share/ko/bin $(KO)/share/ko/pi $(KO)/share/ko/webview
+	rm -rf $(KO)/share/ko/bin $(KO)/share/ko/pi $(KO)/share/ko/webview $(KO)/share/ko/koa
 	cp -R share/ko/bin $(KO)/share/ko/bin
 	mkdir -p $(KO)/share/ko/pi
 	cp share/pi/ko-pi.ts share/pi/transcript.ts share/pi/ko-pi-page.html share/pi/ko-api.d.ts $(KO)/share/ko/pi/
 	cp -R share/pi/skills $(KO)/share/ko/pi/skills
 	cp -R share/webview $(KO)/share/ko/webview
+	mkdir -p $(KO)/share/ko/koa
+	cp share/koa/koa.ts $(KO)/share/ko/koa/
 	cp share/ko/shim.sh $(KO)/share/ko/shim.sh
 
 # The static Linux ko under share/ko/linux/<arch>: bin/ko and share/ko, which has the SHARE files of

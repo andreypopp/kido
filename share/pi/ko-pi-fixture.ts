@@ -5,6 +5,7 @@
 // for the message stream. Delays are gates that a test releases, never timers.
 
 import childProcess from "node:child_process";
+import { EventEmitter, once } from "node:events";
 import type { TestContext } from "node:test";
 
 import assert from "node:assert/strict";
@@ -439,6 +440,35 @@ export function savedSession(dir: string, cwd: string, id: string): string {
   assert.ok(path);
   writeFileSync(path, JSON.stringify(session.getHeader()) + "\n");
   return path;
+}
+
+export function ndjson(input: NodeJS.ReadableStream, state = { text: "", records: [] as any[], ended: false }) {
+  const changes = new EventEmitter();
+  const decoder = new TextDecoder();
+  let partial = "";
+  input.on("data", (bytes: Uint8Array | string) => {
+    const text = typeof bytes === "string" ? bytes : decoder.decode(bytes, { stream: true });
+    state.text += text; partial += text;
+    let end: number;
+    while ((end = partial.indexOf("\n")) >= 0) {
+      const line = partial.slice(0, end); partial = partial.slice(end + 1);
+      try { state.records.push(JSON.parse(line)); } catch {}
+    }
+    changes.emit("record");
+  });
+  const end = () => { state.ended = true; changes.emit("record"); };
+  input.once("end", end); input.once("error", end); input.once("close", end);
+  return {
+    state,
+    async until(predicate: (record: any) => boolean, after = 0) {
+      for (;;) {
+        const record = state.records.slice(after).find(predicate);
+        if (record) return record;
+        if (state.ended) throw new Error("NDJSON stream ended before the expected record");
+        await once(changes, "record", { signal: AbortSignal.timeout(5000) });
+      }
+    },
+  };
 }
 
 export function assistant(stopReason: string, text?: string, errorMessage?: string) {

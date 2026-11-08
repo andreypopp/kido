@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { test } from "node:test";
-import { makeFixture, pollUntil, selfPane, startSession, freshExtension } from "./ko-pi-fixture.ts";
+import { makeFixture, pollUntil, selfPane, startSession, freshExtension, ndjson } from "./ko-pi-fixture.ts";
 
 function request(path: string, value?: unknown) {
   const socketPath = globalThis.__koPiExtensionWebview!.wv.socketPath;
@@ -10,18 +10,7 @@ function request(path: string, value?: unknown) {
   req.on("response", response => {
     state.response = response;
     state.status = response.statusCode!;
-    response.setEncoding("utf8");
-    let partial = "";
-    response.on("data", text => {
-      state.text += text;
-      partial += text;
-      for (let end = partial.indexOf("\n"); end >= 0; end = partial.indexOf("\n")) {
-        const line = partial.slice(0, end);
-        partial = partial.slice(end + 1);
-        try { state.records.push(JSON.parse(line)); } catch {}
-      }
-    });
-    response.on("end", () => { state.ended = true; });
+    ndjson(response, state);
   });
   req.on("error", () => { state.ended = true; });
   req.end(value === undefined ? undefined : JSON.stringify(value));

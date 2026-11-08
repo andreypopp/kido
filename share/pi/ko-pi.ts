@@ -37,14 +37,14 @@ import {
   truncateTail,
   truncateLine,
 } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, replaceControlCharacters, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Key, matchesKey, type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { type WriteStream, accessSync, constants, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import { webview, type Webview } from "../webview/index.ts";
-import { transcript, contentText, mintId, respond, utf8Prefix, utf8Suffix } from "./transcript.ts";
+import { transcript, contentText, mintId, respond, utf8Prefix, utf8Suffix, errorText, replaceControlCharacters, readBody, promptBody } from "./transcript.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
@@ -56,7 +56,6 @@ type Api = components["schemas"];
 const KO_TIMEOUT_MS = 5000;
 const PEER_RESULT_RULE = "independent peer; no report or ending notice";
 const reconnectBackoff = (previous: number): number => Math.min(previous ? previous * 2 : envMs("KO_RECEIVER_BACKOFF_MS", 200), 5000);
-const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
 const VAR_SESSION = "pi.session";
 const VAR_NAME = "pi.name";
@@ -2234,7 +2233,8 @@ export default function (pi: ExtensionAPI) {
     if (path === "/terminal") { webviewWishState.terminal = true; webviewWish(); respond(req, 200, "{}"); return; }
     let value: unknown;
     try { value = JSON.parse(bytes.toString()); } catch {}
-    if (!isRecord(value) || typeof value.text !== "string" || !value.text.trim() || value.mode !== "steer" && value.mode !== "follow_up") { respond(req, 400, JSON.stringify({ error: "A non-empty text and steer or follow_up mode are required" })); return; }
+    const prompt = promptBody(value);
+    if ("error" in prompt) { respond(req, 400, JSON.stringify(prompt)); return; }
     let refusal: string | undefined;
     if (webviewCompacting) refusal = "Wait for compaction to finish";
     else if (!webviewWorking && !session?.isIdle()) refusal = "Wait for the current operation to finish";
@@ -2242,7 +2242,7 @@ export default function (pi: ExtensionAPI) {
     else if (!session.modelRegistry.hasConfiguredAuth(session.model)) refusal = "Configure authentication for the selected model in the terminal first";
     if (refusal) { respond(req, 409, JSON.stringify({ error: refusal })); return; }
     try {
-      pi.sendUserMessage(value.text, { expandPromptTemplates: true, ...(webviewWorking ? { deliverAs: value.mode === "steer" ? "steer" as const : "followUp" as const } : {}) });
+      pi.sendUserMessage(prompt.text, { expandPromptTemplates: true, ...(webviewWorking ? { deliverAs: prompt.mode !== "follow_up" ? "steer" as const : "followUp" as const } : {}) });
       respond(req, 200, "{}");
     } catch (error) { respond(req, 409, JSON.stringify({ error: errorText(error) })); }
   };
@@ -2253,16 +2253,10 @@ export default function (pi: ExtensionAPI) {
       webviewPage ??= readFileSync(join(dirname(fileURLToPath(import.meta.url)), "ko-pi-page.html"), "utf8");
       respond(req, 200, webviewPage, "text/html; charset=utf-8");
     } else if (request.method === "POST" && ["/prompt", "/abort", "/terminal"].includes(url.pathname)) {
-      const chunks: Buffer[] = [];
-      let size = 0;
-      request.on("data", (chunk: Buffer) => {
-        size += chunk.length;
-        if (size <= 1 << 20) chunks.push(chunk);
-      });
-      request.on("end", () => {
-        if (size > 1 << 20) respond(req, 413, "{}");
-        else webviewPost(req, url.pathname, Buffer.concat(chunks));
-      });
+      void readBody(request, 1 << 20).then(bytes => {
+        if (bytes === undefined) respond(req, 413, "{}");
+        else webviewPost(req, url.pathname, bytes);
+      }).catch(error => respond(req, 400, JSON.stringify({ error: errorText(error) })));
     } else respond(req, 404, "{}");
   };
   const webviewStart = async (): Promise<void> => {

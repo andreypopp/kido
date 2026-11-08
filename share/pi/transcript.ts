@@ -9,6 +9,23 @@ const MAX_WEBVIEW_RESULT_BYTES = 16 * 1024;
 const MAX_WEBVIEW_OUTPUT_BYTES = 1 << 20;
 
 export const mintId = (): string => randomBytes(16).toString("base64url");
+export const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);
+export const replaceControlCharacters = (text: string): string => text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ");
+
+export async function readBody(request: IncomingMessage, limit: number): Promise<Buffer | undefined> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size <= limit) chunks.push(chunk);
+  }
+  return size <= limit ? Buffer.concat(chunks) : undefined;
+}
+
+export function promptBody(value: unknown): { text: string; mode: "prompt" | "steer" | "follow_up" } | { error: string } {
+  if (value && typeof value === "object" && "text" in value && typeof value.text === "string" && value.text.trim() && "mode" in value && (value.mode === "prompt" || value.mode === "steer" || value.mode === "follow_up")) return { text: value.text, mode: value.mode };
+  return { error: "A non-empty text and prompt, steer or follow_up mode are required" };
+}
 
 type Text = { text: string; cut: number };
 type ToolState = { type: "pending" } | { type: "running"; result?: Text } | { type: "done"; result: Text; error: boolean } | { type: "not_run" };

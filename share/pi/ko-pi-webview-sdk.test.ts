@@ -151,6 +151,85 @@ test("browser preserves a write-side EOF and handles an absent app", { timeout: 
   }
 });
 
+test("browser forwards a complete large Connection close response", { timeout: 5000 }, async () => {
+  const wv = await webview({ target: "browser" });
+  const body = "0123456789abcdef".repeat(256 * 1024);
+  const server = createServer((_req, response) => {
+    response.writeHead(200, { "Connection": "close", "Content-Length": Buffer.byteLength(body) });
+    response.end(body);
+  });
+  await new Promise<void>(resolve => server.listen(wv.socketPath, resolve));
+  try {
+    assert.equal(await (await fetch(wv.url!)).text(), body);
+  } finally {
+    await wv.close();
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test("browser close drains an in-flight response to a slow reader", { timeout: 5000 }, async () => {
+  const wv = await webview({ target: "browser" });
+  const body = "0123456789abcdef".repeat(256 * 1024);
+  let started: () => void = () => {};
+  const requested = new Promise<void>(resolve => { started = resolve; });
+  const server = createServer((_req, response) => { response.end(body); started(); });
+  await new Promise<void>(resolve => server.listen(wv.socketPath, resolve));
+  const url = new URL(wv.url!);
+  const socket = connect(Number(url.port), "127.0.0.1", () => socket.write(`GET / HTTP/1.1\r\nHost: localhost:${url.port}\r\n\r\n`));
+  socket.pause();
+  let received = "";
+  const ended = new Promise<void>((resolve, reject) => {
+    socket.on("data", bytes => { received += bytes; });
+    socket.on("end", resolve);
+    socket.on("error", reject);
+    socket.on("close", () => resolve());
+  });
+  try {
+    await requested;
+    const closing = wv.close();
+    socket.resume();
+    await ended;
+    await closing;
+    assert.equal(received.slice(received.indexOf("\r\n\r\n") + 4), body);
+  } finally {
+    socket.destroy();
+    await wv.close();
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
+test("browser close ends an unresponsive forward at its deadline", { timeout: 4000 }, async () => {
+  const wv = await webview({ target: "browser" });
+  let requested: () => void = () => {};
+  const ready = new Promise<void>(resolve => { requested = resolve; });
+  let eof = false;
+  const peers = new Set<import("node:net").Socket>();
+  const server = createNetServer({ allowHalfOpen: true }, socket => {
+    peers.add(socket);
+    socket.on("data", requested);
+    socket.on("end", () => { eof = true; });
+    socket.on("close", () => peers.delete(socket));
+  });
+  await new Promise<void>(resolve => server.listen(wv.socketPath, resolve));
+  const url = new URL(wv.url!);
+  const socket = connect(Number(url.port), "127.0.0.1", () => socket.write(`GET / HTTP/1.1\r\nHost: localhost:${url.port}\r\n\r\n`));
+  const closed = new Promise<void>(resolve => { socket.on("close", resolve); socket.on("error", () => {}); });
+  try {
+    await ready;
+    await wv.close();
+    await closed;
+    assert.equal(eof, true);
+    await assert.rejects(fetch(wv.url!));
+  } finally {
+    socket.destroy();
+    for (const peer of peers) peer.destroy();
+    await wv.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
 test("browser close does not wait for an opener", { timeout: 15000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "webview-blocked-open-"));
   const gate = join(dir, "gate");

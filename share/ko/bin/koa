@@ -1,0 +1,19 @@
+#!/bin/sh
+. "${0%/*}/../shim.sh"
+if ! command -v node >/dev/null 2>&1; then
+  echo 'koa: node 24 or later is required on this host; none found on PATH' >&2
+  exit 127
+fi
+if ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0 : 1)'; then
+  echo "koa: node 24 or later is required on this host; found $(node --version)" >&2
+  exit 127
+fi
+ko_custom_pi=
+for ko_arg do
+  if [ "$ko_arg" = --pi ]; then ko_custom_pi=1; fi
+done
+if [ -z "$ko_custom_pi" ] && ! command -v pi >/dev/null 2>&1; then
+  echo 'koa: pi is required on this host; none found on PATH' >&2
+  exit 127
+fi
+exec node "$ko_share/koa/koa.ts" "$@"

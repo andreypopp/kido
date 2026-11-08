@@ -39,7 +39,9 @@ For development, `webview({ target: "browser" })` serves the same
 server on a free port of `127.0.0.1` and shows the page in your
 browser, in a Kido pane or not; it never returns `null` and needs no
 ko. `url` is the page's address, `show(path)` opens it once for each
-path, `hide()` does nothing and `supported` is always true. The SDK
+path, `hide()` does nothing and `supported` is always true. `close()` stops
+the port, lets responses that are on their way reach the browser, and
+ends what remains after one second. The SDK
 refuses a connection whose first request has a `Host` other than that
 address (421), which stops DNS rebinding; any local process can still
 call your routes. `show(path)` refuses a path that does not start with

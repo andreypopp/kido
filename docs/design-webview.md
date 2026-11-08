@@ -187,6 +187,10 @@ The browser target's rules:
   `localhost:<port>`: a browser's connection carries one origin, so
   the first head decides for the connection. There is no token: the
   user decided that a local process may call the page's routes.
+- `close` must not cut a response that is on its way, such as the
+  reply to a page's own quit request: it stops the listener, ends the
+  program's side of each connection, lets each browser side end after
+  its last byte, and destroys what remains after `BROWSER_CLOSE_MS`.
 - `show` opens the URL in the browser, and refuses a path without a
   leading `/`, which could name another host; `hide` does nothing, because a
   program cannot close a tab, so a show after a hide opens no second

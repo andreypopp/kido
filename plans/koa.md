@@ -137,7 +137,9 @@ koa reads the page files and the vendored modules once at start and
 serves one HTML response for `/` (section 4); any other path but its
 routes is 404.
 
-**Checks.** `share/pi/tsconfig.json` includes `../koa/*.ts`.
+**Checks.** `share/pi/tsconfig.json` includes `../koa/*.ts` and maps
+`@earendil-works/pi-coding-agent` to `share/pi/node_modules` in its
+`paths`, so koa's type-only imports resolve from `share/koa/`.
 `scripts/test-ts.sh` runs `koa-*.test.ts` with the ko-pi suite.
 `scripts/lint.sh` adds `share/koa/*.ts` to its TypeScript globs: the
 stale-prose check, the `as`/`any`/`!` hygiene check and the
@@ -244,8 +246,9 @@ koa correlates responses by id. A line that is not JSON goes to koa's
 own stderr with a prefix; it is a bug.
 
 **Shutdown.** `rpc.md`: closing pi's stdin requests an orderly
-shutdown. koa's end, in order: `hide` and `close` the SDK, end pi's
-stdin, wait `KOA_PI_EXIT_MS` (5000) for pi's exit, then `SIGTERM` to
+shutdown. koa's end, in order: end the page's `/events` streams,
+`hide` and `close` the SDK (which then drains the remaining
+responses at once), end pi's stdin, wait `KOA_PI_EXIT_MS` (5000) for pi's exit, then `SIGTERM` to
 the group through `signalPi`, then `SIGKILL` after the same wait. koa
 ends on `SIGTERM`, `SIGHUP` and `SIGINT`, and on a `quit` from the
 page. The pane's hangup rules are ko's (docs/design.md, "Window
@@ -401,7 +404,7 @@ panes"):
 
 | Path | Body | RPC |
 |---|---|---|
-| `/prompt` | `{ text, mode: "prompt" \| "steer" \| "follow_up" }` | `prompt`, with `streamingBehavior` while working; `steer`; `follow_up` |
+| `/prompt` | `{ text, mode: "prompt" \| "steer" \| "follow_up" }` | always `prompt`: plain while idle; while working with `streamingBehavior` `steer` (for `prompt` and `steer`) or `followUp`; never the `steer` and `follow_up` commands, because only `prompt` runs an extension command during streaming (pi's `rpc-commands.md`); the reply carries the disposition |
 | `/abort` | `{}` | `abort` |
 | `/queue/clear` | `{}` | `clear_queue`; the texts return in the response, and the page puts them in the composer |
 | `/model` | `{ provider, modelId }` | `set_model`; `GET /models` lists `get_available_models` |
