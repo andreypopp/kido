@@ -1590,7 +1590,7 @@ pub struct Limits {
 }
 
 impl Limits {
-    pub(crate) fn of(limits: frame::Limits, media: &[frame::Medium]) -> Limits {
+    pub fn of(limits: frame::Limits, media: &[frame::Medium]) -> Limits {
         Limits {
             terminal: Terminal {
                 scrollback: match limits.scrollback {

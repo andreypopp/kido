@@ -136,6 +136,7 @@ export interface Fixture {
   posts(path: string): Array<Record<string, any>>;
   streamOpens(path: string): number;
   feed(message: FeedMessage): void;
+  feedRaw(message: FeedMessage): void;
   acks(): Array<{ type: string; id: string }>;
   forgetAcks(): void;
   dropStream(): void;
@@ -245,6 +246,13 @@ export function makeFixture(): Fixture {
 
   let seq = 0;
   const calls = (): ApiCall[] => jsonLines(apiLog);
+  const feed = (message: FeedMessage, raw: boolean) => {
+    seq++;
+    const from = message.from ?? { type: "pane", pane: "pane_2", session: "boss-session", name: "boss" };
+    const pane = typeof from === "object" && from !== null && "type" in from && from.type === "pane";
+    const record = { seq, text: "", relation: pane ? "sibling" : undefined, ...message, from };
+    appendFileSync(feedFile, JSON.stringify(raw ? { id: message.id, fake_raw: JSON.stringify(record) } : record) + "\n");
+  };
 
   return {
     dir,
@@ -282,10 +290,10 @@ export function makeFixture(): Fixture {
       return calls().filter((call) => call.method === "STREAM" && call.path === path).length;
     },
     feed(message) {
-      seq++;
-      const from = message.from ?? { type: "pane", pane: "pane_2", session: "boss-session", name: "boss" };
-      const pane = typeof from === "object" && from !== null && "type" in from && from.type === "pane";
-      appendFileSync(feedFile, JSON.stringify({ seq, text: "", relation: pane ? "sibling" : undefined, ...message, from }) + "\n");
+      feed(message, false);
+    },
+    feedRaw(message) {
+      feed(message, true);
     },
     acks() {
       return jsonLines(acksFile);

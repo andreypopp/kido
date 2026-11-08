@@ -7,6 +7,9 @@ publish.workspace = true
 [dependencies]
 ko_pane_wire = { path = "../../../../ko_pane_wire" }
 ko_sys = { path = "../../../../ko_sys" }
+ko_server = { path = "../../../../ko_server" }
+ko_config = { path = "../../../../ko_config" }
+serde.workspace = true
 serde_json.workspace = true
 
 [lints]

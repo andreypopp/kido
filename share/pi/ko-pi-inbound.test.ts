@@ -46,11 +46,11 @@ test("each kind reaches pi as its own kind of message and is acked once handed o
     await acked(fx, "kind-note-01");
     assert.deepEqual(notices(s), ["notice from peer (a subagent or background job's report, not the user):\nheads up"]);
 
-    fx.feed({ id: "kind-weird-01", kind: "weird", text: "?", relation: "sibling", from: peer });
+    fx.feedRaw({ id: "kind-weird-01", kind: "weird", text: "?", relation: "sibling", from: peer });
     await acked(fx, "kind-weird-01");
     assert.deepEqual(fx.acks().at(-1), { type: "refuse", id: "kind-weird-01" }, "a message that has no known shape is refused");
     assert.equal(s.delivered.length, 1, "and delivers nothing");
-    fx.feed({ id: "kind-norel-01", kind: "message", text: "no relation", from: peer, relation: undefined });
+    fx.feedRaw({ id: "kind-norel-01", kind: "message", text: "no relation", from: peer, relation: undefined });
     await acked(fx, "kind-norel-01");
     assert.deepEqual(fx.acks().at(-1), { type: "refuse", id: "kind-norel-01" }, "a pane sender without its relation has not the shape either");
 

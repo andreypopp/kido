@@ -187,7 +187,8 @@ These requirements are fixed:
   `share/pi/testdata/fake_ko/` is the crate `fake_ko`, the fake `ko`
   of the TypeScript suite, a workspace member outside
   `default-members` that `make build-fake-ko` builds for
-  `scripts/test-ts.sh`. `ko_bench/` is the binary `ko-bench`, the
+  `scripts/test-ts.sh`. It reads and writes ko's wire only through
+  `ko_server::protocol`'s types. `ko_bench/` is the binary `ko-bench`, the
   benchmark modes, which `make build-bench` builds into `target/release`
   and never installs. ko has no C of its own; the only C is the
   measurement helpers of `bench/`, which `make build-bench` compiles.
