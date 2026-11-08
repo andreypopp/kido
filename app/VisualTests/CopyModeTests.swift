@@ -398,9 +398,11 @@ extension VisualTests {
         XCTAssertNotNil(owner.preparedAlert)
         refused("upload consent sheet")
         owner.respondToAlert(.alertThirdButtonReturn)
+        let preparations = WindowOwner.visualPreparedUploads
         owner.uploadImage(pngData(width: 2, height: 2), to: pane)
         refused("running upload")
         XCTAssertTrue(owner.cancelUploads(pane))
+        try await wait("cancelled image preparation finished") { WindowOwner.visualPreparedUploads > preparations }
         let point = pane.convert(NSPoint(x: 20, y: 20), to: nil)
         pane.mouseDown(with: try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
             windowNumber: owner.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)))
