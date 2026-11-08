@@ -2743,7 +2743,10 @@ the Mach-O files; the Linux ELF needs no signature, and `codesign
 target starts two builds at once; `make -j` with several targets would
 race on `build/ko_client.xcframework`.
 
-Test steps print one line per test case.
+Test steps print one line per test case. Every build or test run that can
+take more than 10 s runs under `quiet-limit 60`, which stops it after 60 s
+without output. The cold GhosttyKit build uses `quiet-limit 600`; build it
+and ko first, as AGENTS.md requires.
 
 `make tsan` and `make asan` build Debug with ReleaseSafe GhosttyKit into
 `build/xcode.noindex/derived-{tsan,asan}`. ASan defaults to `use_sigaltstack=0` because Zig
