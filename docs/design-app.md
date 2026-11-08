@@ -1528,8 +1528,7 @@ selection target, and arrow navigation skips it; only its chevron and
 its folded children's circles take clicks ([Folded children](#folded-children)).
 
 Hovering a pane row's status-indicator slot, the 12pt square of the
-trailing column, replaces the indicator with a 12pt × close button, also on
-an idle row, whose slot is empty; the rest of the row has no hover
+trailing column, replaces the indicator with a 12pt × close button; the rest of the row has no hover
 treatment and records have no close button. Every app-issued
 close goes through one confirmation: the row and tab ×, Close Pane (Command-W)
 and the menu commands. A close proceeds at once only when every live pane in
@@ -1664,8 +1663,13 @@ cause, so a finished child that ko is about to close reads as gone, not as
 a fresh result; accessibility names the cause (`SidebarFeed/Rows.swift`).
 The lingering statuses never reach a window tab. The indicator sits in the trailing slot, centered
 11pt from the row's right edge at every depth and vertically on the title
-line; the header plus center is 15pt from the right edge. Indicators are 6pt dots;
-idle and quiet draw nothing but keep their space, running/compacting green,
+line; the header plus is centred on the same column, 11pt from the right edge.
+The list's 8pt side margins are content insets of a full-width scroll view,
+and its overlay scroller sits at the sidebar's edge (`scrollerInsets`), so it
+covers only the rows' last 9pt and never takes a click meant for the plus or
+the ×.
+Indicators are 6pt dots, so every pane and record row has a mark: idle and quiet are a gray
+dot (the secondary label colour at 50%), running/compacting green,
 waiting rows of any kind orange, failures red. Done/completed is
 a plain green checkmark, about 6×4pt at a 2pt stroke, visually centered on
 the dot position. The lingering checkmark and × have the same footprint and
@@ -1931,8 +1935,7 @@ The children of a folded row that do not show as rows appear as circles
 on the row's second line, right-aligned so that the last one ends under
 the trailing indicator: 6pt status indicators on 10pt centres, one for
 each such direct child in the children's order, each in the child's own
-colour; a quiet child is a gray circle (the secondary label colour at
-55%), unlike the row indicator, because the line counts the children.
+colour; a quiet child is the row indicator's gray dot.
 After six, the line shows `+N` in 10pt muted tabular digits, 4pt after the
 last circle; its right edge, like the last circle's, is the indicator's
 right edge. With exactly one hidden child, its title comes first, in the

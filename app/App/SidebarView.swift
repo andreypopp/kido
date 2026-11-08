@@ -206,6 +206,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
+        scroll.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: -8)
         for view in [scroll, runtimeSection] { addSubview(view) }
         runtimeSection.changed = { [weak self] in self?.needsLayout = true }
         runtimeSection.selected = { [weak self] in self?.table.deselectAll(nil) }
@@ -243,14 +245,13 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
 
     override func layout() {
         super.layout()
-        let inner = bounds.width - 16
         let top = safeAreaInsets.top + 2
         let footer = runtimeSection.height
         runtimeSection.isHidden = footer == 0
         runtimeSection.frame = CGRect(x: 0, y: max(top, bounds.height - footer - 10), width: bounds.width, height: footer)
         runtimeSection.dark = terminalDark
-        scroll.frame = CGRect(x: 8, y: top, width: inner, height: max(0, bounds.height - top - 10 - footer))
-        table.setFrameSize(NSSize(width: scroll.contentSize.width, height: table.frame.height))
+        scroll.frame = CGRect(x: 0, y: top, width: bounds.width, height: max(0, bounds.height - top - 10 - footer))
+        table.setFrameSize(NSSize(width: max(0, scroll.contentSize.width - 16), height: table.frame.height))
     }
 
     var position: Snapshot.Position? { snapshot?.client }

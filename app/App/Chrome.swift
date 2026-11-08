@@ -20,7 +20,7 @@ enum Chrome {
     static var defaultPaper: NSColor { .windowBackgroundColor }
     static var closeHover: NSColor { NSColor.labelColor.withAlphaComponent(0.1) }
     static var windowSelection: NSColor { NSColor.labelColor.withAlphaComponent(0.075) }
-    static var sidebarIdleCircle: NSColor { inkSecondary.withAlphaComponent(inkSecondary.alphaComponent * 0.55) }
+    static var sidebarIdleCircle: NSColor { inkSecondary.withAlphaComponent(inkSecondary.alphaComponent * 0.5) }
     static var sidebarChevron: NSColor { inkSecondary.withAlphaComponent(inkSecondary.alphaComponent * 0.7) }
     static var sidebarDivider: NSColor { ink.withAlphaComponent(0.1) }
     static var rowSelection: NSColor { NSColor.labelColor.withAlphaComponent(0.1) }

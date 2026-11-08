@@ -2,8 +2,7 @@ import AppKit
 import KoModel
 import SidebarFeed
 
-func drawStatusMark(_ status: SidebarRow.Status, at center: NSPoint, flipped: Bool, idle: Bool = false) {
-    guard status != .quiet || idle else { return }
+func drawStatusMark(_ status: SidebarRow.Status, at center: NSPoint, flipped: Bool) {
     let color: NSColor = switch status {
     case .quiet: Chrome.sidebarIdleCircle
     case .endedClean, .endedFailed: Chrome.inkSecondary
@@ -100,7 +99,7 @@ final class SidebarChildren: ActionButton {
         if content.count != 1 { while count > 0 && width(showing: count) > bounds.width { count -= 1 } }
         for (index, child) in content.prefix(count).enumerated() {
             let center = NSPoint(x: content.count == 1 ? bounds.width - 5 : CGFloat(5 + index * 10), y: 6)
-            drawStatusMark(child.status, at: center, flipped: true, idle: true)
+            drawStatusMark(child.status, at: center, flipped: true)
         }
         if content.count == 1 { caption(content[0].title, x: 0, width: bounds.width - 12, font: fonts.tail) }
         else if content.count > count {
@@ -124,7 +123,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
 
     override func mouseDown(with event: NSEvent) {
         if case .header = row?.kind, event.clickCount == 2,
-           NSRect(x: 5, y: 5, width: max(0, bounds.width - 35), height: 18).contains(convert(event.locationInWindow, from: nil)) {
+           NSRect(x: 5, y: 5, width: max(0, bounds.width - 29), height: 18).contains(convert(event.locationInWindow, from: nil)) {
             beginRename()
         } else { super.mouseDown(with: event) }
     }
@@ -140,7 +139,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     var errorHeight: CGFloat {
         guard !renameError.isHidden else { return 0 }
         return ceil((renameError.stringValue as NSString).boundingRect(
-            with: NSSize(width: max(1, bounds.width - 35), height: 1000), options: [.usesLineFragmentOrigin],
+            with: NSSize(width: max(1, bounds.width - 29), height: 1000), options: [.usesLineFragmentOrigin],
             attributes: [.font: renameError.font!]).height) + 6
     }
     static let id = NSUserInterfaceItemIdentifier("cell")
@@ -272,9 +271,9 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             children.isHidden = children.content.isEmpty || width == 0
             children.frame = NSRect(x: bounds.width - 6 - width, y: row.tailY, width: width, height: 12)
         }
-        addWindow.frame = NSRect(x: bounds.width - 28, y: 0, width: 26, height: 26)
-        nameField.frame = NSRect(x: 3, y: 5, width: max(0, bounds.width - 33), height: 18)
-        renameError.frame = NSRect(x: 5, y: 26.5, width: max(0, bounds.width - 35), height: max(1, errorHeight - 6))
+        addWindow.frame = NSRect(x: bounds.width - 22, y: 0, width: 22, height: 28)
+        nameField.frame = NSRect(x: 3, y: 5, width: max(0, bounds.width - 27), height: 18)
+        renameError.frame = NSRect(x: 5, y: 26.5, width: max(0, bounds.width - 29), height: max(1, errorHeight - 6))
         updateTrackingAreas()
     }
 
@@ -317,7 +316,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             let header = { if case .header = row.kind { return true }; return false }()
             let y: CGFloat = header ? 5 : row.padding
             let dotX = bounds.width - 11
-            let end = header ? bounds.width - 28 : bounds.width - (clock.isEmpty ? 23 : trailing + clockWidth + 6)
+            let end = header ? addWindow.frame.minX : bounds.width - (clock.isEmpty ? 23 : trailing + clockWidth + 6)
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byTruncatingTail
             var titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: 18)
