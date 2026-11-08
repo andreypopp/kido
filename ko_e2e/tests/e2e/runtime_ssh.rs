@@ -209,8 +209,18 @@ fn an_ssh_pane_rides_the_master_and_a_dead_master_ends_its_panes_and_never_recon
 
     let zsh =
         crate::status::shell_of(&crate::status::Flavour::Zsh).expect("KO_E2E_HOST_SSH needs zsh");
-    let shell =
-        s.new_pane(json!({"runtime": "box", "command": {"type": "argv", "argv": [text_of(&zsh)]}}));
+    let home = boxed.remote.dir.join("home");
+    fs::create_dir(&home).unwrap();
+    fs::write(home.join(".zshrc"), "").unwrap();
+    let env = json!([
+        {"name": "HOME", "value": text_of(&home)},
+        {"name": "ZDOTDIR", "value": text_of(&home)},
+        {"name": "SHELL", "value": text_of(&zsh)}
+    ]);
+    let shell = s.new_pane(json!({
+        "runtime": "box", "env": env,
+        "command": {"type": "argv", "argv": [text_of(&zsh)]}
+    }));
     s.wait_row(&shell, "explicit remote shell is primed", |row| {
         row["status"]["kind"]["pane"]["phase"]["type"] == "idle"
     });
@@ -222,7 +232,10 @@ fn an_ssh_pane_rides_the_master_and_a_dead_master_ends_its_panes_and_never_recon
             .as_str()
             .is_some_and(|cwd| cwd.ends_with("/sp%20ace"))
     });
-    let split = s.new_pane(json!({"runtime": "box", "cwd": {"pane": shell}}));
+    let split = s.new_pane(json!({"runtime": "box", "cwd": {"pane": shell}, "env": env}));
+    s.wait_row(&split, "remote split shell is primed", |row| {
+        row["status"]["kind"]["pane"]["phase"]["type"] == "idle"
+    });
     s.text(&split, "pwd -P\r");
     s.screen_has(&split, text_of(&cwd));
     let second = s.token_pane_with(json!({"runtime": "box"}), "exec cat");
@@ -238,7 +251,9 @@ fn an_ssh_pane_rides_the_master_and_a_dead_master_ends_its_panes_and_never_recon
     assert!(boxed.master("check"));
     assert!(boxed.master("exit"));
     for pane in [&pane, &second] {
-        dead(s, pane);
+        poll(&format!("{pane} to close with the master"), || {
+            !s.has_pane(pane)
+        });
     }
     let mark = boxed.remote.dir.join("ran");
     let mut ws = start_exec(
