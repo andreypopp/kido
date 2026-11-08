@@ -707,8 +707,10 @@ one when it moves. A routed job has one as a local job does.
   ko-pi writes the namespace `job`, so a clear of `job` removes every
   job record and nothing else.
 - While the job runs, the state is working, the title is the command
-  and the message is the job's name, as `service: <name>` for a
-  service. When it ends, the state is done
+  and the message is the job's name. A running service is idle, with
+  the message `service: <name>`: it is not the agent's work, so it
+  does not make the pane or the folded circles of its ancestors look
+  running. When it ends, the state is done
   for exit 0. Every other end is error: an exit code, a signal, a
   failure to start, a timeout or a stop. The message is the end text
   of its notice (`exit 3`, `signal SIGTERM`).
@@ -744,7 +746,8 @@ or on each key. While the editor is open or pi is suspended, and
 until the next submit or agent start, the rows are absent. A finished
 record that such a clear removed does not come back.
 
-A prompt start (OSC 133 `A`) removes every working record of the pane.
+A prompt start (OSC 133 `A`) removes every record of the pane that has
+not ended: working, blocked and idle, so also a service's.
 pi 1.5.0's TUI strips its OSC 133 zone markers before it writes, so
 the job rows and pi's own working status stay.
 `share/pi/package.json` pins 1.5.0.

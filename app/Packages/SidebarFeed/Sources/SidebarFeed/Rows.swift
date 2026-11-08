@@ -10,6 +10,14 @@ public struct SidebarRow: Equatable, Sendable {
     }
     public enum Status: Comparable, Sendable {
         case error, waiting, running, done, quiet, endedFailed, endedClean
+        var folded: Self {
+            switch self {
+            case .error, .endedFailed: .error
+            case .waiting: .waiting
+            case .running: .running
+            case .done, .quiet, .endedClean: .quiet
+            }
+        }
         func mergingTabStatus(_ other: Self) -> Self { min(self, other) }
     }
     public struct HiddenChild: Equatable, Sendable {
@@ -205,7 +213,7 @@ public struct SidebarOutline: Equatable, Sendable {
 
 public func sidebarRows(_ snapshot: Snapshot?, expanded: Set<SidebarRow.ID> = []) -> SidebarOutline {
     guard let snapshot else { return SidebarOutline(rows: [], ids: [], expandable: []) }
-    typealias Branch = (row: SidebarRow, following: [SidebarRow], waiting: Bool)
+    typealias Branch = (row: SidebarRow, following: [SidebarRow], waiting: Bool, summary: SidebarRow.Status)
     var ids: Set<SidebarRow.ID> = []
     var expandable: Set<SidebarRow.ID> = []
     func finish(_ raw: SidebarRow, children: [Branch]) -> Branch {
@@ -215,14 +223,15 @@ public func sidebarRows(_ snapshot: Snapshot?, expanded: Set<SidebarRow.ID> = []
         let open = expanded.contains(row.id)
         let hidden = open ? [] : children.filter { !$0.waiting }
         let disclosure: SidebarRow.Children = children.isEmpty ? .leaf
-            : open ? .expanded : .folded(hidden.map { .init(title: $0.row.title, status: $0.row.status) })
+            : open ? .expanded : .folded(hidden.map { .init(title: $0.row.title, status: $0.summary) })
         switch row.kind {
         case .pane(let position, _): row.kind = .pane(position, disclosure)
         case .program: row.kind = .program(disclosure)
         default: break
         }
         let following = children.filter { open || $0.waiting }.flatMap { [$0.row] + $0.following }
-        return (row, following, row.status == .waiting || children.contains { $0.waiting })
+        let summary = children.reduce(row.status.folded) { min($0, $1.summary) }
+        return (row, following, row.status == .waiting || children.contains { $0.waiting }, summary)
     }
     func windows(_ nodes: [Node], session: SessionID, depth: Int, root: WindowID?, above: String? = nil) -> [Branch] {
         nodes.flatMap { node -> [Branch] in

@@ -469,6 +469,7 @@ type Job = {
 type BackgroundJob = Job & { mode: JobOutput };
 const isBackgroundJob = (job: Job): job is BackgroundJob => job.mode.type === "job";
 const serviceJob = (job: BackgroundJob): boolean => job.mode.origin.type === "async_bash" && job.mode.origin.service;
+const jobRecordState = (job: BackgroundJob): "idle" | "working" => serviceJob(job) ? "idle" : "working";
 const jobRecordMessage = (job: BackgroundJob): string => serviceJob(job) ? `service: ${job.mode.name}` : job.mode.name;
 const streams = (job: BackgroundJob): boolean => job.mode.origin.type === "async_bash" && job.mode.origin.stream;
 const TAIL_BYTES = 4000;
@@ -2205,7 +2206,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const jobRecords = new Map<string, { type: "running" } | { type: "finished"; timer: NodeJS.Timeout }>();
-  const writeJobRecord = (id: string | undefined, state: Extract<ProgramStatus["state"], "working" | "done" | "error" | "clear">, title?: string, message?: string): boolean => {
+  const writeJobRecord = (id: string | undefined, state: Extract<ProgramStatus["state"], "idle" | "working" | "done" | "error" | "clear">, title?: string, message?: string): boolean => {
     if (!session?.hasUI || !process.env.KO_PANE) return false;
     const encode = (text: string, bytes: number): string => Buffer.from(utf8Prefix(replaceControlCharacters(text).replace(/\s+/g, " ").trim(), bytes)).toString("base64");
     let record = `\x1b]7501;state=${state}:id=${id === undefined ? "job" : `job/${id}`}`;
@@ -2238,7 +2239,7 @@ export default function (pi: ExtensionAPI) {
       }
     }
     if (job.state.type === "running") {
-      if (writeJobRecord(id, "working", job.command, jobRecordMessage(job))) jobRecords.set(id, { type: "running" });
+      if (writeJobRecord(id, jobRecordState(job), job.command, jobRecordMessage(job))) jobRecords.set(id, { type: "running" });
     }
     else {
       if (!writeJobRecord(id, job.state.end.type === "exit" && job.state.end.code === 0 ? "done" : "error", job.command, jobEndText(job.state.end))) return;
@@ -2252,7 +2253,7 @@ export default function (pi: ExtensionAPI) {
     for (const [id, record] of jobRecords) {
       if (record.type !== "running") continue;
       const job = registry?.jobs.get(id);
-      if (job && isBackgroundJob(job)) writeJobRecord(id, "working", job.command, jobRecordMessage(job));
+      if (job && isBackgroundJob(job)) writeJobRecord(id, jobRecordState(job), job.command, jobRecordMessage(job));
     }
   };
   const savedJobs: unknown = Reflect.get(globalThis, JOBS);

@@ -1934,8 +1934,15 @@ children leaves the slot empty, so titles align.
 The children of a folded row that do not show as rows appear as circles
 on the row's second line, right-aligned so that the last one ends under
 the trailing indicator: 6pt status indicators on 10pt centres, one for
-each such direct child in the children's order, each in the child's own
-colour; a quiet child is the row indicator's gray dot.
+each such direct child in the children's order. A circle summarises the
+child's whole subtree: the child, its descendant panes at any depth and
+the program records of all of them, reduced by the order error > running
+> idle (`SidebarRow.Status.folded`). A circle has no done: a clean end
+(done, or a lingering exit 0) is idle, the row indicator's gray dot; a
+failed end is error. So an idle or dead child with a running grandchild
+shows a running circle. A record row's circles reduce over the record and
+its descendant records in the same way. Only the circles summarise; a
+row's own indicator is its own status.
 After six, the line shows `+N` in 10pt muted tabular digits, 4pt after the
 last circle; its right edge, like the last circle's, is the indicator's
 right edge. With exactly one hidden child, its title comes first, in the

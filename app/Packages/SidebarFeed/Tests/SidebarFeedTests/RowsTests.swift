@@ -34,6 +34,36 @@ import KoModel
     } else { Issue.record("missing folded children") }
 }
 
+@Test func foldedCirclesSummarizePaneSubtrees() {
+    func runningChild(_ id: Int) -> Node { pane(id, lifecycle: agent(working()), mark: .running) }
+    let children = [
+        pane(1, lifecycle: agent(idle(outcome(1, .success))), mark: .done),
+        pane(2, lifecycle: .lingering(.exited(.init(code: 2)))),
+        pane(3, children: [runningChild(30)]),
+        pane(4, lifecycle: .ended(.exited(.init(code: 0))), children: [runningChild(40)]),
+        pane(5, lifecycle: .lingering(.exited(.init(code: 0))), children: [runningChild(50)]),
+        pane(6, records: [.working(.init(id: "task"))]),
+        pane(7, children: [runningChild(70), pane(10, lifecycle: agent(idle(outcome(1, .failure))), mark: .failed)]),
+        pane(8, records: [.error(.init(id: "seen"))], recordsSeen: true)
+    ]
+    let row = sidebarRows(makeSnapshot([pane(0, children: children)])).rows[1]
+    guard case .folded(let hidden) = row.children else { Issue.record("missing circles"); return }
+    #expect(hidden.map(\.status) == [.quiet, .error, .running, .running, .running, .running, .error, .quiet])
+    #expect(row.status == .quiet)
+}
+
+@Test func foldedRecordCirclesSummarizeDescendantRecords() {
+    let snapshot = makeSnapshot([pane(0, records: [
+        .done(.init(id: "a")), .idle(.init(id: "a/b")), .working(.init(id: "a/b/c")),
+        .done(.init(id: "a/d")), .working(.init(id: "a/e")), .error(.init(id: "a/e/f"))
+    ])])
+    let rows = sidebarRows(snapshot, expanded: [.pane(.init(number: 0), .init(number: 0))]).rows
+    let row = rows[2]
+    #expect(row.status == .done)
+    guard case .folded(let hidden) = row.children else { Issue.record("missing circles"); return }
+    #expect(hidden.map(\.status) == [.running, .quiet, .error])
+}
+
 @Test func waitOnlyParentsKeepExplicitPaneAndRecordFolds() {
     let session = SessionID(number: 0), root = PaneID(number: 0)
     for records in [false, true] {

@@ -46,6 +46,31 @@ test("job records report exact bytes, linger, reload, refresh after TUI restarts
   } finally { await fx.restore(); }
 });
 
+test("service records stay idle on start, reload, and TUI restore while normal jobs work", async (t) => {
+  const records = captureStatusRecords(t);
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const first = await startSession(fx);
+    const service = await first.tools.get("async_bash").execute("s", { command: gatedCommand(join(fx.dir, "service")), name: "server", service: true });
+    const normal = await first.tools.get("async_bash").execute("n", { command: gatedCommand(join(fx.dir, "normal")), name: "build" });
+    const check = (count: number) => {
+      assert.equal(jobRecords(records, service.details.job, "idle").length, count);
+      assert.equal(jobRecords(records, service.details.job, "working").length, 0);
+      assert.ok(jobRecords(records, service.details.job, "idle").every(record => record.endsWith(":msg=c2VydmljZTogc2VydmVy\x1b\\")));
+      assert.equal(jobRecords(records, normal.details.job, "working").length, count);
+    };
+    check(1);
+    await first.emit("session_shutdown", { reason: "reload" });
+    const second = await startSession(fx, { factory: await freshExtension() });
+    check(2);
+    await second.emit("input", { text: "next", source: "interactive" });
+    check(3);
+    await second.emit("agent_start");
+    check(4);
+  } finally { await fx.restore(); }
+});
+
 test("the record cap drops new working jobs and reuses the oldest finished slot; text is bounded and encoded", async (t) => {
   const records = captureStatusRecords(t);
   const fx = makeFixture();

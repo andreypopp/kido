@@ -488,13 +488,13 @@ private extension PaneView {
         try await wait("restart uses first child rather than a reused remembered id") { owner.testModel?.selection.pane == PaneID(number: 4) }
     }
 
-    func testFoldedDoneUsesTheRowCheckAndQuietKeepsItsSpace() throws {
+    func testFoldedDoneUsesIdleDotAndSubtreeUsesRunningCircle() throws {
         let rows = sidebarRows(sidebarChildrenFixture()).rows
         let parent = try XCTUnwrap(rows.first { $0.target?.pane == PaneID(number: 502) })
         let waiting = try XCTUnwrap(rows.first { $0.target?.pane == PaneID(number: 940) })
         guard case .folded(let first) = parent.children, case .folded(let second) = waiting.children else { return XCTFail("missing folded indicators") }
-        XCTAssertEqual(first.map(\.status), [.running, .done])
-        XCTAssertEqual(second.map(\.status), [.done, .quiet])
+        XCTAssertEqual(first.map(\.status), [.running, .quiet])
+        XCTAssertEqual(second.map(\.status), [.running, .quiet])
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 44, height: 12), styleMask: [], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .aqua)
@@ -508,7 +508,7 @@ private extension PaneView {
             host.addSubview(control)
         }
         host.displayIfNeeded()
-        checkSnapshot { verifySnapshot(of: host, as: .image, named: "done-check-and-idle-dot", record: $0) }
+        checkSnapshot { verifySnapshot(of: host, as: .image, named: "subtree-running-and-idle-dots", record: $0) }
     }
 
     private func click(_ control: NSView) throws {
