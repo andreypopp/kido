@@ -143,14 +143,16 @@ public enum KoSchema {
         public var keys: [String: Action]
         public var mouse: Mouse
         public var theme: Theme
+        public var webview: WebviewSettings
         public var window: WindowSettings
-        public init(clipboard: Clipboard, font: Font, keyboard: Keyboard, keys: [String: Action], mouse: Mouse, theme: Theme, window: WindowSettings) {
+        public init(clipboard: Clipboard, font: Font, keyboard: Keyboard, keys: [String: Action], mouse: Mouse, theme: Theme, webview: WebviewSettings, window: WindowSettings) {
             self.clipboard = clipboard
             self.font = font
             self.keyboard = keyboard
             self.keys = keys
             self.mouse = mouse
             self.theme = theme
+            self.webview = webview
             self.window = window
         }
     }
@@ -977,6 +979,8 @@ public enum KoSchema {
         }
     }
 
+    public typealias HiddenPages = Int
+
     public enum Item: Codable, Equatable, Sendable {
         case session(ItemSession)
         case pane(ItemPane)
@@ -1378,6 +1382,13 @@ public enum KoSchema {
         case failure
     }
 
+    public struct Page: Codable, Equatable, Sendable {
+        public var path: WebviewPath
+        public init(path: WebviewPath) {
+            self.path = path
+        }
+    }
+
     public typealias PaneId = PaneID
 
     public struct PaneJson: Codable, Equatable, Sendable {
@@ -1400,7 +1411,8 @@ public enum KoSchema {
         public var status: PaneStatus?
         public var title: String
         public var vars: [String: JSONValue]
-        public init(close: Close? = nil, command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, inbox: Bool? = nil, label: String, mark: Mark, parent: PaneId? = nil, pid: Int? = nil, place: Place? = nil, progress: Progress? = nil, recordsSeen: Bool, runtime: RuntimeName? = nil, started: Int, status: PaneStatus? = nil, title: String, vars: [String: JSONValue]) {
+        public var webview: Webview?
+        public init(close: Close? = nil, command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, inbox: Bool? = nil, label: String, mark: Mark, parent: PaneId? = nil, pid: Int? = nil, place: Place? = nil, progress: Progress? = nil, recordsSeen: Bool, runtime: RuntimeName? = nil, started: Int, status: PaneStatus? = nil, title: String, vars: [String: JSONValue], webview: Webview? = nil) {
             self.close = close
             self.command = command
             self.cwd = cwd
@@ -1420,6 +1432,7 @@ public enum KoSchema {
             self.status = status
             self.title = title
             self.vars = vars
+            self.webview = webview
         }
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -1442,6 +1455,7 @@ public enum KoSchema {
             self.status = try container.decodeIfPresent(PaneStatus.self, forKey: .status)
             self.title = try container.decode(String.self, forKey: .title)
             self.vars = try container.decode([String: JSONValue].self, forKey: .vars)
+            self.webview = try container.decodeIfPresent(Webview.self, forKey: .webview)
             guard 0 <= self.started else { throw DecodingError.dataCorruptedError(forKey: .started, in: container, debugDescription: "started is at least 0, not \(self.started)") }
         }
         private enum CodingKeys: String, CodingKey {
@@ -1464,6 +1478,7 @@ public enum KoSchema {
             case status
             case title
             case vars
+            case webview
         }
     }
 
@@ -2081,6 +2096,49 @@ public enum KoSchema {
             self.build = build
             self.`protocol` = `protocol`
             self.vt = vt
+        }
+    }
+
+    public struct Webview: Codable, Equatable, Sendable {
+        public var page: Page?
+        public var serving: Bool
+        public init(page: Page? = nil, serving: Bool) {
+            self.page = page
+            self.serving = serving
+        }
+    }
+
+    public enum WebviewLinks: String, Codable, Equatable, Sendable {
+        case deny
+        case `open` = "open"
+    }
+
+    public typealias WebviewPath = String
+
+    public struct WebviewSettings: Codable, Equatable, Sendable {
+        public var enabled: Bool
+        public var inspector: Bool
+        public var keepHidden: HiddenPages
+        public var links: WebviewLinks
+        public init(enabled: Bool, inspector: Bool, keepHidden: HiddenPages, links: WebviewLinks) {
+            self.enabled = enabled
+            self.inspector = inspector
+            self.keepHidden = keepHidden
+            self.links = links
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.enabled = try container.decode(Bool.self, forKey: .enabled)
+            self.inspector = try container.decode(Bool.self, forKey: .inspector)
+            self.keepHidden = try container.decode(HiddenPages.self, forKey: .keepHidden)
+            self.links = try container.decode(WebviewLinks.self, forKey: .links)
+            guard 0 <= self.keepHidden, self.keepHidden <= 16 else { throw DecodingError.dataCorruptedError(forKey: .keepHidden, in: container, debugDescription: "keep_hidden is 0...16, not \(self.keepHidden)") }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case enabled
+            case inspector
+            case keepHidden = "keep_hidden"
+            case links
         }
     }
 

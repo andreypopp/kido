@@ -42,10 +42,13 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { type WriteStream, accessSync, constants, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
+import http, { type IncomingMessage, type ServerResponse } from "node:http";
+import { webview, type Webview } from "../webview/index.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "./ko-api.d.ts";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 type Api = components["schemas"];
 
@@ -321,6 +324,12 @@ const MAX_TASK_BYTES = 1044480;
 
 const MAX_MESSAGE_BYTES = 1000000;
 
+const MAX_WEBVIEW_WINDOW_ITEMS = 40;
+const MAX_WEBVIEW_WINDOW_BYTES = 256 * 1024;
+const MAX_WEBVIEW_ARGS_BYTES = 4 * 1024;
+const MAX_WEBVIEW_RESULT_BYTES = 16 * 1024;
+const WEBVIEW_FLUSH_MS = 50;
+
 const MAX_DEPTH = 2;
 
 // How long a stop waits for the pane to end by itself, and the cap of the whole call: that wait, the
@@ -442,6 +451,38 @@ type ShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
 
 // pi /reload keeps the process, its message stream and its received-id ring.
 type ReceiverHold = { child: ChildProcess; partial: Buffer };
+type WebviewWish = { terminal: boolean };
+type WebviewText = { text: string; cut: number };
+type WebviewToolState = { type: "pending" } | { type: "running"; result?: WebviewText } | { type: "done"; result: WebviewText; error: boolean } | { type: "not_run" };
+type WebviewBlock = { type: "text" | "thinking"; text: string; redacted?: boolean } | { type: "tool"; id: string; name: string; args: WebviewText; state: WebviewToolState };
+type WebviewItem = { seq: number; final: boolean } & (
+  { kind: "user"; text: string; images: number } |
+  { kind: "assistant"; blocks: WebviewBlock[]; stop: string; error: string; lifecycle: "streaming" | "ended" } |
+  { kind: "notice"; customType: string; from: string; text: string } |
+  { kind: "bash"; command: string; output: WebviewText; exit?: number } |
+  { kind: "summary"; text: string }
+);
+type WebviewAssistant = Extract<WebviewItem, { kind: "assistant" }>;
+
+function contentText(value: string | readonly { type: string; text?: string }[], separator = "\n"): string {
+  return typeof value === "string" ? value : value.flatMap((block) => block.type === "text" ? [block.text ?? ""] : []).join(separator);
+}
+
+function webviewCap(text: string, limit: number): WebviewText {
+  const bytes = Buffer.byteLength(text);
+  const prefix = utf8Prefix(text, limit);
+  return { text: prefix, cut: bytes - Buffer.byteLength(prefix) };
+}
+
+function webviewWireItem(item: WebviewItem) {
+  if (item.kind !== "assistant") return item;
+  const { lifecycle, ...wire } = item;
+  return wire;
+}
+
+function webviewFinal(item: WebviewAssistant): boolean {
+  return item.lifecycle === "ended" && item.blocks.every((b) => b.type !== "tool" || b.state.type === "done" || b.state.type === "not_run");
+}
 
 type JobEnd = { type: "exit"; code: number } | { type: "signal"; signal: NodeJS.Signals } | { type: "failed"; message: string } | { type: "stopped" } | { type: "timeout"; seconds: number };
 type JobCall = {
@@ -815,6 +856,8 @@ async function routedJob(registry: JobRegistry, r: Routed, command: string, cwd:
 
 declare global {
   var __koPiExtensionReceiver: ReceiverHold | undefined;
+  var __koPiExtensionWebview: { wv: Webview; server: http.Server; handle: (request: IncomingMessage, response: ServerResponse) => void; supported: () => void } | undefined;
+  var __koPiExtensionWebviewWish: WebviewWish | undefined;
   var __koPiExtensionReceived: string[] | undefined;
   var __koPiExtensionCopy: string | undefined;
   var __koPiExtensionClearQueue: AgentSession["clearQueue"] | undefined;
@@ -932,6 +975,7 @@ function openStream(ko: string, path: string, stdin: "pipe" | "ignore", stderr: 
   child.stdin?.on("error", () => {});
   return child;
 }
+
 
 type Addressable = { id: string; pane: string; name: string; named: boolean; state: "running" | "ended" };
 
@@ -1487,6 +1531,7 @@ async function routedGrep(r: Routed, params: GrepToolInput, signal: AbortSignal 
 
 export default function (pi: ExtensionAPI) {
   if (!isFirstCopy()) return;
+  pi.registerFlag("webview", { description: "Show the session in a webview when supported", type: "boolean" });
   pi.registerFlag("runtime", { description: "Run the built-in tools and ! commands in a configured runtime or an ad-hoc runtime of this session by name", type: "string" });
   pi.on("project_trust", async (event) => {
     const trusted = process.env.KO_AGENT_TRUSTED_CWD;
@@ -1656,7 +1701,7 @@ export default function (pi: ExtensionAPI) {
       };
       const child = openStream(ko, "/client", "pipe");
       peerClient = child;
-      const hello: Api["ClientRequest"] = { type: "hello", name: "ko-pi", focused: false, sizing: { type: "disabled" } };
+      const hello: Api["ClientRequest"] = { type: "hello", name: "ko-pi", webview: false, focused: false, sizing: { type: "disabled" } };
       child.stdin?.write(JSON.stringify(hello) + "\n");
       child.stdout?.on("data", lineReader({ partial: Buffer.alloc(0) }, (line) => {
         try { receive(JSON.parse(line)); } catch {}
@@ -2121,15 +2166,10 @@ export default function (pi: ExtensionAPI) {
 
   const received = (): string[] => (globalThis.__koPiExtensionReceived ??= []);
 
-  let receiver: ReceiverHold | null = null;
-  let receiverData: ((chunk: Buffer) => void) | null = null;
-  let receiverTimer: NodeJS.Timeout | null = null;
-  let receiverBackoff = 0;
-  let receiving = false;
   let queue: Promise<void> = Promise.resolve();
 
   const answerStream = (id: string, type: "ack" | "refuse"): void => {
-    receiver?.child.stdin?.write(JSON.stringify({ type, id } satisfies Api["StreamRequest"]) + "\n");
+    receiver.write(JSON.stringify({ type, id } satisfies Api["StreamRequest"]) + "\n");
   };
 
   const onStreamLine = (line: string): void => {
@@ -2144,7 +2184,6 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     const message = decoded;
-    receiverBackoff = 0;
     queue = queue.then(async () => {
       if (received().includes(message.id)) {
         answerStream(message.id, "ack");
@@ -2166,49 +2205,359 @@ export default function (pi: ExtensionAPI) {
     });
   };
 
-  const onStreamExit = (): void => {
-    if (!receiving) return;
-    receiver = null;
+  let receiverHold: ReceiverHold | null = null;
+  let receiverData: ((chunk: Buffer) => void) | null = null;
+  let receiverTimer: NodeJS.Timeout | null = null;
+  let receiverBackoff = 0;
+  let receiverActive = false;
+  const receiverExit = (): void => {
+    receiverDetach();
+    receiverHold = null;
+    if (!receiverActive) return;
     receiverBackoff = reconnectBackoff(receiverBackoff);
-    receiverTimer = setTimeout(openReceiver, receiverBackoff);
+    receiverTimer = setTimeout(receiverOpen, receiverBackoff);
     receiverTimer.unref();
   };
-
-  function attachReceiver(hold: ReceiverHold): void {
-    receiver = hold;
-    receiverData = lineReader(hold, onStreamLine);
-    hold.child.stdout?.on("data", receiverData);
-    hold.child.stdout?.resume();
-    hold.child.on("exit", onStreamExit);
-  }
-
-  function openReceiver(): void {
+  const receiverDetach = (): void => {
+    if (!receiverHold) return;
+    if (receiverData) receiverHold.child.stdout?.removeListener("data", receiverData);
+    receiverHold.child.stdout?.pause();
+    receiverHold.child.removeListener("exit", receiverExit);
+    receiverHold.child.removeListener("error", receiverExit);
+  };
+  const receiverAttach = (next: ReceiverHold): void => {
+    receiverHold = next;
+    receiverData = lineReader(next, (line) => { receiverBackoff = 0; onStreamLine(line); });
+    next.child.stdout?.on("data", receiverData);
+    next.child.stdout?.resume();
+    next.child.once("exit", receiverExit);
+    next.child.once("error", receiverExit);
+  };
+  function receiverOpen(): void {
     receiverTimer = null;
-    if (!receiving || !ko || !pane) return;
-    attachReceiver({ child: openStream(ko, `/panes/${pane}/messages`, "pipe"), partial: Buffer.alloc(0) });
+    const target = pane ? `/panes/${pane}/messages` : null;
+    if (receiverActive && ko && target) receiverAttach({ child: openStream(ko, target, "pipe"), partial: Buffer.alloc(0) });
   }
-
-  const startReceiver = (): void => {
-    receiving = true;
-    const held = globalThis.__koPiExtensionReceiver;
-    globalThis.__koPiExtensionReceiver = undefined;
-    if (held && held.child.exitCode === null && held.child.signalCode === null) attachReceiver(held);
-    else openReceiver();
+  const receiver = {
+    start(): void {
+      receiverActive = true;
+      const held = globalThis.__koPiExtensionReceiver;
+      globalThis.__koPiExtensionReceiver = undefined;
+      if (held && held.child.exitCode === null && held.child.signalCode === null) receiverAttach(held);
+      else receiverOpen();
+    },
+    stop(park: boolean): void {
+      receiverActive = false;
+      if (receiverTimer) clearTimeout(receiverTimer);
+      receiverTimer = null;
+      const held = receiverHold;
+      receiverDetach();
+      receiverHold = null;
+      if (!held) return;
+      if (park) globalThis.__koPiExtensionReceiver = held;
+      else held.child.kill();
+    },
+    write(line: string): void { receiverHold?.child.stdin?.write(line); },
   };
 
-  const stopReceiver = (park: boolean): void => {
-    receiving = false;
-    if (receiverTimer) clearTimeout(receiverTimer);
-    receiverTimer = null;
-    const hold = receiver;
-    receiver = null;
-    if (!hold) return;
-    if (receiverData) hold.child.stdout?.removeListener("data", receiverData);
-    hold.child.stdout?.pause();
-    hold.child.removeListener("exit", onStreamExit);
-    if (park) globalThis.__koPiExtensionReceiver = hold;
-    else hold.child.kill();
+  const webviewWishState: WebviewWish = globalThis.__koPiExtensionWebviewWish ?? { terminal: false };
+  globalThis.__koPiExtensionWebviewWish = undefined;
+  let webviewActive = false;
+  let webviewDialogs = 0;
+  let webviewPage: string | undefined;
+  let webviewEpoch = mintId();
+  let webviewItems: WebviewItem[] = [];
+  let webviewAssistant: number | undefined;
+  let webviewWorking = false;
+  let webviewCompacting = false;
+  const MAX_WEBVIEW_OUTPUT_BYTES = 1 << 20;
+  const webviewSubscribers = new Set<ServerResponse>();
+  const webviewTools = new Map<string, { item: WebviewAssistant; block: Extract<WebviewBlock, { type: "tool" }> }>();
+  const webviewDirty = new Set<number>();
+  const webviewSent = new Map<number, WebviewAssistant>();
+  const webviewPending = new Map<number, { message: Extract<AgentMessage, { role: "assistant" }>; phase: "update" | "end" }>();
+  const webviewPendingTools = new Map<string, { type: "running"; result: { content: Parameters<typeof contentText>[0] } } | { type: "done"; result: { content: Parameters<typeof contentText>[0] }; error: boolean }>();
+  let webviewFlushTimer: NodeJS.Timeout | null = null;
+
+  const webviewBody = (req: ServerResponse, text: string, more = false): void => {
+    if (req.destroyed || req.writableEnded) return;
+    if (text) req.write(text);
+    if (!more || req.writableLength > MAX_WEBVIEW_OUTPUT_BYTES) {
+      req.end();
+      webviewSubscribers.delete(req);
+    }
   };
+  const webviewResponse = (req: ServerResponse, status: number, text: string, contentType = "application/json"): void => {
+    req.writeHead(status, { "Content-Type": contentType });
+    req.end(text);
+  };
+  const webviewBroadcast = (record: unknown): void => {
+    const line = JSON.stringify(record) + "\n";
+    for (const req of webviewSubscribers) webviewBody(req, line, true);
+  };
+  const webviewState = (): void => webviewBroadcast({ type: "state", working: webviewWorking, name: pi.getSessionName() ?? "", model: session?.model?.id ?? "" });
+  const webviewWish = (): void => {
+    if (!webviewActive) return;
+    const wv = globalThis.__koPiExtensionWebview?.wv;
+    if (wv) void (wv.supported && !webviewDialogs && !webviewWishState.terminal ? wv.show() : wv.hide()).catch(() => {});
+  };
+  const webviewWindow = (before: number): string => {
+    let start = Math.min(before, webviewItems.length);
+    const items: string[] = [];
+    let bytes = 0;
+    while (start > 0 && items.length < MAX_WEBVIEW_WINDOW_ITEMS) {
+      const item = JSON.stringify(webviewWireItem(webviewItems[start - 1]));
+      const size = Buffer.byteLength(item);
+      if (items.length && bytes + size > MAX_WEBVIEW_WINDOW_BYTES) break;
+      bytes += size;
+      items.push(item);
+      start--;
+    }
+    return '"items":[' + items.reverse().join(",") + '],"more":' + (start > 0);
+  };
+  const webviewSchedule = (): void => {
+    if (!webviewFlushTimer) webviewFlushTimer = setTimeout(webviewFlush, WEBVIEW_FLUSH_MS);
+  };
+  const webviewPublish = (item: WebviewItem): void => { webviewDirty.add(item.seq); };
+  const webviewApplyAssistant = (item: WebviewAssistant, message: Extract<AgentMessage, { role: "assistant" }>, ended: boolean): void => {
+    item.blocks = message.content.flatMap((block): WebviewBlock[] => {
+      if (block.type === "text") return [{ type: "text", text: block.text }];
+      if (block.type === "thinking") return [{ type: "thinking", text: block.thinking, redacted: !!block.redacted }];
+      if (block.type !== "toolCall") return [];
+      const existing = webviewTools.get(block.id)?.block;
+      const next: Extract<WebviewBlock, { type: "tool" }> = { type: "tool", id: block.id, name: block.name, args: existing && existing.state.type !== "pending" ? existing.args : webviewCap(JSON.stringify(block.arguments), MAX_WEBVIEW_ARGS_BYTES), state: existing?.state ?? { type: "pending" } };
+      webviewTools.set(block.id, { item, block: next });
+      return [next];
+    });
+    item.stop = message.stopReason;
+    item.error = message.errorMessage ?? "";
+    item.lifecycle = ended ? "ended" : "streaming";
+    if (ended && (message.stopReason === "error" || message.stopReason === "aborted")) {
+      for (const block of item.blocks) if (block.type === "tool" && block.state.type === "pending") block.state = { type: "not_run" };
+    }
+    webviewPublish(item);
+  };
+  const sameText = (a: WebviewText | undefined, b: WebviewText | undefined): boolean => a?.text === b?.text && a?.cut === b?.cut;
+  const sameBlock = (a: WebviewBlock, b: WebviewBlock): boolean => {
+    if (a.type !== b.type) return false;
+    if (a.type !== "tool" && b.type !== "tool") return a.text === b.text && a.redacted === b.redacted;
+    if (a.type !== "tool" || b.type !== "tool") return false;
+    return a.id === b.id && a.name === b.name && sameText(a.args, b.args) && a.state.type === b.state.type
+      && sameText("result" in a.state ? a.state.result : undefined, "result" in b.state ? b.state.result : undefined)
+      && (a.state.type !== "done" || b.state.type === "done" && a.state.error === b.state.error);
+  };
+  function webviewFlush(publish = true): void {
+    if (webviewFlushTimer) clearTimeout(webviewFlushTimer);
+    webviewFlushTimer = null;
+    for (const [seq, held] of webviewPending) {
+      const item = webviewItems[seq];
+      if (item?.kind === "assistant") webviewApplyAssistant(item, held.message, held.phase === "end");
+    }
+    webviewPending.clear();
+    for (const [id, held] of webviewPendingTools) {
+      const found = webviewTools.get(id);
+      if (!found) continue;
+      const result = webviewCap(contentText(held.result.content), MAX_WEBVIEW_RESULT_BYTES);
+      found.block.state = held.type === "done" ? { type: "done", result, error: held.error } : { type: "running", result };
+      webviewPublish(found.item);
+    }
+    webviewPendingTools.clear();
+    if (!publish) { webviewDirty.clear(); return; }
+    for (const seq of webviewDirty) {
+      const item = webviewItems[seq];
+      if (!item) continue;
+      const previous = webviewSent.get(seq);
+      if (item.kind === "assistant" && previous && item.blocks.length === previous.blocks.length) {
+        const blocks = item.blocks.flatMap<{ index: number; suffix: string } | { index: number; block: WebviewBlock }>((block, index) => {
+          const old = previous.blocks[index];
+          if (sameBlock(block, old)) return [];
+          if (block.type !== "tool" && old.type === block.type && block.redacted === old.redacted && block.text.startsWith(old.text)) return [{ index, suffix: block.text.slice(old.text.length) }];
+          return [{ index, block }];
+        });
+        if (blocks.length || item.final !== previous.final || item.stop !== previous.stop || item.error !== previous.error) {
+          webviewBroadcast({ type: "patch", seq, blocks, final: item.final, stop: item.stop, error: item.error });
+        }
+      } else webviewBroadcast({ type: "item", item: webviewWireItem(item) });
+      if (item.kind === "assistant" && !item.final) webviewSent.set(seq, { ...item, blocks: item.blocks.map((block) => ({ ...block })) });
+      else webviewSent.delete(seq);
+    }
+    webviewDirty.clear();
+  }
+  const webviewMessage = (message: AgentMessage, phase: "start" | "update" | "end" | "branch"): void => {
+    const branch = phase === "branch";
+    if (message.role === "toolResult") {
+      if (phase === "end" || branch) {
+        webviewPendingTools.set(message.toolCallId, { type: "done", result: message, error: message.isError });
+        if (!branch) webviewFlush();
+      }
+      return;
+    }
+    if (message.role === "assistant") {
+      let item = !branch && webviewAssistant !== undefined ? webviewItems[webviewAssistant] : undefined;
+      if (phase === "start" || branch || item?.kind !== "assistant") {
+        item = { seq: webviewItems.length, get final() { return webviewFinal(this); }, kind: "assistant", blocks: [], stop: "", error: "", lifecycle: "streaming" };
+        webviewItems.push(item);
+        if (!branch) webviewAssistant = item.seq;
+      }
+      if (item.kind !== "assistant") return;
+      if (branch || phase === "start") webviewApplyAssistant(item, message, branch);
+      else webviewPending.set(item.seq, { message, phase });
+      if (phase === "end") webviewAssistant = undefined;
+      if (!branch) { if (phase === "update") webviewSchedule(); else webviewFlush(); }
+      return;
+    }
+    if (phase !== "end" && !branch) return;
+    const seq = webviewItems.length;
+    let item: WebviewItem;
+    switch (message.role) {
+      case "user": item = { seq, final: true, kind: "user", text: contentText(message.content), images: typeof message.content === "string" ? 0 : message.content.filter(b => b.type === "image").length }; break;
+      case "custom":
+        if (!message.display) return;
+        item = { seq, final: true, kind: "notice", customType: message.customType, from: isRecord(message.details) ? str(message.details.from) : "", text: contentText(message.content) }; break;
+      case "bashExecution": item = { seq, final: true, kind: "bash", command: message.command, output: webviewCap(message.output, MAX_WEBVIEW_RESULT_BYTES), ...(message.exitCode === undefined ? {} : { exit: message.exitCode }) }; break;
+      case "branchSummary": case "compactionSummary": item = { seq, final: true, kind: "summary", text: message.summary }; break;
+      default: return;
+    }
+    webviewItems.push(item);
+    if (!branch) { webviewPublish(item); webviewFlush(); }
+  };
+  const webviewRebuild = (): void => {
+    webviewEpoch = mintId();
+    webviewItems = [];
+    webviewAssistant = undefined;
+    webviewSent.clear();
+    webviewDirty.clear();
+    webviewPending.clear();
+    webviewPendingTools.clear();
+    webviewTools.clear();
+    for (const entry of session?.sessionManager.getBranch() ?? []) {
+      if (entry.type === "message") webviewMessage(entry.message, "branch");
+      else if (entry.type === "custom_message") webviewMessage({ role: "custom", customType: entry.customType, content: entry.content, display: entry.display, details: entry.details, timestamp: Date.parse(entry.timestamp) }, "branch");
+      else if (entry.type === "compaction") webviewMessage({ role: "compactionSummary", summary: entry.summary, tokensBefore: entry.tokensBefore, timestamp: Date.parse(entry.timestamp) }, "branch");
+      else if (entry.type === "branch_summary") webviewMessage({ role: "branchSummary", summary: entry.summary, fromId: entry.fromId, timestamp: Date.parse(entry.timestamp) }, "branch");
+    }
+    const subscribers = [...webviewSubscribers];
+    webviewSubscribers.clear();
+    webviewFlush(false);
+    for (const item of webviewItems) if (item.kind === "assistant") {
+      for (const block of item.blocks) if (block.type === "tool" && block.state.type === "pending") block.state = { type: "not_run" };
+      }
+    webviewSent.clear();
+    const reset = '{"type":"reset","epoch":' + JSON.stringify(webviewEpoch) + ',' + webviewWindow(webviewItems.length) + '}' + "\n";
+    for (const req of subscribers) { webviewSubscribers.add(req); webviewBody(req, reset, true); }
+    webviewState();
+  };
+  const webviewPost = (req: ServerResponse, path: string, bytes: Buffer): void => {
+    if (path === "/abort") { session?.abort(); webviewResponse(req, 200, "{}"); return; }
+    if (path === "/terminal") { webviewWishState.terminal = true; webviewWish(); webviewResponse(req, 200, "{}"); return; }
+    let value: unknown;
+    try { value = JSON.parse(bytes.toString()); } catch {}
+    if (!isRecord(value) || typeof value.text !== "string" || !value.text.trim() || value.mode !== "steer" && value.mode !== "follow_up") { webviewResponse(req, 400, JSON.stringify({ error: "A non-empty text and steer or follow_up mode are required" })); return; }
+    let refusal: string | undefined;
+    if (webviewCompacting) refusal = "Wait for compaction to finish";
+    else if (!webviewWorking && !session?.isIdle()) refusal = "Wait for the current operation to finish";
+    else if (!session?.model) refusal = "Select a model in the terminal first";
+    else if (!session.modelRegistry.hasConfiguredAuth(session.model)) refusal = "Configure authentication for the selected model in the terminal first";
+    if (refusal) { webviewResponse(req, 409, JSON.stringify({ error: refusal })); return; }
+    try {
+      pi.sendUserMessage(value.text, { expandPromptTemplates: true, ...(webviewWorking ? { deliverAs: value.mode === "steer" ? "steer" as const : "followUp" as const } : {}) });
+      webviewResponse(req, 200, "{}");
+    } catch (error) { webviewResponse(req, 409, JSON.stringify({ error: errorText(error) })); }
+  };
+  const webviewHandle = (request: IncomingMessage, req: ServerResponse): void => {
+    req.once("close", () => { webviewSubscribers.delete(req); });
+    const url = new URL(request.url ?? "/", "http://ko");
+    if (request.method === "GET" && url.pathname === "/") {
+      webviewPage ??= readFileSync(join(dirname(fileURLToPath(import.meta.url)), "ko-pi-page.html"), "utf8");
+      webviewResponse(req, 200, webviewPage, "text/html; charset=utf-8");
+    } else if (request.method === "GET" && url.pathname === "/items") {
+      const before = Number(url.searchParams.get("before"));
+      if (!Number.isSafeInteger(before) || before < 0) webviewResponse(req, 400, "{}");
+      else webviewResponse(req, 200, '{"epoch":' + JSON.stringify(webviewEpoch) + ',' + webviewWindow(before) + '}');
+    } else if (request.method === "GET" && url.pathname === "/events") {
+      webviewFlush();
+      req.writeHead(200, { "Content-Type": "application/x-ndjson" });
+      if (url.searchParams.get("epoch") === webviewEpoch) {
+        const after = Number(url.searchParams.get("after") ?? -1);
+        if (!Number.isSafeInteger(after) || after < -1) { webviewBody(req, ""); return; }
+        for (const item of webviewItems.slice(after + 1)) {
+          webviewBody(req, JSON.stringify({ type: "item", item }) + "\n", true);
+          if (req.writableEnded || req.destroyed) break;
+        }
+      } else webviewBody(req, '{"type":"reset","epoch":' + JSON.stringify(webviewEpoch) + ',' + webviewWindow(webviewItems.length) + '}' + "\n", true);
+      if (req.writableEnded || req.destroyed) return;
+      webviewSubscribers.add(req);
+      webviewState();
+    } else if (request.method === "POST" && ["/prompt", "/abort", "/terminal"].includes(url.pathname)) {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      request.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size <= 1 << 20) chunks.push(chunk);
+      });
+      request.on("end", () => {
+        if (size > 1 << 20) webviewResponse(req, 413, "{}");
+        else webviewPost(req, url.pathname, Buffer.concat(chunks));
+      });
+    } else webviewResponse(req, 404, "{}");
+  };
+  const webviewStart = async (): Promise<void> => {
+    webviewRebuild();
+    webviewActive = true;
+    let hold = globalThis.__koPiExtensionWebview;
+    if (!hold) {
+      const wv = await webview({ ko: ko ?? undefined });
+      if (!wv) return;
+      const created = { wv, server: http.createServer(), handle: webviewHandle, supported: () => {} };
+      hold = created;
+      globalThis.__koPiExtensionWebview = created;
+      created.server.on("request", (request, response) => created.handle(request, response));
+      created.server.on("upgrade", (_request, socket) => socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"));
+      wv.on("supported", () => created.supported());
+      await new Promise<void>((resolve, reject) => {
+        created.server.once("error", reject);
+        created.server.listen(wv.socketPath, () => { created.server.off("error", reject); resolve(); });
+      });
+    }
+    hold.handle = webviewHandle;
+    hold.supported = webviewWish;
+    webviewWish();
+  };
+  const webviewStop = async (park: boolean): Promise<void> => {
+    if (webviewFlushTimer) clearTimeout(webviewFlushTimer);
+    webviewFlushTimer = null;
+    for (const req of webviewSubscribers) req.end();
+    webviewSubscribers.clear();
+    const hold = globalThis.__koPiExtensionWebview;
+    if (park) {
+      globalThis.__koPiExtensionWebviewWish = webviewWishState;
+      if (hold) {
+        hold.handle = (_request, response) => { response.writeHead(503); response.end(); };
+        hold.supported = () => {};
+      }
+    } else {
+      if (hold) {
+        await hold.wv.close();
+        await new Promise<void>(resolve => hold.server.close(() => resolve()));
+      }
+      globalThis.__koPiExtensionWebview = undefined;
+      globalThis.__koPiExtensionWebviewWish = undefined;
+    }
+    webviewActive = false;
+  };
+  pi.on("ui_prompt_start", () => { webviewDialogs++; webviewWish(); });
+  pi.on("ui_prompt_end", () => { webviewDialogs = Math.max(0, webviewDialogs - 1); webviewWish(); });
+  pi.on("message_start", (event) => { if (webviewActive && event.message.role === "assistant") webviewMessage(event.message, "start"); });
+  pi.on("message_update", (event) => { if (webviewActive) webviewMessage(event.message, "update"); });
+  pi.on("message_end", (event) => { if (webviewActive) webviewMessage(event.message, "end"); });
+  pi.on("tool_execution_start", (event) => { if (!webviewActive) return; webviewFlush(); const found = webviewTools.get(event.toolCallId); if (found) { found.block.state = { type: "running" }; webviewPublish(found.item); webviewFlush(); } });
+  pi.on("tool_execution_update", (event) => { if (!webviewActive) return; webviewPendingTools.set(event.toolCallId, { type: "running", result: event.partialResult }); webviewSchedule(); });
+  pi.on("tool_execution_end", (event) => { if (!webviewActive) return; webviewPendingTools.set(event.toolCallId, { type: "done", result: event.result, error: event.isError }); webviewFlush(); });
+  pi.on("session_tree", () => { if (webviewActive) webviewRebuild(); });
+  pi.on("session_before_compact", () => { webviewCompacting = true; });
+  pi.on("session_compact_failed", () => { webviewCompacting = false; });
+  pi.on("session_compact", () => { webviewCompacting = false; if (webviewActive) webviewRebuild(); });
+  pi.on("model_select", () => webviewState());
 
   const jobRecords = new Map<string, { type: "running" } | { type: "finished"; timer: NodeJS.Timeout }>();
   let jobRecordQueue = Promise.resolve();
@@ -3428,7 +3777,8 @@ export default function (pi: ExtensionAPI) {
     await startRouted(ctx);
     active = !!(ctx.hasUI && ownSessionId && ko && pane);
     if (active) {
-      startReceiver();
+      receiver.start();
+      if (ctx.mode === "tui" && pi.getFlag("webview") === true) await webviewStart();
       await writeVars([
         [VAR_SESSION, ownSessionId ?? ""],
         [VAR_NAME, pi.getSessionName() ?? ""],
@@ -3464,6 +3814,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_info_changed", async () => {
     await writeVars([[VAR_NAME, pi.getSessionName() ?? ""]]);
+    webviewState();
   });
 
   const running = (): void => {
@@ -3473,6 +3824,10 @@ export default function (pi: ExtensionAPI) {
   pi.on("input", () => { refreshJobRecords(); });
   pi.on("agent_start", () => {
     refreshJobRecords();
+    webviewWorking = true;
+    webviewWishState.terminal = false;
+    webviewWish();
+    webviewState();
     workStarted();
     running();
   });
@@ -3483,7 +3838,7 @@ export default function (pi: ExtensionAPI) {
     if (event?.toolResults?.length) flushStreams();
   });
 
-  pi.on("agent_end", (event: { messages?: { role?: string; stopReason?: string; errorMessage?: string; content?: unknown }[] }) => {
+  pi.on("agent_end", (event) => {
     finishWorking();
     const assistants = (event?.messages ?? []).filter((m) => m?.role === "assistant");
     const last = assistants[assistants.length - 1];
@@ -3491,8 +3846,7 @@ export default function (pi: ExtensionAPI) {
       ending = { kind: "ended", text: "" };
       return;
     }
-    const blocks = Array.isArray(last.content) ? last.content : [];
-    const text = blocks.flatMap((block) => (isRecord(block) && block.type === "text" && typeof block.text === "string" ? [block.text] : [])).join("");
+    const text = contentText(last.content, "");
     ending =
       last.stopReason === "error"
         ? { kind: "error", text: last.errorMessage || "no error message given", notified: false, id: mintId() }
@@ -3503,6 +3857,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_settled", async (event: { aborted?: boolean }, ctx: { isIdle(): boolean }) => {
     if (!ctx.isIdle()) return;
+    webviewWorking = false;
+    webviewState();
     finishWorking();
     settled = true;
     for (const held of interrupted.splice(0)) deliverMessage(held);
@@ -3536,6 +3892,7 @@ export default function (pi: ExtensionAPI) {
     clearImmediate(startup);
     await starting;
     const reason = event?.reason;
+    await webviewStop(reason !== "quit");
     if (registry) detachKeys(registry);
     if (reason === "reload") for (const call of [...calls]) {
       if (call.type === "bash") call.move("reload");
@@ -3544,7 +3901,7 @@ export default function (pi: ExtensionAPI) {
     if (session?.hasUI) session.ui.setWidget("ko-job-hint", undefined);
     stopTick();
     if (reason === "reload") {
-      stopReceiver(true);
+      receiver.stop(true);
       if (registry) registry.owner = null;
       detachJobRecords();
       for (const job of backgroundJobs()) detachJob(job);
@@ -3562,7 +3919,7 @@ export default function (pi: ExtensionAPI) {
         Reflect.deleteProperty(globalThis, JOBS);
         registry = undefined;
       }
-      stopReceiver(false);
+      receiver.stop(false);
       if (active) await unsetVars();
       if (globalThis.__koPiExtensionExit === unsetVarsSync) {
         process.removeListener("exit", unsetVarsSync);

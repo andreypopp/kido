@@ -5,7 +5,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::keys::{Action, Trigger};
-use crate::values::{FontFamily, FontFeature, ThemeName, ranged, word_or_map};
+use crate::values::{FontFamily, FontFeature, HiddenPages, ThemeName, ranged, word_or_map};
 
 /// Kido.app's settings.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -18,8 +18,44 @@ pub struct App {
     pub mouse: Mouse,
     pub clipboard: Clipboard,
     pub window: WindowSettings,
+    /// Webview pane rendering and its limits.
+    pub webview: WebviewSettings,
     /// Extra key bindings, by trigger.
     pub keys: BTreeMap<Trigger, Action>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct WebviewSettings {
+    /// Render HTML pages over the pane's terminal content.
+    pub enabled: bool,
+    /// Whether a link may open in the default browser.
+    pub links: WebviewLinks,
+    /// Allow WebKit's inspector for HTML pages.
+    pub inspector: bool,
+    /// The number of hidden pages that stay live in each native window.
+    pub keep_hidden: HiddenPages,
+}
+
+impl Default for WebviewSettings {
+    fn default() -> WebviewSettings {
+        WebviewSettings {
+            enabled: true,
+            links: WebviewLinks::Deny,
+            inspector: false,
+            keep_hidden: HiddenPages::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WebviewLinks {
+    /// Do not open external links.
+    #[default]
+    Deny,
+    /// Open HTTP and HTTPS links in the default browser.
+    Open,
 }
 
 /// One theme name for both appearances, or a name for each.
@@ -191,6 +227,29 @@ mod tests {
     }
 
     #[test]
+    fn webview_settings_are_checked() {
+        let found = app(
+            "app: {webview: {enabled: false, links: open, inspector: true, keep_hidden: 16}}\n",
+        );
+        assert!(!found.webview.enabled);
+        assert_eq!(found.webview.links, super::WebviewLinks::Open);
+        assert!(found.webview.inspector);
+        assert_eq!(u8::from(found.webview.keep_hidden), 16);
+        assert_eq!(
+            u8::from(
+                app("app: {webview: {keep_hidden: 0}}\n")
+                    .webview
+                    .keep_hidden
+            ),
+            0
+        );
+        for value in ["-1", "17", "1.5", "'4'"] {
+            assert!(parse(&format!("app: {{webview: {{keep_hidden: {value}}}}}\n")).is_err());
+        }
+        assert!(parse("app: {webview: {links: allow}}\n").is_err());
+    }
+
+    #[test]
     fn an_empty_app_is_every_default() {
         let found = app("");
         assert_eq!(found, app("app:\n"));
@@ -204,6 +263,7 @@ mod tests {
                 "mouse": {"scroll_multiplier": {"precision": 1.0, "discrete": 3.0}, "hide_while_typing": false},
                 "clipboard": {"read": "ask", "write": "allow", "copy_on_select": false, "paste_protection": true, "trim_trailing_spaces": true},
                 "window": {"sidebar_shade": 5.0, "unfocused_shift": 3.0},
+                "webview": {"enabled": true, "links": "deny", "inspector": false, "keep_hidden": 4},
                 "keys": {}
             })
         );
@@ -246,6 +306,7 @@ app:
                 "mouse": {"scroll_multiplier": {"precision": 0.5, "discrete": 10.0}, "hide_while_typing": true},
                 "clipboard": {"read": "deny", "write": "deny", "copy_on_select": true, "paste_protection": false, "trim_trailing_spaces": false},
                 "window": {"sidebar_shade": -10.0, "unfocused_shift": 0.0},
+                "webview": {"enabled": true, "links": "deny", "inspector": false, "keep_hidden": 4},
                 "keys": {"alt+k": "unbind", "ctrl+shift+arrow_up": "csi:1;5A", "super+e": "text:X"}
             })
         );
@@ -417,7 +478,7 @@ app:
         crate::config::refusals(&[
             (
                 "app:\n  cursor: {style: beam}\n",
-                "app: unknown field `cursor`, expected one of `theme`, `font`, `keyboard`, `mouse`, `clipboard`, `window`, `keys` at line 2 column 3",
+                "app: unknown field `cursor`, expected one of `theme`, `font`, `keyboard`, `mouse`, `clipboard`, `window`, `webview`, `keys` at line 2 column 3",
             ),
             (
                 "app:\n  clipboard: {blink: true}\n",
@@ -435,7 +496,7 @@ app:
             ),
             (
                 "app:\n  fonts: {}\n",
-                "app: unknown field `fonts`, expected one of `theme`, `font`, `keyboard`, `mouse`, `clipboard`, `window`, `keys` at line 2 column 3",
+                "app: unknown field `fonts`, expected one of `theme`, `font`, `keyboard`, `mouse`, `clipboard`, `window`, `webview`, `keys` at line 2 column 3",
             ),
             (
                 "app:\n  font: {colour: red}\n",

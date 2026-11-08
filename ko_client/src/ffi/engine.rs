@@ -1,5 +1,7 @@
 #![deny(unsafe_code)]
 
+mod webview;
+
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -59,6 +61,7 @@ struct Engine<'a> {
     reported: Option<Code>,
     session: Option<Session>,
     views: Vec<Open>,
+    webview: Vec<webview::Open>,
 }
 
 type Failed = (Code, String);
@@ -102,9 +105,11 @@ pub(super) fn run(shared: &Arc<Shared>) {
         reported: None,
         session: None,
         views: Vec::new(),
+        webview: Vec::new(),
     };
     engine.serve();
     shared.up.store(false, Ordering::SeqCst);
+    engine.webview_shutdown();
 }
 
 impl Engine<'_> {
@@ -198,6 +203,7 @@ impl Engine<'_> {
             let greeting = locked(&shared.hello);
             Hello {
                 name: greeting.name.clone(),
+                webview: greeting.webview,
                 focused: greeting.focused,
                 sizing: greeting.sizing.clone(),
                 selection: locked(&shared.model)
@@ -270,6 +276,9 @@ impl Engine<'_> {
     }
 
     fn lose(&mut self, code: Code, message: &str) {
+        while !self.webview.is_empty() {
+            self.end_webview(0, code, message);
+        }
         if self.reported.is_none()
             || (code == Code::NoServer && self.reported != Some(Code::NoServer))
         {
@@ -294,6 +303,14 @@ impl Engine<'_> {
 
     fn watchdog(&mut self) {
         let now = Instant::now();
+        let mut at = 0;
+        while at < self.webview.len() {
+            if self.webview[at].expired(now) {
+                self.end_webview(at, Code::Io, "webview request timed out");
+            } else {
+                at += 1;
+            }
+        }
         let silent_client = self
             .session
             .as_ref()
@@ -339,6 +356,12 @@ impl Engine<'_> {
                 .is_some_and(|conn| conn.token == ready.token)
         }) {
             self.view_ready(at, ready);
+        } else if let Some(at) = self
+            .webview
+            .iter()
+            .position(|open| open.token() == ready.token)
+        {
+            self.webview_ready(at, ready);
         }
     }
 
@@ -411,6 +434,19 @@ impl Engine<'_> {
         let batch = std::mem::take(&mut *locked(&self.shared.commands));
         for command in batch {
             match command {
+                Command::WebviewStart(task, request) => self.webview_start(task, request),
+                Command::WebviewStop(id) => {
+                    if let Some(at) = self.webview_index(id) {
+                        self.webview.remove(at).dispose(&mut self.poll);
+                    }
+                }
+                Command::WebviewResume(id) => {
+                    if let Some(at) = self.webview_index(id) {
+                        let token = self.webview[at].token();
+                        self.webview_ready(at, buffered(token));
+                    }
+                }
+                Command::WebviewWrite(id, write) => self.webview_write(id, write),
                 Command::Request(request) => self.request(&request),
                 Command::Size(sizing) => self.request(&ClientRequest::Size { sizing }),
                 Command::Open(view) => {
@@ -655,7 +691,7 @@ impl Engine<'_> {
                     Ok(Next::Shutdown | Next::Closed) => {
                         let message = link.close_frame().map_or_else(
                             || "pane view closed".to_owned(),
-                            |(code, reason)| format!("close {code}: {reason}"),
+                            |(code, reason)| format!("close {}: {reason}", u16::from(*code)),
                         );
                         outcome = Err(End::Outage((Code::Closed, message)));
                         break;

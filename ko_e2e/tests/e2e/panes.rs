@@ -129,7 +129,7 @@ fn deleting_a_child_removes_its_focused_subtree_in_one_revision() {
             .push(json!({"name": "other", "windows": [grandchild_window]}));
     });
     let mut client = s.ws("/client");
-    client.send(&json!({"type": "hello", "name": "test", "pane": grandchild, "focused": true, "sizing": {"type": "disabled"}}));
+    client.send(&json!({"type": "hello", "webview": false, "name": "test", "pane": grandchild, "focused": true, "sizing": {"type": "disabled"}}));
     client.welcome();
     let before = s.doc();
     s.delete(&format!("/panes/{child}")).ok();

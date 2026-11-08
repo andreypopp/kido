@@ -35,7 +35,7 @@ use crate::keys::{
 };
 use crate::mirror::Mirror;
 use crate::modes::{self, Modes};
-use crate::renderer::{Layout, PaneFrame, Renderer, status};
+use crate::renderer::{Layout, PaneFrame, Renderer, RightNotice, status};
 use crate::sidebar;
 use crate::tty::{Geometry, Tty};
 
@@ -526,6 +526,19 @@ impl Client {
             Panel::Hidden => Vec::new(),
             _ => self.model.outline(),
         };
+        let notice =
+            if let Some(remote) = self.remote.as_ref().filter(|_| self.reconnecting.is_some()) {
+                RightNotice::Reconnecting(remote.host())
+            } else if self
+                .pane()
+                .and_then(|id| self.row(id))
+                .and_then(|row| row.webview.as_ref())
+                .is_some_and(|webview| webview.page.is_some())
+            {
+                RightNotice::Webview
+            } else {
+                RightNotice::None
+            };
         Layout {
             cols,
             rows,
@@ -536,10 +549,7 @@ impl Client {
                 self.last.window,
                 self.keys.state(),
                 self.keys.mode(),
-                self.remote
-                    .as_ref()
-                    .filter(|_| self.reconnecting.is_some())
-                    .map(Remote::host),
+                notice,
             ),
             help: *self.keys.state() == State::Help,
             resizing: match self.keys.mode() {
@@ -2101,6 +2111,7 @@ fn coalesce_drag(events: Vec<Event>) -> Vec<Event> {
 fn hello(geometry: Geometry, panel: Panel, width: usize, focused: bool) -> Hello {
     Hello {
         name: "ko".to_owned(),
+        webview: false,
         selection: Selection::default(),
         focused,
         sizing: protocol::Sizing::Windows {

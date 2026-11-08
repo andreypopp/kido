@@ -87,7 +87,7 @@ def lexical(text):
     return re.sub(pattern, mask, text), comments
 
 signal_calls = 0
-for path in glob.glob('share/pi/*.ts'):
+for path in glob.glob('share/pi/*.ts') + glob.glob('share/webview/*.ts'):
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text)
     function = re.search(r'\bfunction\s+signalJob\s*\([^)]*\)[^{]*\{', code)
@@ -145,7 +145,7 @@ for path, statements in fuzz_allowed.items():
             report(path, '', 0, f'stale KO_FUZZ_ allowance {statement!r} ({left} unused)')
 
 history = r'\b(previously|no longer|(?<!be )used to|formerly|as of now|since this fix)\b'
-for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s of now|[Ss]ince this fix', glob.glob('share/pi/*.ts')):
+for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s of now|[Ss]ince this fix', glob.glob('share/pi/*.ts') + glob.glob('share/webview/*.ts')):
     text = pathlib.Path(path).read_text()
     _, comments = lexical(text)
     for offset, comment in comments:

@@ -12,4 +12,5 @@ pub mod schema;
 pub mod status;
 mod tree;
 pub mod visit;
+pub mod webview;
 pub mod wire;

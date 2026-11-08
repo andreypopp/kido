@@ -27,6 +27,7 @@ extension NSColor {
 }
 
 @MainActor final class GhosttyRuntime {
+    static let systemFontFamily = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular).familyName!
     private(set) var app: ghostty_app_t!
     private(set) var config: ghostty_config_t
     private var appearance: NSKeyValueObservation?
@@ -312,7 +313,7 @@ extension NSColor {
         }
         let pair = AppConfig.pair(values.theme)
         let themes = ThemePaths(light: checked(pair.light, fallback: fallback.light), dark: checked(pair.dark, fallback: fallback.dark))
-        let text = GhosttyConf.text(values, themes: themes, systemFont: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular).familyName!)
+        let text = GhosttyConf.text(values, themes: themes, systemFont: Self.systemFontFamily)
         guard let config = ghostty_config_new() else { return nil }
         ghostty_config_load_string(config, text, UInt(text.utf8.count), "/kido")
         if let override {
@@ -414,6 +415,35 @@ extension NSColor {
         let defaultDelay = 0.1
         #endif
         DispatchQueue.main.asyncAfter(deadline: .now() + (delay ?? defaultDelay), execute: work)
+    }
+
+    var webviewColors: (cursor: NSColor, selectionBackground: NSColor, selectionForeground: NSColor, palette: [NSColor]) {
+        var cursor = foreground, selectionBackground = foreground, selectionForeground = background
+        for line in ThemeFile.lines(config) {
+            let pair = line.components(separatedBy: " = ")
+            guard pair.count == 2, ["cursor-color", "selection-background", "selection-foreground"].contains(pair[0]) else { continue }
+            let decoded: NSColor
+            switch pair[1] {
+            case "cell-foreground": decoded = foreground
+            case "cell-background": decoded = background
+            default:
+                guard let rgb = RuntimeTint.rgb(hex: pair[1]) else { continue }
+                decoded = Self.color(ghostty_config_color_s(r: UInt8(rgb.r * 255), g: UInt8(rgb.g * 255), b: UInt8(rgb.b * 255)))
+            }
+            switch pair[0] {
+            case "cursor-color": cursor = decoded
+            case "selection-background": selectionBackground = decoded
+            default: selectionForeground = decoded
+            }
+        }
+        var palette = ghostty_config_palette_s()
+        _ = ghostty_config_get(config, &palette, "palette", 7)
+        let colors = withUnsafePointer(to: &palette.colors) { pointer in
+            pointer.withMemoryRebound(to: ghostty_config_color_s.self, capacity: 256) { entries in
+                (0..<16).map { Self.color(entries[$0]) }
+            }
+        }
+        return (cursor, selectionBackground, selectionForeground, colors)
     }
 
     var background: NSColor { color("background") }

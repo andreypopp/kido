@@ -102,6 +102,13 @@ fn frame_of(report: &Report, at: Mono) -> Option<FromPane<'_>> {
             title,
             msg,
         }),
+        Report::Webview(command) => match command {
+            Some(path) => FromPane::Webview(ko_pane_wire::frame::WebviewReport::Enter {
+                path: path.borrowed(),
+            }),
+            None => FromPane::Webview(ko_pane_wire::frame::WebviewReport::Leave),
+        },
+        Report::Reset => FromPane::Webview(ko_pane_wire::frame::WebviewReport::Leave),
         Report::Bell => FromPane::Bell,
         Report::Notify { title, body } => FromPane::Notify { title, body },
         Report::Progress(report) => FromPane::Progress(*report),
@@ -288,6 +295,7 @@ fn simple(live: &mut Option<Live>, out: &mut Out, request: Request<'_>) -> Resul
         return Err(Fault::Invalid);
     };
     match request {
+        Request::WebviewSupported(supported) => live.vt.webview_supported(supported),
         Request::Tail => out.full = false,
         Request::Text(bytes) => live.push(bytes),
         Request::Key(key) => {
@@ -425,6 +433,8 @@ impl Pane {
         let mut vt = Terminal::new(size.cols, size.rows, init.limits).map_err(vt_fault)?;
         vt.resize(size).map_err(vt_fault)?;
         vt.serve(&init.media, &self.tmpdir).map_err(vt_fault)?;
+        vt.webview_reports().map_err(vt_fault)?;
+        vt.webview_supported(init.webview_supported);
         let process = match self.launch {
             Launch::Detached => None,
             Launch::Spawn => {

@@ -159,6 +159,7 @@ fn listing(row: &Value) -> Listing {
     });
     Listing {
         row: Row {
+            webview: row.get("webview").map(fixture).unwrap_or(None),
             id: fixture(&row["id"]),
             started: row["started"].as_u64().unwrap_or(0),
             pid: row.get("pid").map(fixture).unwrap_or(Some(1)),
@@ -520,6 +521,43 @@ struct RawFeed {
     fake_raw: String,
 }
 
+fn dropped(name: &str) -> bool {
+    let path = env(name);
+    !path.is_empty() && fs::remove_file(path).is_ok()
+}
+
+fn stream_webview() -> ExitCode {
+    if env("KO_PANE").is_empty() {
+        return ExitCode::from(6);
+    }
+    let (ended, input) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = std::io::stdin().read_to_end(&mut bytes);
+        let _ = ended.send(());
+    });
+    let mut printed = 0;
+    loop {
+        if input.try_recv().is_ok() {
+            return ExitCode::SUCCESS;
+        }
+        if dropped("KO_FAKE_SERVE_DROP") {
+            return ExitCode::FAILURE;
+        }
+        let feed = fs::read_to_string(env("KO_FAKE_SERVE")).unwrap_or_default();
+        let lines: Vec<_> = feed.lines().collect();
+        for line in lines.iter().skip(printed) {
+            let message: webview::ServeOut = match protocol::decode(line.as_bytes()) {
+                Ok(message) => message,
+                Err(error) => return http_error(400, ErrorKind::Invalid, &error.to_string()),
+            };
+            emit_message(&message);
+        }
+        printed = lines.len();
+        std::thread::sleep(POLL);
+    }
+}
+
 fn stream_messages(pane: &str) -> ExitCode {
     set_inbox(pane, true);
     std::thread::spawn(|| {
@@ -531,9 +569,7 @@ fn stream_messages(pane: &str) -> ExitCode {
     });
     let mut printed = BTreeSet::new();
     loop {
-        let drop = env("KO_FAKE_STREAM_DROP");
-        if !drop.is_empty() && Path::new(&drop).exists() {
-            let _ = fs::remove_file(drop);
+        if dropped("KO_FAKE_STREAM_DROP") {
             set_inbox(pane, false);
             eprintln!("ko api: closed: 1011 dropped");
             return ExitCode::FAILURE;
@@ -881,7 +917,9 @@ fn api(argv: &[String]) -> ExitCode {
         .map_or(path.as_str(), |(route, _)| route);
     let segments: Vec<&str> = route.split('/').collect();
     match (method.as_str(), segments.as_slice()) {
-        ("STREAM", ["", "panes", pane, "messages"]) => return stream_messages(pane),
+        ("STREAM", ["", "panes", pane, "messages"]) if *pane == env("KO_PANE") => {
+            return stream_messages(pane);
+        }
         ("STREAM", ["", "client"]) => return stream_client(),
         ("STREAM", ["", "runtimes", name, "exec"]) => return exec_session(name),
         ("GET", ["", "runtimes"]) => return get_runtimes(None),
@@ -939,6 +977,10 @@ fn main() -> ExitCode {
     append("KO_FAKE_LOG", &json!(argv).to_string());
     match argv.first().map(String::as_str) {
         Some("api") => api(&argv),
+        Some("webview") if argv.get(1).map(String::as_str) == Some("serve") => stream_webview(),
+        Some("webview") if matches!(argv.get(1).map(String::as_str), Some("enter" | "leave")) => {
+            ExitCode::SUCCESS
+        }
         _ => ExitCode::FAILURE,
     }
 }

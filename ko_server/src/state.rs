@@ -51,6 +51,7 @@ mod prompt;
 mod runtime_ops;
 mod sweep;
 pub(crate) mod visit_ops;
+mod webview;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Owner {
@@ -89,6 +90,12 @@ impl From<PutFailure> for protocol::Error {
         };
         protocol::Error::new(kind, message)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stream {
+    Messages,
+    Webview,
 }
 
 #[derive(Debug)]
@@ -131,18 +138,26 @@ pub(crate) enum Wake {
 pub(crate) fn client_of(conn: &Conn) -> Option<&Client> {
     match conn.role()? {
         Role::Client(client) => Some(client),
-        Role::View(_) | Role::Search(_) | Role::Messages(_) | Role::Exec(_) | Role::Visit(_) => {
-            None
-        }
+        Role::View(_)
+        | Role::Search(_)
+        | Role::Messages(_)
+        | Role::Exec(_)
+        | Role::Visit(_)
+        | Role::WebviewServe(_)
+        | Role::WebviewProxy { .. } => None,
     }
 }
 
 fn view_of(conn: &Conn) -> Option<&View> {
     match conn.role()? {
         Role::View(view) => Some(view),
-        Role::Client(_) | Role::Search(_) | Role::Messages(_) | Role::Exec(_) | Role::Visit(_) => {
-            None
-        }
+        Role::Client(_)
+        | Role::Search(_)
+        | Role::Messages(_)
+        | Role::Exec(_)
+        | Role::Visit(_)
+        | Role::WebviewServe(_)
+        | Role::WebviewProxy { .. } => None,
     }
 }
 
@@ -151,6 +166,7 @@ fn pane_listing(pane: &Pane) -> Listing {
     let telemetry = pane.telemetry();
     Listing {
         row: Row {
+            webview: pane.webview().row(),
             id: pane.id(),
             started: pane.started().nanos(),
             pid: proc.child_pid().map(|pid| pid.get()),
@@ -198,6 +214,14 @@ fn deliver(
     {
         view.reject(&mut wire);
     }
+}
+
+fn missing() -> protocol::Error {
+    protocol::Error::new(protocol::ErrorKind::Missing, "pane not found")
+}
+
+fn dead(pane: PaneId) -> protocol::Error {
+    protocol::Error::new(protocol::ErrorKind::Gone, format!("{pane} is dead"))
 }
 
 impl State {
@@ -819,6 +843,7 @@ impl State {
 
     fn stop_pane(&mut self, poll: &mut Poll, id: PaneId) {
         self.end_visit(poll, id, Some("pane removed".to_owned()));
+        self.webview_pane_ended(poll, id);
         let runtime = self.panes.find(id).and_then(|pane| pane.runtime().cloned());
         self.pane_ended(poll, id);
         self.clipboard.drop_where(poll, |read| read.pane == id);
@@ -1004,6 +1029,7 @@ impl State {
             }
             Event::Dead(death) => {
                 self.end_visit(poll, id, Some("pane ended".to_owned()));
+                self.webview_pane_ended(poll, id);
                 self.pump_views(poll, id);
                 self.tell_parent(id, End::Dead((&death).into()));
                 self.pane_ended(poll, id);
@@ -1022,7 +1048,11 @@ impl State {
                 self.sweep_soon(poll);
                 self.settle_stops(poll);
             }
+            Event::Webview(page) => self.webview_page(id, page),
             Event::Prompt(prompt) => {
+                if prompt.step == ko_pane_wire::frame::PromptStep::Start {
+                    self.webview_page(id, None);
+                }
                 if let Some(pane) = self.panes.find_mut(id) {
                     pane.telemetry_mut().prompt(prompt);
                     self.model.mark(poll, pane);
@@ -1374,6 +1404,9 @@ impl State {
         events: &mut Events,
         mut own: impl FnMut(&mut State, &mut Poll, Wake) -> std::io::Result<bool>,
     ) -> std::io::Result<()> {
+        for conn in &mut self.conns {
+            conn.reads = Reads::new();
+        }
         let turned = poll.turn(mode, events).and_then(|()| {
             for &ready in events.ready() {
                 if !own(self, poll, Wake::Ready(ready))?
@@ -1438,12 +1471,13 @@ impl State {
                 self.pump_view(poll, index);
             }
             self.pump_exec(poll, index);
+            self.webview_ready(poll, index);
         }
         if ready.read {
             match self.conns[index].phase {
                 Phase::Ws(_) => self.read_ws(poll, index),
-                Phase::Handling => {
-                    self.conns[index].read(poll, &mut Reads::new());
+                Phase::Handling | Phase::Webview { .. } => {
+                    self.conns[index].read(poll);
                 }
                 _ => self.read_http(poll, index),
             }
@@ -1451,9 +1485,8 @@ impl State {
     }
 
     fn read_http(&mut self, poll: &mut Poll, index: usize) {
-        let mut reads = Reads::new();
         while let Some(conn) = self.conns.get_mut(index) {
-            if !conn.reading_http() || !conn.read(poll, &mut reads) {
+            if !conn.reading_http() || !conn.read(poll) {
                 break;
             }
             self.serve(poll, index);
@@ -1466,43 +1499,113 @@ impl State {
         }
     }
 
+    pub(super) fn pane(&self, id: PaneId) -> Result<&Pane, protocol::Error> {
+        self.panes.find(id).ok_or_else(missing)
+    }
+
+    pub(super) fn live(&self, id: PaneId) -> Result<&Pane, protocol::Error> {
+        let pane = self.pane(id)?;
+        if pane.proc().dead().is_some() {
+            Err(dead(id))
+        } else {
+            Ok(pane)
+        }
+    }
+
+    pub(crate) fn admit_stream(
+        &self,
+        caller: Option<PaneId>,
+        id: PaneId,
+        kind: Stream,
+    ) -> Result<(), protocol::Error> {
+        crate::panes::acts_as(caller, id, "open only its own stream")?;
+        let pane = self.live(id)?;
+        let (stream, message) = match kind {
+            Stream::Messages => (
+                pane.inbox().stream(),
+                "the pane already has a message stream",
+            ),
+            Stream::Webview => (
+                pane.webview().stream(),
+                "the pane already has a webview stream",
+            ),
+        };
+        if stream.is_some() {
+            Err(protocol::Error::new(protocol::ErrorKind::Refused, message))
+        } else {
+            Ok(())
+        }
+    }
+
     pub(crate) fn read_ws(&mut self, poll: &mut Poll, index: usize) {
-        let mut reads = Reads::new();
-        loop {
-            let Some(conn) = self.conns.get_mut(index) else {
-                return;
-            };
+        let Some(conn) = self.conns.get_mut(index) else {
+            return;
+        };
+        let mut reads = std::mem::replace(&mut conn.reads, Reads::new());
+        while let Some(conn) = self.conns.get(index) {
             let token = conn.token;
-            let Conn {
-                out,
-                phase: Phase::Ws(link),
-                ..
-            } = conn
-            else {
-                return;
-            };
-            if !link.role.reads() {
-                return;
+            let Some(role) = conn.role() else { break };
+            if !role.reads() {
+                break;
             }
-            let text = match link.ws.next(out, poll, token, &mut reads) {
-                Next::Text(text) => text,
-                Next::Wait | Next::Close => return,
+            match role {
+                Role::WebviewProxy { pane, req } => {
+                    let (pane, req) = (*pane, *req);
+                    if self.webview_paused(index)
+                        || !self.webview_proxy_message(poll, index, pane, req, &mut reads)
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                Role::WebviewServe(_) if self.webview_paused(index) => break,
+                _ => {}
+            }
+            let Some((role, wire)) = self.conns[index].role_mut() else {
+                break;
             };
-            match link.role {
+            let text = match wire.ws.next(wire.out, poll, token, &mut reads) {
+                Next::Text(text) => text,
+                Next::Wait | Next::Close => break,
+            };
+            match *role {
                 Role::Client(_) => self.client_text(poll, index, text.as_bytes()),
                 Role::View(_) => self.view_text(poll, index, text.as_bytes()),
-                Role::Search(_) => link.ws.reject(out, crate::ws::Rejection::Invalid),
+                Role::Search(_) => wire.ws.reject(wire.out, crate::ws::Rejection::Invalid),
                 Role::Messages(pane) => self.stream_text(poll, index, pane, text.as_bytes()),
                 Role::Exec(_) => self.exec_text(poll, index, text.as_bytes()),
                 Role::Visit(_) => {
                     self.visit_text(poll, index, text.as_bytes());
                     self.runtimes_changed(poll);
                 }
+                Role::WebviewServe(pane) => self.webview_text(poll, index, pane, text.as_bytes()),
+                Role::WebviewProxy { .. } => break,
             }
+        }
+        if let Some(conn) = self.conns.get_mut(index) {
+            conn.reads = reads;
+        }
+    }
+
+    fn webview_supported(&self) -> bool {
+        self.conns
+            .iter()
+            .filter_map(client_of)
+            .any(|client| client.active.as_ref().is_some_and(|active| active.webview))
+    }
+
+    fn webview_supported_changed(&mut self, poll: &mut Poll, before: bool) {
+        let supported = self.webview_supported();
+        if supported != before {
+            self.each_pane(poll, |pane, io| {
+                pane.proc_mut().webview_supported(supported, io)
+            });
+            self.webview_supported_streams();
         }
     }
 
     fn client_text(&mut self, poll: &mut Poll, index: usize, text: &[u8]) {
+        let supported_before = self.webview_supported();
         let request = protocol::decode::<ClientRequest>(text);
         let read = Read::new(&self.config.file);
         let runtimes = if matches!(request, Ok(ClientRequest::Hello(_))) {
@@ -1595,6 +1698,7 @@ impl State {
             }
         };
         self.enter(poll, index, current, request);
+        self.webview_supported_changed(poll, supported_before);
     }
 
     fn claim(&mut self, poll: &mut Poll, index: usize) -> bool {
@@ -1730,6 +1834,7 @@ impl State {
     }
 
     fn settle(&mut self, poll: &mut Poll) {
+        let supported_before = self.webview_supported();
         self.announce_runtimes();
         let mut client_closed = false;
         loop {
@@ -1745,6 +1850,7 @@ impl State {
             self.runtimes.forget_wait(poll, conn.token);
             self.forget_stops(poll, conn.token);
             self.messages.forget(conn.token);
+            self.webview_closed(poll, &conn);
             if let Phase::Ws(link) = conn.phase {
                 let cause = conn.out.cause();
                 match link.role {
@@ -1765,6 +1871,7 @@ impl State {
                         }
                         self.clipboard_forget(poll, |read| read.client == client.id);
                     }
+                    Role::WebviewServe(_) | Role::WebviewProxy { .. } => {}
                     Role::Search(search) => self.cancel_search(poll, search),
                     Role::Messages(pane) => self.stream_closed(poll, pane, conn.token),
                     Role::Exec(session) => self.exec_gone(poll, conn.token, session),
@@ -1786,9 +1893,13 @@ impl State {
         }
         if client_closed {
             self.refocus(poll);
+            self.webview_supported_changed(poll, supported_before);
         }
-        for conn in &mut self.conns {
-            let interest = conn.interest();
+        for index in 0..self.conns.len() {
+            let interest = self.webview_interest(index);
+            let Some(conn) = self.conns.get_mut(index) else {
+                break;
+            };
             if interest.reads() != poll.interest_of(conn.token).reads()
                 && let Phase::Ws(link) = &mut conn.phase
             {
@@ -1798,7 +1909,7 @@ impl State {
                     let _ = poll.start(conn.timer, left, None);
                 }
             }
-            poll.interest(conn.token, conn.interest());
+            poll.interest(conn.token, interest);
         }
     }
 }

@@ -19,7 +19,9 @@ harness, not a pane.
 The **harness** is everything that only an agent has: the pi session,
 the tools, the task, the report and the names. It is one pi
 extension, `share/pi/ko-pi.ts`, which the `ko-pi` shim loads. The two
-parts talk only through `ko api` on ko's routes and streams. ko never
+parts talk only through `ko api` on ko's routes and streams, and
+the `@kido/webview` SDK (`ko webview serve`, `enter` and `leave`) for
+the harness's page. ko never
 reads the
 harness's files, and the harness reads no ko file. **ko is the
 mediator**: every exchange between two agents goes through ko, so the
@@ -108,6 +110,11 @@ The extension uses only these interfaces of ko:
 - In a routed pi, `GET /runtimes/NAME` and `ko api --stream
   /runtimes/NAME/exec` for its tools and its jobs
   (design-runtimes.md, "Agents in a runtime").
+- With `--webview` only, `ko webview serve`, `ko webview enter` and
+  `ko webview leave` through the SDK `share/webview/`, which it imports
+  as `../webview/index.ts`; enter and leave write the escape to the pane
+  through pi's stdout (design-webview.md, "pi's page"). It reads its
+  page, `ko-pi-page.html`, from beside its own file.
 
 `async_bash` and a moved `bash` call are jobs, child processes of pi (design-subagents.md, "A
 job").
@@ -881,7 +888,7 @@ order.
 
 **Install layout.** `make build` lays out `build/ko/` as installed:
 `bin/ko`, `bin/ko-pane` and `share/ko` with `bin/`, `shim.sh`,
-`pi/ko-pi.ts` and the terminfo. `make install` copies it under
+`pi/ko-pi.ts`, `pi/ko-pi-page.html`, `pi/ko-api.d.ts`, `webview/` (the SDK) and the terminfo. `make install` copies it under
 `PREFIX`, default `~/.local`. This is Homebrew's `pkgshare` layout.
 
 ## Knobs

@@ -241,6 +241,25 @@
             "type": "object"
           },
           {
+            "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "type": {
+                "const": "webview",
+                "type": "string"
+              },
+              "webview": {
+                "$ref": "#/components/schemas/Webview"
+              }
+            },
+            "required": [
+              "type",
+              "pane"
+            ],
+            "type": "object"
+          },
+          {
             "allOf": [
               {
                 "$ref": "#/components/schemas/Welcome"
@@ -886,6 +905,35 @@
         ],
         "type": "string"
       },
+      "CloseCode": {
+        "anyOf": [
+          {
+            "enum": [
+              1000,
+              1001,
+              1002,
+              1003,
+              1007,
+              1008,
+              1009,
+              1010,
+              1011,
+              1012,
+              1013
+            ],
+            "type": "integer"
+          },
+          {
+            "maximum": 4999,
+            "minimum": 3000,
+            "type": "integer"
+          }
+        ]
+      },
+      "CloseReason": {
+        "maxLength": 123,
+        "type": "string"
+      },
       "Command": {
         "oneOf": [
           {
@@ -1421,6 +1469,18 @@
           {
             "properties": {
               "kind": {
+                "const": "unavailable",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "kind": {
                 "const": "not_found",
                 "type": "string"
               }
@@ -1772,12 +1832,16 @@
           "sizing": {
             "$ref": "#/components/schemas/Sizing"
           },
+          "webview": {
+            "type": "boolean"
+          },
           "window": {
             "$ref": "#/components/schemas/WindowId"
           }
         },
         "required": [
           "name",
+          "webview",
           "focused",
           "sizing"
         ],
@@ -2238,6 +2302,9 @@
             "additionalProperties": true,
             "default": {},
             "type": "object"
+          },
+          "webview": {
+            "$ref": "#/components/schemas/Webview"
           }
         },
         "required": [
@@ -2588,6 +2655,16 @@
         ],
         "type": "string"
       },
+      "Method": {
+        "enum": [
+          "GET",
+          "PUT",
+          "POST",
+          "PATCH",
+          "DELETE"
+        ],
+        "type": "string"
+      },
       "MountDir": {
         "description": "an absolute path without a comma",
         "pattern": "^/[^,\\u0000]*$",
@@ -2783,6 +2860,17 @@
           "window"
         ],
         "type": "string"
+      },
+      "Page": {
+        "properties": {
+          "path": {
+            "$ref": "#/components/schemas/WebviewPath"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
       },
       "PaneDead": {
         "properties": {
@@ -3801,6 +3889,276 @@
         ],
         "type": "object"
       },
+      "ServeIn": {
+        "oneOf": [
+          {
+            "properties": {
+              "headers": {
+                "$ref": "#/components/schemas/WebviewHeaders"
+              },
+              "req": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "status": {
+                "$ref": "#/components/schemas/WebviewStatus"
+              },
+              "type": {
+                "const": "response",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "req",
+              "status",
+              "headers"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/WebviewData"
+              },
+              "more": {
+                "type": "boolean"
+              },
+              "req": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "body",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "req",
+              "data",
+              "more"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "binary": {
+                "type": "boolean"
+              },
+              "data": {
+                "$ref": "#/components/schemas/Base64"
+              },
+              "req": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "frame",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "req",
+              "data",
+              "binary"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/CloseCode"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/CloseReason"
+              },
+              "req": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "close",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "req",
+              "code",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ServeOut": {
+        "oneOf": [
+          {
+            "properties": {
+              "supported": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "supported",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "supported"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "headers": {
+                "$ref": "#/components/schemas/WebviewHeaders"
+              },
+              "method": {
+                "$ref": "#/components/schemas/Method"
+              },
+              "path": {
+                "type": "string"
+              },
+              "req": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "request",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "req",
+              "method",
+              "path",
+              "headers"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "data": {
+                "$ref": "#/components/schemas/WebviewData"
+              },
+              "more": {
+                "type": "boolean"
+              },
+              "req": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "body",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "req",
+              "data",
+              "more"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "req": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "cancel",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "req"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "headers": {
+                "$ref": "#/components/schemas/WebviewHeaders"
+              },
+              "path": {
+                "type": "string"
+              },
+              "req": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "upgrade",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "req",
+              "path",
+              "headers"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "binary": {
+                "type": "boolean"
+              },
+              "data": {
+                "$ref": "#/components/schemas/WebviewData"
+              },
+              "req": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "frame",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "req",
+              "data",
+              "binary"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/CloseCode"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/CloseReason"
+              },
+              "req": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "close",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "req",
+              "code",
+              "reason"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "ServerVersion": {
         "description": "The reply of a running server: its version, and the instance that changes at each start.",
         "properties": {
@@ -4668,6 +5026,68 @@
         "maximum": 3600000,
         "minimum": 0,
         "type": "integer"
+      },
+      "Webview": {
+        "properties": {
+          "page": {
+            "$ref": "#/components/schemas/Page"
+          },
+          "serving": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "serving"
+        ],
+        "type": "object"
+      },
+      "WebviewBody": {
+        "maxLength": 1048576,
+        "type": "string"
+      },
+      "WebviewData": {
+        "contentEncoding": "base64",
+        "maxLength": 87384,
+        "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+        "type": "string"
+      },
+      "WebviewHeaders": {
+        "items": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "minLength": 1,
+              "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$",
+              "type": "string"
+            },
+            {
+              "pattern": "^[^\\u0000-\\u0008\\u000a-\\u001f\\u007f]*$",
+              "type": "string"
+            }
+          ],
+          "type": "array"
+        },
+        "type": "array"
+      },
+      "WebviewPath": {
+        "maxLength": 2048,
+        "minLength": 1,
+        "pattern": "^/[\\x20-\\x7e]*$",
+        "type": "string"
+      },
+      "WebviewStatus": {
+        "anyOf": [
+          {
+            "const": 101,
+            "type": "integer"
+          },
+          {
+            "maximum": 599,
+            "minimum": 200,
+            "type": "integer"
+          }
+        ]
       },
       "Welcome": {
         "properties": {
@@ -5978,6 +6398,509 @@
           },
           "send": {
             "$ref": "#/components/schemas/ViewRequest"
+          }
+        }
+      }
+    },
+    "/panes/{id}/webview/serve": {
+      "get": {
+        "description": "Serve the pane's HTTP requests and WebSockets. Only the pane itself can open this stream.",
+        "operationId": "WebviewServe",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        },
+        "x-ko-websocket": {
+          "recv": {
+            "$ref": "#/components/schemas/ServeOut"
+          },
+          "send": {
+            "$ref": "#/components/schemas/ServeIn"
+          }
+        }
+      }
+    },
+    "/panes/{id}/webview/{path}": {
+      "delete": {
+        "description": "Delete a resource of the pane's page. Requires a live Ko-Client.",
+        "operationId": "WebviewDelete",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "assets/main.js?q=1",
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "description": "The rest of the request target, including its query string.",
+              "pattern": "^[!-~]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "$ref": "#/components/schemas/WebviewBody"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "default": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The program's response, or a common error body."
+          }
+        }
+      },
+      "get": {
+        "description": "Fetch a resource or open a WebSocket of the pane's page. Requires a live Ko-Client.",
+        "operationId": "WebviewGet",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "assets/main.js?q=1",
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "description": "The rest of the request target, including its query string.",
+              "pattern": "^[!-~]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "$ref": "#/components/schemas/WebviewBody"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          },
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "default": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The program's response, or a common error body."
+          }
+        }
+      },
+      "patch": {
+        "description": "Patch a resource of the pane's page. Requires a live Ko-Client.",
+        "operationId": "WebviewPatch",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "assets/main.js?q=1",
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "description": "The rest of the request target, including its query string.",
+              "pattern": "^[!-~]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "$ref": "#/components/schemas/WebviewBody"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "default": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The program's response, or a common error body."
+          }
+        }
+      },
+      "post": {
+        "description": "Post a body to the pane's page. Requires a live Ko-Client.",
+        "operationId": "WebviewPost",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "assets/main.js?q=1",
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "description": "The rest of the request target, including its query string.",
+              "pattern": "^[!-~]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "$ref": "#/components/schemas/WebviewBody"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "default": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The program's response, or a common error body."
+          }
+        }
+      },
+      "put": {
+        "description": "Put a body to the pane's page. Requires a live Ko-Client.",
+        "operationId": "WebviewPut",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "assets/main.js?q=1",
+            "in": "path",
+            "name": "path",
+            "required": true,
+            "schema": {
+              "description": "The rest of the request target, including its query string.",
+              "pattern": "^[!-~]*$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "$ref": "#/components/schemas/WebviewBody"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Too Many Requests"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          },
+          "default": {
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The program's response, or a common error body."
           }
         }
       }

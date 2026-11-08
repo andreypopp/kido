@@ -212,15 +212,20 @@ pub fn stream(
     caller: Option<Caller>,
     path: &str,
 ) -> Result<Result<Link, Response>, Error> {
-    let route = Route::of_request("GET", path)
-        .ok()
-        .filter(Route::websocket)
-        .ok_or(Error::NotWebsocket)?;
+    let route = Route::of_request("GET", path).map_err(|_| Error::NotWebsocket)?;
+    let limit = route.upgrade().ok_or(Error::NotWebsocket)?;
     let stream = socket(dir, caller.as_ref())
         .and_then(|socket| launch::connect(&socket, launch::PATIENCE, None).map_err(failure))
         .map_err(Error::Server)?;
-    Link::handshake(stream, (None, caller), &route, None, wire::READ_TIMEOUT)
-        .map_err(|error| Error::Server(failure(error)))
+    Link::handshake(
+        stream,
+        (None, caller),
+        &route,
+        None,
+        wire::READ_TIMEOUT,
+        limit,
+    )
+    .map_err(|error| Error::Server(failure(error)))
 }
 
 pub fn patch_pane(
@@ -325,7 +330,10 @@ pub fn forward(
             match link.next(&mut poll, Instant::now())? {
                 Next::Text(text) => print(text.as_str())?,
                 Next::Shutdown | Next::Closed | Next::Gone => {
-                    return Ok(link.close_frame().cloned());
+                    return Ok(link
+                        .close_frame()
+                        .cloned()
+                        .map(|(code, reason)| (code.into(), reason)));
                 }
                 Next::Binary(_) => return Err(StreamError::Binary),
                 Next::Wait => break,

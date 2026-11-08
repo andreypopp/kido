@@ -46,6 +46,7 @@ fn init(argv: &[&str], cwd: &str) -> Vec<u8> {
     let argv: Vec<Vec<u8>> = argv.iter().map(|arg| arg.as_bytes().to_vec()).collect();
     let env = [b"TERM=xterm-ghostty".to_vec()];
     let init = Init {
+        webview_supported: false,
         size: size(80, 24),
         limits: limits(),
         media: Vec::<Medium>::new().into(),

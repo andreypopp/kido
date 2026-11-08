@@ -177,6 +177,7 @@ mod tests {
     fn pane(number: u64, title: &str, dead: Option<Dead>) -> Pane {
         Pane {
             row: Row {
+                webview: None,
                 id: id(number),
                 started: 0,
                 pid: Some(1),

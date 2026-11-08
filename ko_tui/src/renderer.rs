@@ -19,12 +19,19 @@ pub(crate) struct Status {
     pub(crate) right: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RightNotice<'a> {
+    None,
+    Webview,
+    Reconnecting(&'a str),
+}
+
 pub(crate) fn status(
     shown: Option<(&Session, &Window)>,
     last: Option<WindowId>,
     state: &State,
     mode: Mode,
-    reconnect: Option<&str>,
+    notice: RightNotice<'_>,
 ) -> Status {
     let mut left = String::new();
     if let Some((session, window)) = shown {
@@ -41,29 +48,32 @@ pub(crate) fn status(
         }
     }
     let mut right = String::new();
-    let _ = match (reconnect, state, mode) {
-        (Some(host), _, _) => write!(right, "[reconnecting to {host} \u{2014} C-a d to detach]"),
-        (None, State::Prefix, _) => right.write_str("C-a"),
-        (None, State::Rename { of, text }, _) => {
+    let _ = match (notice, state, mode) {
+        (RightNotice::Reconnecting(host), _, _) => {
+            write!(right, "[reconnecting to {host} \u{2014} C-a d to detach]")
+        }
+        (_, State::Prefix, _) => right.write_str("C-a"),
+        (_, State::Rename { of, text }, _) => {
             let what = match of {
                 Rename::Session => "rename-session",
                 Rename::Window => "rename-window",
             };
             write!(right, "({what}) {text}")
         }
-        (None, State::Confirm(Kill::Window), _) => write!(
+        (_, State::Confirm(Kill::Window), _) => write!(
             right,
             "kill-window {}? (y/n)",
             shown.map_or("", |(_, window)| window.name.as_str())
         ),
-        (None, State::Confirm(Kill::Pane), _) => right.write_str("kill-pane? (y/n)"),
-        (None, State::Normal | State::Repeat { .. }, Mode::Sidebar(_)) => {
-            right.write_str("[sidebar]")
-        }
-        (None, State::Normal | State::Repeat { .. }, Mode::Resize | Mode::SidebarResize(_)) => {
+        (_, State::Confirm(Kill::Pane), _) => right.write_str("kill-pane? (y/n)"),
+        (_, State::Normal | State::Repeat { .. }, Mode::Sidebar(_)) => right.write_str("[sidebar]"),
+        (_, State::Normal | State::Repeat { .. }, Mode::Resize | Mode::SidebarResize(_)) => {
             right.write_str("[resize]")
         }
-        (None, _, _) => Ok(()),
+        (RightNotice::Webview, State::Normal | State::Repeat { .. }, Mode::Pane) => {
+            right.write_str("[webview]")
+        }
+        (_, _, _) => Ok(()),
     };
     Status { left, right }
 }
@@ -762,7 +772,7 @@ mod tests {
             rows: 4,
             pane_x: 0,
             pane_rows: 3,
-            status: status(None, None, &State::Normal, Mode::Pane, None),
+            status: status(None, None, &State::Normal, Mode::Pane, RightNotice::None),
             help: false,
             resizing: None,
             copy: Some((pane_id(), copy)),
@@ -1491,21 +1501,41 @@ mod tests {
         let window = |at: usize| &session.windows[at];
         let shown = Some((&session, window(0)));
         let last = Some(window(1).id);
-        let right = |state: &State, reconnect: Option<&str>| {
-            status(shown, last, state, Mode::Pane, reconnect).right
-        };
+        let right = |state: &State, notice| status(shown, last, state, Mode::Pane, notice).right;
         assert_eq!(
-            status(shown, last, &State::Normal, Mode::Pane, None).left,
+            status(shown, last, &State::Normal, Mode::Pane, RightNotice::None).left,
             "[s] 0:a* 1:b- 2:c"
         );
         assert_eq!(
-            status(None, last, &State::Normal, Mode::Pane, None).left,
+            status(None, last, &State::Normal, Mode::Pane, RightNotice::None).left,
             ""
         );
-        assert_eq!(right(&State::Normal, None), "");
-        assert_eq!(right(&State::Prefix, None), "C-a");
+        assert_eq!(right(&State::Normal, RightNotice::None), "");
         assert_eq!(
-            status(shown, last, &State::Normal, Mode::Resize, None).right,
+            status(
+                shown,
+                last,
+                &State::Normal,
+                Mode::Pane,
+                RightNotice::Webview
+            )
+            .right,
+            "[webview]"
+        );
+        assert_eq!(
+            status(
+                shown,
+                last,
+                &State::Normal,
+                Mode::Resize,
+                RightNotice::Webview
+            )
+            .right,
+            "[resize]"
+        );
+        assert_eq!(right(&State::Prefix, RightNotice::None), "C-a");
+        assert_eq!(
+            status(shown, last, &State::Normal, Mode::Resize, RightNotice::None).right,
             "[resize]"
         );
         assert_eq!(
@@ -1514,7 +1544,7 @@ mod tests {
                 last,
                 &State::Normal,
                 Mode::Sidebar("pane_1".parse().unwrap()),
-                None
+                RightNotice::None
             )
             .right,
             "[sidebar]"
@@ -1525,15 +1555,18 @@ mod tests {
                     of: Rename::Session,
                     text: "x".to_owned()
                 },
-                None
+                RightNotice::None
             ),
             "(rename-session) x"
         );
         assert_eq!(
-            right(&State::Confirm(Kill::Window), None),
+            right(&State::Confirm(Kill::Window), RightNotice::None),
             "kill-window a? (y/n)"
         );
-        assert_eq!(right(&State::Confirm(Kill::Pane), None), "kill-pane? (y/n)");
+        assert_eq!(
+            right(&State::Confirm(Kill::Pane), RightNotice::None),
+            "kill-pane? (y/n)"
+        );
         for mode in [Mode::Resize, Mode::Sidebar("pane_1".parse().unwrap())] {
             for (state, expected) in [
                 (State::Prefix, "C-a"),
@@ -1546,11 +1579,14 @@ mod tests {
                 ),
                 (State::Confirm(Kill::Pane), "kill-pane? (y/n)"),
             ] {
-                assert_eq!(status(shown, last, &state, mode, None).right, expected);
+                assert_eq!(
+                    status(shown, last, &state, mode, RightNotice::None).right,
+                    expected
+                );
             }
         }
         assert_eq!(
-            right(&State::Prefix, Some("box")),
+            right(&State::Prefix, RightNotice::Reconnecting("box")),
             "[reconnecting to box \u{2014} C-a d to detach]"
         );
     }

@@ -26,6 +26,7 @@ pub(crate) struct Program {
 
 #[derive(Debug)]
 pub(crate) struct Birth {
+    pub(crate) webview_supported: bool,
     pub(crate) vars: Vars,
     pub(crate) parent: Option<PaneId>,
     pub(crate) close: Close,
@@ -61,6 +62,7 @@ pub(crate) struct Pane {
     token: PaneToken,
     model: PaneModel,
     inbox: Inbox,
+    webview: crate::webview::PaneWebview,
 }
 
 impl Pane {
@@ -87,6 +89,7 @@ impl Pane {
             token,
             model: PaneModel::default(),
             inbox: Inbox::default(),
+            webview: crate::webview::PaneWebview::default(),
         })
     }
 
@@ -169,6 +172,13 @@ impl Pane {
 
     pub(crate) fn token(&self) -> &PaneToken {
         &self.token
+    }
+
+    pub(crate) fn webview(&self) -> &crate::webview::PaneWebview {
+        &self.webview
+    }
+    pub(crate) fn webview_mut(&mut self) -> &mut crate::webview::PaneWebview {
+        &mut self.webview
     }
 
     pub(crate) fn inbox(&self) -> &Inbox {

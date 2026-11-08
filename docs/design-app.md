@@ -63,7 +63,11 @@ the sidebar `Snapshot` and the tabs from it. The owner keeps only that
 model; the layout editor still gets every layout revision. The owner's link is
 `down`, `starting`, `mismatch`, `refused`, `changed` (the bundle changed on disk) or
 `connected`. There is no second long-lived connection: an image fetch
-(`ko_client_image`) is one request on its own short connection.
+(`ko_client_image`) is one request on its own short connection. The
+Webview calls (`ko_client_webview_fetch`, `ko_client_webview_ws_open`) are
+also one connection each, but the core's I/O thread owns them and
+their callbacks stream on the caller's serial queue; the header comment
+of `ko_client.h` gives their contract.
 
 The app and `ko` share one server: the server directory is ko's default
 directory, which `ko_client_default_dir` reads from
@@ -1347,6 +1351,117 @@ The standard window buttons are AppKit's: the toolbar re-lays them out
 at will, so nothing moves them. The fixed top clears them and the
 sidebar toggle, which AppKit keeps in the collapsed titlebar,
 so the terminal never moves vertically when the sidebar collapses.
+
+### Webview panes
+
+A pane whose row has `webview.page` shows its program's page
+(protocol.md, section 16; the design is in
+[design-webview.md](design-webview.md)).
+`app/App/WebviewPaneView.swift` holds one WKWebView as a chrome view of the
+pane, below the copy label and the find bar, over the pane's whole
+bounds. The surface keeps its view and its feed under the page, so
+`leave` shows current terminal content with no snapshot. The owner's
+hello declares `webview: app.webview.enabled`; a reload that changes `enabled`
+reconnects the owner, so the server's `supported` stays true only while a
+client shows pages. With `enabled: false` a pane in webview mode shows its
+terminal content.
+
+**Loads.** The page is `ko://pane_N/` plus the row's path. The `ko:`
+scheme handler sends each request through `ko_client_webview_fetch` and
+streams the response head, the body chunks and the end into the
+`WKURLSchemeTask`; WebKit's `stop` cancels the fetch. At most 6 fetches
+of a page are in flight; the rest wait in arrival order. A row with
+`serving: false` shows "The program is not serving" in place of the
+page; the row is the one source of that state, so a fetch's status
+does not change it. A change of the path or of `serving` loads the page again.
+
+WebKit gives a scheme handler a request body only as `httpBody`, never
+as `httpBodyStream`, and a `fetch` whose body is a `Blob` or a
+`FormData` reaches the handler with no body at all; a string or a
+byte array arrives whole. A page sends its bodies as strings or bytes.
+`WebviewPaneTests` pins this, so it fails when WebKit changes.
+
+**Sandbox.** Each view has its own `WKWebsiteDataStore.nonPersistent()`,
+so a page's storage ends with its view: the origin `ko://pane_N` names no
+server, and two servers, or one server after a restart, can each have a
+`pane_1`. Every view shares one compiled `WKContentRuleList` that blocks the other schemes
+(the list in `WebviewPaneView.swift`), with one rule for each scheme, because WebKit refuses a
+regex alternation ("Disjunctions are not supported yet"). The scheme handler, the navigation delegate and the
+WebSocket shim accept only a `ko:` URL whose host is the view's pane,
+with no port or user. The navigation delegate refuses every other
+navigation, a new window, a download and a response that WebKit cannot
+show; with `app.webview.links: open` it opens a clicked `http(s)` link
+through `NSWorkspace` and still cancels the navigation. Link previews,
+automatic windows and media autoplay are off. The UI delegate answers
+`alert`, `confirm` and `prompt` with nothing, returns no web view for
+`window.open`, and denies media capture and geolocation.
+`isInspectable` follows `app.webview.inspector`. The CSP is the server's.
+
+WebKit treats `ko:` as a secure context (`window.isSecureContext` is
+true on macOS 27), so the secure-context APIs exist in the page. The app
+does not remove them: a script that removes a property misses the first
+document of a `srcdoc` frame, which a page reads before any user script
+runs, and WebKit has no public switch for them. The app relies on
+WebKit's own gates, and `WebviewPaneTests` fails when one of them opens:
+`navigator.clipboard` reads and writes need a user gesture and reject
+without one, with the general pasteboard unchanged; `mediaDevices` is
+absent; geolocation reports `PERMISSION_DENIED` under the denying
+delegate; `Notification.permission` is `denied`; a service worker
+registration on `ko:` is refused. An `https` fetch from the page stops
+at the CSP's `connect-src` before the content rule list sees it.
+
+**WebSockets.** WKURLSchemeHandler does not see WebSocket connections,
+so a document-start script in the page world replaces `window.WebSocket`
+with a shim of the standard API. It posts `open`, `send`, `close` and
+`buffer` to the script message handler `koSocket`, which opens the proxy
+route through `ko_client_webview_ws_open` and answers through
+`evaluateJavaScript`. Messages cross as base64. A message over 64 KiB
+closes the socket with 1009 in the shim, as the server would.
+`bufferedAmount` is the shim's unsent bytes plus the core's
+`ko_webview_ws_buffered_amount`. A send that the core refuses, because its
+queue is full, closes the socket abnormally: a gap in the messages
+would be worse. `close()` before the socket opens cancels it. A page has
+at most 16 sockets, the server's cap for each pane. Each main-frame
+document gets a new generation. The scripts carry the next generation
+from the start of a navigation; the commit of the new document (after a
+link to the same pane or a reload) cancels the old document's sockets,
+and a failed navigation keeps the old generation. A bridge message or a
+core event of another generation is dropped.
+
+**Focus and keys.** A click in the page selects the pane through the
+pane's left-mouse-down monitor and makes the web view first responder.
+`PaneView.owner` maps the web view to its pane, so the window's active
+pane, the focus treatment and the surface's focus report (the program
+gets focus in and out) treat the page as the pane's input.
+`PaneView.inputResponder` is the web view while a page is shown, and
+every path that focuses a pane uses it. While the page has focus,
+`OwnerWindow.performKeyEquivalent` offers a Command key to the main menu
+before WebKit sees it, so Kido's menu keys win; every other key, Escape
+included, goes to the page. Copy mode is not available while the page
+has focus, and showing a page ends copy mode.
+
+**Find.** Command-F opens the pane's find bar, which drives
+`WKWebView.find(_:configuration:)` with wrapping. `WKFindResult` gives
+only `matchFound`, so the bar says "Match" or "No matches", with no
+count.
+
+**Theme.** A document-start script sets `window.ko` (the pane id, the
+theme properties and the cell size) and the `--ko-*` properties
+(`WebviewPaneView.themeScript`) on `:root`, through a `MutationObserver` when the root
+element does not exist yet. The colours come from the pane's effective
+Ghostty config: `ghostty_config_get` does not read `cursor-color` or the
+selection colours, so `GhosttyRuntime.webviewColors` reads them from
+`ghostty_config_serialize`, with the foreground and background as their
+defaults. The web view's appearance and `underPageBackgroundColor`
+follow the pane's background. A change of the script's text replaces the
+user scripts and runs one `evaluateJavaScript` that sets the properties
+again and dispatches `ko-theme` on `window`. `--ko-font-family` is a CSS
+font list: the quoted family name, then `monospace`.
+
+**Hidden pages.** A pane that hides keeps its web view. `SessionView`
+keeps the order in which pages hid, for the whole native window, and
+releases the oldest beyond `app.webview.keep_hidden`; 0 releases a page when
+its pane hides. A released page loads again when its pane shows.
 
 ## Threads
 
@@ -2711,6 +2826,26 @@ events through the panel's `performKeyEquivalent`, the call that
 `NSApplication` makes for a key window, and other keys through its
 `sendEvent`.
 
+`WebviewPaneTests` runs a pane whose program is `ko webview enter` and `ko
+webview serve` against `WebviewToy`, a Swift HTTP and WebSocket server on a
+private unix socket, so every page comes through the real proxy. The
+sandbox checks run in the page's own script, before the test calls any
+JavaScript: `callAsyncJavaScript` gives the page a user gesture, under
+which a clipboard read waits for the user. The images come from WebKit's
+`takeSnapshot`, because an unordered window does not composite a web
+view. Geolocation answers only in an ordered window, so that check
+orders the window far off screen. The Command-key check drives
+`OwnerWindow.performKeyEquivalent` with the web view as first responder.
+
+`KoPiWebviewTests` runs the checkout's `ko-pi --webview` with the pi that
+`share/pi/package.json` pins (`share/pi/node_modules/.bin`, which
+`scripts/test-ts.sh` installs, with Node from Homebrew's `bin`) on a
+fixture session file with `--offline`, under a private `HOME` and pi
+agent directory, so pi makes no model call and reads no user
+configuration. It snapshots the transcript page in
+light and dark (design-webview.md, "pi's page"). A page check in the visual
+suite waits with a `MutationObserver`, never with `requestAnimationFrame`:
+WebKit pauses animation frames for a page in the off-screen window.
 
 `make ko-test` runs the `Ko` scheme (`app/KoTests/`): the client, view,
 content bridge, layout editor, layout gesture, owner and owner-model
@@ -2835,6 +2970,7 @@ Each visual target runs one `xcodebuild test`, which builds the app, and then
 - `make visual-fast` skips the tests that `app/VisualTests/slow.txt` names,
   about 17 s of test time.
 - `make visual-slow` runs only those tests.
+- `ONLY='Class/testName ...'` limits any of the three to the named tests.
 
 `slow.txt` names one `Class/testName` per line, followed by
 `# inherent: <reason>` or `# fix: <cause>`. An `inherent` test needs its cost
@@ -2903,8 +3039,9 @@ log to select for the app's client. Stress also resizes while a window is
 hidden (`hidden-resize`). In the app `Stress` does the same on the main
 queue, also seeded: wheel, scroller drags, scroll requests, find and next,
 window resize bursts, pane grip drags (some deleted mid-drag), edge
-resizes, layout edits through the `LayoutEditor`, appearance, tabs and
-sidebar jumps. After a sidebar jump it waits up to 5 s until the model
+resizes, layout edits through the `LayoutEditor`, appearance, tabs,
+sidebar jumps and a new window whose pane enters webview mode with no serve
+stream (`webview`), so its page shows "The program is not serving". After a sidebar jump it waits up to 5 s until the model
 selects the row's pane (`jump-selects`). It writes one JSON line per action
 to stderr (`build/bundle/stress/<target>-<seed>/stderr.log`; `actions.jsonl`
 is the server side; `summary.json` the counts). `FIND=0` swaps the find actions

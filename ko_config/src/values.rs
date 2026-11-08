@@ -402,18 +402,21 @@ impl ThemeName {
 
 macro_rules! ranged {
     ($name:ident, $min:literal..=$max:literal, $default:literal) => {
-        ranged!($name, true, $min, $max, $default);
+        ranged!($name, f64, "f64", "number", [], true, $min, $max, $default);
     };
     ($name:ident, >$min:literal..=$max:literal, $default:literal) => {
-        ranged!($name, false, $min, $max, $default);
+        ranged!($name, f64, "f64", "number", [], false, $min, $max, $default);
     };
-    ($name:ident, $inclusive:literal, $min:literal, $max:literal, $default:literal) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-        #[serde(try_from = "f64", into = "f64")]
-        pub struct $name(f64);
+    ($name:ident: u8, $min:literal..=$max:literal, $default:literal) => {
+        ranged!($name, u8, "u8", "integer", [Eq], true, $min, $max, $default);
+    };
+    ($name:ident, $number:ty, $codec:literal, $kind:literal, [$($extra:ident),*], $inclusive:literal, $min:literal, $max:literal, $default:literal) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize $(, $extra)*)]
+        #[serde(try_from = $codec, into = $codec)]
+        pub struct $name($number);
 
         impl $name {
-            pub fn get(self) -> f64 {
+            pub fn get(self) -> $number {
                 self.0
             }
         }
@@ -431,7 +434,7 @@ macro_rules! ranged {
 
             fn json_schema(_: &mut SchemaGenerator) -> Schema {
                 let mut schema = json_schema!({
-                    "type": "number",
+                    "type": $kind,
                     "maximum": $max,
                     "description": format!(
                         "A number {} {} and at most {}.",
@@ -448,11 +451,11 @@ macro_rules! ranged {
             }
         }
 
-        impl TryFrom<f64> for $name {
+        impl TryFrom<$number> for $name {
             type Error = String;
 
-            fn try_from(value: f64) -> Result<$name, String> {
-                if (if $inclusive { value >= $min } else { value > $min }) && value <= $max {
+            fn try_from(value: $number) -> Result<$name, String> {
+                if if $inclusive { ($min..=$max).contains(&value) } else { value > $min && value <= $max } {
                     Ok($name(value))
                 } else {
                     Err(format!(
@@ -465,13 +468,15 @@ macro_rules! ranged {
             }
         }
 
-        impl From<$name> for f64 {
-            fn from($name(value): $name) -> f64 {
+        impl From<$name> for $number {
+            fn from($name(value): $name) -> $number {
                 value
             }
         }
     };
 }
+
+ranged!(HiddenPages: u8, 0..=16, 4);
 
 pub(crate) use ranged;
 

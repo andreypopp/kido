@@ -15,7 +15,8 @@ boundary between ko and its pi extension.
 subagents. [docs/design-program-status.md](docs/design-program-status.md)
 describes pane classification and status. [docs/design-runtimes.md](docs/design-runtimes.md)
 describes runtimes: the configuration, the link, the identity on a
-runtime connection and the exec session. [docs/design-app.md](docs/design-app.md)
+runtime connection and the exec session. [docs/design-webview.md](docs/design-webview.md)
+describes webview panes, the `@kido/webview` SDK and ko-pi's page. [docs/design-app.md](docs/design-app.md)
 describes Kido.app. Before you change these mechanisms, read these
 files. The code comments and this file do not repeat them.
 
@@ -174,9 +175,11 @@ These requirements are fixed:
   and `ko enter`, with the exec session's supervisor (`session.rs`).
   It embeds the shell integrations of `share/ko/` with `include_str!`;
   `make build` installs `share/ko/bin` (the `ko`, `ssh` and
-  `ko-pi` shims), `share/ko/shim.sh`, `share/pi/ko-pi.ts` (as
-  `share/ko/pi/ko-pi.ts`) and `share/pi/skills` (as
-  `share/ko/pi/skills`) beside `bin/ko` in `build/ko/`, the layout
+  `ko-pi` shims), `share/ko/shim.sh`, `share/pi/ko-pi.ts`,
+  `share/pi/ko-pi-page.html`, `share/pi/ko-api.d.ts` and
+  `share/pi/skills` (in `share/ko/pi/`), and the SDK
+  `share/webview/` (in `share/ko/webview/`) beside `bin/ko` in
+  `build/ko/`, the layout
   that `ko_shell/src/bin_dir.rs` finds as installed.
   `ko_config/` is the crate `ko_config`: the configuration file
   `config.yaml` (its types, the path rule, the YAML decode in
@@ -271,7 +274,7 @@ These requirements are fixed:
   `[workspace.lints]` in `Cargo.toml` holds the denied lints, and
   every crate inherits them. `clippy.toml` permits `unwrap`, `expect`,
   `panic!` and indexing in tests. The readers of untrusted bytes
-  (`ko_pane_wire`'s `frame.rs` and `ring.rs`, `ko_server`'s
+  (`ko_pane_wire`'s `frame.rs`, `ring.rs` and `webview.rs`, `ko_server`'s
   `pane_proc.rs`, `exec_wire.rs`, `http.rs` and `ws.rs`, `ko_pane`'s
   `io.rs`) also deny `clippy::indexing_slicing` and
   `clippy::arithmetic_side_effects`. `print_stdout` and `print_stderr`
@@ -739,11 +742,14 @@ maps the coordinator's modules.
       bash/, zsh/       the OSC 133 integrations every primed shell sources
       openapi.json, client-model.json, config-schema.json   the generated schemas (make schemas)
     share/pi/           ko-pi.ts, the harness, which the ko-pi shim loads
-                        with --extension; its suite ko-pi-*.test.ts on
+                        with --extension; ko-pi-page.html, its transcript
+                        page; its suite ko-pi-*.test.ts on
                         the fake ko of testdata/fake_ko/; ko-api.d.ts,
                         generated from openapi.json; testdata/ko-prompts.txt,
                         the prompt snapshot; skills/ko/SKILL.md, the ko
                         skill that ko-pi offers to pi
+    share/webview/      @kido/webview, the Node SDK for webview pages
+                        (index.ts, README.md), installed as share/ko/webview
     .pi/prompts/        gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed;
                         release.md, /release: Kido.app first, then ko
     .pi/extensions/     no-git-writes, the spawned agent's bash-tool guard
@@ -777,7 +783,7 @@ install PREFIX=<prefix>` copies that layout under `<prefix>/bin` and
 of `LINUX_ARCHS` (`aarch64`, `x86_64`; by default the host's alone)
 into
 `build/ko/share/ko/linux/<arch>/`: `bin/ko` and `share/ko` with the
-shims, `shim.sh`, the pi extension and the terminfo. It has no
+shims, `shim.sh`, the pi extension, the webview SDK and the terminfo. It has no
 `ko-pane`, because no server runs inside. zig is the C compiler and the
 linker, and `ko_vt_sys/build.rs` builds libghostty-vt with
 `-Dtarget=<arch>-linux-musl`, so libghostty-vt, zig's static libc++ and
@@ -827,7 +833,13 @@ Every C file of `bench/` starts with `#define _DARWIN_C_SOURCE` and
 **The harness is one pi extension.** `share/pi/ko-pi.ts` holds every
 agent tool. It calls only `ko api`, with `--stream` for its message
 stream and a routed pi's exec sessions (docs/design.md, "The pi
-extension, ko-pi", lists the routes), and no run command: its
+extension, ko-pi", lists the routes). With `--webview` only, it serves
+its page through the SDK `share/webview/` (`ko webview serve`, and `ko
+webview enter|leave` with pi's stdout inherited), which it imports by
+the relative path `../webview/index.ts`. Its page,
+`share/pi/ko-pi-page.html`, is the one other file that it reads from
+beside itself (docs/design-webview.md, "pi's page").
+It has no run command: its
 background commands are jobs, child processes of pi
 (docs/design-subagents.md, "A job"). It never opens ko's socket.
 That command, its flags, exit codes and JSON are the contract between
@@ -981,7 +993,7 @@ models of `ko_pane_wire::ring::model` show it on the Rust code:
     make miri    Miri on ko's modules without sockets or FFI (scripts/miri.sh); for CI or the user
     make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/ko
     make ci-like ARGS=...  a CPU/memory-capped Linux container ("Reproducing a CI-only failure")
-    make preview-pi  replace the installed share/ko/pi/ko-pi.ts with the checkout's; unpreview-pi restores it
+    make preview-pi  replace the installed share/ko/pi/ko-pi.ts, ko-pi-page.html and share/ko/webview with the checkout's; unpreview-pi restores them
     make website the website's dev server at http://localhost:4321 (website/README.md)
 
 `make verify STAGES=e2e` selects stages. `E2E=client_` limits
@@ -1088,6 +1100,9 @@ in `fuzz/fuzz_targets/`, each with a dictionary in
 - `frame` and `control`: `ko-pane`'s frame sizes and its control
   dispatch in process (`ko_pane::control`). The first byte of a
   `control` input selects the mode.
+- `webview`: the OSC 7502 parser over the bytes; a path that it
+  accepts keeps the path rules and parses again to itself
+  (`ko_pane_wire::fuzz`).
 - `ring`: an operation list on the real ring writer and reader,
   compared after every operation with a pure model of the ring and of
   `ko-pane`'s room rule (`ko_pane_wire::fuzz`).
@@ -1450,8 +1465,10 @@ PATH: a harness change reaches them only through a Kido.app release.
 `brew audit`/`brew style` vendor gems into the Homebrew checkout itself.
 This can leave the checkout dirty.
 
-`make preview-pi` atomically replaces the installed pi extension and
-backs up the original once; `make unpreview-pi` restores it.
+`make preview-pi` atomically replaces the installed pi extension, its
+page and the webview SDK and backs up the originals once; `make
+unpreview-pi` restores them, and removes a file that the install did
+not have.
 Afterward, run `/reload` in the panes. `KO_PREVIEW_PREFIX` selects a
 prefix other than `brew --prefix ko`.
 

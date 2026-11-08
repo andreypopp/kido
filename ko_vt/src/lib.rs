@@ -115,6 +115,8 @@ pub struct Changes {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Report {
+    Webview(Option<ko_pane_wire::frame::OwnedWebviewPath>),
+    Reset,
     Prompt {
         step: PromptStep,
         exit: Option<i32>,
@@ -199,6 +201,7 @@ fn complete_read(handle: NonNull<sys::GhosttyClipboardReadHandleImpl>, served: O
 
 #[derive(Debug)]
 struct Notes {
+    webview_supported: bool,
     reads: Vec<(ReadId, NonNull<sys::GhosttyClipboardReadHandleImpl>)>,
     next_read: u64,
     replies: Vec<u8>,
@@ -211,6 +214,7 @@ struct Notes {
 impl Notes {
     fn new(cols: Dim, rows: Dim) -> Box<Notes> {
         Box::new(Notes {
+            webview_supported: false,
             reads: Vec::new(),
             next_read: 0,
             replies: Vec::new(),
@@ -236,6 +240,50 @@ pub struct Terminal {
     vt: NonNull<sys::GhosttyTerminalImpl>,
     notes: Box<Notes>,
     searches: search::Searches,
+}
+
+unsafe extern "C" fn unknown_sequence(
+    _terminal: sys::GhosttyTerminal,
+    userdata: *mut c_void,
+    sequence: *const sys::GhosttyTerminalUnknownSequence,
+) {
+    // SAFETY: userdata and sequence are valid for this callback (terminal.h).
+    let (notes, sequence) = unsafe { (&mut *userdata.cast::<Notes>(), &*sequence) };
+    if sequence.tag != sys::GHOSTTY_TERMINAL_UNKNOWN_SEQUENCE_OSC {
+        return;
+    }
+    // SAFETY: the tag identifies the active union member (terminal.h).
+    let osc = unsafe { &sequence.value.osc };
+    if osc.truncated {
+        return;
+    }
+    let terminator = match osc.terminator {
+        sys::GHOSTTY_OSC_TERMINATOR_BEL => b"\x07".as_slice(),
+        sys::GHOSTTY_OSC_TERMINATOR_ST => b"\x1b\\".as_slice(),
+        _ => return,
+    };
+    // SAFETY: the OSC content is readable for this callback (terminal.h).
+    let content = unsafe { entries(osc.content.ptr, osc.content.len) };
+    use ko_pane_wire::webview::{Command, parse};
+    match parse(content) {
+        Some(Command::Query) => {
+            notes
+                .replies
+                .extend_from_slice(&ko_pane_wire::webview::reply(
+                    notes.webview_supported,
+                    terminator,
+                ));
+        }
+        Some(Command::Enter(path)) => notes.reports.push(Report::Webview(Some(path))),
+        Some(Command::Leave) => notes.reports.push(Report::Webview(None)),
+        None => {}
+    }
+}
+
+unsafe extern "C" fn reset(_terminal: sys::GhosttyTerminal, userdata: *mut c_void) {
+    // SAFETY: userdata is the terminal-owned Notes, exclusive for this callback (terminal.h).
+    let notes = unsafe { &mut *userdata.cast::<Notes>() };
+    notes.reports.push(Report::Reset);
 }
 
 unsafe extern "C" fn write_pty(
@@ -774,6 +822,10 @@ impl Terminal {
             check(unsafe { sys::ghostty_terminal_set(self.vt.as_ptr(), option, value) })
         };
         set(
+            sys::GHOSTTY_TERMINAL_OPT_RESET,
+            reset as unsafe extern "C" fn(_, _) as *const c_void,
+        )?;
+        set(
             sys::GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_MEDIUM_FILE,
             ptr::from_ref(&flag(Medium::File)).cast(),
         )?;
@@ -838,6 +890,27 @@ impl Terminal {
             sys::GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ,
             clipboard_read as unsafe extern "C" fn(_, _, _) as *const c_void,
         )
+    }
+
+    pub fn webview_reports(&mut self) -> Result<(), Error> {
+        let max_bytes = ko_pane_wire::webview::MAX_BYTES;
+        // SAFETY: terminal.h specifies a size_t pointer and a callback pointer for these options.
+        unsafe {
+            check(sys::ghostty_terminal_set(
+                self.vt.as_ptr(),
+                sys::GHOSTTY_TERMINAL_OPT_UNKNOWN_MAX_BYTES,
+                ptr::from_ref(&max_bytes).cast(),
+            ))?;
+            check(sys::ghostty_terminal_set(
+                self.vt.as_ptr(),
+                sys::GHOSTTY_TERMINAL_OPT_UNKNOWN_SEQUENCE,
+                unknown_sequence as unsafe extern "C" fn(_, _, _) as *const c_void,
+            ))
+        }
+    }
+
+    pub fn webview_supported(&mut self, supported: bool) {
+        self.notes.webview_supported = supported;
     }
 
     pub fn reports(&mut self) -> &mut Vec<Report> {
@@ -1810,6 +1883,36 @@ mod tests {
         assert!(vt.alternate().unwrap());
         vt.write(b"\x1b[?1049l");
         assert!(!vt.alternate().unwrap());
+    }
+
+    #[test]
+    fn webview_replies_are_ordered_and_truncated_sequences_are_ignored() {
+        let mut vt = make(20, 5);
+        vt.serve(&[], "/tmp").unwrap();
+        vt.webview_reports().unwrap();
+        vt.webview_supported(true);
+        vt.write(b"\x1b]7502;?\x07\x1b[5n\x1b]7502;?\x1b\\");
+        assert_eq!(vt.replies(), b"\x1b]7502;?:actions=enter,leave:supported=1\x07\x1b[0n\x1b]7502;?:actions=enter,leave:supported=1\x1b\\");
+        vt.replies().clear();
+        vt.write(
+            format!(
+                "\x1b]7502;a=enter:x={}\x07",
+                "x".repeat(ko_pane_wire::webview::MAX_BYTES)
+            )
+            .as_bytes(),
+        );
+        assert_eq!(vt.replies(), b"");
+        assert!(vt.reports().is_empty());
+        vt.write(b"\x1b]7502;a=enter\x07\x1b]7502;a=leave\x07");
+        assert_eq!(
+            vt.reports(),
+            &[
+                Report::Webview(Some(
+                    ko_pane_wire::frame::OwnedWebviewPath::try_from("/".to_owned()).unwrap()
+                )),
+                Report::Webview(None)
+            ]
+        );
     }
 
     #[test]

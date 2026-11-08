@@ -31,6 +31,7 @@ mod prompt;
 mod run;
 mod runtime;
 mod server_log;
+mod webview;
 
 const USAGE_ERROR: u8 = 124;
 
@@ -125,6 +126,8 @@ enum Command {
     Layout(LayoutArgs),
     /// Send a prompt, read from stdin, to the agent in the caller's window or session.
     Prompt(prompt::PromptArgs),
+    /// Show or serve a webview page in this pane.
+    Webview(webview::WebviewArgs),
 }
 
 #[derive(Debug, Args)]
@@ -753,5 +756,6 @@ fn main() -> ExitCode {
         Command::Panes(args) => panes(args, cli.server),
         Command::Layout(args) => layout(args, cli.server),
         Command::Prompt(args) => prompt::prompt(args, cli.server),
+        Command::Webview(args) => webview::run(args, cli.server),
     }
 }

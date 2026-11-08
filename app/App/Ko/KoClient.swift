@@ -52,6 +52,7 @@ struct KoHello {
     var name = "app"
     var focused = false
     var viewport: KoSize?
+    var webview = false
 }
 
 // The core's restore results and Ghostty's, matched by name. ko_restore_result is a closed C enum,
@@ -162,17 +163,19 @@ private final class ClientHandle: @unchecked Sendable {
     private let sink: (KoEvent) -> Void
     private let handle = ClientHandle()
     let imageFetches = OperationQueue()
+    let rendersWebview: Bool
     private var user: Unmanaged<KoClient>?
     private var closed = false
 
     init(socket: String, hello: KoHello = KoHello(), fetches: Int = 8, sink: @escaping (KoEvent) -> Void) throws {
         self.sink = sink
+        rendersWebview = hello.webview
         imageFetches.maxConcurrentOperationCount = fetches
         imageFetches.qualityOfService = .utility
         let user = Unmanaged.passRetained(self)
         var pointer: OpaquePointer?
         let code = hello.name.withCString { name in
-            var hello = ko_hello(cols: UInt16(hello.viewport?.cols ?? 80), rows: UInt16(hello.viewport?.rows ?? 24), focused: hello.focused, sizes_windows: hello.viewport != nil, name: name)
+            var hello = ko_hello(cols: UInt16(hello.viewport?.cols ?? 80), rows: UInt16(hello.viewport?.rows ?? 24), focused: hello.focused, sizes_windows: hello.viewport != nil, webview: hello.webview, name: name)
             return ko_client_connect(socket, .main, { user, event in
                 let client = Unmanaged<KoClient>.fromOpaque(user!).takeUnretainedValue()
                 let event = event!.pointee
@@ -202,6 +205,32 @@ private final class ClientHandle: @unchecked Sendable {
                 done?()
             }
         }
+    }
+
+    fileprivate func webviewFetch(pane: PaneID, request: URLRequest, callbacks: inout ko_webview_fetch_callbacks) throws -> OpaquePointer {
+        var out: OpaquePointer?
+        let headers = (request.allHTTPHeaderFields ?? [:]).map { (strdup($0.key)!, strdup($0.value)!) }
+        defer { for (name, value) in headers { free(name); free(value) } }
+        let fields = headers.map { ko_webview_header(name: UnsafePointer($0.0), value: UnsafePointer($0.1)) }
+        let body = request.httpBody ?? Data()
+        let path = try webviewPath(request.url!)
+        let code = try handle.call { pointer in
+            fields.withUnsafeBufferPointer { headers in
+                body.withUnsafeBytes { bytes in
+                    ko_client_webview_fetch(pointer, pane.description, request.httpMethod ?? "GET", path,
+                                         headers.baseAddress, headers.count, bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count, &callbacks, &out)
+                }
+            }
+        }
+        guard code == KO_OK, let out else { throw KoError(code: code) }
+        return out
+    }
+
+    fileprivate func webviewWebSocket(pane: PaneID, path: String, callbacks: inout ko_webview_ws_callbacks) throws -> OpaquePointer {
+        var out: OpaquePointer?
+        let code = try handle.call { ko_client_webview_ws_open($0, pane.description, path, nil, 0, &callbacks, &out) }
+        guard code == KO_OK, let out else { throw KoError(code: code) }
+        return out
     }
 
     private func deliver(_ event: ko_event) {
@@ -479,6 +508,107 @@ private enum KoScrollback: Sendable {
 // The closures run on the decoder thread: `bytes` takes the pty output in place of the surface's
 // process_output; `afterFeed` runs after each feed and `afterRestore` after each restore. In test builds,
 // continuationOverride replaces the server's limit and beforeRestore sees each snapshot.
+private func webviewPath(_ url: URL) throws -> String {
+    guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw URLError(.badURL) }
+    return (parts.percentEncodedPath.isEmpty ? "/" : parts.percentEncodedPath) + (parts.percentEncodedQuery.map { "?" + $0 } ?? "")
+}
+
+@MainActor final class KoWebviewFetch {
+    nonisolated(unsafe) private var handle: OpaquePointer?
+    private let response: (UInt16, [String: String]) -> Void
+    private let body: (Data) -> Void
+    private let end: (Result<Void, Error>) -> Void
+
+    init(client: KoClient, pane: PaneID, request: URLRequest, response: @escaping (UInt16, [String: String]) -> Void,
+         body: @escaping (Data) -> Void, end: @escaping (Result<Void, Error>) -> Void) throws {
+        self.response = response
+        self.body = body
+        self.end = end
+        var callbacks = ko_webview_fetch_callbacks(response: { user, status, headers, count in
+            let fetch = Unmanaged<KoWebviewFetch>.fromOpaque(user!).takeUnretainedValue()
+            MainActor.assumeIsolated {
+                var fields: [String: String] = [:]
+                for index in 0..<count {
+                    let header = headers![index]
+                    let name = String(cString: header.name), value = String(cString: header.value)
+                    fields[name] = fields[name].map { $0 + ", " + value } ?? value
+                }
+                fetch.response(status, fields)
+            }
+        }, body: { user, bytes, count in
+            let fetch = Unmanaged<KoWebviewFetch>.fromOpaque(user!).takeUnretainedValue()
+            MainActor.assumeIsolated { fetch.body(count == 0 ? Data() : Data(bytes: bytes!, count: count)) }
+        }, end: { user, code, _ in
+            let fetch = Unmanaged<KoWebviewFetch>.fromOpaque(user!).takeUnretainedValue()
+            MainActor.assumeIsolated {
+                fetch.cancel()
+                fetch.end(code == KO_OK ? .success(()) : .failure(KoError(code: code)))
+            }
+        }, user: Unmanaged.passUnretained(self).toOpaque())
+        handle = try client.webviewFetch(pane: pane, request: request, callbacks: &callbacks)
+    }
+
+    func cancel() {
+        if let handle { self.handle = nil; ko_webview_fetch_cancel(handle) }
+    }
+
+    deinit { if let handle { ko_webview_fetch_cancel(handle) } }
+}
+
+@MainActor final class KoWebviewSocket {
+    private enum Phase { case connecting, open, ended }
+    private var phase = Phase.connecting
+    nonisolated(unsafe) private var handle: OpaquePointer?
+    private let opened: () -> Void
+    private let message: (Data, Bool) -> Void
+    private let ended: (UInt16, String, Bool) -> Void
+
+    init(client: KoClient, pane: PaneID, url: URL, opened: @escaping () -> Void,
+         message: @escaping (Data, Bool) -> Void, ended: @escaping (UInt16, String, Bool) -> Void) throws {
+        self.opened = opened
+        self.message = message
+        self.ended = ended
+        var callbacks = ko_webview_ws_callbacks(open: { user, _, _, _ in
+            let socket = Unmanaged<KoWebviewSocket>.fromOpaque(user!).takeUnretainedValue()
+            MainActor.assumeIsolated { socket.phase = .open; socket.opened() }
+        }, message: { user, bytes, count, binary in
+            let socket = Unmanaged<KoWebviewSocket>.fromOpaque(user!).takeUnretainedValue()
+            MainActor.assumeIsolated { socket.message(count == 0 ? Data() : Data(bytes: bytes!, count: count), binary) }
+        }, close: { user, result, code, reason in
+            let socket = Unmanaged<KoWebviewSocket>.fromOpaque(user!).takeUnretainedValue()
+            let text = reason.map { String(cString: $0) } ?? ""
+            MainActor.assumeIsolated { socket.cancel(); socket.ended(code, text, result == KO_OK) }
+        }, user: Unmanaged.passUnretained(self).toOpaque())
+        handle = try client.webviewWebSocket(pane: pane, path: webviewPath(url), callbacks: &callbacks)
+    }
+
+    var bufferedAmount: Int { handle.map { Int(ko_webview_ws_buffered_amount($0)) } ?? 0 }
+
+    func send(_ data: Data, binary: Bool) throws {
+        guard let handle else { throw KoError(code: KO_ERR_CLOSED) }
+        let code = data.withUnsafeBytes { ko_webview_ws_send(handle, $0.bindMemory(to: UInt8.self).baseAddress, $0.count, binary) }
+        guard code == KO_OK else { throw KoError(code: code) }
+    }
+
+    func close(code: UInt16, reason: String) throws {
+        guard phase != .ended else { return }
+        guard phase == .open, let handle else {
+            cancel()
+            ended(1006, "Closed before open", false)
+            return
+        }
+        let result = ko_webview_ws_close(handle, code, reason)
+        guard result == KO_OK else { throw KoError(code: result) }
+    }
+
+    func cancel() {
+        phase = .ended
+        if let handle { self.handle = nil; ko_webview_ws_cancel(handle) }
+    }
+
+    deinit { if let handle { ko_webview_ws_cancel(handle) } }
+}
+
 struct KoViewHooks: Sendable {
     var bytes: (@Sendable (UnsafeRawBufferPointer) -> Void)?
     var afterFeed: (@Sendable (ko_feed) -> Void)?

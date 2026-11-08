@@ -142,9 +142,38 @@ pub fn set_nonblocking(fd: BorrowedFd<'_>) -> io::Result<()> {
 pub struct Queue {
     pub bytes: Vec<u8>,
     sent: usize,
+    written: u64,
 }
 
 impl Queue {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes,
+            ..Self::default()
+        }
+    }
+
+    pub fn extend(&mut self, bytes: &[u8]) {
+        if self.sent_past_half() {
+            self.compact();
+        }
+        self.bytes.extend_from_slice(bytes);
+    }
+
+    pub fn written(&self) -> u64 {
+        self.written
+    }
+
+    pub fn position(&self) -> io::Result<u64> {
+        self.written
+            .checked_add(self.bytes.len().saturating_sub(self.sent) as u64)
+            .ok_or_else(|| io::Error::other("write position exhausted"))
+    }
+
+    pub fn backed_up(&self, limit: usize) -> bool {
+        self.bytes.len().saturating_sub(self.sent) >= limit
+    }
+
     pub fn is_empty(&self) -> bool {
         self.sent >= self.bytes.len()
     }
@@ -171,7 +200,13 @@ impl Queue {
         {
             match write(fd, pending) {
                 Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-                Ok(count) => self.sent = self.sent.saturating_add(count),
+                Ok(count) => {
+                    self.sent = self.sent.saturating_add(count);
+                    self.written = self
+                        .written
+                        .checked_add(count as u64)
+                        .ok_or_else(|| io::Error::other("write position exhausted"))?;
+                }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(error) => return Err(error),
             }

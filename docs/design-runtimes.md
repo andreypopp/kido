@@ -421,6 +421,8 @@ not exist on a runtime connection.
 not name is refused (`router.rs` checks the identity,
 `State::runtime_gate` the route): `/client`, views, search, `PUT
 /layout`, every `/runtimes` route and the exec session among them.
+The pane's own webview serve stream is in the list; the webview proxy
+routes are not (protocol.md, section 16).
 For a caller `c` of runtime `R`,
 `visible(c) = panes of R ∪ scope(c)`, with the one `scope` of the
 stop and the messages (protocol.md, section 7; `ko_server/src/panes.rs`):

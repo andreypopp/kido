@@ -216,6 +216,7 @@ mod tests {
     fn pane(number: u64, status: Option<Live>) -> Pane {
         Pane {
             row: ko_server::protocol::Row {
+                webview: None,
                 id: id(number),
                 started: 0,
                 pid: Some(1),

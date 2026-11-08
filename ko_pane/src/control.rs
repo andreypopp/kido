@@ -39,6 +39,7 @@ fn detached(reader: &Reader, data: &[u8], at_end: bool) -> Option<Pane> {
 
 fn fresh(pane: &mut Pane) -> bool {
     let init = Init {
+        webview_supported: false,
         size: Size::DEFAULT,
         limits: Limits {
             scrollback: Scrollback::Bounded {

@@ -8,6 +8,29 @@ final class SessionView: NSView {
     // The client whose views feed the panes.
     weak var client: KoClient?
     var host = Host.local
+    var webview: (PaneID) -> KoSchema.Webview? = { _ in nil }
+    private var hiddenWebview: [PaneID] = []
+    private var webviewQueued = false
+
+    func updateWebview() {
+        guard !webviewQueued else { return }
+        webviewQueued = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            webviewQueued = false
+            let live = panes
+            let hidden = live.filter { $0.isHiddenOrHasHiddenAncestor && $0.webviewView != nil }
+            let ids = Set(hidden.map(\.pane))
+            hiddenWebview.removeAll { !ids.contains($0) }
+            hiddenWebview.append(contentsOf: hidden.map(\.pane).filter { !hiddenWebview.contains($0) })
+            let release = Set(hiddenWebview.prefix(max(0, hiddenWebview.count - runtime.values.webview.keepHidden)))
+            for pane in live {
+                if release.contains(pane.pane) { pane.releaseWebview() }
+                else { pane.updateWebview(webview(pane.pane)) }
+            }
+            hiddenWebview.removeAll { release.contains($0) }
+        }
+    }
     var edit: (KoSchema.Edit, LayoutEditor.Key?) -> Void = { _, _ in }
     var editing: () -> Bool = { false }
     var selectPane: (PaneID) -> Void = { _ in }
@@ -85,6 +108,7 @@ final class SessionView: NSView {
 
     func reloadConfig(font: Float?) {
         forEachPane { $0.reloadConfig(font: font) }
+        updateWebview()
     }
 
     func updateColorScheme() {
@@ -133,8 +157,8 @@ final class SessionView: NSView {
         updating = true
         defer { updating = previousUpdate }
         let start = DispatchTime.now(), before = shown, last = recent.first
-        let focused = (self.window?.firstResponder as? PaneView)?.isDescendant(of: self) == true
-        defer { DispatchQueue.main.async { [weak self] in self?.evict() } }
+        let focused = PaneView.owner(self.window?.firstResponder)?.isDescendant(of: self) == true
+        defer { updateWebview(); DispatchQueue.main.async { [weak self] in self?.evict() } }
         for (id, view) in windows { view.isHidden = id != window }
         others.values.forEach { $0.isHidden = true }
         guard let window, let view = windows[window], view !== before else { return }
@@ -208,6 +232,7 @@ final class SessionView: NSView {
             pane.reflow { pane.setFontSize(points) }
         }
         cellChanged()
+        updateWebview()
     }
 
     // Every surface reports its own font and cell changes; one pass lays
@@ -220,6 +245,7 @@ final class SessionView: NSView {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             relayoutQueued = false
+            panes.forEach { $0.webviewView?.updateTheme() }
             windows.values.forEach { $0.cellChanged() }
         }
     }

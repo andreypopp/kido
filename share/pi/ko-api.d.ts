@@ -265,6 +265,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/panes/{id}/webview/serve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Serve the pane's HTTP requests and WebSockets. Only the pane itself can open this stream. */
+        get: operations["WebviewServe"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/panes/{id}/webview/{path}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Fetch a resource or open a WebSocket of the pane's page. Requires a live Ko-Client. */
+        get: operations["WebviewGet"];
+        /** @description Put a body to the pane's page. Requires a live Ko-Client. */
+        put: operations["WebviewPut"];
+        /** @description Post a body to the pane's page. Requires a live Ko-Client. */
+        post: operations["WebviewPost"];
+        /** @description Delete a resource of the pane's page. Requires a live Ko-Client. */
+        delete: operations["WebviewDelete"];
+        options?: never;
+        head?: never;
+        /** @description Patch a resource of the pane's page. Requires a live Ko-Client. */
+        patch: operations["WebviewPatch"];
+        trace?: never;
+    };
     "/prompt": {
         parameters: {
             query?: never;
@@ -537,6 +575,11 @@ export interface components {
             message: string;
             /** @constant */
             type: "refused";
+        } | {
+            pane: components["schemas"]["PaneId"];
+            /** @constant */
+            type: "webview";
+            webview?: components["schemas"]["Webview"];
         } | ({
             /** @constant */
             type: "welcome";
@@ -692,6 +735,8 @@ export interface components {
          * @enum {string}
          */
         Close: "exit" | "keep" | "on_exit";
+        CloseCode: (1000 | 1001 | 1002 | 1003 | 1007 | 1008 | 1009 | 1010 | 1011 | 1012 | 1013) | number;
+        CloseReason: string;
         Command: {
             argv: string[];
             /** @constant */
@@ -871,6 +916,9 @@ export interface components {
             kind: "precondition_failed";
         } | {
             /** @constant */
+            kind: "unavailable";
+        } | {
+            /** @constant */
             kind: "not_found";
         } | ({
             /** @constant */
@@ -964,6 +1012,7 @@ export interface components {
             pane?: components["schemas"]["PaneId"];
             session?: components["schemas"]["SessionId"];
             sizing: components["schemas"]["Sizing"];
+            webview: boolean;
             window?: components["schemas"]["WindowId"];
         };
         /** @enum {string} */
@@ -1079,6 +1128,7 @@ export interface components {
             vars: {
                 [key: string]: unknown;
             };
+            webview?: components["schemas"]["Webview"];
         };
         Live: {
             pane: components["schemas"]["Local"];
@@ -1162,6 +1212,8 @@ export interface components {
          * @enum {string}
          */
         MessageState: "queued" | "delivered" | "acked";
+        /** @enum {string} */
+        Method: "GET" | "PUT" | "POST" | "PATCH" | "DELETE";
         /** @description an absolute path without a comma */
         MountDir: string;
         Mouse: {
@@ -1217,6 +1269,9 @@ export interface components {
         OutcomeResult: "success" | "failure";
         /** @enum {string} */
         Over: "session" | "window";
+        Page: {
+            path: components["schemas"]["WebviewPath"];
+        };
         PaneDead: {
             dead: components["schemas"]["Dead"];
             pane: components["schemas"]["PaneId"];
@@ -1511,6 +1566,71 @@ export interface components {
         Sent: {
             via: components["schemas"]["Via"];
         };
+        ServeIn: {
+            headers: components["schemas"]["WebviewHeaders"];
+            req: number;
+            status: components["schemas"]["WebviewStatus"];
+            /** @constant */
+            type: "response";
+        } | {
+            data: components["schemas"]["WebviewData"];
+            more: boolean;
+            req: number;
+            /** @constant */
+            type: "body";
+        } | {
+            binary: boolean;
+            data: components["schemas"]["Base64"];
+            req: number;
+            /** @constant */
+            type: "frame";
+        } | {
+            code: components["schemas"]["CloseCode"];
+            reason: components["schemas"]["CloseReason"];
+            req: number;
+            /** @constant */
+            type: "close";
+        };
+        ServeOut: {
+            supported: boolean;
+            /** @constant */
+            type: "supported";
+        } | {
+            headers: components["schemas"]["WebviewHeaders"];
+            method: components["schemas"]["Method"];
+            path: string;
+            req: number;
+            /** @constant */
+            type: "request";
+        } | {
+            data: components["schemas"]["WebviewData"];
+            more: boolean;
+            req: number;
+            /** @constant */
+            type: "body";
+        } | {
+            req: number;
+            /** @constant */
+            type: "cancel";
+        } | {
+            headers: components["schemas"]["WebviewHeaders"];
+            path: string;
+            req: number;
+            /** @constant */
+            type: "upgrade";
+        } | {
+            binary: boolean;
+            data: components["schemas"]["WebviewData"];
+            req: number;
+            /** @constant */
+            type: "frame";
+        } | {
+            code: components["schemas"]["CloseCode"];
+            reason: components["schemas"]["CloseReason"];
+            req: number;
+            /** @constant */
+            type: "close";
+        };
         /** @description The reply of a running server: its version, and the instance that changes at each start. */
         ServerVersion: {
             build: string;
@@ -1738,6 +1858,18 @@ export interface components {
         VolumePath: string;
         /** @description Milliseconds. */
         WaitMs: number;
+        Webview: {
+            page?: components["schemas"]["Page"];
+            serving: boolean;
+        };
+        WebviewBody: string;
+        WebviewData: string;
+        WebviewHeaders: [
+            string,
+            string
+        ][];
+        WebviewPath: string;
+        WebviewStatus: 101 | number;
         Welcome: {
             client: components["schemas"]["ClientId"];
             instance: components["schemas"]["Instance"];
@@ -2556,6 +2688,373 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    WebviewServe: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Switching Protocols */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    WebviewGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+                /** @example assets/main.js?q=1 */
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/octet-stream": components["schemas"]["WebviewBody"];
+            };
+        };
+        responses: {
+            /** @description Switching Protocols */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The program's response, or a common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+        };
+    };
+    WebviewPut: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+                /** @example assets/main.js?q=1 */
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/octet-stream": components["schemas"]["WebviewBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The program's response, or a common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+        };
+    };
+    WebviewPost: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+                /** @example assets/main.js?q=1 */
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/octet-stream": components["schemas"]["WebviewBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The program's response, or a common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+        };
+    };
+    WebviewDelete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+                /** @example assets/main.js?q=1 */
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/octet-stream": components["schemas"]["WebviewBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The program's response, or a common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+        };
+    };
+    WebviewPatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+                /** @example assets/main.js?q=1 */
+                path: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/octet-stream": components["schemas"]["WebviewBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The program's response, or a common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "*/*": string;
                 };
             };
         };

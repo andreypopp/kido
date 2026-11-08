@@ -3,7 +3,7 @@ use crate::api::routes;
 use crate::ids::MessageId;
 use crate::inbox::{Admit, Outcome, Status};
 use crate::pane_kind::{self, Kind, LocalKind};
-use crate::panes::{Edge, acts_as, relation};
+use crate::panes::{Edge, relation};
 use crate::protocol::{
     Content, End, Error, ErrorKind, MessageState, Payload, Posted, Relation, SendMessage, Sender,
     Sent, StreamRequest,
@@ -58,40 +58,7 @@ fn stamp(id: PaneId, pane: Option<&Pane>) -> Sender {
     }
 }
 
-fn missing() -> Error {
-    Error::new(ErrorKind::Missing, "pane not found")
-}
-
-fn dead(pane: PaneId) -> Error {
-    Error::new(ErrorKind::Gone, format!("{pane} is dead"))
-}
-
 impl State {
-    pub(super) fn pane(&self, id: PaneId) -> Result<&Pane, Error> {
-        self.panes.find(id).ok_or_else(missing)
-    }
-
-    fn live(&self, id: PaneId) -> Result<&Pane, Error> {
-        let pane = self.pane(id)?;
-        if pane.proc().dead().is_some() {
-            Err(dead(id))
-        } else {
-            Ok(pane)
-        }
-    }
-
-    pub(crate) fn admit_stream(&self, caller: Option<PaneId>, id: PaneId) -> Result<(), Error> {
-        acts_as(caller, id, "open only its own message stream")?;
-        if self.live(id)?.inbox().stream().is_some() {
-            Err(Error::new(
-                ErrorKind::Refused,
-                "the pane already has a message stream",
-            ))
-        } else {
-            Ok(())
-        }
-    }
-
     pub(crate) fn open_stream(&mut self, id: PaneId, stream: Token) {
         if self
             .panes

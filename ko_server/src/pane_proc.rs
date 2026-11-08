@@ -100,6 +100,7 @@ pub(crate) enum Event {
         title: Option<String>,
         body: String,
     },
+    Webview(Option<crate::protocol::webview::Page>),
     Progress(Option<Progress>),
     Image {
         req: Req,
@@ -352,6 +353,7 @@ pub(crate) struct Launch<'a> {
     pub(crate) env: &'a [Vec<u8>],
     pub(crate) size: Size,
     pub(crate) limits: Limits,
+    pub(crate) webview_supported: bool,
 }
 
 impl PaneProc {
@@ -368,10 +370,12 @@ impl PaneProc {
             env,
             size,
             limits,
+            webview_supported,
         } = *launch;
         let mut out = Vec::new();
         let id = id.to_string();
         let init = Init {
+            webview_supported,
             size,
             limits,
             media: (&config.media[..]).into(),
@@ -728,6 +732,10 @@ impl PaneProc {
         Ok(req)
     }
 
+    pub(crate) fn webview_supported(&mut self, supported: bool, io: &mut Io<'_>) {
+        let _ = self.send(&ToPane::WebviewSupported(supported), io);
+    }
+
     pub(crate) fn clear_history(&mut self, io: &mut Io<'_>) {
         let _ = self.send(&ToPane::ClearHistory, io);
     }
@@ -978,6 +986,14 @@ impl PaneProc {
                 if self.pending.remove(&req) == Some(Reply::Search) {
                     io.events.push(Event::SearchDone { req });
                 }
+            }
+            FromPane::Webview(report) => {
+                io.events.push(Event::Webview(match report {
+                    frame::WebviewReport::Enter { path } => {
+                        Some(crate::protocol::webview::Page { path: path.into() })
+                    }
+                    frame::WebviewReport::Leave => None,
+                }));
             }
             FromPane::Progress(report) => {
                 io.events

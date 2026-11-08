@@ -84,5 +84,12 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "webview"
+path = "fuzz_targets/webview.rs"
+test = false
+doc = false
+bench = false
+
 [lints]
 workspace = true

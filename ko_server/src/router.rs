@@ -36,15 +36,8 @@ where
 }
 
 fn respond(conn: &mut Conn, status: Status, body: &str) {
-    let length = body.len().to_string();
-    conn.out.send(http::response(
-        status,
-        &[
-            ("content-type", "application/json"),
-            ("content-length", &length),
-        ],
-        body.as_bytes(),
-    ));
+    conn.out
+        .send(http::json_response(status, body, http::Policy::Control));
 }
 
 fn ok<E: Endpoint>(conn: &mut Conn, value: &E::Reply)
@@ -54,21 +47,58 @@ where
     respond(conn, Status::Ok, &protocol::json(value));
 }
 
-fn alt<E: Alt<CODE>, const CODE: u16>(conn: &mut Conn, body: &E::Body)
+fn alt<E: Alt<CODE>, const CODE: u16>(conn: &mut Conn, body: &E::Body, policy: http::Policy)
 where
     E::Body: Serialize,
 {
-    respond(conn, E::STATUS, &protocol::json(body));
+    conn.out.send(http::json_response(
+        E::STATUS,
+        &protocol::json(body),
+        policy,
+    ));
 }
 
 fn error(conn: &mut Conn, kind: ErrorKind, message: impl Into<String>) {
     let status = kind.status();
-    let body = protocol::json(&Error::new(kind, message));
-    respond(conn, status, &body);
+    conn.out.send(http::error_reply(
+        &Error::new(kind, message),
+        status,
+        http::Policy::Control,
+    ));
+}
+
+fn proxy_refusal<E: Alt<429, Body = Error> + Alt<502, Body = Error> + Alt<503, Body = Error>>(
+    conn: &mut Conn,
+    refusal: crate::webview::Refusal,
+) {
+    use crate::webview::Refusal;
+    match refusal {
+        Refusal::Full => alt::<E, 429>(
+            conn,
+            &Error::new(ErrorKind::Refused, "too many webview requests"),
+            http::Policy::Webview,
+        ),
+        Refusal::Unavailable => alt::<E, 503>(
+            conn,
+            &Error::new(ErrorKind::Unavailable, "the program is not serving"),
+            http::Policy::Webview,
+        ),
+        Refusal::Exhausted => alt::<E, 502>(
+            conn,
+            &Error::new(ErrorKind::Io, "webview request serial exhausted"),
+            http::Policy::Webview,
+        ),
+        Refusal::Error(error) => conn.out.send(http::error_reply(
+            &error,
+            error.kind.status(),
+            http::Policy::Webview,
+        )),
+    }
 }
 
 fn handshake(state: &mut State, index: usize, head: &http::Head) -> Option<Vec<u8>> {
-    let response = ws::handshake(head);
+    let response = ws::handshake(head)
+        .map(|accept| http::switching_protocols(&accept, &[], http::Policy::Control));
     if response.is_none() {
         error(
             &mut state.conns[index],
@@ -79,7 +109,14 @@ fn handshake(state: &mut State, index: usize, head: &http::Head) -> Option<Vec<u
     response
 }
 
-fn upgrade(state: &mut State, poll: &mut Poll, index: usize, response: Vec<u8>, role: Role) {
+pub(crate) fn upgrade(
+    state: &mut State,
+    poll: &mut Poll,
+    index: usize,
+    response: Vec<u8>,
+    role: Role,
+    ws: Ws,
+) {
     let Some(conn) = state.conns.get_mut(index) else {
         return;
     };
@@ -91,11 +128,7 @@ fn upgrade(state: &mut State, poll: &mut Poll, index: usize, response: Vec<u8>, 
             ws::overflow_close(),
         );
     }
-    let part = conn.rest();
-    conn.phase = Phase::Ws(Box::new(Link {
-        ws: Ws::new(part),
-        role,
-    }));
+    conn.phase = Phase::Ws(Box::new(Link { ws, role }));
     let _ = poll.start(conn.timer, ws::PING_INTERVAL, None);
 }
 
@@ -170,83 +203,79 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
         Err(Invalid::NoRoute) => None,
         Err(invalid) => return error(conn, ErrorKind::Invalid, invalid.to_string()),
     };
-    let ours = protocol::version();
-    let discovery = route == Some(Route::Version {});
-    let protocol = head
-        .header(PROTOCOL_HEADER)
-        .or(discovery.then_some(ours.protocol.as_str()));
-    let vt = head
-        .header(VT_HEADER)
-        .or(discovery.then_some(ours.vt.as_str()));
-    if let Err(Error { kind, message }) = check_version(protocol, vt) {
-        return error(conn, kind, message);
-    }
-    if head.header("origin").is_some() {
-        return error(
-            conn,
-            ErrorKind::Refused,
-            "Origin is not permitted on this unix server",
-        );
-    }
-    let client = head
-        .header("ko-client")
-        .map(|text| text.parse::<ClientId>().ok());
-    if let Some(client) = client
-        && !client.is_some_and(|client| state.registered(client))
+    let policy = if route
+        .as_ref()
+        .is_some_and(|route| matches!(route.kind(), route::Kind::Proxy { .. }))
     {
-        return error(&mut state.conns[index], ErrorKind::Gone, "client is closed");
-    }
-    let client = client.flatten();
-    let origin = state.conns[index].origin.clone();
-    let caller = match acting(
-        state,
-        (head.header("ko-pane"), head.header("ko-pane-token")),
-        &origin,
-    ) {
-        Ok(caller) => caller,
-        Err(Error { kind, message }) => {
-            return error(&mut state.conns[index], kind, message);
+        http::Policy::Webview
+    } else {
+        http::Policy::Control
+    };
+    let ours = protocol::version();
+    let admitted = (|| -> Result<_, Error> {
+        let discovery = route == Some(Route::Version {});
+        check_version(
+            head.header(PROTOCOL_HEADER)
+                .or(discovery.then_some(ours.protocol.as_str())),
+            head.header(VT_HEADER)
+                .or(discovery.then_some(ours.vt.as_str())),
+        )?;
+        if head.header("origin").is_some() && policy != http::Policy::Webview {
+            return Err(Error::new(
+                ErrorKind::Refused,
+                "Origin is not permitted on this unix server",
+            ));
+        }
+        let client = head
+            .header(protocol::CLIENT_HEADER)
+            .map(|text| text.parse::<ClientId>().ok());
+        if client.is_some_and(|client| !client.is_some_and(|client| state.registered(client))) {
+            return Err(Error::new(ErrorKind::Gone, "client is closed"));
+        }
+        let client = client.flatten();
+        let origin = &state.conns[index].origin;
+        let caller = acting(
+            state,
+            (
+                head.header(protocol::PANE_HEADER),
+                head.header(protocol::PANE_TOKEN_HEADER),
+            ),
+            origin,
+        )?;
+        let route = route.ok_or_else(|| Error::new(ErrorKind::Missing, "resource not found"))?;
+        if route
+            .pane()
+            .is_some_and(|pane| state.panes.find(pane).is_none())
+        {
+            return Err(Error::new(ErrorKind::Missing, "pane not found"));
+        }
+        if let (Origin::Runtime(runtime), Some(caller)) = (origin, caller) {
+            state.runtime_gate(runtime, caller, &route)?;
+        }
+        let bytes = match &payload {
+            Payload::Bytes(bytes) => Some(bytes.as_slice()),
+            Payload::Oversized => None,
+        };
+        let method = route.method();
+        let request = route
+            .with_body(bytes)
+            .map_err(|invalid| Error::new(ErrorKind::Invalid, invalid.to_string()))?;
+        Ok((request, caller, client, method))
+    })();
+    let (request, caller, client, method) = match admitted {
+        Ok(admitted) => admitted,
+        Err(error) => {
+            state.conns[index]
+                .out
+                .send(http::error_reply(&error, error.kind.status(), policy));
+            return;
         }
     };
     state.conns[index].caller = caller;
-    let Some(route) = route else {
-        return error(
-            &mut state.conns[index],
-            ErrorKind::Missing,
-            "resource not found",
-        );
-    };
-    if let Some(id) = route.pane()
-        && state.panes.find(id).is_none()
-    {
-        return error(
-            &mut state.conns[index],
-            ErrorKind::Missing,
-            "pane not found",
-        );
-    }
-    if let (Origin::Runtime(runtime), Some(caller)) = (&origin, caller)
-        && let Err(Error { kind, message }) = state.runtime_gate(runtime, caller, &route)
-    {
-        return error(&mut state.conns[index], kind, message);
-    }
     let Some(token) = state.token(index) else {
         return;
     };
-    let bytes = match &payload {
-        Payload::Bytes(bytes) => Some(bytes.as_slice()),
-        Payload::Oversized => None,
-    };
-    let request = match route.with_body(bytes) {
-        Ok(request) => request,
-        Err(invalid) => {
-            return error(
-                &mut state.conns[index],
-                ErrorKind::Invalid,
-                invalid.to_string(),
-            );
-        }
-    };
+    let origin = state.conns[index].origin.clone();
     match request {
         Request::Version {} => {
             let version = ServerVersion {
@@ -283,7 +312,11 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
         Request::PutLayout { body } => match state.put_layout(poll, body, caller) {
             Ok(snapshot) => ok::<routes::PutLayout>(&mut state.conns[index], &snapshot),
             Err(PutFailure::Stale(snapshot)) => {
-                alt::<routes::PutLayout, 409>(&mut state.conns[index], &snapshot);
+                alt::<routes::PutLayout, 409>(
+                    &mut state.conns[index],
+                    &snapshot,
+                    http::Policy::Control,
+                );
             }
             Err(failure) => {
                 reply::<routes::PutLayout>(&mut state.conns[index], Err(failure.into()));
@@ -307,7 +340,15 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                 return;
             };
             let id = state.client_id();
-            upgrade(state, poll, index, response, Role::Client(Client::new(id)));
+            let ws = Ws::new(state.conns[index].rest());
+            upgrade(
+                state,
+                poll,
+                index,
+                response,
+                Role::Client(Client::new(id)),
+                ws,
+            );
             state.read_ws(poll, index);
         }
         Request::PostMessage { id, body } => {
@@ -315,14 +356,67 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                 reply::<routes::PostMessage>(&mut state.conns[index], result);
             }
         }
-        Request::Messages { id } => {
-            if let Err(Error { kind, message }) = state.admit_stream(caller, id) {
+        Request::WebviewServe { id } => {
+            if let Err(Error { kind, message }) =
+                state.admit_stream(caller, id, crate::state::Stream::Webview)
+            {
                 return error(&mut state.conns[index], kind, message);
             }
             let Some(response) = handshake(state, index, &head) else {
                 return;
             };
-            upgrade(state, poll, index, response, Role::Messages(id));
+            let ws = Ws::flow(state.conns[index].rest());
+            upgrade(state, poll, index, response, Role::WebviewServe(id), ws);
+            state.open_webview(id, token);
+            state.read_ws(poll, index);
+        }
+        Request::WebviewGet { id, path, body }
+        | Request::WebviewPost { id, path, body }
+        | Request::WebviewPut { id, path, body }
+        | Request::WebviewPatch { id, path, body }
+        | Request::WebviewDelete { id, path, body } => {
+            if let Err(refusal) = state.proxy_webview(
+                index,
+                crate::webview::ProxyRequest {
+                    caller,
+                    client,
+                    pane: id,
+                    method,
+                    path,
+                    body: body.0,
+                    head,
+                },
+            ) {
+                match method {
+                    protocol::Method::Get => {
+                        proxy_refusal::<routes::WebviewGet>(&mut state.conns[index], refusal)
+                    }
+                    protocol::Method::Post => {
+                        proxy_refusal::<routes::WebviewPost>(&mut state.conns[index], refusal)
+                    }
+                    protocol::Method::Put => {
+                        proxy_refusal::<routes::WebviewPut>(&mut state.conns[index], refusal)
+                    }
+                    protocol::Method::Patch => {
+                        proxy_refusal::<routes::WebviewPatch>(&mut state.conns[index], refusal)
+                    }
+                    protocol::Method::Delete => {
+                        proxy_refusal::<routes::WebviewDelete>(&mut state.conns[index], refusal)
+                    }
+                }
+            }
+        }
+        Request::Messages { id } => {
+            if let Err(Error { kind, message }) =
+                state.admit_stream(caller, id, crate::state::Stream::Messages)
+            {
+                return error(&mut state.conns[index], kind, message);
+            }
+            let Some(response) = handshake(state, index, &head) else {
+                return;
+            };
+            let ws = Ws::new(state.conns[index].rest());
+            upgrade(state, poll, index, response, Role::Messages(id), ws);
             state.open_stream(id, token);
             state.read_ws(poll, index);
         }
@@ -453,18 +547,23 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                     return error(&mut state.conns[index], kind, message);
                 }
             };
-            let Some(response) = ws::handshake(&head) else {
+            let Some(response) = ws::handshake(&head)
+                .map(|accept| http::switching_protocols(&accept, &[], http::Policy::Control))
+            else {
                 return error(
                     &mut state.conns[index],
                     ErrorKind::Invalid,
                     "Didn't pass scrutiny",
                 );
             };
-            upgrade(state, poll, index, response, Role::Visit(visit));
+            let ws = Ws::new(state.conns[index].rest());
+            upgrade(state, poll, index, response, Role::Visit(visit), ws);
             state.read_ws(poll, index);
         }
         Request::Exec { name, session } => {
-            let Some(response) = ws::handshake(&head) else {
+            let Some(response) = ws::handshake(&head)
+                .map(|accept| http::switching_protocols(&accept, &[], http::Policy::Control))
+            else {
                 return error(
                     &mut state.conns[index],
                     ErrorKind::Invalid,
@@ -477,7 +576,15 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                     return error(&mut state.conns[index], kind, message);
                 }
             };
-            upgrade(state, poll, index, response, Role::Exec(Session::new(name)));
+            let ws = Ws::new(state.conns[index].rest());
+            upgrade(
+                state,
+                poll,
+                index,
+                response,
+                Role::Exec(Session::new(name)),
+                ws,
+            );
             state.read_ws(poll, index);
         }
         Request::PromptResolve { from, window } => {
@@ -509,7 +616,8 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             };
             match state.start_search(poll, token, id, needle.as_str()) {
                 Some(search) => {
-                    upgrade(state, poll, index, response, Role::Search(search));
+                    let ws = Ws::new(state.conns[index].rest());
+                    upgrade(state, poll, index, response, Role::Search(search), ws);
                     state.read_ws(poll, index);
                 }
                 None => error(
@@ -519,6 +627,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                 ),
             }
         }
+
         Request::View {
             id,
             history,
@@ -541,7 +650,8 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             let Some(response) = handshake(state, index, &head) else {
                 return;
             };
-            upgrade(state, poll, index, response, Role::View(view));
+            let ws = Ws::new(state.conns[index].rest());
+            upgrade(state, poll, index, response, Role::View(view), ws);
             state.open_view(poll, index, offset.map(Offset::get));
             state.read_ws(poll, index);
         }
@@ -585,9 +695,14 @@ pub(crate) fn screen<E: Endpoint<Reply = route::text>>(
                 ("transfer-encoding", "chunked"),
             ],
             b"",
+            http::Policy::Control,
         );
     }
-    http::chunk(chunk, &mut out);
+    if !chunk.is_empty() {
+        out.extend_from_slice(http::chunk_header(chunk.len()).as_bytes());
+        out.extend_from_slice(chunk);
+        out.extend_from_slice(b"\r\n");
+    }
     if last {
         out.extend_from_slice(LAST_CHUNK);
         finish(state, poll, conn, |conn| conn.out.send(out));
@@ -646,6 +761,7 @@ pub(crate) fn image<E: Endpoint<Reply = route::pixels>>(
                     (IMAGE_FRAMES_HEADER, frames),
                 ],
                 b"",
+                http::Policy::Control,
             );
             conn.out.send_pixels(head, map);
             if conn.out.streaming() {
@@ -886,7 +1002,7 @@ mod tests {
         );
         let hello = r#"["hello",["t","pane_1",true,{"cols":7,"rows":7},false]]"#;
         let _array_hello = server.connect(&[upgrade("/client"), text(hello)].concat());
-        let size_hello = r#"{"type":"hello","name":"t","pane":"pane_1","focused":false,"sizing":{"type":"windows","viewport":[80,24],"windows":[]}}"#;
+        let size_hello = r#"{"type":"hello","webview":false,"name":"t","pane":"pane_1","focused":false,"sizing":{"type":"windows","viewport":[80,24],"windows":[]}}"#;
         let _array_size = server.connect(&[upgrade("/client"), text(size_hello)].concat());
         let key = r#"{"type":"input","input":["key",["press",20,0,97,"a",false]]}"#;
         let _array_key = server.connect(&[upgrade("/panes/pane_1/view"), text(key)].concat());
@@ -917,7 +1033,7 @@ mod tests {
             pane: crate::ids::PaneId::new(1),
             title: "x".repeat(400_000),
         });
-        let hello = r#"{"type":"hello","name":"t","focused":false,"sizing":{"type":"disabled"}}"#;
+        let hello = r#"{"type":"hello","webview":false,"name":"t","focused":false,"sizing":{"type":"disabled"}}"#;
         let client = server.connect(&[upgrade("/client"), text(hello)].concat());
         let registered = server.state.registered(ClientId::new(1));
         let closed_at = (1..400).find(|_| {
@@ -953,8 +1069,8 @@ mod tests {
     fn message() -> impl Strategy<Value = Vec<u8>> {
         prop_oneof![
             4 => prop::sample::select(vec![
-                r#"{"type":"hello","name":"t","focused":true,"sizing":{"type":"disabled"}}"#,
-                r#"{"type":"hello","name":"t","pane":"pane_1","focused":false,"sizing":{"type":"windows","viewport":{"cols":4097,"rows":24},"windows":[]}}"#,
+                r#"{"type":"hello","webview":false,"name":"t","focused":true,"sizing":{"type":"disabled"}}"#,
+                r#"{"type":"hello","webview":false,"name":"t","pane":"pane_1","focused":false,"sizing":{"type":"windows","viewport":{"cols":4097,"rows":24},"windows":[]}}"#,
                 r#"{"type":"select","request":1,"pane":"pane_1"}"#,
                 r#"{"type":"select","request":1,"pane":"pane_99"}"#,
                 r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":50,"rows":10,"cell_px":{"width":8,"height":16}},"windows":[]}}"#,
@@ -1155,7 +1271,7 @@ mod tests {
 
     fn hello(extra: &str, focused: bool, cols: u16, rows: u16) -> String {
         format!(
-            r#"{{"type":"hello","name":"t",{extra}"focused":{focused},"sizing":{{"type":"windows","viewport":{{"cols":{cols},"rows":{rows}}},"windows":[]}}}}"#
+            r#"{{"type":"hello","webview":false,"name":"t",{extra}"focused":{focused},"sizing":{{"type":"windows","viewport":{{"cols":{cols},"rows":{rows}}},"windows":[]}}}}"#
         )
     }
 

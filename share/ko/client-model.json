@@ -703,6 +703,9 @@
           "vars": {
             "additionalProperties": true,
             "type": "object"
+          },
+          "webview": {
+            "$ref": "#/components/schemas/Webview"
           }
         },
         "required": [

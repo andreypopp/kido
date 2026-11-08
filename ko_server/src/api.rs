@@ -16,7 +16,23 @@ use crate::protocol::{
     Sent, ServerVersion, Snapshot, StatusReport, StopPane, StreamRequest, VarValue, ViewEvent,
     ViewRequest, VisitClient, VisitServer,
 };
-use crate::route::{Invalid, Param, binary, pixels, routes, text};
+use crate::route::{Invalid, Param, RawBody, binary, pixels, routes, text};
+
+use crate::protocol::webview::Rest;
+
+impl Param for Rest {
+    const EXAMPLE: &'static str = "assets/main.js?q=1";
+    const REST: bool = true;
+    fn parse(value: &str) -> Result<Self, Invalid> {
+        Self::try_from(value.to_owned()).map_err(Invalid::message)
+    }
+    fn render(&self) -> String {
+        self.as_str().to_owned()
+    }
+    fn schema(_: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({"type":"string","pattern":"^[!-~]*$","description":"The rest of the request target, including its query string."})
+    }
+}
 
 pub fn route_paths() -> impl Iterator<Item = (&'static str, &'static [&'static str])> {
     ROUTES.iter().map(|route| (route.path, route.docs))
@@ -595,6 +611,24 @@ routes! {
         caller: optional,
         reply: Empty,
     }
+    /// Serve the pane's HTTP requests and WebSockets. Only the pane itself can open this stream.
+    WebviewServe {
+        method: WS,
+        path: /panes/{id: PaneId}/webview/serve,
+        caller: optional,
+        send: crate::protocol::webview::ServeIn,
+        recv: crate::protocol::webview::ServeOut,
+    }
+    /// Fetch a resource or open a WebSocket of the pane's page. Requires a live Ko-Client.
+    WebviewGet { method: PROXY(GET), path: /panes/{id: PaneId}/webview/{path: Rest}, body: RawBody, reply: binary, errors: { 429, 502, 503 } }
+    /// Post a body to the pane's page. Requires a live Ko-Client.
+    WebviewPost { method: PROXY(POST), path: /panes/{id: PaneId}/webview/{path: Rest}, body: RawBody, reply: binary, errors: { 429, 502, 503 } }
+    /// Put a body to the pane's page. Requires a live Ko-Client.
+    WebviewPut { method: PROXY(PUT), path: /panes/{id: PaneId}/webview/{path: Rest}, body: RawBody, reply: binary, errors: { 429, 502, 503 } }
+    /// Patch a resource of the pane's page. Requires a live Ko-Client.
+    WebviewPatch { method: PROXY(PATCH), path: /panes/{id: PaneId}/webview/{path: Rest}, body: RawBody, reply: binary, errors: { 429, 502, 503 } }
+    /// Delete a resource of the pane's page. Requires a live Ko-Client.
+    WebviewDelete { method: PROXY(DELETE), path: /panes/{id: PaneId}/webview/{path: Rest}, body: RawBody, reply: binary, errors: { 429, 502, 503 } }
     /// The messages that other panes and the user send to a pane, one text message each, in the
     /// order of the pane's queue. The receiver answers each with an ack or a refuse. Only the pane
     /// itself may open the stream, and a pane has one stream at most.

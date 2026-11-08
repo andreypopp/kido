@@ -18,7 +18,7 @@ pub const MAX_FRAME_BYTES: usize = MAX_FRAME as usize + 4;
 const MAX_DIMENSION: u16 = 4096;
 pub const MAX_KEY: u16 = 175;
 const HEADER: usize = 5;
-const INIT_VERSION: u16 = 3;
+const INIT_VERSION: u16 = 4;
 const MAX_STRINGS: u32 = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +62,8 @@ pub enum Kind {
     SearchCancel = 36,
     Matches = 37,
     SearchDone = 38,
+    Webview = 39,
+    WebviewSupported = 40,
 }
 
 impl Kind {
@@ -105,6 +107,8 @@ impl Kind {
             36 => Kind::SearchCancel,
             37 => Kind::Matches,
             38 => Kind::SearchDone,
+            39 => Kind::Webview,
+            40 => Kind::WebviewSupported,
             _ => return None,
         })
     }
@@ -251,6 +255,62 @@ pub enum ProgressState {
     Error,
     Indeterminate,
     Pause,
+}
+
+pub const WEBVIEW_PATH_MAX_BYTES: usize = 2048;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedWebviewPath(String);
+
+impl TryFrom<String> for OwnedWebviewPath {
+    type Error = String;
+    fn try_from(path: String) -> Result<Self, Self::Error> {
+        WebviewPath::new(&path)
+            .ok_or_else(|| format!("path must start with / and use at most {WEBVIEW_PATH_MAX_BYTES} printable ASCII bytes"))?;
+        Ok(Self(path))
+    }
+}
+
+impl From<WebviewPath<'_>> for OwnedWebviewPath {
+    fn from(path: WebviewPath<'_>) -> Self {
+        Self(path.as_str().to_owned())
+    }
+}
+
+impl From<OwnedWebviewPath> for String {
+    fn from(path: OwnedWebviewPath) -> Self {
+        path.0
+    }
+}
+
+impl OwnedWebviewPath {
+    pub fn borrowed(&self) -> WebviewPath<'_> {
+        WebviewPath(&self.0)
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebviewPath<'a>(&'a str);
+
+impl<'a> WebviewPath<'a> {
+    fn new(path: &'a str) -> Option<Self> {
+        (path.starts_with('/')
+            && path.len() <= WEBVIEW_PATH_MAX_BYTES
+            && path.bytes().all(|byte| (0x20..=0x7e).contains(&byte)))
+        .then_some(Self(path))
+    }
+    pub fn as_str(self) -> &'a str {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebviewReport<'a> {
+    Enter { path: WebviewPath<'a> },
+    Leave,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -700,6 +760,7 @@ impl TryFrom<u8> for MouseButton {
 
 #[derive(Debug, Clone)]
 pub struct Init<'a> {
+    pub webview_supported: bool,
     pub size: Size,
     pub limits: Limits,
     pub media: Cow<'a, [Medium]>,
@@ -711,6 +772,7 @@ pub struct Init<'a> {
 
 #[derive(Debug, Clone, Copy)]
 pub enum ToPane<'a> {
+    WebviewSupported(bool),
     Init(&'a Init<'a>),
     Tail(Pos),
     Resize(Size),
@@ -867,6 +929,7 @@ impl Body<'_> {
 
     fn init(&mut self, init: &Init<'_>) -> Result<(), Oversize> {
         self.u16(INIT_VERSION);
+        self.bool(init.webview_supported);
         self.size(init.size);
         let limits = init.limits;
         let (max_bytes, max_lines) = match limits.scrollback {
@@ -1003,6 +1066,13 @@ impl Body<'_> {
                 self.bool(on);
                 Kind::Alternate
             }
+            FromPane::Webview(report) => {
+                self.bool(matches!(report, WebviewReport::Enter { .. }));
+                if let WebviewReport::Enter { path } = report {
+                    self.string(path.as_str().as_bytes())?;
+                }
+                Kind::Webview
+            }
             FromPane::Bell => Kind::Bell,
             FromPane::Notify { title, body } => {
                 self.string(title)?;
@@ -1118,6 +1188,10 @@ impl Body<'_> {
                 self.string(text.as_bytes())?;
                 self.bool(check_safe);
                 Kind::Paste
+            }
+            ToPane::WebviewSupported(supported) => {
+                self.bool(supported);
+                Kind::WebviewSupported
             }
             ToPane::Focus(focused) => {
                 self.bool(focused);
@@ -1257,6 +1331,7 @@ impl fmt::Display for Malformed {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FromPane<'a> {
+    Webview(WebviewReport<'a>),
     Ready(i64),
     Head(Pos),
     Title(&'a [u8]),
@@ -1513,6 +1588,21 @@ pub fn decode(frame: &[u8]) -> Result<Option<FromPane<'_>>, Malformed> {
             fields.end()?;
             FromPane::Alternate(on)
         }
+        Kind::Webview => {
+            let mut fields = Fields(body);
+            let report = if fields.flag()? {
+                WebviewReport::Enter {
+                    path: WebviewPath::new(
+                        std::str::from_utf8(fields.bytes()?).map_err(|_| Malformed::Field)?,
+                    )
+                    .ok_or(Malformed::Field)?,
+                }
+            } else {
+                WebviewReport::Leave
+            };
+            fields.end()?;
+            FromPane::Webview(report)
+        }
         Kind::Bell => {
             Fields(body).end()?;
             FromPane::Bell
@@ -1616,7 +1706,8 @@ pub fn decode(frame: &[u8]) -> Result<Option<FromPane<'_>>, Malformed> {
             fields.end()?;
             FromPane::SearchDone(req)
         }
-        Kind::Init
+        Kind::WebviewSupported
+        | Kind::Init
         | Kind::Tail
         | Kind::Resize
         | Kind::Text
@@ -1636,6 +1727,7 @@ pub fn decode(frame: &[u8]) -> Result<Option<FromPane<'_>>, Malformed> {
 
 #[derive(Debug, Clone)]
 pub enum Request<'a> {
+    WebviewSupported(bool),
     Init(Init<'a>),
     Tail,
     Resize(Size),
@@ -1801,6 +1893,7 @@ impl<'a> Fields<'a> {
         if self.u16()? != INIT_VERSION {
             return Err(Malformed::Field);
         }
+        let webview_supported = self.flag()?;
         let size = self.size()?;
         let (bytes, lines) = (self.limit()?, self.limit()?);
         let scrollback = if bytes == Some(0) || lines == Some(0) {
@@ -1834,6 +1927,7 @@ impl<'a> Fields<'a> {
         .map(|(_, medium)| medium)
         .collect();
         Ok(Init {
+            webview_supported,
             size,
             limits: Limits {
                 scrollback,
@@ -1918,6 +2012,7 @@ pub fn decode_request(frame: &[u8]) -> Result<Request<'_>, Malformed> {
                 check_safe,
             }
         }
+        Kind::WebviewSupported => Request::WebviewSupported(fields.flag()?),
         Kind::Focus => Request::Focus(fields.flag()?),
         Kind::Screen => {
             let req = Req(fields.u32()?);
@@ -1977,6 +2072,7 @@ pub fn decode_request(frame: &[u8]) -> Result<Request<'_>, Malformed> {
         | Kind::Alternate
         | Kind::Bell
         | Kind::Notify
+        | Kind::Webview
         | Kind::Progress
         | Kind::ImageReply
         | Kind::ImageGone
@@ -2131,6 +2227,7 @@ mod tests {
     #[test]
     fn the_init_frame_has_its_wire_layout() {
         let init = Init {
+            webview_supported: false,
             size: Size::DEFAULT,
             limits: Limits {
                 scrollback: Scrollback::Disabled,
@@ -2145,7 +2242,7 @@ mod tests {
             id: "pane_1".into(),
         };
         let body = encoded(&ToPane::Init(&init))[5..].to_vec();
-        let mut expected = vec![3, 0, 80, 0, 24, 0, 8, 0, 16, 0];
+        let mut expected = vec![4, 0, 0, 80, 0, 24, 0, 8, 0, 16, 0];
         expected.extend([1, 0, 0, 0, 0, 0, 0, 0, 0]);
         expected.extend([0, 0, 0, 0, 0, 0, 0, 0, 0]);
         expected.extend(3u64.to_le_bytes());
@@ -2168,6 +2265,7 @@ mod tests {
     #[test]
     fn the_pane_decodes_what_the_server_encodes() {
         let init = Init {
+            webview_supported: true,
             size: Size::DEFAULT,
             limits: Limits {
                 scrollback: Scrollback::Bounded {
@@ -2190,6 +2288,7 @@ mod tests {
             };
             assert_eq!(
                 (
+                    got.webview_supported,
                     got.size,
                     got.limits,
                     &*got.media,
@@ -2199,6 +2298,7 @@ mod tests {
                     &*got.id
                 ),
                 (
+                    init.webview_supported,
                     init.size,
                     init.limits,
                     &*init.media,
@@ -2300,6 +2400,9 @@ mod tests {
         ));
         let text = encoded(&ToPane::Text(b"\x00x"));
         assert!(matches!(decode_request(&text), Ok(Request::Text(b"\x00x"))));
+        decoded(&ToPane::WebviewSupported(true), |request| {
+            assert!(matches!(request, Request::WebviewSupported(true)));
+        });
         decoded(&ToPane::Focus(true), |request| {
             assert!(matches!(request, Request::Focus(true)));
         });
@@ -2374,6 +2477,7 @@ mod tests {
         );
         let init = |version: u16, argv: &[&[u8]], cwd: &[u8]| {
             let mut body = version.to_le_bytes().to_vec();
+            body.push(0);
             body.extend([80, 0, 24, 0, 8, 0, 16, 0]);
             body.extend([0; 18]);
             body.extend([0; 8]);
@@ -2391,11 +2495,11 @@ mod tests {
             body.extend([0; 4]);
             frame(Kind::Init, &body)
         };
-        assert!(decode_request(&init(3, &[b"/bin/sh"], b"/")).is_ok());
-        refused(init(2, &[b"/bin/sh"], b"/"), "version");
-        refused(init(3, &[], b"/"), "no program");
-        refused(init(3, &[b"sh"], b"/"), "relative program");
-        refused(init(3, &[b"/bin/sh"], b"/\0"), "NUL in a string");
+        assert!(decode_request(&init(4, &[b"/bin/sh"], b"/")).is_ok());
+        refused(init(3, &[b"/bin/sh"], b"/"), "version");
+        refused(init(4, &[], b"/"), "no program");
+        refused(init(4, &[b"sh"], b"/"), "relative program");
+        refused(init(4, &[b"/bin/sh"], b"/\0"), "NUL in a string");
     }
 
     #[test]
@@ -2459,6 +2563,10 @@ mod tests {
                 name: b"sleep",
             }),
             FromPane::Alternate(true),
+            FromPane::Webview(WebviewReport::Enter {
+                path: WebviewPath::new("/page?q=1").unwrap(),
+            }),
+            FromPane::Webview(WebviewReport::Leave),
             FromPane::Bell,
             FromPane::Notify {
                 title: b"",

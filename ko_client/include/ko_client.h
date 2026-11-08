@@ -342,7 +342,7 @@ typedef int (*ko_restore_fn)(void *user, const ko_snapshot *snapshot);
  * What the client tells the server in its hello. `sizes_windows` says that its
  * window takes part in sizing. The core sends the latest viewport and focus in
  * each later hello, with no window claims. Report displayed windows after Welcome.
- * This flag stays fixed. `name` is NUL-terminated and tells the server's log which client
+ * This flag stays fixed. `webview` says that the client can show webviews. `name` is NUL-terminated and tells the server's log which client
  * this is; NULL means "app".
  */
 typedef struct ko_hello {
@@ -350,6 +350,7 @@ typedef struct ko_hello {
     uint16_t rows;
     bool focused;
     bool sizes_windows;
+    bool webview;
     const char *name;
 } ko_hello;
 
@@ -620,6 +621,91 @@ typedef struct ko_image {
     char shm_name[32];
     ko_buffer body;
 } ko_image;
+
+typedef struct ko_webview_fetch ko_webview_fetch;
+typedef struct ko_webview_ws ko_webview_ws;
+
+typedef struct ko_webview_header {
+    const char *name;
+    const char *value;
+} ko_webview_header;
+
+typedef void (*ko_webview_response_fn)(void *user, uint16_t status,
+                                   const ko_webview_header *headers, size_t count);
+typedef void (*ko_webview_body_fn)(void *user, const uint8_t *data, size_t len);
+typedef void (*ko_webview_end_fn)(void *user, ko_code result, const char *message);
+typedef void (*ko_webview_message_fn)(void *user, const uint8_t *data, size_t len, bool binary);
+typedef void (*ko_webview_close_fn)(void *user, ko_code result, uint16_t code, const char *reason);
+
+typedef struct ko_webview_fetch_callbacks {
+    ko_webview_response_fn response;
+    ko_webview_body_fn body;
+    ko_webview_end_fn end;
+    void *user;
+} ko_webview_fetch_callbacks;
+
+typedef struct ko_webview_ws_callbacks {
+    ko_webview_response_fn open;
+    ko_webview_message_fn message;
+    ko_webview_close_fn close;
+    void *user;
+} ko_webview_ws_callbacks;
+
+/*
+ * Starts one webview proxy request on a new connection and returns at once. The
+ * I/O thread owns it and sends the client's Ko-Client header. The path starts
+ * with / and includes its query. The method is GET, POST, PUT or DELETE; the
+ * body is at most 1 MiB. Header names and values are UTF-8. The core removes
+ * hop-by-hop, identity and framing headers and supplies its own.
+ *
+ * All three callbacks are required. They run in order on the serial queue of
+ * ko_client_connect: one response, body chunks as they arrive, then one end.
+ * An HTTP error status is a response, not a transport error: end reports KO_OK
+ * when its body is complete. A transport error ends with a non-KO_OK result
+ * and its message. Every callback buffer and string lives only for the call.
+ * The core copies inputs before return and stops reading when callbacks wait.
+ * No request is retried after a reconnect.
+ *
+ * The caller owns the handle until cancel, including after end. Cancel drops
+ * the connection and joins its I/O request. It drops queued callbacks and waits
+ * for a callback on another thread: none starts after it returns. It may run
+ * inside a callback of the same client. No other call on that handle may run
+ * during cancel. Client close cancels every request; its handles then only
+ * need cancel. A client close suppresses queued callbacks, as for views.
+ * On failure, out is NULL and no callback runs.
+ */
+ko_code ko_client_webview_fetch(const ko_client *client, const char *pane,
+                             const char *method, const char *path,
+                             const ko_webview_header *headers, size_t count,
+                             const uint8_t *body, size_t len,
+                             const ko_webview_fetch_callbacks *callbacks,
+                             ko_webview_fetch **out);
+ko_code ko_webview_fetch_cancel(ko_webview_fetch *fetch);
+
+/*
+ * Opens a WebSocket on the webview proxy route. It has the same ownership,
+ * copying, queue, cancellation and reconnect rules as a fetch. All callbacks
+ * are required. Open runs after a valid 101 reply. Messages retain their text
+ * or binary type. A failed upgrade calls close without open. Close reports
+ * KO_OK and the peer's code and reason for a clean close, or a non-KO_OK result
+ * and code 1011 for a transport failure. A message over 64 KiB ends with 1009.
+ * Extensions are not negotiated.
+ *
+ * Send requires an open socket and at most 64 KiB; text is UTF-8. KO_ERR_REFUSED
+ * means that the send queue is full. buffered_amount counts application bytes
+ * queued for writing, not WebSocket framing. Close starts the close handshake
+ * but does not consume the handle; cancel is still required after close's
+ * callback. Close codes follow RFC 6455 and reasons use at most 123 UTF-8 bytes.
+ * These calls return at once, except cancel, which joins the I/O request.
+ */
+ko_code ko_client_webview_ws_open(const ko_client *client, const char *pane,
+                               const char *path, const ko_webview_header *headers,
+                               size_t count, const ko_webview_ws_callbacks *callbacks,
+                               ko_webview_ws **out);
+ko_code ko_webview_ws_send(const ko_webview_ws *socket, const uint8_t *data, size_t len, bool binary);
+ko_code ko_webview_ws_close(const ko_webview_ws *socket, uint16_t code, const char *reason);
+size_t ko_webview_ws_buffered_amount(const ko_webview_ws *socket);
+ko_code ko_webview_ws_cancel(ko_webview_ws *socket);
 
 /*
  * Fetches one frame on a new connection, parallel with any other call. `accept_shm` asks for a

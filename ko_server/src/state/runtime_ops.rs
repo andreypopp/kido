@@ -179,6 +179,7 @@ impl State {
             }
         };
         Ok(Birth {
+            webview_supported: self.webview_supported(),
             vars,
             parent: request.parent,
             close: request.close,
@@ -576,6 +577,7 @@ impl State {
             | Route::DeleteVar { .. }
             | Route::DeleteVars { .. }
             | Route::Messages { .. }
+            | Route::WebviewServe { .. }
             | Route::PostMessage { .. }
             | Route::PromptResolve { .. }
             | Route::SendPrompt { .. } => Ok(()),

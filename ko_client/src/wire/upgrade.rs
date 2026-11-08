@@ -12,6 +12,7 @@ use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token, Wake};
 use ko_sys::fd::Queue;
 
 use crate::wire::Link;
+use ko_server::protocol;
 
 struct Buffered<'a> {
     bytes: &'a [u8],
@@ -102,6 +103,7 @@ impl Connecting {
                         &self.key,
                         self.cancel,
                         Some(ready.token),
+                        protocol::Upgrade::Control,
                     )?;
                     return Ok(match linked {
                         Ok(link) => UpgradeStep::Open(Box::new(link)),

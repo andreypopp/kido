@@ -344,6 +344,7 @@ pub(crate) fn snapshot(lines: &str) -> Result<(), String> {
         };
         let hello = ClientRequest::Hello(Hello {
             name: "bench".to_owned(),
+            webview: false,
             selection: protocol::Selection {
                 pane: Some(pane),
                 ..protocol::Selection::default()

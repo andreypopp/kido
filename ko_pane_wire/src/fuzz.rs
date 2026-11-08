@@ -6,6 +6,26 @@
     clippy::arithmetic_side_effects
 )]
 
+pub fn webview(data: &[u8]) {
+    if data.len() > crate::webview::MAX_BYTES {
+        return;
+    }
+    if let Some(crate::webview::Command::Enter(path)) = crate::webview::parse(data) {
+        let text = path.as_str();
+        assert!(text.starts_with('/'));
+        assert!(text.len() <= crate::frame::WEBVIEW_PATH_MAX_BYTES);
+        assert!(
+            text.bytes()
+                .all(|byte| byte.is_ascii() && !byte.is_ascii_control())
+        );
+        let encoded = format!("7502;a=enter:p={}", crate::base64::encode(text.as_bytes()));
+        assert_eq!(
+            crate::webview::parse(encoded.as_bytes()),
+            Some(crate::webview::Command::Enter(path))
+        );
+    }
+}
+
 use crate::ring::{Commit, HEADER, Offset, Pos, Reach, Reader, RecordKind, Writer};
 
 struct Bytes<'a>(&'a [u8]);
@@ -328,6 +348,18 @@ pub fn ring(data: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn webview_corpus() {
+        for data in [
+            b"7502;a=enter".as_slice(),
+            b"7502;a=leave",
+            b"7502;?",
+            b"7502;a=enter:p=Lz9hPWI=",
+        ] {
+            super::webview(data);
+        }
+    }
+
     use super::*;
     use std::path::Path;
 

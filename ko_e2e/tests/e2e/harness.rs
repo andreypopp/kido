@@ -726,7 +726,7 @@ fn dechunk(mut data: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-type Headers = Vec<(String, String)>;
+pub(crate) type Headers = Vec<(String, String)>;
 
 #[derive(Debug)]
 pub(crate) struct Server {
@@ -1134,6 +1134,7 @@ impl Server {
         let mut body = json!({
             "type": "hello",
             "name": "test",
+            "webview": false,
             "focused": hello.focused,
             "sizing": {"type": "windows", "viewport": hello.size, "windows": hello.windows.iter().map(|window| json!({"window": window, "size": hello.size})).collect::<Vec<_>>() },
         });

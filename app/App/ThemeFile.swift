@@ -24,7 +24,7 @@ struct ThemeFile: Equatable {
     let contents: Data?
     let problem: Problem?
 
-    private static func lines(_ config: ghostty_config_t) -> Set<String> {
+    static func lines(_ config: ghostty_config_t) -> Set<String> {
         let value = ghostty_config_serialize(config)
         defer { ghostty_string_free(value) }
         return Set(String(decoding: UnsafeRawBufferPointer(start: value.ptr, count: Int(value.len)), as: UTF8.self).split(separator: "\n").map(String.init))

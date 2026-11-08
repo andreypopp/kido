@@ -36,6 +36,12 @@
           "dark": "kido-dark",
           "light": "kido-light"
         },
+        "webview": {
+          "enabled": true,
+          "inspector": false,
+          "keep_hidden": 4,
+          "links": "deny"
+        },
         "window": {
           "sidebar_shade": 5.0,
           "unfocused_shift": 3.0
@@ -141,6 +147,16 @@
           "default": {
             "dark": "kido-dark",
             "light": "kido-light"
+          }
+        },
+        "webview": {
+          "description": "Webview pane rendering and its limits.",
+          "$ref": "#/$defs/WebviewSettings",
+          "default": {
+            "enabled": true,
+            "inspector": false,
+            "keep_hidden": 4,
+            "links": "deny"
           }
         },
         "window": {
@@ -398,6 +414,12 @@
       "type": "number",
       "maximum": 72.0,
       "minimum": 4.0
+    },
+    "HiddenPages": {
+      "description": "A number of at least 0 and at most 16.",
+      "type": "integer",
+      "maximum": 16,
+      "minimum": 0
     },
     "Idle": {
       "description": "Seconds, or the word none.",
@@ -995,6 +1017,46 @@
       "description": "an absolute path without a colon",
       "type": "string",
       "pattern": "^/[^:\\u0000]*$"
+    },
+    "WebviewLinks": {
+      "oneOf": [
+        {
+          "description": "Do not open external links.",
+          "type": "string",
+          "const": "deny"
+        },
+        {
+          "description": "Open HTTP and HTTPS links in the default browser.",
+          "type": "string",
+          "const": "open"
+        }
+      ]
+    },
+    "WebviewSettings": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Render HTML pages over the pane's terminal content.",
+          "type": "boolean",
+          "default": true
+        },
+        "inspector": {
+          "description": "Allow WebKit's inspector for HTML pages.",
+          "type": "boolean",
+          "default": false
+        },
+        "keep_hidden": {
+          "description": "The number of hidden pages that stay live in each native window.",
+          "$ref": "#/$defs/HiddenPages",
+          "default": 4
+        },
+        "links": {
+          "description": "Whether a link may open in the default browser.",
+          "$ref": "#/$defs/WebviewLinks",
+          "default": "deny"
+        }
+      },
+      "additionalProperties": false
     },
     "WindowSettings": {
       "type": "object",

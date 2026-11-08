@@ -15,6 +15,8 @@ pub(crate) enum Role {
     View(View),
     Search(Searching),
     Messages(PaneId),
+    WebviewServe(PaneId),
+    WebviewProxy { pane: PaneId, req: u64 },
     Exec(Session),
     Visit(Visit),
 }
@@ -27,7 +29,9 @@ impl Role {
             | Role::View(_)
             | Role::Search(_)
             | Role::Messages(_)
-            | Role::Visit(_) => true,
+            | Role::Visit(_)
+            | Role::WebviewServe(_)
+            | Role::WebviewProxy { .. } => true,
         }
     }
 }

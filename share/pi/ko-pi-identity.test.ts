@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { mkdirSync, writeFileSync, copyFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, copyFileSync, cpSync, mkdtempSync, rmSync, existsSync } from "node:fs";
 
 import { join, dirname } from "node:path";
 
@@ -47,8 +47,10 @@ test("a second copy of the extension at another path registers nothing, and a re
   const here = dirname(fileURLToPath(import.meta.url));
   const dir = mkdtempSync(join(here, ".copy-"));
   try {
-    copyFileSync(join(here, "ko-pi.ts"), join(dir, "ko-pi.ts"));
-    const copy = await import(pathToFileURL(join(dir, "ko-pi.ts")).href);
+    mkdirSync(join(dir, "pi"));
+    copyFileSync(join(here, "ko-pi.ts"), join(dir, "pi", "ko-pi.ts"));
+    cpSync(join(here, "..", "webview"), join(dir, "webview"), { recursive: true });
+    const copy = await import(pathToFileURL(join(dir, "pi", "ko-pi.ts")).href);
     const registered = createFakePi();
     copy.default(registered.pi);
     assert.deepEqual([...registered.tools.keys()], [], "the copy registered tools");

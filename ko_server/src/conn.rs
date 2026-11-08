@@ -34,6 +34,7 @@ struct Chunk {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Fit {
+    Reply,
     Cap,
     Spill,
 }
@@ -123,12 +124,19 @@ impl Queue {
         }
     }
 
+    pub(crate) fn push_reply(&mut self, bytes: Vec<u8>) {
+        if !self.sealed() && !bytes.is_empty() {
+            self.bytes = self.bytes.saturating_add(bytes.len());
+            self.chunks.push_back(Chunk { bytes, tail: false });
+        }
+    }
+
     pub(crate) fn push(&mut self, parts: &[&[u8]], fit: Fit) -> bool {
         let len = parts.iter().map(|part| part.len()).sum();
         if self.sealed() || len == 0 {
             return !self.sealed();
         }
-        if self.fits(len) {
+        if self.fits(len) || fit == Fit::Reply {
             self.bytes = self.bytes.saturating_add(len);
             self.chunks.push_back(Chunk {
                 bytes: parts.concat(),
@@ -478,6 +486,32 @@ impl Output {
         }
     }
 
+    pub(crate) fn drain(&mut self) {
+        self.queue.policy = Policy::Sealed;
+        self.flush();
+    }
+
+    pub(crate) fn send_chunk(&mut self, data: &[u8], more: bool) {
+        if self.is_open() {
+            if !data.is_empty() {
+                let head = http::chunk_header(data.len());
+                self.queue
+                    .push(&[head.as_bytes(), data, b"\r\n"], Fit::Reply);
+            }
+            if !more {
+                self.queue.push(&[http::LAST_CHUNK], Fit::Reply);
+            }
+            self.flush();
+        }
+    }
+
+    pub(crate) fn send_reply(&mut self, bytes: Vec<u8>) {
+        if self.is_open() {
+            self.queue.push_reply(bytes);
+            self.flush();
+        }
+    }
+
     pub(crate) fn send(&mut self, bytes: Vec<u8>) {
         if self.is_open() {
             self.queue.push_vec(bytes);
@@ -790,6 +824,10 @@ pub(crate) enum Phase {
         length: usize,
     },
     Handling,
+    Webview {
+        pane: crate::ids::PaneId,
+        req: u64,
+    },
     Streaming,
     Ws(Box<Link>),
     Closing,
@@ -808,6 +846,17 @@ pub(crate) struct Conn {
     pub(crate) phase: Phase,
     pub(crate) origin: Origin,
     pub(crate) caller: Option<PaneId>,
+    pub(crate) reads: Reads,
+}
+
+fn request_policy(head: &http::Head) -> http::Policy {
+    if crate::api::Route::of_request(&head.method, &head.target)
+        .is_ok_and(|route| matches!(route.kind(), crate::route::Kind::Proxy { .. }))
+    {
+        http::Policy::Webview
+    } else {
+        http::Policy::Control
+    }
 }
 
 impl Conn {
@@ -826,6 +875,7 @@ impl Conn {
             phase: Phase::Head,
             origin,
             caller: None,
+            reads: Reads::new(),
         }
     }
 
@@ -855,7 +905,7 @@ impl Conn {
                 !self.eof && !self.out.backed_up()
             }
             Phase::Ws(link) => !self.eof && link.role.reads(),
-            Phase::Handling => !self.eof,
+            Phase::Handling | Phase::Webview { .. } => !self.eof,
             Phase::Streaming | Phase::Closing => false,
         };
         match self.out.life() {
@@ -875,7 +925,7 @@ impl Conn {
             )
     }
 
-    pub(crate) fn read(&mut self, poll: &mut Poll, reads: &mut Reads) -> bool {
+    pub(crate) fn read(&mut self, poll: &mut Poll) -> bool {
         if self.start > 0 {
             self.input.copy_within(self.start..self.end, 0);
             self.end = self.end.saturating_sub(self.start);
@@ -884,7 +934,7 @@ impl Conn {
         let Some(window) = self.input.get_mut(self.end..) else {
             return false;
         };
-        match poll.read(self.token, self.out.stream.as_fd(), window, reads) {
+        match poll.read(self.token, self.out.stream.as_fd(), window, &mut self.reads) {
             Ok(Some(Read::Data(count))) => {
                 self.end = self.end.saturating_add(count);
                 true
@@ -906,11 +956,12 @@ impl Conn {
         self.out.send(bytes);
     }
 
-    fn refuse(&mut self, status: Status) {
+    fn refuse(&mut self, status: Status, policy: http::Policy) {
         self.close_with(http::response(
             status,
             &[("connection", "close"), ("content-length", "0")],
             b"",
+            policy,
         ));
     }
 
@@ -933,12 +984,17 @@ impl Conn {
                     }
                     Parsed::BadLine => self.out.close(),
                     Parsed::Invalid => self.close_with(http::BAD_REQUEST.to_vec()),
-                    Parsed::TooLarge => self.refuse(Status::HeadTooLarge),
+                    Parsed::TooLarge => self.refuse(Status::HeadTooLarge, http::Policy::Control),
                     Parsed::Complete { head, size } => {
                         self.start = self.start.saturating_add(size);
                         self.scanned = 0;
                         match head.framing() {
-                            Framing::Chunked => self.refuse(Status::LengthRequired),
+                            Framing::Chunked => {
+                                self.refuse(Status::LengthRequired, request_policy(&head))
+                            }
+                            Framing::Invalid if request_policy(&head) == http::Policy::Webview => {
+                                self.refuse(Status::BadRequest, http::Policy::Webview)
+                            }
                             Framing::Invalid => self.close_with(http::BAD_REQUEST.to_vec()),
                             Framing::Length(0) => {
                                 return Some(Request {
@@ -1003,7 +1059,11 @@ impl Conn {
                         return None;
                     }
                 }
-                Phase::Handling | Phase::Streaming | Phase::Ws(_) | Phase::Closing => return None,
+                Phase::Handling
+                | Phase::Webview { .. }
+                | Phase::Streaming
+                | Phase::Ws(_)
+                | Phase::Closing => return None,
             }
         }
         None
@@ -1025,7 +1085,7 @@ impl Conn {
         if matches!(self.phase, Phase::Closing) && !self.out.waiting() {
             self.out.close();
         }
-        if matches!(self.phase, Phase::Handling) && self.eof {
+        if matches!(self.phase, Phase::Handling | Phase::Webview { .. }) && self.eof {
             self.out.close();
         }
     }
@@ -1044,6 +1104,7 @@ pub(crate) mod tests {
             Status::Ok,
             &[("content-length", "2")],
             b"ok",
+            http::Policy::Control,
         ));
     }
 
@@ -1056,8 +1117,8 @@ pub(crate) mod tests {
                 conn.out.flush();
             }
             if ready.read {
-                let mut reads = Reads::new();
-                while conn.reading_http() && conn.read(poll, &mut reads) {
+                conn.reads = Reads::new();
+                while conn.reading_http() && conn.read(poll) {
                     while let Some(request) = conn.next_request() {
                         handler(conn, request);
                     }
@@ -1282,6 +1343,7 @@ pub(crate) mod tests {
                 Status::Ok,
                 &[("content-length", &length)],
                 &vec![b'x'; size],
+                http::Policy::Control,
             ));
         };
         let data = format!(
@@ -1312,6 +1374,7 @@ pub(crate) mod tests {
             Status::HeadTooLarge,
             &[("connection", "close"), ("content-length", "0")],
             b"",
+            http::Policy::Control,
         );
         let xs = reply.iter().filter(|&&byte| byte == b'x').count();
         assert_eq!(

@@ -166,7 +166,7 @@ final class WindowView: NSView {
         if let placement { validateFrames(placement) }
         else { freeFrames = [:] }
         // Hiding the focused pane gives the focus to the next key view, so read it before the relayout.
-        let paneFocused = (window?.firstResponder as? PaneView).map { focused in panes.contains { $0 === focused } } == true
+        let paneFocused = PaneView.owner(window?.firstResponder).map { focused in panes.contains { $0 === focused } } == true
         let previous = active
         active = visible.root.panes.first { $0.active }.map { shownPanes[$0.id]?.shown.position.pane ?? $0.id } ?? active
         guard hot else { return }
@@ -209,9 +209,9 @@ final class WindowView: NSView {
     func focusActive(force: Bool) {
         guard !isHidden, let view = activePane, let window else { return }
         let focused = window.firstResponder
-        guard force || focused === window || focused == nil || (focused as? PaneView)?.isDescendant(of: session ?? self) == true
+        guard force || focused === window || focused == nil || PaneView.owner(focused)?.isDescendant(of: session ?? self) == true
         else { return }
-        window.makeFirstResponder(view)
+        window.makeFirstResponder(view.inputResponder)
     }
 
     func close() {
@@ -296,6 +296,7 @@ final class WindowView: NSView {
         slots = nextSlots
         updateBreadcrumbs()
         updateFocusTreatment()
+        session?.updateWebview()
         invalidateCursorRects()
         needsReconcile = false
         sizeClient()

@@ -205,11 +205,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         window.colorSpace = .displayP3
         session = SessionView(runtime: runtime)
         runtime.onConfigReload = { [weak self] font in self?.session.reloadConfig(font: font) }
+        runtime.onConfigChange = { [weak self] in self?.session?.updateWebview() }
         session.frame = NSRect(x: 0, y: 0, width: 700, height: height)
         window.contentView = session
         _ = try await KoServer.launch(dir: directory.path)
         try await koPut(directory.path, #"[{"name":"visual","windows":\#(windows ?? #"[{"name":"zsh","tree":\#(koPane(pane))}]"#)}]"#)
-        let client = try KoClient(socket: directory.path + "/socket", hello: KoHello(name: "visual", viewport: KoSize(cols: 80, rows: 24, cell: nil))) { [weak self] event in
+        let client = try KoClient(socket: directory.path + "/socket", hello: KoHello(name: "visual", viewport: KoSize(cols: 80, rows: 24, cell: nil), webview: runtime.values.webview.enabled)) { [weak self] event in
             self?.handle(event)
         }
         self.client = client
@@ -218,6 +219,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         editor.onSettled = { [weak self] in self?.session?.editsSettled() }
         self.editor = editor
         session.client = client
+        session.webview = { [weak self] in self?.koModel?.pane($0)?.webview }
         session.edit = { edit, key in editor.submit(edit, key: key) }
         session.editing = { editor.holding }
         session.selectPane = { pane in try? client.select(KO_SELECT_PANE, pane) }

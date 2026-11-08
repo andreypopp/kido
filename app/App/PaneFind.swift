@@ -10,7 +10,7 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
     private let nextButton = IconButton("chevron.down", "Next match", size: 15)
     private let done = IconButton("xmark", "Done", size: 15)
     // Ghostty searches the pane's mirror, which holds the whole history.
-    private enum Status: Equatable { case none, matches(Int), at(Int, of: Int) }
+    private enum Status: Equatable { case none, matches(Int), at(Int, of: Int), found(Bool) }
     private var status = Status.none { didSet { showStatus() } }
     private var selected: Int?
     private var start: (x: Int, y: Int)?
@@ -63,6 +63,7 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
         let compact = bounds.width < 300
         let (text, navigable) = switch status {
         case .none: ("", false)
+        case .found(let found): (found ? "Match" : "No matches", found)
         case .matches(0): (compact ? "0" : "No matches", false)
         case .matches(let total): (compact ? "\(total)" : "\(total) matches", true)
         case .at(let index, let total): (compact ? "\(index)/\(total)" : "\(index) of \(total)", true)
@@ -97,13 +98,24 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
 
     func search(navigate: Bool = true) {
         autoNavigate = navigate
-        restartGhostty()
+        if let webview = pane?.webviewView {
+            let query = field.stringValue
+            guard !query.isEmpty else { status = .none; return }
+            webview.find(query) { [weak self] found in
+                guard let self, field.stringValue == query else { return }
+                status = .found(found)
+            }
+        } else { restartGhostty() }
     }
 
     @objc func next() { move(1) }
     @objc func previous() { move(-1) }
 
     private func move(_ delta: Int) {
+        if let webview = pane?.webviewView {
+            webview.find(field.stringValue, backwards: delta < 0) { [weak self] in self?.status = .found($0) }
+            return
+        }
         guard total > 0 else { return }
         if total == 1, let start, pane?.copyMode != nil { pane?.copyMove("", to: start); return }
         pane?.resetScroll()
@@ -159,7 +171,7 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
     @objc func close() {
         action("end_search")
         if pane?.copyMode != nil, !field.stringValue.isEmpty { pane?.copyFind.query = field.stringValue }
-        if (window?.firstResponder as? NSView)?.isDescendant(of: self) == true { window?.makeFirstResponder(pane) }
+        if (window?.firstResponder as? NSView)?.isDescendant(of: self) == true { window?.makeFirstResponder(pane?.inputResponder) }
         let pane = pane
         removeFromSuperview()
         pane?.find = nil

@@ -37,4 +37,5 @@ mod state;
 mod telemetry;
 pub mod vars;
 mod view;
+mod webview;
 pub mod ws;

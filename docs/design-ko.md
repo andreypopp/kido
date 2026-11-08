@@ -143,16 +143,22 @@ waiters; `state/pane_ops.rs` holds `POST /panes`, the pane stop with
 its escalation and what a pane identity may do (`router.rs` checks
 the identity itself), and `state/sweep.rs` the sweep. `view.rs` and `delivery.rs`
 are the verified stream path
-(AGENTS.md, "Verus"); `conn.rs`, `ws.rs`, `http.rs` and `deflate.rs`
-the connection, the framing and the slice codec; `api.rs`, `route.rs`,
+(AGENTS.md, "Verus"); `webview.rs` holds a pane's webview record
+(its page, its serve stream and its requests in flight) and
+`state/webview.rs` the proxy and the serve stream (protocol.md,
+section 16), with the wire types in `protocol/webview.rs`; `conn.rs`,
+`ws.rs`, `http.rs` (with `http/response.rs`, the incremental response
+reader that `ko_client`'s upstream also uses, for `ko webview serve`
+and the C ABI) and
+`deflate.rs` the connection, the framing and the slice codec; `api.rs`, `route.rs`,
 `router.rs`, `protocol.rs` and `schema.rs` the routes, the wire types
 and the OpenAPI document. The status model is `telemetry.rs`,
 `program_status.rs`, `pane_kind.rs`, `pane_status.rs` and `model.rs`
 ([design-program-status.md](design-program-status.md)); `vars.rs`,
 `inbox.rs`, `clipboard.rs`, `shm.rs` and
 `agent.rs` own the variables, a pane's
-message queue (its routes in `state/messages.rs`), the clipboard answerer, the
-shared-memory leak record and the `agent.sock` link; `config.rs` the
+message queue (its routes in `state/messages.rs`), the clipboard
+answerer, the shared-memory leak record and the `agent.sock` link; `config.rs` the
 state directory, the options and the knobs. `runtime/` holds the
 runtimes' registry, links and exec helpers over the configuration of
 `ko_config`, with
@@ -564,7 +570,10 @@ each visible cell by binary search.
 The status line has tmux's default shape and colours: the session and
 its windows by position on the left, `*` on the shown window and `-`
 on the last one, and on the right the pending prefix, a prompt (a
-rename or a kill confirmation) or the reconnect notice. Windows are
+rename or a kill confirmation), the reconnect notice or a mode. A
+pane whose row has a webview page (protocol.md, section 16) shows `[webview]`
+while it is active and no other word has the place; the client still
+draws the pane's terminal. Windows are
 numbered from 0, tmux's `base-index`, so the label and the key `C-a 0`
 to `9` agree; the sidebar numbers panes from 1. The status line is
 always on and has no key to hide it: it carries the prefix indicator
@@ -955,8 +964,9 @@ that only tests and tuning need are environment variables (design.md,
 "Knobs").
 
 **`app:`.** Kido.app's terminal settings: the theme pair, the font,
-the keyboard, the mouse, the clipboard, the window shades
-and `keys`. This is a closed whitelist that the app maps to the
+the keyboard, the mouse, the clipboard, the window shades, `webview`
+and `keys`. `webview` is the app's own (design-app.md, "Webview panes") and
+reaches no Ghostty key. The rest is a closed whitelist that the app maps to the
 Ghostty configuration that it generates (design-app.md, "Panes"): each
 key has a type, a default, a range and one Ghostty key, and no user file
 reaches Ghostty. A Ghostty option joins the whitelist by a decision, one

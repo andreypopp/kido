@@ -132,6 +132,8 @@ export interface Fixture {
   streamOpens(path: string): number;
   feed(message: FeedMessage): void;
   feedRaw(message: FeedMessage): void;
+  serve(message: components["schemas"]["ServeOut"]): void;
+  webviewActions(): string[];
   acks(): Array<{ type: string; id: string }>;
   forgetAcks(): void;
   dropStream(): void;
@@ -224,6 +226,8 @@ export function makeFixture(): Fixture {
   process.env.KO_FAKE_CLIENT_LAYOUTS = file("client-layouts.jsonl");
   process.env.KO_FAKE_FEED = feedFile;
   process.env.KO_FAKE_ACKS = acksFile;
+  process.env.KO_FAKE_SERVE = file("serve.jsonl");
+  writeFileSync(file("serve.jsonl"), JSON.stringify({ type: "supported", supported: false }) + "\n");
   process.env.KO_FAKE_STREAM_DROP = dropFile;
   process.env.KO_FAKE_SEND_SCRIPT = sendScript;
   process.env.KO_FAKE_SENT = file("sent.json");
@@ -237,6 +241,8 @@ export function makeFixture(): Fixture {
   process.env.KO_JOB_KILL_MS = "50";
   process.env.KO_STREAM_INTERVAL_MS = "5";
   globalThis.__koPiExtensionReceiver = undefined;
+  globalThis.__koPiExtensionWebview = undefined;
+  globalThis.__koPiExtensionWebviewWish = undefined;
   globalThis.__koPiExtensionReceived = undefined;
 
   let seq = 0;
@@ -290,6 +296,8 @@ export function makeFixture(): Fixture {
     feedRaw(message) {
       feed(message, true);
     },
+    serve(message) { appendFileSync(file("serve.jsonl"), JSON.stringify(message) + "\n"); },
+    webviewActions() { return jsonLines(file("ko.jsonl")).filter((args) => args[0] === "webview" && args[1] !== "serve").map((args) => args[1]); },
     acks() {
       return jsonLines(acksFile);
     },
@@ -316,6 +324,11 @@ export function makeFixture(): Fixture {
     },
     async restore() {
       for (const shutdown of sessions.reverse()) await shutdown();
+      if (globalThis.__koPiExtensionWebview) {
+        await globalThis.__koPiExtensionWebview.wv.close();
+        await new Promise<void>(resolve => globalThis.__koPiExtensionWebview!.server.close(() => resolve()));
+      }
+      globalThis.__koPiExtensionWebview = undefined;
       globalThis.__koPiExtensionReceiver?.child.kill();
       globalThis.__koPiExtensionReceiver = undefined;
       await pollUntil(() => work.size === 0, 15000, "all fake commands to close");
@@ -451,6 +464,8 @@ function fakeCtx(
 ) {
   return {
     hasUI: true,
+    mode: "print",
+    modelRegistry: { hasConfiguredAuth: () => true, find: () => undefined },
     sessionManager: {
       getSessionId: () => sessionId,
       getSessionName: () => undefined,
@@ -460,7 +475,6 @@ function fakeCtx(
     },
     cwd: process.cwd(),
     model: { provider: "acme", id: "caller" },
-    modelRegistry: { find: () => undefined },
     isProjectTrusted: () => false,
     isIdle: idle,
     hasPendingMessages: () => false,
@@ -474,7 +488,7 @@ export type Started = ReturnType<typeof createFakePi> & { aborts(): number; shut
 
 export async function startSession(
   fx: Fixture,
-  opts: { factory?: (pi: never) => void; sessionId?: string; name?: string; idle?: () => boolean; entries?: Entry[]; ctx?: Record<string, unknown>; record?: boolean; startup?: boolean; flags?: Record<string, string>; bashSource?: string } = {},
+  opts: { mode?: "tui" | "print" | "rpc" | "json"; factory?: (pi: never) => void; sessionId?: string; name?: string; idle?: () => boolean; entries?: Entry[]; ctx?: Record<string, unknown>; record?: boolean; startup?: boolean; flags?: Record<string, string | boolean>; bashSource?: string } = {},
 ): Promise<Started> {
   const { factory = koPi, sessionId = "self-session", name, idle, entries = [], ctx, record = true, flags = {} } = opts;
   const created = createFakePi(join(fx.dir, "sessions", "caller"), entries);
@@ -486,6 +500,7 @@ export async function startSession(
   let shutdowns = 0;
   const context = {
     ...fakeCtx(sessionId, created.ui, idle, join(fx.dir, "sessions", "caller"), () => created.entries),
+    mode: opts.mode ?? "print",
     abort: () => {
       aborts++;
     },
@@ -498,7 +513,7 @@ export async function startSession(
   await created.emit("session_start", {}, context);
   if (opts.startup !== false) {
     await new Promise<void>((resolve) => setImmediate(resolve));
-    await pollUntil(() => [...(commandWork.get(join(fx.binDir, "ko")) ?? [])].every((child) => child.spawnargs.includes("--stream")), 2000, "startup API calls to close");
+    await pollUntil(() => [...(commandWork.get(join(fx.binDir, "ko")) ?? [])].every((child) => child.spawnargs.includes("--stream") || child.spawnargs.includes("webview")), 2000, "startup API calls to close");
   }
   return { ...created, aborts: () => aborts, shutdowns: () => shutdowns };
 }

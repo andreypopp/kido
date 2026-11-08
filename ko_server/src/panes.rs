@@ -239,6 +239,7 @@ impl Panes {
             env: &env,
             size,
             limits: settings.limits,
+            webview_supported: birth.webview_supported,
         };
         let pane = Pane::spawn(config, &launch, birth, token, &mut self.stamps, io)
             .map_err(AddError::Io)?;
@@ -848,6 +849,7 @@ mod tests {
                 Start::Host(Some(Path::new(cwd))),
             )?;
             let birth = Birth {
+                webview_supported: false,
                 vars: Default::default(),
                 parent: None,
                 close: Default::default(),

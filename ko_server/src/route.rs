@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 
 use crate::http::Status;
 use crate::ids::PaneId;
-use crate::protocol;
+use crate::protocol::{self, Method};
 
 pub(crate) type SchemaFn = fn(&mut SchemaGenerator) -> Schema;
 
@@ -31,15 +31,6 @@ impl fmt::Display for Invalid {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Method {
-    Get,
-    Put,
-    Post,
-    Patch,
-    Delete,
-}
-
 impl Method {
     pub(crate) const GET: Method = Method::Get;
     pub(crate) const PUT: Method = Method::Put;
@@ -47,33 +38,30 @@ impl Method {
     pub(crate) const PATCH: Method = Method::Patch;
     pub(crate) const DELETE: Method = Method::Delete;
     pub(crate) const WS: Method = Method::Get;
-
-    pub(crate) fn http(self) -> &'static str {
-        match self {
-            Method::Get => "GET",
-            Method::Put => "PUT",
-            Method::Post => "POST",
-            Method::Patch => "PATCH",
-            Method::Delete => "DELETE",
-        }
-    }
 }
 
 pub(crate) fn captures<'a>(
     template: &'static str,
     path: &'a str,
+    rest: bool,
 ) -> Option<impl Iterator<Item = &'a str>> {
-    let mut parts = path.strip_prefix('/')?.split('/');
-    for shape in template.strip_prefix('/')?.split('/') {
+    let path = path.strip_prefix('/')?;
+    let template = template.strip_prefix('/')?;
+    let count = if rest {
+        template.split('/').count()
+    } else {
+        usize::MAX
+    };
+    let mut parts = path.splitn(count, '/');
+    for shape in template.split('/') {
         let part = parts.next()?;
         if !shape.starts_with('{') && part != shape {
             return None;
         }
     }
     parts.next().is_none().then(|| {
-        path.split('/')
-            .skip(1)
-            .zip(template.split('/').skip(1))
+        path.splitn(count, '/')
+            .zip(template.split('/'))
             .filter(|(_, shape)| shape.starts_with('{'))
             .map(|(part, _)| part)
     })
@@ -113,6 +101,7 @@ pub(crate) fn arg<'a>(query: &[(&str, &'a str)], name: &str) -> Option<&'a str> 
 
 pub(crate) trait Param: Sized {
     const EXAMPLE: &'static str;
+    const REST: bool = false;
 
     fn parse(value: &str) -> Result<Self, Invalid>;
     fn render(&self) -> String;
@@ -171,7 +160,14 @@ pub(crate) fn push_query<T: Param + PartialEq>(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BodyFormat {
+    Json,
+    Binary,
+}
+
 pub(crate) trait Body: Sized {
+    const FORMAT: BodyFormat = BodyFormat::Json;
     const OVERSIZED: &'static str = "body exceeds 1 MiB";
 
     fn decode(payload: Option<&[u8]>) -> Result<Self, Invalid>;
@@ -181,6 +177,27 @@ impl<T: Serialize + DeserializeOwned> Body for T {
     fn decode(payload: Option<&[u8]>) -> Result<T, Invalid> {
         let bytes = payload.ok_or_else(|| Invalid::message(Self::OVERSIZED))?;
         protocol::decode(bytes).map_err(|error| Invalid::message(error.to_string()))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RawBody(pub(crate) Vec<u8>);
+
+impl Body for RawBody {
+    const FORMAT: BodyFormat = BodyFormat::Binary;
+    fn decode(payload: Option<&[u8]>) -> Result<Self, Invalid> {
+        payload
+            .map(|bytes| RawBody(bytes.to_vec()))
+            .ok_or_else(|| Invalid::message(Self::OVERSIZED))
+    }
+}
+
+impl JsonSchema for RawBody {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "WebviewBody".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({"type":"string","format":"binary","maxLength":crate::http::MAX_BODY})
     }
 }
 
@@ -263,6 +280,10 @@ pub(crate) struct ParamInfo {
 
 #[derive(Debug)]
 pub(crate) enum Kind {
+    Proxy {
+        reply: Option<Content>,
+        errors: &'static [(u16, SchemaFn)],
+    },
     Http {
         reply: Option<Content>,
         errors: &'static [(u16, SchemaFn)],
@@ -281,7 +302,7 @@ pub(crate) struct RouteInfo {
     pub(crate) docs: &'static [&'static str],
     pub(crate) path_params: &'static [ParamInfo],
     pub(crate) query: &'static [ParamInfo],
-    pub(crate) body: Option<SchemaFn>,
+    pub(crate) body: Option<(SchemaFn, BodyFormat)>,
     pub(crate) caller: Caller,
     pub(crate) kind: Kind,
 }
@@ -312,6 +333,16 @@ macro_rules! error_body {
 }
 pub(crate) use error_body;
 
+macro_rules! method {
+    (PROXY($method:ident)) => {
+        $crate::protocol::Method::$method
+    };
+    ($method:ident) => {
+        $crate::protocol::Method::$method
+    };
+}
+pub(crate) use method;
+
 macro_rules! kind {
     (WS { reply: [], errors: [], send: [$send:ty], recv: [$($recv:ty),+] }) => {
         $crate::route::Kind::Ws {
@@ -321,6 +352,16 @@ macro_rules! kind {
     };
     (WS $($rest:tt)*) => {
         compile_error!("a WS route declares send and recv, and no reply or errors")
+    };
+    (PROXY($verb:ident) {
+        reply: [$($reply:ty)?],
+        errors: [$($es:literal $(: $et:ty)?),*],
+        send: [], recv: []
+    }) => {
+        $crate::route::Kind::Proxy {
+            reply: $crate::route::reply_of!($($reply)?),
+            errors: &[$(($es, $crate::route::json::<$crate::route::error_body!($($et)?)>)),*],
+        }
     };
     ($method:ident {
         reply: [$($reply:ty)?],
@@ -351,7 +392,10 @@ macro_rules! body_of {
         None
     };
     ($body:ty) => {
-        Some($crate::route::json::<$body>)
+        Some((
+            $crate::route::json::<$body>,
+            <$body as $crate::route::Body>::FORMAT,
+        ))
     };
 }
 pub(crate) use body_of;
@@ -380,7 +424,7 @@ macro_rules! routes {
     ($(
         $(#[doc = $doc:literal])*
         $name:ident {
-            method: $method:ident,
+            method: $method:ident $(($verb:ident))?,
             path: $( / $( $lit:ident )? $( { $pn:ident : $pt:ty } )? )*
             $(, query: { $( $qn:ident : $qt:ty $( = $qd:ident )? ),* $(,)? } )?
             $(, body: $bt:ty )?
@@ -429,11 +473,14 @@ macro_rules! routes {
             )* )?
         )*
 
+        #[derive(Debug)]
+        enum RouteIndex { $( $name, )* }
+
         pub(crate) const ROUTES: &[$crate::route::RouteInfo] = &[
             $(
                 $crate::route::RouteInfo {
                     name: stringify!($name),
-                    method: $crate::route::Method::$method,
+                    method: $crate::route::method!($method $(($verb))?),
                     path: concat!( $( "/", $( stringify!($lit), )? $( "{", stringify!($pn), "}", )? )* ),
                     docs: &[ $( $doc, )* ],
                     path_params: &[ $( $(
@@ -454,7 +501,7 @@ macro_rules! routes {
                     )* )? ],
                     body: $crate::route::body_of!($($bt)?),
                     caller: $crate::route::caller_of!($($caller)?),
-                    kind: $crate::route::kind!($method {
+                    kind: $crate::route::kind!($method $(($verb))? {
                         reply: [$($reply)?],
                         errors: [$($($es $(: $et)?),*)?],
                         send: [$($send)?],
@@ -465,33 +512,31 @@ macro_rules! routes {
         ];
 
         impl Route {
-            pub fn of_request(method: &str, target: &str) -> Result<Route, $crate::route::Invalid> {
-                let (path, query) = $crate::route::split_target(target)?;
-                Route::parse(method, path, &query)
-            }
-
             #[allow(unused_mut, unused_variables)]
-            fn parse(
+            pub fn of_request(
                 method: &str,
-                path: &str,
-                query: &[(&str, &str)],
+                target: &str,
             ) -> Result<Route, $crate::route::Invalid> {
                 $(
+                    let rest = false $( $( || <$pt as $crate::route::Param>::REST )? )*;
+                    let path = if rest { target } else { target.split_once('?').map_or(target, |(path, _)| path) };
                     if let Some(mut captured) = $crate::route::captures(
                         concat!( $( "/", $( stringify!($lit), )? $( "{", stringify!($pn), "}", )? )* ),
                         path,
+                        rest,
                     ) {
+                        let query = if rest { Vec::new() } else { $crate::route::split_target(target)?.1 };
                         $( $(
                             let $pn = <$pt as $crate::route::Param>::parse(
                                 captured.next().unwrap_or_default(),
                             )?;
                         )? )*
-                        if method == $crate::route::Method::$method.http() {
+                        if method == $crate::route::method!($method $(($verb))?).http() {
                             return Ok(Route::$name {
                                 $( $( $pn, )? )*
                                 $( $(
                                     $qn: $crate::route::query::<$qt>(
-                                        $crate::route::arg(query, stringify!($qn)),
+                                        $crate::route::arg(&query, stringify!($qn)),
                                         None $( .or(Some(<$qt>::$qd)) )?,
                                     )?,
                                 )* )?
@@ -520,23 +565,33 @@ macro_rules! routes {
                                     None $( .or(Some(<$qt>::$qd)) )?,
                                 );
                             )* )?
-                            ($crate::route::Method::$method.http(), target)
+                            ($crate::route::method!($method $(($verb))?).http(), target)
                         }
                     )*
                 }
             }
 
-            pub fn websocket(&self) -> bool {
-                let name = self.name();
-                ROUTES.iter().any(|info| {
-                    info.name == name && matches!(info.kind, $crate::route::Kind::Ws { .. })
-                })
+            pub fn method(&self) -> $crate::protocol::Method { match self { $( Route::$name { .. } => $crate::route::method!($method $(($verb))?), )* } }
+
+            #[cfg(test)]
+            fn name(&self) -> &'static str {
+                match self { $( Route::$name { .. } => stringify!($name), )* }
             }
 
-            fn name(&self) -> &'static str {
-                match self {
-                    $( Route::$name { .. } => stringify!($name), )*
+            pub(crate) fn kind(&self) -> &'static $crate::route::Kind {
+                match self { $( Route::$name { .. } => &ROUTES[RouteIndex::$name as usize].kind, )* }
+            }
+
+            pub fn upgrade(&self) -> Option<$crate::protocol::Upgrade> {
+                match self.kind() {
+                    $crate::route::Kind::Ws { .. } => Some($crate::protocol::Upgrade::Control),
+                    $crate::route::Kind::Proxy { .. } if self.method() == $crate::protocol::Method::Get => Some($crate::protocol::Upgrade::Page),
+                    _ => None,
                 }
+            }
+
+            pub fn websocket(&self) -> bool {
+                self.upgrade() == Some($crate::protocol::Upgrade::Control)
             }
 
             #[allow(unused_variables)]

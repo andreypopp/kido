@@ -60,17 +60,13 @@ impl State {
         patch: PanePatch,
     ) -> Result<(), Error> {
         acts_as(caller, id, "change only itself")?;
-        let pane = self
-            .panes
-            .find_mut(id)
-            .ok_or_else(|| Error::new(ErrorKind::Missing, "pane not found"))?;
-        if pane.proc().dead().is_some() {
-            return Err(Error::new(ErrorKind::Gone, format!("{id} is dead")));
-        }
+        let pane = self.live(id)?;
         if let Some(close) = patch.close
             && pane.close() != close
         {
-            pane.set_close(close);
+            if let Some(pane) = self.panes.find_mut(id) {
+                pane.set_close(close);
+            }
             let announced = layout_panes(&self.document, &self.panes, |pane| pane == id);
             self.broadcast(&ClientEvent::Layout(announced));
         }

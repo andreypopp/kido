@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use ko_server::api::Route;
 use ko_server::http::{self, Response, Upgrade, call};
 use ko_server::ids::{ClientId, PaneId, PaneToken};
+use ko_server::protocol;
 use ko_server::ws::{accepted, refused, upgrade_request};
 use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token, Wake};
 use ko_sys::fd::{self, Queue, Waited, Want};
@@ -21,6 +22,7 @@ use tungstenite::{Bytes, Error, Message, Utf8Bytes};
 use crate::launch::{self, PATIENCE};
 
 const MAX_MESSAGE: usize = 128 << 20;
+const MAX_PENDING: usize = 1 << 20;
 const RECEIVE_BUFFER: usize = 1 << 20;
 const MAX_RESERVE: usize = 64 << 20;
 pub const READ_TIMEOUT: Duration = Duration::from_secs(40);
@@ -134,8 +136,8 @@ fn identity(caller: Option<&Caller>) -> Vec<(&'static str, String)> {
     match caller {
         None => Vec::new(),
         Some(Caller { pane, token }) => vec![
-            ("Ko-Pane", pane.to_string()),
-            ("Ko-Pane-Token", token.to_string()),
+            (protocol::PANE_HEADER, pane.to_string()),
+            (protocol::PANE_TOKEN_HEADER, token.to_string()),
         ],
     }
 }
@@ -201,7 +203,7 @@ pub(crate) fn exchange(
     let mut response = http::read_response_with(&mut reader, |head, piece| {
         if answer.is_empty() {
             let length = head
-                .header("content-length")
+                .header(http::CONTENT_LENGTH_HEADER)
                 .and_then(|length| length.parse().ok());
             answer.reserve(length.unwrap_or(0).min(MAX_RESERVE));
         }
@@ -373,6 +375,36 @@ pub enum Next {
 }
 
 #[derive(Debug)]
+pub(crate) enum ReadError {
+    Io(io::Error),
+    TooLarge,
+}
+
+impl From<io::Error> for ReadError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<ReadError> for io::Error {
+    fn from(error: ReadError) -> Self {
+        match error {
+            ReadError::Io(error) => error,
+            other => io::Error::other(other.to_string()),
+        }
+    }
+}
+
+impl Display for ReadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => error.fmt(formatter),
+            Self::TooLarge => formatter.write_str("WebSocket message exceeds its limit"),
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Link {
     stream: UnixStream,
     ctx: WebSocketContext,
@@ -380,7 +412,7 @@ pub struct Link {
     reads: Reads,
     token: Option<Token>,
     received: Instant,
-    closing: Option<(u16, String)>,
+    closing: Option<(ko_server::protocol::CloseCode, String)>,
     cancel: Option<Arc<Wake>>,
     within: Duration,
 }
@@ -420,12 +452,28 @@ impl Read for Io<'_> {
 
 impl Write for Io<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.out.bytes.extend_from_slice(bytes);
+        self.out.extend(bytes);
         Ok(bytes.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+fn writer<'a>(
+    stream: &'a UnixStream,
+    out: &'a mut Queue,
+    received: &'a mut Instant,
+    within: Duration,
+) -> Io<'a> {
+    Io {
+        stream,
+        source: None,
+        out,
+        cancel: None,
+        received,
+        within,
     }
 }
 
@@ -453,8 +501,15 @@ impl Link {
         cancel: Option<Arc<Wake>>,
         within: Duration,
     ) -> io::Result<Link> {
-        Link::handshake(stream, (client, None), route, cancel, within)?
-            .map_err(|response| refused(&response))
+        Link::handshake(
+            stream,
+            (client, None),
+            route,
+            cancel,
+            within,
+            protocol::Upgrade::Control,
+        )?
+        .map_err(|response| refused(&response))
     }
 
     pub(crate) fn handshake(
@@ -463,6 +518,7 @@ impl Link {
         route: &Route,
         cancel: Option<Arc<Wake>>,
         within: Duration,
+        limit: protocol::Upgrade,
     ) -> io::Result<Result<Link, Response>> {
         let (method, target) = route.to_request();
         let identity = identity(caller.as_ref());
@@ -473,7 +529,7 @@ impl Link {
             cancel: cancel.as_deref(),
             within: Limit::Idle(within),
         })?;
-        let mut link = Link::upgraded(stream, upgrade, &key, cancel, None)?;
+        let mut link = Link::upgraded(stream, upgrade, &key, cancel, None, limit)?;
         if let Ok(link) = &mut link {
             link.within = within;
         }
@@ -486,6 +542,7 @@ impl Link {
         key: &str,
         cancel: Option<Arc<Wake>>,
         token: Option<Token>,
+        limit: protocol::Upgrade,
     ) -> io::Result<Result<Link, Response>> {
         let (response, rest) = match upgrade {
             Upgrade::Accepted(response, rest) => (response, rest),
@@ -494,18 +551,22 @@ impl Link {
         accepted(&response, key)?;
         // macOS can return EINVAL for this tuning when the peer has closed.
         let _ = ko_sys::sock::set_receive_buffer(stream.as_fd(), RECEIVE_BUFFER);
-        let mut link = Link::of(stream, rest);
+        let mut link = Link::of(stream, rest, limit);
         link.cancel = cancel;
         link.token = token;
         Ok(Ok(link))
     }
 
-    pub fn of(stream: UnixStream, rest: Vec<u8>) -> Link {
+    pub fn of(stream: UnixStream, rest: Vec<u8>, limit: protocol::Upgrade) -> Link {
+        let max_message = match limit {
+            protocol::Upgrade::Control => MAX_MESSAGE,
+            protocol::Upgrade::Page => ko_server::protocol::EXEC_CHUNK,
+        };
         let config = WebSocketConfig::default()
             .read_buffer_size(1 << 15)
             .write_buffer_size(0)
-            .max_message_size(Some(MAX_MESSAGE))
-            .max_frame_size(Some(MAX_MESSAGE));
+            .max_message_size(Some(max_message))
+            .max_frame_size(Some(max_message));
         Link {
             stream,
             ctx: WebSocketContext::from_partially_read(rest, Role::Client, Some(config)),
@@ -550,7 +611,7 @@ impl Link {
         }
     }
 
-    pub fn close_frame(&self) -> Option<&(u16, String)> {
+    pub fn close_frame(&self) -> Option<&(ko_server::protocol::CloseCode, String)> {
         self.closing.as_ref()
     }
 
@@ -568,6 +629,14 @@ impl Link {
     }
 
     pub fn next(&mut self, poll: &mut Poll, now: Instant) -> io::Result<Next> {
+        self.next_message(poll, now).map_err(Into::into)
+    }
+
+    pub(crate) fn next_message(
+        &mut self,
+        poll: &mut Poll,
+        now: Instant,
+    ) -> Result<Next, ReadError> {
         let Some(token) = self.token else {
             return Ok(Next::Closed);
         };
@@ -616,8 +685,8 @@ impl Link {
     fn pump(
         ctx: &mut WebSocketContext,
         io: &mut Io<'_>,
-        closing: &mut Option<(u16, String)>,
-    ) -> io::Result<Next> {
+        closing: &mut Option<(ko_server::protocol::CloseCode, String)>,
+    ) -> Result<Next, ReadError> {
         let next = loop {
             let message = match ctx.read(io) {
                 Ok(message) => message,
@@ -625,7 +694,8 @@ impl Link {
                     break Next::Wait;
                 }
                 Err(Error::ConnectionClosed | Error::AlreadyClosed) => break Next::Closed,
-                Err(error) => return Err(failed(error)),
+                Err(Error::Capacity(_)) => return Err(ReadError::TooLarge),
+                Err(error) => return Err(ReadError::Io(failed(error))),
             };
             match message {
                 Message::Text(body) => break Next::Text(body),
@@ -635,7 +705,13 @@ impl Link {
                     let shutdown = frame.as_ref().is_some_and(|frame| {
                         frame.code == tungstenite::protocol::frame::coding::CloseCode::Away
                     });
-                    *closing = frame.map(|frame| (u16::from(frame.code), frame.reason.to_string()));
+                    *closing = frame
+                        .map(|frame| {
+                            ko_server::protocol::CloseCode::try_from(u16::from(frame.code))
+                                .map(|code| (code, frame.reason.to_string()))
+                        })
+                        .transpose()
+                        .map_err(|message| io::Error::new(io::ErrorKind::InvalidData, message))?;
                     break if shutdown {
                         Next::Shutdown
                     } else if closing.as_ref().is_some_and(|(_, reason)| reason == "gone") {
@@ -654,17 +730,70 @@ impl Link {
     }
 
     pub fn send(&mut self, body: String) -> io::Result<()> {
-        let mut io = Io {
-            stream: &self.stream,
-            source: None,
-            out: &mut self.out,
-            cancel: None,
-            received: &mut self.received,
-            within: self.within,
-        };
+        self.message(Message::Text(body.into())).map(|_| ())
+    }
+
+    pub(crate) fn message(&mut self, message: Message) -> io::Result<std::ops::Range<u64>> {
+        let len = message.len() as u64;
         self.ctx
-            .write(&mut io, Message::Text(body.into()))
+            .flush(&mut writer(
+                &self.stream,
+                &mut self.out,
+                &mut self.received,
+                self.within,
+            ))
+            .map_err(failed)?;
+        self.ctx
+            .write(
+                &mut writer(&self.stream, &mut self.out, &mut self.received, self.within),
+                message,
+            )
+            .map_err(failed)?;
+        let end = self.out.position()?;
+        Ok(end.saturating_sub(len)..end)
+    }
+
+    pub(crate) fn close(
+        &mut self,
+        code: ko_server::protocol::CloseCode,
+        reason: protocol::CloseReason,
+    ) -> io::Result<()> {
+        self.ctx
+            .close(
+                &mut writer(&self.stream, &mut self.out, &mut self.received, self.within),
+                Some(tungstenite::protocol::CloseFrame {
+                    code: code.into(),
+                    reason: String::from(reason).into(),
+                }),
+            )
             .map_err(failed)
+    }
+
+    pub(crate) fn drained(&self) -> bool {
+        self.out.is_empty()
+    }
+
+    pub(crate) fn backed_up(&self) -> bool {
+        self.out.backed_up(MAX_PENDING)
+    }
+
+    pub(crate) fn interest(&self, poll: &mut Poll, read: bool) {
+        if let Some(token) = self.token {
+            poll.interest(token, Interest::of(read, !self.out.is_empty()));
+        }
+    }
+
+    #[cfg(target_vendor = "apple")]
+    pub(crate) fn output(&self) -> &Queue {
+        &self.out
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let result = self.out.flush(self.stream.as_fd());
+        if self.out.sent_past_half() {
+            self.out.compact();
+        }
+        result
     }
 
     pub fn flush_blocking(&mut self) -> io::Result<()> {
@@ -677,7 +806,7 @@ impl Link {
     }
 
     pub fn settle(&mut self, poll: &mut Poll) -> io::Result<()> {
-        self.out.flush(self.stream.as_fd())?;
+        self.flush()?;
         if let Some(token) = self.token {
             poll.interest(token, Interest::of(true, !self.out.is_empty()));
         }
@@ -695,7 +824,7 @@ mod tests {
             let (stream, peer) = UnixStream::pair().unwrap();
             let (send, result) = std::sync::mpsc::channel();
             let worker = std::thread::spawn(move || {
-                let mut link = Link::of(stream, Vec::new());
+                let mut link = Link::of(stream, Vec::new(), protocol::Upgrade::Control);
                 link.within = Duration::from_millis(50);
                 link.send("x".repeat(4 << 20)).unwrap();
                 let error = if receive {
@@ -738,6 +867,7 @@ mod tests {
             &Route::Client {},
             None,
             Duration::from_secs(1),
+            protocol::Upgrade::Control,
         )
         .unwrap_err();
         assert!(
@@ -765,7 +895,7 @@ mod tests {
         .unwrap();
         closed(&stream);
         assert!(
-            Link::upgraded(stream, upgrade, key, None, None)
+            Link::upgraded(stream, upgrade, key, None, None, protocol::Upgrade::Control)
                 .unwrap()
                 .is_ok()
         );
@@ -773,7 +903,7 @@ mod tests {
 
     fn pair() -> (Link, UnixStream, Poll) {
         let (ours, theirs) = UnixStream::pair().unwrap();
-        let mut link = Link::of(ours, Vec::new());
+        let mut link = Link::of(ours, Vec::new(), protocol::Upgrade::Control);
         let mut poll = Poll::new();
         link.watch(&mut poll).unwrap();
         (link, theirs, poll)
@@ -817,6 +947,27 @@ mod tests {
                 .map(|(b, k)| b ^ k)
                 .collect(),
         )
+    }
+
+    #[test]
+    fn an_application_payload_follows_pending_control_frames() {
+        let (mut link, mut server, _poll) = pair();
+        server.write_all(&frame(9, b"p")).unwrap();
+        assert_eq!(
+            link.ctx
+                .read(&mut writer(
+                    &link.stream,
+                    &mut link.out,
+                    &mut link.received,
+                    link.within
+                ))
+                .unwrap(),
+            Message::Ping(Bytes::from_static(b"p"))
+        );
+        let range = link.message(Message::binary(vec![1; 65536])).unwrap();
+        assert_eq!(link.out.bytes[0], 0x8a);
+        assert_eq!(link.out.bytes[7], 0x82);
+        assert_eq!(range, 21..65557);
     }
 
     #[test]
@@ -886,7 +1037,7 @@ mod tests {
         server.write_all(&frame(8, &[])).unwrap();
         let (send, result) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let mut link = Link::of(stream, Vec::new());
+            let mut link = Link::of(stream, Vec::new(), protocol::Upgrade::Control);
             link.within = Duration::from_millis(30);
             send.send(link.receive()).unwrap();
         });

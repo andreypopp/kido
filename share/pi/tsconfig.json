@@ -10,5 +10,5 @@
     "erasableSyntaxOnly": true,
     "skipLibCheck": true
   },
-  "include": ["ko-pi.ts", "ko-pi-fixture.ts", "ko-pi-*.test.ts"]
+  "include": ["ko-pi.ts", "ko-pi-fixture.ts", "ko-pi-*.test.ts", "../webview/*.ts"]
 }

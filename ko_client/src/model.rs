@@ -516,6 +516,12 @@ impl Model {
                 self.runtimes.retain(|known| !known.is(&name, source));
                 return Applied::State;
             }
+            ClientEvent::Webview { pane, webview } => {
+                if let Some(pane) = self.pane_mut(pane) {
+                    pane.row.webview = webview;
+                    return Applied::State;
+                }
+            }
             ClientEvent::Welcome(_) | ClientEvent::Refused { .. } => {}
         }
         Applied::Nothing
@@ -1361,6 +1367,52 @@ mod tests {
                 row.progress.and_then(|p| p.progress),
             ),
             (Some(dead), "t", "/tmp", Some(4242), Some("vim"), Some(40))
+        );
+    }
+
+    #[test]
+    fn webview_events_replace_and_clear_the_pane_record() {
+        let mut model = model(Layout { sessions: vec![] });
+        model.apply(announced(one_pane_layout(&[1]), vec![entry(1, &[])]));
+        let webview = protocol::webview::Webview {
+            page: Some(protocol::webview::Page {
+                path: protocol::webview::PagePath::try_from("/page?q=1".to_owned()).unwrap(),
+            }),
+            serving: true,
+        };
+        assert_eq!(
+            model.apply(ClientEvent::Webview {
+                pane: pane(1),
+                webview: Some(webview.clone())
+            }),
+            Applied::State
+        );
+        assert_eq!(model.panes[0].row.webview, Some(webview));
+        #[cfg(target_vendor = "apple")]
+        assert_eq!(
+            serde_json::to_value(model.json()).unwrap()["panes"][0]["webview"]["page"]["path"],
+            "/page?q=1"
+        );
+        assert_eq!(
+            model.apply(ClientEvent::Webview {
+                pane: pane(1),
+                webview: None
+            }),
+            Applied::State
+        );
+        assert_eq!(model.panes[0].row.webview, None);
+        #[cfg(target_vendor = "apple")]
+        assert!(
+            serde_json::to_value(model.json()).unwrap()["panes"][0]
+                .get("webview")
+                .is_none()
+        );
+        assert_eq!(
+            model.apply(ClientEvent::Webview {
+                pane: pane(99),
+                webview: None
+            }),
+            Applied::Nothing
         );
     }
 

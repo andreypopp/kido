@@ -278,6 +278,8 @@ class Generator:
             self.out[name] = f'    public typealias {name} = Double'
         elif schema.get('type') == 'boolean':
             self.out[name] = f'    public typealias {name} = Bool'
+        elif 'oneOf' in schema and all(value.get('type') == 'string' and isinstance(value.get('const'), str) for value in schema['oneOf']):
+            self.string_enum(name, {'enum': [value['const'] for value in schema['oneOf']]})
         elif 'oneOf' in schema:
             self.tagged(name, schema)
         elif 'anyOf' in schema:

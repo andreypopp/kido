@@ -27,3 +27,6 @@ mod sshd;
 mod status;
 mod vars;
 mod views;
+mod webview;
+mod webview_cli;
+mod webview_proxy;

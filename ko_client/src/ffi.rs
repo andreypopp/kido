@@ -6,11 +6,13 @@ mod engine;
 mod images;
 mod remote;
 mod view;
+mod webview;
 
 pub use calls::*;
 pub use config::*;
 pub use images::*;
 pub use remote::*;
+pub use webview::*;
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
@@ -74,7 +76,7 @@ impl Code {
             ErrorKind::Invalid => Code::Invalid,
             ErrorKind::Refused => Code::Refused,
             ErrorKind::Gone => Code::Gone,
-            ErrorKind::Io => Code::Io,
+            ErrorKind::Io | ErrorKind::Unavailable => Code::Io,
             ErrorKind::PreconditionFailed => Code::Conflict,
             ErrorKind::Missing => Code::NotFound,
             ErrorKind::ProtocolMismatch(_) => Code::ProtocolMismatch,
@@ -247,6 +249,7 @@ pub struct HelloIn {
     pub rows: u16,
     pub focused: bool,
     pub sizes_windows: bool,
+    pub webview: bool,
     pub name: *const c_char,
 }
 
@@ -279,6 +282,7 @@ enum Posted {
     Failed(Code, CString),
     Mismatch(Code, Version),
     View(Arc<View>, ViewEvent),
+    Webview(webview::WebviewDelivery),
 }
 
 #[derive(Debug)]
@@ -313,6 +317,10 @@ enum Command {
     Close(u64),
     Resync(u64, protocol::ViewOptions),
     Input(u64, Input),
+    WebviewStart(Arc<webview::Task>, webview::Request),
+    WebviewStop(u64),
+    WebviewResume(u64),
+    WebviewWrite(u64, webview::Write),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,6 +364,7 @@ impl TryFrom<Size> for protocol::Size {
 #[derive(Debug)]
 struct Greeting {
     name: String,
+    webview: bool,
     focused: bool,
     sizing: protocol::Sizing,
 }
@@ -376,7 +385,7 @@ struct Shared {
     up: AtomicBool,
     model_pending: AtomicBool,
     decoders: Mutex<Vec<Arc<View>>>,
-    views: AtomicU64,
+    handles: AtomicU64,
     navigation: Mutex<crate::model::NavigationIds>,
     calls: Mutex<usize>,
     idle: Condvar,
@@ -431,6 +440,12 @@ fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Shared {
+    fn barrier(&self) {
+        if !std::ptr::eq(RUNNING.get(), self) {
+            drop(locked(&self.running));
+        }
+    }
+
     fn command(&self, command: Command) {
         locked(&self.commands).push_back(command);
         self.wake.wake();
@@ -483,6 +498,7 @@ extern "C" fn deliver(context: *mut c_void) {
         RUNNING.set(std::ptr::null());
     };
     match &item.posted {
+        Posted::Webview(delivery) => delivery.deliver(shared),
         Posted::Welcome {
             client,
             instance,
@@ -820,6 +836,7 @@ pub unsafe extern "C" fn ko_client_connect(
         rows: 24,
         focused: false,
         sizes_windows: false,
+        webview: false,
         name: std::ptr::null(),
     });
     let socket = PathBuf::from(std::ffi::OsStr::from_bytes(socket.to_bytes()));
@@ -840,6 +857,7 @@ pub unsafe extern "C" fn ko_client_connect(
     unsafe { dispatch_retain(queue) };
     let hello = Greeting {
         name,
+        webview: hello.webview,
         focused: hello.focused,
         sizing: if hello.sizes_windows {
             protocol::Sizing::Windows {
@@ -900,7 +918,7 @@ fn start(
         up: AtomicBool::new(false),
         model_pending: AtomicBool::new(false),
         decoders: Mutex::new(Vec::new()),
-        views: AtomicU64::new(0),
+        handles: AtomicU64::new(0),
         navigation: Mutex::new(crate::model::NavigationIds::default()),
         calls: Mutex::new(0),
         idle: Condvar::new(),
@@ -1068,9 +1086,7 @@ pub unsafe extern "C" fn ko_client_close(client: *mut Client) -> Code {
             .unwrap_or_else(PoisonError::into_inner);
     }
     drop(calls);
-    if RUNNING.get() != Arc::as_ptr(shared) {
-        drop(locked(&shared.running));
-    }
+    shared.barrier();
     if let Some(worker) = locked(&client.worker).take() {
         let _ = worker.join();
     }
@@ -1488,7 +1504,7 @@ pub unsafe extern "C" fn ko_view_open(
     let Some(handle_id) = next_handle() else {
         return Code::Io;
     };
-    let id = shared.views.fetch_add(1, Ordering::SeqCst);
+    let id = shared.handles.fetch_add(1, Ordering::SeqCst);
     let history = if history { History::All } else { History::None };
     let Ok(view) = View::start(shared, id, pane, history, (restore, feed), User(user)) else {
         return Code::Io;
@@ -1522,9 +1538,7 @@ pub unsafe extern "C" fn ko_view_close(view: *mut ViewHandle) -> Code {
     shared.command(Command::Close(view.id));
     locked(&shared.decoders).retain(|known| known.id != view.id);
     view.shut();
-    if RUNNING.get() != Arc::as_ptr(shared) {
-        drop(locked(&shared.running));
-    }
+    shared.barrier();
     Code::Ok
 }
 
@@ -1630,6 +1644,9 @@ mod tests {
     type Ws = WebSocket<UnixStream>;
     type Script = Box<dyn FnOnce(&mut Ws, String) + Send>;
     type Plain = Arc<dyn Fn(&Request) -> Option<(u16, String)> + Send + Sync>;
+    type Raw = Arc<dyn Fn(&Request, &mut UnixStream) -> bool + Send + Sync>;
+
+    mod webview;
 
     const WAIT: Duration = Duration::from_secs(10);
     const QUIET: Duration = Duration::from_millis(250);
@@ -1918,6 +1935,7 @@ mod tests {
         ) -> *mut Client {
             let hello = hello.unwrap_or(Greeting {
                 name: "app".to_owned(),
+                webview: false,
                 focused: false,
                 sizing: protocol::Sizing::Disabled,
             });
@@ -1980,6 +1998,7 @@ mod tests {
         clients: Vec<Script>,
         views: Vec<Option<Script>>,
         plain: Plain,
+        raw: Option<Raw>,
         stall: Option<(String, Mutex<Sender<()>>)>,
     }
 
@@ -1992,11 +2011,20 @@ mod tests {
             clients: vec![Box::new(script)],
             views: Vec::new(),
             plain: Arc::new(answer_empty),
+            raw: None,
             stall: None,
         }
     }
 
     impl Routes {
+        fn raw(
+            mut self,
+            raw: impl Fn(&Request, &mut UnixStream) -> bool + Send + Sync + 'static,
+        ) -> Routes {
+            self.raw = Some(Arc::new(raw));
+            self
+        }
+
         fn view(mut self, script: impl FnOnce(&mut Ws, String) + Send + 'static) -> Routes {
             self.views.push(Some(Box::new(script)));
             self
@@ -2100,7 +2128,7 @@ mod tests {
     fn handle(
         mut stream: UnixStream,
         queued: &Queued,
-        (plain, stall, halted): (&Plain, &Stall, &AtomicBool),
+        (plain, raw, stall, halted): (&Plain, &Option<Raw>, &Stall, &AtomicBool),
         requests: &Arc<Mutex<Vec<Request>>>,
     ) {
         let _ = stream.set_nonblocking(false);
@@ -2132,6 +2160,9 @@ mod tests {
             body,
         };
         locked(requests).push(request.clone());
+        if raw.as_ref().is_some_and(|raw| raw(&request, &mut stream)) {
+            return;
+        }
         if let Some(key) = header(&head, "Sec-WebSocket-Key") {
             let script = {
                 let mut queued = locked(queued);
@@ -2210,15 +2241,16 @@ mod tests {
                 if halted.load(Ordering::SeqCst) {
                     break;
                 }
-                let (queued, plain, stall, seen, halted) = (
+                let (queued, plain, raw, stall, seen, halted) = (
                     Arc::clone(&queued),
                     Arc::clone(&routes.plain),
+                    routes.raw.clone(),
                     Arc::clone(&stall),
                     Arc::clone(&seen),
                     Arc::clone(&halted),
                 );
                 connections.push(std::thread::spawn(move || {
-                    handle(stream, &queued, (&plain, &stall, &halted), &seen);
+                    handle(stream, &queued, (&plain, &raw, &stall, &halted), &seen);
                 }));
             }
             for connection in connections {
@@ -2567,7 +2599,7 @@ mod tests {
         assert_eq!(
             hello,
             json!({
-                "type": "hello", "name": "app", "focused": false,
+                "type": "hello", "webview": false, "name": "app", "focused": false,
                 "sizing": {"type": "disabled"}
             }),
             "a client without a hello struct neither sizes windows nor has focus"
@@ -2635,7 +2667,7 @@ mod tests {
             open_view(handle.0, Decoder::new(|_| Restored::Ok), true).addr()
         });
         until("the view open has entered", || {
-            shared.views.load(Ordering::SeqCst) == 1
+            shared.handles.load(Ordering::SeqCst) == 1
         });
         let closing_handle = Handle(fixture.probe.client.load(Ordering::SeqCst));
         let (done, closed) = channel();
@@ -3176,6 +3208,7 @@ mod tests {
 
     fn pane_row(number: u64, status: Option<PaneStatus>) -> Listing {
         let row = Row {
+            webview: None,
             id: format!("pane_{number}").parse().unwrap(),
             started: 0,
             pid: Some(100),
@@ -3365,6 +3398,7 @@ mod tests {
             &server,
             Some(Greeting {
                 name: "app".to_owned(),
+                webview: false,
                 focused: false,
                 sizing: protocol::Sizing::Windows {
                     viewport: protocol::Size(frame::Size::DEFAULT),
@@ -3425,6 +3459,7 @@ mod tests {
                     windows: protocol::WindowSizes::default(),
                 },
                 focused: false,
+                webview: false,
                 name: "window_7".to_owned(),
             }),
             crate::wire::WATCHDOG,
@@ -4052,6 +4087,7 @@ mod tests {
                             _ => Some((426, String::new())),
                         }
                     }),
+                    raw: None,
                     stall: None,
                 },
             );
@@ -4212,6 +4248,7 @@ mod tests {
                         "/version" => Some((200, body.clone())),
                         _ => Some((404, String::new())),
                     }),
+                    raw: None,
                     stall: None,
                 },
             )
@@ -4591,6 +4628,7 @@ mod tests {
             rows: 24,
             focused: false,
             sizes_windows: false,
+            webview: false,
             name: std::ptr::null(),
         };
         // SAFETY: the socket, the queue and the hello are valid, and out is writable.
@@ -5306,6 +5344,7 @@ mod tests {
                 })],
                 views: Vec::new(),
                 plain: Arc::new(answer_empty),
+                raw: None,
                 stall: None,
             }
             .view(move |socket, _| {

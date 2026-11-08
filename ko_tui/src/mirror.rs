@@ -944,7 +944,12 @@ mod tests {
     fn mirror() -> (Mirror, UnixStream, Poll) {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let mut poll = Poll::new();
-        let mirror = with(Link::of(ours, Vec::new()), default_limits(), &mut poll).unwrap();
+        let mirror = with(
+            Link::of(ours, Vec::new(), protocol::Upgrade::Control),
+            default_limits(),
+            &mut poll,
+        )
+        .unwrap();
         (mirror, theirs, poll)
     }
 
@@ -982,7 +987,7 @@ mod tests {
         server
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
-        let mut link = Link::of(ours, Vec::new());
+        let mut link = Link::of(ours, Vec::new(), protocol::Upgrade::Control);
         link.watch(&mut poll).unwrap();
         server.write_all(b"\x89\x04ping").unwrap();
         assert_eq!(link.next(&mut poll, Instant::now()).unwrap(), Next::Wait);
@@ -1420,7 +1425,12 @@ mod tests {
         let length = u16::try_from(record.len()).unwrap().to_be_bytes();
         let rest = [&[0x82, 126][..], &length, &record].concat();
         let mut poll = Poll::new();
-        let mirror = with(Link::of(ours, rest), default_limits(), &mut poll).unwrap();
+        let mirror = with(
+            Link::of(ours, rest, protocol::Upgrade::Control),
+            default_limits(),
+            &mut poll,
+        )
+        .unwrap();
         assert_eq!(
             (kind(&mirror), row(&mirror, 0)),
             ("full", "buffered".to_owned())

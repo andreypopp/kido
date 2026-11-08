@@ -1,3 +1,33 @@
+pub mod webview;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Upgrade {
+    Control,
+    Page,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum Method {
+    Get,
+    Put,
+    Post,
+    Patch,
+    Delete,
+}
+
+impl Method {
+    pub fn http(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Put => "PUT",
+            Self::Post => "POST",
+            Self::Patch => "PATCH",
+            Self::Delete => "DELETE",
+        }
+    }
+}
+
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
@@ -25,9 +55,96 @@ use crate::pane_proc::{self, Death};
 use crate::route::{Body, Invalid};
 use crate::vars::{Loose, Vars};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u16", into = "u16")]
+pub struct CloseCode(u16);
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct CloseReason(Cow<'static, str>);
+
+impl CloseReason {
+    pub const EMPTY: Self = Self(Cow::Borrowed(""));
+    pub const SIZE: Self = Self(Cow::Borrowed(CloseCode::SIZE_REASON));
+    pub const PROGRAM_CLOSED: Self = Self(Cow::Borrowed("program socket closed"));
+    pub(crate) const INVALID_UTF8: Self = Self(Cow::Borrowed("invalid UTF-8"));
+    pub(crate) const EXTENSIONS: Self =
+        Self(Cow::Borrowed("WebSocket extensions are not supported"));
+    pub(crate) const STREAM_CLOSED: Self = Self(Cow::Borrowed("webview stream closed"));
+    pub(crate) const CLIENT_CLOSED: Self = Self(Cow::Borrowed("client closed"));
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl TryFrom<String> for CloseReason {
+    type Error = &'static str;
+    fn try_from(reason: String) -> Result<Self, Self::Error> {
+        if reason.len() > 123 {
+            Err("WebSocket close reason exceeds 123 bytes")
+        } else {
+            Ok(Self(Cow::Owned(reason)))
+        }
+    }
+}
+impl From<CloseReason> for String {
+    fn from(reason: CloseReason) -> Self {
+        reason.0.into_owned()
+    }
+}
+impl JsonSchema for CloseReason {
+    fn schema_name() -> Cow<'static, str> {
+        "CloseReason".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type":"string","maxLength":123})
+    }
+}
+
+impl CloseCode {
+    pub const NORMAL: Self = Self(1000);
+    pub(crate) const AWAY: Self = Self(1001);
+    pub(crate) const PROTOCOL: Self = Self(1002);
+    pub(crate) const INVALID: Self = Self(1007);
+    pub const SIZE: Self = Self(1009);
+    pub const INTERNAL: Self = Self(1011);
+    pub const SIZE_REASON: &'static str = "message exceeds 64 KiB";
+}
+impl TryFrom<u16> for CloseCode {
+    type Error = &'static str;
+    fn try_from(code: u16) -> Result<Self, Self::Error> {
+        if tungstenite::protocol::frame::coding::CloseCode::from(code).is_allowed() {
+            Ok(Self(code))
+        } else {
+            Err("invalid WebSocket close code")
+        }
+    }
+}
+impl From<CloseCode> for u16 {
+    fn from(code: CloseCode) -> Self {
+        code.0
+    }
+}
+impl From<CloseCode> for tungstenite::protocol::frame::coding::CloseCode {
+    fn from(code: CloseCode) -> Self {
+        code.0.into()
+    }
+}
+impl JsonSchema for CloseCode {
+    fn schema_name() -> Cow<'static, str> {
+        "CloseCode".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"anyOf":[{"type":"integer","enum":[1000,1001,1002,1003,1007,1008,1009,1010,1011,1012,1013]},{"type":"integer","minimum":3000,"maximum":4999}]})
+    }
+}
+
 const PROTOCOL: &str = "1.0";
 const PROTOCOL_MAJOR: &str = "1";
 const VT: &str = env!("KO_VT");
+
+pub const PANE_HEADER: &str = "Ko-Pane";
+pub const PANE_TOKEN_HEADER: &str = "Ko-Pane-Token";
+pub(crate) const CLIENT_HEADER: &str = "Ko-Client";
 
 pub(crate) const PROTOCOL_HEADER: &str = "ko-protocol";
 pub(crate) const VT_HEADER: &str = "ko-vt";
@@ -103,6 +220,7 @@ pub enum ErrorKind {
     Gone,
     Io,
     PreconditionFailed,
+    Unavailable,
     #[serde(rename = "not_found")]
     Missing,
     ProtocolMismatch(Version),
@@ -118,6 +236,7 @@ impl ErrorKind {
             ErrorKind::Io => Status::Internal,
             ErrorKind::Missing => Status::NotFound,
             ErrorKind::PreconditionFailed => Status::PreconditionFailed,
+            ErrorKind::Unavailable => Status::ServiceUnavailable,
             ErrorKind::ProtocolMismatch(_) => Status::UpgradeRequired,
         }
     }
@@ -549,6 +668,8 @@ pub struct Progress {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Row {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub webview: Option<crate::protocol::webview::Webview>,
     pub id: PaneId,
     /// The pane's creation time in server monotonic nanoseconds.
     pub started: u64,
@@ -1465,6 +1586,7 @@ impl From<ring::Marker> for Marker {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Hello {
     pub name: String,
+    pub webview: bool,
     #[serde(flatten)]
     pub selection: Selection,
     pub focused: bool,
@@ -1804,6 +1926,10 @@ pub struct StatusChange {
 pub enum ClientEvent {
     Refused {
         message: String,
+    },
+    Webview {
+        pane: PaneId,
+        webview: Option<crate::protocol::webview::Webview>,
     },
     Welcome(Welcome),
     Layout(LayoutPanes),
@@ -2437,9 +2563,9 @@ mod tests {
             same::<PasteResult>(json);
         }
         for json in [
-            r#"{"type":"hello","name":"test","focused":true,"sizing":{"type":"windows","viewport":{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}},"windows":[]}}"#,
-            r#"{"type":"hello","name":"app","pane":"pane_3","focused":false,"sizing":{"type":"disabled"}}"#,
-            r#"{"type":"hello","name":"app","session":"session_1","window":"window_2","pane":"pane_3","focused":false,"sizing":{"type":"windows","viewport":{"cols":80,"rows":24},"windows":[]}}"#,
+            r#"{"type":"hello","name":"test","webview":false,"focused":true,"sizing":{"type":"windows","viewport":{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}},"windows":[]}}"#,
+            r#"{"type":"hello","name":"app","webview":false,"pane":"pane_3","focused":false,"sizing":{"type":"disabled"}}"#,
+            r#"{"type":"hello","name":"app","webview":false,"session":"session_1","window":"window_2","pane":"pane_3","focused":false,"sizing":{"type":"windows","viewport":{"cols":80,"rows":24},"windows":[]}}"#,
             r#"{"type":"select","request":1,"pane":"pane_3"}"#,
             r#"{"type":"select","request":1,"session":"session_1"}"#,
             r#"{"type":"switch","request":1,"over":"window","direction":"previous"}"#,
@@ -2580,16 +2706,20 @@ mod tests {
 
     #[test]
     fn decoders_take_defaults_and_nulls_and_refuse_bad_shapes() {
-        let hello = r#"{"type":"hello","name":"x","focused":true,"sizing":{"type":"windows","viewport":{"cols":1,"rows":1},"windows":[]}}"#;
+        assert!(CloseReason::try_from("x".repeat(123)).is_ok());
+        assert!(CloseReason::try_from("x".repeat(124)).is_err());
+        assert!(CloseReason::try_from("é".repeat(61)).is_ok());
+        assert!(CloseReason::try_from("é".repeat(62)).is_err());
+        let hello = r#"{"type":"hello","name":"x","webview":false,"focused":true,"sizing":{"type":"windows","viewport":{"cols":1,"rows":1},"windows":[]}}"#;
         assert_eq!(
             decoded::<ClientRequest>(
-                r#"{"type":"hello","name":"x","focused":true,"extra":1,"sizing":{"type":"windows","viewport":{"cols":1,"rows":1},"windows":[]}}"#
+                r#"{"type":"hello","name":"x","webview":false,"focused":true,"extra":1,"sizing":{"type":"windows","viewport":{"cols":1,"rows":1},"windows":[]}}"#
             ),
             Ok(hello.to_owned())
         );
         assert_eq!(
             decoded::<ClientRequest>(
-                r#"{"type":"hello","name":"x","focused":true,"pane":null,"sizing":{"type":"windows","viewport":{"cols":1,"rows":1,"cell_px":null},"windows":[]}}"#
+                r#"{"type":"hello","name":"x","webview":false,"focused":true,"pane":null,"sizing":{"type":"windows","viewport":{"cols":1,"rows":1,"cell_px":null},"windows":[]}}"#
             ),
             Ok(hello.to_owned())
         );
@@ -2831,7 +2961,7 @@ mod tests {
                 r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":80,"rows":24,"cell_px":[8,16]},"windows":[]}}"#,
             ),
             decoded::<ClientRequest>(
-                r#"{"type":"hello","name":"t","focused":true,"sizing":{"type":"windows","viewport":[80,24],"windows":[]}}"#,
+                r#"{"type":"hello","name":"t","webview":false,"focused":true,"sizing":{"type":"windows","viewport":[80,24],"windows":[]}}"#,
             ),
             decoded::<ViewRequest>(r#"{"type":"resync","history":"all","images":["x"]}"#),
             decoded::<ViewRequest>(r#"{"type":"input","input":["paste",["x",true]]}"#),

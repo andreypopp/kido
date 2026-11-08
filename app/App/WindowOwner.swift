@@ -20,7 +20,10 @@ class OwnerWindow: NSWindow {
         super.sendEvent(event)
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        allowsPaneInput && super.performKeyEquivalent(with: event)
+        guard allowsPaneInput else { return false }
+        if PaneView.owner(firstResponder)?.webviewFocused == true, event.modifierFlags.contains(.command),
+           NSApp.mainMenu?.performKeyEquivalent(with: event) == true { return true }
+        return super.performKeyEquivalent(with: event)
     }
 
     var focusChanged: (NSResponder?, NSResponder?) -> Void = { _, _ in }
@@ -390,6 +393,11 @@ private class AlertEscape: NSView {
         window.appearance = theme.appearance
         sidebar.updateAppearance(runtime: runtime)
         session?.updateBackground()
+        session?.updateWebview()
+        if case .connected(let client) = link, client.rendersWebview != runtime.values.webview.enabled {
+            invalidate()
+            connect(cause: .reconnect)
+        }
     }
 
     func window(_ window: NSWindow, willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions) -> NSApplication.PresentationOptions {
@@ -919,7 +927,7 @@ private class AlertEscape: NSView {
         note("dialing \(socket) (\(cause.label.replacingOccurrences(of: "\n", with: "; "))) [owner \(ownerID)]")
         let view = makeSessionView()
         do {
-            let hello = KoHello(name: ownerID, viewport: KoSize(cols: 80, rows: 24, cell: nil))
+            let hello = KoHello(name: ownerID, viewport: KoSize(cols: 80, rows: 24, cell: nil), webview: runtime.values.webview.enabled)
             let client = try KoClient(socket: socket, hello: hello, fetches: host.imageFetches) { [weak self] event in
                 guard let self, accepts(generation) else { return }
                 handle(event)
@@ -953,6 +961,7 @@ private class AlertEscape: NSView {
         let view = SessionView(runtime: runtime)
         view.host = host
         view.onURL = { [weak self] in self?.openLink($0) }
+        view.webview = { [weak self] in self?.koModel?.pane($0)?.webview }
         if case .connected(let client) = link { view.client = client }
         view.sidebarFocused = { [weak sidebar] in sidebar?.list.containsFocus == true }
         view.reorder = reorder
@@ -1205,6 +1214,7 @@ private class AlertEscape: NSView {
                 newSession()
             }
         }
+        session?.updateWebview()
         let roots = (model.session.flatMap { ko.layout.layout.session($0) }?.windows ?? []).filter { projection.rootWindows[$0.id] == $0.id }
         let shown = Dictionary(uniqueKeysWithValues: projection.placements.values.filter { $0.position.pane == $0.slot.pane }.compactMap { root in
             projection.shown(root.position.pane, slots: paneSlots).map { (root.position.pane, $0) }

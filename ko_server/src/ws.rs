@@ -1,5 +1,7 @@
 #![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
+use crate::protocol::webview::FrameKind;
+
 use crate::diagnostics::Cause;
 use std::io::{self, Cursor, Read, Write};
 use std::os::fd::AsFd;
@@ -14,7 +16,7 @@ use tungstenite::{Error, Message, Utf8Bytes};
 
 use crate::conn::{Fit, Life, Output, Queue};
 use crate::deflate::{self, Deflate};
-use crate::http::{self, Head, MAX_HEAD, Status};
+use crate::http::{self, Head, MAX_HEAD};
 use crate::ids::ClientId;
 
 const RECORD_HEADER: usize = 9;
@@ -142,7 +144,12 @@ pub fn upgrade_request(
 
 pub fn accepted(response: &http::Response, key: &str) -> io::Result<()> {
     let accept = tungstenite::handshake::derive_accept_key(key.as_bytes());
-    if response.status == 101 && response.header("sec-websocket-accept") == Some(&accept) {
+    if response.status == 101
+        && response.header("sec-websocket-accept") == Some(&accept)
+        && !response.headers.iter().any(|(name, value)| {
+            name.eq_ignore_ascii_case("sec-websocket-extensions") && !value.trim().is_empty()
+        })
+    {
         Ok(())
     } else {
         Err(refused(response))
@@ -156,7 +163,7 @@ pub fn refused(response: &http::Response) -> io::Error {
     ))
 }
 
-pub(crate) fn handshake(head: &Head) -> Option<Vec<u8>> {
+pub(crate) fn handshake(head: &Head) -> Option<String> {
     let upgrade = head
         .header("upgrade")
         .is_some_and(|value| value.eq_ignore_ascii_case("websocket"));
@@ -169,24 +176,21 @@ pub(crate) fn handshake(head: &Head) -> Option<Vec<u8>> {
     let key = head
         .header("sec-websocket-key")
         .filter(|key| !key.is_empty())?;
-    (upgrade && connection && version).then(|| {
-        let accept = tungstenite::handshake::derive_accept_key(key.as_bytes());
-        http::response(
-            Status::SwitchingProtocols,
-            &[
-                ("upgrade", "websocket"),
-                ("connection", "upgrade"),
-                ("sec-websocket-accept", &accept),
-            ],
-            b"",
-        )
-    })
+    (upgrade && connection && version)
+        .then(|| tungstenite::handshake::derive_accept_key(key.as_bytes()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Limit {
+    Cap,
+    Reply,
 }
 
 #[derive(Debug)]
 struct Io<'a> {
     source: Option<PollRead<'a>>,
     queue: &'a mut Queue,
+    limit: Limit,
 }
 
 impl Read for Io<'_> {
@@ -200,7 +204,10 @@ impl Read for Io<'_> {
 
 impl Write for Io<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self.queue.push(&[bytes], Fit::Cap) {
+        if self.limit == Limit::Reply {
+            self.queue.push_reply(bytes.to_vec());
+            Ok(bytes.len())
+        } else if self.queue.push(&[bytes], Fit::Cap) {
             Ok(bytes.len())
         } else {
             Err(io::Error::other("connection queue full"))
@@ -222,10 +229,11 @@ pub(crate) fn overflow_close() -> Vec<u8> {
     bytes
 }
 
-fn writer(out: &mut Output) -> Io<'_> {
+fn writer(out: &mut Output, limit: Limit) -> Io<'_> {
     Io {
         source: None,
         queue: out.parts().1,
+        limit,
     }
 }
 
@@ -251,6 +259,7 @@ enum Awaiting {
 #[derive(Debug)]
 pub(crate) struct Ws {
     ctx: WebSocketContext,
+    limit: Limit,
     next_ping: Instant,
     ping: Option<Awaiting>,
     accepted: u64,
@@ -266,12 +275,75 @@ impl Ws {
             .max_frame_size(Some(MAX_MESSAGE));
         let now = Instant::now();
         Ws {
+            limit: Limit::Cap,
             ctx: WebSocketContext::from_partially_read(part, Side::Server, Some(config)),
             next_ping: now.checked_add(PING_INTERVAL).unwrap_or(now),
             ping: None,
             accepted: 0,
             blocked: None,
         }
+    }
+
+    pub(crate) fn flow(part: Vec<u8>) -> Ws {
+        let mut ws = Ws::new(part);
+        ws.limit = Limit::Reply;
+        ws
+    }
+
+    pub(crate) fn proxy(part: Vec<u8>) -> Ws {
+        let mut ws = Ws::flow(part);
+        ws.ctx.set_config(|config| {
+            config.max_message_size = Some(crate::protocol::EXEC_CHUNK);
+            config.max_frame_size = Some(crate::protocol::EXEC_CHUNK);
+        });
+        ws
+    }
+
+    pub(crate) fn message(
+        &mut self,
+        out: &mut Output,
+        poll: &mut Poll,
+        token: Token,
+        reads: &mut Reads,
+    ) -> Result<Option<Message>, Cause> {
+        if !out.is_open() {
+            return Err(Cause::Io);
+        }
+        let (stream, queue) = out.parts();
+        let mut io = Io {
+            source: Some(PollRead::new(poll, token, stream.as_fd(), reads)),
+            queue,
+            limit: self.limit,
+        };
+        let result = loop {
+            match self.ctx.read(&mut io) {
+                Ok(message) => match message {
+                    Message::Pong(_) => self.ping = None,
+                    Message::Ping(_) | Message::Frame(_) => {}
+                    other => break Ok(Some(other)),
+                },
+                Err(Error::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
+                    break Ok(None);
+                }
+                Err(Error::Capacity(_)) => {
+                    out.closing(Cause::MessageTooLarge);
+                    break Ok(Some(Message::Close(Some(CloseFrame {
+                        code: CloseCode::Size,
+                        reason: crate::protocol::CloseCode::SIZE_REASON.into(),
+                    }))));
+                }
+                Err(
+                    Error::ConnectionClosed
+                    | Error::AlreadyClosed
+                    | Error::Protocol(
+                        tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+                    ),
+                ) => break Err(Cause::Eof),
+                Err(_) => break Err(Cause::Io),
+            }
+        };
+        out.flush();
+        result
     }
 
     pub(crate) fn next(
@@ -281,54 +353,67 @@ impl Ws {
         token: Token,
         reads: &mut Reads,
     ) -> Next {
-        if !out.is_open() {
-            return Next::Close;
-        }
-        let (stream, queue) = out.parts();
-        let mut io = Io {
-            source: Some(PollRead::new(poll, token, stream.as_fd(), reads)),
-            queue,
+        let cause = match self.message(out, poll, token, reads) {
+            Ok(Some(Message::Text(text))) => return Next::Text(text.as_str().to_owned()),
+            Ok(None) => return Next::Wait,
+            Ok(Some(Message::Close(_))) => Cause::PeerClosed,
+            Ok(Some(_)) => Cause::Refused,
+            Err(cause) => cause,
         };
-        let next = loop {
-            match self.ctx.read(&mut io) {
-                Ok(message) => match message {
-                    Message::Text(text) => break Next::Text(text.as_str().to_owned()),
-                    Message::Pong(_) => self.ping = None,
-                    Message::Ping(_) | Message::Frame(_) => {}
-                    Message::Binary(_) => {
-                        out.closing(Cause::Refused);
-                        break Next::Close;
-                    }
-                    Message::Close(_) => {
-                        out.closing(Cause::PeerClosed);
-                        let mut bytes = std::io::Cursor::new(Vec::new());
-                        let _ = self.ctx.flush(&mut bytes);
-                        out.finish(bytes.into_inner());
-                        break Next::Close;
-                    }
-                },
-                Err(Error::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
-                    break Next::Wait;
-                }
-                Err(error) => {
-                    let cause = match error {
-                        Error::ConnectionClosed
-                        | Error::AlreadyClosed
-                        | Error::Protocol(
-                            tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
-                        ) => Cause::Eof,
-                        _ => Cause::Io,
-                    };
-                    out.closing(cause);
-                    break Next::Close;
-                }
-            }
-        };
-        out.flush();
-        if next == Next::Close {
+        out.closing(cause);
+        if matches!(cause, Cause::PeerClosed) {
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            let _ = self.ctx.flush(&mut bytes);
+            out.finish(bytes.into_inner());
+        } else {
             out.close();
         }
-        next
+        Next::Close
+    }
+
+    pub(crate) fn proxy_send(
+        &mut self,
+        out: &mut Output,
+        data: Vec<u8>,
+        binary: FrameKind,
+    ) -> Result<(), std::string::FromUtf8Error> {
+        let message = binary.into_message(data)?;
+        if self
+            .ctx
+            .write(
+                &mut Io {
+                    source: None,
+                    queue: out.parts().1,
+                    limit: Limit::Reply,
+                },
+                message,
+            )
+            .is_err()
+        {
+            out.close();
+        }
+        out.flush();
+        Ok(())
+    }
+
+    pub(crate) fn proxy_close(
+        &mut self,
+        out: &mut Output,
+        code: crate::protocol::CloseCode,
+        reason: crate::protocol::CloseReason,
+    ) {
+        let _ = self.ctx.close(
+            &mut Io {
+                source: None,
+                queue: out.parts().1,
+                limit: Limit::Reply,
+            },
+            Some(CloseFrame {
+                code: code.into(),
+                reason: String::from(reason).into(),
+            }),
+        );
+        out.drain();
     }
 
     pub(crate) fn send(&mut self, out: &mut Output, text: impl Into<Utf8Bytes>) {
@@ -343,7 +428,7 @@ impl Ws {
         }
         if self
             .ctx
-            .write(&mut writer(out), Message::Text(text))
+            .write(&mut writer(out, self.limit), Message::Text(text))
             .is_err()
         {
             out.closing(Cause::Io);
@@ -444,7 +529,10 @@ impl Ws {
         if now >= self.next_ping {
             if self
                 .ctx
-                .write(&mut writer(out), Message::Ping(Default::default()))
+                .write(
+                    &mut writer(out, self.limit),
+                    Message::Ping(Default::default()),
+                )
                 .is_err()
             {
                 if out.life() == Life::Draining {

@@ -50,7 +50,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         case #selector(promptSelectionItem(_:)): canPrompt()
         case #selector(copySelectionItem(_:)), #selector(NSText.copy(_:)): hasSelection
         case #selector(NSText.selectAll(_:)), #selector(NSText.paste(_:)): copyMode == nil
-        case #selector(runCommand(_:)), #selector(toggleCopyMode(_:)),
+        case #selector(toggleCopyMode(_:)): !webviewFocused
+        case #selector(runCommand(_:)),
              #selector(showFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)): true
         default: false
         }
@@ -88,7 +89,37 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var canPrompt: () -> Bool = { false }
     var selectionQuote: String? { hasSelection ? readSelection() : nil }
     var onPrompt: (PaneView, String?) -> Void = { _, _ in }
-    var chromeViews: [NSView] { [copyLabel, breadcrumb, runtimePill] + [find].compactMap { $0 } }
+    private(set) var webviewView: WebviewPaneView?
+    var inputResponder: NSResponder { if let webviewView { webviewView.browser } else { self } }
+    var webviewFocused: Bool {
+        guard let webviewView, let responder = window?.firstResponder as? NSView else { return false }
+        return responder.isDescendant(of: webviewView)
+    }
+    var chromeViews: [NSView] { [webviewView].compactMap { $0 } + [copyLabel, breadcrumb, runtimePill] + [find].compactMap { $0 } }
+
+    func updateWebview(_ webview: KoSchema.Webview?) {
+        guard runtime.values.webview.enabled, let page = webview?.page, let client else { releaseWebview(); return }
+        guard !isHiddenOrHasHiddenAncestor || webviewView != nil else { return }
+        if webviewView == nil {
+            endCopy()
+            find?.close()
+            webviewView = WebviewPaneView(pane: self, client: client)
+            needsLayout = true
+            if let chrome = copyLabel.superview { chrome.addSubview(webviewView!, positioned: .below, relativeTo: copyLabel) }
+            if window?.firstResponder === self { window?.makeFirstResponder(inputResponder) }
+        }
+        webviewView?.update(path: page.path, serving: webview?.serving == true)
+    }
+
+    func releaseWebview() {
+        guard let webviewView else { return }
+        let focused = webviewFocused || find?.focused == true
+        find?.close()
+        webviewView.close()
+        self.webviewView = nil
+        needsLayout = true
+        if focused { window?.makeFirstResponder(self) }
+    }
     enum CopyMode { case entering(DispatchWorkItem), cursor, selecting, lines(anchor: (x: Int, y: Int), cursor: (x: Int, y: Int)) }
     private(set) var copyMode: CopyMode?
     private enum MouseDrag {
@@ -255,7 +286,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         var view = responder as? NSView
         while let current = view {
             if let pane = current as? PaneView { return pane }
-            view = (current as? PaneFind)?.pane ?? current.superview
+            view = (current as? PaneFind)?.pane ?? (current as? WebviewPaneView)?.pane ?? current.superview
         }
         return nil
     }
@@ -474,6 +505,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         presentScroll()
         guard let parent = copyLabel.superview else { return }
         let chrome = parent.bounds
+        if let webviewView { webviewView.frame = parent.convert(bounds, from: self) }
         let capsule = min(420, max(200, chrome.width - 16))
         find?.frame = NSRect(x: chrome.width - 8 - capsule, y: 8, width: capsule, height: 32)
         let copy = copyLabel.subviews[0]
@@ -622,6 +654,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     private(set) var disposed = false
 
     func dispose() {
+        releaseWebview()
         guard !disposed else { return }
         disposed = true
         _ = (window?.delegate as? WindowOwner)?.cancelUploads(self)
@@ -732,6 +765,13 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             guard let self, let window, event.window === window else { return event }
             switch event.type {
             case .leftMouseDown:
+                if let webviewView, window.attachedSheet == nil,
+                   let hit = window.contentView?.superview?.hitTest(event.locationInWindow), hit.isDescendant(of: webviewView) {
+                    onSelect()
+                    window.makeFirstResponder(inputResponder)
+                    syncFocus()
+                    return event
+                }
                 if acceptsKeyInput, window.attachedSheet == nil, !(NSApp.isActive && window.isKeyWindow), window.firstResponder !== self,
                    window.contentView?.superview?.hitTest(event.locationInWindow) === self {
                     window.makeFirstResponder(self)
@@ -988,6 +1028,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     func updatePaper() {
         layer?.backgroundColor = paperColor.cgColor
+        webviewView?.updateTheme()
     }
 
     func setFontSize(_ points: Float) {
@@ -1034,6 +1075,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     // MARK: - Copy mode
 
     @objc func toggleCopyMode(_ sender: Any?) {
+        guard !webviewFocused else { return }
         guard copyMode == nil else { return endCopy() }
         startCopy()
     }
@@ -1395,7 +1437,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     func syncFocus() {
-        setSurfaceFocus(window?.firstResponder === self && (window as? OwnerWindow)?.isInputWindow != false)
+        setSurfaceFocus((window?.firstResponder === self || webviewFocused) && (window as? OwnerWindow)?.isInputWindow != false)
     }
 
     override func becomeFirstResponder() -> Bool {

@@ -65,19 +65,20 @@ miri:
 	bash scripts/miri.sh
 
 preview-pi unpreview-pi:
-	@set -eu; prefix="$${KO_PREVIEW_PREFIX:-$$(brew --prefix ko)}"; dir=$$(cd "$$prefix/share/ko/pi" && pwd -P); \
-	file=ko-pi.ts; \
-	if test '$@' = preview-pi; then \
-	  test -e "$$dir/$$file.orig" || cp -p "$$dir/$$file" "$$dir/$$file.orig"; src="share/pi/$$file"; \
-	else src="$$dir/$$file.orig"; fi; \
-	tmp=$$(mktemp "$$dir/$$file.XXXXXX"); cp -p "$$src" "$$tmp"; mv "$$tmp" "$$dir/$$file"; \
-	if test '$@' = preview-pi; then \
-	  test -e "$$dir/skills.orig" || ! test -d "$$dir/skills" || cp -Rp "$$dir/skills" "$$dir/skills.orig"; \
-	  rm -rf "$$dir/skills"; cp -Rp share/pi/skills "$$dir/skills"; \
-	else \
-	  rm -rf "$$dir/skills"; ! test -d "$$dir/skills.orig" || cp -Rp "$$dir/skills.orig" "$$dir/skills"; \
-	fi; \
-	echo 'Run /reload in the panes'
+	@set -eu; prefix="$${KO_PREVIEW_PREFIX:-$$(brew --prefix ko)}"; dir=$$(cd "$$prefix/share/ko" && pwd -P); \
+	for file in pi/ko-pi.ts pi/ko-pi-page.html pi/ko-api.d.ts pi/skills webview; do \
+	  dst="$$dir/$$file"; \
+	  if test '$@' = preview-pi; then \
+	    if ! test -e "$$dst.orig" && ! test -e "$$dst.orig.absent"; then \
+	      if test -e "$$dst"; then cp -Rp "$$dst" "$$dst.orig"; else touch "$$dst.orig.absent"; fi; \
+	    fi; src="share/$$file"; \
+	  elif test -e "$$dst.orig.absent"; then rm -rf "$$dst" "$$dst.orig.absent"; continue; \
+	  elif test -e "$$dst.orig"; then src="$$dst.orig"; \
+	  else continue; fi; \
+	  tmp=$$(mktemp -d "$$dir/.preview.XXXXXX"); cp -Rp "$$src" "$$tmp/item"; \
+	  rm -rf "$$dst"; mv "$$tmp/item" "$$dst"; rmdir "$$tmp"; \
+	  if test '$@' = unpreview-pi; then rm -rf "$$dst.orig"; fi; \
+	done; echo 'Run /reload in the panes'
 
 release:
 	bash scripts/release.sh '$(VERSION)' $(ARGS)
@@ -89,18 +90,19 @@ website:
 # source by terminfo.zig; tic writes x/ or 78/ by platform, and both are shipped.
 # zig keeps its caches in the KO_ZIG_CACHE of .cargo/config.toml.
 KO := build/ko
-SHARE := bin pi shim.sh terminfo
+SHARE := bin pi webview shim.sh terminfo
 ZIG_CACHE := $(CURDIR)/target/zig-cache
 TERMINFO := $(KO)/share/ko/terminfo
 build: $(TERMINFO)/x/xterm-ghostty
 	$(CARGO) build --locked --release --bin ko --bin ko-pane
 	rm -f $(KO)/bin/ko $(KO)/bin/ko-pane
 	cp target/release/ko target/release/ko-pane $(KO)/bin/
-	rm -rf $(KO)/share/ko/bin $(KO)/share/ko/pi
+	rm -rf $(KO)/share/ko/bin $(KO)/share/ko/pi $(KO)/share/ko/webview
 	cp -R share/ko/bin $(KO)/share/ko/bin
 	mkdir -p $(KO)/share/ko/pi
-	cp share/pi/ko-pi.ts $(KO)/share/ko/pi/ko-pi.ts
+	cp share/pi/ko-pi.ts share/pi/ko-pi-page.html share/pi/ko-api.d.ts $(KO)/share/ko/pi/
 	cp -R share/pi/skills $(KO)/share/ko/pi/skills
+	cp -R share/webview $(KO)/share/ko/webview
 	cp share/ko/shim.sh $(KO)/share/ko/shim.sh
 
 # The static Linux ko under share/ko/linux/<arch>: bin/ko and share/ko, which has the SHARE files of

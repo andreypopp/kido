@@ -94,7 +94,7 @@ fn lifecycle_logs_rotate_and_input_logs_contain_only_counts() {
 fn a_bad_client_hello_reports_the_decode_error_before_closing() {
     let s = start(&[]);
     let mut client = s.ws("/client");
-    client.send(&json!({"type": "hello", "focused": false, "sizing": {"type": "disabled"}}));
+    client.send(&json!({"type": "hello", "webview": false, "focused": false, "sizing": {"type": "disabled"}}));
     let refusal = client.event("refused");
     assert_eq!(refusal["message"], "missing field `name`");
     client.closed("the refused hello");
@@ -230,7 +230,7 @@ fn one_client_sizes_each_reported_window_independently_of_its_selection() {
         &json!({"parent": parent["pane"], "command": {"type": "shell", "command": "exec /bin/sh"}}),
     );
     let mut client = s.ws("/client");
-    client.send(&json!({"type": "hello", "name": "test", "pane": child["pane"], "focused": true, "sizing": {"type": "windows", "viewport": size(120, 40), "windows": []}}));
+    client.send(&json!({"type": "hello", "webview": false, "name": "test", "pane": child["pane"], "focused": true, "sizing": {"type": "windows", "viewport": size(120, 40), "windows": []}}));
     client.welcome();
     let before = s.doc()["revision"].as_u64().unwrap();
     let mut report = json!({"type": "size", "sizing": {"type": "windows", "viewport": size(120, 40), "windows": [
@@ -272,7 +272,7 @@ fn one_client_sizes_each_reported_window_independently_of_its_selection() {
             && dimensions(doc, &sibling["window"]) == (60, 20)
     });
     let mut peer = s.ws("/client");
-    peer.send(&json!({"type": "hello", "name": "peer", "pane": sibling["pane"], "focused": true, "sizing": {"type": "windows", "viewport": size(90, 30), "windows": [{"window": child["window"], "size": size(51, 21)}]}}));
+    peer.send(&json!({"type": "hello", "webview": false, "name": "peer", "pane": sibling["pane"], "focused": true, "sizing": {"type": "windows", "viewport": size(90, 30), "windows": [{"window": child["window"], "size": size(51, 21)}]}}));
     peer.welcome();
     wait_doc("peer claims its reported child", &s, |doc| {
         dimensions(doc, &child["window"]) == (51, 21)
@@ -315,7 +315,7 @@ fn one_client_sizes_each_reported_window_independently_of_its_selection() {
     assert_eq!(client.event("selected")["pane"], parent["pane"]);
     assert_eq!(dimensions(&s.doc(), &parent["window"]), (123, 43));
     let mut invalid = s.ws("/client");
-    invalid.send(&json!({"type": "hello", "name": "invalid", "focused": true, "sizing": {"type": "disabled"}}));
+    invalid.send(&json!({"type": "hello", "webview": false, "name": "invalid", "focused": true, "sizing": {"type": "disabled"}}));
     invalid.welcome();
     let before = s.doc();
     invalid.send(&json!({"type": "size", "sizing": {"type": "windows", "viewport": size(1, 1), "windows": [
@@ -406,7 +406,7 @@ fn removing_a_window_returns_the_client_to_its_previous_visit() {
             {"name": "b", "tree": new()}]}
     ]}}));
     let mut client = s.ws("/client");
-    client.send(&json!({"type": "hello", "name": "test", "pane": "pane_1", "focused": false, "sizing": {"type": "disabled"}}));
+    client.send(&json!({"type": "hello", "webview": false, "name": "test", "pane": "pane_1", "focused": false, "sizing": {"type": "disabled"}}));
     let hello = client.event("selected");
     assert_eq!(hello["pane"], "pane_1");
     assert!(hello.get("request").is_none());

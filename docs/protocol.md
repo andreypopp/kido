@@ -158,7 +158,8 @@ only with its own token (section 15).
 A request that carries an `Origin` header is refused (`refused`). A
 unix-socket server has no origin of its own. No native client sends
 one; a browser always does. This closes cross-site WebSocket
-hijacking before any TCP listener exists.
+hijacking before any TCP listener exists. The webview proxy routes are
+the one exception (section 16).
 
 Encoding: control bodies are JSON. Nothing negotiates compression:
 section 4 gives the one place where ko compresses, the snapshot
@@ -233,7 +234,7 @@ does not pass unseen.
 `GET /client` upgrades to the client connection, one per native window
 or terminal client process. The client's first message is its hello:
 name, what it currently shows, focus and its sizing: `disabled`, or
-the viewport and the windows that it displays with their sizes. The server answers with the
+the viewport and the windows that it displays with their sizes. It also reports whether it can show webviews (`webview`, section 16). The server answers with the
 `Welcome` event, which carries the client's id, the terminal
 limits and the runtimes with their link states (section 15), then the
 full layout document with every pane's row (section 7), then events
@@ -576,8 +577,9 @@ in the order the server produced them. The kinds, as `ClientEvent` in
 change, with the rows of the panes that the change adds (section 7);
 a window's new `focus` when only the focus changed (section 7); a
 pane's title, pwd, pid, foreground, status, variable, death, bell,
-notification, progress, message stream (`inbox`, section 7) and
-runtime (`pane_runtime`, section 15); a pane's clipboard write and clipboard
+notification, progress, message stream (`inbox`, section 7), runtime
+(`pane_runtime`, section 15) and webview record (`webview`, section 16);
+a pane's clipboard write and clipboard
 read (section 9), a runtime's entry and
 its removal (section 15), and this client's
 own state when a `switch` or a removal moved it. The OSC 133 steps
@@ -609,7 +611,8 @@ Pane state and pane events:
 - A pane's row (`Listing` in `ko_server/src/protocol.rs`) carries
   its title, pwd, foreground process, death, status, variables,
   progress (OSC 9;4), `inbox` while its message stream is open
-  (section 7). The pid is
+  (section 7) and `webview` while it has a page or a serve stream
+  (section 16). The pid is
   absent until the coordinator accepts the `ready` pid (section 14),
   and absent when that pid had no process. The status is
   absent until the model has run once for the pane; the progress is
@@ -1177,10 +1180,16 @@ coordinator keeps the OSC 7501 record set, which the status route
 also writes (section 6), and applies its rules
 (design-program-status.md, "The record set"); `ko-pane` parses nothing that libghostty-vt has
 validated. An OSC 7501 report has no flag for an absent title or
-message, so an empty string is absent. RIS needs no frame of its own:
-libghostty-vt reports a `clear` of every record and a progress
-`remove` before its reset, so `ko-pane` does not register the
-`RESET` callback.
+message, so an empty string is absent. RIS needs no frame of its own
+for these records: libghostty-vt reports a `clear` of every record and
+a progress `remove` before its reset. The webview page has no such
+report, so `ko-pane` registers the `RESET` callback and sends a
+`webview` frame with `leave` for it.
+
+OSC 7502 is the one sequence that `ko-pane` parses itself, from the
+unknown-sequence callback (section 16): it sends the `webview` frame with
+the decoded action, and it answers the query from the `supported` value
+that `init` and the `webview_supported` frame give it.
 
 Rules: `bytes` offsets are consecutive from zero; a `resize` is
 applied by `ko-pane` between two `bytes` records and written as a
@@ -1396,3 +1405,126 @@ after the escalation (design-runtimes.md, "The exec session"). A
 ended ends with `exit` and the signal's name on every kind. One runtime
 runs at most 32 sessions; later ones wait in order. The user and host
 pane identities may open a session; a runtime connection may not.
+
+## 16. Webview panes
+
+[design-webview.md](design-webview.md) gives the design;
+this section gives the behaviour that the server has today. A program
+switches its pane to a page with OSC 7502 and serves the page over
+its pane's serve stream; the page's client fetches it through the
+proxy route.
+
+**The escape.** OSC 7502 has the pair grammar of OSC 7501;
+`ko_pane_wire/src/webview.rs` holds the grammar, its parser and its
+encoder, which `ko webview` also uses. `ko_vt` parses it in
+libghostty-vt's unknown-sequence callback, which `ko-pane` installs.
+`enter` sets the page and `leave` removes it. An `enter` whose path
+the parser refuses is ignored as a whole, and so is a sequence that
+the callback cut off at `MAX_BYTES`. The coordinator gets the decoded
+action as the `webview` frame (section 14).
+
+**The query.** `ko-pane` answers the query itself, through the
+callback's reply path, so the answer stays in order with the
+terminal's other replies and has the terminator of the query. It
+names the actions and the current `supported`.
+
+**Supported.** Each hello declares `webview` (section 3): whether the client
+can show webviews. `supported` is true while at least one connected client
+declared it. It is a fact of the server, not of a pane: it does not
+say that a client shows the pane. The coordinator sends each
+`ko-pane` the new value when it changes, and gives a new `ko-pane`
+the current value in `init` (section 14). `ko-pane` keeps it only for
+the query.
+
+**The record.** `PaneWebview` in `ko_server/src/webview.rs` keeps a
+pane's page, its serve stream and its requests in flight. The wire
+form is `Webview` in `ko_server/src/protocol/webview.rs`: the page, if the
+program entered one, and `serving`, derived from the open stream. The row carries it as `webview`, absent when there is no page and
+no stream, and a `webview` event carries the pane's whole record on each
+change (section 6). `leave`, the pane's death, RIS and a primary
+prompt start (OSC 133 `A`) remove the page; the death also closes the
+serve stream. The alternate screen does not touch it. Nothing
+persists. The status model does not read it.
+
+**The serve stream**, `GET /panes/{id}/webview/serve`, a WebSocket of
+JSON text messages (`ServeIn` and `ServeOut` in
+`ko_server/src/protocol/webview.rs`). Only the pane itself opens it: the
+user and every other pane are `refused`. It is in the runtime gate's
+list, so a program in a runtime serves over the runtime listener. A
+pane has at most one; a second upgrade is `refused`. The server sends
+`supported` with the current value at open and on each change. For each
+proxied request or page WebSocket, the server mints a `req` serial,
+which only increases. A `data` payload is at most `EXEC_CHUNK` before its
+encoding, as in the exec session (section 15), and a `body` with `more: false`
+ends its side. The program sees the method, the path with its query
+and the headers as the page sent them, with the hop-by-hop headers,
+`Host` and the identity headers (`Ko-Pane`, `Ko-Pane-Token`,
+`Ko-Client`) removed, and the server's own `Ko-Pane` added.
+`ko_server::http::forwarded` owns the rule, which `ko webview serve` and
+the client core also apply. The program answers requests in any order.
+
+A page's WebSocket is an `upgrade`. The program accepts it with a
+`response` of status 101, and any other status is the proxy's answer.
+After 101, a `frame` is one WebSocket message in either direction, and
+a `close` ends it from either side. A message over `EXEC_CHUNK` closes that
+WebSocket with 1009, in both directions. The proxy does not pass on
+`Sec-WebSocket-Extensions` in either direction, and it refuses a
+response that names an extension, because it reads and writes only
+uncompressed messages.
+
+When the stream closes, a request that has no response head yet gets
+`502` (`io`); a response whose head was sent ends with the close of
+its connection and no final chunk, because HTTP cannot change a
+status that it already sent, so the client sees the body cut off.
+Every page WebSocket of the pane closes with 1011.
+
+**The proxy route**, `GET|POST|PUT|PATCH|DELETE /panes/{id}/webview/{path...}`,
+where `{path...}` takes the rest of the target, query included. A
+`GET` with `Upgrade: websocket` opens a page WebSocket. Only the user
+with the `Ko-Client` header of a live client may call it: a pane
+identity is `refused`, an expired client is `gone`, and the runtime
+listener refuses it (it is not in the gate's list). These routes are
+the one exception to the `Origin` refusal of section 1, because the
+client passes on the page's headers and only a live client's id gets
+past the check. The request body is at most `MAX_BODY` (`ko_server/src/http.rs`),
+else `invalid`.
+An unknown pane or a pane with no page is `not_found`, a dead pane is
+`gone`, and a pane with no serve stream is `503` (`unavailable`): the
+program is not serving. A pane has at most `MAX_IN_FLIGHT` requests and WebSockets
+in flight, and the next one gets `429`. The server streams the
+response as the program sends it. When the proxy connection closes,
+the program gets `cancel`, or `close` for a WebSocket.
+
+Every proxy response, an error included, has `Cache-Control:
+no-store` and the `Content-Security-Policy` of `CSP` in
+`ko_server/src/http.rs`. A program's own CSP passes through
+beside it, so both apply: a program can make the policy stricter, never
+weaker.
+
+Back-pressure: the server stops reading the serve stream while any
+proxy connection of its pane has its queue over the cap, and stops
+reading a page WebSocket while the serve stream's queue is over the
+cap. A slow page slows its own pane, not the server. A full serve
+queue never closes the stream: every message to the program waits in
+the pane's record until the queue has room. `supported` never waits in
+that queue: the record keeps the value that it sent last, and when the
+queue has room the server sends the current value first if it differs. A request in flight is a
+connection in `Phase::Webview` with its waiter in the pane's
+`PaneWebview` (design-ko.md, "The loop rule").
+
+**`ko webview`** (`ko/src/webview.rs`, whose clap definitions give the
+flags) writes the escapes to its tty for `enter` and `leave`. `ko
+webview serve` opens the serve stream with the pane's identity and
+forwards each request to its unix socket as HTTP/1.1, one connection
+for each request; an `upgrade` becomes an HTTP/1.1 WebSocket upgrade
+on its own connection, and its messages and close go both ways. Its
+stdout carries only the `supported` message, as JSON lines, when the
+stream opens and at each change, so the program learns the value with
+no stream of its own. It runs on one loop until its stdin or the
+stream closes. It exits 6 without a
+pane identity, so a program learns from ko alone whether it runs in a
+pane, and 1 with the server's message when the upgrade is refused. A connection that
+closes keeps its queue until the queue drains or `READ_TIMEOUT`
+(`ko_client/src/wire.rs`) ends, so the program gets the close code. Its HTTP client is
+`ko_client/src/webview.rs`, over the response reader of
+`ko_server/src/http/response.rs`.

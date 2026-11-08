@@ -28,6 +28,7 @@ impl From<Current> for Selection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Active {
+    pub(crate) webview: bool,
     pub(crate) current: Option<Current>,
     pub(crate) focused: bool,
     pub(crate) sizing: Sizing,
@@ -100,6 +101,7 @@ impl Client {
         match (&mut self.active, request) {
             (None, ClientRequest::Hello(hello)) => {
                 self.active = Some(Active {
+                    webview: hello.webview,
                     current: None,
                     focused: hello.focused,
                     sizing: hello.sizing,
@@ -383,6 +385,7 @@ mod tests {
     fn at(current: Current) -> Client {
         let mut client = Client::new(ClientId::new(1));
         client.active = Some(Active {
+            webview: false,
             current: None,
             focused: false,
             sizing: Sizing::Windows {
@@ -656,6 +659,7 @@ mod tests {
     #[test]
     fn a_window_is_claimed_by_a_focused_client_or_by_one_that_no_focused_client_shares_it_with() {
         let peer = |window: u64, focused, disabled| Active {
+            webview: false,
             current: Some(current(1, 3, 3)),
             focused,
             sizing: if disabled {
@@ -722,7 +726,7 @@ mod tests {
             Err("hello must be first")
         );
         let hello: ClientRequest = serde_json::from_str(
-            r#"{"type":"hello","name":"t","window":"window_2","focused":false,"sizing":{"type":"windows","viewport":{"cols":8,"rows":8},"windows":[]}}"#,
+            r#"{"type":"hello","webview":false,"name":"t","window":"window_2","focused":false,"sizing":{"type":"windows","viewport":{"cols":8,"rows":8},"windows":[]}}"#,
         )
         .unwrap();
         assert_eq!(

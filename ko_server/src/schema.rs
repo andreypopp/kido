@@ -122,13 +122,13 @@ fn operation(generator: &mut SchemaGenerator, route: &RouteInfo) -> Value {
     let description: Vec<&str> = route.docs.iter().map(|line| line.trim()).collect();
     operation.insert("description".to_owned(), json!(description.join(" ")));
     let caller = ParamInfo {
-        name: "Ko-Pane",
+        name: protocol::PANE_HEADER,
         schema: <PaneId as Param>::schema,
         example: <PaneId as Param>::EXAMPLE,
         default: None,
     };
     let token = ParamInfo {
-        name: "Ko-Pane-Token",
+        name: protocol::PANE_TOKEN_HEADER,
         schema: |generator| generator.subschema_for::<PaneToken>(),
         example: "0123456789abcdef0123456789abcdef",
         default: None,
@@ -148,12 +148,16 @@ fn operation(generator: &mut SchemaGenerator, route: &RouteInfo) -> Value {
     if !parameters.is_empty() {
         operation.insert("parameters".to_owned(), Value::Array(parameters));
     }
-    if let Some(body) = route.body {
+    if let Some((body, format)) = route.body {
+        let media = match format {
+            crate::route::BodyFormat::Json => "application/json",
+            crate::route::BodyFormat::Binary => "application/octet-stream",
+        };
         operation.insert(
             "requestBody".to_owned(),
             json!({
-                "required": true,
-                "content": {"application/json": {"schema": body(generator).to_value()}},
+                "required": matches!(format, crate::route::BodyFormat::Json),
+                "content": {(media): {"schema": body(generator).to_value()}},
             }),
         );
     }
@@ -177,7 +181,13 @@ fn operation(generator: &mut SchemaGenerator, route: &RouteInfo) -> Value {
                 json!({"send": send(generator).to_value(), "recv": received}),
             );
         }
-        Kind::Http { reply, errors } => {
+        Kind::Http { reply, errors } | Kind::Proxy { reply, errors } => {
+            if matches!(route.kind, Kind::Proxy { .. }) && route.method == protocol::Method::Get {
+                responses.insert(
+                    "101".to_owned(),
+                    json!({"description": Status::SwitchingProtocols.reason()}),
+                );
+            }
             match reply {
                 Some(Content::Json(schema)) => {
                     responses.insert(
@@ -209,7 +219,15 @@ fn operation(generator: &mut SchemaGenerator, route: &RouteInfo) -> Value {
                         }),
                     );
                 }
-                Some(Content::Binary) | None => {}
+                Some(Content::Binary) => {
+                    let media = if matches!(route.kind, Kind::Proxy { .. }) {
+                        "*/*"
+                    } else {
+                        "application/octet-stream"
+                    };
+                    responses.insert("200".to_owned(), json!({"description":Status::Ok.reason(),"content":{(media):{"schema":{"type":"string"}}}}));
+                }
+                None => {}
             }
             for (status, schema) in *errors {
                 responses.insert(
@@ -222,17 +240,15 @@ fn operation(generator: &mut SchemaGenerator, route: &RouteInfo) -> Value {
             }
         }
     }
-    responses.insert(
-        "default".to_owned(),
+    let default = if matches!(route.kind, Kind::Proxy { .. }) {
+        json!({"description":"The program's response, or a common error body.","content":{"*/*":{"schema":{"type":"string"}}}})
+    } else {
         json!({
             "description": "The common error body.",
-            "content": {
-                "application/json": {
-                    "schema": generator.subschema_for::<protocol::Error>().to_value(),
-                },
-            },
-        }),
-    );
+            "content": {"application/json": {"schema": generator.subschema_for::<protocol::Error>().to_value()}},
+        })
+    };
+    responses.insert("default".to_owned(), default);
     operation.insert("responses".to_owned(), Value::Object(responses));
     Value::Object(operation)
 }
@@ -295,6 +311,28 @@ fn document() -> Value {
 mod tests {
     use super::*;
 
+    #[test]
+    fn webview_proxy_methods_share_media_but_only_get_upgrades() {
+        let document = document();
+        let path = "/panes/{id}/webview/{path}";
+        for method in ["get", "post", "put", "patch", "delete"] {
+            let operation = &document["paths"][path][method];
+            assert!(operation["responses"]["200"]["content"]["*/*"].is_object());
+            assert!(operation["responses"]["default"]["content"]["*/*"].is_object());
+            assert_eq!(operation["responses"]["101"].is_object(), method == "get");
+            let route = crate::api::Route::of_request(
+                &method.to_ascii_uppercase(),
+                "/panes/pane_1/webview/",
+            )
+            .unwrap();
+            assert!(matches!(route.kind(), Kind::Proxy { .. }));
+            assert_eq!(
+                route.upgrade(),
+                (method == "get").then_some(crate::protocol::Upgrade::Page)
+            );
+        }
+    }
+
     fn references(value: &Value, found: &mut Vec<String>) {
         match value {
             Value::Object(object) => {
@@ -323,6 +361,13 @@ mod tests {
                 "{}",
                 route.name
             );
+            if matches!(route.kind, Kind::Proxy { .. }) {
+                assert_eq!(
+                    operation["responses"]["101"].is_object(),
+                    route.method == protocol::Method::Get
+                );
+                assert!(operation["responses"]["default"]["content"]["*/*"].is_object());
+            }
             assert!(
                 operation["responses"]["default"].is_object(),
                 "{}",

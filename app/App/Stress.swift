@@ -23,12 +23,12 @@ typealias AppWindow = StressWindow
         case find, findNext = "find-next", findClose = "find-close"
         case resizeBurst = "resize-burst", gripDrag = "grip-drag", gripDragKill = "grip-drag-kill", appearance, edgeResize = "edge-resize"
         case layoutEdit = "layout-edit", hiddenResize = "hidden-resize"
-        case tabs, sidebarJump = "sidebar-jump", sidebarMode = "sidebar-mode"
+        case tabs, sidebarJump = "sidebar-jump", sidebarMode = "sidebar-mode", webview
     }
     private static let actions: [Action] = [
         .wheel, .wheel, .stripPress, .stripWheel, .alternate, .scrollerDrag, .scrollerDrag, .scrollRequest, .find, .findNext, .findClose,
         .resizeBurst, .gripDrag, .gripDragKill, .appearance, .edgeResize, .layoutEdit, .layoutEdit, .hiddenResize, .tabs, .sidebarJump,
-        .sidebarMode,
+        .sidebarMode, .webview,
     ]
     private let owner: WindowOwner
     private var window: NSWindow { owner.window }
@@ -137,10 +137,11 @@ typealias AppWindow = StressWindow
             pane.mouseDown(with: event(.leftMouseDown, point))
             pane.mouseUp(with: event(.leftMouseUp, point))
             counts["strip-press-delivered", default: 0] += 1
-        case .alternate:
+        case .alternate, .webview:
             guard let model = owner.stressModel, let session = model.selection.session ?? model.layout.layout.sessions.first?.id,
                   let last = model.layout.layout.sessions.first(where: { $0.id == session })?.windows.last else { return }
-            let script = "while :; do printf '\\033[?1049hALT SCREEN\\n'; sleep 2; printf '\\033[?1049l'; sleep 2; done"
+            let script = action == .webview ? "'\(tools.ko)' webview enter; exec /bin/cat"
+                : "while :; do printf '\\033[?1049hALT SCREEN\\n'; sleep 2; printf '\\033[?1049l'; sleep 2; done"
             owner.stressEdit(.addWindow(KoSchema.EditAddWindow(after: last.id, new: KoSchema.CreatePane(command: .shell(.init(command: script))), session: session)))
         case .wheel, .stripWheel:
             let delta = Int32(random(2) == 0 ? 1500 : -500)
