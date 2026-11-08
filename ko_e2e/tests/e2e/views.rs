@@ -16,6 +16,49 @@ use crate::harness::{
     write_config,
 };
 
+#[test]
+fn received_websocket_close_is_echoed_before_eof() {
+    use std::io::Read;
+    use tungstenite::Message as Msg;
+    use tungstenite::protocol::CloseFrame;
+    use tungstenite::protocol::frame::coding::CloseCode;
+
+    let s = start(&[]);
+    let pane = crate::panes::token_pane_in_new_session(&s, "close");
+    for frame in [
+        Some(CloseFrame {
+            code: CloseCode::Library(4000),
+            reason: "finished".into(),
+        }),
+        None,
+    ] {
+        for (role, mut ws) in [
+            ("view", s.ws(&format!("/panes/{pane}/view"))),
+            ("client", s.client(None).0),
+            ("messages", crate::messages::open(&s, &pane)),
+        ] {
+            ws.socket.close(frame.clone()).unwrap();
+            let deadline = Instant::now() + DEADLINE;
+            loop {
+                let left = deadline.checked_duration_since(Instant::now()).unwrap();
+                if let Err(error) = ws.socket.get_ref().set_read_timeout(Some(left)) {
+                    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+                }
+                match ws.socket.read() {
+                    Ok(Msg::Close(reply)) => {
+                        assert_eq!(reply, frame, "{role}");
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(error) => panic!("{role}: expected a Close reply, got {error}"),
+                }
+            }
+            let mut byte = [0];
+            assert_eq!(ws.raw().read(&mut byte).unwrap(), 0, "{role}: EOF");
+        }
+    }
+}
+
 const SOCKET_BUFFER: usize = 1 << 20;
 const FLOOD: usize = 8 * SOCKET_BUFFER;
 

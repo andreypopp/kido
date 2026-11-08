@@ -83,6 +83,16 @@ behind the output that the view's queue and spill already hold; only
 this close means the end of the pane, and a client treats it as that,
 not as an outage.
 
+Each side answers a received close frame with a close frame of the
+same code and reason (RFC 6455, section 5.5.1), unless it sent its own
+close first; a close with a code that the RFC forbids gets a protocol
+error close (1002). The server puts the reply into the connection's
+output queue and shuts the connection after the queue drains, so the
+reply follows any output that is already queued; a peer that does not
+read gets the stall close of section 4. A client tries its reply once,
+within its usual write limit, and a failure of that write does not
+change the result.
+
 Backpressure is the connection's own: the server writes with
 non-blocking writes and never blocks on a client. A stream that cannot
 be written is handled per resource (section 4 for views). The server

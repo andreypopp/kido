@@ -301,6 +301,9 @@ impl Ws {
                     }
                     Message::Close(_) => {
                         out.closing(Cause::PeerClosed);
+                        let mut bytes = std::io::Cursor::new(Vec::new());
+                        let _ = self.ctx.flush(&mut bytes);
+                        out.finish(bytes.into_inner());
                         break Next::Close;
                     }
                 },

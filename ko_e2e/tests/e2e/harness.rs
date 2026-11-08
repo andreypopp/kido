@@ -441,7 +441,7 @@ impl Record<'_> {
 
 #[derive(Debug)]
 pub(crate) struct Ws {
-    socket: WebSocket<Steady>,
+    pub(crate) socket: WebSocket<Steady>,
     deadline: Instant,
     began: Instant,
     received: usize,

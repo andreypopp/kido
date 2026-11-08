@@ -585,7 +585,9 @@ impl Link {
             },
             &mut self.closing,
         )?;
-        if !matches!(next, Next::Closed | Next::Gone) {
+        if matches!(next, Next::Closed | Next::Gone) {
+            let _ = self.out.flush(self.stream.as_fd());
+        } else {
             self.settle(poll)?;
         }
         Ok(next)
@@ -604,7 +606,9 @@ impl Link {
             },
             &mut self.closing,
         )?;
-        if !matches!(next, Next::Closed | Next::Gone) {
+        if matches!(next, Next::Closed | Next::Gone) {
+            let _ = self.flush_blocking();
+        } else {
             self.flush_blocking()?;
         }
         Ok(next)
@@ -628,6 +632,7 @@ impl Link {
                 Message::Text(body) => break Next::Text(body),
                 Message::Binary(body) => break Next::Binary(body),
                 Message::Close(frame) => {
+                    let _ = ctx.flush(io);
                     *closing = frame.map(|frame| (u16::from(frame.code), frame.reason.to_string()));
                     break if closing.as_ref().is_some_and(|(_, reason)| reason == "gone") {
                         Next::Gone
@@ -852,6 +857,60 @@ mod tests {
         );
         server.write_all(&frame(8, b"")).unwrap();
         assert_eq!(settled(&mut link, &mut poll), [Next::Closed]);
+    }
+
+    #[test]
+    fn a_close_reply_to_a_peer_that_does_not_read_times_out() {
+        let (stream, mut server) = UnixStream::pair().unwrap();
+        stream.set_nonblocking(true).unwrap();
+        let mut full = false;
+        for _ in 0..1024 {
+            match fd::write(stream.as_fd(), &[0; 65536]) {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    full = true;
+                    break;
+                }
+                Err(error) => panic!("fill the send buffer: {error}"),
+            }
+        }
+        assert!(full);
+        stream.set_nonblocking(false).unwrap();
+        server.write_all(&frame(8, &[])).unwrap();
+        let (send, result) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut link = Link::of(stream, Vec::new());
+            link.within = Duration::from_millis(30);
+            send.send(link.receive()).unwrap();
+        });
+        let received = result.recv_timeout(Duration::from_secs(1));
+        drop(server);
+        worker.join().unwrap();
+        assert_eq!(received.unwrap().unwrap(), Next::Closed);
+    }
+
+    #[test]
+    fn a_received_close_gets_a_masked_reply() {
+        for blocking in [false, true] {
+            for body in [
+                Vec::new(),
+                [4000_u16.to_be_bytes().as_slice(), b"finished"].concat(),
+            ] {
+                let (mut link, mut server, mut poll) = pair();
+                server
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                server.write_all(&frame(8, &body)).unwrap();
+                if blocking {
+                    assert_eq!(link.receive().unwrap(), Next::Closed);
+                } else {
+                    assert_eq!(settled(&mut link, &mut poll), [Next::Closed]);
+                }
+                let mut reply = vec![0; 6 + body.len()];
+                server.read_exact(&mut reply).unwrap();
+                assert_eq!(unmasked(&reply), (8, body));
+            }
+        }
     }
 
     #[test]
