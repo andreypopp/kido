@@ -1209,9 +1209,11 @@ delegates as its brief says and does not write code.
   the commit. macOS is the platform that counts: a
   failure that occurs only on Linux CI gets no unit unless the user
   asks, and a brief asks for no Linux checks.
-- **Models.** Name a model by its fully qualified name, in every
-  `spawn_agent` call, also a resume or a fork: without `model`, the
-  agent takes the caller's model.
+- **Models.** Name a model by its fully qualified name in every
+  `spawn_agent` call without `resume_from`: without `model`, the agent
+  takes the caller's model. A `resume_from`, also with `fork`, and a
+  `message_agent` that revives an ended agent keep the model and
+  thinking level of the saved session; name a model only to change it.
   - A manager runs on `claude-bridge/claude-opus-5-5`.
   - An implementer, a builder, and investigation or reproduction work
     run on `openai-codex/gpt-6.1-sol:low`.

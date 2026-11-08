@@ -2899,7 +2899,7 @@ export default function (pi: ExtensionAPI) {
     name: "message_agent",
     label: "Message Agent",
     description:
-      "Send text to an agent by name, session id, or unique id prefix. message (default) queues for any agent until its current turn ends; to an ended subagent of yours or a recorded peer it resumes that agent in its own session, with its history, and the message is its next turn. A peer stays independent. steer joins the current turn of any agent in your scope. interrupt-and-steer aborts the current turn of any agent in your scope, then starts a new turn with the text.",
+      "Send text to an agent by name, session id, or unique id prefix. message (default) queues for any agent until its current turn ends; to an ended subagent of yours or a recorded peer it resumes that agent in its own session, with its history and its last model and thinking level, and the message is its next turn. A peer stays independent. steer joins the current turn of any agent in your scope. interrupt-and-steer aborts the current turn of any agent in your scope, then starts a new turn with the text.",
     promptSnippet: "message_agent(to, message, mode?) - send a message to another agent in this session",
     parameters: Type.Object(
       {
