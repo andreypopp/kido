@@ -140,12 +140,25 @@ pub(crate) struct ModelJson<'a> {
     outline: Vec<Item>,
 }
 
+#[derive(Debug, Default)]
+pub struct NavigationIds {
+    last: Option<protocol::NavigationId>,
+}
+
+impl NavigationIds {
+    pub fn next_request(&mut self) -> Result<protocol::NavigationId, &'static str> {
+        let id = protocol::NavigationId::next(self.last).ok_or("navigation ids exhausted")?;
+        self.last = Some(id);
+        Ok(id)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Applied {
     Nothing,
     State,
     Layout,
-    Selected,
+    Selected(Option<protocol::NavigationId>),
     Notice(Notice),
 }
 
@@ -186,7 +199,7 @@ impl Model {
         let ClientEvent::Layout(layout) = next()? else {
             return Err(JoinError::Protocol("layout missing".to_owned()));
         };
-        let ClientEvent::Selected(selection) = next()? else {
+        let ClientEvent::Selected { selection, .. } = next()? else {
             return Err(JoinError::Protocol("selection missing".to_owned()));
         };
         let mut model = Model::new(welcome, layout);
@@ -401,9 +414,9 @@ impl Model {
                     return Applied::State;
                 }
             }
-            ClientEvent::Selected(selection) => {
+            ClientEvent::Selected { request, selection } => {
                 self.selection = selection;
-                return Applied::Selected;
+                return Applied::Selected(request);
             }
             ClientEvent::Title(title) => {
                 if let Some(pane) = self.pane_mut(title.pane) {
@@ -858,6 +871,22 @@ mod tests {
     }
 
     #[test]
+    fn navigation_ids_refuse_zero_and_never_wrap() {
+        assert_eq!(
+            protocol::NavigationId::try_from(0),
+            Err("navigation id must be nonzero")
+        );
+        let mut ids = NavigationIds::default();
+        assert_eq!(ids.next_request().map(u64::from), Ok(1));
+        assert_eq!(ids.next_request().map(u64::from), Ok(2));
+        ids.last = Some(protocol::NavigationId::try_from(u64::MAX - 1).unwrap());
+        assert_eq!(ids.next_request().map(u64::from), Ok(u64::MAX));
+        assert_eq!(ids.next_request(), Err("navigation ids exhausted"));
+        assert_eq!(ids.next_request(), Err("navigation ids exhausted"));
+        assert!(protocol::decode::<protocol::NavigationId>(b"0").is_err());
+    }
+
+    #[test]
     fn the_outline_groups_panes_under_their_session_in_document_order() {
         let sessions = vec![
             vec![
@@ -990,8 +1019,11 @@ mod tests {
             ..Selection::default()
         };
         assert_eq!(
-            model.apply(ClientEvent::Selected(selection)),
-            Applied::Selected
+            model.apply(ClientEvent::Selected {
+                request: None,
+                selection
+            }),
+            Applied::Selected(None)
         );
         assert_eq!(model.selection, selection);
         let title = ClientEvent::Title(protocol::Title {

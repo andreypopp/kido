@@ -325,6 +325,14 @@ moves a client, the client gets a `selected` event. A client gets
 `selected` for each of its own `select` and `switch` requests, also
 for one that names its current pane or does not move, and for each hello, as the third message after
 `welcome` and `layout`, so a client never derives its selection itself.
+Each `select` and `switch` carries a `request` id that the client
+chooses, and its answer echoes that id; the answer to a hello and the
+`selected` of a removal carry none. The server only echoes the id. A
+client applies every `selected` to its selection, but only the answer
+with a request's own id completes that request, so a cancelled or
+superseded request, or an unsolicited `selected` between them, never
+completes a later one. A client never reuses an id, also across a
+reconnect.
 A reconnecting client names its last selection in its hello, so the
 reconnect does not move it.
 
@@ -981,10 +989,14 @@ a removal of section 7, so it takes the pane's descendants with it. An `exit` pa
 program failed to start (cause `failed`: an exec or `cwd` failure of
 `ko-pane`) stays dead, so its error stays
 readable on its screen; `keep` keeps every dead pane. It keeps no record of a
-removed pane. The sweep never chooses an `on_exit` or orphaned pane
-that is focused: shown by a client whose terminal has focus (section
-3); it tries again when the focus changes. The `exit` rule ignores
-the focus, because the user ended the program in that pane.
+removed pane. The sweep never collects an `on_exit` pane for its
+linger grace while it is focused: shown by a client whose terminal
+has focus (section 3); it tries again when the focus changes. The
+`exit` rule ignores the focus, because the user ended the program in
+that pane, and so does the orphan rule: a child that a client shows
+in its dead parent's slot goes at once. The client then moves as
+section 3 says: to the parent while it lingers, so its last screen
+stays readable.
 
 The removal of an `exit` pane follows its death in this order: the
 server forwards the output that the ring holds to the views, sends

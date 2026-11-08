@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::num::{NonZeroU16, NonZeroUsize};
+use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
 
 use ko_config::runtime::{PathMap, RuntimePi};
 use ko_config::values::{AbsPath, RuntimeColor, RuntimeName, env_valid};
@@ -1491,6 +1491,44 @@ impl Sizing {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "u64", into = "u64")]
+pub struct NavigationId(NonZeroU64);
+
+impl NavigationId {
+    pub fn next(previous: Option<Self>) -> Option<Self> {
+        previous.map_or(Some(Self(NonZeroU64::MIN)), |id| {
+            id.0.checked_add(1).map(Self)
+        })
+    }
+}
+
+impl TryFrom<u64> for NavigationId {
+    type Error = &'static str;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        NonZeroU64::new(value)
+            .map(Self)
+            .ok_or("navigation id must be nonzero")
+    }
+}
+
+impl From<NavigationId> for u64 {
+    fn from(id: NavigationId) -> Self {
+        id.0.get()
+    }
+}
+
+impl JsonSchema for NavigationId {
+    fn schema_name() -> Cow<'static, str> {
+        "NavigationId".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "integer", "minimum": 1, "maximum": u64::MAX, "description": "The client's id of a select or switch, which its selected answer echoes."})
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Selection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1525,8 +1563,16 @@ pub struct Switch {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientRequest {
     Hello(Hello),
-    Select(Selection),
-    Switch(Switch),
+    Select {
+        request: NavigationId,
+        #[serde(flatten)]
+        selection: Selection,
+    },
+    Switch {
+        request: NavigationId,
+        #[serde(flatten)]
+        switch: Switch,
+    },
     Size {
         sizing: Sizing,
     },
@@ -1707,7 +1753,12 @@ pub enum ClientEvent {
         window: WindowId,
         pane: PaneId,
     },
-    Selected(Selection),
+    Selected {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request: Option<NavigationId>,
+        #[serde(flatten)]
+        selection: Selection,
+    },
     Title(Title),
     Pwd(Pwd),
     Pid {
@@ -2287,9 +2338,9 @@ mod tests {
             r#"{"type":"hello","name":"test","focused":true,"sizing":{"type":"windows","viewport":{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}},"windows":[]}}"#,
             r#"{"type":"hello","name":"app","pane":"pane_3","focused":false,"sizing":{"type":"disabled"}}"#,
             r#"{"type":"hello","name":"app","session":"session_1","window":"window_2","pane":"pane_3","focused":false,"sizing":{"type":"windows","viewport":{"cols":80,"rows":24},"windows":[]}}"#,
-            r#"{"type":"select","pane":"pane_3"}"#,
-            r#"{"type":"select","session":"session_1"}"#,
-            r#"{"type":"switch","over":"window","direction":"previous"}"#,
+            r#"{"type":"select","request":1,"pane":"pane_3"}"#,
+            r#"{"type":"select","request":1,"session":"session_1"}"#,
+            r#"{"type":"switch","request":1,"over":"window","direction":"previous"}"#,
             r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":80,"rows":24,"cell_px":{"width":8,"height":16}},"windows":[]}}"#,
             r#"{"type":"focused","focused":true}"#,
         ] {
@@ -2442,8 +2493,8 @@ mod tests {
         );
         for refused in [
             r#"["select","pane_1"]"#,
-            r#"{"type":"switch","over":"pane","direction":"next"}"#,
-            r#"{"type":"switch","over":"window"}"#,
+            r#"{"type":"switch","request":1,"over":"pane","direction":"next"}"#,
+            r#"{"type":"switch","request":1,"over":"window"}"#,
             r#"{"type":"focused","focused":1}"#,
             r#"{"type":"focused"}"#,
             r#""focused""#,

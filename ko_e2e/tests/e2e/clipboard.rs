@@ -204,7 +204,7 @@ fn one_clipboard_read_gets_exactly_one_answer_with_two_clients() {
     // The client without the focus answers first, and the server has dealt with that answer
     // when it replies to the next request of the same client.
     other.send(&answer(&read["id"], "from-the-other"));
-    other.send(&json!({"type": "select", "pane": pane}));
+    other.send(&json!({"type": "select", "request": 1, "pane": pane}));
     let seen = tags_until(&mut other, "selected");
     assert!(
         !seen.iter().any(|tag| tag == "clipboard_read"),
@@ -247,7 +247,7 @@ fn clipboard_read_survives_a_view_reconnect_but_not_an_unattended_session() {
             "{\"command\":{\"type\":\"argv\",\"argv\":[\"/bin/cat\"]}}",
         )
         .json();
-    client.send(&json!({"type": "select", "pane": created["pane"]}));
+    client.send(&json!({"type": "select", "request": 1, "pane": created["pane"]}));
     tags_until(&mut client, "selected");
     s.text(&unattended, "\n");
     poll("a different session is not attended", || {
@@ -378,7 +378,7 @@ fn read_through_a_client(
     s.text(&pane, "\n");
     let read = client.event("clipboard_read");
     client.send(&reply(&read["id"]));
-    client.send(&json!({"type": "select", "pane": pane}));
+    client.send(&json!({"type": "select", "request": 1, "pane": pane}));
     tags_until(&mut client, "selected");
     s.text(&pane, "BARRIER");
     poll("the barrier in the pane", || {

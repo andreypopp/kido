@@ -145,36 +145,43 @@ private class AlertEscape: NSView {
     }
     private struct SelectionWait {
         var focus: SelectionFocus
+        var request: UInt64?
         var directions: [WindowDirection] = []
     }
     private enum NavigationPhase {
         case idle, selecting(PaneID, SelectionWait), session(SelectionWait), resuming(SelectionWait)
         case switching(WindowDirection, SelectionWait), restoring(PaneID, SelectionWait)
+        var wait: SelectionWait? {
+            get {
+                switch self {
+                case .idle: nil
+                case .selecting(_, let wait), .session(let wait), .resuming(let wait), .switching(_, let wait), .restoring(_, let wait): wait
+                }
+            }
+            set {
+                guard let newValue else { return }
+                switch self {
+                case .idle: break
+                case .selecting(let pane, _): self = .selecting(pane, newValue)
+                case .session: self = .session(newValue)
+                case .resuming: self = .resuming(newValue)
+                case .switching(let direction, _): self = .switching(direction, newValue)
+                case .restoring(let pane, _): self = .restoring(pane, newValue)
+                }
+            }
+        }
+        var request: UInt64? { wait?.request }
+        mutating func sent(_ request: UInt64) { wait?.request = request }
         var isIdle: Bool { if case .idle = self { true } else { false } }
         var isTravelling: Bool { switch self { case .switching, .restoring, .resuming: true; default: false } }
         mutating func enqueue(_ direction: WindowDirection, focus: SelectionFocus) -> Bool {
-            switch self {
-            case .idle: return false
-            case .selecting(let pane, var wait): wait.focus = focus; wait.directions.append(direction); self = .selecting(pane, wait)
-            case .session(var wait): wait.focus = focus; wait.directions.append(direction); self = .session(wait)
-            case .resuming(var wait): wait.focus = focus; wait.directions.append(direction); self = .resuming(wait)
-            case .switching(let current, var wait): wait.focus = focus; wait.directions.append(direction); self = .switching(current, wait)
-            case .restoring(let pane, var wait): wait.focus = focus; wait.directions.append(direction); self = .restoring(pane, wait)
-            }
+            guard !isIdle else { return false }
+            wait?.focus = focus
+            wait?.directions.append(direction)
             return true
         }
     }
-    private struct NavigationState {
-        enum Answer { case ignored, selecting, session, switching, restoring }
-        var phase = NavigationPhase.idle
-        var answers: [Answer] = []
-        var isIdle: Bool { phase.isIdle && answers.isEmpty }
-        mutating func cancel() {
-            phase = .idle
-            answers = answers.map { _ in .ignored }
-        }
-    }
-    private var navigationState = NavigationState()
+    private var navigationPhase = NavigationPhase.idle
     private(set) var preparedAlert: (alert: NSAlert, respond: (NSApplication.ModalResponse) -> Void)?
 
     private static let localServerRestarted = Notification.Name("KidoLocalServerRestarted")
@@ -952,8 +959,8 @@ private class AlertEscape: NSView {
                 perform(.jump(position))
             } else {
                 supersedeIntent()
-                navigationState.phase = .selecting(pane, SelectionWait(focus: .pane))
-                try? sendSelection(.selecting) { try client.select(KO_SELECT_PANE, pane) }
+                navigationPhase = .selecting(pane, SelectionWait(focus: .pane))
+                if let request = try? client.select(KO_SELECT_PANE, pane) { navigationPhase.sent(request) }
             }
         }
         view.paneCommand = { [weak self] command, pane in
@@ -991,7 +998,7 @@ private class AlertEscape: NSView {
         guard case .connected = link else { return }
         switch event {
         case .welcome(let id, let fresh):
-            navigationState = NavigationState(phase: fresh || snapshot == nil ? .idle : .resuming(SelectionWait(focus: sidebar.list.containsFocus ? .sidebar : .pane)))
+            navigationPhase = fresh || snapshot == nil ? .idle : .resuming(SelectionWait(focus: sidebar.list.containsFocus ? .sidebar : .pane))
             session?.resetSizeReport()
             stoppingRuntimes = []
             updateRuntimeSection()
@@ -1019,37 +1026,33 @@ private class AlertEscape: NSView {
             editor?.layoutChanged(revision: Int(revision))
         case .model:
             receiveSoon()
-        case .selected(let session, let window, let pane):
+        case .selected(let request, let session, let window, let pane):
             note("selection received session=\(session?.description ?? "none") window=\(window?.description ?? "none") pane=\(pane?.description ?? "none") owner=\(ownerID)")
             receiveSoon()
-            guard !navigationState.answers.isEmpty else { return }
-            let answer = navigationState.answers.removeFirst()
-            switch (answer, navigationState.phase) {
-            case (.selecting, .selecting), (.session, .session), (.switching, .switching), (.restoring, .restoring): break
-            default: return
-            }
-            if !navigationState.isIdle, case .connected(let client) = link {
+            guard let request, navigationPhase.request == request else { return }
+            if !navigationPhase.isIdle, case .connected(let client) = link {
                 receiving = false
                 receive(client)
             }
+            guard navigationPhase.request == request else { return }
             let wait: SelectionWait
-            switch navigationState.phase {
+            switch navigationPhase {
             case .idle, .resuming: return
             case .selecting(let expected, let pending):
                 guard pane == expected else { return }
                 wait = pending
             case .session(let pending): wait = pending
             case .switching(_, let pending):
-                guard let window, let pane, case .connected(let client) = link else { navigationState.phase = .idle; return }
+                guard let window, let pane, case .connected(let client) = link else { navigationPhase = .idle; return }
                 let target = paneSlots.selected(in: window, fallback: pane)
                 if target != pane {
-                    navigationState.phase = .restoring(target, pending)
+                    navigationPhase = .restoring(target, pending)
                     #if KIDO_VISUAL
                     testRestoringChild?(target)
                     #endif
-                    guard case .restoring(let expected, _) = navigationState.phase, expected == target else { return }
-                    do { try sendSelection(.restoring) { try client.select(KO_SELECT_PANE, target) } }
-                    catch { navigationState.cancel(); notice("Could not select the pane", String(describing: error)) }
+                    guard case .restoring(let expected, _) = navigationPhase, expected == target else { return }
+                    do { navigationPhase.sent(try client.select(KO_SELECT_PANE, target)) }
+                    catch { navigationPhase = .idle; notice("Could not select the pane", String(describing: error)) }
                     return
                 }
                 wait = pending
@@ -1057,13 +1060,13 @@ private class AlertEscape: NSView {
                 guard pane == expected else { return }
                 wait = pending
             }
-            navigationState.phase = .idle
+            navigationPhase = .idle
             if let pane { paneSlots.observe(pane, in: projection) }
             if let direction = wait.directions.first, case .connected(let client) = link {
                 var following = wait
                 following.directions.removeFirst()
                 do { try beginWindowSwitch(direction, waiting: following, client: client) }
-                catch { navigationState.phase = .idle; notice("Could not select the window", String(describing: error)) }
+                catch { navigationPhase = .idle; notice("Could not select the window", String(describing: error)) }
                 return
             }
             if let session, let window, wait.focus == .pane {
@@ -1073,7 +1076,7 @@ private class AlertEscape: NSView {
         case .failed(let code, let message):
             note("client lost host=\(host.label) owner=\(ownerID) code=\(code.rawValue): \(message)")
             if code == KO_ERR_REFUSED { return refused(message) }
-            navigationState = NavigationState()
+            navigationPhase = .idle
             welcomed = false
             guard recovering == nil else { return }
             if code == KO_ERR_NO_SERVER { return startServer() }
@@ -1133,7 +1136,7 @@ private class AlertEscape: NSView {
         }
         if ko.selection.session == nil, !selectedFirst, let first = ko.layout.layout.sessions.first {
             selectedFirst = true
-            try? sendSelection(.ignored) { try client.select(KO_SELECT_SESSION, first.id) }
+            try? client.select(KO_SELECT_SESSION, first.id)
         }
         let marks = ko.runtimeMarks
         let snapshot = Snapshot(model: ko, marks: marks)
@@ -1142,33 +1145,33 @@ private class AlertEscape: NSView {
         let projection = PaneProjection(snapshot)
         let model = SessionModel(ko).navigation(snapshot, panes: projection).model
         let previousMoved = previous.map { projection.placements[$0.client.pane]?.position != $0.client } ?? false
-        let interrupted = switch navigationState.phase {
+        let interrupted = switch navigationPhase {
         case .idle, .resuming: false
         case .selecting(let pane, _): projection.placements[pane] == nil
         case .switching, .session: previousMoved
         case .restoring(let pane, _): previousMoved || projection.placements[pane] == nil
         }
-        if interrupted { navigationState.cancel() }
-        let repairs = paneSlots.reconcile(projection, selected: navigationState.isIdle ? ko.selection.pane : nil)
-        if case .resuming(let wait) = navigationState.phase {
+        if interrupted { navigationPhase = .idle }
+        let repairs = paneSlots.reconcile(projection, selected: navigationPhase.isIdle ? ko.selection.pane : nil)
+        if case .resuming(let wait) = navigationPhase {
             if let pane = ko.selection.pane, let placement = projection.placements[pane] {
                 let target = paneSlots.selected(in: placement.slot.window, fallback: placement.slot.pane)
                 if target != pane {
-                    navigationState.phase = .restoring(target, wait)
-                    do { try sendSelection(.restoring) { try client.select(KO_SELECT_PANE, target) } }
-                    catch { navigationState.phase = .resuming(wait) }
+                    navigationPhase = .restoring(target, wait)
+                    do { navigationPhase.sent(try client.select(KO_SELECT_PANE, target)) }
+                    catch { navigationPhase = .resuming(wait) }
                 } else {
-                    navigationState.phase = .idle
+                    navigationPhase = .idle
                     paneSlots.observe(pane, in: projection)
                     if let direction = wait.directions.first {
                         var following = wait
                         following.directions.removeFirst()
                         do { try beginWindowSwitch(direction, waiting: following, client: client) }
-                        catch { navigationState.phase = .idle }
+                        catch { navigationPhase = .idle }
                     }
                 }
-            } else { navigationState.phase = .idle }
-        } else if navigationState.isIdle, let pane = ko.selection.pane,
+            } else { navigationPhase = .idle }
+        } else if navigationPhase.isIdle, let pane = ko.selection.pane,
            previous?.client != snapshot?.client || previous?.serverInstance != snapshot?.serverInstance
              || previousProjection.placements[pane]?.slot != projection.placements[pane]?.slot {
             paneSlots.observe(pane, in: projection)
@@ -1176,9 +1179,9 @@ private class AlertEscape: NSView {
         received = Received(ko: ko, model: model, snapshot: snapshot, projection: projection)
         for position in repairs {
             focusTarget = .pane(position)
-            navigationState.phase = .selecting(position.pane, SelectionWait(focus: .pane))
-            do { try sendSelection(.selecting) { try client.select(KO_SELECT_PANE, position.pane) } }
-            catch { navigationState.cancel() }
+            navigationPhase = .selecting(position.pane, SelectionWait(focus: .pane))
+            do { navigationPhase.sent(try client.select(KO_SELECT_PANE, position.pane)) }
+            catch { navigationPhase = .idle }
         }
         guard welcomed else { return }
         if ko.layout.layout.sessions.isEmpty {
@@ -1203,7 +1206,7 @@ private class AlertEscape: NSView {
         })
         let selected = ko.selection.pane.flatMap { pane -> PaneID? in
             guard let placement = projection.placements[pane] else { return nil }
-            let actual = navigationState.phase.isTravelling ? paneSlots.selected(in: placement.slot.window, fallback: placement.slot.pane) : pane
+            let actual = navigationPhase.isTravelling ? paneSlots.selected(in: placement.slot.window, fallback: placement.slot.pane) : pane
             return projection.placements[actual]?.slot.pane
         }
         session?.update(roots, alive: Set(ko.layout.layout.windows.map(\.id)), selected: selected, marks: marks, shown: shown)
@@ -1357,8 +1360,8 @@ private class AlertEscape: NSView {
                 done?(nil)
                 if case .connected(let client) = link {
                     switch edited.created {
-                    case .session(let created)?: try? sendSelection(.ignored) { try client.select(KO_SELECT_SESSION, created.session) }
-                    case .window(let created)?: try? sendSelection(.ignored) { try client.select(KO_SELECT_WINDOW, created.window) }
+                    case .session(let created)?: try? client.select(KO_SELECT_SESSION, created.session)
+                    case .window(let created)?: try? client.select(KO_SELECT_WINDOW, created.window)
                     case .pane?, nil: break
                     }
                 }
@@ -1456,7 +1459,7 @@ private class AlertEscape: NSView {
     }
 
     func supersedeIntent() {
-        navigationState.cancel()
+        navigationPhase = .idle
         paneSlots.cancelRepair()
         intent += 1
         focusTarget = nil
@@ -1574,19 +1577,14 @@ private class AlertEscape: NSView {
         window.makeKeyAndOrderFront(nil)
     }
 
-    private func sendSelection(_ answer: NavigationState.Answer, _ send: () throws -> Void) throws {
-        try send()
-        navigationState.answers.append(answer)
-    }
-
     private func beginWindowSwitch(_ direction: WindowDirection, waiting: SelectionWait, client: KoClient) throws {
-        navigationState.phase = .switching(direction, waiting)
-        try sendSelection(.switching) { try client.switchOver(KO_OVER_WINDOW, direction.raw) }
+        navigationPhase = .switching(direction, waiting)
+        navigationPhase.sent(try client.switchOver(KO_OVER_WINDOW, direction.raw))
     }
 
     func perform(_ navigation: Navigation, focus: SelectionFocus = .pane) {
         if case .switchWindow(let next) = navigation,
-           navigationState.phase.enqueue(WindowDirection(next: next), focus: focus) { return }
+           navigationPhase.enqueue(WindowDirection(next: next), focus: focus) { return }
         if case .jump(let target) = navigation { sidebar.list.select(target) }
         supersedeIntent()
         if case .releaseSideFocus = navigation { return sidebar.list.leave() }
@@ -1595,35 +1593,35 @@ private class AlertEscape: NSView {
         func selectTab(_ id: WindowID) throws {
             guard let window = koModel?.layout.layout.window(id) else { return }
             let target = paneSlots.selected(in: id, fallback: window.focus)
-            navigationState.phase = .selecting(target, SelectionWait(focus: focus))
-            try sendSelection(.selecting) { try client.select(KO_SELECT_PANE, target) }
+            navigationPhase = .selecting(target, SelectionWait(focus: focus))
+            navigationPhase.sent(try client.select(KO_SELECT_PANE, target))
         }
         do {
             switch navigation {
             case .jump(let target):
-                navigationState.phase = .selecting(target.pane, SelectionWait(focus: focus))
+                navigationPhase = .selecting(target.pane, SelectionWait(focus: focus))
                 paneSlots.show(target.pane, in: projection)
                 let slot = projection.placements[target.pane]?.slot ?? target
                 if let window = koModel?.layout.layout.window(slot.window),
                    let zoom = window.zoom, zoom != slot.pane {
                     editor?.submit(.zoom(KoSchema.EditZoom(pane: nil, window: window.id)))
                 }
-                try sendSelection(.selecting) { try client.select(KO_SELECT_PANE, target.pane) }
+                navigationPhase.sent(try client.select(KO_SELECT_PANE, target.pane))
             case .selectWindow(_, let window):
                 try selectTab(window)
             case .selectSession(let session):
-                navigationState.phase = .session(SelectionWait(focus: focus))
-                try sendSelection(.session) { try client.select(KO_SELECT_SESSION, session) }
+                navigationPhase = .session(SelectionWait(focus: focus))
+                navigationPhase.sent(try client.select(KO_SELECT_SESSION, session))
             case .switchSession(let next):
-                navigationState.phase = .session(SelectionWait(focus: focus))
-                try sendSelection(.session) { try client.switchOver(KO_OVER_SESSION, next ? KO_DIRECTION_NEXT : KO_DIRECTION_PREVIOUS) }
+                navigationPhase = .session(SelectionWait(focus: focus))
+                navigationPhase.sent(try client.switchOver(KO_OVER_SESSION, next ? KO_DIRECTION_NEXT : KO_DIRECTION_PREVIOUS))
             case .switchWindow(let next):
                 try beginWindowSwitch(WindowDirection(next: next), waiting: SelectionWait(focus: focus), client: client)
             case .releaseSideFocus: break
             }
         } catch {
             paneSlots = previousSlots
-            navigationState.cancel()
+            navigationPhase = .idle
             let title: String = switch navigation {
             case .jump: "Could not select the pane"
             case .selectWindow, .switchWindow: "Could not select the window"
@@ -1690,7 +1688,7 @@ private class AlertEscape: NSView {
 
     private func invalidate(keepingSnapshot: Bool = false) {
         focusTarget = nil
-        navigationState = NavigationState()
+        navigationPhase = .idle
         generation += 1
         stoppingRuntimes = []
         updateRuntimeSection()
@@ -1770,7 +1768,8 @@ private class AlertEscape: NSView {
     }
     var testEditing: Bool { editor?.holding == true }
     var testClient: KoClient? { if case .connected(let client) = link { client } else { nil } }
-    var testNavigationIdle: Bool { navigationState.isIdle }
+    var testNavigationIdle: Bool { navigationPhase.isIdle }
+    var testNavigationRequest: UInt64? { navigationPhase.request }
     var testRestoringChild: ((PaneID) -> Void)?
     func testReceive(_ event: KoEvent) { handle(event) }
     var testAttended: Bool? { didSet { attend() } }

@@ -5,7 +5,8 @@ use ko_pane_wire::frame::Size;
 use crate::ids::{ClientId, PaneId, SessionId, WindowId};
 use crate::layout::nearest;
 use crate::protocol::{
-    ClientRequest, ClipboardServed, Direction, Layout, Over, Selection, Sizing, Switch,
+    ClientRequest, ClipboardServed, Direction, Layout, NavigationId, Over, Selection, Sizing,
+    Switch,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,8 +43,8 @@ pub(crate) struct Client {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Change {
     Hello(Selection),
-    Select(Selection),
-    Switch(Switch),
+    Select(NavigationId, Selection),
+    Switch(NavigationId, Switch),
     Claim,
     Resize {
         previous: Sizing,
@@ -106,11 +107,17 @@ impl Client {
                 Ok(Change::Hello(hello.selection))
             }
             (None, _) => Err("hello must be first"),
-            (Some(_), ClientRequest::Select(selection)) if selection == Selection::default() => {
+            (Some(_), ClientRequest::Select { selection, .. })
+                if selection == Selection::default() =>
+            {
                 Err("nothing to select")
             }
-            (Some(_), ClientRequest::Select(selection)) => Ok(Change::Select(selection)),
-            (Some(_), ClientRequest::Switch(switch)) => Ok(Change::Switch(switch)),
+            (Some(_), ClientRequest::Select { request, selection }) => {
+                Ok(Change::Select(request, selection))
+            }
+            (Some(_), ClientRequest::Switch { request, switch }) => {
+                Ok(Change::Switch(request, switch))
+            }
             (Some(active), ClientRequest::Size { sizing }) => {
                 let previous = std::mem::replace(&mut active.sizing, sizing);
                 Ok(Change::Resize { previous })
@@ -707,7 +714,8 @@ mod tests {
     fn a_request_before_the_hello_and_an_empty_selection_are_refused() {
         let mut client = Client::new(ClientId::new(1));
         let select = |selection: &str| -> ClientRequest {
-            serde_json::from_str(&format!(r#"{{"type":"select"{selection}}}"#)).unwrap()
+            serde_json::from_str(&format!(r#"{{"type":"select", "request": 1{selection}}}"#))
+                .unwrap()
         };
         assert_eq!(
             client.receive(select(r#","pane":"pane_1""#)),
@@ -725,7 +733,10 @@ mod tests {
         assert_eq!(client.receive(select("")), Err("nothing to select"));
         assert_eq!(
             client.receive(select(r#","session":"session_1""#)),
-            Ok(Change::Select(selection(Some(1), None, None)))
+            Ok(Change::Select(
+                NavigationId::try_from(1).unwrap(),
+                selection(Some(1), None, None)
+            ))
         );
     }
 }

@@ -646,7 +646,7 @@ fn a_window_names_its_last_focused_pane_and_a_put_cannot_set_it() {
     let before = s.doc();
     assert!(revision(&before) >= revision(&first));
 
-    client.send(&json!({"type": "select", "pane": "pane_2"}));
+    client.send(&json!({"type": "select", "request": 1, "pane": "pane_2"}));
     let current = s.doc();
     assert_eq!(windows(&current)[0]["focus"], json!("pane_2"));
     assert_eq!(
@@ -759,7 +759,7 @@ fn selecting_an_unreported_window_does_not_size_it() {
     let s = start(&[]);
     let mut client = two_windows_and_a_wide_client(&s);
     let before = s.doc();
-    client.send(&json!({"type": "select", "pane": "pane_2"}));
+    client.send(&json!({"type": "select", "request": 1, "pane": "pane_2"}));
     assert_eq!(client.event("selected")["window"], "window_2");
     let after = s.doc();
     assert_eq!(after["layout"], before["layout"]);

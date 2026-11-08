@@ -11,7 +11,7 @@ use crate::clipboard;
 use ko_client::edit::{Edge, Edit};
 use ko_client::launch::{self, BACKOFF_FIRST, PATIENCE, backoff_after};
 use ko_client::layout::{EditError, Edited};
-use ko_client::model::{Applied, Item, JoinError, Model, Notice, Rejoin, cycle};
+use ko_client::model::{Applied, Item, JoinError, Model, NavigationIds, Notice, Rejoin, cycle};
 use ko_client::remote::{Progress, Remote};
 use ko_client::wire::{self, Link, Next, WATCHDOG, silent, text};
 use ko_config::values::{AbsPath, RuntimeName};
@@ -352,6 +352,12 @@ impl Click {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingSelection {
+    request: protocol::NavigationId,
+    pane: Option<PaneId>,
+}
+
 #[derive(Debug)]
 struct Client {
     view: Option<Shown>,
@@ -373,7 +379,8 @@ struct Client {
     sidebar_width: usize,
     keys: Keys,
     last: Last,
-    pending_selection: Option<PaneId>,
+    pending_selection: Option<PendingSelection>,
+    navigation: NavigationIds,
     mouse_down: Option<PaneId>,
     drag: Option<Drag>,
     geometry: Geometry,
@@ -454,6 +461,7 @@ impl Client {
             keys: Keys::new(),
             last: Last::default(),
             pending_selection: None,
+            navigation: NavigationIds::default(),
             mouse_down: None,
             drag: None,
             geometry,
@@ -481,7 +489,9 @@ impl Client {
     }
 
     fn pane(&self) -> Option<PaneId> {
-        self.pending_selection.or(self.model.selection.pane)
+        self.pending_selection
+            .and_then(|pending| pending.pane)
+            .or(self.model.selection.pane)
     }
 
     fn active(&mut self) -> Option<&mut ShownPane> {
@@ -677,11 +687,23 @@ impl Client {
         if self.pane() != Some(pane) {
             self.leave_copy()?;
         }
-        self.client_send(&ClientRequest::Select(Selection {
-            pane: Some(pane),
-            ..Selection::default()
-        }))?;
-        self.pending_selection = Some(pane);
+        self.navigate(Some(pane), |request| ClientRequest::Select {
+            request,
+            selection: Selection {
+                pane: Some(pane),
+                ..Selection::default()
+            },
+        })
+    }
+
+    fn navigate(
+        &mut self,
+        pane: Option<PaneId>,
+        make: impl FnOnce(protocol::NavigationId) -> ClientRequest,
+    ) -> Result<(), String> {
+        let request = self.navigation.next_request().map_err(str::to_owned)?;
+        self.client_send(&make(request))?;
+        self.pending_selection = Some(PendingSelection { request, pane });
         Ok(())
     }
 
@@ -1092,7 +1114,9 @@ impl Client {
             other => return self.command(other),
         };
         match selection {
-            Some(selection) => self.client_send(&ClientRequest::Select(selection)),
+            Some(selection) => {
+                self.navigate(None, |request| ClientRequest::Select { request, selection })
+            }
             None => Ok(()),
         }
     }
@@ -1168,7 +1192,10 @@ impl Client {
             Action::Kill(kill) => self.kill(kill)?,
             Action::Rename(of, text) => self.rename(of, text)?,
             Action::Switch(over, direction) => {
-                self.client_send(&ClientRequest::Switch(Switch { over, direction }))?;
+                self.navigate(None, |request| ClientRequest::Switch {
+                    request,
+                    switch: Switch { over, direction },
+                })?;
             }
             Action::Pane(command) => self.pane_command(command)?,
             Action::LastSession | Action::LastWindow | Action::Window(_) => {}
@@ -1927,7 +1954,14 @@ impl Client {
             )),
             _ => None,
         };
+        let pending_pane = self
+            .pending_selection
+            .and_then(|pending| pending.pane)
+            .filter(|pane| self.model.locate(*pane).is_some());
         let applied = self.model.apply(event);
+        if pending_pane.is_some_and(|pane| self.model.locate(pane).is_none()) {
+            self.pending_selection = None;
+        }
         if let Some((pane, at)) = cursor
             && self.model.locate(pane).is_none()
         {
@@ -1972,9 +2006,14 @@ impl Client {
                             Applied::Layout if self.reconnecting.is_none() => self.sync_views()?,
                             Applied::Layout => {}
                             Applied::Notice(notice) => self.notice(notice)?,
-                            Applied::Selected => {
+                            Applied::Selected(request) => {
                                 self.resize()?;
-                                self.pending_selection = None;
+                                if self
+                                    .pending_selection
+                                    .is_some_and(|pending| Some(pending.request) == request)
+                                {
+                                    self.pending_selection = None;
+                                }
                                 if !matches!(
                                     self.keys.state(),
                                     State::Normal | State::Prefix | State::Repeat { .. }

@@ -765,6 +765,20 @@
             "type": "object"
           }
         ]
+      },
+      "Selection": {
+        "properties": {
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionId"
+          },
+          "window": {
+            "$ref": "#/components/schemas/WindowId"
+          }
+        },
+        "type": "object"
       }
     }
   },

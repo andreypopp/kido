@@ -909,7 +909,8 @@ most easily:
   program exits or dies by a signal, focused or not, but keeps a
   start failure (cause `failed`); a `close: on_exit` pane dead for
   the linger grace; and a pane whose immutable `parent` pane is gone
-  or dead (the last two not while a focused client shows the pane).
+  or dead, focused or not (the linger collection waits while a
+  focused client shows the pane).
   Every removal (a `DELETE`, the sweep, a stop) takes the pane's
   descendants in the same change; the server owns that cascade. A
   child's pane gets `close: on_exit` and its spawner's pane as

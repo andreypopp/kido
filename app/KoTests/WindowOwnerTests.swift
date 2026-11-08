@@ -162,6 +162,61 @@ import KoModel
         wait("the manual restart") { self.names(owner) == ["session"] && owner.testBanner.isHidden }
     }
 
+    func testNavigationIgnoresUnsolicitedAndCancelledAnswers() throws {
+        let dir = try server()
+        let owner = try owner(dir)
+        wait("the initial selection") { owner.testModel?.selection.pane != nil && owner.testNavigationIdle }
+        let model = try XCTUnwrap(owner.testModel)
+        let session = try XCTUnwrap(model.selection.session)
+        let window = try XCTUnwrap(model.selection.window)
+        let pane = try XCTUnwrap(model.selection.pane)
+        owner.perform(.selectWindow(session, window))
+        let a = try XCTUnwrap(owner.testNavigationRequest)
+        owner.perform(.releaseSideFocus)
+        owner.perform(.selectWindow(session, window))
+        let b = try XCTUnwrap(owner.testNavigationRequest)
+        XCTAssertNotEqual(a, b)
+        owner.testReceive(.selected(request: nil, session: session, window: window, pane: pane))
+        XCTAssertFalse(owner.testNavigationIdle)
+        owner.testReceive(.selected(request: a, session: session, window: window, pane: pane))
+        XCTAssertFalse(owner.testNavigationIdle)
+        owner.testReceive(.selected(request: b, session: session, window: window, pane: pane))
+        XCTAssertTrue(owner.testNavigationIdle)
+    }
+
+    func testAnAnswerCannotCompleteTheRepairCreatedWhileReceivingItsModel() throws {
+        let dir = try server()
+        let owner = try owner(dir)
+        wait("the parent selection") { owner.testModel?.selection.pane != nil && owner.testNavigationIdle }
+        let initial = try XCTUnwrap(owner.testModel)
+        let parent = try XCTUnwrap(initial.selection.pane)
+        let session = try XCTUnwrap(initial.selection.session)
+        let window = try XCTUnwrap(initial.selection.window)
+        let child = try XCTUnwrap(PaneID(ko: createPane(#"{"parent":"\#(parent)","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)))
+        wait("the child window") { owner.testModel?.layout.layout.windows.contains { $0.focus == child } == true }
+        let childWindow = try XCTUnwrap(owner.testModel?.layout.layout.windows.first { $0.focus == child }?.id)
+        owner.perform(.selectWindow(session, childWindow))
+        wait("the child is shown") { owner.testModel?.selection.pane == child && owner.testNavigationIdle }
+        let client = try XCTUnwrap(owner.testClient)
+        owner.perform(.selectSession(session))
+        let a = try XCTUnwrap(owner.testNavigationRequest)
+        let deletion = try runTool(tools.ko, ["api", "--server", dir, "-X", "DELETE", "/panes/\(child)"], env: ["PATH": "/usr/bin:/bin", "HOME": dir])
+        XCTAssertEqual(deletion.status, 0)
+        let deadline = Date().addingTimeInterval(5)
+        var current = try client.model()
+        while (current.pane(child) != nil || current.selection.pane != parent), Date() < deadline {
+            current = try client.model()
+        }
+        XCTAssertNil(current.pane(child))
+        XCTAssertEqual(current.selection.pane, parent)
+        owner.testReceive(.selected(request: a, session: session, window: window, pane: parent))
+        let b = try XCTUnwrap(owner.testNavigationRequest)
+        XCTAssertNotEqual(a, b)
+        XCTAssertFalse(owner.testNavigationIdle)
+        owner.testReceive(.selected(request: b, session: session, window: window, pane: parent))
+        XCTAssertTrue(owner.testNavigationIdle)
+    }
+
     func testNavigationSelectsAndSwitchesThroughTheCore() throws {
         let dir = try server()
         let sleep = #"{"pane":{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}}"#

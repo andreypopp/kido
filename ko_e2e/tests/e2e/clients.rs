@@ -294,7 +294,7 @@ fn one_client_sizes_each_reported_window_independently_of_its_selection() {
     assert_eq!(dimensions(&event, &parent["window"]), (121, 41));
     assert_eq!(dimensions(&event, &child["window"]), (51, 21));
     peer.send(&json!({"type": "size", "sizing": {"type": "disabled"}}));
-    peer.send(&json!({"type": "select", "pane": sibling["pane"]}));
+    peer.send(&json!({"type": "select", "request": 1, "pane": sibling["pane"]}));
     peer.event("selected");
     report["sizing"]["windows"][0]["size"] = size(122, 42);
     client.send(&report);
@@ -311,7 +311,7 @@ fn one_client_sizes_each_reported_window_independently_of_its_selection() {
         .unwrap()
         .push(json!({"window": "window_999999", "size": size(2, 2)}));
     client.send(&report);
-    client.send(&json!({"type": "select", "pane": parent["pane"]}));
+    client.send(&json!({"type": "select", "request": 1, "pane": parent["pane"]}));
     assert_eq!(client.event("selected")["pane"], parent["pane"]);
     assert_eq!(dimensions(&s.doc(), &parent["window"]), (123, 43));
     let mut invalid = s.ws("/client");
@@ -325,7 +325,7 @@ fn one_client_sizes_each_reported_window_independently_of_its_selection() {
     let after = s.doc();
     assert_eq!(after["layout"], before["layout"]);
     assert_eq!(after["revision"], before["revision"]);
-    client.send(&json!({"type": "select", "pane": child["pane"]}));
+    client.send(&json!({"type": "select", "request": 1, "pane": child["pane"]}));
     client.event("selected");
     let created = crate::panes::post(
         &s,
@@ -405,9 +405,15 @@ fn removing_a_window_returns_the_client_to_its_previous_visit() {
             {"name": "c", "tree": new()},
             {"name": "b", "tree": new()}]}
     ]}}));
-    let (mut client, _) = s.app_client(json!({"pane": "pane_1"}), false, (80, 24));
-    client.send(&json!({"type": "select", "window": "window_3"}));
-    assert_eq!(client.event("selected")["window"], "window_3");
+    let mut client = s.ws("/client");
+    client.send(&json!({"type": "hello", "name": "test", "pane": "pane_1", "focused": false, "sizing": {"type": "disabled"}}));
+    let hello = client.event("selected");
+    assert_eq!(hello["pane"], "pane_1");
+    assert!(hello.get("request").is_none());
+    client.send(&json!({"type": "select", "request": 41, "window": "window_3"}));
+    let answer = client.event("selected");
+    assert_eq!(answer["window"], "window_3");
+    assert_eq!(answer["request"], 41);
     s.delete("/panes/pane_3").ok();
     assert_eq!(
         client.event("selected"),
@@ -491,7 +497,7 @@ fn a_swept_child_selects_its_parent_or_the_existing_window_fallback() {
             .unwrap()
             .push(json!({"name": "fallback", "tree": split("h", vec![exiting(None), new()])}));
     });
-    c.send(&json!({"type": "select", "pane": "pane_4"}));
+    c.send(&json!({"type": "select", "request": 1, "pane": "pane_4"}));
     assert_eq!(c.event("selected")["pane"], "pane_4");
     poll("the root pane is ready", || {
         s.request("GET", "/panes/pane_4/screen", None, 200)
@@ -513,7 +519,7 @@ fn a_swept_child_selects_its_parent_or_the_existing_window_fallback() {
             .push(json!({"name": "orphan", "tree": exiting(Some("pane_2"))}));
     });
     c.send(&json!({"type": "focused", "focused": true}));
-    c.send(&json!({"type": "select", "pane": "pane_6"}));
+    c.send(&json!({"type": "select", "request": 1, "pane": "pane_6"}));
     assert_eq!(c.event("selected")["pane"], "pane_6");
     s.delete("/panes/pane_2").ok();
     assert!(!s.has_pane("pane_6"));
@@ -522,6 +528,36 @@ fn a_swept_child_selects_its_parent_or_the_existing_window_fallback() {
         json!({"type": "selected", "session": "session_1", "window": "window_1", "pane": "pane_1"})
     );
     assert!(!s.has_pane("pane_6"));
+
+    let parent = s.new_pane(json!({"close": "keep", "command": {"type": "argv", "argv": ["/bin/sh", "-c", "printf READY; read line; printf FINISHED"]}}));
+    let child = s.new_pane(json!({"parent": parent, "close": "on_exit"}));
+    let grandchild = s.new_pane(json!({"parent": child, "close": "on_exit"}));
+    c.send(&json!({"type": "select", "request": 43, "pane": child}));
+    let selected = c.event("selected");
+    assert_eq!(selected["pane"], child);
+    assert_eq!(selected["request"], 43);
+    c.send(&json!({"type": "size", "sizing": {"type": "windows", "viewport": {"cols": 80, "rows": 24}, "windows": [
+        {"window": "window_6", "size": {"cols": 80, "rows": 24}},
+        {"window": selected["window"], "size": {"cols": 80, "rows": 24}}
+    ]}}));
+    poll("the kept parent is ready", || {
+        s.request("GET", &format!("/panes/{parent}/screen"), None, 200)
+            .contains("READY")
+    });
+    s.text(&parent, "\n");
+    assert_eq!(c.event("dead")["pane"], parent);
+    layout_until(&mut c, |sessions| {
+        sessions[0]["windows"].as_array().map(Vec::len) == Some(2)
+    });
+    let selected = c.event("selected");
+    assert_eq!(selected["pane"], parent);
+    assert!(selected.get("request").is_none());
+    assert!(!s.has_pane(&child));
+    assert!(!s.has_pane(&grandchild));
+    assert!(
+        s.request("GET", &format!("/panes/{parent}/screen"), None, 200)
+            .contains("FINISHED")
+    );
 }
 
 const FOCUS_PROGRAM: &str = r#"import os,tty
@@ -578,25 +614,25 @@ fn select_switch_and_the_server_selecting_move_one_client_and_focus_reports_foll
     let (mut c, _) = s.app_client(json!({"pane": "pane_1"}), true, (80, 24));
     logs(&s, ["I", "", ""]);
 
-    c.send(&json!({"type": "select", "pane": "pane_2"}));
+    c.send(&json!({"type": "select", "request": 1, "pane": "pane_2"}));
     assert_eq!(c.event("selected")["pane"], json!("pane_2"));
-    c.send(&json!({"type": "select", "pane": "pane_2"}));
+    c.send(&json!({"type": "select", "request": 1, "pane": "pane_2"}));
     assert_eq!(
         c.event("selected")["pane"],
         json!("pane_2"),
         "a select is announced also for the pane that is current"
     );
     logs(&s, ["IO", "I", ""]);
-    c.send(&json!({"type": "switch", "over": "window", "direction": "next"}));
+    c.send(&json!({"type": "switch", "request": 1, "over": "window", "direction": "next"}));
     assert_eq!(
         c.event("selected"),
-        json!({"type": "selected", "session": "session_2", "window": "window_3", "pane": "pane_3"})
+        json!({"type": "selected", "request": 1, "session": "session_2", "window": "window_3", "pane": "pane_3"})
     );
     logs(&s, ["IO", "IO", "I"]);
-    c.send(&json!({"type": "switch", "over": "session", "direction": "previous"}));
+    c.send(&json!({"type": "switch", "request": 1, "over": "session", "direction": "previous"}));
     assert_eq!(c.event("selected")["pane"], json!("pane_2"));
     logs(&s, ["IO", "IOI", "IO"]);
-    c.send(&json!({"type": "select", "session": "session_2"}));
+    c.send(&json!({"type": "select", "request": 1, "session": "session_2"}));
     assert_eq!(
         c.event("selected")["pane"],
         json!("pane_3"),
@@ -604,12 +640,12 @@ fn select_switch_and_the_server_selecting_move_one_client_and_focus_reports_foll
     );
     logs(&s, ["IO", "IOIO", "IOI"]);
 
-    c.send(&json!({"type": "select", "window": "window_1"}));
+    c.send(&json!({"type": "select", "request": 1, "window": "window_1"}));
     assert_eq!(c.event("selected")["pane"], json!("pane_1"));
     logs(&s, ["IOI", "IOIO", "IOIO"]);
 
     let (mut watcher, _) = s.app_client(json!({"pane": "pane_1"}), true, (80, 24));
-    c.send(&json!({"type": "select", "pane": "pane_2"}));
+    c.send(&json!({"type": "select", "request": 1, "pane": "pane_2"}));
     logs(&s, ["IOI", "IOIOI", "IOIO"]);
     watcher.send(&json!({"type": "focused", "focused": false}));
     logs(&s, ["IOIO", "IOIOI", "IOIO"]);

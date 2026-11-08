@@ -111,6 +111,7 @@ pub struct Failure {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Selected {
+    pub request: u64,
     pub session: *const c_char,
     pub window: *const c_char,
     pub pane: *const c_char,
@@ -274,7 +275,7 @@ enum Posted {
     },
     Layout(Layout),
     Model,
-    Selected(Selection),
+    Selected(Option<protocol::NavigationId>, Selection),
     Alert(Notice),
     Failed(Code, CString),
     Mismatch(Code, Version),
@@ -377,6 +378,7 @@ struct Shared {
     model_pending: AtomicBool,
     decoders: Mutex<Vec<Arc<View>>>,
     views: AtomicU64,
+    navigation: Mutex<crate::model::NavigationIds>,
     calls: Mutex<usize>,
     idle: Condvar,
     running: Mutex<()>,
@@ -514,7 +516,7 @@ extern "C" fn deliver(context: *mut c_void) {
                 },
             });
         }
-        Posted::Selected(selection) => {
+        Posted::Selected(request, selection) => {
             let name = |id: Option<String>| id.map(|id| string(&id));
             let (session, window, pane) = (
                 name(selection.session.map(|id| id.to_string())),
@@ -525,6 +527,7 @@ extern "C" fn deliver(context: *mut c_void) {
                 kind: EVENT_SELECTED,
                 body: Body {
                     selected: Selected {
+                        request: request.map_or(0, u64::from),
                         session: pointer(&session),
                         window: pointer(&window),
                         pane: pointer(&pane),
@@ -899,6 +902,7 @@ fn start(
         model_pending: AtomicBool::new(false),
         decoders: Mutex::new(Vec::new()),
         views: AtomicU64::new(0),
+        navigation: Mutex::new(crate::model::NavigationIds::default()),
         calls: Mutex::new(0),
         idle: Condvar::new(),
         running: Mutex::new(()),
@@ -1102,15 +1106,33 @@ const SELECT_SESSION: c_int = 1;
 const SELECT_WINDOW: c_int = 2;
 const SELECT_PANE: c_int = 3;
 
+fn navigate(
+    client: &Client,
+    out: &mut u64,
+    make: impl FnOnce(protocol::NavigationId) -> ClientRequest,
+) -> Code {
+    let Ok(id) = locked(&client.shared.navigation).next_request() else {
+        return Code::Invalid;
+    };
+    *out = u64::from(id);
+    request(client, Command::Request(make(id)))
+}
+
 /// # Safety
 ///
 /// `client` is a live handle. `id` is null or a NUL-terminated string.
+/// `request_` is null or writable for one u64.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_select(
     client_: *const Client,
     kind: c_int,
     id: *const c_char,
+    request_: *mut u64,
 ) -> Code {
+    // SAFETY: ko_client.h requires request_ to be null or writable for one uint64_t.
+    let Some(out) = (unsafe { request_.as_mut() }) else {
+        return Code::Argument;
+    };
     let scope = ();
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
     let id_text = unsafe { text_of(id, &scope) };
@@ -1145,18 +1167,26 @@ pub unsafe extern "C" fn ko_client_select(
             return Code::NotFound;
         }
     }
-    request(&client, Command::Request(ClientRequest::Select(selection)))
+    navigate(&client, out, |request| ClientRequest::Select {
+        request,
+        selection,
+    })
 }
 
 /// # Safety
 ///
-/// `client` is a live handle.
+/// `client` is a live handle. `request_` is null or writable for one u64.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_switch(
     client_: *const Client,
     over: c_int,
     direction: c_int,
+    request_: *mut u64,
 ) -> Code {
+    // SAFETY: ko_client.h requires request_ to be null or writable for one uint64_t.
+    let Some(out) = (unsafe { request_.as_mut() }) else {
+        return Code::Argument;
+    };
     let Some(client) = client(client_) else {
         return Code::Argument;
     };
@@ -1167,10 +1197,10 @@ pub unsafe extern "C" fn ko_client_switch(
         (2, 2) => (Over::Window, Direction::Previous),
         _ => return Code::Argument,
     };
-    request(
-        &client,
-        Command::Request(ClientRequest::Switch(Switch { over, direction })),
-    )
+    navigate(&client, out, |request| ClientRequest::Switch {
+        request,
+        switch: Switch { over, direction },
+    })
 }
 
 /// # Safety
@@ -1629,7 +1659,7 @@ mod tests {
         Welcome(String, String, bool),
         Layout(u64, u32, u32, u32),
         Model,
-        Selected(Option<String>, Option<String>, Option<String>),
+        Selected(u64, Option<String>, Option<String>, Option<String>),
         Alert(c_int, String, Option<String>, Option<String>),
         ClipboardWrite(String, c_int, Vec<(String, Vec<u8>)>),
         ClipboardRead(String, u64, c_int, Vec<String>, bool),
@@ -1721,6 +1751,7 @@ mod tests {
                 // SAFETY: this arm matches the event kind for this union member.
                 let selected = unsafe { event.body.selected };
                 Seen::Selected(
+                    selected.request,
                     // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
                     unsafe { optional(selected.session) },
                     // SAFETY: the callback or ABI keeps this string readable and NUL-terminated through this read.
@@ -3370,7 +3401,7 @@ mod tests {
             }
             send(
                 socket,
-                r#"{"type":"selected","pane":"pane_2","window":"window_1","session":"session_1"}"#,
+                r#"{"type":"selected","request":4,"pane":"pane_2","window":"window_1","session":"session_1"}"#,
             );
             let _ = dropped.recv_timeout(WAIT);
             let _ = socket.close(None);
@@ -3418,21 +3449,45 @@ mod tests {
         );
         assert!(matches!(fixture.next(), Seen::Welcome(..)));
         assert!(matches!(fixture.next(), Seen::Layout(0, ..)));
-        // SAFETY: the client is live and the strings are NUL-terminated.
+        let mut navigation_request = 0;
+        // SAFETY: the client is live, the strings are NUL-terminated and the request is writable.
         unsafe {
             assert_eq!(
-                ko_client_select(client, SELECT_PANE, c"pane_2".as_ptr()),
+                ko_client_select(
+                    client,
+                    SELECT_PANE,
+                    c"pane_2".as_ptr(),
+                    std::ptr::null_mut()
+                ),
+                Code::Argument
+            );
+            assert_eq!(
+                ko_client_switch(client, 2, 1, std::ptr::null_mut()),
+                Code::Argument
+            );
+            assert_eq!(
+                ko_client_select(
+                    client,
+                    SELECT_PANE,
+                    c"pane_2".as_ptr(),
+                    &mut navigation_request
+                ),
                 Code::Ok
             );
             assert_eq!(
-                ko_client_select(client, SELECT_WINDOW, c"window_1".as_ptr()),
+                ko_client_select(client, SELECT_WINDOW, c"window_1".as_ptr(), &mut 0),
                 Code::Ok
             );
             assert_eq!(
-                ko_client_select(client, SELECT_SESSION, c"session_1".as_ptr()),
+                ko_client_select(client, SELECT_SESSION, c"session_1".as_ptr(), &mut 0),
                 Code::Ok
             );
-            assert_eq!(ko_client_switch(client, 2, 1), Code::Ok);
+            assert_eq!(navigation_request, 1);
+            assert_eq!(
+                ko_client_switch(client, 2, 1, &mut navigation_request),
+                Code::Ok
+            );
+            assert_eq!(navigation_request, 4);
             assert_eq!(
                 ko_client_size(
                     client,
@@ -3449,14 +3504,14 @@ mod tests {
             );
             assert_eq!(ko_client_focus(client, true), Code::Ok);
             assert_eq!(
-                ko_client_select(client, SELECT_PANE, c"nonsense".as_ptr()),
+                ko_client_select(client, SELECT_PANE, c"nonsense".as_ptr(), &mut 0),
                 Code::Argument
             );
             assert_eq!(
-                ko_client_select(client, 9, c"pane_1".as_ptr()),
+                ko_client_select(client, 9, c"pane_1".as_ptr(), &mut 0),
                 Code::Argument
             );
-            assert_eq!(ko_client_switch(client, 3, 1), Code::Argument);
+            assert_eq!(ko_client_switch(client, 3, 1, &mut 0), Code::Argument);
             assert_eq!(
                 ko_client_size(
                     client,
@@ -3529,7 +3584,7 @@ mod tests {
                 Code::Argument
             );
             assert_eq!(
-                ko_client_select(client, SELECT_PANE, c"pane_9".as_ptr()),
+                ko_client_select(client, SELECT_PANE, c"pane_9".as_ptr(), &mut 0),
                 Code::NotFound
             );
         }
@@ -3539,15 +3594,23 @@ mod tests {
         assert_eq!(
             received,
             [
-                r#"{"type":"select","pane":"pane_2"}"#,
-                r#"{"type":"select","window":"window_1"}"#,
-                r#"{"type":"select","session":"session_1"}"#,
-                r#"{"type":"switch","over":"window","direction":"next"}"#,
+                r#"{"type":"select","request":1,"pane":"pane_2"}"#,
+                r#"{"type":"select","request":2,"window":"window_1"}"#,
+                r#"{"type":"select","request":3,"session":"session_1"}"#,
+                r#"{"type":"switch","request":4,"over":"window","direction":"next"}"#,
                 r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":100,"rows":30,"cell_px":{"width":9,"height":18}},"windows":[]}}"#,
                 r#"{"type":"focused","focused":true}"#,
             ]
         );
-        assert!(matches!(fixture.next(), Seen::Selected(..)));
+        assert_eq!(
+            fixture.next(),
+            Seen::Selected(
+                4,
+                Some("session_1".to_owned()),
+                Some("window_1".to_owned()),
+                Some("pane_2".to_owned())
+            )
+        );
         drop_first.send(()).unwrap();
         let hello: Value = serde_json::from_str(&hellos.recv_timeout(WAIT).unwrap()).unwrap();
         assert_eq!(
@@ -4551,10 +4614,13 @@ mod tests {
                 Code::Argument
             );
             assert_eq!(
-                ko_client_select(std::ptr::null(), 3, c"pane_1".as_ptr()),
+                ko_client_select(std::ptr::null(), 3, c"pane_1".as_ptr(), &mut 0),
                 Code::Argument
             );
-            assert_eq!(ko_client_switch(std::ptr::null(), 1, 1), Code::Argument);
+            assert_eq!(
+                ko_client_switch(std::ptr::null(), 1, 1, &mut 0),
+                Code::Argument
+            );
             assert_eq!(
                 ko_client_size(
                     std::ptr::null(),

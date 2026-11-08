@@ -8,7 +8,7 @@ enum KoEvent: Equatable {
     case layout(revision: UInt64)
     case failed(code: ko_code, message: String)
     case model
-    case selected(session: SessionID?, window: WindowID?, pane: PaneID?)
+    case selected(request: UInt64?, session: SessionID?, window: WindowID?, pane: PaneID?)
     case mismatch(code: ko_code, server: KoSchema.Version, own: KoSchema.Version)
     case clipboardWrite(pane: PaneID, contents: [KoClipboardContent])
     case clipboardRead(KoClipboardRead)
@@ -216,7 +216,7 @@ private final class ClientHandle: @unchecked Sendable {
             sink(.model)
         case KO_EVENT_SELECTED:
             let selected = event.selected
-            sink(.selected(session: optional(selected.session).flatMap(SessionID.init(ko:)), window: optional(selected.window).flatMap(WindowID.init(ko:)),
+            sink(.selected(request: selected.request == 0 ? nil : selected.request, session: optional(selected.session).flatMap(SessionID.init(ko:)), window: optional(selected.window).flatMap(WindowID.init(ko:)),
                            pane: optional(selected.pane).flatMap(PaneID.init(ko:))))
         case KO_EVENT_CLIPBOARD_WRITE:
             let write = event.clipboard_write
@@ -321,9 +321,11 @@ private final class ClientHandle: @unchecked Sendable {
         return try JSONDecoder().decode(KoModel.self, from: handle.call { try take(ko_client_model($0, &buffer), &buffer) })
     }
 
-    func select<Kind>(_ kind: Int, _ id: ID<Kind>) throws {
-        try handle.call { try check(ko_client_select($0, Int32(kind), id.description)) }
+    @discardableResult func select<Kind>(_ kind: Int, _ id: ID<Kind>) throws -> UInt64 {
+        var request: UInt64 = 0
+        try handle.call { try check(ko_client_select($0, Int32(kind), id.description, &request)) }
         note("selection sent kind=\(kind) id=\(id)")
+        return request
     }
 
     // The cell's pixel size answers a program's size queries; the C call takes 0 and 0 for unknown.
@@ -342,9 +344,11 @@ private final class ClientHandle: @unchecked Sendable {
         }
     }
 
-    func switchOver(_ over: Int, _ direction: Int) throws {
-        try handle.call { try check(ko_client_switch($0, Int32(over), Int32(direction))) }
+    @discardableResult func switchOver(_ over: Int, _ direction: Int) throws -> UInt64 {
+        var request: UInt64 = 0
+        try handle.call { try check(ko_client_switch($0, Int32(over), Int32(direction), &request)) }
         note("selection switch sent over=\(over) direction=\(direction)")
+        return request
     }
 
     // Blocks until the server answered: run it off the main queue.

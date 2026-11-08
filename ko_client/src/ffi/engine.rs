@@ -398,8 +398,8 @@ impl Engine<'_> {
                 Some(model) => Posted::Layout(layout_of(model)),
                 None => return,
             },
-            Applied::Selected => match locked(&shared.model).as_ref() {
-                Some(model) => Posted::Selected(model.selection),
+            Applied::Selected(request) => match locked(&shared.model).as_ref() {
+                Some(model) => Posted::Selected(*request, model.selection),
                 None => return,
             },
             Applied::Notice(notice) => Posted::Alert(notice.clone()),

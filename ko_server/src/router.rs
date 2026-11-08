@@ -948,8 +948,8 @@ mod tests {
             4 => prop::sample::select(vec![
                 r#"{"type":"hello","name":"t","focused":true,"sizing":{"type":"disabled"}}"#,
                 r#"{"type":"hello","name":"t","pane":"pane_1","focused":false,"sizing":{"type":"windows","viewport":{"cols":4097,"rows":24},"windows":[]}}"#,
-                r#"{"type":"select","pane":"pane_1"}"#,
-                r#"{"type":"select","pane":"pane_99"}"#,
+                r#"{"type":"select","request":1,"pane":"pane_1"}"#,
+                r#"{"type":"select","request":1,"pane":"pane_99"}"#,
                 r#"{"type":"size","sizing":{"type":"windows","viewport":{"cols":50,"rows":10,"cell_px":{"width":8,"height":16}},"windows":[]}}"#,
                 r#"{"type":"focused","focused":true}"#,
                 r#"{"type":"resync","history":"all","images":"none"}"#,
@@ -1280,7 +1280,7 @@ mod tests {
         peer.events(&mut server);
         peer.send(
             &mut server,
-            r#"{"type":"switch","over":"window","direction":"next"}"#,
+            r#"{"type":"switch","request":1,"over":"window","direction":"next"}"#,
         );
         let selected = peer
             .events(&mut server)
@@ -1289,21 +1289,23 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             selected,
-            [json!({"type":"selected","session":"session_1","window":"window_1","pane":"pane_1"})]
+            [
+                json!({"type":"selected","request":1,"session":"session_1","window":"window_1","pane":"pane_1"})
+            ]
         );
         let removed = server.reply("DELETE /panes/pane_1", "\r\n");
         assert!(removed.starts_with("HTTP/1.1 200"), "{removed}");
         peer.events(&mut server);
         peer.send(
             &mut server,
-            r#"{"type":"switch","over":"window","direction":"previous"}"#,
+            r#"{"type":"switch","request":1,"over":"window","direction":"previous"}"#,
         );
         let selected = peer
             .events(&mut server)
             .into_iter()
             .filter(|event| event["type"] == "selected")
             .collect::<Vec<_>>();
-        assert_eq!(selected, [json!({"type":"selected"})]);
+        assert_eq!(selected, [json!({"type":"selected","request":1})]);
     }
 
     #[test]
@@ -1331,22 +1333,22 @@ mod tests {
         };
         a.send(
             &mut server,
-            r#"{"type":"switch","over":"window","direction":"next"}"#,
+            r#"{"type":"switch","request":1,"over":"window","direction":"next"}"#,
         );
         assert_eq!(kinds(&a.events(&mut server)), ["selected pane_2"]);
         a.send(
             &mut server,
-            r#"{"type":"switch","over":"session","direction":"next"}"#,
+            r#"{"type":"switch","request":1,"over":"session","direction":"next"}"#,
         );
         assert_eq!(kinds(&a.events(&mut server)), ["selected pane_3"]);
         a.send(
             &mut server,
-            r#"{"type":"switch","over":"window","direction":"next"}"#,
+            r#"{"type":"switch","request":1,"over":"window","direction":"next"}"#,
         );
         assert_eq!(kinds(&a.events(&mut server)), ["selected pane_1"]);
         a.send(
             &mut server,
-            r#"{"type":"switch","over":"session","direction":"previous"}"#,
+            r#"{"type":"switch","request":1,"over":"session","direction":"previous"}"#,
         );
         assert_eq!(
             window_of(&server, 1),
@@ -1354,27 +1356,42 @@ mod tests {
         );
         a.send(
             &mut server,
-            r#"{"type":"switch","over":"session","direction":"previous"}"#,
+            r#"{"type":"switch","request":1,"over":"session","direction":"previous"}"#,
         );
         assert_eq!(
             window_of(&server, 1),
             Some(("window_1".to_owned(), "pane_1".to_owned()))
         );
         a.events(&mut server);
-        a.send(&mut server, r#"{"type":"select","pane":"pane_2"}"#);
+        a.send(
+            &mut server,
+            r#"{"type":"select","request":1,"pane":"pane_2"}"#,
+        );
         assert_eq!(kinds(&a.events(&mut server)), ["selected pane_2"]);
-        a.send(&mut server, r#"{"type":"select","pane":"pane_2"}"#);
+        a.send(
+            &mut server,
+            r#"{"type":"select","request":1,"pane":"pane_2"}"#,
+        );
         assert_eq!(
             kinds(&a.events(&mut server)),
             ["selected pane_2"],
             "also for the pane that is current"
         );
-        a.send(&mut server, r#"{"type":"select","session":"session_1"}"#);
+        a.send(
+            &mut server,
+            r#"{"type":"select","request":1,"session":"session_1"}"#,
+        );
         assert_eq!(kinds(&a.events(&mut server)), ["selected pane_2"]);
-        a.send(&mut server, r#"{"type":"select","window":"window_9"}"#);
+        a.send(
+            &mut server,
+            r#"{"type":"select","request":1,"window":"window_9"}"#,
+        );
         assert!(kinds(&b.events(&mut server)).is_empty());
         assert_eq!(server.current(2), None);
-        b.send(&mut server, r#"{"type":"select","window":"window_3"}"#);
+        b.send(
+            &mut server,
+            r#"{"type":"select","request":1,"window":"window_3"}"#,
+        );
         assert_eq!(kinds(&b.events(&mut server)), ["selected pane_3"]);
         assert!(kinds(&a.events(&mut server)).is_empty());
     }
@@ -1457,7 +1474,10 @@ mod tests {
         assert_eq!(focused(&server), [true, false, false]);
         let mut b = server.peer(&hello(r#""pane":"pane_1","#, false, 80, 24));
         b.events(&mut server);
-        a.send(&mut server, r#"{"type":"select","pane":"pane_2"}"#);
+        a.send(
+            &mut server,
+            r#"{"type":"select","request":1,"pane":"pane_2"}"#,
+        );
         assert_eq!(focused(&server), [false, true, false]);
         b.send(&mut server, r#"{"type":"focused","focused":true}"#);
         assert_eq!(focused(&server), [true, true, false]);
@@ -1484,9 +1504,15 @@ mod tests {
         });
         let mut peer = server.peer(&hello(r#""pane":"pane_4","#, true, 80, 24));
         peer.events(&mut server);
-        peer.send(&mut server, r#"{"type":"select","window":"window_2"}"#);
+        peer.send(
+            &mut server,
+            r#"{"type":"select","request":1,"window":"window_2"}"#,
+        );
         peer.events(&mut server);
-        peer.send(&mut server, r#"{"type":"select","window":"window_1"}"#);
+        peer.send(
+            &mut server,
+            r#"{"type":"select","request":1,"window":"window_1"}"#,
+        );
         assert_eq!(kinds(&peer.events(&mut server)), ["selected pane_4"]);
     }
 
@@ -1504,14 +1530,20 @@ mod tests {
         let _third = server.peer(&hello(r#""window":"window_1","#, false, 80, 24));
         assert_eq!(pane_of(&server, 3), "pane_4");
         let mut gains = server.peer(&hello(r#""pane":"pane_1","#, false, 80, 24));
-        gains.send(&mut server, r#"{"type":"select","pane":"pane_4"}"#);
+        gains.send(
+            &mut server,
+            r#"{"type":"select","request":1,"pane":"pane_4"}"#,
+        );
         let _fourth = server.peer(&hello(r#""window":"window_1","#, false, 80, 24));
         assert_eq!(
             pane_of(&server, 5),
             "pane_4",
             "an unfocused select notes nothing"
         );
-        gains.send(&mut server, r#"{"type":"select","pane":"pane_1"}"#);
+        gains.send(
+            &mut server,
+            r#"{"type":"select","request":1,"pane":"pane_1"}"#,
+        );
         gains.send(&mut server, r#"{"type":"focused","focused":true}"#);
         let _fifth = server.peer(&hello(r#""window":"window_1","#, false, 80, 24));
         assert_eq!(

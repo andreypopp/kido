@@ -531,10 +531,14 @@ export interface components {
             /** @constant */
             type: "focus";
             window: components["schemas"]["WindowId"];
-        } | ({
+        } | {
+            pane?: components["schemas"]["PaneId"];
+            request?: components["schemas"]["NavigationId"];
+            session?: components["schemas"]["SessionId"];
             /** @constant */
             type: "selected";
-        } & components["schemas"]["Selection"]) | ({
+            window?: components["schemas"]["WindowId"];
+        } | ({
             /** @constant */
             type: "title";
         } & components["schemas"]["Title"]) | ({
@@ -623,13 +627,20 @@ export interface components {
         ClientRequest: ({
             /** @constant */
             type: "hello";
-        } & components["schemas"]["Hello"]) | ({
+        } & components["schemas"]["Hello"]) | {
+            pane?: components["schemas"]["PaneId"];
+            request: components["schemas"]["NavigationId"];
+            session?: components["schemas"]["SessionId"];
             /** @constant */
             type: "select";
-        } & components["schemas"]["Selection"]) | ({
+            window?: components["schemas"]["WindowId"];
+        } | {
+            direction: components["schemas"]["Direction"];
+            over: components["schemas"]["Over"];
+            request: components["schemas"]["NavigationId"];
             /** @constant */
             type: "switch";
-        } & components["schemas"]["Switch"]) | {
+        } | {
             sizing: components["schemas"]["Sizing"];
             /** @constant */
             type: "size";
@@ -1149,6 +1160,8 @@ export interface components {
         MouseButton: "unknown" | "left" | "right" | "middle" | "four" | "five" | "six" | "seven" | "eight" | "nine" | "ten" | "eleven";
         /** @description At most 256 bytes, without control characters. */
         Name: string;
+        /** @description The client's id of a select or switch, which its selected answer echoes. */
+        NavigationId: number;
         /** @description The text to search for, percent-encoded in the query. */
         Needle: string;
         /** @description A window of one pane. */
@@ -1443,11 +1456,6 @@ export interface components {
             end_row: number;
             row: number;
         };
-        Selection: {
-            pane?: components["schemas"]["PaneId"];
-            session?: components["schemas"]["SessionId"];
-            window?: components["schemas"]["WindowId"];
-        };
         /**
          * @description The kinds that a sender may give. The server reads none of them.
          * @enum {string}
@@ -1570,10 +1578,6 @@ export interface components {
             id: components["schemas"]["MessageId"];
             /** @constant */
             type: "refuse";
-        };
-        Switch: {
-            direction: components["schemas"]["Direction"];
-            over: components["schemas"]["Over"];
         };
         Terminal: {
             apc_max_bytes: number;

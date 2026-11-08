@@ -636,20 +636,27 @@ impl State {
         let sizes = self.document.layout().pane_sizes().into_iter().collect();
         self.resize_panes(poll, &sizes);
         for (index, current) in moved {
-            self.selected(index, current);
+            self.selected(index, current, None);
         }
         self.refocus(poll);
         self.remove_session_runtimes(poll, before);
     }
 
-    fn selected(&mut self, index: usize, current: Option<Current>) {
+    fn selected(
+        &mut self,
+        index: usize,
+        current: Option<Current>,
+        request: Option<protocol::NavigationId>,
+    ) {
         if let Some((Role::Client(client), wire)) =
             self.conns.get_mut(index).and_then(Conn::role_mut)
         {
             let selection = current.map(Selection::from).unwrap_or_default();
             let id = client.id;
-            wire.ws
-                .send(wire.out, protocol::json(&ClientEvent::Selected(selection)));
+            wire.ws.send(
+                wire.out,
+                protocol::json(&ClientEvent::Selected { request, selection }),
+            );
             self.record(diagnostics::Event::Selected {
                 client: id,
                 selection,
@@ -774,12 +781,18 @@ impl State {
         self.broadcast(&ClientEvent::Layout(announced));
     }
 
-    fn enter(&mut self, poll: &mut Poll, index: usize, current: Option<Current>) {
+    fn enter(
+        &mut self,
+        poll: &mut Poll,
+        index: usize,
+        current: Option<Current>,
+        request: Option<protocol::NavigationId>,
+    ) {
         if let Some((Role::Client(client), _)) = self.conns.get_mut(index).and_then(Conn::role_mut)
         {
             client.set_current(current);
         }
-        self.selected(index, current);
+        self.selected(index, current, request);
         self.arrive(poll, index);
         self.refocus(poll);
     }
@@ -1514,7 +1527,7 @@ impl State {
                 return wire.ws.reject(wire.out, crate::ws::Rejection::Invalid);
             }
         };
-        let current = match change {
+        let (current, request) = match change {
             Change::Hello(selection) => {
                 client.forget(layout);
                 let current = client.select(layout, selection).or_else(|| {
@@ -1541,15 +1554,16 @@ impl State {
                 let announced = ClientEvent::Layout(layout_panes(document, panes, |_| true));
                 wire.ws.send(wire.out, protocol::json(&announced));
                 self.claim_sizes(poll, index, &protocol::Sizing::Disabled);
-                current
+                (current, None)
             }
-            Change::Select(selection) => match client.select(layout, selection) {
-                Some(current) => Some(current),
+            Change::Select(request, selection) => match client.select(layout, selection) {
+                Some(current) => (Some(current), Some(request)),
                 None => return wire.ws.reject(wire.out, crate::ws::Rejection::Invalid),
             },
-            Change::Switch(switch) => {
-                client.switch(layout, switch, &|pane| self.panes.parent(pane))
-            }
+            Change::Switch(request, switch) => (
+                client.switch(layout, switch, &|pane| self.panes.parent(pane)),
+                Some(request),
+            ),
             Change::Claim => {
                 self.claim_sizes(poll, index, &protocol::Sizing::Disabled);
                 self.arrive(poll, index);
@@ -1568,7 +1582,7 @@ impl State {
                 return self.clipboard_answered(poll, id, read, served);
             }
         };
-        self.enter(poll, index, current);
+        self.enter(poll, index, current, request);
     }
 
     fn claim(&mut self, poll: &mut Poll, index: usize) -> bool {

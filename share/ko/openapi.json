@@ -295,15 +295,22 @@
             "type": "object"
           },
           {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Selection"
-              }
-            ],
             "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "request": {
+                "$ref": "#/components/schemas/NavigationId"
+              },
+              "session": {
+                "$ref": "#/components/schemas/SessionId"
+              },
               "type": {
                 "const": "selected",
                 "type": "string"
+              },
+              "window": {
+                "$ref": "#/components/schemas/WindowId"
               }
             },
             "required": [
@@ -709,36 +716,51 @@
             "type": "object"
           },
           {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Selection"
-              }
-            ],
             "properties": {
+              "pane": {
+                "$ref": "#/components/schemas/PaneId"
+              },
+              "request": {
+                "$ref": "#/components/schemas/NavigationId"
+              },
+              "session": {
+                "$ref": "#/components/schemas/SessionId"
+              },
               "type": {
                 "const": "select",
                 "type": "string"
+              },
+              "window": {
+                "$ref": "#/components/schemas/WindowId"
               }
             },
             "required": [
-              "type"
+              "type",
+              "request"
             ],
             "type": "object"
           },
           {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Switch"
-              }
-            ],
             "properties": {
+              "direction": {
+                "$ref": "#/components/schemas/Direction"
+              },
+              "over": {
+                "$ref": "#/components/schemas/Over"
+              },
+              "request": {
+                "$ref": "#/components/schemas/NavigationId"
+              },
               "type": {
                 "const": "switch",
                 "type": "string"
               }
             },
             "required": [
-              "type"
+              "type",
+              "request",
+              "over",
+              "direction"
             ],
             "type": "object"
           },
@@ -2634,6 +2656,12 @@
         "maxLength": 256,
         "type": "string"
       },
+      "NavigationId": {
+        "description": "The client's id of a select or switch, which its selected answer echoes.",
+        "maximum": 18446744073709551615,
+        "minimum": 1,
+        "type": "integer"
+      },
       "Needle": {
         "description": "The text to search for, percent-encoded in the query.",
         "maxLength": 4096,
@@ -3659,20 +3687,6 @@
         ],
         "type": "object"
       },
-      "Selection": {
-        "properties": {
-          "pane": {
-            "$ref": "#/components/schemas/PaneId"
-          },
-          "session": {
-            "$ref": "#/components/schemas/SessionId"
-          },
-          "window": {
-            "$ref": "#/components/schemas/WindowId"
-          }
-        },
-        "type": "object"
-      },
       "SendKind": {
         "description": "The kinds that a sender may give. The server reads none of them.",
         "enum": [
@@ -4106,21 +4120,6 @@
             "type": "object"
           }
         ]
-      },
-      "Switch": {
-        "properties": {
-          "direction": {
-            "$ref": "#/components/schemas/Direction"
-          },
-          "over": {
-            "$ref": "#/components/schemas/Over"
-          }
-        },
-        "required": [
-          "over",
-          "direction"
-        ],
-        "type": "object"
       },
       "Terminal": {
         "properties": {

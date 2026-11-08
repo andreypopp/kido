@@ -27,7 +27,7 @@ import XCTest
     private func connectRecording(_ dir: String, panes: Int, sizes: Bool, _ layouts: Layouts) throws -> KoClient {
         let connection = try connect(dir, hello: KoHello(viewport: sizes ? KoSize(cols: 100, rows: 30, cell: nil) : nil), panes: panes) { event in
             if case .layout = event { layouts.record() }
-            if case .selected(_, _, let pane) = event { layouts.selected = pane }
+            if case .selected(_, _, _, let pane) = event { layouts.selected = pane }
         }
         layouts.connection = connection
         layouts.record()

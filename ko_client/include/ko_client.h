@@ -78,6 +78,14 @@ extern "C" {
  * names the selection that the model had, and the server answers each hello
  * with its `selected`, so a reconnect does not move the selection.
  *
+ * Navigation. Select and switch require a writable request pointer. The core
+ * writes a nonzero request id before it queues the request, so the id is
+ * available before its answer. Ids never repeat in one client, including
+ * across reconnects. Match an answer by its id, not by event order or target.
+ * A selected event for hello or an unsolicited repair has request 0.
+ * A null request pointer returns KO_ERR_ARGUMENT and sends nothing. Select
+ * and switch return KO_ERR_INVALID when the request ids are exhausted.
+ *
  * A view's link ends without its view only when the pane is gone or the
  * server restarted (KO_EVENT_VIEW_CLOSED). Any other end of the link (a close
  * frame other than `gone`, an I/O error, or 60 s with no byte while the view
@@ -160,8 +168,9 @@ typedef struct ko_failure {
     const char *message;
 } ko_failure;
 
-/* This client's selection moved. A member is NULL when the selection lacks it. */
+/* This client's selection moved. A selection member is NULL when the selection lacks it. */
 typedef struct ko_selected {
+    uint64_t request;
     const char *session;
     const char *window;
     const char *pane;
@@ -516,7 +525,7 @@ enum {
  * answers each select with KO_EVENT_SELECTED; KO_ERR_NOT_FOUND is a pane that the model's layout
  * does not have.
  */
-ko_code ko_client_select(const ko_client *client, int kind, const char *id);
+ko_code ko_client_select(const ko_client *client, int kind, const char *id, uint64_t *request);
 
 enum {
     KO_OVER_SESSION = 1,
@@ -525,7 +534,7 @@ enum {
     KO_DIRECTION_PREVIOUS = 2,
 };
 
-ko_code ko_client_switch(const ko_client *client, int over, int direction);
+ko_code ko_client_switch(const ko_client *client, int over, int direction, uint64_t *request);
 
 typedef struct {
     uint16_t cols;

@@ -474,7 +474,9 @@ focused panes, and the end of a linger grace (protocol.md, section
    default; design-ko.md, "The configuration file"). The sweep
    removes it.
 3. A pane's `parent` is gone or dead. The sweep removes the pane at
-   once, live or dead. The rule reads no process and no pi evidence,
+   once, live or dead, also while a focused client shows it: a child
+   shows in its parent's slot, so when the dead parent lingers, the
+   removal shows its last screen in its place. The rule reads no process and no pi evidence,
    by design: a child of a pi that quits inside a living shell pane
    ends through its own parent watch, not the sweep.
 
@@ -483,8 +485,9 @@ child's poll. It is the only available action outside the child, and
 it ends a `tail -f` that an exited parent started. A pane without a
 parent is a root that the sweep must not cancel.
 
-The sweep never chooses an `on_exit` or orphaned pane that a client
-with terminal focus shows (protocol.md, section 3); it tries again when the focus changes.
+The sweep never collects an `on_exit` pane for its linger grace while
+a client with terminal focus shows it (protocol.md, section 3); it
+tries again when the focus changes.
 Waiting loses nothing. It does not protect a session's last window: an
 empty session ends.
 

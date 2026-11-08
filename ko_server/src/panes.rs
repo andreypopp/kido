@@ -358,6 +358,11 @@ pub(crate) fn sweep(panes: &[Seen], now: Mono, linger: impl Fn() -> Duration) ->
         let orphan = pane
             .parent
             .is_some_and(|parent| standing(panes, parent) != Standing::Live);
+        let exited = pane.close == Close::Exit && matches!(pane.condition, Condition::Dead { .. });
+        if exited || orphan {
+            swept.removed.push(pane.id);
+            continue;
+        }
         let lingered = match pane.condition {
             Condition::Dead { at } | Condition::Failed { at } if pane.close == Close::OnExit => {
                 let age = Duration::from_nanos(now.nanos().saturating_sub(at.nanos()));
@@ -370,8 +375,7 @@ pub(crate) fn sweep(panes: &[Seen], now: Mono, linger: impl Fn() -> Duration) ->
             }
             _ => false,
         };
-        let exited = pane.close == Close::Exit && matches!(pane.condition, Condition::Dead { .. });
-        if exited || (!pane.shown && (orphan || lingered)) {
+        if !pane.shown && lingered {
             swept.removed.push(pane.id);
         }
     }
@@ -658,7 +662,27 @@ mod tests {
             shown: true,
             ..seen(1, None, Close::OnExit, dead(5))
         };
-        assert_eq!(removed(&[shown]), Vec::<u64>::new(), "a shown pane stays");
+        assert_eq!(
+            removed(std::slice::from_ref(&shown)),
+            Vec::<u64>::new(),
+            "a shown pane stays"
+        );
+        let focused = [
+            Seen {
+                shown: true,
+                ..seen(10, Some(2), Close::Keep, live)
+            },
+            Seen {
+                shown: true,
+                ..seen(11, Some(2), Close::OnExit, dead(0))
+            },
+            shown,
+        ];
+        assert_eq!(removed(&focused), [10, 11]);
+        assert_eq!(
+            sweep(&focused[..2], Mono::from_nanos(NOW), || GRACE).next,
+            None
+        );
         assert_eq!(standing(&panes, PaneId::new(2)), Standing::Dead);
         assert_eq!(standing(&panes, PaneId::new(4)), Standing::Live);
         assert_eq!(standing(&panes, PaneId::new(8)), Standing::Gone);
