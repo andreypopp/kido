@@ -425,7 +425,10 @@ fn pane_runs_the_shims() {
 fn shell_completions_survive_priming_cleanup() {
     let s = start_with(
         Path::new("/bin/sh"),
-        &[("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")],
+        &[
+            ("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+            ("TMPDIR", "/tmp"),
+        ],
         &[],
     );
     for flavour in [Flavour::Zsh, Flavour::Bash] {
@@ -437,51 +440,47 @@ fn shell_completions_survive_priming_cleanup() {
             &flavour,
             &s.dir,
             if zsh {
-                r#"autoload -Uz compinit compdump
-_ko_test_fpath=("${fpath[@]}")
-fpath=("${(@)fpath:#*/ko-shell.*}")
-compinit -D -d "$HOME/complete.dump"
-unset '_comps[ko]'
-compdump
-fpath=("${_ko_test_fpath[@]}")
-unset _ko_test_fpath
-compinit -C -d "$HOME/complete.dump"
-print -r -- "${_comps[ko]-absent}" > "$HOME/ko-before-precmd"
-print -r -- "$_ko_dir" > "$HOME/ko-completion-dir"
-_t_fpath=$FPATH
-_t_hook() {
-  [[ $FPATH == $_t_fpath ]] || {
-    _t_fpath=$FPATH
-    unset _comps
-    compinit
-  }
+                r#"fpath=("$HOME/site-functions" "${fpath[@]}")
+export FPATH
+autoload -Uz compinit add-zsh-hook
+recompinit() {
+  unset _comps
+  compinit
+  print reinitialized >> "$HOME/compinit-calls"
 }
-precmd_functions+=(_t_hook)"#
+recompinit
+typeset -g __fpath_snapshot="$FPATH"
+_auto_compinit_if_fpath_changed() {
+  if [[ "$FPATH" != "$__fpath_snapshot" ]]; then
+    recompinit
+    __fpath_snapshot="$FPATH"
+  fi
+}
+add-zsh-hook precmd _auto_compinit_if_fpath_changed
+precmd() { eval "$PROMPT_COMMAND" }
+print -r -- "$_ko_dir" > "$HOME/ko-completion-dir""#
             } else {
                 ""
             },
         );
         if zsh {
+            fs::create_dir(s.dir.join("site-functions")).unwrap();
             fs::write(
                 s.dir.join(".zshenv"),
                 "fpath=(\"${(@)fpath:#*/ko-shell.*}\")\n",
             )
             .unwrap();
         }
-        let pane = s.pane(&format!(
+        let mut request = sh(&format!(
             "KO_SHELL={} exec {} shell",
             quote(text_of(&shell)),
             quote(text_of(&ko()))
         ));
+        request["close"] = json!("keep");
+        let pane = s.new_pane(request);
+        s.screen_has(&pane, "READY>");
         s.text(&pane, "printf 'PRIMED_%s\\n' READY\r");
         s.screen_has(&pane, "PRIMED_READY");
-        if zsh {
-            s.text(
-                &pane,
-                "unset _comps; compinit; printf 'SECOND_%s\\n' PROMPT\r",
-            );
-            s.screen_has(&pane, "SECOND_PROMPT");
-        }
         let out = s
             .dir
             .join(if zsh { "zsh-complete" } else { "bash-complete" });
@@ -498,22 +497,40 @@ precmd_functions+=(_t_hook)"#
                 quote(text_of(&out))
             )
         };
-        s.text(
-            &pane,
-            &format!("{script}; printf 'COMPLETION_%s\\n' DONE\r"),
-        );
-        s.screen_has(&pane, "COMPLETION_DONE");
+        for attempt in 0..if zsh { 2 } else { 1 } {
+            if attempt == 1 {
+                s.text(
+                    &pane,
+                    "(exit 0); : $(exit 1); unfunction _ko; autoload -Uz _ko; fpath+=(\"$HOME/site-functions\"); printf 'SECOND_%s\\n' PROMPT\r",
+                );
+                s.screen_has(&pane, "SECOND_PROMPT");
+                let dir = fs::read_to_string(s.dir.join("ko-completion-dir")).unwrap();
+                assert!(
+                    Path::new(dir.trim()).join("completions/_ko").is_file(),
+                    "subshell exit removed the completion directory: {}",
+                    dir.trim()
+                );
+            }
+            s.text(
+                &pane,
+                &format!("{script}; printf 'COMPLETION_{attempt}_%s\\n' DONE\r"),
+            );
+            s.screen_has(&pane, &format!("COMPLETION_{attempt}_DONE"));
+            let written = fs::read_to_string(&out).unwrap();
+            assert!(
+                written.contains(&format!("/panes/{pane}/screen")),
+                "{written}"
+            );
+            if zsh {
+                assert!(written.starts_with("_ko\n"), "{written}");
+            }
+        }
         let written = fs::read_to_string(out).unwrap();
-        assert!(
-            written.contains(&format!("/panes/{pane}/screen")),
-            "{written}"
-        );
         if zsh {
             assert_eq!(
-                fs::read_to_string(s.dir.join("ko-before-precmd")).unwrap(),
-                "absent\n"
+                fs::read_to_string(s.dir.join("compinit-calls")).unwrap(),
+                "reinitialized\nreinitialized\n"
             );
-            assert!(written.starts_with("_ko\n"), "{written}");
         } else {
             assert!(
                 written
@@ -535,11 +552,49 @@ precmd_functions+=(_t_hook)"#
         if zsh {
             let dir = fs::read_to_string(s.dir.join("ko-completion-dir")).unwrap();
             let dir = Path::new(dir.trim());
-            assert!(dir.join("_ko").is_file(), "{}", dir.display());
             assert!(!dir.join(".zshenv").exists());
             assert!(!dir.join("integration.zsh").exists());
             s.text(&pane, "exit\r");
             poll("the completion directory cleanup", || !dir.exists());
+            dotfiles(
+                &flavour,
+                &s.dir,
+                r#"autoload -Uz compinit compdump
+_ko_test_fpath=("${fpath[@]}")
+fpath=("${(@)fpath:#*/ko-shell.*}")
+compinit -D -d "$HOME/complete.dump"
+unset '_comps[ko]'
+compdump
+fpath=("${_ko_test_fpath[@]}")
+unset _ko_test_fpath
+compinit -C -d "$HOME/complete.dump"
+print -r -- "${_comps[ko]-absent}" > "$HOME/ko-before-precmd""#,
+            );
+            let stale = s.pane(&format!(
+                "KO_SHELL={} exec {} shell",
+                quote(text_of(&shell)),
+                quote(text_of(&ko()))
+            ));
+            s.screen_has(&stale, "READY>");
+            assert_eq!(
+                fs::read_to_string(s.dir.join("ko-before-precmd")).unwrap(),
+                "absent\n"
+            );
+            s.text(
+                &stale,
+                &format!(
+                    "{}; printf 'REPAIRED_%s\\n' DONE\r",
+                    script.replace(&pane, &stale)
+                ),
+            );
+            s.screen_has(&stale, "REPAIRED_DONE");
+            let written = fs::read_to_string(s.dir.join("zsh-complete")).unwrap();
+            assert!(written.starts_with("_ko\n"), "{written}");
+            assert!(
+                written.contains(&format!("/panes/{stale}/screen")),
+                "{written}"
+            );
+            s.text(&stale, "exit\r");
             let marker = s.dir.join("zsh-early-exit");
             fs::write(
                 s.dir.join(".zshenv"),

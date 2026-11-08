@@ -20,6 +20,7 @@ else
 fi
 unset KO_ORIG_ZDOTDIR
 _ko_cleanup() {
+  (( ZSH_SUBSHELL )) && return
   command rm -rf -- "$_ko_dir"
   unset _ko_dir _ko_src
   zshexit_functions=("${(@)zshexit_functions:#_ko_cleanup}")
@@ -33,17 +34,17 @@ zshexit_functions+=(_ko_cleanup)
 {
   _ko_dir="${${(%):-%x}:A:h}"
   _ko_src="$(<"$_ko_dir/integration.zsh")"
-  fpath=("$_ko_dir" "${(@)fpath:#$_ko_dir}")
+  fpath=("$_ko_dir/completions" "${(@)fpath:#$_ko_dir/completions}")
   _ko_zshenv="${ZDOTDIR-$HOME}/.zshenv"
   [[ ! -r $_ko_zshenv ]] || source -- "$_ko_zshenv"
   unset _ko_zshenv
-  fpath=("$_ko_dir" "${(@)fpath:#$_ko_dir}")
+  fpath=("$_ko_dir/completions" "${(@)fpath:#$_ko_dir/completions}")
 } always {
   if [[ -o interactive && -n $_ko_src ]]; then
     typeset -ag precmd_functions
     precmd_functions+=(_ko_ssh_init)
   else
-    fpath=("${(@)fpath:#$_ko_dir}")
+    fpath=("${(@)fpath:#$_ko_dir/completions}")
     _ko_cleanup
   fi
 }
@@ -147,7 +148,8 @@ ko_dir=$(mktemp -d "${TMPDIR:-/tmp}/ko-ssh.XXXXXXXX" 2>/dev/null) && [ -d "$ko_d
 trap 'rm -rf "$ko_dir"' EXIT HUP INT TERM
 if [ "$ko_name" = zsh ]; then
   ko_decode "$ko_zsh_b64" "$ko_dir/integration.zsh" || ko_plain
-  ko_decode "$ko_completion_b64" "$ko_dir/_ko" || ko_plain
+  mkdir -m 700 "$ko_dir/completions" || ko_plain
+  ko_decode "$ko_completion_b64" "$ko_dir/completions/_ko" || ko_plain
   ko_zdotdir=${ZDOTDIR:-$HOME}
   [ -f "$ko_zdotdir/.zshrc" ] || [ -f "$ko_zdotdir/.zshenv" ] ||
     [ -f "$ko_zdotdir/.zprofile" ] || [ -f "$ko_zdotdir/.zlogin" ] || ko_plain
@@ -232,7 +234,7 @@ pub(crate) fn local(
         Mode::Plain => return Ok(Vec::new()),
         Mode::Zsh => vec![
             (".zshenv", ZSHENV.to_owned()),
-            ("_ko", ZSH_COMPLETION.to_owned()),
+            ("completions/_ko", ZSH_COMPLETION.to_owned()),
             ("integration.zsh", with_path(ZSH_INTEGRATION)),
         ],
         Mode::Bash => vec![
@@ -241,9 +243,18 @@ pub(crate) fn local(
         ],
     };
     let dir = throwaway_dir()?;
-    let written = files
-        .iter()
-        .try_for_each(|(name, body)| write_private(&dir.join(name), body));
+    let written = (if mode == Mode::Zsh {
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(dir.join("completions"))
+    } else {
+        Ok(())
+    })
+    .and_then(|()| {
+        files
+            .iter()
+            .try_for_each(|(name, body)| write_private(&dir.join(name), body))
+    });
     if let Err(error) = written {
         let _ = fs::remove_dir_all(&dir);
         return Err(error);
@@ -459,7 +470,9 @@ exit 0
             };
             let all: String = fs::read_dir(dir)
                 .unwrap()
-                .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.is_file())
+                .map(|path| fs::read_to_string(path).unwrap())
                 .collect();
             let _ = fs::remove_dir_all(dir);
             all
@@ -540,7 +553,10 @@ exit 0
         assert_eq!(zsh.len(), 1);
         assert_eq!(zsh[0].0, "ZDOTDIR");
         assert!(zsh[0].1.contains("/ko-shell."));
-        assert_eq!(listing(Path::new(&zsh[0].1)), ".zshenv _ko integration.zsh");
+        assert_eq!(
+            listing(Path::new(&zsh[0].1)),
+            ".zshenv completions integration.zsh"
+        );
         let zsh = local(Some("/home/me/dots"), None, Mode::Zsh).unwrap();
         assert_eq!(
             zsh[1],

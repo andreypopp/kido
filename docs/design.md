@@ -804,13 +804,20 @@ variables fails the e2e test that compares them with the generated
 script.
 
 - zsh: the temporary `ZDOTDIR` holds `_ko` (`share/ko/zsh/_ko`, with
-  `#compdef ko`). Its `.zshenv` puts that directory first on `fpath`
+  `#compdef ko`) in its own `0700` subdirectory `completions`, because
+  `compaudit` also checks the parent of each `fpath` entry, and a
+  world-writable `/tmp` as that parent makes `compinit` stop at its
+  "insecure directories" question. Its `.zshenv` puts that
+  subdirectory first on `fpath`
   before it sources the user's `.zshenv`, and again after it, so the
   user's own `compinit` finds `_ko`; ko never runs `compinit`. At the
   first prompt it loads `_ko` into memory, maps `ko` to it with
   `compdef` when `compinit -C` read an older dump without `_ko`, and
   deletes the other two files. The directory with `_ko` stays on
-  `fpath` until `zshexit` deletes it, so a `compinit` that runs after
+  `fpath` until the main shell's `zshexit` deletes it; the cleanup does
+  nothing in a subshell, because zsh also runs `zshexit` when a
+  subshell exits with `exit` (`(exit)`, `$(exit)`). So a `compinit`
+  that runs after
   the first prompt (a plugin manager's reload, a hook that runs
   `compinit` again when `$FPATH` changed) still finds `_ko`. ko does
   not change `fpath` after `.zshrc`, so such a hook sees no change. A
