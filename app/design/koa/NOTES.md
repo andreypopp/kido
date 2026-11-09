@@ -71,13 +71,16 @@ assistant texts (or between the user's message and the first text).
 
 - **Collapsed** (default): one terminal-font line, muted. A chevron,
   then the summary, then the elapsed time at the right. While running
-  the summary is a spinner and the current step in the fg colour
-  ("running **make cargo …** · step 4 of 4"); done, it is a green check
-  and the count by kind ("✓ 4 steps · thinking, 1 read, 1 edit, 1
-  command"). A failed run leads with a red ✕ and "1 command failed";
-  an aborted one with a warning ⊘ and "aborted · you pressed Escape".
-- **Expanded to lines**: the steps, indented 18pt under a 12%
-  hairline. One line per step: a mark for the kind in a 12pt column
+  the summary is a gray spinner (hairline ring, muted arc; no accent
+  colour) and the running label in regular weight, muted ("⟳ make
+  cargo …"; no word "running"); done, it is the tools by name in the
+  muted tone ("thinking, read, edit, bash"; "bash x2" when one ran
+  twice). A failed run colours the failed tool's name red; an aborted one
+  reads "aborted, you pressed Escape" in the muted tone. No icon.
+- **Expanded to lines**: the steps, indented 18pt, with a 12% hairline
+  guide under the run line's chevron (4pt from the run's left edge;
+  user, 2026-11-09). One line per step: the action name in muted (bash, read, edit, write; a generic tool
+  is its own name; a thinking block reads "thinking"), then
   (`$` bash, `✎` edit, `◇` read, `∴` thinking), the command or path
   in the fg colour, the step's own detail in faint (`+5 −1`, `212
   lines`, the thinking's first words), and the result at the right:
@@ -465,3 +468,105 @@ with a user message; the floating dock is in every state with a
 composer, a dialog or the exit card. The mockup scrolls each
 transcript so that text sits under the glass, to show it; a real
 page scrolled to its end shows the last message above the dock.
+
+
+## No step counts (user, 2026-11-09)
+
+The run line names no steps: no "step i of n" while running (the
+number is not known in advance), no "N steps ·" before the kinds when
+done or failed, and "aborted, you pressed Escape" without a count.
+The done line lists the tools by name, "xN" when one ran several
+times ("thinking, read, edit, bash", "read, bash x2"); The failed
+run colours that tool's name red in the same list. blocks.html and mockup.html show the new wording; the
+page's run() in share/koa/koa-page.js still writes the counts.
+
+## No kind marks (user, 2026-11-09)
+
+Step lines carry no sigil ($, ✎, ◇, ∴). The action name is the mark:
+"bash make verify …", "read ko_server/src/sweep.rs 212 lines", "edit …
++5 −1", "write …", a generic tool by its name, and "thinking". The
+name is muted, the label in the fg colour, as before. The page's
+stepInfo() in koa-page.js still sets a mark; the .mark column goes.
+
+## No status icons (user, 2026-11-09)
+
+No check, cross, abort glyph or spinner on a run line or a step line.
+Colour alone carries the status: gray (the muted tone) for success,
+running and aborted, red (`--ko-color-1`) for a failure. No word "failed"
+anywhere: on the run line the failed tool's name is red in the list
+("read, bash x2" with "bash x2" red); on its step the name and the
+time are red, with no outcome word and no exit code (user, 2026-11-09:
+"let's not specify exit codes"); the output holds what the command
+printed. A finished step shows
+only its time; a running one shows the time counting, no "…". The
+edit's "+5 −1" keeps green and red: it is the diff count, not a
+status. The .ok, .warn, .spin and .glyph rules of the run leave
+koa-page.css; .err stays and also colours the failed step's time.
+
+## Tool names on the run line (user, 2026-11-09)
+
+The run line uses the tool's name, never "command": "bash", not
+"command". A tool that ran N times is "bash xN", not "N commands";
+once is the bare name. The same form for every tool: "read x2",
+"edit". A failure is the red name, never the word "failed" or an exit code.
+
+Tool names are in the terminal font (`--ko-font-family`, .92em like
+the labels): the step's name span and the run line's list of names
+(user, 2026-11-09), and the "thinking" label with them. "failed",
+"running" and the aborted text stay in the prose font.
+
+## The steps guide under the chevron (user, 2026-11-09)
+
+The hairline at the left of a run's steps is under the run line's
+chevron: .steps has margin-left 4pt (the glyph is centred in its 9pt
+box, so its ink is at 4.5pt in both states) and padding-left 13pt, so
+the step lines start 18pt from the run's left edge. (Was margin 17pt, padding 11pt, with the guide to
+the right of the chevron and the steps at 28pt.)
+
+Tool output and diffs inside a step's detail are smaller than the step
+text: .detail pre and .diff at .88em (was 1em and .95em of the .98em
+detail); user, 2026-11-09.
+
+## Running: a gray spinner, no word, no bold (user, 2026-11-09)
+
+The run line in progress shows an animated spinner in the gray tones
+(8pt ring, 1.5pt, `--hair2` with a `--muted` arc, .8s) and then the
+running label as regular text in the muted tone: "⟳ make verify
+STAGES=unit", "⟳ thinking". The word "running" and the bold label go.
+The spinner is the one animated mark; the status-icon rule still holds
+for finished states (colour only).
+
+## Even word spacing on a step line (user, 2026-11-09)
+
+The step summary (.step .sum) is set in the terminal font at .92em, so
+the spaces between the name, the label and the detail are all terminal
+spaces; before, the spaces were prose spaces between terminal-font
+spans and looked narrower. The detail text ("212 lines", "+5 −1", a
+thinking's first line) is reset to the prose font at the step size
+(1.087em of .92em).
+
+## The chevron on the spinner's centre (user, 2026-11-09)
+
+The chevron glyph (›) is centred in its 9pt box (text-align center)
+and dropped 1pt (position relative, top 1pt), so its ink, folded or
+rotated open, is centred on the spinner and on the x-height middle of
+the label. Before, the open chevron sat about 1.5pt high and the
+folded one about 1pt high.
+
+## No empty output box (user, 2026-11-09)
+
+A tool step's detail shows the output pre only when there is output;
+a running bash with nothing yet shows just its cwd line, and a tool
+that ended with empty output shows no box. (Before: an empty pre.)
+
+## Smaller timings (user, 2026-11-09)
+
+The times on the run line and on the step lines are .8em of the line
+(was .92em, the size of the labels), in the terminal font and the
+faint tone as before.
+
+## No exit codes (user, 2026-11-09)
+
+A failed bash step shows no "exit N": only its name and its time in
+red, like any other failed tool. The outcome column holds a word only
+for "aborted".

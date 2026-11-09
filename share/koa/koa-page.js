@@ -72,9 +72,9 @@ function args(block) {
 }
 function stepInfo(step) {
   const { block, item } = step;
-  if (block.type === 'thinking') return { mark: '∴', label: 'thinking', labelClass: '', detail: block.redacted ? 'redacted' : block.text.split('\n')[0], kind: 'thinking' };
+  if (block.type === 'thinking') return { label: 'thinking', labelClass: 'name', detail: block.redacted ? 'redacted' : block.text.split('\n')[0], kind: 'thinking' };
   const values = step.args;
-  const kind = ({ bash: 'command', edit: 'edit', read: 'read' })[block.name] || block.name;
+  const kind = block.name;
   const first = Object.values(values)[0];
   const label = block.name === 'bash' ? values.command : ['read', 'edit', 'write'].includes(block.name) ? values.path : block.name + (first === undefined ? '' : ' ' + (typeof first === 'string' ? first : JSON.stringify(first)));
   let detail = '';
@@ -88,7 +88,7 @@ function stepInfo(step) {
     edit = { old, next, prefix, suffix };
     detail = '+' + (next.length - prefix - suffix) + ' −' + (old.length - prefix - suffix);
   }
-  return { edit, labelClass: block.name === 'bash' ? 'cmd' : ['read', 'edit', 'write'].includes(block.name) ? 'path' : '', mark: ({ bash: '$', edit: '✎', read: '◇' })[block.name] || '◇', label: typeof label === 'string' ? label : label === undefined ? block.name + ' ' + block.args.text : JSON.stringify(label), detail, kind, aborted: item.stop === 'aborted' && block.state.type !== 'done' };
+  return { edit, labelClass: block.name === 'bash' ? 'cmd' : ['read', 'edit', 'write'].includes(block.name) ? 'path' : '', label: typeof label === 'string' ? label : label === undefined ? block.name + ' ' + block.args.text : JSON.stringify(label), detail, kind, aborted: item.stop === 'aborted' && block.state.type !== 'done' };
 }
 function fold(view, key, line, details) {
   view.classList.toggle('open', folds.get(key) === true);
@@ -107,13 +107,17 @@ function run(steps) {
   const failed = steps.filter(step => step.block.state?.type === 'done' && step.block.state.error);
   const aborted = steps.some(step => step.item.stop === 'aborted' && step.item.blocks.slice(step.index + 1).every(block => block.type !== 'text' || !block.text));
   const active = steps.find(step => step.block.state?.type === 'running') ?? steps.findLast(step => step.block.type === 'tool' ? step.block.state.type === 'pending' && !step.item.final : !step.item.final && step.block.ended === undefined);
-  if (aborted) summary.append(node('span', '⊘', 'warn glyph'), ' aborted · ' + steps.length + ' steps, you pressed Escape');
-  else if (failed.length) summary.append(node('span', '✕', 'err glyph'), ' ' + steps.length + ' steps · ' + failed.length + ' ' + failed[0].info.kind + (failed.length === 1 ? '' : 's') + ' failed');
-  else if (active) summary.append(node('span', undefined, 'spin'), ' running ', node('b', active.info.label, active.info.labelClass), ' · step ' + (steps.indexOf(active) + 1) + ' of ' + steps.length);
+  if (aborted) summary.append('aborted, you pressed Escape');
+  else if (active) summary.append(node('span', undefined, 'spin'), ' ', node('span', active.info.label, 'names'));
   else {
     const counts = new Map();
     for (const step of steps) { const kind = step.info.kind; counts.set(kind, (counts.get(kind) || 0) + 1); }
-    summary.append(node('span', '✓', 'ok glyph'), ' ' + steps.length + ' steps · ' + [...counts].map(([kind, count]) => kind === 'thinking' ? 'thinking' : count + ' ' + kind + (count === 1 ? '' : 's')).join(', '));
+    const names = node('span', undefined, 'names');
+    for (const [kind, count] of counts) {
+      if (names.childNodes.length) names.append(', ');
+      names.append(node('span', kind === 'thinking' || count === 1 ? kind : kind + ' x' + count, failed.some(step => step.info.kind === kind) ? 'err' : ''));
+    }
+    summary.append(names);
   }
   const timed = steps.filter(step => step.block.started !== undefined);
   const started = steps[0].block.started ?? steps[0].item.at;
@@ -125,15 +129,16 @@ function run(steps) {
     const child = node('div', undefined, 'step');
     const row = node('div', undefined, 'line');
     const sum = node('span', undefined, 'sum');
-    sum.append(node('span', info.label, info.labelClass), ' ');
+    if (block.type === 'tool' && ['bash', 'read', 'edit', 'write'].includes(block.name)) sum.append(node('span', block.name, block.state?.error ? 'name err' : 'name'), ' ');
+    sum.append(node('span', info.label, block.state?.error && !['bash', 'read', 'edit', 'write'].includes(block.name) ? 'err' : info.labelClass), ' ');
     const counts = info.detail.match(/^\+(\d+) −(\d+)$/);
-    if (counts) sum.append(node('span', '+' + counts[1], 'ok'), ' ', node('span', '−' + counts[2], 'err'));
+    if (counts) sum.append(node('span', '+' + counts[1], 'added'), ' ', node('span', '−' + counts[2], 'err'));
     else sum.append(node('span', info.detail, 'delta'));
-    const result = block.state?.type === 'done' ? block.state.error ? info.kind === 'command' ? 'exit' + (block.exit === undefined ? '' : ' ' + block.exit) : 'failed' : '✓' : info.aborted ? 'aborted' : block.type === 'thinking' && (block.ended !== undefined || step.item.final) ? '✓' : '…';
+    const result = info.aborted ? 'aborted' : '';
     const outcome = node('span', undefined, 'outcome');
-    const ended = block.ended ?? (info.aborted ? step.item.ended : undefined);
-    outcome.append(node('span', result, block.state?.error ? 'err' : result === '✓' ? 'ok glyph' : result === 'aborted' ? 'warn' : ''), node('span', ' ' + duration(block.durationMs ?? (block.started !== undefined && ended !== undefined ? ended - block.started : undefined)), 'time'));
-    row.append(node('span', '›', 'chev'), node('span', info.mark, 'mark'), sum, outcome);
+    const ended = block.ended ?? (info.aborted ? step.item.ended : !step.item.final ? Date.now() : undefined);
+    outcome.append(node('span', result, block.state?.error ? 'err' : ''), node('span', (result ? ' ' : '') + duration(block.durationMs ?? (block.started !== undefined && ended !== undefined ? ended - block.started : undefined)), block.state?.error ? 'time err' : 'time'));
+    row.append(node('span', '›', 'chev'), sum, outcome);
     const detail = node('div', undefined, 'detail');
     if (block.type === 'thinking') detail.append(node('div', block.text || (block.redacted ? 'Redacted thinking' : ''), 'think'));
     else {
@@ -148,7 +153,7 @@ function run(steps) {
         detail.append(diff);
       } else {
         if (block.name === 'bash') detail.append(node('div', 'cwd ' + displayCwd(), 'kv'));
-        detail.append(node('pre', block.state.result?.text ?? block.args.text));
+        if (block.state.result?.text) detail.append(node('pre', block.state.result.text));
       }
       if (block.state.result?.cut) detail.append(node('div', block.state.result.cut + ' bytes omitted', 'delta'));
     }
@@ -268,7 +273,7 @@ function status() {
   element('context-bar').classList.toggle('high', percent > 75);
   element('context-bar').firstElementChild.style.width = Math.min(100, Math.max(0, percent ?? 0)) + '%';
   const path = (displayCwd() || '').replace(/\/$/, ''), slash = path.lastIndexOf('/');
-  element('cwd').replaceChildren(node('span', path.slice(0, slash + 1), 'hide-n k'), node('span', path.slice(slash + 1)), ...(state.branch ? [node('span', '· ' + state.branch)] : []), ...(state.dirty ? [node('span', '*', 'warn')] : []));
+  element('cwd').replaceChildren(node('span', path.slice(0, slash + 1), 'hide-n k'), node('span', path.slice(slash + 1)), ...(state.branch ? [node('span', '· ' + state.branch)] : []), ...(state.dirty ? [node('span', '*', 'dirty')] : []));
 }
 function button(label, key, primary = false) {
   const result = node('button', label, 'btn' + (primary ? ' primary' : ''));

@@ -350,11 +350,11 @@ new epoch.
 thinking and tool block, across assistant items, between two text
 blocks or between the user's message and the first text. A run's
 line, its step lines and the step details follow mockup sections 3
-to 6: the marks `$` bash, `✎` edit, `◇` read, `∴` thinking, and the
-tool name with its first argument for any other tool; the result at
-the right. A run's summary names the current step while a step runs,
-the counts by kind when done, the failure count when a tool result
-has `isError`, and "aborted" when the item's `stop` is `aborted`. A
+to 6 and `app/design/koa/NOTES.md`, from "No step counts" to "No exit
+codes": no step counts, no kind marks and no status icons; a step line
+names its tool, a run line lists the tools by name, colour alone marks
+a failure, and a running run shows a gray spinner and the current
+step's label. A
 failed run stays collapsed, as the user decided. The elapsed time is
 `ended - started` of the run's first and last step. Fold state is a
 page-local `Map` keyed by `seq:index`; a reload loses it, which the

@@ -386,7 +386,7 @@ test("thinking and aborted steps use live times without inventing replay times",
     return {live:contents(live),replay:contents(replay)};
   })()`);
   assert.match(result.live, /27s/);
-  assert.match(result.live, /✓ 4s/);
+  assert.match(result.live, /4s/);
   assert.match(result.live, /aborted 23s/);
   assert.doesNotMatch(result.replay, /27s|4s|23s/);
 });
@@ -400,7 +400,7 @@ test("a patch before an older-items reply is replayed after that reply", async (
   assert.equal(await result, "old new");
 });
 
-test("failed and aborted runs keep their step counts and outcomes", async () => {
+test("failed and aborted runs keep their outcomes", async () => {
   const app = await page();
   const result = app.run(`(()=>{
     const contents=value=>typeof value==='string'?value:value.textContent+value.children.map(contents).join('');
@@ -412,11 +412,11 @@ test("failed and aborted runs keep their step counts and outcomes", async () => 
     const edit={type:'tool',name:'edit',args:{text:JSON.stringify({path:'ko_server/src/sweep.rs',oldText:'',newText:''})},state:{type:'not_run'}};
     const abortedItem={at:0,final:true,stop:'aborted',blocks:[thinking,edit]};
     const aborted=run(abortedItem.blocks.map((block,index)=>({block,index,key:'a'+index,item:abortedItem})));
-    return {failed:contents(failed.children[0]),output:contents(failed.children[1].children[1].children[1]),aborted:contents(aborted.children[0]),warn:aborted.children[1].children[1].children[0].children[3].children[0].className};
+    return {failed:contents(failed.children[0]),output:contents(failed.children[1].children[1].children[1]),aborted:contents(aborted.children[0]),outcome:contents(aborted.children[1].children[1].children[0].children[2])};
   })()`);
-  assert.match(result.failed, /2 steps · 1 command failed41s/);
+  assert.match(result.failed, /read, bash41s/);
   assert.match(result.output, /FAIL unit 40.2s/);
   assert.doesNotMatch(result.output, /Command exited/);
-  assert.match(result.aborted, /aborted · 2 steps, you pressed Escape/);
-  assert.equal(result.warn, "warn");
+  assert.match(result.aborted, /aborted, you pressed Escape/);
+  assert.equal(result.outcome, "aborted ");
 });
