@@ -87,7 +87,7 @@ def lexical(text):
     return re.sub(pattern, mask, text), comments
 
 ts_sources = glob.glob('share/pi/*.ts') + glob.glob('share/webview/*.ts') + glob.glob('share/koa/*.ts') + glob.glob('share/koa/stress/*.ts') + glob.glob('share/koa/page/*.ts')
-signal_sites = {'share/pi/ko-pi.ts': {'function': 'signalJob', 'count': 0}, 'share/koa/koa.ts': {'function': 'signalPi', 'count': 0}}
+signal_sites = {'share/pi/ko-pi.ts': {'function': 'signalJob', 'count': 0}, 'share/koa/koa-child.ts': {'function': 'signalChild', 'count': 0}}
 for path in ts_sources:
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text)
@@ -105,7 +105,7 @@ for path in ts_sources:
         if start <= match.start() < end:
             allowed['count'] += 1
         else:
-            report(path, text, match.start(), 'process.kill must occur only in signalJob or signalPi')
+            report(path, text, match.start(), 'process.kill must occur only in signalJob or signalChild')
 for path, site in signal_sites.items():
     if site['count'] != 1:
         report(path, '', 0, 'expected exactly one process.kill call in ' + site['function'])
@@ -120,7 +120,7 @@ for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', 
         for match in re.finditer(r'(?<![\w:])kill(?:pg)?\s*\(', code):
             report(path, text, match.start(), 'signals must go through ko_sys::pid')
 
-core = [path for path in ts_sources if path.startswith('share/koa/') or path in ('share/pi/ko-pi.ts', 'share/pi/text.ts', 'share/pi/transcript.ts')]
+core = [path for path in ts_sources if path.startswith('share/koa/') or path in ('share/pi/ko-pi.ts', 'share/pi/text.ts', 'share/pi/transcript.ts', 'share/pi/agents.ts', 'share/pi/token.ts')]
 for path in candidates(r'(^|[^a-zA-Z_])(as|any)([^a-zA-Z_]|$)|!', core):
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text)

@@ -2,23 +2,26 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { readFile, appendFile, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 import { homedir } from "node:os";
 import timers from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { RpcCommand, RpcResponse, JsonAgentSessionEvent, RpcExtensionUIRequest, RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
+import type { RpcCommand, RpcResponse, JsonAgentSessionEvent, RpcExtensionUIRequest, RpcExtensionUIResponse, SlashCommandSource } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 type PiThinkingLevel = import("@earendil-works/pi-agent-core").ThinkingLevel;
-import { transcript, respond, readBody, promptBody, idBody, modelBody, thinkingBody, dialogBody } from "../pi/transcript.ts";
+import { transcript, respond, readBody, promptBody, completeBody, idBody, modelBody, thinkingBody, dialogBody } from "../pi/transcript.ts";
 import { errorText, replaceControlCharacters, utf8Prefix } from "../pi/text.ts";
 import { webview } from "../webview/index.ts";
 import { assemblePage } from "./koa-assemble.ts";
-import type { Exit, Pi, State, ThinkingLevel, DialogMethod } from "./records.ts";
+import { complete, findFd, agentDiscovery } from "./koa-complete.ts";
+import { signalChild } from "./koa-child.ts";
+import type { Exit, Pi, State, ThinkingLevel, DialogMethod, CompletionCommand } from "./records.ts";
 
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const thinkingLevelsMatch: Same<ThinkingLevel, PiThinkingLevel> = true;
 const dialogMethodsMatch: Same<DialogMethod, Extract<RpcExtensionUIRequest, { method: DialogMethod }>["method"]> = true;
-void [thinkingLevelsMatch, dialogMethodsMatch];
+const commandSourcesMatch: Same<CompletionCommand["source"], SlashCommandSource> = true;
+void [thinkingLevelsMatch, dialogMethodsMatch, commandSourcesMatch];
 
 const RPC_RESPONSE_MS = 10000;
 const FLUSH_MS = 50;
@@ -26,13 +29,6 @@ const QUIT_REPLY_MS = 1000;
 
 type Assistant = Extract<AgentMessage, { role: "assistant" }>;
 type Root = { value: "idle" | "working" | "done" | "error"; message: string };
-
-function signalPi(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
-  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
-  try { process.kill(-child.pid, signal); } catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
-  }
-}
 
 function rpc(child: ChildProcessWithoutNullStreams) {
   let serial = 0;
@@ -129,6 +125,10 @@ async function main(): Promise<void> {
   if (metricsFile) await writeFile(metricsFile, "");
   let metricsWrites: Promise<void> | undefined;
   const feed = transcript({ flushMs: FLUSH_MS, metrics: metricsFile !== undefined });
+  const agentDir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi/agent");
+  const fd = findFd(process.env.KOA_FD, agentDir.replace(/^~(?=\/|$)/, homedir()), process.env.PATH ?? "");
+  if (!fd) process.stderr.write("koa: fd not found; file completion is unavailable\n");
+  const agents = agentDiscovery(process.env.KO_PANE ?? "", process.env.KO_AGENT_LIST_TTL_MS);
   const state: Omit<State, "pi"> = { working: false, aborted: false, name: "pi", levels: [], cwd: process.cwd(), home: homedir(), queue: { steering: [], followUp: [] }, dialogs: [], statuses: {} };
   let stopping = false;
   let pi: Pi = { type: "starting" };
@@ -316,7 +316,7 @@ async function main(): Promise<void> {
     try { await view.hide(); } catch (error) { process.stderr.write(`koa: hide: ${errorText(error)}\n`); }
     try { await view.close(); } catch (error) { process.stderr.write(`koa: close: ${errorText(error)}\n`); }
     server.close(); server.closeAllConnections(); child.stdin.end();
-    if (!await waitExit()) { signalPi(child, "SIGTERM"); if (!await waitExit()) { signalPi(child, "SIGKILL"); await link.exited; } }
+    if (!await waitExit()) { signalChild(child, "SIGTERM"); if (!await waitExit()) { signalChild(child, "SIGKILL"); await link.exited; } }
     child.stdout.destroy(); child.stderr.destroy();
   };
   const command = async (value: RpcCommand, response: ServerResponse) => {
@@ -326,6 +326,21 @@ async function main(): Promise<void> {
     respond(response, result.success ? 200 : 409, JSON.stringify(result.success ? "data" in result ? result.data : {} : { error: result.error }));
   };
   const routes: Record<string, { method: "GET" | "POST"; access: "ready" | "alive" | "exited" | "any"; handle(value: unknown, response: ServerResponse): void | Promise<void> }> = {
+    "/complete": { method: "POST", access: "alive", handle: async (value, response) => {
+      const query = completeBody(value);
+      if ("error" in query) { respond(response, 400, JSON.stringify(query)); return; }
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      response.once("close", abort);
+      try {
+        const result = await complete(query.text, query.pos, { cwd: state.cwd, fd, signal: controller.signal, agents, commands: async () => {
+          if (pi.type !== "ready") return [];
+          const result = await link.command({ type: "get_commands" });
+          return result.success && result.command === "get_commands" ? result.data.commands : [];
+        } });
+        if (!controller.signal.aborted) respond(response, 200, JSON.stringify(result));
+      } finally { response.removeListener("close", abort); }
+    } },
     "/models": { method: "GET", access: "ready", handle: (_value, response) => command({ type: "get_available_models" }, response) },
     "/prompt": { method: "POST", access: "ready", handle: (value, response) => {
       const prompt = promptBody(value);

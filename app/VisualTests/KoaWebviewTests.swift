@@ -1,10 +1,13 @@
 import AppKit
 import WebKit
 import XCTest
+import KoClient
+import KoModel
+import SidebarFeed
 @testable import Kido
 
 extension VisualTests {
-    private enum KoaScenario { case transcript, dialogs, controls, exit, feed }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion }
     func testKoaInterruptRestoresNativeInput() async throws {
         let script = directory.appendingPathComponent("quit-script.jsonl")
         try "".write(to: script, atomically: true, encoding: .utf8)
@@ -125,6 +128,14 @@ extension VisualTests {
 
     func testKoaWebviewNarrowExit() async throws {
         try await koaWebview(width: 470, height: 560, scenario: .exit, captures: ["narrow-exited"])
+    }
+
+    func testKoaWebviewCompletionWide() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .completion, captures: Set(["slash-all", "slash-filter", "at-agents", "at-files", "at-mid", "none"].map { "complete-" + $0 }))
+    }
+
+    func testKoaWebviewCompletionNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .completion, captures: Set(["slash-all", "slash-filter", "at-agents", "at-files", "at-mid", "none"].map { "narrow-complete-" + $0 }))
     }
 
     private func koaWebview(width: CGFloat, height: CGFloat, scenario: KoaScenario = .transcript, captures: Set<String>) async throws {
@@ -286,6 +297,16 @@ extension VisualTests {
         steps.append(["type": "stderr", "text": "node:internal/process/esm_loader:108\n    throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);\nError [ERR_MODULE_NOT_FOUND]: Cannot find package '@kido/webview'\n    at packageResolve (node:internal/modules/esm/resolve:873:9)\n    at moduleResolve (node:internal/modules/esm/resolve:946:18)\n"])
         steps.append(["type": "exit", "code": 1])
         steps.insert(["type": "respond", "command": "get_available_thinking_levels", "data": ["levels": ["off", "minimal", "low", "medium", "high", "xhigh"]]], at: 3)
+        if scenario == .completion {
+            steps = Array(steps.prefix(4))
+            let commands = [("gh-watch", "Watch main and report each head’s CI", "prompt"), ("release", "Release Kido.app first, then ko", "prompt"), ("koa", "Use the koa harness for child agents", "extension"), ("runtime", "Run the built-in tools in a runtime of this session", "extension"), ("skill:ko", "Read and change the ko layout: sessions, windows, panes", "skill"), ("skill:simplify", "Clean up the changed code without changing behavior", "skill"), ("skill:rex", "Manage Rex sessions, tabs and panes with the rex CLI", "skill"), ("plan", "Write a plan in plans/ before the code", "prompt"), ("review", "Run the correctness and modules reviewers on the diff", "extension"), ("skill:ko-api", "Call ko api routes from a prompt", "skill")]
+            steps.append(["type": "respond", "command": "get_commands", "data": ["commands": commands.map { ["name": $0.0, "description": $0.1, "source": $0.2] }]])
+            var completionUser = user
+            completionUser["content"] = [["type": "text", "text": "Review the sidebar unit before it lands"]]
+            prompt([])
+            replay([completionUser])
+            replay([])
+        }
         if scenario == .feed {
             steps = Array(steps.prefix(4))
             let part = String(repeating: "x", count: 4096)
@@ -301,11 +322,49 @@ extension VisualTests {
         let nowJSON = String(decoding: try JSONSerialization.data(withJSONObject: now.path, options: .fragmentsAllowed), as: UTF8.self)
         try "import {readFileSync} from 'node:fs'; Date.now = () => Number(readFileSync(\(nowJSON), 'utf8'));".write(to: clock, atomically: true, encoding: .utf8)
         let output = directory.appendingPathComponent("koa.stderr")
-        try await start(width: width, height: height, pane: "export HOME=\(SSH.quote(home.path)) PATH=\(SSH.quote(path)) KOA_FAKE_SCRIPT=\(SSH.quote(script.path)) NODE_OPTIONS=\(SSH.quote("--import " + clock.path)); exec \(SSH.quote(tools.prefix + "/share/ko/bin/koa")) --pi \(SSH.quote(fake)) 2>\(SSH.quote(output.path))")
+        let fd = directory.appendingPathComponent("fd")
+        if scenario == .completion {
+            try #"""
+            #!/usr/bin/env node
+            const args=process.argv.slice(2);let rest=args.slice(16),shallow=rest[0]==='--max-depth';if(shallow)rest=rest.slice(2);if(rest[0]==='--')rest=rest.slice(1);const query=new RegExp(rest[0]||'','i');const paths=['share/pi/skills/','share/pi/ko-pi.ts','app/App/SidebarView.swift','app/App/SidebarRow.swift','app/design/sidebar/mockup.html','ko_server/src/sign.rs','scripts/ci-like.sh','ko_sys/src/signal.rs','ko_pane/src/io.rs','ko_tui/src/mirror.rs','ko_server/','ko_shell/','ko_sys/','ko_server/src/','ko_server/src/sweep.rs','ko_server/src/state.rs','ko_server/src/api.rs','ko_shell/src/session.rs','ko_sys/src/spawn.rs','ko_sys/src/pid.rs','ko_server/src/lib.rs','ko_shell/src/bin_dir.rs'];console.log(paths.filter(p=>(!shallow||p.replace(/\/$/,'').split('/').length===1)&&query.test(p)).join('\n'));
+            """#.write(to: fd, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fd.path)
+        }
+        let command = "export HOME=\(SSH.quote(home.path)) PATH=\(SSH.quote(path)) KOA_FAKE_SCRIPT=\(SSH.quote(script.path)) NODE_OPTIONS=\(SSH.quote("--import " + clock.path))" + (scenario == .completion ? " KOA_FD=\(SSH.quote(fd.path))" : "") + "; exec \(SSH.quote(tools.prefix + "/share/ko/bin/koa")) --pi \(SSH.quote(fake)) 2>\(SSH.quote(output.path))"
+        if scenario == .completion {
+            let idle = "stty raw -echo; printf '\\033]7501;state=idle:app=pi\\033\\\\'; exec cat"
+            let working = "stty raw -echo; printf '\\033]7501;state=working:app=pi\\033\\\\'; exec cat"
+            let rootVars = String(decoding: try JSONEncoder().encode(["pi.name": "kido-app", "pi.session": "kido-app-session"]), as: UTF8.self)
+            try await start(width: width, height: height, windows: #"[{"tree":\#(koPane(idle, vars: rootVars))}]"#)
+            func create(_ name: String, parent: PaneID, script: String, activity: String = "") async throws -> Snapshot.Position {
+                let body = KoSchema.CreatePane(command: .shell(.init(command: script)), parent: parent, vars: ["pi.name": .string(name), "pi.session": .string(name + "-session"), "pi.activity": .string(activity)])
+                let input = directory.appendingPathComponent(name + ".json")
+                try JSONEncoder().encode(body).write(to: input)
+                return try JSONDecoder().decode(Snapshot.Position.self, from: Data(try await ko(["api", "-X", "POST", "--input", input.path, "/panes"], dir: directory.path).utf8))
+            }
+            let manager = try await create("sidebar-right", parent: PaneID(number: 1), script: working, activity: "applying the review findings")
+            let viewer = try await create("viewer", parent: manager.pane, script: command)
+            _ = try await create("simplify-reuse", parent: manager.pane, script: idle)
+            _ = try await create("simplify-altitude", parent: manager.pane, script: working, activity: "reading the diff")
+            for name in ["sidebar-right", "simplify-reuse", "simplify-altitude"] {
+                try await koUntil(directory.path, "/layout", contains: "\"session\":\"\(name)-session\"")
+            }
+            try client?.select(KO_SELECT_PANE, viewer.pane)
+            try await wait("completion viewer selected") { self.terminal?.activePane?.pane == viewer.pane }
+        } else {
+            try await start(width: width, height: height, pane: command)
+        }
         let pane = try XCTUnwrap(terminal?.panes.first)
         try await wait("koa webview", within: 20) { (pane.webviewView?.visualDocuments ?? 0) > 0 }
         let diagnostics = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
         let web = try XCTUnwrap(pane.webviewView?.browser, diagnostics)
+        if scenario == .completion {
+            // WebKit pauses animation frames in an off-screen window.
+            pane.webviewView?.visualFeedScript = "window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),0);window.cancelAnimationFrame=clearTimeout;"
+            let documents = pane.webviewView?.visualDocuments ?? 0
+            web.reload()
+            try await wait("completion document with measurement clock") { (pane.webviewView?.visualDocuments ?? 0) > documents && !web.isLoading }
+        }
         if scenario == .feed {
             try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model').textContent==='claude-opus-5-5'")
             pane.webviewView?.visualFeedPath = "/events"
@@ -356,6 +415,77 @@ extension VisualTests {
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.dot.on{animation:none!important}';document.head.append(style);return true})()")
         let idleHint = try await webviewJS(web, "document.querySelector('#hint .spin')===null")
         XCTAssertEqual(idleHint, "true")
+        if scenario == .completion {
+            _ = try await webviewJS(web, "(()=>{window.completePrompts=[];window.lastComplete=null;const nativeFetch=window.fetch;window.fetch=async(path,options)=>{if(path==='/prompt')completePrompts.push(JSON.parse(options.body));const response=await nativeFetch(path,options);if(path==='/complete'){lastComplete={query:JSON.parse(options.body),result:await response.clone().json()};document.body.dataset.complete=String(Number(document.body.dataset.complete||0)+1)}return response};return true})()")
+            let warmed = try await webviewJS(web, "(async()=>{const deadline=performance.now()+5000;while(performance.now()<deadline){const result=await(await fetch('/complete',{method:'POST',body:JSON.stringify({text:'@si',pos:3})})).json();if(result.options.filter(o=>o.kind==='agent').length===3)return true}throw Error('agent completion deadline')})()")
+            XCTAssertEqual(warmed, "true")
+            let prefix = width < 750 ? "narrow-complete-" : "complete-"
+            func show(_ before: String, _ token: String, _ after: String = "", empty: Bool = false) async throws {
+                let data = String(decoding: try JSONSerialization.data(withJSONObject: ["before": before, "token": token, "after": after]), as: UTF8.self)
+                _ = try await webviewJS(web, "(()=>{const {before,token,after}=\(data);lastComplete=null;window.composer.setText(before+token.slice(0,-1)+after);window.composer.focus();const input=document.querySelector('#prompt .cm-content');for(let i=0;i<after.length;i++)input.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',keyCode:37,bubbles:true,cancelable:true}));document.execCommand('insertText',false,token.slice(-1));return true})()")
+                try await webviewUntil(web, "lastComplete?.query.text===\(String(reflecting: before + token + after))&&lastComplete?.query.pos===\(before.utf16.count + token.utf16.count)")
+                if empty { try await webviewUntil(web, "!document.querySelector('.koa-complete')") }
+                else {
+                    try await webviewUntil(web, "(()=>{const popup=document.querySelector('.koa-complete'),field=document.querySelector('#field');return !!popup&&popup.getBoundingClientRect().top>=0&&popup.getBoundingClientRect().bottom<=field.getBoundingClientRect().top-5})()")
+                    let contained = try await webviewJS(web, "(()=>{const popup=document.querySelector('.koa-complete').getBoundingClientRect(),field=document.querySelector('#field').getBoundingClientRect();return popup.left>=field.left-.5&&popup.right<=field.right+.5})()")
+                    XCTAssertEqual(contained, "true", "Completion stays inside the field width")
+                }
+            }
+            func resize(_ height: CGFloat) async throws {
+                window.setContentSize(NSSize(width: width, height: height))
+                window.contentView?.layoutSubtreeIfNeeded()
+                try await settle()
+            }
+            func key(_ name: String) async throws {
+                _ = try await webviewJS(web, "document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'\(name)',bubbles:true,cancelable:true}))")
+            }
+            try await show("", "/")
+            try await capture(prefix + "slash-all")
+            try await key("ArrowDown"); try await key("Tab")
+            try await webviewUntil(web, "window.composer.text()==='/release '&&!document.querySelector('.koa-complete')&&completePrompts.length===0")
+            try await resize(300)
+            try await show("", "/re")
+            try await capture(prefix + "slash-filter")
+            try await key("Enter")
+            try await webviewUntil(web, "window.composer.text()===''&&completePrompts.length===1&&completePrompts[0].text==='/release '")
+            try await resize(height)
+            try await advance()
+            try await webviewUntil(web, "document.querySelector('.user')?.textContent.includes('Review the sidebar unit')")
+            try await show("Ask ", "@si")
+            try await capture(prefix + "at-agents")
+            try await key("Tab")
+            let accepted = try await webviewJS(web, "window.composer.text()==='Ask '+lastComplete.result.options[0].insert&&completePrompts.length===2")
+            XCTAssertEqual(accepted, "true")
+            try await advance()
+            try await webviewUntil(web, "document.querySelector('#items').children.length===0")
+            try await show("Read ", "@ko_s")
+            try await capture(prefix + "at-files")
+            try await key("Enter")
+            try await webviewUntil(web, "window.composer.text()==='Read @ko_sys/'&&completePrompts.length===3")
+            try await show("Hand the weight rule to ", "@si", " and tell me when it lands")
+            try await key("ArrowDown")
+            try await capture(prefix + "at-mid")
+            try await key("Enter")
+            try await webviewUntil(web, "window.composer.text()==='Hand the weight rule to '+lastComplete.result.options[1].insert+' and tell me when it lands'&&completePrompts.length===3")
+            try await resize(300)
+            try await show("Read ", "@zzz", empty: true)
+            try await capture(prefix + "none")
+            try await show("", "/re")
+            try await key("Escape")
+            try await webviewUntil(web, "!document.querySelector('.koa-complete')&&window.composer.text()==='/re'")
+            try await key("Escape")
+            let escapedOnce = try await webviewJS(web, "window.composer.text()")
+            XCTAssertEqual(escapedOnce, "\"/re\"")
+            try await key("Escape")
+            let escapedTwice = try await webviewJS(web, "window.composer.text()")
+            XCTAssertEqual(escapedTwice, "\"\"")
+            _ = try await webviewJS(web, "(()=>{const fetchNow=window.fetch;window.completionWaiting=false;window.fetch=async(...args)=>{const response=await fetchNow(...args);if(args[0]==='/complete'){completionWaiting=true;await new Promise(resolve=>window.releaseCompletion=resolve)}return response};window.composer.setText('/r');document.execCommand('insertText',false,'e');return true})()")
+            try await webviewUntil(web, "completionWaiting")
+            try await key("Escape")
+            let cancelled = try await webviewJS(web, "(async()=>{releaseCompletion();await new Promise(requestAnimationFrame);await new Promise(requestAnimationFrame);return !document.querySelector('.koa-complete')&&window.composer.text()==='/re'})()")
+            XCTAssertEqual(cancelled, "true", "Escape cancels a pending completion without changing the draft")
+            return
+        }
         try await capture("idle")
         _ = try await webviewJS(web, "(()=>{window.composer.setText('Three things, in order:\\n1. make the sweep keep a start failure for the linger grace\\n2. add the e2e test `sweep_keeps_a_start_failure` beside the linger test\\n3. then update docs/design.md, \"Window lifecycle\"\\n\\nDo not touch the cascade.');return true})()")
         try await capture("composer-multi")
@@ -501,7 +631,7 @@ extension VisualTests {
             try await capture("narrow-exited")
         }
         switch scenario {
-        case .transcript, .feed: break
+        case .transcript, .feed, .completion: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

@@ -1,5 +1,11 @@
 import { randomBytes } from "node:crypto";
 
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+export const str = (value: unknown): string => typeof value === "string" ? value : "";
+
 export const mintId = (): string => randomBytes(16).toString("base64url");
 
 export const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);

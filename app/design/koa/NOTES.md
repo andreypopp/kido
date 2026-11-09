@@ -592,9 +592,10 @@ six states, light and dark, wide and 60 columns:
 hairline and shadow, radius 9pt, padding 5pt, 6pt above the field.
 Width: at least 260pt, at most 460pt and never wider than the field;
 it opens at the token's x (the `/` or `@`, less the 9pt row padding)
-and shifts left to stay inside the field. Rows: 27pt, radius 6pt,
-8pt horizontal padding, the current row on the 8% well (`--well2`),
-at most 8 rows before the list scrolls. A footer in the faint
+and shifts left to stay inside the field. Rows: 23pt (the .95em prose line
+plus 3pt padding top and bottom), radius 6pt, 8pt horizontal
+padding, the current row on the 8% well (`--well2`), at most 8 rows
+(184pt) before the list scrolls. A footer in the faint
 terminal font: "↑↓ move · ⇥ ↩ accept · ⎋ close".
 
 **A row.** The label in the terminal font at .92em in the fg colour:

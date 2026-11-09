@@ -67,7 +67,7 @@ miri:
 preview-pi: koa-page
 preview-pi unpreview-pi:
 	@set -eu; prefix="$${KO_PREVIEW_PREFIX:-$$(brew --prefix ko)}"; dir=$$(cd "$$prefix/share/ko" && pwd -P); \
-	for file in pi/ko-pi.ts pi/transcript.ts pi/text.ts pi/ko-api.d.ts pi/skills webview $(addprefix koa/,$(KOA_FILES)); do \
+	for file in pi/ko-pi.ts pi/transcript.ts pi/text.ts pi/agents.ts pi/token.ts pi/ko-api.d.ts pi/skills webview $(addprefix koa/,$(KOA_FILES)); do \
 	  dst="$$dir/$$file"; \
 	  if test '$@' = preview-pi; then mkdir -p "$$(dirname "$$dst")"; \
 	    if ! test -e "$$dst.orig" && ! test -e "$$dst.orig.absent"; then \
@@ -92,7 +92,7 @@ website:
 # zig keeps its caches in the KO_ZIG_CACHE of .cargo/config.toml.
 KO := build/ko
 SHARE := bin pi webview koa shim.sh terminfo
-KOA_SRC := koa.ts koa-assemble.ts records.ts package.json
+KOA_SRC := koa.ts koa-complete.ts koa-child.ts koa-assemble.ts records.ts package.json
 KOA_FILES := $(KOA_SRC) page.html page.css page.js
 KOA_ESBUILD = share/koa/node_modules/.bin/esbuild share/koa/page/page.ts share/koa/page/page.css share/koa/page/page.html --loader:.html=copy --bundle --format=esm --platform=browser --target=safari26 --outdir=$(KO)/share/ko/koa
 
@@ -103,7 +103,7 @@ share/%/node_modules/.package-lock.json: share/%/package-lock.json share/%/packa
 
 koa-page: $(KO)/share/ko/koa/page.js
 
-$(KO)/share/ko/koa/page.js: $(wildcard share/koa/page/*) $(addprefix share/koa/,$(KOA_SRC)) share/koa/node_modules/.package-lock.json
+$(KO)/share/ko/koa/page.js: share/pi/token.ts $(wildcard share/koa/page/*) $(addprefix share/koa/,$(KOA_SRC)) share/koa/node_modules/.package-lock.json
 	rm -rf $(KO)/share/ko/koa
 	mkdir -p $(KO)/share/ko/koa
 	$(KOA_ESBUILD)
@@ -120,7 +120,7 @@ build: $(TERMINFO)/x/xterm-ghostty koa-page
 	rm -rf $(KO)/share/ko/bin $(KO)/share/ko/pi $(KO)/share/ko/webview
 	cp -R share/ko/bin $(KO)/share/ko/bin
 	mkdir -p $(KO)/share/ko/pi
-	cp share/pi/ko-pi.ts share/pi/transcript.ts share/pi/text.ts share/pi/ko-api.d.ts $(KO)/share/ko/pi/
+	cp share/pi/ko-pi.ts share/pi/transcript.ts share/pi/text.ts share/pi/agents.ts share/pi/token.ts share/pi/ko-api.d.ts $(KO)/share/ko/pi/
 	cp -R share/pi/skills $(KO)/share/ko/pi/skills
 	cp -R share/webview $(KO)/share/ko/webview
 	cp share/ko/shim.sh $(KO)/share/ko/shim.sh

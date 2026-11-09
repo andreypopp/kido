@@ -3,11 +3,13 @@ import { readFileSync, appendFileSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { setTimeout } from "node:timers/promises";
 import { spawn } from "node:child_process";
+import { connect } from "node:net";
 
-type Step = { type: "respond"; command: "get_state" | "get_messages" | "get_session_stats" | "get_available_thinking_levels"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "stderr"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[]; delayMs?: number };
+type Step = { type: "respond"; command: "get_state" | "get_messages" | "get_session_stats" | "get_available_thinking_levels" | "get_commands"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "stderr"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[]; delayMs?: number };
 const script: Step[] = process.env.KOA_FAKE_SCRIPT ? readFileSync(process.env.KOA_FAKE_SCRIPT, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
 let next = 0;
 let working = false;
+let startupGate = process.env.KOA_FAKE_STARTUP_GATE;
 const selectionFile = process.env.KOA_FAKE_SELECTION_FILE;
 const selection: { model?: { id: string; provider: string }; thinkingLevel?: string } = selectionFile ? JSON.parse(readFileSync(selectionFile, "utf8")) : {};
 if (selectionFile) {
@@ -43,12 +45,18 @@ async function advance(): Promise<void> {
 }
 async function command(value: { type: string; id: string; message?: string; streamingBehavior?: string; provider?: string; modelId?: string; level?: string }): Promise<void> {
   log(value);
+  if (value.type === "get_state" && startupGate) {
+    const gate = connect(startupGate);
+    startupGate = undefined;
+    await once(gate, "data"); gate.end();
+  }
   if (value.type === "prompt" && working && !["steer", "followUp"].includes(value.streamingBehavior ?? "")) {
     await emit({ type: "response", command: value.type, id: value.id, success: false, error: "prompt requires streamingBehavior while working" });
     return;
   }
   let data: object = {};
   if (value.type === "prompt") data = { disposition: working ? "queued" : "started" };
+  else if (value.type === "get_commands") data = { commands: [] };
   else if (value.type === "get_state") data = { sessionName: "Fake pi", thinkingLevel: "low", sessionId: "fake", isStreaming: working };
   else if (value.type === "get_messages") data = { messages: [] };
   else if (value.type === "get_available_thinking_levels") data = { levels: ["off", "low", "high"] };
@@ -68,7 +76,7 @@ async function command(value: { type: string; id: string; message?: string; stre
     await write([response, ...step.after ?? []].map(record => JSON.stringify(record) + "\n").join(""));
     await advance();
   } else {
-    const introspection = ["get_state", "get_messages", "get_available_thinking_levels", "get_session_stats"].includes(value.type);
+    const introspection = ["get_state", "get_messages", "get_available_thinking_levels", "get_session_stats", "get_commands"].includes(value.type);
     if (!introspection && (step?.type === "wait" || !["prompt", "abort", "steer", "follow_up"].includes(value.type))) {
       await emit({ type: "response", command: value.type, id: value.id, success: false, error: step?.type === "wait" ? `expected ${step.command}` : `unsupported command ${value.type}` });
     } else {

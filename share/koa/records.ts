@@ -1,3 +1,7 @@
+export type CompletionCommand = { name: string; description?: string; source: "extension" | "prompt" | "skill" };
+export type CompletionOption = { label: string; detail?: string; insert: string; cursor?: number } & ({ kind: "command"; source: CompletionCommand["source"]; matched: number[] } | { kind: "agent"; matched: number[] } | { kind: "file" | "directory" });
+export type CompletionQuery = { text: string; pos: number };
+export type CompletionResult = { from: number; to: number; options: CompletionOption[] };
 export type PromptMode = "prompt" | "follow_up";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type DialogMethod = Dialog["method"];

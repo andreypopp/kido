@@ -823,6 +823,20 @@ unit. The order is fixed, because each unit builds on the one before.
    `KoaWebviewTests` (a `read` step's label under ⌘-hover). The manager sends the handler's shape to the top-level
    session before the implementer writes it: it is a new page-to-app
    surface.
+15. **Markdown in the composer.** Section 7, "Markdown in the
+   composer". After unit 11, as its own unit: it has its own
+   snapshots and demo, and unit 11 is in flight. `@codemirror/lang-markdown`
+   and `@lezer/highlight` as direct dependencies, the language and
+   the highlight style in `page/composer.ts`, the Shift-Return and
+   Backspace bindings, the completion's code check in
+   `page/complete.ts`, the CSS tokens. Tests: the DOM tests for the
+   two keys (a list item continues on Shift-Return, an empty item
+   loses its marker, Backspace deletes a marker, Return still sends),
+   a unit test that the completion source answers null inside a code
+   span and a fence, and two snapshots in `KoaWebviewTests` (a draft
+   with a heading, emphasis, a code span, a link, a list and a quote;
+   a fence), light and dark, which the manager checks against the
+   rule of section 7, "Highlighting", and the user judges in a demo.
 
 ## 7. The composer: CodeMirror 6 and completion
 
@@ -922,8 +936,8 @@ single binary has no modules at all. `autocomplete.js` also imports
 above itself, in `share/koa/koa-complete.ts` ("Completion" below),
 and the `@` token rule, which ko-pi already copies from pi
 (`share/pi/ko-pi.ts:832-847`, `atToken`), moves to the shared module
-`share/pi/agents.ts` ("`@name` agents" below) so that ko-pi and koa
-share one copy.
+`share/koa/token.ts` ("Completion" below) so that ko-pi, koa and the
+page share one copy.
 
 ### CodeMirror 6: the packages and their cost
 
@@ -1273,15 +1287,42 @@ CodeMirror's `autocompletion({ override: [source], defaultKeymap:
 false, icons: false, activateOnTypingDelay: 20, maxRenderedOptions:
 20 })` supplies the state and the tooltip; koa's keymap above binds
 the keys, with `completionStatus(state) === 'active'` as the guard.
-The source gets a `CompletionContext`; it posts the whole text and
-the cursor offset, and the page filters nothing: pi asks its provider
-again at each keystroke, and so does koa.
+The source gets a `CompletionContext`. It decides first whether the
+cursor is in a trigger context, with the same pure token rules that
+koa uses: `share/koa/token.ts`, a module with no imports, holds
+`atToken` (the agent token, moved from `ko-pi.ts`), `fileToken` (pi's
+`extractAtPrefix` with its quotes and wrappers) and `slashToken` (the
+`/` on the first line with blank before it). Without a token the
+source returns null and sends nothing, as pi's editor asks its
+provider only in a context (`editor.js:1030-1046`); with one it posts
+the whole text and the cursor offset, and koa computes the prefix and
+the options with the same functions, so the two sides agree on where
+a token starts. The page filters the options not at all: pi asks its
+provider again at each keystroke in a context, and so does koa.
+`ko-pi.ts`, `koa-complete.ts` and `page/complete.ts` import
+`token.ts` (`agents.ts` does not need it); the fuzzy matcher's
+`matched` indices are koa's, and the page only turns them into
+ranges; `KOA_FILES` installs it, and `ko-pi.ts` reaches it as
+`../koa/token.ts` in both layouts, like `records.ts`.
 
 **The route.** `POST /complete` with the body `{ text, pos }`,
 access `alive` (file completion works while pi starts; the command
 list is then empty). It answers `{ from, to, options }` with
-`options: [{ label, detail?, insert, kind }]`, `kind` one of
-`command`, `file`, `directory`; `from` is the start of the prefix
+`options`, each a `CompletionOption` of `records.ts`, a union on
+`kind`: `command` with its `source` (pi's RPC names `extension`,
+`prompt` and `skill`, a union in `records.ts` that `koa.ts` proves
+equal to pi's `SlashCommandSource` at compile time, as it does for
+`ThinkingLevel`; the page shows the word "template" for `prompt`),
+`agent`, `file` and `directory`, each with `label`, `detail?`,
+`insert`, `cursor?` (the caret's offset inside `insert`, default its
+length; `insert.length - 1` for a quoted directory, pi's
+`applyCompletion` rule) and, for commands and agents, `matched`
+(the indices of the fuzzy-matched letters, so the page runs no second
+matcher). The body and the reply are types of `records.ts`, because
+the page reads them. `to` is `pos`, or `pos + 1` when the prefix is
+quoted and a `"` follows the caret, which pi's apply consumes. A file
+row shows the display path with a muted trailing `/` for a directory
+and no detail, as the mockup draws it. `from` is the start of the prefix
 that the option replaces and `to` is `pos`; `insert` is the text that
 pi's apply rule produces for the prefix (`/name `, `@path `, `@dir/`,
 the quotes), so the page inserts it and decides nothing. An empty
@@ -1299,16 +1340,28 @@ other route's, under the 1 MiB limit.
   cache, so a `/reload` in pi shows at once), fuzzy-filtered with pi's
   rule (`skill:` by bare name first). Each `detail` is the
   description. No argument completion.
-- `@token`: `atToken` of `agents.ts`, then `fd` from the token's base
+- `@token`: `atToken` and `fileToken` of `token.ts`, then `fd` from the token's base
   directory with pi's arguments, 100 results, pi's scoring, 20 rows,
-  the base directory's entries first. `fd` is pi's: `~/.pi/agent/bin/fd`
+  the base directory's entries first. One rule beyond pi's: the
+  user's pattern comes after `--` in `fd`'s argv, so a quoted query
+  such as `@"--help` is a pattern and never an option of `fd`; the
+  test for it asks `@"--help.txt` and expects the pattern, not an
+  empty result. `fd` is pi's: `~/.pi/agent/bin/fd`
   (`$PI_CODING_AGENT_DIR/bin/fd`), else `fd` on PATH, resolved once
   at start; without one, `@` returns no options and koa prints one
   line to its stderr at start. Tests name their `fd` through `KOA_FD`.
 - A request closed by the page (`request.on('close')`) aborts the
   `signal`, and koa kills the `fd` child that it spawned for it, as
   pi does (`autocomplete.js:166-170`). The signal goes through koa's
-  one signal function, which takes koa's own child record (decision
+  one signal function, `signalChild(child: ChildProcess, signal)` in
+  `share/koa/koa-child.ts` (today `signalPi`, `koa.ts:30`), imported
+  by `koa.ts` for pi's group and by `koa-complete.ts` for `fd`; the
+  lint's permitted-site entry moves to that file, and `KOA_FILES`
+  installs it. The route
+  aborts through `response.once('close')`, attached before the
+  search starts, because an `IncomingMessage`'s `close` is the end
+  of the body, not the client's departure. It takes koa's own child
+  record (decision
   8): the function grows from pi's record to any child that koa
   spawned, and `scripts/lint.sh`'s one permitted site stays one.
 - `fuzzyFilter` is koa's copy of pi's rule (`pi-tui/dist/fuzzy.js`,
@@ -1344,7 +1397,7 @@ parts move out of `ko-pi.ts` into a shared module `share/pi/agents.ts`
 (installed beside `ko-pi.ts` as `transcript.ts` is; the Makefile and
 `preview-pi` lists get it): `PaneInfo`, `parsePanes`, `placesOf`,
 `piAgent`, `rootRecord`, `peerPanes`, the relationship computation of
-`discovery` as a pure function `relationships(panes, me)`, `atToken`,
+`discovery` as a pure function `relationships(panes, me)`,
 `agentCompletionItems` over the fields it reads (`id`, `name`,
 `named`, `self`, `status`, `activity`, `parent`, `state`,
 `relationship`), `completionValue`, `NAME_WORD_SEPARATORS`,
@@ -1384,14 +1437,34 @@ trip; an `@` request is one `fd` run, tens of milliseconds in a
 repository of this size. The page shows nothing until the answer.
 
 **The popup** is CodeMirror's tooltip above the field (the composer
-is at the bottom, so it opens upward), restyled in `page/page.css`
-through `--ko-*` tones: a card with the dock's glass and hairline,
-rows of a label and a muted detail, the current row on the 8 % well,
-paths in the terminal font, at most 8 rows visible before it
-scrolls. The design agent mocks it first (a `/` list, an `@` list,
-in light and dark, windowed and narrow), and the page follows the
-mockup; the values above are the starting point for the mockup, not
-the design.
+is at the bottom, so it opens upward): `tooltips({ position:
+"absolute", parent: field, tooltipSpace })` makes the field its
+containing block; the space has the field's left and right, less the
+9px row margin, and the viewport's top and bottom, so CodeMirror
+clamps the x to the field and never hides or shrinks the popup for
+want of room above the caret line inside the field; and one CSS
+rule, `top: auto !important; bottom: calc(100% + 6px)`, pins it 6pt
+above the field whatever line the caret is on, because CodeMirror
+writes only inline `top` and `left`; `aboveCursor: true` keeps its
+side class in agreement. No `TooltipView.offset` plugin. CodeMirror
+appends the tooltip in a wrapper under `parent`, so the rule selects
+the wrapper that holds the popup. One known limit, accepted: when a
+token's start scrolls out of the six-line box while the list is open
+(a wrapped `@path` longer than the box), CodeMirror would hide the
+popup through a private sentinel that the rule overrides, so the
+popup keeps its last x, inside the field, until the next keystroke;
+the rule does not reach for that sentinel. The app's test asserts the
+popup's bottom above the field's top and its left and right inside
+the field. It is
+restyled in `page/page.css`
+through `--ko-*` tones after the mockup `app/design/koa/complete.html`
+and its notes, NOTES.md "The completion popup": the card, its width
+and anchor at the token's x, the 27pt rows with the current row on
+`--well2`, 8 rows before the list scrolls, the footer, the label in
+the terminal font, the muted detail, the kind tag for commands and
+agents, the bold matched letters. The plan does not repeat the
+mockup's values; the page follows it, and the three snapshots of
+unit 11 are its states 1, 3 and 4.
 
 **Tests.**
 
@@ -1430,6 +1503,106 @@ code in `composer()`; `setRangeText` and the `isComposing` checks on
 the composer; every `element('prompt').value` read and write; the
 pane, relationship and completion functions of `ko-pi.ts` that move
 to `share/pi/agents.ts`.
+
+### Markdown in the composer
+
+Status: a design, 2026-11-09, for the user's request "for the
+composer we should use CM6's markdown extensions". Unit 15.
+
+**Verified facts.** `@codemirror/lang-markdown` 6.5.2 (MIT,
+`sideEffects: false`) depends on `@lezer/markdown` 1.8.1 and on
+`@codemirror/lang-html` 6.4.12, which brings `lang-css` 6.3.1,
+`lang-javascript` 6.2.5, `@lezer/html` 1.3.13, `@lezer/css` 1.3.9
+and `@lezer/javascript` 1.5.6. Its `markdown()` function makes an
+HTML language at module level (`dist/index.js:402`, `htmlNoMatch`)
+and uses it as the default `htmlTagLanguage` (`:407`), so a bundle
+that calls `markdown()` carries the whole HTML, CSS and JavaScript
+chain. Its named exports `markdownLanguage`,
+`insertNewlineContinueMarkup` and `deleteMarkupBackward` do not
+reference it, and esbuild drops it. Measured on the unit 10 and 11
+exports as the base (esbuild 0.28.2, no minify):
+
+| Bundle | Bytes | Over the base |
+|---|---|---|
+| base: state, view, commands, autocomplete | 624,621 | |
+| + `markdown()` | 969,532 | 344,911; HTML, CSS and JavaScript parsers in |
+| + `markdownLanguage`, the two commands, `syntaxHighlighting`, `HighlightStyle`, `tags` | 713,914 | 89,293; no HTML chain |
+| + `@lezer/markdown` `parser` with `GFM` and `@codemirror/language`'s `Language` alone | 701,890 | 77,269; no continuation commands |
+
+The third row is the design: `lang-markdown`'s named exports, never
+`markdown()`. The fourth saves 12 KB and loses the two markup
+commands, which live in `lang-markdown`; not worth a hand-written
+`Language`. `markdownLanguage` is CommonMark plus GFM (tables, task
+lists, strikethrough, autolinks), subscript, superscript and emoji
+(`dist/index.js:62-74`); `commonmarkLanguage` is strict CommonMark.
+The two commands return false outside markup
+(`markdownLanguage.isActiveAt` checks in each), so a key bound to
+them falls through to the next binding. The HTML, CSS and JavaScript
+packages are installed and in the lockfile as transitive packages,
+not bundled, under the `@lezer/lr` rule above. Direct dependencies
+added to `share/koa/package.json`: `@codemirror/lang-markdown` 6.5.2
+and `@lezer/highlight` 1.2.5 (for `tags`; already transitive).
+
+**What "markdown extensions" means here.** The composer gets the
+language, so the field understands what the user writes as the model
+will read it, and three things that follow from it:
+
+1. **Highlighting.** `syntaxHighlighting(HighlightStyle.define([...]))`
+   over `@lezer/highlight`'s tags as the markdown parser emits them,
+   with one plain rule, decided by the user on 2026-11-09 without a
+   mockup; the user judges it in a demo. The composer keeps its type,
+   the prose font at `--ko-font-size`, and the rule adds only this:
+   the markup characters (`#`, `*`, `_`, `` ` ``, `>`, the list marks,
+   the fence lines, the link brackets and the URL: the tags
+   `processingInstruction`, `meta`, `url` and the fence's `meta`) in
+   the muted tone; `strong` bold; `emphasis` italic; `strikethrough`
+   struck; `monospace` (code spans and fenced code text) in
+   `--ko-font-family` at the transcript's code size (`code{font:.92em
+   ...}` in `page.css`), with no background; `heading` bold at the
+   field's size, no larger type; link text in the fg colour; nothing
+   else coloured. Every tone is a `--ko-*` property or a mix of them,
+   as the rest of the page; no highlight colour of its own.
+2. **Continuation.** `insertNewlineContinueMarkup` on Shift-Return:
+   in a list item or a quote it inserts the newline with the next
+   marker (`- `, `3. `, `> `, `- [ ] `), and on an empty item it
+   removes the marker instead; outside markup it returns false and the
+   plain newline of unit 10 follows in the same keymap. Return keeps
+   its one meaning, send: a user who wants the next list item presses
+   Shift-Return, as for any newline. `deleteMarkupBackward` on
+   Backspace: at the start of an item's text it deletes the marker;
+   elsewhere it returns false and `standardKeymap`'s `deleteCharBackward`
+   runs. Both bindings go into the composer's `Prec.highest` keymap
+   beside Enter, so the keymap of unit 10 stays the one owner of Enter
+   and of its composition guard: `insertNewlineContinueMarkup` runs
+   under the same `outsideComposition` wrapper as the Enter handlers.
+   `markdownKeymap` itself is not used: it binds Enter.
+3. **Fenced code.** No `codeLanguages`: a fence's text is `monospace`
+   and nothing more. One parser per language costs 20 to 80 KB
+   (`@lezer/javascript` alone is 80,799 bytes of source) and the
+   composer is for prompts, not for code editing.
+
+`commonmarkLanguage` versus `markdownLanguage`: `markdownLanguage`,
+because the page renders GFM through marked and the field should
+parse what the transcript shows (a table, a task list, `~~text~~`).
+
+**Completion and the tree.** Completion does not need the tree: pi's
+provider works on the line's text and so does koa's. With the
+language present, the source adds one check: `syntaxTree(state)
+.resolveInner(pos, -1)` and, when the node or an ancestor is
+`InlineCode`, `FencedCode` or `CodeBlock` (the names of
+`@lezer/markdown`), the source returns null, so a `/` or an `@` in a
+code span or a fence is literal text. pi's TUI does not do this; it
+is a small gain from the tree and costs three lines (open question 3).
+The tree is incremental, so the check is cheap at every keystroke.
+
+**What does not change.** The IME guard and the Enter ownership of
+unit 10; the textarea-equivalent `input(user)` rule, because the
+highlighting is a view decoration and not a document change; the
+six-line cap and the `--ko-focus` border; the completion popup.
+`page.css` gains the highlight tokens as classes of the
+`HighlightStyle` (CodeMirror writes them into its one `<style>`
+element; a `HighlightStyle.define` with `themeType` is not needed,
+because every tone is a `--ko-*` property that follows the theme).
 
 ## 8. Images and attachments
 
@@ -1985,5 +2158,13 @@ committed (section 7, "Built, not committed"), so `make build` needs
 Node 24; the Homebrew formula's `depends_on "node" => :build` and its
 `npm ci` are a release step of the tap at the next release, not a
 change in this repository; and the bundle is not minified.
+
+Section 7, "Markdown in the composer", decided on 2026-11-09: the
+named exports of `lang-markdown`, never `markdown()`; Shift-Return
+continues a list or a quote and ends an empty item, Return stays
+send, Backspace at an item's start deletes the marker; no `/` or `@`
+completion inside a code span or a fence; fences stay plain
+monospace; no mockup, the highlighting follows the plain rule of
+"Highlighting" and the user judges it in a demo.
 
 None open.

@@ -1,14 +1,14 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, writeFile, rm, mkdir, cp } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, mkdir, cp, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { createServer, connect } from "node:net";
 import timers from "node:timers/promises";
 import { Readable } from "node:stream";
-import { assistant, sse } from "../pi/ko-pi-fixture.ts";
+import { assistant, sse, selfPane, agentPane, pollUntil } from "../pi/ko-pi-fixture.ts";
 
 test("--help prints usage without starting pi or a webview", { timeout: 5000 }, async () => {
   const child = spawn(process.execPath, [resolve('../koa/koa.ts'), '--help', '--pi', '/does-not-exist'], { env: { PATH: '' }, stdio: 'pipe' });
@@ -29,7 +29,7 @@ async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv =
   const log = join(dir, "log");
   await writeFile(join(dir, process.platform === "darwin" ? "open" : "xdg-open"), '#!/bin/sh\nprintf "%s\\n" "$1" >> "$OPEN_LOG"\n', { mode: 0o700 });
   await writeFile(script, steps.map(value => JSON.stringify(value)).join("\n"));
-  const child = spawn(process.execPath, [program, "--browser", "--pi", pi ?? resolve("../koa/koa-fake-pi.ts"), "--no-session", ...args], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, OPEN_LOG: join(dir, "urls"), KOA_FAKE_SCRIPT: script, KOA_FAKE_LOG: log, KOA_PI_EXIT_MS: "30", ...env }, stdio: "pipe" });
+  const child = spawn(process.execPath, [program, "--browser", "--pi", pi ?? resolve("../koa/koa-fake-pi.ts"), "--no-session", ...args], { env: { ...process.env, OPEN_LOG: join(dir, "urls"), KO_PANE: "", KOA_FAKE_SCRIPT: script, KOA_FAKE_LOG: log, KOA_PI_EXIT_MS: "30", ...env, PATH: `${dir}:${env.PATH ?? process.env.PATH}` }, stdio: "pipe" });
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", bytes => { stdout += bytes; });
@@ -48,6 +48,56 @@ async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv =
   if (startup) await until(record => record.type === "state" && (pi ? record.pi?.type === "exited" : Array.isArray(record.levels) && record.levels.length === 3));
   return { post, until, records: () => stream.records, count: () => stream.records.length, close, stdout: () => stdout, stderr: () => stderr, log: async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line)), base };
 }
+test("completion reads pi commands on every request and validates offsets", { timeout: 10000 }, async t => {
+  const app = await fixture(t, [{ type: "respond", command: "get_commands", data: { commands: [{ name: "find", description: "Find a file", source: "extension" }] } }]);
+  for (let i = 0; i < 2; i++) {
+    const response = await app.post("complete", { text: "/fi", pos: 3 });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { from: 0, to: 3, options: [{ label: "/find", detail: "Find a file", insert: "/find ", kind: "command", source: "extension", matched: [1, 2] }] });
+  }
+  assert.equal((await app.log()).filter(record => record.type === "get_commands").length, 2);
+  for (const body of [{ text: "@", pos: -1 }, { text: "@", pos: 2 }, { text: "@", pos: 0.5 }, { text: 1, pos: 0 }]) assert.equal((await app.post("complete", body)).status, 400);
+});
+
+test("completion serves files and live agents during startup and cancels its fd child", { timeout: 10000 }, async t => {
+  const dir = await mkdtemp("/tmp/koa-completion-");
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const layout = join(dir, "panes.json"), gate = join(dir, "gate"), fd = join(dir, "fd");
+  await symlink(resolve("../../target/debug/fake_ko"), join(dir, "ko"));
+  await writeFile(layout, JSON.stringify([selfPane(), agentPane({ pane: "pane_2", session: "22222222aaaa", name: "sidebar" }), agentPane({ pane: "pane_3", session: "22222222bbbb", name: "fix-sidebar" }), agentPane({ pane: "pane_4", session: "elsewhere", name: "sidebar-elsewhere", koSession: "session_2" }), agentPane({ pane: "pane_5", session: "other", name: "sidebar-other", parent: "pane_99" })]));
+  await writeFile(fd, `#!/usr/bin/env node
+const fs=require('node:fs'),net=require('node:net'),path=${JSON.stringify(dir)},args=process.argv.slice(2);
+if(args[0]!=='--base-directory'||!args.includes('--hidden')||!args.includes('--follow')||!args.includes('.git/**'))process.exit(91);
+if(fs.existsSync(path+'/block')){fs.writeFileSync(path+'/pid',String(process.pid));net.connect(path+'/gate',function(){this.write('fd')})}else if(new RegExp(args.at(-1)).test('sidebar.txt'))console.log('sidebar.txt');
+`, { mode: 0o700 });
+  const server = createServer();
+  server.listen(gate); await once(server, "listening");
+  t.after(() => server.close());
+  const starting = once(server, "connection");
+  const app = await fixture(t, [{ type: "respond", command: "get_commands", data: { commands: [{ name: "find", source: "extension" }] } }], { KO_PANE: "pane_1", KO_SOCKET: "", KO_PANE_TOKEN: "", KO_FAKE_PANES: layout, KO_FAKE_API_LOG: join(dir, "ko-log"), KOA_FD: fd, KOA_FAKE_STARTUP_GATE: gate, PATH: dir + ":" + process.env.PATH, KO_AGENT_LIST_TTL_MS: "1000" }, undefined, false);
+  const [startup] = await starting;
+  t.after(() => startup.destroy());
+  assert.deepEqual((await (await app.post("complete", { text: "/fi", pos: 3 })).json()).options, []);
+  assert.equal((await app.log()).some(record => record.type === "get_commands"), false);
+  let items: { kind: string; insert: string }[] = [];
+  await pollUntil(async () => { items = (await (await app.post("complete", { text: "@si", pos: 3 })).json()).options; return items.some(item => item.kind === "agent"); }, 5000, "agent completion refresh").catch(async error => { throw new Error(String(error) + "\n" + app.stderr() + "\n" + JSON.stringify(items) + "\n" + await readFile(join(dir, "ko-log"), "utf8").catch(() => "no ko calls")); });
+  assert.deepEqual(items.map(item => item.insert), ["@sidebar (session 22222222a) ", "@fix-sidebar (session 22222222b) ", "@sidebar.txt "]);
+  startup.write("ready");
+  await app.until(record => record.type === "state" && record.pi?.type === "ready");
+  assert.equal((await (await app.post("complete", { text: "/fi", pos: 3 })).json()).options[0].insert, "/find ");
+  await writeFile(join(dir, "block"), "");
+  const connected = once(server, "connection"), controller = new AbortController();
+  const request = fetch(app.base + "complete", { method: "POST", body: JSON.stringify({ text: "@si", pos: 3 }), signal: controller.signal });
+  const [socket] = await connected;
+  t.after(() => socket.destroy());
+  await once(socket, "data");
+  assert.match(await readFile(join(dir, "pid"), "utf8"), /^[1-9]\d+$/);
+  const closed = once(socket, "close");
+  controller.abort();
+  await assert.rejects(request, { name: "AbortError" });
+  await closed;
+});
+
 test("document loads read the current page files and recover after a failed read", { timeout: 10000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), "koa-page-reload-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

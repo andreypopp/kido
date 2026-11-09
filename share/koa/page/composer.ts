@@ -2,6 +2,7 @@ import { Compartment, Prec, Transaction } from '@codemirror/state';
 import { EditorView, keymap, placeholder, type Command } from '@codemirror/view';
 import { history, historyKeymap, standardKeymap, insertNewline } from '@codemirror/commands';
 
+import { completion } from './complete.ts';
 import type { PromptMode } from '../records.ts';
 
 const outsideComposition = (command: Command): Command => view => !view.compositionStarted && command(view);
@@ -9,13 +10,16 @@ const outsideComposition = (command: Command): Command => view => !view.composit
 export function composer(host: HTMLElement, handlers: { input(user: boolean): void; send(mode: PromptMode): void; quit(): void }) {
   const hint = new Compartment();
   let label = 'Message koa…';
+  const completions = completion(host, () => handlers.send('prompt'));
   const empty = () => view.state.doc.length === 0;
   const view = new EditorView({
     parent: host,
     extensions: [
       history(),
+      completions.extension,
       keymap.of([...historyKeymap, ...standardKeymap.filter(binding => binding.key !== 'Enter')]),
       Prec.highest(keymap.of([
+        ...completions.keys.map(binding => ({ ...binding, run: outsideComposition(binding.run) })),
         { key: 'Enter', run: outsideComposition(() => { handlers.send('prompt'); return true; }) },
         { key: 'Shift-Enter', run: outsideComposition(insertNewline) },
         { key: 'Alt-Enter', run: outsideComposition(() => { handlers.send('follow_up'); return true; }) },

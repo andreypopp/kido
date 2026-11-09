@@ -851,8 +851,9 @@ Every C file of `bench/` starts with `#define _DARWIN_C_SOURCE` and
 **The harness is one pi extension.** `share/pi/ko-pi.ts` holds every
 agent tool. It calls only `ko api`, with `--stream` for its message
 stream and a routed pi's exec sessions (docs/design.md, "The pi
-extension, ko-pi", lists the routes). At run time it imports `text.ts` beside
-itself and nothing else of the checkout. It has no run command: its
+extension, ko-pi", lists the routes). At run time it imports `text.ts`,
+`agents.ts` and `token.ts` beside itself, which koa shares, and nothing
+else of the checkout. It has no run command: its
 background commands are jobs, child processes of pi
 (docs/design-subagents.md, "A job"). It never opens ko's socket.
 That command, its flags, exit codes and JSON are the contract between

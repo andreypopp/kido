@@ -1,0 +1,3 @@
+bounds=0.00,0.00,980.00,300.00 separator=0.00,0.00,980.00,0.50 banner=false
+pane_3 cells=Geometry(x: 0, y: 0, width: 120, height: 18) layer=tiled grid=9.50,9.00,960.00,279.00 content=9.50,0.50,960.00,299.50 chrome=0.00,0.50,980.00,299.50 insets=8.5,12.0 find=false alternate=false scroll=nil
+divider=0.00,0.00,980.00,0.50

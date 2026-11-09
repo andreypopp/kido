@@ -88,3 +88,17 @@ button,textarea,input,select{font:inherit;color:inherit}button{appearance:none;c
 @media(max-width:750px){.dialogs{padding:0 14px 8px}.exited{padding:0 14px 10px}.status .ext{display:none}}
 .notice{color:var(--muted);white-space:pre-wrap}
 @media(max-width:750px){#transcript{padding:10px 12px calc(var(--dock-h,96px) + 8px)}.composer{padding:0 14px 10px}.hide-n{display:none}.seg{padding:0 7px}}
+
+/* CodeMirror sets the container's position and the popup's top inline. */
+.field>:has(>.koa-complete){position:absolute!important;inset:-1px;pointer-events:none}
+.field .koa-complete{top:auto!important;bottom:calc(100% + 6px);margin-left:-9px;pointer-events:auto}
+body .cm-tooltip.cm-tooltip-autocomplete.koa-complete{display:flex;flex-direction:column;z-index:40;min-width:min(260px,calc(100vw - 28px));max-width:min(460px,100%);background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border:1px solid color-mix(in srgb,var(--ko-fg) 22%,transparent);border-radius:9px;box-shadow:inset 0 .5px 0 color-mix(in srgb,#fff 28%,transparent),0 6px 22px color-mix(in srgb,var(--ko-fg) 14%,transparent),0 1px 3px color-mix(in srgb,var(--ko-fg) 10%,transparent);padding:5px;font:.95em/1.5 var(--prose);color:var(--ko-fg)}
+body .cm-tooltip.cm-tooltip-autocomplete.koa-complete>ul{flex:1;min-height:0;max-height:184px;min-width:0;max-width:none;overflow:auto;scrollbar-gutter:stable;padding:0;margin:0;font:inherit;white-space:normal}
+body .cm-tooltip.cm-tooltip-autocomplete.koa-complete>ul>li{display:flex;align-items:baseline;gap:10px;height:23px;box-sizing:border-box;padding:3px 8px!important;border-radius:6px;white-space:nowrap;color:var(--ko-fg)}
+body .cm-tooltip.cm-tooltip-autocomplete.koa-complete>ul>li[aria-selected]{background:var(--well2);color:var(--ko-fg)}
+body .koa-complete .cm-completionLabel{font:.92em var(--ko-font-family);color:var(--ko-fg);flex-shrink:0;min-width:0;overflow:hidden;text-overflow:ellipsis;max-width:70%}
+body .koa-complete .cm-completionMatchedText{font-weight:600;text-decoration:none}
+body .koa-complete .cm-completion-directory .cm-completionLabel::after{content:"/";color:var(--muted)}
+body .koa-complete .cm-completionDetail{color:var(--muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;font:.92em var(--prose);margin:0}
+body .koa-complete .cm-completionKind{color:var(--faint);font:.8em var(--ko-font-family);flex-shrink:0;margin-left:auto}
+body .cm-tooltip.cm-tooltip-autocomplete.koa-complete::after{flex-shrink:0;content:"↑↓ move · ⇥ ↩ accept · ⎋ close";display:block;margin-top:4px;padding:5px 8px 1px;border-top:1px solid var(--hair);color:var(--faint);font:.8em/1.4 var(--ko-font-family)}

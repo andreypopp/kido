@@ -37,16 +37,18 @@ import {
   truncateTail,
   truncateLine,
 } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, type AutocompleteItem, type AutocompleteProvider, type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Key, matchesKey, type AutocompleteProvider, type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { type WriteStream, accessSync, constants, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
-import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, replaceControlCharacters } from "./text.ts";
+import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, replaceControlCharacters, isRecord, str } from "./text.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "./ko-api.d.ts";
+import { atToken } from "./token.ts";
+import { parsePanes, placesOf, piAgent, peerPanes, ancestorsOf, runningRows, agentCache, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentCompletionRow } from "./agents.ts";
 
 type Api = components["schemas"];
 
@@ -54,11 +56,6 @@ const KO_TIMEOUT_MS = 5000;
 const PEER_RESULT_RULE = "independent peer; no report or ending notice";
 const reconnectBackoff = (previous: number): number => Math.min(previous ? previous * 2 : envMs("KO_RECEIVER_BACKOFF_MS", 200), 5000);
 
-const VAR_SESSION = "pi.session";
-const VAR_NAME = "pi.name";
-const VAR_ACTIVITY = "pi.activity";
-const VAR_TASK = "ko-pi.task";
-const VAR_RUNTIME = "pi.runtime";
 const VAR_KO_RUNTIME = "ko.runtime";
 const VAR_KEYS = [VAR_SESSION, VAR_NAME, VAR_ACTIVITY];
 
@@ -72,12 +69,6 @@ type SendKind = Api["SendKind"];
 type Dead = Api["Dead"];
 
 type RunResult = { ok: true; out: string; raw: string } | { ok: false; error: string; code?: number; out: string; err: string };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
 function findKo(): string | null {
   const path = process.env.PATH;
@@ -181,84 +172,6 @@ function isErrorKind(value: unknown): value is Api["Error"]["kind"] {
   return typeof value === "string" && ERROR_KINDS.includes(value);
 }
 
-type PaneInfo = {
-  pane: string;
-  session: string;
-  window: string;
-  sessionVar: string;
-  kind: Api["Live"] | null;
-  name: string;
-  activity: string;
-  cwd: string;
-  runtime: string;
-  dead: Dead | null;
-  root: { app: string; state: string } | null;
-  title: string;
-  parent: string;
-  inbox: boolean;
-  task: unknown;
-};
-
-function rootRecord(programStatus: Api["ProgramStatus"] | null): { app: string; state: string } | null {
-  const root = programStatus?.records.find((r) => r.id === "");
-  return root ? { app: root.app ?? "", state: root.state } : null;
-}
-
-function piAgent(kind: Api["Live"] | null) {
-  return (kind?.type === "host" || kind?.type === "runtime") && kind.pane.type === "pi_agent" ? kind.pane : undefined;
-}
-
-function peerPanes(panes: PaneInfo[], of: PaneInfo): PaneInfo[] {
-  return panes.filter((p) => p.session === of.session && p.pane !== of.pane && p.parent === of.parent);
-}
-
-type Place = { session: string; window: string };
-
-function placeLeaves(node: Api["LeafNode"] | Api["Float"], place: Place, into: Map<string, Place>): void {
-  if ("pane" in node) into.set(node.pane, place);
-  else for (const child of node.children) placeLeaves(child, place, into);
-}
-
-function placesOf(layout: Api["LayoutPanes"]): Map<string, Place> {
-  const places = new Map<string, Place>();
-  for (const session of layout.layout.sessions) {
-    for (const window of session.windows) {
-      const place = { session: session.id, window: window.id };
-      placeLeaves(window.tree, place, places);
-      for (const float of window.floats) placeLeaves(float, place, places);
-    }
-  }
-  return places;
-}
-
-function parsePanes(layout: Api["LayoutPanes"]): PaneInfo[] {
-  const places = placesOf(layout);
-  return layout.panes.map((row) => {
-    const place = places.get(row.id);
-    const root = rootRecord(row.status?.program_status ?? null);
-    const kind = row.status?.kind ?? null;
-    const routed = row.vars[VAR_RUNTIME];
-    const route = kind?.type === "host" && piAgent(kind) && isRecord(routed) && typeof routed.name === "string" ? { name: routed.name, cwd: str(routed.cwd) } : undefined;
-    return {
-      pane: row.id,
-      session: place?.session ?? "",
-      window: place?.window ?? "",
-      sessionVar: str(row.vars[VAR_SESSION]),
-      kind,
-      name: str(row.vars[VAR_NAME]),
-      activity: str(row.vars[VAR_ACTIVITY]),
-      cwd: route?.cwd || row.cwd,
-      runtime: row.runtime ?? route?.name ?? "",
-      dead: row.dead,
-      root,
-      title: row.title,
-      parent: row.parent ?? "",
-      inbox: row.inbox === true,
-      task: row.vars[VAR_TASK],
-    };
-  });
-}
-
 async function listPanesResult(timeoutMs = KO_TIMEOUT_MS): Promise<{ ok: boolean; panes: PaneInfo[] }> {
   const body = apiBody(await apiCall("GET", "/layout", undefined, timeoutMs));
   if (body === undefined) return { ok: false, panes: [] };
@@ -305,12 +218,6 @@ const steerHeader = (from: string): string => `${from} is redirecting this work:
 const inboundHeader = (sender: string | undefined, verb: string | undefined): string =>
   `${sender && sender !== "another agent" ? `@${sender}` : "another agent"}${verb ? ` ${verb}` : ""}:`;
 
-const NAME_WORD_SEPARATORS = /[\s\-_/]+/;
-
-const MIN_ID_PREFIX = 8;
-
-const MAX_AGENT_COMPLETIONS = 10;
-
 const MAX_NOTICE_BYTES = 4000;
 const MAX_JOB_TITLE_BYTES = 192;
 const MAX_JOB_MESSAGE_BYTES = 2048;
@@ -344,28 +251,9 @@ const reply = (text: string, details: unknown = {}) => ({ content: [{ type: "tex
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-
-type AgentRow = {
-  id: string;
-  name: string;
-  named: boolean;
-  pane: string;
-  window: string;
-  status: string;
-  activity: string;
-  parent: string;
-  depth: number;
-  self: boolean;
-  cwd: string;
-  runtime?: string;
-  canMessage: boolean;
-  kind: "agent" | "subagent";
-  relationship: "parent" | "peer" | "own" | "relative" | "other";
-  state: "running" | "ended";
-  ended?: string;
-  model?: string;
-  reported?: boolean;
-  report?: string;
+type AgentRow = AgentCompletionRow & {
+  pane: string; window: string; depth: number; cwd: string; runtime?: string; canMessage: boolean;
+  kind: "agent" | "subagent"; ended?: string; model?: string; reported?: boolean; report?: string;
 };
 
 type ChildRuntime = { name: string; mode: "routed" | "inside" };
@@ -384,7 +272,6 @@ type ChildData = {
   runtime?: ChildRuntime;
   pane: { instance: string; pane: string };
 };
-
 
 const handleClick = (event: TuiMouseEvent, click: () => void) => {
   if (event.button !== "left") return;
@@ -829,22 +716,6 @@ function isFirstCopy(): boolean {
   return (globalThis.__koPiExtensionCopy ??= extensionPath) === extensionPath;
 }
 
-// Must agree with pi's own CombinedAutocompleteProvider (extractAtPrefix), since
-// the merged list carries one prefix for the agents and the files both.
-function atToken(textBeforeCursor: string): string | undefined {
-  const separator = /[\s"'=]|(?=\p{Punctuation})[\p{Script_Extensions=Han}\p{Script_Extensions=Hiragana}\p{Script_Extensions=Katakana}\p{Script_Extensions=Hangul}\p{Script_Extensions=Bopomofo}]|[，．：；！？（）［］｛｝“”‘’…—]/u;
-  const wrappers: Record<string, string> = { "(": ")", "[": "]", "{": "}", "<": ">", "`": "`" };
-  const quote = textBeforeCursor.lastIndexOf('"');
-  if ((textBeforeCursor.match(/"/g)?.length ?? 0) % 2 && textBeforeCursor[quote - 1] === "@") {
-    let start = quote - 1;
-    while (wrappers[textBeforeCursor[start - 1]]) start--;
-    if (start === 0 || separator.test(textBeforeCursor[start - 1])) return undefined;
-  }
-  let token = textBeforeCursor.split(separator).at(-1) ?? "";
-  while (wrappers[token[0]] && !token.includes(wrappers[token[0]], 1)) token = token.slice(1);
-  return token.startsWith("@") ? token.slice(1) : undefined;
-}
-
 function normalizeAddress(to: string): { wanted: string; mention: boolean } {
   const raw = to.replace(/^@/, "");
   const id = raw.match(/^(?:.* )?\(session ([^\s()]+)\)$/)?.[1];
@@ -931,7 +802,6 @@ function openStream(ko: string, path: string, stdin: "pipe" | "ignore", stderr: 
   return child;
 }
 
-
 type Addressable = { id: string; pane: string; name: string; named: boolean; state: "running" | "ended" };
 
 function isPosted(value: unknown): value is Api["Posted"] {
@@ -940,33 +810,6 @@ function isPosted(value: unknown): value is Api["Posted"] {
 
 function matchesId(row: { id: string; pane: string }, wanted: string, prefix = false): boolean {
   return prefix ? wanted.length >= MIN_ID_PREFIX && row.id.startsWith(wanted) : row.id === wanted || (row.pane !== "" && row.pane === wanted);
-}
-
-function completionValue(ids: AgentRow[], agent: AgentRow): string {
-  let n = MIN_ID_PREFIX;
-  while (n < agent.id.length && ids.some((other) => other !== agent && other.id.startsWith(agent.id.slice(0, n)))) n++;
-  return `@${agent.name} (session ${agent.id.slice(0, n)})`;
-}
-
-function agentCompletionItems(agents: AgentRow[], all: AgentRow[], token: string): AutocompleteItem[] {
-  const nameByID = new Map(agents.map((a) => [a.id, a.name]));
-  const wanted = token.toLowerCase();
-  const matched: Array<{ agent: AgentRow; rank: number }> = [];
-  for (const a of agents) {
-    if (a.self || !a.name || !a.named) continue;
-    const name = a.name.toLowerCase();
-    if (name.startsWith(wanted)) matched.push({ agent: a, rank: 0 });
-    else if (name.split(NAME_WORD_SEPARATORS).some((word) => word.startsWith(wanted))) matched.push({ agent: a, rank: 1 });
-  }
-  matched.sort((x, y) => x.rank - y.rank);
-  return matched.slice(0, MAX_AGENT_COMPLETIONS).map(({ agent: a }) => {
-    const parent = a.parent ? nameByID.get(a.parent) || a.parent : "";
-    const description = a.state === "ended" ? "ended peer" : [
-      a.activity ? `${a.status || "agent"} - ${a.activity}` : a.status || "agent",
-      parent ? `subagent of ${parent}` : "",
-    ].filter(Boolean).join(", ");
-    return { value: completionValue(all, a), label: `@${a.name}`, description };
-  });
 }
 
 // Go-style %q: escapes quotes, backslashes and control characters but keeps
@@ -1486,7 +1329,7 @@ export default function (pi: ExtensionAPI) {
 
   const written = new Map<string, string>();
 
-  let completion: { rows: AgentRow[]; all: AgentRow[]; at: number; refreshing: Promise<void> | null } | null = null;
+  let completion: ReturnType<typeof agentCache> | undefined;
 
   const insideKo = (): boolean => !!process.env.KO_SOCKET && findKo() !== null;
   const offersSkill = (): boolean => insideKo() && !routed;
@@ -1721,26 +1564,7 @@ export default function (pi: ExtensionAPI) {
     const [{ ok, panes }] = await Promise.all([listPanesResult(), readInstance()]);
     const byPane = new Map(panes.map((p) => [p.pane, p]));
     const me = panes.find((p) => p.pane === pane);
-    const ancestorsOf = (p: PaneInfo): PaneInfo[] => {
-      const chain: PaneInfo[] = [];
-      let cur = byPane.get(p.parent);
-      while (cur && !chain.includes(cur)) {
-        chain.push(cur);
-        cur = byPane.get(cur.parent);
-      }
-      return chain;
-    };
     const mySession = me?.session ?? "";
-    const relationship = new Map<string, AgentRow["relationship"]>();
-    if (me) {
-      const ancestors = ancestorsOf(me);
-      ancestors.forEach((a, i) => {
-        relationship.set(a.pane, i === 0 ? "parent" : "relative");
-        for (const peer of peerPanes(panes, a)) if (!relationship.has(peer.pane)) relationship.set(peer.pane, "relative");
-      });
-      for (const peer of peerPanes(panes, me)) relationship.set(peer.pane, "peer");
-      for (const p of panes) if (p.parent === me.pane && p.session === mySession) relationship.set(p.pane, "own");
-    }
     const branch = entries();
     const marks = childMarks(branch);
     const registry = children(branch);
@@ -1758,30 +1582,25 @@ export default function (pi: ExtensionAPI) {
     const reportOf = (child: ChildData): string | undefined => marks.get(child.session)?.text;
     const all: AgentRow[] = [];
     const elsewhere: AgentRow[] = [];
-    for (const p of panes) {
+    for (const { pane: p, row: running } of runningRows(panes, me)) {
       const child = alive.get(p.pane);
       const peer = pending.get(p.pane);
-      const self = p.pane === pane;
       const agent = piAgent(p.kind);
-      if (p.dead || !(agent || peer || (child && p.parent === pane))) continue;
+      if (!(agent || peer || (child && p.parent === pane))) continue;
       const parentPane = byPane.get(p.parent);
       const row: AgentRow = {
+        ...running,
         id: agent?.session || child?.session || peer?.session || p.pane,
         name: p.name || child?.name || peer?.name || p.title,
         named: p.name !== "" || !!child || !!peer,
         pane: p.pane,
         window: p.window,
-        status: p.root?.state ?? "starting",
-        activity: p.activity,
-        parent: parentPane ? piAgent(parentPane.kind)?.session ?? "" : (p.parent === pane ? ownSessionId ?? "" : ""),
-        depth: ancestorsOf(p).length,
-        self,
+        parent: parentPane ? running.parent : (p.parent === pane ? ownSessionId ?? "" : ""),
+        depth: ancestorsOf(byPane, p).length,
         cwd: p.cwd,
         ...(p.runtime ? { runtime: p.runtime } : {}),
         canMessage: p.inbox,
         kind: parentPane && (piAgent(parentPane.kind) || parentPane.pane === pane) ? "subagent" : "agent",
-        relationship: self ? "own" : relationship.get(p.pane) ?? "other",
-        state: "running",
       };
       if (child) {
         row.model = child.model;
@@ -1804,7 +1623,7 @@ export default function (pi: ExtensionAPI) {
         status: "ended",
         activity: "",
         parent: ownSessionId ?? "",
-        depth: (me ? ancestorsOf(me).length : 0) + 1,
+        depth: (me ? ancestorsOf(byPane, me).length : 0) + 1,
         self: false,
         cwd: child.cwd,
         ...(child.runtime ? { runtime: child.runtime.name } : {}),
@@ -1826,7 +1645,7 @@ export default function (pi: ExtensionAPI) {
       all.push({ id: peer.session, name: peer.name, named: true, pane: "", window: "", status: "ended", activity: "", parent: "", depth: 0, self: false, cwd: peer.cwd, canMessage: false, kind: "agent", relationship: "peer", state: "ended", ended: "its pane is gone" });
     }
     const rows = all.filter((a) => !a.self && a.relationship !== "other");
-    const ancestors = me ? ancestorsOf(me) : [];
+    const ancestors = me ? ancestorsOf(byPane, me) : [];
     return { rows, all, elsewhere, panes, ok, me, depth: ancestors.length, ancestors: ancestors.map((a) => piAgent(a.kind)?.session).filter((session): session is string => !!session) };
   };
 
@@ -2023,7 +1842,6 @@ export default function (pi: ExtensionAPI) {
     append(ENTRY_REPORT, { child: child.session, name: child.name, text, id });
     deliverNotice(reportNotice(child, text), child.name);
   };
-
 
   const screenTail = async (route: string): Promise<string | undefined> => {
     const body = apiBody(await apiCall("GET", route));
@@ -3379,26 +3197,14 @@ export default function (pi: ExtensionAPI) {
     // both simply get no `@name` completion.
     const ui = ctx.ui;
     if (ui?.addAutocompleteProvider && !completion) {
-      const cache: { rows: AgentRow[]; all: AgentRow[]; at: number; refreshing: Promise<void> | null } = { rows: [], all: [], at: 0, refreshing: null };
+      const cache = agentCache(discovery, process.env.KO_AGENT_LIST_TTL_MS);
       completion = cache;
       ui.addAutocompleteProvider((current: AutocompleteProvider): AutocompleteProvider => ({
         triggerCharacters: current.triggerCharacters,
         async getSuggestions(lines, cursorLine, cursorCol, options) {
           const token = atToken((lines[cursorLine] ?? "").slice(0, cursorCol));
           if (token === undefined) return current.getSuggestions(lines, cursorLine, cursorCol, options);
-          if (!cache.refreshing && Date.now() - cache.at >= envMs("KO_AGENT_LIST_TTL_MS", 1000)) {
-            cache.refreshing = discovery()
-              .then(({ rows, all }) => {
-                cache.all = all;
-                cache.rows = rows.filter((a) => a.state !== "ended" || a.relationship === "peer");
-                cache.at = Date.now();
-              })
-              .catch(() => {})
-              .finally(() => {
-                cache.refreshing = null;
-              });
-          }
-          const items = agentCompletionItems(cache.rows, cache.all, token);
+          const items = cache(token);
           const files = await current.getSuggestions(lines, cursorLine, cursorCol, options);
           if (items.length === 0) return files;
           const prefix = `@${token}`;
