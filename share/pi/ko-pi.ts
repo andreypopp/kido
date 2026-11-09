@@ -476,7 +476,6 @@ type BackgroundJob = Job & { mode: JobOutput };
 const isBackgroundJob = (job: Job): job is BackgroundJob => job.mode.type === "job";
 const serviceJob = (job: BackgroundJob): boolean => job.mode.origin.type === "async_bash" && job.mode.origin.service;
 const jobRecordState = (job: BackgroundJob): "idle" | "working" => serviceJob(job) ? "idle" : "working";
-const jobRecordMessage = (job: BackgroundJob): string => serviceJob(job) ? `service: ${job.mode.name}` : job.mode.name;
 const streams = (job: BackgroundJob): boolean => job.mode.origin.type === "async_bash" && job.mode.origin.stream;
 const TAIL_BYTES = 4000;
 const HELD_BYTES = 64 * 1024;
@@ -2252,10 +2251,10 @@ export default function (pi: ExtensionAPI) {
       }
     }
     if (job.state.type === "running") {
-      if (writeJobRecord(id, jobRecordState(job), job.command, jobRecordMessage(job))) jobRecords.set(id, { type: "running" });
+      if (writeJobRecord(id, jobRecordState(job), job.mode.name, job.command)) jobRecords.set(id, { type: "running" });
     }
     else {
-      if (!writeJobRecord(id, job.state.end.type === "exit" && job.state.end.code === 0 ? "done" : "error", job.command, jobEndText(job.state.end))) return;
+      if (!writeJobRecord(id, job.state.end.type === "exit" && job.state.end.code === 0 ? "done" : "error", job.mode.name, jobEndText(job.state.end))) return;
       const timer = setTimeout(() => clearJobRecord(id), envMs("KO_JOB_RECORD_LINGER_MS", 5000));
       timer.unref();
       jobRecords.delete(id);
@@ -2266,7 +2265,7 @@ export default function (pi: ExtensionAPI) {
     for (const [id, record] of jobRecords) {
       if (record.type !== "running") continue;
       const job = registry?.jobs.get(id);
-      if (job && isBackgroundJob(job)) writeJobRecord(id, jobRecordState(job), job.command, jobRecordMessage(job));
+      if (job && isBackgroundJob(job)) writeJobRecord(id, jobRecordState(job), job.mode.name, job.command);
     }
   };
   const savedJobs: unknown = Reflect.get(globalThis, JOBS);

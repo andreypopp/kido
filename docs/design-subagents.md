@@ -707,11 +707,11 @@ one when it moves. A routed job has one as a local job does.
 - The id is `job/<job id>`. A job id is unique in the registry. Only
   ko-pi writes the namespace `job`, so a clear of `job` removes every
   job record and nothing else.
-- While the job runs, the state is working, the title is the command
-  and the message is the job's name. A running service is idle, with
-  the message `service: <name>`: it is not the agent's work, so it
-  does not make the pane or the folded circles of its ancestors look
-  running. When it ends, the state is done
+- The title is the job's name, so a row reads name first and command
+  second. While the job runs, the state is working and the message is
+  the command. A running service is idle: it is not the agent's work,
+  so it does not make the pane or the folded circles of its ancestors
+  look running. When it ends, the state is done
   for exit 0. Every other end is error: an exit code, a signal, a
   failure to start, a timeout or a stop. The message is the end text
   of its notice (`exit 3`, `signal SIGTERM`).
