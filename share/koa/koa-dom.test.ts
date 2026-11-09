@@ -17,27 +17,95 @@ async function page() {
     replaceChildren(...children: Node[]) { this.children = children; }
     setAttribute() {} focus() {} setSelectionRange() {} addEventListener() {} scrollIntoView() {} getBoundingClientRect() { return { left: 0 }; }
     querySelector() { return undefined; }
+    get childNodes() { return this.children; }
+    insertBefore(child: Node, _next: Node | null) { this.children.push(child); }
     get firstElementChild() { return this.children[0]; }
   }
   const elements = new Map<string, Node>();
   const listeners = new Map<string, (event: unknown) => void>();
   const document = { querySelector: () => null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); } return node; }, createElement: () => new Node(), createElementNS: () => new Node(), addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
-  const context = { document, window: { ko: {} }, innerWidth: 980, console, getComputedStyle: () => ({ maxHeight: "120px" }), setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { markdown: () => () => [], document, window: { ko: {}, addEventListener() {} }, innerWidth: 980, console, getComputedStyle: () => ({ maxHeight: "120px" }), setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   return { context, elements, listeners, run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/setInterval\(status,[\s\S]*$/, "") + "\n" + code + "\n}", context) };
 }
 
-test("both transcript pages skip empty stream lines", async () => {
+async function connectSource(name: string) {
+  const source = await readFile(new URL(name, import.meta.url), "utf8");
+  return source.slice(source.indexOf("let source, reconnect"), source.indexOf("async function older()"));
+}
+
+test("both transcript pages apply SSE synchronously and reconnect with the applied cursor", async () => {
   for (const name of ["koa-page.js", "../pi/ko-pi-page.html"]) {
-    const source = await readFile(new URL(name, import.meta.url), "utf8");
-    const connect = source.slice(source.indexOf("async function connect()"), source.indexOf("async function older()"));
-    const response = new ReadableStream({ start(controller) {
-      for (const text of ["\n{\"type\":\"state\"", ",\"name\":\"ready\"}\n\n\n"]) controller.enqueue(new TextEncoder().encode(text));
-      controller.close();
-    } });
+    const connect = await connectSource(name);
+    const sources: EventSource[] = [];
+    class EventSource {
+      onopen?: () => void; onerror?: () => void; onmessage?: (event: { data: string }) => void;
+      closed = false;
+      readonly url: string;
+      constructor(url: string) { this.url = url; sources.push(this); }
+      close() { this.closed = true; }
+    }
     const received: object[] = [];
-    await runInNewContext(connect + ";connect()", { metrics: undefined, epoch: "", after: -1, delay: 200, disconnected: false, TextDecoder, console, fetch: async () => ({ ok: true, body: response }), apply: (record: object) => received.push(record), element: () => ({}), followBottom() {}, setTimeout() {} });
-    assert.equal(JSON.stringify(received), JSON.stringify([{ type: "state", name: "ready" }]), name);
+    const retries: (() => void)[] = [];
+    const retry = () => { const callback = retries.shift(); assert.ok(callback); callback(); };
+    let teardown: () => void = () => {};
+    let restore: (event: { persisted: boolean }) => void = () => {};
+    const context = { metrics: undefined, epoch: "", after: -1, delay: 200, disconnected: false, EventSource, console, window: { addEventListener(name: string, handler: (event?: { persisted: boolean }) => void) { if (name === "pagehide") teardown = handler; else if (name === "pageshow") restore = handler; } }, apply(record: { type: string; epoch?: string; after?: number }) {
+      if (record.type === "bad") throw Error("Apply failed");
+      received.push(record);
+      if (record.epoch) context.epoch = record.epoch;
+      if (record.after !== undefined) context.after = record.after;
+    }, element: () => ({}), followBottom() {}, setTimeout(callback: () => void) { retries.push(callback); }, clearTimeout() {} };
+    runInNewContext(connect + ";connect()", context);
+    sources[0].onopen?.();
+    sources[0].onmessage?.({ data: '{"type":"state","epoch":"new","after":3}' });
+    assert.equal(received.length, 1, name);
+    sources[0].onerror?.();
+    assert.equal(sources[0].closed, true);
+    retry();
+    assert.equal(sources[1].url, "/events?epoch=new&after=3");
+    sources[1].onmessage?.({ data: '{"type":"bad"}' });
+    assert.equal(sources[1].closed, true);
+    retry();
+    assert.equal(sources[2].url, "/events?epoch=new&after=3");
+    sources[2].onmessage?.({ data: 'not JSON' });
+    assert.equal(sources[2].closed, true);
+    teardown();
+    retry();
+    assert.equal(sources.length, 3);
+    restore({ persisted: false });
+    assert.equal(sources.length, 3);
+    restore({ persisted: true });
+    assert.equal(sources.length, 4);
+    assert.equal(sources[3].url, "/events?epoch=new&after=3");
+    restore({ persisted: true });
+    assert.equal(sources.length, 4);
+    teardown();
+    assert.equal(sources[3].closed, true);
   }
+});
+
+test("stream metrics use the selected mode in a Kido page", async () => {
+  const connect = await connectSource("koa-page.js");
+  for (const mode of ["applied", "frame"]) {
+    const metrics = { mode, bytes: 0, pending: [], samples: [], frames: new Set(), timer: undefined };
+    let frames = 0;
+    class EventSource {
+      onmessage?: (event: { data: string }) => void;
+      constructor() { queueMicrotask(() => this.onmessage?.({ data: '{"type":"flush","t":1000,"bytes":1234}' })); }
+    }
+    runInNewContext(connect + ";connect()", { metrics, EventSource, window: { addEventListener() {} }, epoch: "", after: -1, delay: 200, console, element: () => ({}), followBottom() {}, performance: { timeOrigin: 1000, now: () => 12 }, Date: { now: () => 1012 }, sendMetrics() {}, setTimeout() {}, requestAnimationFrame(callback: () => void) { frames++; callback(); } });
+    await Promise.resolve();
+    assert.equal(frames, mode === "frame" ? 1 : 0);
+    assert.deepEqual(JSON.parse(JSON.stringify(metrics.samples)), [{ t: 1000, [mode]: 1012, bytes: 1234, clockError: 0 }]);
+  }
+});
+
+test("finished prose and view change checks retain no extra text strings", async () => {
+  const app = await page();
+  const retained = app.run("const text='payload '.repeat(10000);put({seq:0,kind:'assistant',final:true,blocks:[{type:'text',text}]});({source:texts.get('0:0').source,signature:views.get(0).signature})");
+  assert.deepEqual({ source: retained.source?.length ?? 0, signature: retained.signature?.length ?? 0 }, { source: 0, signature: 0 });
+  assert.equal(app.run("const initial={seq:1,kind:'assistant',final:false,blocks:[{type:'text',text:'first'}]};put(initial);apply({type:'patch',seq:1,final:false,blocks:[{index:0,suffix:' last'}]});const updated=items.get(1),streaming=texts.get('1:0').source==='first last';apply({type:'patch',seq:1,final:true,blocks:[]});initial!==updated&&initial.blocks!==updated.blocks&&initial.blocks[0]!==updated.blocks[0]&&initial.blocks[0].text==='first'&&streaming&&texts.get('1:0').source===undefined&&views.get(1).item===items.get(1)"), true);
+  assert.equal(app.run("const finished={seq:0,kind:'assistant',final:true,blocks:[{type:'text',text:'same'}]};put(finished);const proseView=texts.get('0:0').view;put({...finished,blocks:[{type:'text',text:'same'}]});apply({type:'patch',seq:0,final:true,stop:'stop',ended:42,blocks:[]});texts.get('0:0').view===proseView&&items.get(0).stop==='stop'&&items.get(0).ended===42"), true);
 });
 
 test("a run joins adjacent assistant items without replacing their text views", async () => {

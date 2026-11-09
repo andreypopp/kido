@@ -93,6 +93,7 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   let browser = false;
   let metricsFile: string | undefined;
+  let metricsMode: "applied" | "frame" | undefined;
   let executable = "pi";
   const pass: string[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -101,16 +102,21 @@ async function main(): Promise<void> {
     else if (arg === "--metrics") {
       metricsFile = args[++i];
       if (!metricsFile) throw new Error("--metrics requires a path");
+    } else if (arg === "--metrics-mode") {
+      const mode = args[++i];
+      if (mode !== "applied" && mode !== "frame") throw new Error("--metrics-mode requires applied or frame");
+      metricsMode = mode;
     } else if (arg === "--pi") {
       const path = args[++i];
       if (!path) throw new Error("--pi requires a path");
       executable = path;
     } else if (arg !== undefined) pass.push(arg);
   }
+  if (metricsMode && !metricsFile) throw new Error("--metrics-mode requires --metrics");
   const configured = Number(process.env.KOA_PI_EXIT_MS ?? 5000);
   const exitMs = Number.isFinite(configured) && configured > 0 ? configured : 5000;
   const document = await assemblePage(location);
-  const page = metricsFile ? document.replace("<head>", '<head><meta name="koa-metrics" content="on">') : document;
+  const page = metricsFile ? document.replace("<head>", `<head><meta name="koa-metrics" content="${metricsMode ?? "frame"}">`) : document;
   const view = await webview({ target: browser ? "browser" : "pane" });
   if (!view) throw new Error("koa requires a Kido pane or --browser");
   if (metricsFile) await writeFile(metricsFile, "");

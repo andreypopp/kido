@@ -4,7 +4,10 @@ import XCTest
 @testable import Kido
 
 extension VisualTests {
-    private enum KoaScenario { case transcript, dialogs, controls, exit }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, feed }
+    func testKoaWebviewFeedHeldTail() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .feed, captures: [])
+    }
     func testKoaWebviewMockupStates() async throws {
         try await koaWebview(width: 980, height: 560, captures: ["stream", "lines", "details"])
     }
@@ -209,6 +212,13 @@ extension VisualTests {
         steps.append(["type": "stderr", "text": "node:internal/process/esm_loader:108\n    throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);\nError [ERR_MODULE_NOT_FOUND]: Cannot find package '@kido/webview'\n    at packageResolve (node:internal/modules/esm/resolve:873:9)\n    at moduleResolve (node:internal/modules/esm/resolve:946:18)\n"])
         steps.append(["type": "exit", "code": 1])
         steps.insert(["type": "respond", "command": "get_available_thinking_levels", "data": ["levels": ["off", "minimal", "low", "medium", "high", "xhigh"]]], at: 3)
+        if scenario == .feed {
+            steps = Array(steps.prefix(4))
+            let part = String(repeating: "x", count: 4096)
+            prompt([["type": "agent_start"], ["type": "message_start", "message": assistant([["type": "text", "text": part]])]])
+            prompt([["type": "message_update", "usage": usage, "assistantMessageEvent": ["type": "text_delta", "contentIndex": 0, "delta": part]]])
+            prompt([["type": "message_end", "message": assistant([["type": "text", "text": part + part + part]])], ["type": "agent_settled", "aborted": false]])
+        }
         try steps.map { String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self) }.joined(separator: "\n").write(to: script, atomically: true, encoding: .utf8)
         let path = [bin.path, tools.prefix + "/bin", "/opt/homebrew/bin", ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
         let clock = directory.appendingPathComponent("clock.mjs")
@@ -222,6 +232,31 @@ extension VisualTests {
         try await wait("koa webview", within: 20) { (pane.webviewView?.visualDocuments ?? 0) > 0 }
         let diagnostics = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
         let web = try XCTUnwrap(pane.webviewView?.browser, diagnostics)
+        if scenario == .feed {
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model').textContent==='claude-opus-5-5'")
+            pane.webviewView?.visualFeedPath = "/events"
+            pane.webviewView?.visualFeedScript = #"""
+            const NativeEventSource=EventSource;
+            window.EventSource=class extends NativeEventSource{constructor(...args){super(...args);window.feedSource=this}};
+            """#
+            web.reload()
+            try await wait("reloaded feed", within: 10) { !web.isLoading }
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model').textContent==='claude-opus-5-5'")
+            for index in 1...3 {
+                let before = pane.webviewView!.visualFeedBytes
+                let response = try await webviewJS(web, "fetch('/prompt',{method:'POST',body:JSON.stringify({text:'next',mode:'prompt'})}).then(async r=>({status:r.status,body:await r.json()}))")
+                XCTAssertTrue(response.contains("\"status\":200"), response)
+                try await wait("feed chunk \(index) handed to WebKit", within: 5) { pane.webviewView!.visualFeedBytes > before + 4096 }
+            }
+            let handed = pane.webviewView!.visualFeedBytes
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('.assistant p')?.textContent==='x'.repeat(12288)", within: 5)
+            XCTAssertEqual(pane.webviewView!.visualFeedBytes, handed)
+            let open = try await webviewJS(web, "feedSource.readyState===EventSource.OPEN")
+            XCTAssertEqual(open, "true")
+            let final = try await webviewJS(web, "document.querySelector('.assistant p').textContent")
+            XCTAssertEqual(final, "\"" + String(repeating: "x", count: 12288) + "\"")
+            return
+        }
         func capture(_ name: String) async throws {
             guard captures.contains(name) else { return }
             window.contentView?.layoutSubtreeIfNeeded()
@@ -372,7 +407,7 @@ extension VisualTests {
             try await capture("narrow-exited")
         }
         switch scenario {
-        case .transcript: break
+        case .transcript, .feed: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

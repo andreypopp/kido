@@ -9,7 +9,17 @@ final class WebviewToy: @unchecked Sendable {
     private var starting: CheckedContinuation<Void, Error>?
     private var delayed: [NWConnection] = []
     private var opened = Set<ObjectIdentifier>()
-    private var eventStream: NWConnection?
+    private var stashStream: NWConnection?
+    func writeStash() {
+        queue.sync {
+            stashStream?.send(content: Self.chunk(String(repeating: "x", count: 4096)), completion: .contentProcessed { _ in })
+        }
+    }
+    func finishStash() {
+        queue.sync {
+            stashStream?.send(content: Self.chunk(""), completion: .contentProcessed { _ in })
+        }
+    }
     private var slots: [(id: Int, connection: NWConnection?)] = []
     var acceptedSlots: [Int] { queue.sync { slots.map(\.id) } }
     var waitingSlots: Int { queue.sync { slots.filter { $0.connection != nil }.count } }
@@ -22,12 +32,6 @@ final class WebviewToy: @unchecked Sendable {
         }
     }
 
-    func writeLaterRecord() {
-        queue.async { [self] in
-            guard let eventStream else { return }
-            eventStream.send(content: Self.chunk(96), completion: .contentProcessed { _ in })
-        }
-    }
     var delayedCount: Int { queue.sync { delayed.count } }
     var socketCount: Int { queue.sync { opened.count } }
     let path: String
@@ -96,11 +100,18 @@ final class WebviewToy: @unchecked Sendable {
                 return
             }
             let text = String(decoding: data[..<end.upperBound], as: UTF8.self)
+            if text.hasPrefix("GET /stash ") {
+                stashStream = connection
+                connection.send(content: Data("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\n\r\n".utf8) + Self.chunk(String(repeating: "x", count: 4096)), completion: .contentProcessed { _ in })
+                return
+            }
+            if text.hasPrefix("GET /sse ") {
+                let body = "data: {\"record\":1}\n\n"
+                connection.send(content: Data("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n".utf8) + Self.chunk(body), completion: .contentProcessed { _ in })
+                return
+            }
             if text.hasPrefix("GET /events ") {
-                eventStream = connection
-                connection.send(content: Data("HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nTransfer-Encoding: chunked\r\n\r\n".utf8), completion: .contentProcessed { [weak self] error in
-                    if error == nil { self?.events(connection, 0) }
-                })
+                connection.send(content: Data("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n".utf8), completion: .contentProcessed { _ in })
                 return
             }
             if let path = text.split(separator: " ").dropFirst().first, path.hasPrefix("/slot/"), let id = Int(path.dropFirst(6)) {
@@ -130,19 +141,8 @@ final class WebviewToy: @unchecked Sendable {
         }
     }
 
-    private static func chunk(_ index: Int) -> Data {
-        let record = "{\"record\":\(index)}\n"
-        return Data("\(String(record.utf8.count, radix: 16))\r\n\(record)\r\n".utf8)
-    }
-
-    private func events(_ connection: NWConnection, _ index: Int) {
-        guard index < 96 else { return }
-        let gap = [0, 2, 0, 7, 1][index % 5]
-        queue.asyncAfter(deadline: .now() + .milliseconds(gap)) { [weak self] in
-            connection.send(content: Self.chunk(index), completion: .contentProcessed { [weak self] error in
-                if error == nil { self?.events(connection, index + 1) }
-            })
-        }
+    private static func chunk(_ body: String) -> Data {
+        Data("\(String(body.utf8.count, radix: 16))\r\n\(body)\r\n".utf8)
     }
 
     private func body(_ connection: NWConnection, _ data: Data, _ length: Int) {

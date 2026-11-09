@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import WebKit
 import KoClient
 import KoModel
@@ -7,9 +8,12 @@ import XCTest
 
 @MainActor final class KoaStressTests: VisualTestCase {
     private static var startingWebContent: Int?
+    private static let visibleWorkloads: Set<Int> = [2, 6]
     private var dir = ""
     private var owner: WindowOwner!
     private var output: URL!
+    private var visible: Bool { ProcessInfo.processInfo.environment["KOA_STRESS_VISIBLE"] == "1" }
+    private var timing: String { visible ? "frame" : "applied" }
     private var path: String { [tools.prefix + "/bin", "/opt/homebrew/bin", ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":") }
 
     override func setUp() async throws {
@@ -25,7 +29,13 @@ import XCTest
             XCTAssertEqual(generated.status, 0, generated.err)
         }
         let manifest = output.appendingPathComponent("kido-manifest.json")
-        if !FileManager.default.fileExists(atPath: manifest.path) { try JSONSerialization.data(withJSONObject: ["target": "kido", "ids": [1, 2, 6, 7, 8, 12]]).write(to: manifest) }
+        let selected = Set((ProcessInfo.processInfo.environment["KOA_STRESS_TESTS"] ?? "").split(separator: " ").map(String.init))
+        let workloads = [(1, "testLongSession"), (2, "testFastTokens"), (6, "testManyPanes"), (7, "testHiddenShown"), (8, "testThemes"), (12, "testParentChildren")]
+        let ids = workloads.compactMap { id, test -> Int? in
+            let enabled = selected.isEmpty || selected.contains("KoaStressTests") || selected.contains("KoaStressTests/" + test)
+            return enabled && (!visible || Self.visibleWorkloads.contains(id)) ? id : nil
+        }
+        try JSONSerialization.data(withJSONObject: ["target": "kido", "ids": ids]).write(to: manifest)
         dir = try koServerDir()
         let config = output.appendingPathComponent("kido-config.yaml").path
         try "app: {font: {size: 13}, webview: {keep_hidden: 0}}\n".write(toFile: config, atomically: true, encoding: .utf8)
@@ -33,8 +43,16 @@ import XCTest
         let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config, pasteboard: board))
         owner = WindowOwner(host: .local, runtime: runtime, start: false)
         owner.testServerDir = dir
-        owner.window.setFrame(NSRect(x: -20000, y: -20000, width: 1200, height: 850), display: false)
-        PaneView.renderOffscreen = true
+        if visible {
+            let screen = try XCTUnwrap(NSScreen.main)
+            owner.window.setFrame(screen.visibleFrame.insetBy(dx: 16, dy: 16), display: false)
+            let policy = NSApp.activationPolicy()
+            NSApp.setActivationPolicy(.regular)
+            addTeardownBlock { @MainActor in NSApp.setActivationPolicy(policy) }
+        } else {
+            owner.window.setFrame(NSRect(x: -20000, y: -20000, width: 1200, height: 850), display: false)
+        }
+        PaneView.renderOffscreen = !visible
         addTeardownBlock { @MainActor [owner] in owner?.close(); board.releaseGlobally(); PaneView.renderOffscreen = false }
         _ = try await KoServer.launch(dir: dir)
     }
@@ -61,17 +79,28 @@ import XCTest
         for write in writes { let value = try await write.value; XCTAssertEqual(value, "true") }
     }
 
-    private func memory() async throws -> [String: Int] {
-        let result = try await Child.run("/bin/ps", ["-axo", "rss=,comm="])
-        XCTAssertEqual(result.status, 0, result.err)
-        let rows = result.out.split(separator: "\n").filter { $0.contains("com.apple.WebKit.WebContent") }
-        return ["rssKiB": rows.reduce(0) { $0 + (Int($1.split(separator: " ").first ?? "0") ?? 0) }, "processes": rows.count]
+    private func memory() throws -> [String: Int] {
+        let processes = try XCTUnwrap(WKProcessPool.perform(NSSelectorFromString("_webContentProcessInfo"))?.takeUnretainedValue() as? [NSObject])
+        var footprints: [UInt64] = []
+        for process in processes {
+            let pid = try XCTUnwrap(process.value(forKey: "pid") as? NSNumber).int32Value
+            var usage = rusage_info_v4()
+            let result = withUnsafeMutablePointer(to: &usage) { pointer in
+                pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V4, $0) }
+            }
+            if result != 0 {
+                if errno == ESRCH { continue }
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+            footprints.append(usage.ri_phys_footprint)
+        }
+        return ["footprintBytes": Int(footprints.reduce(0, +)), "maxFootprintBytes": Int(footprints.max() ?? 0), "processes": footprints.count]
     }
 
     private var panes: [PaneView] { owner.testSession?.windows.values.filter { !$0.isHidden }.flatMap(\.panes) ?? [] }
 
-    private func summary(_ id: Int, started: Date, before: [String: Int], metrics: [String], status: Result<Void, Error>) async throws {
-        var value: [String: Any] = ["target": "kido", "id": id, "before": before, "after": try await memory(), "metrics": metrics, "seconds": Date().timeIntervalSince(started)]
+    private func summary(_ id: Int, started: Date, before: [String: Int], metrics: [String], status: Result<Void, Error>) throws {
+        var value: [String: Any] = ["target": "kido", "visible": visible, "timing": timing, "id": id, "before": before, "after": try memory(), "metrics": metrics, "seconds": Date().timeIntervalSince(started)]
         switch status {
         case .success: value["status"] = "ok"
         case .failure(let error): value["status"] = "failed"; value["error"] = String(describing: error)
@@ -80,8 +109,9 @@ import XCTest
     }
 
     private func measure(_ id: Int, count: Int = 1, hidden: Bool = false) async throws {
+        if visible && !Self.visibleWorkloads.contains(id) { throw XCTSkip("Workload has no visible stress mode") }
         var started = Date()
-        var before = try await memory()
+        var before = try memory()
         if Self.startingWebContent == nil { Self.startingWebContent = before["processes"] }
         var metrics: [String] = []
         do {
@@ -89,22 +119,41 @@ import XCTest
             while before["processes"] != Self.startingWebContent {
                 guard Date() < settled else { throw NSError(domain: "KoaStress", code: 2, userInfo: [NSLocalizedDescriptionKey: "baseline not settled"]) }
                 try await Task.sleep(for: .milliseconds(100))
-                before = try await memory()
+                before = try memory()
             }
             started = Date()
-            let deadline = started.addingTimeInterval(90)
+            let completionSeconds: TimeInterval = id == 6 && !visible ? 180 : 90
+            let deadline = started.addingTimeInterval(completionSeconds)
             func command(_ index: Int) -> String {
                 let file = output.appendingPathComponent("kido-\(id)-\(index).jsonl").path
                 metrics.append(file)
                 let script = output.appendingPathComponent("scripts/\(id).jsonl").path
-                return "export PATH=\(SSH.quote(path)) KOA_FAKE_SCRIPT=\(SSH.quote(script)) KOA_FAKE_LOG=\(SSH.quote(output.appendingPathComponent("kido-\(id)-\(index)-rpc.jsonl").path)); exec \(SSH.quote(tools.prefix + "/share/ko/bin/koa")) --pi \(SSH.quote(checkoutRoot.appendingPathComponent("share/koa/koa-fake-pi.ts").path)) --metrics \(SSH.quote(file)) 2>\(SSH.quote(output.appendingPathComponent("kido-\(id)-\(index).stderr").path))"
+                return "export PATH=\(SSH.quote(path)) KOA_FAKE_SCRIPT=\(SSH.quote(script)) KOA_FAKE_LOG=\(SSH.quote(output.appendingPathComponent("kido-\(id)-\(index)-rpc.jsonl").path)); exec \(SSH.quote(tools.prefix + "/share/ko/bin/koa")) --pi \(SSH.quote(checkoutRoot.appendingPathComponent("share/koa/koa-fake-pi.ts").path)) --metrics \(SSH.quote(file)) --metrics-mode \(timing) 2>\(SSH.quote(output.appendingPathComponent("kido-\(id)-\(index).stderr").path))"
             }
             let trees = (0..<count).map { koPane(command($0)) }
-            let tree = count == 1 ? trees[0] : #"{"split":"h","children":[\#(trees.joined(separator: ","))]}"#
+            let tree: String
+            if visible && count == 8 {
+                let rows = stride(from: 0, to: 8, by: 4).map { index in
+                    #"{"split":"h","children":[\#(trees[index..<(index + 4)].joined(separator: ","))]}"#
+                }
+                tree = #"{"split":"v","children":[\#(rows.joined(separator: ","))]}"#
+            } else {
+                tree = count == 1 ? trees[0] : #"{"split":"h","children":[\#(trees.joined(separator: ","))]}"#
+            }
             let windows = hidden ? #"[{"name":"koa","tree":\#(tree)},{"name":"other","tree":\#(koPane())}]"# : #"[{"name":"koa","tree":\#(tree)}]"#
             try await koPut(dir, #"[{"name":"stress","windows":\#(windows)}]"#)
             owner.start()
+            if visible {
+                owner.window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+            }
             try await wait("koa stress pages", within: 30) { self.panes.count == count && self.panes.allSatisfy { ($0.webviewView?.visualDocuments ?? 0) > 0 } }
+            if visible {
+                for pane in panes {
+                    let browser = try XCTUnwrap(pane.webviewView?.browser)
+                    try await webviewUntil(browser, "document.visibilityState==='visible'&&!document.hidden", within: 5)
+                }
+            }
             for pane in panes { try await prompt(try XCTUnwrap(pane.webviewView?.browser)) }
             if id != 1 { try await webviewUntil(try XCTUnwrap(panes.first?.webviewView?.browser), "document.querySelector('#status').textContent.startsWith('working')") }
             if id == 12 {
@@ -126,7 +175,7 @@ import XCTest
                     try await wait("parent selected") { self.panes.first?.pane == parent && (self.panes.first?.webviewView?.visualDocuments ?? 0) > 0 }
                 }
                 try await wait("children released") { self.owner.testSession?.windows.values.filter { $0.isHidden }.flatMap(\.panes).allSatisfy { $0.webviewView == nil } == true }
-                try JSONSerialization.data(withJSONObject: try await memory()).write(to: output.appendingPathComponent("kido-12-hidden.json"))
+                try JSONSerialization.data(withJSONObject: try memory()).write(to: output.appendingPathComponent("kido-12-hidden.json"))
                 try await complete(try XCTUnwrap(panes.first?.webviewView?.browser), id: id, deadline: deadline)
                 try await flushMetrics(try panes.map { try XCTUnwrap($0.webviewView?.browser) })
                 let children = owner.testModel?.layout.layout.sessions.first?.windows.filter { $0.id != parentWindow } ?? []
@@ -151,21 +200,43 @@ import XCTest
                 let rows = try XCTUnwrap(owner.testModel?.layout.layout.sessions.first?.windows)
                 try XCTUnwrap(owner.testClient).select(KO_SELECT_WINDOW, rows[1].id)
                 try await wait("hidden koa page released") { self.owner.testSession?.windows[rows[0].id]?.panes.allSatisfy { $0.webviewView == nil } == true }
-                let during = try await memory()
+                let during = try memory()
                 try XCTUnwrap(owner.testClient).select(KO_SELECT_WINDOW, rows[0].id)
                 try await wait("koa page reloaded") { (self.panes.first?.webviewView?.visualDocuments ?? 0) > 0 }
                 try JSONSerialization.data(withJSONObject: during).write(to: output.appendingPathComponent("kido-\(id)-hidden.json"))
             }
-            for pane in panes { try await complete(try XCTUnwrap(pane.webviewView?.browser), id: id, deadline: deadline) }
+            for pane in panes {
+                let browser = try XCTUnwrap(pane.webviewView?.browser)
+                try await complete(browser, id: id, deadline: deadline)
+                if id == 6 {
+                    let snapshot = try await webviewJS(browser, """
+                    (async()=>{
+                      let before=Number.MAX_SAFE_INTEGER;const expected=[];
+                      for(;;){
+                        const page=await (await fetch('/items?before='+before)).json();
+                        expected.unshift(...page.items);
+                        if(!page.more)break;
+                        before=page.items[0].seq;
+                      }
+                      return {actual:window.koaMetrics.items,expected,after:window.koaMetrics.after,cursor:expected.at(-1).seq};
+                    })()
+                    """)
+                    let result = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(snapshot.utf8)) as? [String: Any])
+                    XCTAssertEqual(try XCTUnwrap(result["actual"] as? NSArray), try XCTUnwrap(result["expected"] as? NSArray))
+                    XCTAssertEqual(try XCTUnwrap(result["after"] as? Int), try XCTUnwrap(result["cursor"] as? Int))
+                }
+            }
             try await flushMetrics(try panes.map { try XCTUnwrap($0.webviewView?.browser) })
             for file in metrics {
                 let records = try String(contentsOfFile: file, encoding: .utf8).split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) }
                 XCTAssertTrue(records.contains { (($0 as? [String: Any])?["samples"] as? [Any])?.isEmpty == false }, "No apply samples: \(file)")
             }
-            XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || owner.window.isMainWindow)
-            try await summary(id, started: started, before: before, metrics: metrics, status: .success(()))
+            if visible { XCTAssertTrue(owner.window.isVisible && owner.window.isKeyWindow) }
+            else { XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || owner.window.isMainWindow) }
+            try summary(id, started: started, before: before, metrics: metrics, status: .success(()))
+
         } catch {
-            try await summary(id, started: started, before: before, metrics: metrics, status: .failure(error))
+            try summary(id, started: started, before: before, metrics: metrics, status: .failure(error))
             throw error
         }
     }

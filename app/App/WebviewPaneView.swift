@@ -33,6 +33,9 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     private var pendingDocument: (navigation: WKNavigation, generation: String)?
     private var theme = ""
     #if KIDO_VISUAL
+    var visualFeedScript: String?
+    var visualFeedPath: String?
+    private(set) var visualFeedBytes = 0
     private(set) var visualRejectedNavigations = 0
     private(set) var visualDocuments = 0
     #endif
@@ -179,7 +182,12 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
                     guard let fetch else { return }
                     let response = HTTPURLResponse(url: fetch.task.request.url!, statusCode: Int(status), httpVersion: "HTTP/1.1", headerFields: headers)!
                     fetch.task.didReceive(response)
-                }, body: { [weak fetch] data in fetch?.task.didReceive(data) }, end: { [weak self, weak fetch] result in
+                }, body: { [weak self, weak fetch] data in
+                    fetch?.task.didReceive(data)
+                    #if KIDO_VISUAL
+                    if let self, let path = visualFeedPath, fetch?.task.request.url?.path == path { visualFeedBytes += data.count }
+                    #endif
+                }, end: { [weak self, weak fetch] result in
                     guard let self, let fetch else { return }
                     switch result {
                     case .success: fetch.task.didFinish()
@@ -264,6 +272,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         controller.removeAllUserScripts()
         #if KIDO_VISUAL
         controller.addUserScript(WKUserScript(source: "window.__koNativeWebSocket=window.WebSocket", injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
+        if let visualFeedScript { controller.addUserScript(WKUserScript(source: visualFeedScript, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page)) }
         #endif
         controller.addUserScript(WKUserScript(source: Self.socketScript.replacingOccurrences(of: "__KO_DOCUMENT__", with: pendingDocument?.generation ?? generation), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
         controller.addUserScript(WKUserScript(source: theme, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))

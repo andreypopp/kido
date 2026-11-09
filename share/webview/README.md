@@ -49,11 +49,11 @@ call your routes. `show(path)` refuses a path that does not start with
 has no `window.ko` and no `--ko-*` properties, so give `:root` a
 fallback theme.
 
-In Kido, a streaming response can hold its last chunk until the program
-writes again (the cause is in WebKit's delivery to the page, as far as
-the tests can tell). A stream that goes quiet should send one harmless
-write after its last record: an empty line for NDJSON, a comment line
-`:` for server-sent events.
+For a live stream from your program to the page, use server-sent
+events and `EventSource`, not a long `fetch` body read with a
+`ReadableStream`: the WebKit of current macOS can hold the end of such
+a body until more data arrives (WebKit bug 322545). A `fetch` whose
+response ends is not affected.
 
 Kido.app shows the page in a sandbox with no network: the page reaches
 only your server, through `fetch` and `WebSocket`. Send a request body

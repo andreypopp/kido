@@ -75,8 +75,8 @@ Non-goals, for this plan:
    copy.
 6. The run grouping and the fold state are the page's. A run is
    derived from the items; nothing stores it.
-7. The page talks to koa over `fetch` only: one long `GET /events`
-   and short requests. No WebSocket.
+7. The page talks to koa over HTTP only: one `EventSource` on
+   `/events` and short `fetch` requests. No WebSocket.
 8. Every signal of koa goes through one function, `signalPi`, which
    takes koa's own child record. `scripts/lint.sh` applies the
    `process.kill` rule of `share/pi/` to `share/koa/`.
@@ -360,7 +360,7 @@ failed run stays collapsed, as the user decided. The elapsed time is
 page-local `Map` keyed by `seq:index`; a reload loses it, which the
 plan accepts.
 
-**Records from koa to the page**, as JSON lines on `/events`, in
+**Records from koa to the page**, as server-sent events on `/events`, in
 addition to the shared module's `reset`, `item` and `patch`:
 
 ```ts
@@ -693,14 +693,28 @@ unit. The order is fixed, because each unit builds on the one before.
    JS heap after W2 (was 117 MB) and +232 MiB of WebContent memory
    (was +423 MiB). The stress report fails a page above 32 MiB of
    retained JS heap or 320 MiB of WebContent memory.
-6b. **Many streaming pages.** W6 (eight panes that stream at once)
-   fails: one page does not finish in 90 s, flush to apply reaches a
-   p95 of 27 s, and WebKit logs `Too many messages (129) in the queue`
-   of `WebPage_URLSchemeTaskDidReceiveData` for seven renderers. The
-   scheme handler hands every small chunk to WebKit as its own
-   `didReceive`; coalesce the chunks of one turn of the main queue
-   into one call (and check that `testWebviewStreamingLastRecord`
-   still holds), then measure W6 again.
+6b. **Many streaming pages.** Done: Kido sets no limit on the number
+   of webviews. On the screen, eight streaming panes finish in 24 s
+   with a flush-to-frame p95 of 194 ms. Off the screen, pages lost the
+   tail of the stream; 6d found the cause. Coalescing the chunks of one
+   fetch changed nothing measurable and was dropped.
+6c. **A visible page's memory.** Measure the physical footprint of a
+   visible page (the stress report has no budget for it yet), find what
+   WebKit keeps for a long transcript, and whether windowing old items
+   lowers it. Off the screen, one W6 page of eight had a footprint of
+   320 MiB against 88 to 113 MiB for the others.
+6d. **The live feed is SSE.** Done: WebKit bug 322545 hid the tail of
+   a `fetch` body (docs/design-webview.md, "The live channel");
+   `/events` is now server-sent events, and the empty-line workaround
+   is gone. Finished prose keeps no copy of its text, and the stress
+   report measures the physical footprint of the test app's own
+   WebContent processes.
+6e. **The transport's faults.** From the review of the fetch path:
+   a bound on the fetches that wait for a slot and on the WebSocket
+   shim's pending sends; response headers without hop-by-hop fields
+   (`Transfer-Encoding` reaches WebKit with a decoded body) and a
+   defined `Content-Encoding`; a failed response aborts only its own
+   request, not the serve loop of every request.
 7. **ko-pi's page goes.** The user decided on 2026-11-08 that koa
    replaces ko-pi's page when koa is stable: its visual tests and its
    stress runs pass, and every finding of unit 6 is fixed. Until then

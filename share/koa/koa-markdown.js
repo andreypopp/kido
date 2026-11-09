@@ -36,6 +36,8 @@ export function markdown() {
       selected.links = tokens.links;
       return { streaming, html: parser.parser(selected) };
     });
-    return blocks;
+    const result = blocks;
+    if (final) { blocks = []; raw = []; links = ''; }
+    return result;
   };
 }

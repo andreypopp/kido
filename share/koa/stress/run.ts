@@ -4,22 +4,23 @@ import { EventEmitter, once } from 'node:events';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import timers from 'node:timers/promises';
-import { scripts, names, pageWorkloads } from './workloads.ts';
+import http from 'node:http';
+import { scripts, workloads, pageWorkloads } from './workloads.ts';
 
 const configured = process.env.KOA_STRESS_OUTPUT;
 if (!configured) throw Error('KOA_STRESS_OUTPUT is required; use stress/run.sh');
 const output = resolve(configured);
 const selected = process.argv.slice(2).map(Number);
-const workloads = selected.length ? selected : pageWorkloads;
-assert.ok(workloads.every(id => pageWorkloads.includes(id)), 'Unknown page workload');
-await writeFile(join(output, 'page-manifest.json'), JSON.stringify({ target: 'page', ids: workloads }), { flag: 'wx' });
+const ids = selected.length ? selected : pageWorkloads;
+assert.ok(ids.every(id => pageWorkloads.includes(id)), 'Unknown page workload');
+await writeFile(join(output, 'page-manifest.json'), JSON.stringify({ target: 'page', ids }), { flag: 'wx' });
 await scripts(join(output, 'scripts'));
 const root = resolve(new URL('../../..', import.meta.url).pathname);
 type Reply = { id?: number; method?: string; params?: { chunk?: string }; error?: unknown; result?: { result?: { value?: unknown }; exceptionDetails?: unknown; usedSize?: number } };
-for (const id of workloads) {
+for (const id of ids) {
   let directory: string | undefined;
   let socket: WebSocket | undefined;
+  let stalled: http.IncomingMessage | undefined;
   const resources: { child: ChildProcess; closed: Promise<void> }[] = [];
   const timersToClear = new Set<NodeJS.Timeout>();
   let stopping = false;
@@ -45,7 +46,7 @@ for (const id of workloads) {
     directory = await mkdtemp(join(tmpdir(), 'koa-stress-'));
     for (const opener of ['open', 'xdg-open']) await writeFile(join(directory, opener), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     const file = join(output, `page-${id}.jsonl`);
-    const koa = startChild(process.execPath, [join(root, 'share/koa/koa.ts'), '--browser', '--pi', join(root, 'share/koa/koa-fake-pi.ts'), '--metrics', file], { ...process.env, KO_SOCKET: '', KO_PANE: '', KO_PANE_TOKEN: '', PATH: `${directory}:${process.env.PATH}`, KOA_FAKE_SCRIPT: join(output, `scripts/${id}.jsonl`) });
+    const koa = startChild(process.execPath, [join(root, 'share/koa/koa.ts'), '--browser', '--pi', join(root, 'share/koa/koa-fake-pi.ts'), '--metrics', file, '--metrics-mode', 'frame'], { ...process.env, KO_SOCKET: '', KO_PANE: '', KO_PANE_TOKEN: '', PATH: `${directory}:${process.env.PATH}`, KOA_FAKE_SCRIPT: join(output, `scripts/${id}.jsonl`) });
     const url = await address(koa, /http:\/\/127\.0\.0\.1:\d+\//, 'koa');
     koa.stderr?.resume();
     const chrome = startChild(process.env.KOA_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--remote-debugging-port=0', `--user-data-dir=${directory}/chrome`, 'about:blank']);
@@ -102,7 +103,13 @@ for (const id of workloads) {
     const started = performance.now();
     const observations: Record<string, unknown> = {};
     const prompt = (size: number) => evaluate(`fetch('/prompt',{method:'POST',body:JSON.stringify({text:'p'.repeat(${size}),mode:'prompt'})}).then(r=>r.status)`);
-    if (id === 10) await evaluate('window.koaMetrics.pauseRead()');
+    if (id === 10) {
+      stalled = await new Promise<http.IncomingMessage>((resolve, reject) => {
+        const request = http.get(new URL('events', url), { agent: false }, response => { request.setTimeout(0); response.pause(); resolve(response); });
+        request.setTimeout(10000, () => request.destroy(Error('Stalled subscriber deadline')));
+        request.once('error', reject);
+      });
+    }
     assert.equal(await prompt(id === 4 ? 900 * 1024 : 2), 200, 'Prompt was not accepted');
     if (id === 4) {
       assert.equal(await prompt(1.5 * 1024 * 1024), 413);
@@ -116,11 +123,21 @@ for (const id of workloads) {
     }
     if (id === 5) {
       for (let n = 0; n < 200; n++) await load(true);
-      await evaluate(`(async()=>{const r=await fetch('/events');const reader=r.body.getReader();let text='';while(!text.includes('\\n')){const chunk=await reader.read();if(chunk.done)throw Error('No reset');text+=new TextDecoder().decode(chunk.value)}window.stressEpoch=JSON.parse(text.split('\\n')[0]).epoch;await reader.cancel();for(let n=0;n<200;n++){const r=await fetch('/events?epoch='+encodeURIComponent(window.stressEpoch)+'&after=-1');if(!r.ok)throw Error('Reconnect failed');await r.body.cancel()}return true})()`);
+      await evaluate(`(async()=>{
+        const open=(url,accept)=>new Promise((resolve,reject)=>{
+          const source=new EventSource(url);
+          const finish=(error,record)=>{clearTimeout(timer);source.close();error?reject(error):resolve(record)};
+          const timer=setTimeout(()=>finish(Error('EventSource deadline')),10000);
+          source.onerror=()=>finish(Error('EventSource failed'));
+          source.onmessage=event=>{try{const record=JSON.parse(event.data);if(accept(record))finish(null,record)}catch(error){finish(error)}};
+        });
+        const reset=await open('/events',record=>record.type==='reset');
+        for(let n=0;n<200;n++)await open('/events?epoch='+encodeURIComponent(reset.epoch)+'&after=-1',()=>true);
+        return true;
+      })()`);
     }
     if (id === 8) observations.themeFrame = await evaluate(`(async()=>{const times=[];for(let n=0;n<50;n++){const t=performance.now();document.documentElement.style.setProperty('--ko-bg',n%2?'#fff':'#111');dispatchEvent(new Event('ko-theme'));await new Promise(requestAnimationFrame);times.push(performance.now()-t)}return times})()`);
     if (id === 9) assert.deepEqual(await evaluate(`Promise.all(Array.from({length:8},()=>fetch('/items?before=0').then(r=>r.status)))`), Array(8).fill(200));
-    if (id === 10) { await timers.setTimeout(10000); await evaluate('window.koaMetrics.resumeRead()'); }
     if (id === 11) assert.deepEqual(await evaluate(`Promise.all([new Blob([JSON.stringify({text:'body-kind probe',mode:'prompt'})]),new FormData()].map(body=>fetch('/prompt',{method:'POST',body}).then(r=>r.status)))`), [200, 400]);
     await until(`document.querySelector('#status').textContent==='idle'&&document.querySelector('#items').textContent.includes('STRESS DONE ${id}')`, 120000);
     if ([2, 5, 8, 9].includes(id)) {
@@ -129,7 +146,13 @@ for (const id of workloads) {
     }
     if (id === 1) assert.equal(await evaluate(`document.querySelector('#items').textContent.includes('Paragraph 1998')`), true);
     if (id === 3) assert.equal(await evaluate(`document.querySelector('#items').textContent.includes('bash')`), true);
-    if (id === 10) assert.equal(await evaluate('window.koaMetrics.after'), 1024, 'Incomplete cursor recovery');
+    if (id === 10) {
+      assert.equal(await evaluate('window.koaMetrics.after'), 1024, 'Incomplete cursor recovery');
+      assert.ok(stalled);
+      const ended = once(stalled, 'end', { signal: AbortSignal.timeout(10000) });
+      stalled.resume();
+      await ended;
+    }
     await evaluate('window.koaMetrics.flush().then(()=>true)');
     const seconds = (performance.now() - started) / 1000;
     await snapshot('after');
@@ -138,17 +161,18 @@ for (const id of workloads) {
     const records: { samples: { frame: number }[]; caps: number; opens: number; subscribers: number }[] = (await readFile(file, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.ok(records.flatMap(record => record.samples).length > 0, 'No frame samples');
     const last = records.at(-1); assert.ok(last); assert.equal(last.subscribers, 1);
-    if (id === 10) { assert.ok(last.caps > 0, 'Stalled reader did not reach the output cap'); assert.ok(last.opens > 1, 'No reconnect after cap'); }
-    const summary = { target: 'page', id, name: names[id - 1], timing: 'frame', status: 'ok', seconds, metrics: [file], heap: heap.usedSize, observations };
+    if (id === 10) { assert.ok(last.caps > 0, 'Stalled reader did not reach the output cap'); assert.ok(last.opens > 1, 'No independent stalled subscriber'); }
+    const summary = { target: 'page', id, name: workloads[id - 1]?.name, timing: 'frame', status: 'ok', seconds, metrics: [file], heap: heap.usedSize, observations };
     await writeFile(join(output, `page-${id}-summary.json`), JSON.stringify(summary));
     console.log(JSON.stringify(summary));
   } catch (error) {
-    await writeFile(join(output, `page-${id}-summary.json`), JSON.stringify({ target: 'page', id, status: 'failed', error: String(error) }));
+    await writeFile(join(output, `page-${id}-summary.json`), JSON.stringify({ target: 'page', timing: 'frame', id, status: 'failed', error: String(error) }));
     throw error;
   } finally {
     stopping = true;
     for (const timer of timersToClear) clearTimeout(timer);
     socket?.close();
+    stalled?.destroy();
     for (const { child } of resources) if (child.pid && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
     const stop = setTimeout(() => { for (const { child } of resources) if (child.pid && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); }, 12000);
     await Promise.all(resources.map(resource => resource.closed)); clearTimeout(stop);

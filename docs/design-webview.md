@@ -205,8 +205,8 @@ The browser target's rules:
 
 A page talks to its program with HTTP and WebSockets only:
 
-- Program to page: a streaming response body, which the page reads
-  with `fetch` and a `ReadableStream`.
+- Program to page: server-sent events, which the page reads with
+  `EventSource`.
 - Page to program: `fetch` with a method and a body.
 - Both ways: the standard `new WebSocket(url)`. WKURLSchemeHandler
   does not see WebSocket connections, so the app injects a shim of the
@@ -217,14 +217,17 @@ the cell size, with a `ko-theme` event on a change. It has no method
 that reaches the program or the server: the app is not a message bus
 between a page and ko.
 
-A streaming response can hold its last chunk in Kido.app until the
-program writes again. Our layers pass the chunk on at once (tests of
-the bridge, the proxy and the ffi), and a later write releases it, so
-the hold is after the scheme handler's `didReceive`, most likely in
-WebKit; a counter there hides it, so it is not proven.
-`testWebviewStreamingLastRecord` pins that nothing is lost. A program
-that streams therefore sends one harmless write after its last record;
-the transcript module does it for koa and ko-pi.
+A page reads a live stream with `EventSource`, not with a `fetch`
+body. WebKit before 319981@main (bug 322545, commit `718031552ba1`),
+which includes macOS 27.0.1's WebKit, stashes the bytes that arrive
+while a `fetch` body's reader is busy, and the reader's next pull does
+not take them (`FetchBodySource::pull`): they wait for the next chunk
+or the end of the response, and a stream that goes quiet can hide its
+tail for good. Kido hands WebKit every byte; the fault is in WebCore.
+WebKit's `EventSource` reads through its own loader, which does not
+take that path. `testWebviewFetchStashedChunks` pins the fault and
+fails when WebKit ships the fix; a finite `fetch` is not affected,
+because its end releases the stash.
 
 ## The sandbox
 
@@ -343,9 +346,12 @@ koa will share; ko-pi feeds it from pi's events.
 size on each page load, and a stream of tokens must not cost the
 square of its size:
 
-- `/events` streams JSON lines and stays open. A page with the
-  current epoch gives its last final item and gets only the items
-  after it. Any other page gets `reset`: the newest items, under the window
+- `/events` is a server-sent event stream that stays open, one JSON
+  record for each event. A page with the current epoch gives its last
+  final item and gets only the items after it. A page that loses the
+  stream closes it and opens it again with its own epoch and last
+  final item, not with `Last-Event-ID`: a patch changes an unfinished
+  item many times, so the item, not the event, is the cursor. Any other page gets `reset`: the newest items, under the window
   caps of `share/pi/transcript.ts`, and whether older items exist.
 - `/items?before=N` gives older items under the same caps, when the
   page's top comes into view.

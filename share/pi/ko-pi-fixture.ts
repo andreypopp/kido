@@ -442,7 +442,7 @@ export function savedSession(dir: string, cwd: string, id: string): string {
   return path;
 }
 
-export function ndjson(input: NodeJS.ReadableStream, state = { text: "", records: [] as any[], ended: false }) {
+export function sse(input: NodeJS.ReadableStream, state = { text: "", records: [] as any[], ended: false }) {
   const changes = new EventEmitter();
   const decoder = new TextDecoder();
   let partial = "";
@@ -450,9 +450,10 @@ export function ndjson(input: NodeJS.ReadableStream, state = { text: "", records
     const text = typeof bytes === "string" ? bytes : decoder.decode(bytes, { stream: true });
     state.text += text; partial += text;
     let end: number;
-    while ((end = partial.indexOf("\n")) >= 0) {
-      const line = partial.slice(0, end); partial = partial.slice(end + 1);
-      try { state.records.push(JSON.parse(line)); } catch {}
+    while ((end = partial.indexOf("\n\n")) >= 0) {
+      const line = partial.slice(0, end); partial = partial.slice(end + 2);
+      assert.match(line, /^data: [^\r\n]*$/);
+      state.records.push(JSON.parse(line.slice(6)));
     }
     changes.emit("record");
   });
@@ -464,7 +465,7 @@ export function ndjson(input: NodeJS.ReadableStream, state = { text: "", records
       for (;;) {
         const record = state.records.slice(after).find(predicate);
         if (record) return record;
-        if (state.ended) throw new Error("NDJSON stream ended before the expected record");
+        if (state.ended) throw new Error("SSE stream ended before the expected record");
         await once(changes, "record", { signal: AbortSignal.timeout(5000) });
       }
     },

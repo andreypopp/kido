@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import { test } from "node:test";
-import { makeFixture, pollUntil, selfPane, startSession, freshExtension, ndjson } from "./ko-pi-fixture.ts";
+import { makeFixture, pollUntil, selfPane, startSession, freshExtension, sse } from "./ko-pi-fixture.ts";
 
 function request(path: string, value?: unknown) {
   const socketPath = globalThis.__koPiExtensionWebview!.wv.socketPath;
@@ -10,7 +10,12 @@ function request(path: string, value?: unknown) {
   req.on("response", response => {
     state.response = response;
     state.status = response.statusCode!;
-    ndjson(response, state);
+    if (response.headers["content-type"] === "text/event-stream") sse(response, state);
+    else {
+      response.setEncoding("utf8");
+      response.on("data", text => { state.text += text; });
+      response.once("close", () => { state.ended = true; });
+    }
   });
   req.on("error", () => { state.ended = true; });
   req.end(value === undefined ? undefined : JSON.stringify(value));
@@ -140,6 +145,39 @@ test("webview HTTP transcript windows, patches, caps, epochs and prompt prefligh
   } finally { for (const stream of streams) stream.close(); await fx.restore(); }
 });
 
+test("webview reconnect replays unfinished assistant and tool content without a doubled suffix", async () => {
+  const fx = makeFixture();
+  const streams: Array<ReturnType<typeof request>> = [];
+  try {
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx, { mode: "tui", flags: { webview: true } });
+    const original = request("/events"); streams.push(original);
+    await pollUntil(() => original.state.records.some(r => r.type === "state"));
+    const epoch = original.state.records[0].epoch;
+    const tool = { type: "toolCall", id: "reconnect", name: "bash", arguments: { command: "test" } };
+    const message = (text: string) => ({ role: "assistant", content: [{ type: "text", text }, tool] });
+    await s.emit("message_start", { message: message("first") });
+    await s.emit("tool_execution_start", { toolCallId: "reconnect", toolName: "bash", args: tool.arguments });
+    await s.emit("tool_execution_update", { toolCallId: "reconnect", partialResult: { content: [{ type: "text", text: "tool first" }] } });
+    await pollUntil(() => transcript(original.state.records).get(0)?.blocks[1].state.result?.text === "tool first");
+    const resumed = request(`/events?epoch=${epoch}&after=-1`); streams.push(resumed);
+    await pollUntil(() => resumed.state.records.some(r => r.type === "state"));
+    original.close();
+    await s.emit("message_update", { message: message("first last") });
+    await s.emit("tool_execution_end", { toolCallId: "reconnect", result: { content: [{ type: "text", text: "tool first last" }] }, isError: false });
+    await s.emit("message_end", { message: message("first last") });
+    await pollUntil(() => transcript(resumed.state.records).get(0)?.final);
+    const item = transcript(resumed.state.records).get(0);
+    assert.equal(item.blocks[0].text, "first last");
+    assert.equal(item.blocks[1].state.result.text, "tool first last");
+    await s.emit("session_tree");
+    await pollUntil(() => resumed.state.records.some(r => r.type === "reset"));
+    const rebuilt = resumed.state.records.find(r => r.type === "reset");
+    assert.notEqual(rebuilt.epoch, epoch);
+    assert.deepEqual([...transcript(resumed.state.records).values()], rebuilt.items);
+  } finally { for (const stream of streams) stream.close(); await fx.restore(); }
+});
+
 test("webview large unfinished items keep an active reader connected for patches and state", async () => {
   const fx = makeFixture();
   let events: ReturnType<typeof request> | undefined;
@@ -186,10 +224,13 @@ test("webview HTTP cap ends only a stalled reader while another reader continues
     await s.emit("message_end", { message: { role: "user", content: "still connected" } });
     await pollUntil(() => active.state.records.some(r => r.type === "item" && r.item.seq === 40));
     assert.equal(active.state.ended, false);
+    const complete = [...transcript(active.state.records).values()];
+    assert.deepEqual(complete.map(item => item.text), [...Array(40).fill("x".repeat(100000)), "still connected"]);
     const after = delivered.at(-1).item.seq;
     const resumed = request(`/events?epoch=${epoch}&after=${after}`); streams.push(resumed);
     await pollUntil(() => resumed.state.records.some(r => r.type === "item"));
     assert.equal(resumed.state.records[0].type, "item");
     assert.equal(resumed.state.records[0].item.seq, after + 1);
+    assert.equal(resumed.state.records[0].item.text, "x".repeat(100000));
   } finally { for (const stream of streams) stream.close(); await fx.restore(); }
 });

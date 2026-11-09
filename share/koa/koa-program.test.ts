@@ -8,7 +8,7 @@ import { once } from "node:events";
 import { createServer, connect } from "node:net";
 import timers from "node:timers/promises";
 import { Readable } from "node:stream";
-import { assistant, ndjson } from "../pi/ko-pi-fixture.ts";
+import { assistant, sse } from "../pi/ko-pi-fixture.ts";
 
 async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv = {}, pi?: string, startup = true, args: string[] = []) {
   const dir = await mkdtemp(join(tmpdir(), "koa-test-"));
@@ -30,7 +30,7 @@ async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv =
   t.after(() => controller.abort());
   const response = await fetch(base + "events", { signal: controller.signal });
   assert.ok(response.body);
-  const { state: stream, until } = ndjson(Readable.from(response.body));
+  const { state: stream, until } = sse(Readable.from(response.body));
   const post = (path: string, body: object = {}) => fetch(base + path, { method: "POST", body: JSON.stringify(body) });
   if (startup) await until(record => record.type === "state" && (pi ? record.pi?.type === "exited" : Array.isArray(record.levels) && record.levels.length === 3));
   return { post, until, records: () => stream.records, count: () => stream.records.length, close, stdout: () => stdout, stderr: () => stderr, log: async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line)), base };
@@ -43,10 +43,11 @@ test("metrics are opt-in and record frame samples with stream counters", { timeo
   const dir = await mkdtemp(join(tmpdir(), "koa-metrics-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, "metrics.jsonl");
-  const on = await fixture(t, [], {}, undefined, true, ["--metrics", file]);
+  const on = await fixture(t, [], {}, undefined, true, ["--metrics", file, "--metrics-mode", "frame"]);
   const flush = await on.until(record => record.type === "flush");
   assert.equal(typeof flush.t, "number");
-  assert.match(await (await fetch(on.base)).text(), /<meta name="koa-metrics"/);
+  assert.ok(flush.bytes > 0);
+  assert.match(await (await fetch(on.base)).text(), /<meta name="koa-metrics" content="frame">/);
   const samples = [{ t: flush.t, frame: flush.t + 12, bytes: 100, clockError: 0 }];
   assert.equal((await on.post("metrics", samples)).status, 200);
   const record = JSON.parse((await readFile(file, "utf8")).trim());
@@ -62,6 +63,17 @@ test("metrics are opt-in and record frame samples with stream counters", { timeo
   await rm(file, { recursive: true }); await writeFile(file, "");
   assert.equal((await on.post("metrics", samples)).status, 200);
   assert.deepEqual(JSON.parse((await readFile(file, "utf8")).trim()).samples, samples);
+});
+
+test("metrics mode is explicit and requires metrics", { timeout: 10000 }, async () => {
+  for (const args of [["--metrics-mode", "frame"], ["--metrics-mode", "invalid"]]) {
+    const child = spawn(process.execPath, [resolve("../koa/koa.ts"), ...args], { timeout: 5000 });
+    let error = "";
+    child.stderr.on("data", bytes => { error += bytes; });
+    const [code] = await once(child, "close");
+    assert.equal(code, 1);
+    assert.match(error, args[1] === "frame" ? /--metrics-mode requires --metrics/ : /--metrics-mode requires applied or frame/);
+  }
 });
 
 test("startup refuses prompts until the snapshot response is applied", { timeout: 10000 }, async t => {
@@ -248,7 +260,7 @@ test("queue, model, thinking and dialog routes carry RPC state", { timeout: 1000
   const controller = new AbortController();
   const reloaded = await fetch(app.base + "events", { signal: controller.signal });
   assert.ok(reloaded.body);
-  const reload = ndjson(Readable.from(reloaded.body));
+  const reload = sse(Readable.from(reloaded.body));
   const reloadedState = await reload.until(record => record.type === "state");
   assert.deepEqual(reloadedState.dialogs, state.dialogs);
   assert.deepEqual(reloadedState.editor, { id: "editor", text: "Draft" });

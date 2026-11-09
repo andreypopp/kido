@@ -128,16 +128,13 @@ export function transcript({ flushMs, metrics = false }: { flushMs: number; metr
   const pending = new Map<number, { message: Extract<AgentMessage, { role: "assistant" }>; phase: "update" | "end" }>();
   const pendingTools = new Map<string, { type: "running"; content: Content } | { type: "done"; content: Content; error: boolean; at?: number; durationMs?: number; structuredContent?: unknown }>();
   let flushTimer: NodeJS.Timeout | null = null;
-  let quietTimer: NodeJS.Timeout | undefined;
-  let written = false;
 
+  const frame = (json: string): string => "data: " + json + "\n\n";
   const body = (req: ServerResponse, text: string, more = false): void => {
     if (req.destroyed || req.writableEnded) return;
     if (text) {
-      const bytes = counters ? Buffer.from(text) : text;
-      req.write(bytes);
-      if (counters && typeof bytes !== "string") { counters.bytes += bytes.length; counters.highWater = Math.max(counters.highWater, req.writableLength); }
-      if (text !== "\n") written = true;
+      req.write(text);
+      if (counters) { counters.bytes += Buffer.byteLength(text); counters.highWater = Math.max(counters.highWater, req.writableLength); }
     }
     if (!more || req.writableLength > MAX_WEBVIEW_OUTPUT_BYTES) {
       if (counters && req.writableLength > MAX_WEBVIEW_OUTPUT_BYTES) counters.caps++;
@@ -145,22 +142,11 @@ export function transcript({ flushMs, metrics = false }: { flushMs: number; metr
       subscribers.delete(req);
     }
   };
-  const quiet = (): void => {
-    if (!written || quietTimer) return;
-    // WebKit can hold the last scheme-handler chunk until another write: testWebviewStreamingLastRecord.
-    quietTimer = setTimeout(() => {
-      quietTimer = undefined;
-      if (!written) return;
-      written = false;
-      for (const response of subscribers) body(response, "\n", true);
-    }, 4 * flushMs);
-  };
   const broadcast = (record: unknown): void => {
-    const line = JSON.stringify(record) + "\n";
+    const line = frame(JSON.stringify(record));
     for (const req of subscribers) body(req, line, true);
-    quiet();
   };
-  const flushRecord = () => ({ type: "flush", t: Date.now() });
+  const flushRecord = (bytes: number) => ({ type: "flush", t: Date.now(), bytes });
   const window = (before: number): string => {
     let start = Math.min(before, items.length);
     const strings: string[] = [];
@@ -175,7 +161,7 @@ export function transcript({ flushMs, metrics = false }: { flushMs: number; metr
     }
     return '"items":[' + strings.reverse().join(",") + '],"more":' + (start > 0);
   };
-  const reset = (): string => '{"type":"reset","epoch":' + JSON.stringify(epoch) + ',' + window(items.length) + '}' + "\n";
+  const reset = (): string => frame('{"type":"reset","epoch":' + JSON.stringify(epoch) + ',' + window(items.length) + '}');
   const schedule = (): void => {
     if (!flushTimer) flushTimer = setTimeout(flush, flushMs);
   };
@@ -259,7 +245,7 @@ export function transcript({ flushMs, metrics = false }: { flushMs: number; metr
       if (item.kind === "assistant" && !item.final) sent.set(seq, { ...item, blocks: item.blocks.map((block) => ({ ...block })) });
       else sent.delete(seq);
     }
-    if (counters && dirty.size) { counters.flushes++; broadcast(flushRecord()); }
+    if (counters && dirty.size) { counters.flushes++; broadcast(flushRecord(counters.bytes)); }
     dirty.clear();
   };
   const applyMessage = (message: AgentMessage, phase: "start" | "update" | "end" | "branch", ended?: number): void => {
@@ -341,7 +327,6 @@ export function transcript({ flushMs, metrics = false }: { flushMs: number; metr
     pendingTools.set(id, { type: "done", content, error, at, durationMs, structuredContent }); flush();
   };
   const close = (): void => {
-    clearTimeout(quietTimer); quietTimer = undefined; written = false;
     if (flushTimer) clearTimeout(flushTimer);
     flushTimer = null;
     for (const response of subscribers) response.end();
@@ -357,21 +342,20 @@ export function transcript({ flushMs, metrics = false }: { flushMs: number; metr
       if (counters) counters.opens++;
       req.once("close", () => subscribers.delete(req));
       flush();
-      req.writeHead(200, { "Content-Type": "application/x-ndjson" });
+      req.writeHead(200, { "Content-Type": "text/event-stream" });
       if (url.searchParams.get("epoch") === epoch) {
         if (counters) counters.cursors++;
         const after = Number(url.searchParams.get("after") ?? -1);
         if (!Number.isSafeInteger(after) || after < -1) { body(req, ""); return true; }
         for (const item of items.slice(after + 1)) {
-          body(req, JSON.stringify({ type: "item", item }) + "\n", true);
+          body(req, frame(JSON.stringify({ type: "item", item })), true);
           if (req.writableEnded || req.destroyed) break;
         }
       } else { if (counters) counters.resets++; body(req, reset(), true); }
       if (req.writableEnded || req.destroyed) return true;
       subscribers.add(req);
-      if (counters) body(req, JSON.stringify(flushRecord()) + "\n", true);
+      if (counters) body(req, frame(JSON.stringify(flushRecord(counters.bytes))), true);
       if (currentState) broadcast(currentState);
-      quiet();
     } else return false;
     return true;
   };

@@ -36,8 +36,11 @@ function timestamp(at) {
 function prose(key, source, final) {
   let memo = texts.get(key);
   if (!memo) { memo = { render: markdown(), view: node('div', undefined, 'msg assistant'), blocks: [] }; texts.set(key, memo); }
+  if (memo.final && final) return memo.view;
   if (memo.source === source && memo.final === final) return memo.view;
-  memo.source = source; memo.final = final;
+  if (final) delete memo.source;
+  else memo.source = source;
+  memo.final = final;
   memo.view.querySelector('.caret')?.remove();
   const blocks = memo.render(source, final);
   let first = 0;
@@ -187,9 +190,8 @@ function reconcileRuns(seq) {
 function put(item) {
   items.set(item.seq, item);
   first = first === undefined ? item.seq : Math.min(first, item.seq);
-  const signature = JSON.stringify(item);
   const previous = views.get(item.seq);
-  if (previous?.signature === signature) return previous.view;
+  if (previous?.item === item) return previous.view;
   const view = previous?.view ?? node('div');
   view.dataset.seq = item.seq;
   const children = [], slots = new Map();
@@ -219,7 +221,7 @@ function put(item) {
   }
   children.forEach((child, index) => { if (view.childNodes[index] !== child) view.insertBefore(child, view.childNodes[index] ?? null); });
   while (view.childNodes.length > children.length) view.lastChild.remove();
-  views.set(item.seq, { view, signature, slots });
+  views.set(item.seq, { view, item, slots });
   if (!previous) {
     const next = [...views.keys()].filter(seq => seq > item.seq).sort((a, b) => a - b)[0];
     element('items').insertBefore(view, views.get(next)?.view ?? null);
@@ -425,12 +427,13 @@ function apply(record) {
     composer();
   } else if (record.type === 'item') put(record.item);
   else if (record.type === 'patch') {
-    const item = items.get(record.seq);
-    if (!item) { if (paging) pagingPatches.push(record); return; }
+    const current = items.get(record.seq);
+    if (!current) { if (paging) pagingPatches.push(record); return; }
+    const item = { ...current, blocks: current.blocks.slice() };
     Object.assign(item, { final: record.final, stop: record.stop, error: record.error, ended: record.ended });
     for (const change of record.blocks) {
       if (change.block) { item.blocks[change.index] = change.block; texts.delete(record.seq + ':' + change.index); }
-      else item.blocks[change.index].text += change.suffix;
+      else item.blocks[change.index] = { ...item.blocks[change.index], text: item.blocks[change.index].text + change.suffix };
     }
     put(item);
   } else if (record.type === 'state') {
@@ -447,7 +450,8 @@ function followBottom() {
   if (scrollFrame !== undefined) return;
   scrollFrame = requestAnimationFrame(() => { scrollFrame = undefined; if (follow) element('scroll').scrollTop = element('scroll').scrollHeight; });
 }
-const metrics = document.querySelector('meta[name="koa-metrics"]') ? { bytes: 0, pending: [], samples: [], timer: undefined, writes: Promise.resolve(), frames: new Set(), reader: { type: 'running' }, error: undefined } : undefined;
+const metricsMode = document.querySelector('meta[name="koa-metrics"]')?.content;
+const metrics = metricsMode ? { mode: metricsMode, bytes: 0, pending: [], samples: [], timer: undefined, writes: Promise.resolve(), frames: new Set(), error: undefined } : undefined;
 function sendMetrics(force = false) {
   if (!metrics || !force && !metrics.samples.length) return;
   clearTimeout(metrics.timer); metrics.timer = undefined;
@@ -464,32 +468,30 @@ if (metrics) window.koaMetrics = {
     sendMetrics(true); await metrics.writes;
     if (metrics.error) throw Error(metrics.error);
   },
-  pauseRead() {
-    if (metrics.reader.type === 'paused') throw Error('Already paused');
-    let resume;
-    const ready = new Promise(resolve => { resume = resolve; });
-    metrics.reader = { type: 'paused', ready, resume };
-  },
-  resumeRead() { if (metrics.reader.type === 'paused') { metrics.reader.resume(); metrics.reader = { type: 'running' }; } },
   get after() { return after; },
+  get items() { return [...items.values()]; },
 };
-async function connect() {
-  try {
-    const response = await fetch('/events?epoch=' + encodeURIComponent(epoch) + '&after=' + after);
-    if (!response.ok) throw Error('Connection failed');
-    const reader = response.body.getReader(), decoder = new TextDecoder(); let partial = ''; delay = 200;
-    element('error').textContent = '';
-    for (;;) {
-      if (metrics?.reader.type === 'paused') await metrics.reader.ready;
-      const { value, done } = await reader.read(); if (done) break;
-      if (metrics) metrics.bytes += value.byteLength;
-      partial += decoder.decode(value, { stream: true });
-      let end;
-      while ((end = partial.indexOf('\n')) >= 0) { const line = partial.slice(0, end); partial = partial.slice(end + 1); if (line) { try { const record = JSON.parse(line); if (metrics && record.type === 'flush') metrics.pending.push(record.t); else apply(record); } catch (error) { console.error(error); reportError(error); } } }
+let source, reconnect, closed = false;
+function connect() {
+  if (closed) return;
+  source = new EventSource('/events?epoch=' + encodeURIComponent(epoch) + '&after=' + after);
+  const lost = () => {
+    source.onmessage = source.onerror = source.onopen = null;
+    source.close();
+    element('error').textContent = 'Connection lost. Reconnecting…';
+    reconnect = setTimeout(connect, delay); delay = Math.min(delay * 2, 5000);
+  };
+  source.onopen = () => { delay = 200; element('error').textContent = ''; };
+  source.onerror = lost;
+  source.onmessage = event => {
+    try {
+      const record = JSON.parse(event.data);
+      if (metrics && record.type === 'flush') { metrics.bytes = record.bytes; metrics.pending.push(record.t); }
+      else apply(record);
       followBottom();
       if (metrics?.pending.length) {
         const pending = metrics.pending.splice(0), bytes = metrics.bytes;
-        const sampled = (kind) => {
+        const sampled = kind => {
           const at = performance.timeOrigin + performance.now();
           for (const t of pending) {
             metrics.samples.push({ t, [kind]: at, bytes, clockError: Date.now() - at });
@@ -497,7 +499,7 @@ async function connect() {
           }
           metrics.timer ??= setTimeout(sendMetrics, 250);
         };
-        if (window.ko) sampled('applied');
+        if (metrics.mode === 'applied') sampled('applied');
         else {
           let finish;
           const frame = new Promise(resolve => { finish = resolve; });
@@ -505,10 +507,11 @@ async function connect() {
           requestAnimationFrame(() => { sampled('frame'); metrics.frames.delete(frame); finish(); });
         }
       }
-    }
-  } catch { element('error').textContent = 'Connection lost. Reconnecting…'; }
-  setTimeout(connect, delay); delay = Math.min(delay * 2, 5000);
+    } catch (error) { console.error(error); lost(); }
+  };
 }
+window.addEventListener('pagehide', () => { closed = true; source?.close(); clearTimeout(reconnect); });
+window.addEventListener('pageshow', event => { if (event.persisted && closed) { closed = false; connect(); } });
 async function older() {
   if (!more || paging || first === undefined) return;
   paging = true;

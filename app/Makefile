@@ -84,7 +84,7 @@ visual visual-fast visual-slow: project
 	trap '$(KO_ABS)/build/ko/bin/ko kill-server --server "$$server" 2>/dev/null || true; rm -rf "$$server"' EXIT; \
 	xcodebuild -project Kido.xcodeproj -scheme Visual -configuration Debug KIDO_VISUAL_SERVER="$$server" \
 		-destination platform=macOS -derivedDataPath $(DERIVED) KO_CHECKOUT=$(KO_ABS) KIDO_VISUAL_CONDITION=KIDO_VISUAL \
-		KIDO_VISUAL_RECORD=$(RECORD) KOA_STRESS=$(KOA_STRESS) KOA_STRESS_OUTPUT=$(KOA_STRESS_OUTPUT) $(foreach test,$(ONLY),-only-testing:VisualTests/$(test)) $$select test 2>&1 | $(XCODE_PROGRESS)
+		KIDO_VISUAL_RECORD=$(RECORD) KOA_STRESS=$(KOA_STRESS) KOA_STRESS_VISIBLE=$(KOA_STRESS_VISIBLE) KOA_STRESS_TESTS="$(ONLY)" KOA_STRESS_OUTPUT=$(KOA_STRESS_OUTPUT) $(foreach test,$(ONLY),-only-testing:VisualTests/$(test)) $$select test 2>&1 | $(XCODE_PROGRESS)
 	python3 scripts/quit-check.py $(abspath $(APP))
 
 .PHONY: koa-stress koa-stress-root

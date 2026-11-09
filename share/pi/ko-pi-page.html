@@ -376,37 +376,32 @@
       });
     }
 
-    async function connect() {
-      try {
-        const response = await fetch('/events?epoch=' + encodeURIComponent(epoch) + '&after=' + after);
-        if (!response.ok) throw Error('Connection failed');
-        if (disconnected) element('error').textContent = '';
-        disconnected = false;
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let partial = '';
-        delay = 200;
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          partial += decoder.decode(value, { stream: true });
-          let end, offset = 0;
-          while ((end = partial.indexOf('\n', offset)) >= 0) {
-            const line = partial.slice(offset, end);
-            offset = end + 1;
-            if (line) apply(JSON.parse(line));
-          }
-          partial = partial.slice(offset);
-          followBottom();
-        }
-      } catch (error) {
+    let source, reconnect, closed = false;
+    function connect() {
+      if (closed) return;
+      source = new EventSource('/events?epoch=' + encodeURIComponent(epoch) + '&after=' + after);
+      const lost = () => {
+        source.onmessage = source.onerror = source.onopen = null;
+        source.close();
         disconnected = true;
         element('error').textContent = 'Connection lost. Reconnecting…';
-      }
-      element('status').textContent = 'Reconnecting…';
-      setTimeout(connect, delay);
-      delay = Math.min(delay * 2, 5000);
+        element('status').textContent = 'Reconnecting…';
+        reconnect = setTimeout(connect, delay);
+        delay = Math.min(delay * 2, 5000);
+      };
+      source.onopen = () => {
+        delay = 200;
+        if (disconnected) element('error').textContent = '';
+        disconnected = false;
+      };
+      source.onerror = lost;
+      source.onmessage = event => {
+        try { apply(JSON.parse(event.data)); followBottom(); }
+        catch { lost(); }
+      };
     }
+    window.addEventListener('pagehide', () => { closed = true; source?.close(); clearTimeout(reconnect); });
+    window.addEventListener('pageshow', event => { if (event.persisted && closed) { closed = false; connect(); } });
 
     async function older() {
       if (!more || paging || first === undefined) return;

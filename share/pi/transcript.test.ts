@@ -17,30 +17,24 @@ function request(view: ReturnType<typeof transcript>, path: string) {
   return lines;
 }
 
+function record(line: string) {
+  assert.match(line, /^data: [^\r\n]*\n\n$/);
+  return JSON.parse(line.slice(6, -2));
+}
+
 function assistant(text: string, stopReason: "stop" | "error" = "stop"): Extract<AgentMessage, { role: "assistant" }> {
   return { role: "assistant", content: [{ type: "text", text }], api: "openai-responses", provider: "openai", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason, timestamp: 123 };
 }
 
-test("a quiet event burst gets one trailing empty line", t => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+test("events use SSE framing", () => {
   const view = transcript({ flushMs: 10 });
   const lines = request(view, "/events");
-  view.state({ name: "first" });
-  t.mock.timers.tick(9);
-  view.state({ name: "last" });
-  t.mock.timers.tick(30);
-  assert.equal(lines.filter(line => line === "\n").length, 0);
-  t.mock.timers.tick(1);
-  assert.equal(lines.filter(line => line === "\n").length, 1);
-  t.mock.timers.tick(100);
-  assert.equal(lines.filter(line => line === "\n").length, 1);
-  view.message({ role: "user", content: "next burst", timestamp: 1 }, "end");
-  t.mock.timers.tick(40);
-  assert.equal(lines.filter(line => line === "\n").length, 2);
-  view.state({ name: "closed" });
+  assert.ok(lines.length > 0);
+  for (const line of lines) {
+    assert.match(line, /^data: .*\n\n$/);
+    assert.equal(JSON.parse(line.slice(6)).type, "reset");
+  }
   view.close();
-  t.mock.timers.tick(10);
-  assert.equal(lines.filter(line => line === "\n").length, 2);
 });
 
 test("caps preserve UTF-8 and windows retain the newest forty items", () => {
@@ -74,12 +68,12 @@ test("patches append only unchanged text prefixes and replace changed blocks", (
   view.message(assistant("hello"), "start");
   view.message(assistant("hello world"), "update");
   request(view, "/events");
-  assert.deepEqual(JSON.parse(lines.findLast(line => line.includes('"type":"patch"'))!).blocks, [{ index: 0, suffix: " world" }]);
+  assert.deepEqual(record(lines.findLast(line => line.includes('"type":"patch"'))!).blocks, [{ index: 0, suffix: " world" }]);
   view.message(assistant("replacement"), "update");
   request(view, "/events");
-  assert.deepEqual(JSON.parse(lines.findLast(line => line.includes('"type":"patch"'))!).blocks, [{ index: 0, block: { type: "text", text: "replacement" } }]);
+  assert.deepEqual(record(lines.findLast(line => line.includes('"type":"patch"'))!).blocks, [{ index: 0, block: { type: "text", text: "replacement" } }]);
   view.message(assistant("replacement", "error"), "end");
-  const patch = JSON.parse(lines.findLast(line => line.includes('"type":"patch"'))!);
+  const patch = record(lines.findLast(line => line.includes('"type":"patch"'))!);
   assert.equal(patch.stop, "error");
   assert.equal(patch.final, true);
   assert.deepEqual(patch.blocks, []);
@@ -90,7 +84,7 @@ test("patches append only unchanged text prefixes and replace changed blocks", (
   thinking.content = [{ type: "thinking", thinking: "hidden", redacted: true }];
   view.message(thinking, "update");
   request(view, "/events");
-  assert.deepEqual(JSON.parse(lines.findLast(line => line.includes('"type":"patch"'))!).blocks, [{ index: 0, block: { type: "thinking", text: "hidden", redacted: true } }]);
+  assert.deepEqual(record(lines.findLast(line => line.includes('"type":"patch"'))!).blocks, [{ index: 0, block: { type: "thinking", text: "hidden", redacted: true } }]);
   view.close();
 });
 
@@ -137,12 +131,12 @@ test("rebuild sends reset then exactly one caller-supplied state and keeps the e
   const view = transcript({ flushMs: 1000 });
   view.state({ working: false, name: "before", model: "test" });
   const lines = request(view, "/events");
-  const firstEpoch = JSON.parse(lines[0]).epoch;
+  const firstEpoch = record(lines[0]).epoch;
   assert.match(firstEpoch, /^[A-Za-z0-9_-]{22}$/);
   lines.length = 0;
   view.rebuild([{ role: "user", content: "restored", timestamp: 456 }]);
   view.state({ working: true, name: "after", model: "test" });
-  const records = lines.map(line => JSON.parse(line));
+  const records = lines.map(record);
   assert.deepEqual(records.map(record => record.type), ["reset", "state"]);
   assert.deepEqual(records[0].items, [{ seq: 0, at: 456, final: true, kind: "user", text: "restored", images: 0 }]);
   assert.match(records[0].epoch, /^[A-Za-z0-9_-]{22}$/);

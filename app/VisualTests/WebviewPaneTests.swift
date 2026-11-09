@@ -72,52 +72,51 @@ extension VisualTests {
         _ = try await webviewJS(web, "window.slotStream.body.cancel().then(()=>true)")
     }
 
-    func testWebviewStreamingLastRecord() async throws {
+    func testWebviewEventSourceScheme() async throws {
+        let pane = try await webviewStart()
+        let web = try XCTUnwrap(pane.webviewView?.browser)
+        let result = try await webviewJS(web, """
+        new Promise(resolve=>{
+          const source=new EventSource('/sse');
+          const timer=setTimeout(()=>{source.close();resolve('timeout')},5000);
+          source.onmessage=event=>{clearTimeout(timer);source.close();resolve(event.data)};
+          source.onerror=()=>{clearTimeout(timer);source.close();resolve('error')};
+        })
+        """)
+        XCTAssertEqual(result, #""{\"record\":1}""#)
+    }
+
+    func testWebviewFetchStashedChunks() async throws {
         let toy = try WebviewToy(path: directory.appendingPathComponent("webview.sock").path)
         let pane = try await webviewStart(toy: toy)
         let web = try XCTUnwrap(pane.webviewView?.browser)
-        let result = try await webviewJS(web, """
+        let view = try XCTUnwrap(pane.webviewView)
+        view.visualFeedPath = "/stash"
+        let before = view.visualFeedBytes
+        let quietMilliseconds = 500
+        let first = try await webviewJS(web, """
         (async()=>{
-          const response=await fetch('/events');
-          window.streamReader=response.body.getReader();
-          const decoder=new TextDecoder();let pending='',count=0,ended=false;
-          let timeout;
-          const deadline=new Promise(resolve=>timeout=setTimeout(()=>resolve({count,ended,pending,timeout:true}),5000));
-          let arrived;
-          const first=new Promise(resolve=>arrived=resolve);
-          window.streamRecords=[];
-          window.stream97=(async()=>{
-            while(count<97){
-              const {value,done}=await streamReader.read();
-              if(done){ended=true;break}
-              pending+=decoder.decode(value,{stream:true});
-              let newline;
-              while((newline=pending.indexOf('\\n'))!==-1){
-                const record=JSON.parse(pending.slice(0,newline));pending=pending.slice(newline+1);
-                window.streamRecords.push(record.record);
-                count++;
-                if(count===96)arrived({count,ended,pending,timeout:false});
-              }
-            }
-            return {count,ended,pending,timeout:false};
-          })();
-          const result=await Promise.race([first,deadline]);clearTimeout(timeout);return result;
+          window.stashReader=(await fetch('/stash')).body.getReader();
+          window.stashBytes=(await stashReader.read()).value.byteLength;
+          return stashBytes;
         })()
         """)
-        let state = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
-        let count = try XCTUnwrap(state["count"] as? Int)
-        let expected: Int
-        let records: String
-        if count < 96 {
-            // WebKit can hold the last stream record until the next write.
-            toy.writeLaterRecord()
-            expected = 97
-            records = try await webviewJS(web, "Promise.race([stream97.then(()=>streamRecords),new Promise(resolve=>setTimeout(()=>resolve(streamRecords),5000))])")
-        } else {
-            expected = 96
-            records = try await webviewJS(web, "streamRecords")
-        }
-        XCTAssertEqual(try JSONSerialization.jsonObject(with: Data(records.utf8)) as? [Int], Array(0..<expected))
+        XCTAssertEqual(first, "4096")
+        toy.writeStash()
+        try await wait("second chunk handed") { view.visualFeedBytes == before + 8192 }
+        toy.writeStash()
+        try await wait("third chunk handed") { view.visualFeedBytes == before + 12288 }
+        // WebKit bug 322545; upstream fix 718031552ba1 (319981@main).
+        let held = try await webviewJS(web, """
+        (async()=>{
+          window.stashDone=(async()=>{for(;;){const {value,done}=await stashReader.read();if(done)return;stashBytes+=value.byteLength}})();
+          return await Promise.race([stashDone.then(()=>stashBytes),new Promise(resolve=>setTimeout(()=>resolve(stashBytes),\(quietMilliseconds)))]);
+        })()
+        """)
+        XCTAssertEqual(held, "8192")
+        toy.finishStash()
+        let final = try await webviewJS(web, "stashDone.then(()=>stashBytes)")
+        XCTAssertEqual(final, "12288")
     }
 
     func testWebviewPostBodies() async throws {

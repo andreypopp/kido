@@ -2,13 +2,26 @@ import { writeFile, mkdir, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const names = ['long-session', 'fast-tokens', 'large-output', 'large-prompt', 'reconnects', 'many-panes', 'hidden-shown', 'themes', 'fetch-concurrency', 'slow-page', 'body-kinds', 'children'];
+export const workloads = [
+  { name: 'long-session', memory: { type: 'limited' } },
+  { name: 'fast-tokens', memory: { type: 'limited' } },
+  { name: 'large-output', memory: { type: 'limited' } },
+  { name: 'large-prompt', memory: { type: 'limited' } },
+  { name: 'reconnects', memory: { type: 'limited' } },
+  { name: 'many-panes', memory: { type: 'limited' } },
+  { name: 'hidden-shown', memory: { type: 'limited' } },
+  { name: 'themes', memory: { type: 'limited' } },
+  { name: 'fetch-concurrency', memory: { type: 'limited' } },
+  { name: 'slow-page', memory: { type: 'reported', reason: '64 MiB transcript tests back-pressure' } },
+  { name: 'body-kinds', memory: { type: 'limited' } },
+  { name: 'children', memory: { type: 'limited' } },
+] as const;
 export const pageWorkloads = [1, 2, 3, 4, 5, 8, 9, 10, 11];
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const assistant = (content: object[]) => ({ role: 'assistant', api: 'test', provider: 'test', model: 'test', usage, timestamp: Date.now(), stopReason: 'stop', content });
 export async function scripts(directory: string) {
   await mkdir(directory, { recursive: true });
-  for (let id = 1; id <= 12; id++) {
+  for (let id = 1; id <= workloads.length; id++) {
     const messages = id === 1 ? Array.from({ length: 2000 }, (_, i) => assistant(i % 2 ? [{ type: 'toolCall', id: 'tool-' + i, name: 'read', arguments: { path: 'file-' + i } }] : [{ type: 'text', text: 'Paragraph ' + i + '\n\n' + 'Long session text. '.repeat(20) }])) : [];
     const steps: object[] = [
       { type: 'respond', command: 'get_messages', data: { messages } },
