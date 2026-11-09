@@ -72,7 +72,7 @@ function args(block) {
 }
 function stepInfo(step) {
   const { block, item } = step;
-  if (block.type === 'thinking') return { mark: '∴', label: 'thinking', detail: block.redacted ? 'redacted' : block.text.split('\n')[0], kind: 'thinking' };
+  if (block.type === 'thinking') return { mark: '∴', label: 'thinking', labelClass: '', detail: block.redacted ? 'redacted' : block.text.split('\n')[0], kind: 'thinking' };
   const values = step.args;
   const kind = ({ bash: 'command', edit: 'edit', read: 'read' })[block.name] || block.name;
   const first = Object.values(values)[0];
@@ -88,7 +88,7 @@ function stepInfo(step) {
     edit = { old, next, prefix, suffix };
     detail = '+' + (next.length - prefix - suffix) + ' −' + (old.length - prefix - suffix);
   }
-  return { edit, mark: ({ bash: '$', edit: '✎', read: '◇' })[block.name] || '◇', label: typeof label === 'string' ? label : label === undefined ? block.name + ' ' + block.args.text : JSON.stringify(label), detail, kind, aborted: item.stop === 'aborted' && block.state.type !== 'done' };
+  return { edit, labelClass: block.name === 'bash' ? 'cmd' : ['read', 'edit', 'write'].includes(block.name) ? 'path' : '', mark: ({ bash: '$', edit: '✎', read: '◇' })[block.name] || '◇', label: typeof label === 'string' ? label : label === undefined ? block.name + ' ' + block.args.text : JSON.stringify(label), detail, kind, aborted: item.stop === 'aborted' && block.state.type !== 'done' };
 }
 function fold(view, key, line, details) {
   view.classList.toggle('open', folds.get(key) === true);
@@ -107,13 +107,13 @@ function run(steps) {
   const failed = steps.filter(step => step.block.state?.type === 'done' && step.block.state.error);
   const aborted = steps.some(step => step.item.stop === 'aborted' && step.item.blocks.slice(step.index + 1).every(block => block.type !== 'text' || !block.text));
   const active = steps.find(step => step.block.state?.type === 'running') ?? steps.findLast(step => step.block.type === 'tool' ? step.block.state.type === 'pending' && !step.item.final : !step.item.final && step.block.ended === undefined);
-  if (aborted) summary.append(node('span', '⊘', 'warn'), ' aborted · ' + steps.length + ' steps, you pressed Escape');
-  else if (failed.length) summary.append(node('span', '✕', 'err'), ' ' + steps.length + ' steps · ' + failed.length + ' ' + failed[0].info.kind + (failed.length === 1 ? '' : 's') + ' failed');
-  else if (active) summary.append(node('span', undefined, 'spin'), ' running ', node('b', active.info.label), ' · step ' + (steps.indexOf(active) + 1) + ' of ' + steps.length);
+  if (aborted) summary.append(node('span', '⊘', 'warn glyph'), ' aborted · ' + steps.length + ' steps, you pressed Escape');
+  else if (failed.length) summary.append(node('span', '✕', 'err glyph'), ' ' + steps.length + ' steps · ' + failed.length + ' ' + failed[0].info.kind + (failed.length === 1 ? '' : 's') + ' failed');
+  else if (active) summary.append(node('span', undefined, 'spin'), ' running ', node('b', active.info.label, active.info.labelClass), ' · step ' + (steps.indexOf(active) + 1) + ' of ' + steps.length);
   else {
     const counts = new Map();
     for (const step of steps) { const kind = step.info.kind; counts.set(kind, (counts.get(kind) || 0) + 1); }
-    summary.append(node('span', '✓', 'ok'), ' ' + steps.length + ' steps · ' + [...counts].map(([kind, count]) => kind === 'thinking' ? 'thinking' : count + ' ' + kind + (count === 1 ? '' : 's')).join(', '));
+    summary.append(node('span', '✓', 'ok glyph'), ' ' + steps.length + ' steps · ' + [...counts].map(([kind, count]) => kind === 'thinking' ? 'thinking' : count + ' ' + kind + (count === 1 ? '' : 's')).join(', '));
   }
   const timed = steps.filter(step => step.block.started !== undefined);
   const started = steps[0].block.started ?? steps[0].item.at;
@@ -125,14 +125,14 @@ function run(steps) {
     const child = node('div', undefined, 'step');
     const row = node('div', undefined, 'line');
     const sum = node('span', undefined, 'sum');
-    sum.append(node('span', info.label, 'cmd'), ' ');
+    sum.append(node('span', info.label, info.labelClass), ' ');
     const counts = info.detail.match(/^\+(\d+) −(\d+)$/);
     if (counts) sum.append(node('span', '+' + counts[1], 'ok'), ' ', node('span', '−' + counts[2], 'err'));
     else sum.append(node('span', info.detail, 'delta'));
     const result = block.state?.type === 'done' ? block.state.error ? info.kind === 'command' ? 'exit' + (block.exit === undefined ? '' : ' ' + block.exit) : 'failed' : '✓' : info.aborted ? 'aborted' : block.type === 'thinking' && (block.ended !== undefined || step.item.final) ? '✓' : '…';
-    const outcome = node('span', undefined, block.state?.error ? 'time err' : 'time');
+    const outcome = node('span', undefined, 'outcome');
     const ended = block.ended ?? (info.aborted ? step.item.ended : undefined);
-    outcome.append(node('span', result, block.state?.error ? 'err' : result === '✓' ? 'ok' : result === 'aborted' ? 'warn' : ''), ' ' + duration(block.durationMs ?? (block.started !== undefined && ended !== undefined ? ended - block.started : undefined)));
+    outcome.append(node('span', result, block.state?.error ? 'err' : result === '✓' ? 'ok glyph' : result === 'aborted' ? 'warn' : ''), node('span', ' ' + duration(block.durationMs ?? (block.started !== undefined && ended !== undefined ? ended - block.started : undefined)), 'time'));
     row.append(node('span', '›', 'chev'), node('span', info.mark, 'mark'), sum, outcome);
     const detail = node('div', undefined, 'detail');
     if (block.type === 'thinking') detail.append(node('div', block.text || (block.redacted ? 'Redacted thinking' : ''), 'think'));
@@ -227,7 +227,6 @@ function put(item) {
     element('items').insertBefore(view, views.get(next)?.view ?? null);
   }
   if (slots.size || previous?.slots.size || !previous) reconcileRuns(item.seq);
-  element('empty').hidden = true;
   element('older').hidden = !more;
   after = Math.max(after, first - 1);
   while (items.get(after + 1)?.final) after++;
@@ -239,7 +238,6 @@ function composer() {
   const blocked = state.pi?.type === 'starting' || !!state.dialogs?.length, working = state.working && !blocked;
   element('field').inert = blocked;
   element('field').classList.toggle('blocked', blocked);
-  element('empty').hidden = items.size > 0 || input.value.length > 0 || blocked || hasExited();
   element('field').classList.toggle('working', working);
   input.placeholder = working ? 'Steer koa…' : 'Message koa…';
   sendButton.disabled = blocked || !working && !input.value.trim();
@@ -247,10 +245,10 @@ function composer() {
   sendButton.setAttribute('aria-label', working ? 'Stop' : 'Send');
   if (buttonWorking !== working) {
     buttonWorking = working;
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 14 14');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 16 16');
     const shape = document.createElementNS(svg.namespaceURI, working ? 'rect' : 'path');
-    if (working) { for (const [key, value] of Object.entries({ x: 3.5, y: 3.5, width: 7, height: 7, rx: 1 })) shape.setAttribute(key, value); shape.setAttribute('fill', 'currentColor'); shape.setAttribute('stroke', 'none'); }
-    else shape.setAttribute('d', 'M3 7h8M7 3l4 4-4 4');
+    if (working) { for (const [key, value] of Object.entries({ x: 4, y: 4, width: 8, height: 8, rx: 1.5 })) shape.setAttribute(key, value); shape.setAttribute('fill', 'currentColor'); shape.setAttribute('stroke', 'none'); }
+    else shape.setAttribute('d', 'M3 8h9.5M8.3 3.8 12.5 8l-4.2 4.2');
     svg.append(shape); sendButton.replaceChildren(svg);
   }
   element('hint').textContent = [input.value ? '⇧↩ newline' : '', working ? '↩ steers while koa works' : ''].filter(Boolean).join(' · ');
@@ -553,4 +551,8 @@ document.addEventListener('pointerdown', event => { if (!element('picker').conta
 element('scroll').onscroll = () => { const scroll = element('scroll'); follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; if (scroll.scrollTop < 80) void older(); };
 setInterval(status, 1000);
 new ResizeObserver(followBottom).observe(element('scroll'));
+new ResizeObserver(([entry]) => {
+  document.body.style.setProperty('--dock-h', entry.borderBoxSize[0].blockSize + 'px');
+  followBottom();
+}).observe(element('dock'));
 composer(); element('prompt').focus(); void connect();

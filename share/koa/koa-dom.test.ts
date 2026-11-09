@@ -282,7 +282,7 @@ test("a startup dialog is visible with an inert composer", async () => {
 
 test("a state record preserves a typed dialog answer", async () => {
   const app = await page();
-  assert.equal(app.run("state={working:true,dialogs:[{id:'a',method:'input',title:'Question'}]};composer();dialogs();const form=element('dialogs').children[0];const input=form.children[1];input.value='typed';state={dialogs:[{id:'a',method:'input',title:'Question'}]};dialogs();apply({type:'reset',epoch:'next',more:false,items:[]});element('dialogs').children[0]===form&&input.value==='typed'&&element('prompt').placeholder==='Message koa…'&&element('send').disabled&&element('empty').hidden"), true);
+  assert.equal(app.run("state={working:true,dialogs:[{id:'a',method:'input',title:'Question'}]};composer();dialogs();const form=element('dialogs').children[0];const input=form.children[1];input.value='typed';state={dialogs:[{id:'a',method:'input',title:'Question'}]};dialogs();apply({type:'reset',epoch:'next',more:false,items:[]});element('dialogs').children[0]===form&&input.value==='typed'&&element('prompt').placeholder==='Message koa…'&&element('send').disabled"), true);
 });
 
 test("unchanged state keeps queue controls and status nodes and acknowledges editor once", async () => {

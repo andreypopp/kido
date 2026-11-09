@@ -12,7 +12,7 @@ extension VisualTests {
         try await koaWebview(width: 980, height: 560, scenario: .feed, captures: [])
     }
     func testKoaWebviewMockupStates() async throws {
-        try await koaWebview(width: 980, height: 560, captures: ["stream", "lines", "details"])
+        try await koaWebview(width: 980, height: 560, captures: ["user-well", "stream", "lines", "details"])
     }
 
     func testKoaWebviewErrorState() async throws {
@@ -265,7 +265,13 @@ extension VisualTests {
             window.contentView?.layoutSubtreeIfNeeded()
             pane.webviewView?.layoutSubtreeIfNeeded()
             _ = try await webviewJS(web, "(()=>{if(!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)document.querySelector('#prompt').focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=scroll.scrollHeight;return true})()")
-            try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');return scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1})()")
+            try await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
+            try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=scroll.scrollHeight;return scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1})()")
+            let lastAboveDock = try await webviewJS(web, "(()=>{const last=document.querySelector('#items').lastElementChild;return !last||last.getBoundingClientRect().bottom<=document.querySelector('#dock').getBoundingClientRect().top})()")
+            XCTAssertEqual(lastAboveDock, "true", "dock space keeps the last message above the composer")
+            if name != "stream" && name != "narrow-stream" {
+                _ = try await webviewJS(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=Math.max(0,scroll.scrollHeight-scroll.clientHeight-document.querySelector('#dock').getBoundingClientRect().height*.55);return true})()")
+            }
             try await webviewSnapshot(pane, name + "-light", testName: "testKoaWebviewMockupStates()")
             try await darken()
             pane.webviewView?.updateTheme()
@@ -290,6 +296,7 @@ extension VisualTests {
         try await webviewUntil(web, "document.querySelector('#field').classList.contains('working')")
         let workingSweep = try await webviewJS(web, "getComputedStyle(document.querySelector('#field'),'::after').backgroundImage.includes('linear-gradient')&&getComputedStyle(document.querySelector('#field'),'::after').content!=='none'")
         XCTAssertEqual(workingSweep, "true")
+        try await capture("user-well")
         try await advance()
         try await webviewUntil(web, "document.querySelector('.caret')&&document.querySelector('table')")
         if captures.contains("focus") {
@@ -314,8 +321,6 @@ extension VisualTests {
         _ = try await webviewJS(web, "(()=>{const p=document.querySelector('#prompt');p.value='Also keep the failure message.';p.dispatchEvent(new Event('input'));return true})()")
         try await capture("composer-working")
         _ = try await webviewJS(web, "(()=>{const p=document.querySelector('#prompt');p.value='';p.dispatchEvent(new Event('input'));return true})()")
-        let emptyHidden = try await webviewJS(web, "document.querySelector('#empty').hidden")
-        XCTAssertEqual(emptyHidden, "true")
         try await capture("narrow-stream")
         let caretCount = try await webviewJS(web, "document.querySelectorAll('.caret').length")
         XCTAssertEqual(caretCount, "1")

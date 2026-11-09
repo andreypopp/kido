@@ -458,6 +458,12 @@ works, Escape aborts and a second Escape clears the composer, as
 NOTES.md says. Command-F is WebKit's find. The composer's one button,
 its placeholders and when its key hints show are NOTES.md, "The
 composer"; the page follows it and the plan does not repeat it. The
+composer floats over the transcript on a CSS glass (`backdrop-filter`);
+a `ResizeObserver` on the dock keeps the transcript's bottom padding at
+the dock's height, so a page pinned to the bottom keeps its last line
+above the glass. WebKit's private `-apple-visual-effect` material is not
+used: it needs the private `useSystemAppearance` preference, and
+WebKit's snapshot does not show it, so no test could check it. The
 composer takes the focus when the page's window gets focus (the pane
 became first responder), unless a dialog or a picker is open or the
 focus is in a control of the page (native or by its role), and after a
