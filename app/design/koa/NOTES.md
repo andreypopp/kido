@@ -39,8 +39,12 @@ timestamp (below, "The transcript").
 
 ## The transcript
 
-- Content column: 720pt wide, centred, 22pt top and 24pt side
-  padding. In the narrow pane it is fluid with 14pt sides.
+- Content column: 720pt wide, centred, 14pt top and 20pt side
+  padding (22/24 before 2026-11-09). In the narrow pane it is fluid
+  with 12pt sides.
+- An empty session shows nothing: the paper, the composer and the
+  status bar, no wordmark or "nothing yet" text (user, 2026-11-09;
+  the earlier centred empty state is gone).
 - Markdown: headings in the prose font, 1.3/1.15/1em, 600 weight;
   lists with muted markers; inline code in an 8% well with 4pt
   corners; code blocks in a 5% well with a 12% hairline, 7pt corners,
@@ -92,13 +96,15 @@ assistant texts (or between the user's message and the first text).
 - A 9pt-radius field with an 18% hairline, 9pt 12pt padding. Focused:
   the hairline darkens to 40%. The text grows to six lines and then
   scrolls.
-- **One button**, at the bottom right inside the field: a 26pt
-  rounded square with an 8pt radius, the shape of the palette's Send
-  control, no border and no text, an icon in the paper colour (14pt,
-  2pt stroke). Send is the accent colour with a right arrow while the
-  field has text, and the 18% hairline tone, inert, while it is empty.
-  While koa works the same spot holds stop: the fg colour with a
-  rounded 7pt square; red on hover. Clicking send sends (a steer while
+- **One button**, at the bottom right inside the field, light
+  weight (user, 2026-11-09, after two heavier forms): a 26pt square
+  hit area with no fill, no border and no text, only a 15pt icon at a
+  1.6pt stroke. Send is a right arrow in the accent colour while the
+  field has text, and in the faint tone (fg 35%), inert, while it is
+  empty. While koa works the same spot holds stop: a filled 8pt
+  rounded square in the muted tone, red on hover. Hover on a live
+  button is the 8% well behind the icon (7pt radius), nothing else.
+  Clicking send sends (a steer while
   koa works), clicking stop aborts. No pill, no labelled button, no
   circle (user, 2026-11-08: the text pill, the `↩ send` label and a
   round button were each rejected).
@@ -155,6 +161,14 @@ the status bar drops the segments above. Nothing hides otherwise.
 3. The status bar is at the bottom, under the composer.
 4. The context bar always shows.
 5. A user message carries a timestamp, no label.
+
+Decisions, 2026-11-09 (the feedback round below): run and step
+lines in the prose font; compact spacing; the composer floats over
+the transcript on glass, the status bar stays a band; the composer
+button is icon-only with no fill; an empty session shows nothing.
+The user approved the round as shown ("much better, let's go with
+that"), with the user message as A, the gray block, which the mockup
+showed; B and C stay in the control for reference.
 
 ## Dialogs from extensions (unit 5)
 
@@ -286,3 +300,168 @@ text bindings.
    line, and the log has every message.
 5. On exit, start pi again automatically after a crash (code ≠ 0)
    once? Recommendation: no; the card makes the restart one key.
+
+## Feedback round, 2026-11-09 (five notes from the user's first use)
+
+Every value below is in `mockup.html`; the "Composer" and "User
+message" controls switch the treatments that need a choice.
+
+### 1. Run and step lines in the system font
+
+The run line, the step lines and the thinking line are the prose
+font now; only the glyphs and the code-like parts stay in the
+terminal font.
+
+- `.run`: `font: .95em/1.5 var(--prose)`, colour muted (was
+  `.92em/1.6 var(--mono)`).
+- Terminal font, `.92em`: the chevron and the mark (`›`, `$`, `✎`,
+  `◇`, `∴`), a command (`.cmd`), a path (`.path`) and the time at the
+  right (`.time`, tabular digits). Everything else in a line (the
+  count, "thinking", the tool names, the delta words, "aborted") is
+  prose.
+- The thinking block's text was prose already; it is `1em/1.5`,
+  muted, `white-space: pre-wrap`.
+
+### 2. The thinking block's padding
+
+The space under an expanded thinking block came from three margins
+that added up. Now: `.detail{margin:2px 0 4px 20px}`,
+`.detail .think{padding:0;margin:0}`, `.detail pre{margin:3px 0 4px}`,
+`.diff{margin:3px 0 4px}`. The block ends 4pt above the next step
+line, like a command's output well does.
+
+### 3. Compact
+
+| Property | Was | Now |
+| --- | --- | --- |
+| Pane line height (prose) | 1.6 | 1.5 |
+| Transcript padding, wide | 22 24 10 | 14 20 8 |
+| Transcript padding, narrow | 16 14 8 | 10 12 6 |
+| Gap after a message or a run (`.msg`, `.run` margin-bottom) | 22 | 14 |
+| Paragraph gap (`.assistant p`) | .9em | .65em |
+| Heading margins | 1.3em 0 .5em | 1em 0 .4em |
+| List margin-bottom | .9em | .65em |
+| Code block (`pre`) | 1.5 line, 10 12 padding, 1em below | 1.45 line, 8 10 padding, .75em below |
+| Run and step line padding, gap | 2 0, 9 | 1 0, 8 |
+| Steps indent (`.steps` margin-left, padding-left) | 18, 12 | 17, 11 |
+| Step margin | 1 0 | 0 |
+
+The 720pt content column is unchanged: shorter lines read worse,
+and the side margins were already the 20pt the narrow pane needs.
+
+### 4. The user message (needs the user's choice)
+
+Three treatments, the "User message" control, all from `--ko-*`:
+
+- **A · gray block (default in the mockup).** `background: var(--well)`
+  (fg 5% over bg), `border-radius: 8px`, `padding: 7px 12px`, no bar.
+  The timestamp sits at the right inside the block. Reads as "what
+  you said" without colour; the accent stays for the working sweep
+  and the focus ring.
+- **B · accent tint.** The same block with
+  `background: color-mix(in srgb, var(--accent) 7%, var(--ko-bg))`.
+  Warmer in kido-light (a blue-grey over cream), bluer in kido-dark.
+- **C · gray block with the bar.** A, plus `border-left: 2px solid
+  var(--accent)`, `border-radius: 0 8px 8px 0`, `padding-left: 12px`.
+  The old bar as a hint of "you", on the new block.
+- "current" keeps the old bar-only form for comparison.
+
+Chosen: A (user, 2026-11-09, as the default the mockup showed). The block alone separates the two voices, the
+bar added a second cue, and B's tint competes with the accent's
+other meanings. In all three the text is `--fg`, the time is faint
+`.8em` terminal font, tabular digits, at the right of the first line.
+
+### 5. The composer floats over the transcript
+
+The "Composer" control: "floating glass" (default) or "docked band"
+(the earlier design).
+
+**Layout.** The pane is the positioning context. The scroller
+(`.scroll`) is absolute, `inset: 0 0 24px 0`, so it runs under the
+dock; the transcript's bottom padding is the dock's height plus 8pt
+(`--dock-h`, measured from the dock's box, set on the pane; the
+built page measures it with a ResizeObserver on the dock and sets
+the padding, so the last message is never under the glass when
+scrolled to the end). The dock (`.dock`) holds everything that was
+between the transcript and the status bar: the dialog card and its
+"+1 queued" line, the composer with its queue, the exit card. It is
+absolute, `left: 0; right: 0; bottom: 24px`, `pointer-events: none`
+with `auto` on its children, so a click beside the composer reaches
+the transcript. The status bar stays a 24pt opaque band at the
+bottom (`position: absolute; bottom: 0; background: var(--bg)`):
+its numbers and the context bar must not sit over moving text, and a
+band gives the glass a floor to float above. The composer's 24pt
+side padding and 12pt bottom padding are unchanged, so the capsule
+floats 12pt above the band.
+
+**Glass, the base style (what a browser and the mockup show).** On
+`.field`, `.dialog`, `.exited .card` and `.queue` inside the dock:
+
+    background: color-mix(in srgb, var(--ko-bg) 72%, transparent);
+    -webkit-backdrop-filter: blur(18px) saturate(1.35);
+    backdrop-filter: blur(18px) saturate(1.35);
+    border: 1px solid color-mix(in srgb, var(--ko-fg) 22%, transparent);
+    box-shadow: inset 0 .5px 0 color-mix(in srgb, #fff 28%, transparent),
+                0 6px 22px color-mix(in srgb, var(--ko-fg) 14%, transparent),
+                0 1px 3px color-mix(in srgb, var(--ko-fg) 10%, transparent);
+
+Focus: border `fg 45%`; working: border `accent 55%`, the sweep as
+before. The queue list gets the same surface with `border-radius:
+8px; padding: 4px 8px 6px`; the one-line "+1 queued" note has a
+`text-shadow` of the background so it reads over text. Radius (9pt
+field, 9pt cards), padding and the content inset are the docked
+values: the shape does not change with the material.
+
+**Liquid Glass in Kido, the enhancement.** Kido's WKWebView can set
+the private `useSystemAppearance`, which enables WebKit's private
+`-apple-visual-effect` (see alastair.is, "Apple has a private CSS
+property to add Liquid Glass effects to web content"). The mockup
+carries it as
+
+    @supports (-apple-visual-effect: -apple-system-glass-material) {
+      .dock .field, .dock .dialog, .dock .exited .card, .dock .queue {
+        background: transparent;
+        backdrop-filter: none; -webkit-backdrop-filter: none;
+        -apple-visual-effect: -apple-system-glass-material;
+        box-shadow: none;
+        border-color: color-mix(in srgb, var(--ko-fg) 14%, transparent);
+      }
+    }
+
+A browser and Safari do not support the property, so the mockup
+shows the base style only. The real material should look like the
+system's: a clear, lensing glass that takes the pane's colour from
+what is under it, with its own specular edge and shadow (hence
+`box-shadow: none` and the lighter border; if the material draws its
+own edge, drop the border too). What must hold in both: the same
+rounded rect (the material clips to the element's border-radius),
+the same padding and content inset, the text in `--fg` and the hints
+in `--faint`. The implementer verifies on macOS 27 that the material
+renders in a pane's web view and in the off-screen snapshots; if the
+snapshots show no material, they show the base style, which is the
+same shape.
+
+**Contrast.** The base glass is 72% of the pane background over an
+18pt blur: a code block or a table under it becomes a soft tone
+shift, not legible shapes, and `--fg` text on it measures within a
+few percent of `--fg` on the plain background (the mix lightens or
+darkens by at most 28% of what is beneath, and the blur averages
+that). The placeholder and hints are `--faint` (fg 35% over bg) as
+before; over busy content they lose a little, which the mockup shows
+in the stream state. If the real material is clearer than the base
+style, the field keeps a tinted fill behind the text
+(`color-mix(var(--ko-bg) 40%, transparent)`) rather than a weaker
+text colour.
+
+**The unfocused pane.** The glass and the band are mixes of
+`--ko-bg`, which the app shifts to the unfocused paper together with
+the pane: both follow it with no branch, and the base glass stays
+72% of whatever the paper is, so a focused and an unfocused pane
+differ by the same step inside and outside the composer.
+
+**States that changed.** Every state: the compact spacing and the
+prose run lines are everywhere; the user block is in every state
+with a user message; the floating dock is in every state with a
+composer, a dialog or the exit card. The mockup scrolls each
+transcript so that text sits under the glass, to show it; a real
+page scrolled to its end shows the last message above the dock.

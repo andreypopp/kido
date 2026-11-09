@@ -54,30 +54,33 @@ section>p{margin:-4px 0 12px;color:var(--muted);max-width:900px}
 .grid{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
 
 /* ---- the pane: one webview, the page owns its whole content area ---- */
-.pane{width:980px;height:560px;background:var(--bg);color:var(--fg);border:1px solid var(--hair2);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;font:var(--ko-font-size)/1.6 var(--prose);box-shadow:0 1px 2px color-mix(in srgb,var(--ko-fg) 10%,transparent)}
+.pane{width:980px;height:560px;background:var(--bg);color:var(--fg);border:1px solid var(--hair2);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;font:var(--ko-font-size)/1.5 var(--prose);box-shadow:0 1px 2px color-mix(in srgb,var(--ko-fg) 10%,transparent)}
 .pane.narrow{width:calc(60*var(--ko-cell-width) + 2px)}
 .pane.short{height:300px}
 html[data-width=narrow] .pane{width:calc(60*var(--ko-cell-width) + 2px)}
 
 /* transcript */
 .scroll{flex:1;overflow:auto;scrollbar-gutter:stable}
-.transcript{max-width:720px;margin:0 auto;padding:22px 24px 10px}
-.narrow .transcript,html[data-width=narrow] .transcript{padding:16px 14px 8px}
-.msg{margin:0 0 22px}
-.msg.user{border-left:2px solid var(--accent);padding:1px 0 1px 12px;color:var(--fg);display:flex;gap:14px;align-items:baseline}
+.transcript{max-width:720px;margin:0 auto;padding:14px 20px 8px}
+.narrow .transcript,html[data-width=narrow] .transcript{padding:10px 12px 6px}
+.msg{margin:0 0 14px}
+.msg.user{color:var(--fg);display:flex;gap:14px;align-items:baseline;border-radius:8px;padding:7px 12px;background:var(--well)}
+html[data-user=tint] .msg.user{background:color-mix(in srgb,var(--accent) 7%,var(--ko-bg))}
+html[data-user=bar] .msg.user{background:var(--well);border-left:2px solid var(--accent);border-radius:0 8px 8px 0;padding-left:12px}
+html[data-user=plain] .msg.user{background:none;border-left:2px solid var(--accent);border-radius:0;padding:1px 0 1px 12px}
 .msg.user .t{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
-.msg.user time{color:var(--faint);font:.8em/1.6 var(--mono);white-space:nowrap;font-variant-numeric:tabular-nums}
+.msg.user time{color:var(--faint);font:.8em/1.5 var(--mono);white-space:nowrap;font-variant-numeric:tabular-nums}
 .msg.user .who{display:none}
-.assistant p{margin:0 0 .9em}
+.assistant p{margin:0 0 .65em}
 .assistant p:last-child{margin-bottom:0}
-.assistant h1,.assistant h2,.assistant h3{font:600 1em/1.35 var(--prose);margin:1.3em 0 .5em}
+.assistant h1,.assistant h2,.assistant h3{font:600 1em/1.35 var(--prose);margin:1em 0 .4em}
 .assistant h2{font-size:1.15em}
 .assistant h1{font-size:1.3em}
-.assistant ul,.assistant ol{margin:.2em 0 .9em;padding-left:1.4em}
+.assistant ul,.assistant ol{margin:.1em 0 .65em;padding-left:1.4em}
 .assistant li{margin:.15em 0}
 .assistant li::marker{color:var(--muted)}
 code{font:.92em var(--mono);background:var(--well2);border-radius:4px;padding:1px 5px}
-pre{font:.9em/1.5 var(--mono);background:var(--well);border:1px solid var(--hair);border-radius:7px;padding:10px 12px;margin:.3em 0 1em;overflow:auto;position:relative}
+pre{font:.9em/1.45 var(--mono);background:var(--well);border:1px solid var(--hair);border-radius:7px;padding:8px 10px;margin:.3em 0 .75em;overflow:auto;position:relative}
 pre code{background:none;padding:0;font-size:1em}
 pre .lang{position:absolute;top:6px;right:10px;font-size:.8em;color:var(--faint);text-transform:lowercase}
 table{border-collapse:collapse;margin:.3em 0 1em;font-size:.95em}
@@ -90,8 +93,9 @@ a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in 
 @keyframes blink{50%{opacity:0}}
 
 /* ---- the run: a collapsed line of tool calls and thinking ---- */
-.run{margin:0 0 22px;font:.92em/1.6 var(--mono);color:var(--muted)}
-.run>.line,.step>.line{display:flex;align-items:baseline;gap:9px;cursor:pointer;user-select:none;padding:2px 0;border-radius:4px}
+.run{margin:0 0 14px;font:.95em/1.5 var(--prose);color:var(--muted)}
+.run .mark,.run .chev,.step .cmd,.step .path,.run .time{font-family:var(--mono);font-size:.92em}
+.run>.line,.step>.line{display:flex;align-items:baseline;gap:8px;cursor:pointer;user-select:none;padding:1px 0;border-radius:4px}
 .run>.line:hover,.step>.line:hover{color:var(--fg)}
 .chev{width:9px;flex-shrink:0;color:var(--faint);transition:transform .12s;font-size:.9em}
 .open>.line .chev{transform:rotate(90deg)}
@@ -101,21 +105,21 @@ a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in 
 .spin{display:inline-block;width:8px;height:8px;border-radius:50%;border:1.5px solid var(--faint);border-top-color:var(--accent);animation:spin .8s linear infinite;vertical-align:-1px;margin-right:1px}
 @keyframes spin{to{transform:rotate(360deg)}}
 .ok{color:var(--ok)}.err{color:var(--err)}.warn{color:var(--warn)}
-.steps{display:none;margin:2px 0 0 18px;border-left:1px solid var(--hair);padding-left:12px}
+.steps{display:none;margin:1px 0 0 17px;border-left:1px solid var(--hair);padding-left:11px}
 .open>.steps{display:block}
-.step{margin:1px 0}
+.step{margin:0}
 .step .mark{width:12px;text-align:center;flex-shrink:0}
 .step .cmd{color:var(--fg)}
 .step .path{color:var(--fg)}
 .step .delta{color:var(--faint)}
 .step .delta .plus{color:var(--ok)}.step .delta .minus{color:var(--err)}
-.detail{display:none;margin:4px 0 8px 21px;font-size:.98em}
+.detail{display:none;margin:2px 0 4px 20px;font-size:.98em}
 .step.open>.detail{display:block}
-.detail pre{margin:4px 0 6px;max-height:260px;font-size:1em;color:var(--fg)}
+.detail pre{margin:3px 0 4px;max-height:260px;font-size:1em;color:var(--fg)}
 .detail .kv{color:var(--faint);margin:2px 0}
 .detail .kv b{color:var(--muted);font-weight:500}
-.detail .think{font:1.02em/1.55 var(--prose);color:var(--muted);white-space:pre-wrap;max-height:260px;overflow:auto;padding:2px 0 2px 0}
-.diff{font:1em/1.5 var(--mono);margin:4px 0 6px;border:1px solid var(--hair);border-radius:7px;overflow:hidden}
+.detail .think{font:1em/1.5 var(--prose);color:var(--muted);white-space:pre-wrap;max-height:260px;overflow:auto;padding:0;margin:0}
+.diff{font:.95em/1.45 var(--mono);margin:3px 0 4px;border:1px solid var(--hair);border-radius:7px;overflow:hidden}
 .diff .h{padding:4px 10px;background:var(--well);color:var(--muted);border-bottom:1px solid var(--hair);font-size:.92em}
 .diff .l{padding:0 10px;white-space:pre;color:var(--fg)}
 .diff .l.add{background:color-mix(in srgb,var(--ko-color-2) 12%,var(--ko-bg))}
@@ -127,6 +131,20 @@ a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in 
 
 /* ---- composer ---- */
 .composer{flex-shrink:0;padding:0 24px 12px;max-width:720px;width:100%;margin:0 auto}
+/* ---- floating composer: the transcript scrolls beneath a glass dock ---- */
+html:not([data-dock=band]) .pane .scroll{position:absolute;left:0;right:0;top:0;bottom:24px}
+html:not([data-dock=band]) .pane .transcript{padding-bottom:calc(var(--dock-h,96px) + 8px)}
+html:not([data-dock=band]) .pane .status{position:absolute;left:0;right:0;bottom:0;background:var(--bg)}
+html:not([data-dock=band]) .dock{position:absolute;left:0;right:0;bottom:24px;pointer-events:none}
+html:not([data-dock=band]) .dock>*{pointer-events:auto}
+html:not([data-dock=band]) .dock .field,html:not([data-dock=band]) .dock .dialog,html:not([data-dock=band]) .dock .exited .card{background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border:1px solid color-mix(in srgb,var(--ko-fg) 22%,transparent);box-shadow:inset 0 .5px 0 color-mix(in srgb,#fff 28%,transparent),0 6px 22px color-mix(in srgb,var(--ko-fg) 14%,transparent),0 1px 3px color-mix(in srgb,var(--ko-fg) 10%,transparent)}
+/* progressive enhancement: Liquid Glass in Kido's WKWebView (private -apple-visual-effect, only with useSystemAppearance); the browser shows the fallback above */
+@supports (-apple-visual-effect: -apple-system-glass-material){html:not([data-dock=band]) .dock .field,html:not([data-dock=band]) .dock .dialog,html:not([data-dock=band]) .dock .exited .card,html:not([data-dock=band]) .dock .queue{background:transparent;-webkit-backdrop-filter:none;backdrop-filter:none;-apple-visual-effect:-apple-system-glass-material;box-shadow:none;border-color:color-mix(in srgb,var(--ko-fg) 14%,transparent)}}
+html:not([data-dock=band]) .dock .field.focus{border-color:color-mix(in srgb,var(--ko-fg) 45%,transparent)}
+html:not([data-dock=band]) .dock .field.working{border-color:color-mix(in srgb,var(--accent) 55%,transparent)}
+html:not([data-dock=band]) .dock .queue{background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border-radius:8px;padding:4px 8px 6px;margin:6px 0 0}
+html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0 0 2px var(--ko-bg)}
+
 .narrow .composer,html[data-width=narrow] .composer{padding:0 14px 10px}
 .field{border:1px solid var(--hair2);border-radius:9px;background:var(--bg);padding:9px 12px 8px;position:relative;transition:border-color .12s}
 .field.focus{border-color:color-mix(in srgb,var(--ko-fg) 40%,var(--ko-bg))}
@@ -139,13 +157,13 @@ a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in 
 .field .foot .hint{opacity:0;transition:opacity .15s}
 .field.focus .foot .hint,.field.working .foot .hint{opacity:1}
 /* the one button: send (accent, arrow right) or stop (fg, square). 26pt rounded square, 8pt radius, like the palette's Send; no border, no text. */
-.act{width:26px;height:26px;border-radius:8px;border:0;padding:0;display:grid;place-items:center;cursor:pointer;color:var(--bg);background:var(--accent);margin-right:-5px;margin-bottom:-2px;transition:background .12s,color .12s}
-.act svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.act:hover{background:color-mix(in srgb,var(--accent) 85%,var(--ko-fg))}
-.act.off{background:var(--hair2);color:var(--bg);cursor:default}
-.act.off:hover{background:var(--hair2)}
-.act.stop{background:var(--fg);color:var(--bg)}
-.act.stop:hover{background:var(--err)}
+.act{width:26px;height:26px;border-radius:7px;border:0;padding:0;display:grid;place-items:center;cursor:pointer;color:var(--accent);background:none;margin-right:-7px;margin-bottom:-2px;transition:background .12s,color .12s}
+.act svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.act:hover{background:var(--well2)}
+.act.off{color:var(--faint);cursor:default}
+.act.off:hover{background:none}
+.act.stop{color:var(--muted)}
+.act.stop:hover{color:var(--err);background:var(--well2)}
 .field.working{border-color:color-mix(in srgb,var(--accent) 45%,var(--ko-bg))}
 .field.working::after{content:"";position:absolute;left:12px;right:12px;top:-1px;height:1px;background:linear-gradient(90deg,transparent,var(--accent),transparent);background-size:40% 100%;animation:sweep 1.6s linear infinite;opacity:.8}
 @keyframes sweep{from{background-position:-40% 0}to{background-position:140% 0}}
@@ -239,9 +257,6 @@ a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in 
 .status .dot.off{background:var(--err)}
 
 /* idle empty */
-.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--faint);gap:8px;font:.95em var(--prose)}
-.empty .wordmark{font:500 1.2em var(--mono);color:var(--muted);letter-spacing:.02em}
-.empty .wordmark::before{content:"›";color:var(--accent);margin-right:8px}
 
 .note{font-size:12px;color:var(--muted);max-width:980px;margin:10px 0 0}
 .note code{font-size:.9em}
@@ -252,6 +267,8 @@ a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in 
 <p class="lede">One pane, one page. The page uses only the <code>--ko-*</code> properties the app sets from the pane's theme and font; the <code>:root</code> block at the top is the fallback for a plain browser (kido-light / kido-dark). Every tone is a <code>color-mix</code> of <code>--ko-fg</code>, <code>--ko-bg</code> and the ANSI palette. Prose is the system font at the terminal's size; tool lines, code, the composer footer and the status bar are the terminal font.</p>
 <div class="controls">
   <label>Theme <select id="theme"><option value="light">kido-light</option><option value="dark">kido-dark</option></select></label>
+  <label>User message <select id="usermsg"><option value="well">A · gray block (fg 5%)</option><option value="tint">B · accent tint (7%)</option><option value="bar">C · gray block + accent bar</option><option value="plain">current (bar only)</option></select></label>
+  <label>Composer <select id="dock"><option value="glass">floating glass</option><option value="band">docked band (before)</option></select></label>
   <label>Pane width <select id="width"><option value="wide">wide (980pt)</option><option value="narrow">narrow (60 columns)</option></select></label>
   <span style="color:var(--faint)">Click a run line or a step line to fold or unfold it.</span>
 </div>
@@ -322,7 +339,11 @@ a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in 
 const $=(s,r=document)=>r.querySelector(s);
 const html=document.documentElement;
 $('#theme').onchange=e=>html.dataset.theme=e.target.value;
-$('#width').onchange=e=>html.dataset.width=e.target.value;
+function settle(){for(const pane of document.querySelectorAll('.pane')){const dock=pane.querySelector('.dock'),t=pane.querySelector('.scroll');if(!dock||!t)continue;const h=html.dataset.dock==='band'?0:dock.getBoundingClientRect().height;pane.style.setProperty('--dock-h',h+'px');t.scrollTop=Math.max(0,t.scrollHeight-t.clientHeight-(h?h*0.55:0))}}
+requestAnimationFrame(settle);
+$('#width').onchange=e=>{html.dataset.width=e.target.value;settle()};
+$('#usermsg').onchange=e=>html.dataset.user=e.target.value;
+$('#dock').onchange=e=>{html.dataset.dock=e.target.value;settle()};
 
 const md=`<h2>What the sweep does</h2>
 <p>The sweep reads the pane rows, never a process. It removes a pane with the default <code>close: exit</code> as soon as its program exits, and keeps three other kinds for a while:</p>
@@ -350,7 +371,7 @@ function status(kind){
   return `<div class="status">${map[kind]||map.idle}<span class="seg">claude-opus-5-5<span class="hide-n k"> · thinking high</span></span><span class="seg"><span class="ctx${kind==='waiting'?' high':''}"><i style="width:${kind==='waiting'?78:42}%"></i></span><span class="hide-n k">${kind==='waiting'?'156k / 200k':'84k / 200k'}</span>${kind==='waiting'?'78%':'42%'}</span><span class="seg grow"></span><span class="seg"><span class="hide-n">~/Workspace/</span>kido <span class="k">·</span> main<span class="warn">*</span></span></div>`}
 
 function composer(kind){
-  const icon={send:'<svg viewBox="0 0 16 16"><path d="M3 8h9.5M8.3 3.8 12.5 8l-4.2 4.2"/></svg>',stop:'<svg viewBox="0 0 16 16"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5" fill="currentColor" stroke="none"/></svg>'};
+  const icon={send:'<svg viewBox="0 0 16 16"><path d="M3 8h9.5M8.3 3.8 12.5 8l-4.2 4.2"/></svg>',stop:'<svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor" stroke="none"/></svg>'};
   const btn=(k,label,extra='')=>`<button class="act ${k}${extra}" aria-label="${label}" title="${label}">${icon[k==='stop'?'stop':'send']}</button>`;
   const foot=(hint,buttons)=>`<div class="foot"><span class="hint">${hint}</span><span class="sp"></span>${buttons}</div>`;
   if(kind==='multi')return `<div class="composer"><div class="field focus"><div class="text">Three things, in order:
@@ -393,7 +414,7 @@ const transcript=(inner)=>`<div class="scroll"><div class="transcript">${inner}<
 const userMsg=(t,when='14:32')=>`<div class="msg user"><div class="t">${t}</div><time datetime="2026-11-08T14:32">${when}</time></div>`;
 
 const states={
-  idle:()=>`<div class="empty"><div class="wordmark">koa</div><div>Session <code>2026-11-08-a3f1</code> · nothing yet</div></div>${composer('empty')}${status('idle')}`,
+  idle:()=>`${transcript('')}${composer('empty')}${status('idle')}`,
   stream:()=>transcript(userMsg(user1)+`<div class="msg assistant">${md}<span class="caret"></span></div>`)+composer('working')+status('working'),
   'run-running':()=>transcript(userMsg('Make the sweep keep a start failure for the linger grace, then test it')+run({sum:`<span class="spin"></span> running <b>make cargo ARGS='test -p ko_server sweep'</b> <span class="delta">· step 4 of 4</span>`,res:`<span class="time">9s</span>`,steps:runSteps()}))+composer('working')+status('working'),
   'run-done':()=>transcript(userMsg('Make the sweep keep a start failure for the linger grace, then test it')+run({sum:`<span class="ok">✓</span> 4 steps <span class="delta">· thinking, 1 read, 1 edit, 1 command</span>`,res:`<span class="time">10s</span>`,steps:runSteps()})+`<div class="msg assistant"><p>Done. <code>due()</code> now matches on <code>close</code>, a start failure never fires <code>Close::Exit</code>, and the three sweep tests pass.</p></div>`)+composer('empty')+status('idle'),
@@ -441,7 +462,7 @@ Object.assign(states,{
   'dialog-confirm':()=>transcript('')+dialogCard({title:'Force-push main?',message:'origin/main moves from 20857320 to 88bdb070. Other clones need a reset.',buttons:'<button class="btn">No<kbd>⎋</kbd></button><button class="btn primary">Yes<kbd>↩</kbd></button>',hint:''})+inertComposer()+status('waiting'),
   'dialog-input':()=>transcript('')+dialogCard({title:'Version for the tap',timeout:{left:'43s',pct:88},body:'<div class="in focus">0.32.0<span class="caret"></span></div>',hint:'',buttons:'<button class="btn">Cancel<kbd>⎋</kbd></button><button class="btn primary">Submit<kbd>↩</kbd></button>'})+inertComposer()+status('waiting'),
   'dialog-editor':()=>transcript('')+dialogCard({title:'Release notes',message:'Edit the draft; empty cancels.',body:'<div class="in multi focus">## 0.32\n\n- The sidebar shows status at the right and folds children\n- A program can show a webview page in its pane<span class="caret"></span></div>',hint:'⇧↩ newline',buttons:'<button class="btn">Cancel<kbd>⎋</kbd></button><button class="btn primary">Submit<kbd>⌃↩</kbd></button>'})+inertComposer()+status('waiting'),
-  queue:()=>transcript(userMsg('Release 0.32')+run({sum:`<span class="spin"></span> running <b>make verify</b> <span class="delta">· step 3 of 3</span>`,res:`<span class="time">1m02s</span>`,steps:[]}))+`<div class="composer"><div class="field working"><div class="text ph">Steer koa…</div><div class="foot"><span class="hint">↩ steers while koa works</span><span class="sp"></span><button class="act stop" aria-label="Abort"><svg viewBox="0 0 16 16"><rect x="4.5" y="4.5" width="7" height="7" rx="1.5" fill="currentColor" stroke="none"/></svg></button></div></div>${queueBlock()}</div>`+status('working'),
+  queue:()=>transcript(userMsg('Release 0.32')+run({sum:`<span class="spin"></span> running <b>make verify</b> <span class="delta">· step 3 of 3</span>`,res:`<span class="time">1m02s</span>`,steps:[]}))+`<div class="composer"><div class="field working"><div class="text ph">Steer koa…</div><div class="foot"><span class="hint">↩ steers while koa works</span><span class="sp"></span><button class="act stop" aria-label="Abort"><svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor" stroke="none"/></svg></button></div></div>${queueBlock()}</div>`+status('working'),
   'picker-model':()=>transcript('')+composer('empty')+picker({left:84,ph:'Model',rows:[{n:'claude-opus-5-5',p:'anthropic',on:true},{n:'claude-sonnet-5-5',p:'anthropic',cur:true},{n:'claude-fable-5-1',p:'claude-bridge'},{n:'gpt-6.1-sol',p:'openai-codex'},{n:'gpt-6-astra',p:'openai-codex'}]})+status('idle').replace('<span class="seg">claude-opus-5-5','<span class="seg pick">claude-opus-5-5'),
   'picker-thinking':()=>transcript('')+composer('empty')+picker({left:196,ph:'Thinking',rows:[{n:'off'},{n:'minimal'},{n:'low'},{n:'medium',cur:true},{n:'high',on:true},{n:'xhigh'}]})+status('idle'),
   'toast-info':()=>transcript('')+composer('empty')+statusWith('idle',ext([['git','↑2'],['tests','3 failing']])+toast('info','Worktree ~/Workspace/kido-release created')),
@@ -458,7 +479,7 @@ Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@kido/webview'
   ]}))+composer('empty')+status('aborted'),
 });
 
-for(const pane of document.querySelectorAll('.pane')){pane.innerHTML=states[pane.dataset.state]();
+for(const pane of document.querySelectorAll('.pane')){pane.innerHTML=states[pane.dataset.state]();{const dock=document.createElement('div');dock.className='dock';const kids=[...pane.children].filter(c=>!c.classList.contains('scroll')&&!c.classList.contains('transcript')&&!c.classList.contains('status')&&!c.classList.contains('picker'));if(kids.length){kids[0].before(dock);kids.forEach(k=>dock.append(k))}}
   if(pane.dataset.state!=='stream'){}}
 document.addEventListener('click',e=>{const line=e.target.closest('.line');if(!line)return;const host=line.parentElement;if(host.classList.contains('run')||host.classList.contains('step')){if(host.classList.contains('step')&&!host.querySelector('.detail'))return;host.classList.toggle('open')}});
 // scroll streaming panes to the bottom, like the live page
