@@ -5,6 +5,9 @@ import XCTest
 
 extension VisualTests {
     private enum KoaScenario { case transcript, dialogs, controls, exit, feed }
+    func testKoaWebviewComposerFocus() async throws {
+        try await koaWebview(width: 980, height: 560, captures: ["focus"])
+    }
     func testKoaWebviewFeedHeldTail() async throws {
         try await koaWebview(width: 980, height: 560, scenario: .feed, captures: [])
     }
@@ -289,6 +292,24 @@ extension VisualTests {
         XCTAssertEqual(workingSweep, "true")
         try await advance()
         try await webviewUntil(web, "document.querySelector('.caret')&&document.querySelector('table')")
+        if captures.contains("focus") {
+            try await split(1, .h)
+            try await wait("koa focus split") { self.terminal?.panes.count == 2 }
+            let other = try XCTUnwrap(terminal?.panes.first { $0 !== pane })
+            window.makeFirstResponder(other)
+            _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt').blur();return true})()")
+            window.makeFirstResponder(pane.inputResponder)
+            XCTAssertTrue(window.firstResponder === web)
+            _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt').blur();const range=document.createRange();range.selectNodeContents(document.querySelector('.assistant p'));getSelection().removeAllRanges();getSelection().addRange(range);return true})()")
+            let selected = try await webviewJS(web, "getSelection().toString().length>0")
+            XCTAssertEqual(selected, "true")
+            let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: "z", charactersIgnoringModifiers: "z", isARepeat: false, keyCode: 6))
+            window.sendEvent(key)
+            try await webviewUntil(web, "document.querySelector('#prompt').value==='z'&&document.activeElement===document.querySelector('#prompt')")
+            try await webviewSnapshot(pane, "composer-focus", testName: "testKoaWebviewComposerFocus()")
+            return
+        }
         try await capture("stream")
         _ = try await webviewJS(web, "(()=>{const p=document.querySelector('#prompt');p.value='Also keep the failure message.';p.dispatchEvent(new Event('input'));return true})()")
         try await capture("composer-working")

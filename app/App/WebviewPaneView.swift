@@ -59,6 +59,8 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         config.userContentController.add(bridge, contentWorld: .page, name: "koSocket")
         browser = WKWebView(frame: .zero, configuration: config)
         super.init(frame: .zero)
+        // WebKit's base background overwrites the layer colour before the page paints.
+        browser.setValue(false, forKey: "drawsBackground")
         bridge.owner = self
         wantsLayer = true
         browser.navigationDelegate = self
@@ -288,8 +290,8 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     func updateTheme() {
         guard let pane else { return }
         browser.appearance = NSAppearance(named: pane.runtime.background.isDark ? .darkAqua : .aqua)
-        browser.underPageBackgroundColor = pane.runtime.background
-        layer?.backgroundColor = pane.runtime.background.cgColor
+        browser.underPageBackgroundColor = pane.paperColor
+        layer?.backgroundColor = pane.paperColor.cgColor
         unavailable.textColor = pane.runtime.foreground
         browser.isInspectable = pane.runtime.values.webview.inspector
         let next = themeScript()
@@ -309,7 +311,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         let colors = runtime.webviewColors
         let family = (runtime.values.font.family ?? GhosttyRuntime.systemFontFamily)
             .replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        var properties = ["--ko-bg": rgb(runtime.background), "--ko-fg": rgb(runtime.foreground), "--ko-cursor": rgb(colors.cursor),
+        var properties = ["--ko-bg": rgb(pane.paperColor), "--ko-fg": rgb(runtime.foreground), "--ko-cursor": rgb(colors.cursor),
                           "--ko-selection-bg": rgb(colors.selectionBackground), "--ko-selection-fg": rgb(colors.selectionForeground),
                           "--ko-font-family": "\"\(family)\", monospace",
                           "--ko-font-size": "\(pane.font)px", "--ko-cell-width": "\(pane.cell.width)px", "--ko-cell-height": "\(pane.cell.height)px",

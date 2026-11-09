@@ -8,6 +8,17 @@ final class WebviewToy: @unchecked Sendable {
     private var connections: [NWConnection] = []
     private var starting: CheckedContinuation<Void, Error>?
     private var delayed: [NWConnection] = []
+    private var documents: [NWConnection] = []
+    var heldDocumentCount: Int { queue.sync { documents.count } }
+    func releaseDocuments() {
+        queue.sync {
+            let body = Data(Self.page.utf8)
+            for connection in documents {
+                connection.send(content: Data("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body, completion: .contentProcessed { _ in connection.cancel() })
+            }
+            documents = []
+        }
+    }
     private var opened = Set<ObjectIdentifier>()
     private var messages = 0
     var messageCount: Int { queue.sync { messages } }
@@ -109,6 +120,7 @@ final class WebviewToy: @unchecked Sendable {
                 return
             }
             let text = String(decoding: data[..<end.upperBound], as: UTF8.self)
+            if text.hasPrefix("GET /held ") { documents.append(connection); return }
             if text.hasPrefix("GET /encoded ") {
                 encodedHead = text
                 let body = Data(base64Encoded: "H4sIAAAAAAAA/0vNS85PSU1RKE7OSM1NVUjKT6kEAHcGrlsTAAAA")!

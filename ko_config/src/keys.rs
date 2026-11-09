@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::values::{Payload, ranged};
 
-const MENU_OWNED: [&str; 51] = [
+const MENU_OWNED: [&str; 52] = [
     "super+1",
     "super+2",
     "super+3",
@@ -24,6 +24,7 @@ const MENU_OWNED: [&str; 51] = [
     "super+p",
     "super+shift+p",
     "super+f",
+    "super+r",
     "super+g",
     "super+shift+g",
     "super+z",
@@ -339,6 +340,9 @@ mod tests {
             "command+down",
             "super+shift+enter",
             "super+q",
+            "super+r",
+            "cmd+key_r",
+            "command+R",
         ] {
             let error = trigger(text).unwrap_err();
             assert!(

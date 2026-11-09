@@ -50,6 +50,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         case #selector(promptSelectionItem(_:)): canPrompt()
         case #selector(copySelectionItem(_:)), #selector(NSText.copy(_:)): hasSelection
         case #selector(NSText.selectAll(_:)), #selector(NSText.paste(_:)): copyMode == nil
+        case #selector(reloadPage(_:)): webviewView != nil
         case #selector(toggleCopyMode(_:)): !webviewFocused
         case #selector(runCommand(_:)),
              #selector(showFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)): true
@@ -265,6 +266,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     private var wheelRemainder = 0.0
     private var wheelOwner: ghostty_wheel_disposition_e?
     private var rowHeight: CGFloat = 1
+    @objc func reloadPage(_ sender: Any? = nil) { webviewView?.browser.reload() }
+
     @objc func showFind(_ sender: Any? = nil) {
         if case .entering = copyMode { return }
         snapScroll()
@@ -505,7 +508,14 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         presentScroll()
         guard let parent = copyLabel.superview else { return }
         let chrome = parent.bounds
-        if let webviewView { webviewView.frame = parent.convert(bounds, from: self) }
+        if let webviewView, let paneChrome = parent as? PaneChrome {
+            var interior = chrome.insetBy(dx: 1, dy: 1)
+            if paneChrome.runtimeMark != nil {
+                interior.origin.y = max(interior.minY, PaneChrome.stripeBand)
+                interior.size.height = max(0, chrome.maxY - 1 - interior.minY)
+            }
+            webviewView.frame = parent.convert(bounds, from: self).intersection(interior)
+        }
         let capsule = min(420, max(200, chrome.width - 16))
         find?.frame = NSRect(x: chrome.width - 8 - capsule, y: 8, width: capsule, height: 32)
         let copy = copyLabel.subviews[0]

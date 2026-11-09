@@ -1,7 +1,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, writeFile, rm, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, mkdir, cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
@@ -10,13 +10,13 @@ import timers from "node:timers/promises";
 import { Readable } from "node:stream";
 import { assistant, sse } from "../pi/ko-pi-fixture.ts";
 
-async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv = {}, pi?: string, startup = true, args: string[] = []) {
+async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv = {}, pi?: string, startup = true, args: string[] = [], program = resolve("../koa/koa.ts")) {
   const dir = await mkdtemp(join(tmpdir(), "koa-test-"));
   const script = join(dir, "script");
   const log = join(dir, "log");
   await writeFile(join(dir, process.platform === "darwin" ? "open" : "xdg-open"), '#!/bin/sh\nprintf "%s\\n" "$1" >> "$OPEN_LOG"\n', { mode: 0o700 });
   await writeFile(script, steps.map(value => JSON.stringify(value)).join("\n"));
-  const child = spawn(process.execPath, [resolve("../koa/koa.ts"), "--browser", "--pi", pi ?? resolve("../koa/koa-fake-pi.ts"), "--no-session", ...args], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, OPEN_LOG: join(dir, "urls"), KOA_FAKE_SCRIPT: script, KOA_FAKE_LOG: log, KOA_PI_EXIT_MS: "30", ...env }, stdio: "pipe" });
+  const child = spawn(process.execPath, [program, "--browser", "--pi", pi ?? resolve("../koa/koa-fake-pi.ts"), "--no-session", ...args], { env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, OPEN_LOG: join(dir, "urls"), KOA_FAKE_SCRIPT: script, KOA_FAKE_LOG: log, KOA_PI_EXIT_MS: "30", ...env }, stdio: "pipe" });
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", bytes => { stdout += bytes; });
@@ -35,6 +35,31 @@ async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv =
   if (startup) await until(record => record.type === "state" && (pi ? record.pi?.type === "exited" : Array.isArray(record.levels) && record.levels.length === 3));
   return { post, until, records: () => stream.records, count: () => stream.records.length, close, stdout: () => stdout, stderr: () => stderr, log: async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line)), base };
 }
+test("document loads read the current page files and recover after a failed read", { timeout: 10000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), "koa-page-reload-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await cp(resolve("../koa"), dir, { recursive: true });
+  const program = join(dir, "koa.ts");
+  await writeFile(program, `import ${JSON.stringify(resolve("../koa/koa.ts"))};`);
+  const app = await fixture(t, [], {}, undefined, true, [], program);
+  for (const name of ["koa-page.html", "koa-page.css", "koa-page.js", "koa-markdown.js"]) {
+    const file = join(dir, name), marker = `reload-${name}`;
+    assert.doesNotMatch(await (await fetch(app.base)).text(), new RegExp(marker));
+    const original = await readFile(file, "utf8");
+    await writeFile(file, original + `\n/* ${marker} */`);
+    assert.match(await (await fetch(app.base)).text(), new RegExp(marker));
+  }
+  const file = join(dir, "koa-page.css"), style = await readFile(file, "utf8");
+  await rm(file);
+  const failed = await fetch(app.base);
+  assert.equal(failed.status, 500);
+  assert.match(await failed.text(), /ENOENT.*koa-page\.css/);
+  await writeFile(file, style);
+  const restored = await fetch(app.base);
+  assert.equal(restored.status, 200);
+  assert.match(await restored.text(), /reload-koa-page\.css/);
+});
+
 test("metrics are opt-in and record frame samples with stream counters", { timeout: 10000 }, async t => {
   const off = await fixture(t, []);
   assert.equal((await off.post("metrics", [])).status, 404);

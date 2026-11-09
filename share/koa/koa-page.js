@@ -378,7 +378,7 @@ function exited() {
   if (!state.sessionFile) card.append(node('div', 'No session file was saved. Start pi again starts a fresh session.', 'fresh'));
   card.append(actions); host.append(card); start.focus();
 }
-function closePicker() { element('picker').hidden = true; pickerButton?.classList.remove('pick'); pickerButton = undefined; }
+function closePicker() { element('picker').hidden = true; if (pickerButton) { pickerButton.classList.remove('pick'); element('prompt').focus(); } pickerButton = undefined; }
 async function picker(kind) {
   if (state.pi?.type !== 'ready') return;
   const trigger = element(kind), host = element('picker');
@@ -398,9 +398,9 @@ async function picker(kind) {
     row.onmouseenter = () => selection.mark(index); row.onclick = () => choose(index); host.append(row); return row;
   });
   const selection = cursor(rows, () => {});
-  const choose = async index => { const choice = choices[index]; if (!choice) return; try { await fetchJSON('/' + kind, kind === 'model' ? { provider: choice.provider, modelId: choice.id } : { level: choice.id }); closePicker(); trigger.focus(); } catch (error) { reportError(error); } };
+  const choose = async index => { const choice = choices[index]; if (!choice) return; try { await fetchJSON('/' + kind, kind === 'model' ? { provider: choice.provider, modelId: choice.id } : { level: choice.id }); closePicker(); } catch (error) { reportError(error); } };
   host.append(node('div', '↑↓ move · ↩ choose · ⎋ close', 'hints')); selection.mark(Math.max(0, choices.findIndex(current))); host.focus();
-  host.onkeydown = event => { if (event.metaKey || event.ctrlKey || event.isComposing) return; if (['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); if (event.key === 'Escape') { closePicker(); trigger.focus(); } else if (event.key === 'Enter') void choose(selection.index); else selection.mark(selection.index + (event.key === 'ArrowDown' ? 1 : -1)); } };
+  host.onkeydown = event => { if (event.metaKey || event.ctrlKey || event.isComposing) return; if (['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); if (event.key === 'Escape') { closePicker(); } else if (event.key === 'Enter') void choose(selection.index); else selection.mark(selection.index + (event.key === 'ArrowDown' ? 1 : -1)); } };
 }
 function statuses() {
   const entries = Object.entries(state.statuses || {}).sort(([a], [b]) => a.localeCompare(b)), signature = JSON.stringify(entries);
@@ -545,7 +545,9 @@ element('send').onclick = () => state.working ? stop() : send();
 element('older').onclick = older;
 element('prompt').oninput = () => { escaped = false; composer(); };
 element('prompt').onkeydown = event => { if (!event.metaKey && !event.ctrlKey && !event.isComposing && event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(event.altKey ? 'follow_up' : 'prompt'); } };
-document.addEventListener('keydown', event => { if (event.metaKey || event.ctrlKey || event.isComposing || state.dialogs?.length) return; if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (escaped) { element('prompt').value = ''; composer(); } else { escaped = true; if (state.working) void stop(); } } });
+const isControl = target => target?.isContentEditable || target?.closest('input,textarea,select,button,[role=button],[role=option],[role=listbox],[role=menuitem]');
+window.addEventListener('focus', () => { if (!state.dialogs?.length && !pickerButton && !isControl(document.activeElement)) element('prompt').focus(); });
+document.addEventListener('keydown', event => { if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs?.length || pickerButton) return; if (!event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !event.target?.isContentEditable && !event.target?.closest('input,textarea,select')) { event.preventDefault(); const input = element('prompt'); input.focus(); input.setRangeText(event.key, input.selectionStart, input.selectionEnd, 'end'); input.dispatchEvent(new Event('input', { bubbles: true })); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (escaped) { element('prompt').value = ''; composer(); } else { escaped = true; if (state.working) void stop(); } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
 document.addEventListener('pointerdown', event => { if (!element('picker').contains(event.target) && event.target !== pickerButton) closePicker(); });
 element('scroll').onscroll = () => { const scroll = element('scroll'); follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; if (scroll.scrollTop < 80) void older(); };

@@ -1447,6 +1447,13 @@ before WebKit sees it, so Kido's menu keys win; every other key, Escape
 included, goes to the page. Copy mode is not available while the page
 has focus, and showing a page ends copy mode.
 
+The page lies inside the pane's chrome, 1 pt from each edge and below
+the runtime stripe when the pane has one, so the focus border and the
+stripe, which the chrome draws, are never under the page. The inset does
+not change with focus, so a focus change does not resize the page.
+Edit → Reload Page (⌘R) reloads the focused pane's page; it is enabled
+only while the pane shows a page.
+
 **Find.** Command-F opens the pane's find bar, which drives
 `WKWebView.find(_:configuration:)` with wrapping. `WKFindResult` gives
 only `matchFound`, so the bar says "Match" or "No matches", with no
@@ -1459,8 +1466,15 @@ element does not exist yet. The colours come from the pane's effective
 Ghostty config: `ghostty_config_get` does not read `cursor-color` or the
 selection colours, so `GhosttyRuntime.webviewColors` reads them from
 `ghostty_config_serialize`, with the foreground and background as their
-defaults. The web view's appearance and `underPageBackgroundColor`
-follow the pane's background. A change of the script's text replaces the
+defaults. `--ko-bg` is the pane's paper (`PaneView.paperColor`), so an
+unfocused pane's page gets the same shifted paper as a terminal's
+default background; the other properties do not change with focus. The
+web view's appearance, its native backing and `underPageBackgroundColor`
+follow the same paper. WebKit's own base background is off
+(`drawsBackground`, a private property set before the view is attached
+and before any navigation): it draws the system's control background,
+white in light mode, until the page paints, which flashed white on a
+pane switch. A change of the script's text replaces the
 user scripts and runs one `evaluateJavaScript` that sets the properties
 again and dispatches `ko-theme` on `window`. `--ko-font-family` is a CSS
 font list: the quoted family name, then `monospace`.

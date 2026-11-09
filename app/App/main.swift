@@ -317,6 +317,7 @@ import SidebarFeed
             .separator(),
         ]
         edit.addItem(withTitle: "Find", action: nil, keyEquivalent: "").submenu = find
+        edit.addItem(item("Reload Page", #selector(PaneView.reloadPage(_:)), "r", .command))
         edit.addItem(item("Prompt with Selection…", #selector(PaneView.promptSelectionItem(_:)), "o", .command))
         edit.addItem(item("Copy Mode", #selector(PaneView.toggleCopyMode(_:)), "c", [.command, .shift]))
         edit.addItem(item("Reset Clipboard and Upload Permissions", #selector(resetClipboardPermissions), "", []))

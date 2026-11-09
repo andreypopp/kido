@@ -9,13 +9,21 @@ async function page() {
     value = ""; private text = ""; className = ""; style = {}; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {};
     get textContent() { return this.text; }
     set textContent(value: unknown) { this.text = String(value); }
-    classList = { toggle() {}, remove() {}, add() {}, contains() { return false; } };
+    private classes = new Set<string>();
+    classList = { toggle: (name: string, force = !this.classes.has(name)) => { if (force) this.classes.add(name); else this.classes.delete(name); }, remove: (name: string) => { this.classes.delete(name); }, add: (name: string) => { this.classes.add(name); }, contains: (name: string) => this.classes.has(name) };
     append(...children: Node[]) { this.children.push(...children); }
     prepend(...children: Node[]) { this.children.unshift(...children); }
     before(...children: Node[]) { this.children.push(...children); }
     remove() {}
     replaceChildren(...children: Node[]) { this.children = children; }
-    setAttribute() {} focus() {} setSelectionRange() {} addEventListener() {} scrollIntoView() {} getBoundingClientRect() { return { left: 0 }; }
+    tagName = 'DIV'; isContentEditable = false; selectionStart = 0; selectionEnd = 0; hidden = true;
+    oninput?: () => void;
+    onkeydown?: (event: unknown) => void;
+    attributes = new Map<string, string>();
+    setAttribute(name: string, value: string) { this.attributes.set(name, value); } focus() { document.activeElement = this; } setSelectionRange() {} addEventListener() {} scrollIntoView() {} getBoundingClientRect() { return { left: 0 }; }
+    closest(selector: string) { return ['INPUT', 'TEXTAREA', 'SELECT', ...(selector.includes('button') ? ['BUTTON'] : [])].includes(this.tagName) || (this.attributes.has('role') && selector.includes(`[role=${this.attributes.get('role')}]`)) ? this : null; }
+    setRangeText(text: string) { this.value = this.value.slice(0, this.selectionStart) + text + this.value.slice(this.selectionEnd); }
+    dispatchEvent() { this.oninput?.(); }
     querySelector() { return undefined; }
     get childNodes() { return this.children; }
     insertBefore(child: Node, _next: Node | null) { this.children.push(child); }
@@ -23,15 +31,109 @@ async function page() {
   }
   const elements = new Map<string, Node>();
   const listeners = new Map<string, (event: unknown) => void>();
-  const document = { querySelector: () => null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); } return node; }, createElement: () => new Node(), createElementNS: () => new Node(), addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
-  const context = { markdown: () => () => [], document, window: { ko: {}, addEventListener() {} }, innerWidth: 980, console, getComputedStyle: () => ({ maxHeight: "120px" }), setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
-  return { context, elements, listeners, run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/setInterval\(status,[\s\S]*$/, "") + "\n" + code + "\n}", context) };
+  const windowListeners = new Map<string, (event?: unknown) => void>();
+  let activeElement: Node | undefined;
+  const document = { get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { activeElement = node; }, querySelector: () => null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); } return node; }, createElement: () => new Node(), createElementNS: () => new Node(), addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
+  const context = { markdown: () => () => [], document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, getComputedStyle: () => ({ maxHeight: "120px" }), setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  return { context, elements, listeners, windowListeners, run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/setInterval\(status,[\s\S]*$/, "") + "\n" + code + "\n}", context) };
 }
 
 async function connectSource(name: string) {
   const source = await readFile(new URL(name, import.meta.url), "utf8");
   return source.slice(source.indexOf("let source, reconnect"), source.indexOf("async function older()"));
 }
+
+test("pane focus selects the composer without taking page controls or dialog fields", async () => {
+  const app = await page();
+  app.run("state={pi:{type:'ready'},dialogs:[]};element('prompt').tagName='TEXTAREA';element('model').tagName='BUTTON';element('prompt').focus()");
+  app.context.document.activeElement = undefined;
+  app.windowListeners.get('focus')?.();
+  assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
+  for (const tag of ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON']) {
+    const control = app.elements.get('model');
+    assert.ok(control);
+    control.tagName = tag; control.focus();
+    app.windowListeners.get('focus')?.();
+    assert.equal(app.context.document.activeElement, control);
+  }
+  const editable = app.elements.get('model');
+  assert.ok(editable);
+  editable.tagName = 'DIV'; editable.isContentEditable = true; editable.focus();
+  app.windowListeners.get('focus')?.();
+  assert.equal(app.context.document.activeElement, editable);
+  app.run("state.dialogs=[{id:'question'}]");
+  app.context.document.activeElement = undefined;
+  app.windowListeners.get('focus')?.();
+  assert.equal(app.context.document.activeElement, undefined);
+});
+
+test("printable transcript keys reach the composer but native shortcuts and fields keep their keys", async () => {
+  const app = await page();
+  app.run("state={pi:{type:'ready'},dialogs:[]};element('prompt').tagName='TEXTAREA'");
+  const target = { closest: () => null };
+  let prevented = 0;
+  const key = (extra = {}) => app.listeners.get('keydown')?.({ key: 'z', target, preventDefault() { prevented++; }, ...extra });
+  for (const modifier of ['metaKey', 'ctrlKey', 'altKey', 'isComposing']) key({ [modifier]: true });
+  key({ key: 'Tab' });
+  const button = { closest: (selector: string) => selector.includes('button') ? {} : null };
+  key({ key: ' ', target: button });
+  key({ key: 'Enter', target: button });
+  assert.equal(prevented, 0);
+  assert.equal(app.elements.get('prompt')?.value, '');
+  key();
+  assert.equal(app.elements.get('prompt')?.value, 'z');
+  assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
+  assert.equal(prevented, 1);
+  key({ target: app.elements.get('prompt') });
+  key({ target: { isContentEditable: true, closest: () => null } });
+  assert.equal(prevented, 1);
+  assert.equal(app.listeners.has('blur'), false);
+  assert.equal(app.windowListeners.has('blur'), false);
+});
+
+test("Space on a fold control toggles once without typing or losing focus", async () => {
+  const app = await page();
+  const { view, line } = app.run("state={pi:{type:'ready'},dialogs:[]};const view=node('div'),line=node('div');fold(view,'fold',line,node('div'));line.focus();({view,line})");
+  const event = { key: ' ', target: line, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+  line.onkeydown(event);
+  app.listeners.get('keydown')?.(event);
+  assert.equal(view.classList.contains('open'), true);
+  assert.equal(line.attributes.get('aria-expanded'), 'true');
+  assert.equal(app.elements.get('prompt')?.value ?? '', '');
+  assert.equal(app.context.document.activeElement, line);
+  app.windowListeners.get('focus')?.();
+  assert.equal(app.context.document.activeElement, line);
+});
+
+test("an open picker keeps letters and window focus and still handles Enter and Escape", async () => {
+  for (const key of ['Enter', 'Escape']) {
+    const app = await page();
+    const requests: string[] = [];
+    app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
+    await app.run("state={pi:{type:'ready'},dialogs:[],levels:['off','low'],thinking:'off'};picker('thinking')");
+    const host = app.elements.get('picker');
+    assert.ok(host);
+    app.listeners.get('keydown')?.({ key: 'z', target: host, preventDefault() {} });
+    assert.equal(app.elements.get('prompt')?.value ?? '', '');
+    assert.equal(app.context.document.activeElement, host);
+    app.windowListeners.get('focus')?.();
+    assert.equal(app.context.document.activeElement, host);
+    assert.ok(host.onkeydown);
+    host.onkeydown({ key, preventDefault() {}, stopPropagation() {} });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(requests, key === 'Enter' ? ['/thinking'] : []);
+    assert.equal(host.hidden, true);
+    assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
+  }
+});
+
+test("closing a picker or a dialog returns focus to the composer", async () => {
+  const app = await page();
+  app.run("pickerButton=element('model');element('model').focus();closePicker()");
+  assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
+  app.run("dialogId='question';state.dialogs=[];element('model').focus();dialogs()");
+  assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
+});
 
 test("the transcript page applies SSE synchronously and reconnects with the applied cursor", async () => {
   for (const name of ["koa-page.js"]) {

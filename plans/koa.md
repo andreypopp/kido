@@ -135,8 +135,9 @@ four page files and `share/koa/vendor/` to `share/ko/koa/`, and
 `share/pi/transcript.ts` beside `ko-pi.ts`. `preview-pi` gets
 `koa/koa.ts`, the four page files, `koa/vendor` and
 `pi/transcript.ts`. The tests and the stress files are not installed.
-koa reads the page files and the vendored modules once at start and
-serves one HTML response for `/` (section 4); any other path but its
+koa reads the page files and the vendored modules on each request of
+`/` and serves one HTML response (section 4), so an edit of a page file
+shows at the next page load (⌘R); a failed read answers 500; any other path but its
 routes is 404.
 
 **Checks.** `share/pi/tsconfig.json` includes `../koa/*.ts` and maps
@@ -438,8 +439,7 @@ style in a `<style>`, the modules and the script in `<script
 type="module">` elements, in dependency order, with their `import`
 and `export` statements rewritten to one module scope by a small
 assembly function in `koa-assemble.ts` that the suite tests. koa does the
-assembly once at start and keeps the result; a page load is one
-request. The server's CSP permits the inline script and style. The
+assembly for each request of `/`; a page load is one request. The server's CSP permits the inline script and style. The
 page escapes every text that it did not write. marked produces an HTML string for one
 block; the page parses it with a `DOMParser` into a detached document
 and adopts the nodes, after the `html` tokens were escaped at the
@@ -458,8 +458,12 @@ works, Escape aborts and a second Escape clears the composer, as
 NOTES.md says. Command-F is WebKit's find. The composer's one button,
 its placeholders and when its key hints show are NOTES.md, "The
 composer"; the page follows it and the plan does not repeat it. The
-composer has focus at load and after a send; a click on a run or step
-line toggles it. The page has no other shortcut.
+composer takes the focus when the page's window gets focus (the pane
+became first responder), unless a dialog or a picker is open or the
+focus is in a control of the page (native or by its role), and after a
+send, a picker or a dialog; a printable key typed outside a field goes to
+the composer, while Space and Enter on a focused control keep their
+action, and a selection in the transcript stays. A click on a run or step line toggles it. The page has no other shortcut.
 
 **Streaming markdown.** `koa-markdown.js` is the block memoization,
 after Streamdown's design, in plain DOM:

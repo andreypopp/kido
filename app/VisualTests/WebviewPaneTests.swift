@@ -3,6 +3,7 @@ import WebKit
 import XCTest
 import SnapshotTesting
 import KoModel
+import KoClient
 @testable import Kido
 
 @MainActor private final class WebviewMenuProbe: NSObject {
@@ -32,7 +33,8 @@ extension VisualTests {
         return pane
     }
 
-    func webviewSnapshot(_ pane: PaneView, _ name: String, testName: String = #function) async throws {
+    @discardableResult
+    func webviewSnapshot(_ pane: PaneView, _ name: String, testName: String = #function, afterCapture: (() -> Void)? = nil) async throws -> (chrome: NSBitmapImageRep, page: NSBitmapImageRep) {
         let webview = try XCTUnwrap(pane.webviewView)
         window.contentView?.layoutSubtreeIfNeeded()
         webview.layoutSubtreeIfNeeded()
@@ -44,12 +46,217 @@ extension VisualTests {
             done.fulfill()
         }
         await fulfillment(of: [done], timeout: 10)
+        afterCapture?()
         let overlay = NSImageView(frame: webview.browser.frame)
         overlay.image = try XCTUnwrap(image)
         overlay.imageScaling = .scaleAxesIndependently
         webview.addSubview(overlay)
         defer { overlay.removeFromSuperview() }
         try await snapshot(name, testName: testName)
+        let chrome = try XCTUnwrap(webview.superview)
+        let terminal = try XCTUnwrap(terminal)
+        let bitmap = try XCTUnwrap(terminal.bitmapImageRepForCachingDisplay(in: terminal.bounds))
+        terminal.cacheDisplay(in: terminal.bounds, to: bitmap)
+        let scale = CGFloat(bitmap.pixelsWide) / terminal.bounds.width
+        let area = terminal.convert(chrome.bounds, from: chrome)
+        let cropped = try XCTUnwrap(bitmap.cgImage?.cropping(to: CGRect(x: area.minX * scale, y: area.minY * scale, width: area.width * scale, height: area.height * scale)))
+        let page = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image?.tiffRepresentation))?.converting(to: .sRGB, renderingIntent: .default))
+        return (try XCTUnwrap(NSBitmapImageRep(cgImage: cropped).converting(to: .sRGB, renderingIntent: .default)), page)
+    }
+
+    func testWebviewChromeEdges() async throws {
+        let pane = try await webviewStart()
+        let web = try XCTUnwrap(pane.webviewView?.browser)
+        _ = try await webviewJS(web, "(()=>{document.body.innerHTML='';document.body.style.background='#ffffff';return true})()")
+        try await split(1, .h)
+        try await split(1, .v)
+        try await wait("both split axes") { self.terminal?.panes.count == 3 }
+        try client?.select(KO_SELECT_PANE, pane.pane)
+        try await wait("webview selected") { self.terminal?.active == pane.pane }
+        window.makeFirstResponder(pane.inputResponder)
+        for dark in [false, true] {
+            if dark { try await darken() }
+            terminal?.updateFocusTreatment()
+            let image = try await webviewSnapshot(pane, dark ? "dark" : "light").chrome
+            for (x, y) in [(image.pixelsWide / 2, 0), (image.pixelsWide / 2, image.pixelsHigh - 1), (0, image.pixelsHigh / 2), (image.pixelsWide - 1, image.pixelsHigh / 2)] {
+                let color = try XCTUnwrap(image.colorAt(x: x, y: y))
+                XCTAssertGreaterThan(color.blueComponent - color.redComponent, 0.1, "webview accent edge at \(x),\(y)")
+            }
+            let chrome = try XCTUnwrap(pane.webviewView?.superview as? PaneChrome)
+            chrome.runtimeMark = .unavailable(.init(name: "buildbox", source: .config), routed: true)
+            pane.needsLayout = true
+            pane.layoutSubtreeIfNeeded()
+            let striped = try await webviewSnapshot(pane, dark ? "stripe-dark" : "stripe-light").chrome
+            let mark = try XCTUnwrap(chrome.runtimeMark)
+            let stripe = try XCTUnwrap(Chrome.runtimeStripe(Chrome.runtimeTint(mark, dark: dark), focused: true).usingColorSpace(.sRGB))
+            let pixel = try XCTUnwrap(striped.colorAt(x: striped.pixelsWide / 2, y: 1))
+            for (actual, expected) in zip([pixel.redComponent, pixel.greenComponent, pixel.blueComponent], [stripe.redComponent, stripe.greenComponent, stripe.blueComponent]) {
+                XCTAssertEqual(actual, expected, accuracy: 0.02, "runtime stripe stays outside the page")
+            }
+            chrome.runtimeMark = nil
+            pane.needsLayout = true
+            pane.layoutSubtreeIfNeeded()
+        }
+    }
+
+    func testWebviewFocusPaper() async throws {
+        let pane = try await webviewStart()
+        let view = try XCTUnwrap(pane.webviewView)
+        let web = view.browser
+        _ = try await webviewJS(web, "(()=>{document.body.innerHTML='<div id=foreground style=\"position:fixed;left:20px;top:20px;width:40px;height:40px;background:var(--ko-fg)\"></div><div id=hard style=\"position:fixed;left:80px;top:20px;width:40px;height:40px;background:#123456\"></div>';return true})()")
+        try await split(1, .h)
+        try await wait("paper split") { self.terminal?.panes.count == 2 }
+        try client?.select(KO_SELECT_PANE, pane.pane)
+        try await wait("paper selected") { self.terminal?.active == pane.pane }
+        window.contentView?.layoutSubtreeIfNeeded()
+        for dark in [false, true] {
+            if dark { try await darken() }
+            window.makeFirstResponder(pane.inputResponder)
+            terminal?.updateFocusTreatment()
+            let before = try await webviewJS(web, "[ko.theme['--ko-fg'],ko.theme['--ko-cursor'],ko.theme['--ko-color-1'],getComputedStyle(document.querySelector('#hard')).backgroundColor]")
+            let documents = view.visualDocuments
+            let frame = view.frame
+            for (name, focused) in [("focused", true), ("unfocused", false), ("refocused", true), ("not-key", false)] {
+                window.makeFirstResponder(focused ? pane.inputResponder : window)
+                session.sidebarFocused = { name == "unfocused" }
+                if name == "not-key" { NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window) }
+                terminal?.updateFocusTreatment()
+                XCTAssertEqual(view.frame, frame, "focus does not resize the page")
+                let expected = try XCTUnwrap(pane.paperColor.usingColorSpace(.sRGB))
+                let rgb = "rgb(\(Int(expected.redComponent * 255)),\(Int(expected.greenComponent * 255)),\(Int(expected.blueComponent * 255)))"
+                try await webviewEqual(web, "ko.theme['--ko-bg']", "\"\(rgb)\"")
+                try await webviewUntil(web, "getComputedStyle(document.body).backgroundColor==='\(rgb.replacingOccurrences(of: ",", with: ", "))'")
+                let underPage = try XCTUnwrap(web.underPageBackgroundColor?.usingColorSpace(.sRGB))
+                for (actual, value) in zip([underPage.redComponent, underPage.greenComponent, underPage.blueComponent], [expected.redComponent, expected.greenComponent, expected.blueComponent]) {
+                    XCTAssertEqual(actual, value, accuracy: 1.0 / 255, "WebKit backing follows pane paper")
+                }
+                let after = try await webviewJS(web, "[ko.theme['--ko-fg'],ko.theme['--ko-cursor'],ko.theme['--ko-color-1'],getComputedStyle(document.querySelector('#hard')).backgroundColor]")
+                XCTAssertEqual(after, before)
+                XCTAssertEqual(view.visualDocuments, documents)
+                window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
+                window.orderBack(nil)
+                defer { window.orderOut(nil) }
+                _ = try await webviewJS(web, "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))")
+                let captured = try await webviewSnapshot(pane, "\(name)-\(dark ? "dark" : "light")", afterCapture: { self.window.orderOut(nil) })
+                let image = captured.chrome
+                let color = try XCTUnwrap(image.colorAt(x: image.pixelsWide / 2, y: image.pixelsHigh / 2))
+                for (actual, value) in zip([color.redComponent, color.greenComponent, color.blueComponent], [expected.redComponent, expected.greenComponent, expected.blueComponent]) {
+                    XCTAssertEqual(actual, value, accuracy: 0.01, "webview paper follows pane focus")
+                }
+                let chrome = try XCTUnwrap(view.superview)
+                let scale = CGFloat(image.pixelsWide) / chrome.bounds.width
+                let foreground = try XCTUnwrap(runtime.foreground.usingColorSpace(.sRGB))
+                for (x, swatch, label) in [(40.0, foreground, "foreground swatch"),
+                                           (100.0, NSColor(srgbRed: 18.0 / 255, green: 52.0 / 255, blue: 86.0 / 255, alpha: 1), "hard-coded swatch")] {
+                    let pageScale = CGFloat(captured.page.pixelsWide) / web.bounds.width
+                    let pixel = try XCTUnwrap(captured.page.colorAt(x: Int(x * pageScale), y: Int(40 * pageScale)))
+                    for (actual, value) in zip([pixel.redComponent, pixel.greenComponent, pixel.blueComponent], [swatch.redComponent, swatch.greenComponent, swatch.blueComponent]) {
+                        XCTAssertEqual(actual, value, accuracy: 0.01, label)
+                    }
+                }
+                let strip = try XCTUnwrap(image.colorAt(x: Int((frame.minX - 2) * scale), y: Int(frame.midY * scale)))
+                for (actual, value) in zip([strip.redComponent, strip.greenComponent, strip.blueComponent], [expected.redComponent, expected.greenComponent, expected.blueComponent]) {
+                    XCTAssertEqual(actual, value, accuracy: 0.01, "surrounding strip matches page paper")
+                }
+            }
+            NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        }
+    }
+
+    func testWebviewUnpaintedPaper() async throws {
+        let toy = try WebviewToy(path: directory.appendingPathComponent("webview.sock").path)
+        try await toy.start()
+        addTeardownBlock { toy.stop() }
+        let config = directory.appendingPathComponent("unpainted.yaml")
+        try "app: {webview: {keep_hidden: 4}}\n".write(to: config, atomically: true, encoding: .utf8)
+        try await start(configFile: config.path, pane: "'\(tools.ko)' webview enter --path /held; exec '\(tools.ko)' webview serve --socket '\(toy.path)'")
+        let pane = try XCTUnwrap(terminal?.panes.first)
+        try await wait("held first document") { toy.heldDocumentCount == 1 }
+        try await split(1, .h)
+        try await wait("unpainted split") { self.terminal?.panes.count == 2 }
+        try client?.select(KO_SELECT_PANE, pane.pane)
+        try await wait("unpainted pane selected") { self.terminal?.active == pane.pane }
+        for keep in [4, 0] {
+            if keep == 0 {
+                runtime.onConfigChange = { [weak self] in self?.session.updateColorScheme(); self?.session.updateBackground(); self?.session.updateWebview() }
+                try "app: {webview: {keep_hidden: 0}}\n".write(to: config, atomically: true, encoding: .utf8)
+                try await wait("release hidden pages configured") { self.runtime.values.webview.keepHidden == 0 }
+                try await darken(.aqua)
+            }
+            for dark in [false, true] {
+                if dark { try await darken() }
+                for shifted in [false, true] {
+                    session.sidebarFocused = { shifted }
+                    window.makeFirstResponder(shifted ? window : pane.inputResponder)
+                    terminal?.updateFocusTreatment()
+                    for exposure in ["first", "reshown"] {
+                        if exposure == "reshown" {
+                            let previous = try XCTUnwrap(pane.webviewView)
+                            try await toggleZoom(2)
+                            try await wait("page hidden") { pane.isHiddenOrHasHiddenAncestor }
+                            session.updateWebview()
+                            await mainQueueFence()
+                            if keep == 0 { XCTAssertNil(pane.webviewView) }
+                            else { XCTAssertTrue(pane.webviewView === previous) }
+                            let requests = toy.heldDocumentCount
+                            try await toggleZoom(2)
+                            try await wait("page visible again") { !pane.isHiddenOrHasHiddenAncestor && pane.webviewView != nil }
+                            if keep == 0 { try await wait("replacement document held") { toy.heldDocumentCount > requests } }
+                            try client?.select(KO_SELECT_PANE, pane.pane)
+                            try await wait("reshown page selected") { self.terminal?.active == pane.pane }
+                            window.makeFirstResponder(shifted ? window : pane.inputResponder)
+                            terminal?.updateFocusTreatment()
+                        }
+                        let view = try XCTUnwrap(pane.webviewView)
+                        XCTAssertTrue(view.browser.isLoading)
+                        XCTAssertEqual(view.browser.value(forKey: "drawsBackground") as? Bool, false)
+                        window.contentView?.layoutSubtreeIfNeeded()
+                        view.browser.needsDisplay = true
+                        view.browser.displayIfNeeded()
+                        let name = "keep-\(keep)-\(dark ? "dark" : "light")-\(shifted ? "shifted" : "focused")-\(exposure)"
+                        let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+                        view.cacheDisplay(in: view.bounds, to: bitmap)
+                        let image = try XCTUnwrap(bitmap.converting(to: .sRGB, renderingIntent: .default))
+                        let captured = NSImage(size: view.bounds.size)
+                        captured.addRepresentation(image)
+                        checkSnapshot { verifySnapshot(of: captured, as: .image, named: name, record: $0, snapshotDirectory: checkoutRoot.appendingPathComponent("app/VisualTests/__Snapshots__/VisualTests").path) }
+                        let pixel = try XCTUnwrap(image.colorAt(x: image.pixelsWide / 2, y: image.pixelsHigh / 2))
+                        let paper = try XCTUnwrap(pane.paperColor.usingColorSpace(.sRGB))
+                        for (actual, expected) in zip([pixel.redComponent, pixel.greenComponent, pixel.blueComponent], [paper.redComponent, paper.greenComponent, paper.blueComponent]) {
+                            XCTAssertEqual(actual, expected, accuracy: 1.0 / 255, "unpainted page shows pane paper: \(name)")
+                        }
+                    }
+                }
+            }
+        }
+        let web = try XCTUnwrap(pane.webviewView?.browser)
+        toy.releaseDocuments()
+        try await wait("released page loaded") { !web.isLoading && web.url != nil }
+        try await webviewEqual(web, "Promise.all([window.echo,window.sandbox]).then(()=>true)", "true")
+    }
+
+    func testWebviewReloadMenu() async throws {
+        let pane = try await webviewStart()
+        let view = try XCTUnwrap(pane.webviewView)
+        let menu = try XCTUnwrap(NSApp.mainMenu)
+        func items(_ menu: NSMenu) -> [NSMenuItem] {
+            menu.items.flatMap { [$0] + ($0.submenu.map(items) ?? []) }
+        }
+        let entries = items(menu)
+        let reload = try XCTUnwrap(entries.first { $0.title == "Reload Page" })
+        XCTAssertEqual(reload.keyEquivalent, "r")
+        XCTAssertEqual(reload.keyEquivalentModifierMask, .command)
+        XCTAssertEqual(entries.filter { $0.keyEquivalent.lowercased() == "r" && $0.keyEquivalentModifierMask == .command }.count, 1)
+        window.makeFirstResponder(pane.inputResponder)
+        XCTAssertTrue(pane.validateMenuItem(reload))
+        let documents = view.visualDocuments
+        XCTAssertTrue(pane.tryToPerform(try XCTUnwrap(reload.action), with: reload))
+        try await wait("menu reloads the page") { view.visualDocuments > documents }
+        try await split(1, .h)
+        try await wait("terminal for reload validation") { self.terminal?.panes.count == 2 }
+        let terminalPane = try XCTUnwrap(terminal?.panes.first { $0 !== pane })
+        window.makeFirstResponder(terminalPane)
+        XCTAssertFalse(terminalPane.validateMenuItem(reload))
     }
 
     func testWebviewPendingFetchLimit() async throws {

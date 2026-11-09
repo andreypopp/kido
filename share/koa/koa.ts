@@ -116,8 +116,6 @@ async function main(): Promise<void> {
   if (metricsMode && !metricsFile) throw new Error("--metrics-mode requires --metrics");
   const configured = Number(process.env.KOA_PI_EXIT_MS ?? 5000);
   const exitMs = Number.isFinite(configured) && configured > 0 ? configured : 5000;
-  const document = await assemblePage(location);
-  const page = metricsFile ? document.replace("<head>", `<head><meta name="koa-metrics" content="${metricsMode ?? "frame"}">`) : document;
   const view = await webview({ target: browser ? "browser" : "pane" });
   if (!view) throw new Error("koa requires a Kido pane or --browser");
   if (metricsFile) await writeFile(metricsFile, "");
@@ -398,7 +396,14 @@ async function main(): Promise<void> {
         respond(response, 200, "{}"); return;
       }
       if (feed.handle(request, response)) return;
-      if (request.method === "GET" && request.url === "/") { respond(response, 200, page, "text/html; charset=utf-8"); return; }
+      if (request.method === "GET" && request.url === "/") {
+        try {
+          const document = await assemblePage(location);
+          const page = metricsFile ? document.replace("<head>", `<head><meta name="koa-metrics" content="${metricsMode ?? "frame"}">`) : document;
+          respond(response, 200, page, "text/html; charset=utf-8");
+        } catch (error) { respond(response, 500, errorText(error), "text/plain; charset=utf-8"); }
+        return;
+      }
       const route = routes[request.url ?? ""];
       if (!route || route.method !== request.method) { respond(response, 404, "{}"); return; }
       switch (route.access) {
