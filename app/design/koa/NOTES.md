@@ -131,12 +131,12 @@ right, separated by hairlines:
 3. context: a 44pt bar (18% track, faint fill; warning colour over
    75%), the exact "84k / 200k" in faint, and the percent;
 4. a flexible gap;
-5. the cwd with its last component in the fg colour and the branch,
-   a `*` in the warning colour when dirty.
+5. the cwd with its last component in the fg colour (no git branch
+   and no dirty mark: user, 2026-11-09).
 
 In the narrow pane the thinking label, the exact token numbers and
 the cwd's leading directories go first; the bar, the percent, the
-model, the state and `kido · main*` stay.
+model, the state and `kido` stay.
 
 ## The narrow pane (60 cells)
 
@@ -153,8 +153,7 @@ the status bar drops the segments above. Nothing hides otherwise.
   the path and the line counts; read → the path and the line count;
   anything else → the tool name and its first argument.
 - The status facts: model, thinking level, context tokens used and
-  the limit, cwd, branch and dirty flag, and the run state with its
-  start time.
+  the limit, cwd, and the run state with its start time.
 - Steer and abort as requests from the page.
 
 ## Decisions (user, 2026-11-08)
@@ -570,3 +569,86 @@ faint tone as before.
 A failed bash step shows no "exit N": only its name and its time in
 red, like any other failed tool. The outcome column holds a word only
 for "aborted".
+
+## The completion popup (complete.html; proposal, 2026-11-09)
+
+`complete.html`, beside `blocks.html`, is the reference for unit 11
+(plans/koa.md, section 7, "Completion"). It copies `mockup.html`'s
+style block and draws the popup over the floating glass composer in
+six states, light and dark, wide and 60 columns:
+
+1. `/` at the start: every command of `get_commands` (templates,
+   skills, extension commands), first row current, 8 of 10 visible.
+2. `/re`: pi's fuzzy filter; `skill:` names by their bare name first.
+3. `@si`: the session's agents first, as ko-pi shows them, then
+   files; a directory ends with `/`.
+4. `@ko_s`: files and directories alone, the base directory's
+   entries first.
+5. `@` in the middle of a message, the second row current, text after
+   the caret.
+6. `@zzz`: no match closes the list; there is no empty state.
+
+**The card.** The dock's glass (`--ko-bg` 72% over a blur), its 22%
+hairline and shadow, radius 9pt, padding 5pt, 6pt above the field.
+Width: at least 260pt, at most 460pt and never wider than the field;
+it opens at the token's x (the `/` or `@`, less the 9pt row padding)
+and shifts left to stay inside the field. Rows: 27pt, radius 6pt,
+8pt horizontal padding, the current row on the 8% well (`--well2`),
+at most 8 rows before the list scrolls. A footer in the faint
+terminal font: "↑↓ move · ⇥ ↩ accept · ⎋ close".
+
+**A row.** The label in the terminal font at .92em in the fg colour:
+`/name`, `@name`, or the path (a directory with a muted trailing `/`).
+The detail in the muted tone, prose at .92em, ellipsized: a command's
+description; an agent's status, activity and parent ("running -
+applying the review findings, subagent of kido-app"); a file has none.
+A kind tag at the right in the faint terminal font at .8em for
+commands (`template`, `skill`, `extension`) and agents (`agent`); files
+and directories carry none, the trailing `/` tells them apart. The
+fuzzy-matched letters of a command or agent name are bold; paths are
+plain.
+
+**Keys** (the plan's): ↑↓ move, Tab accepts, Enter accepts and, for a
+command, sends; Escape closes. The typed token in the field is the
+accent colour for `/` and the fg colour for `@`, in the mockup only, to
+show where the popup anchors; the page need not colour it.
+
+Fixtures: the extension commands `/koa`, `/runtime`, `/review` and the
+skill `/skill:ko-api` are invented for the list; the templates and the
+other skills are the user's. Renders: `/tmp/koa-shots/complete-<state>-<theme>-<width>.png`.
+
+## A working agent, five ways (working.html; proposals, 2026-11-09)
+
+`working.html` compares five ways to show that pi is working, each in
+light and dark, wide and 60 columns, on one frame of a live pane (a
+user message, a run in progress with its gray spinner, the status bar
+at "working 12s"). The run line's spinner stays in every variant.
+
+- **A · shipped.** The field's border mixes 55% accent over the glass;
+  a 1pt accent light, 40% of the width, crosses the top edge every
+  1.6s (`.field.working`, `.field.working::after`, `sweep`).
+- **B · the border travels.** No accent: the border is a gray ring
+  (`--hair`) with one brighter segment (fg 85%) that runs around the
+  field once every 2.4s, a conic gradient on a `::before` masked to
+  the 1pt border (`@property --a`, `ring`).
+- **C · quiet, a spinner in the foot.** The border rests. The foot's
+  hint becomes the run line's gray spinner, then "working 12s · ⎋
+  abort"; the status dot breathes (opacity to .35 and back, 1.6s).
+- **D · the status bar carries it.** A 2pt muted light, 30% of the
+  width, sweeps along the top edge of the status bar every 1.8s
+  (`.status::before`); the field rests; the dot breathes.
+- **E · the placeholder shimmers.** A light travels through "Steer
+  koa…" every 2.2s (a gradient clipped to the text, `shine`); border
+  and bar rest; the dot breathes.
+
+Renders: `/tmp/koa-shots/working-<a..e>-<theme>-<width>.png`, one
+frame each at 45% of the cycle.
+
+**Chosen: C** (user, 2026-11-09, "let's do C"). mockup.html's working
+state now shows it: the field's border stays the resting hairline
+(the accent tint and the top-edge sweep go), the foot's hint is the
+run line's gray spinner (8pt ring, 1.5pt, `--hair2` with a `--muted`
+arc, .8s) then "working 12s · ⎋ abort" in the faint terminal font,
+and the status bar's green dot breathes (opacity to .35 and back,
+1.6s ease-in-out). The placeholder stays "Steer koa…", so the ↩ hint
+is not needed. The run line's spinner is unchanged.

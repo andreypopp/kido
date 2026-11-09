@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
+import { markdown } from "./page/markdown.ts";
+import type { PromptMode } from "./records.ts";
 
 async function page() {
   const source = stripTypeScriptTypes(await readFile(new URL("page/page.ts", import.meta.url), "utf8"));
@@ -20,6 +22,7 @@ async function page() {
     before(...children: Node[]) { this.append(...children); }
     remove() { if (this.contains(document.activeElement)) document.activeElement = undefined; if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = undefined; }
     replaceChildren(...children: Node[]) { this.children.forEach(child => { if (child instanceof Node) child.parent = undefined; }); this.children = []; this.append(...children); }
+    content = { childNodes: [] };
     tagName = 'DIV'; isContentEditable = false; selectionStart = 0; selectionEnd = 0; hidden = true;
     oninput?: () => void;
     onkeydown?: (event: unknown) => void;
@@ -32,33 +35,47 @@ async function page() {
     get childNodes() { return this.children; }
     insertBefore(child: Node, _next: Node | null) { this.children.push(child); }
     get firstElementChild() { return this.children[0]; }
+    get lastElementChild() { return this.children.at(-1); }
   }
   const elements = new Map<string, Node>();
   const listeners = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
   const document = { hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { activeElement = node; }, querySelector: () => null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); } return node; }, createElement: () => new Node(), createElementNS: () => new Node(), addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
-  const context = { Node, Element: Node, HTMLElement: Node, HTMLTextAreaElement: Node, HTMLButtonElement: Node, markdown: () => () => [], document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, getComputedStyle: () => ({ maxHeight: "120px" }), setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
-  return { context, elements, listeners, windowListeners, run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/setInterval\(status,[\s\S]*$/, "") + "\n" + code + "\n}", context) };
+  type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void };
+  let handlers: Handlers | undefined;
+  let text = () => '';
+  let prompt: Node | undefined;
+  const composer = (host: Node, callbacks: Handlers) => {
+    handlers = callbacks;
+    const content = host.children[0] ?? new Node(); content.isContentEditable = true; if (!host.children.length) host.append(content);
+    prompt = content;
+    text = () => content.value;
+    return {
+      text,
+      empty: () => content.value.length === 0,
+      setText(text: string) { content.value = text; content.selectionStart = content.selectionEnd = text.length; callbacks.input(false); },
+      insert(text: string) { content.setRangeText(text); callbacks.input(true); },
+      focus: () => content.focus(),
+      hasFocus: () => document.activeElement === content,
+      placeholder(text: string) { content.placeholder = text; },
+    };
+  };
+  const context = { composer, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, markdown, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  return { context, elements, listeners, windowListeners, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\n" + code + "\n}", context) };
 }
 
-test("Control-D quits only with an empty composer and Control-C does not quit", async () => {
+test("composer handlers send the selected mode and quit", async () => {
   const app = await page();
-  const requests: string[] = [];
-  app.context.fetch = async (url?: string) => { requests.push(url ?? ''); return { ok: true, json: async () => ({}) }; };
-  app.run("state={...state,pi:{type:'ready'}};composer()");
-  const input = app.elements.get('prompt');
-  assert.ok(input);
-  const key = (key: string) => input.onkeydown?.({ key, ctrlKey: true, preventDefault() {} });
-  key('c');
-  assert.deepEqual(requests, []);
-  input.value = 'draft';
-  key('d');
-  assert.deepEqual(requests, []);
-  assert.equal(input.value, 'draft');
-  input.value = '';
-  key('d');
-  assert.deepEqual(requests, ['/quit']);
+  const requests: { path: string; body: object }[] = [];
+  app.context.fetch = async (path?: string, options?: { body?: string }) => { requests.push({ path: path ?? '', body: JSON.parse(options?.body ?? '{}') }); return { ok: true, json: async () => ({}) }; };
+  app.run("state={...state,pi:{type:'ready'}};refreshComposer();editor.setText('draft')");
+  app.handlers()?.send('follow_up');
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, [{ path: '/prompt', body: { text: 'draft', mode: 'follow_up' } }]);
+  app.handlers()?.quit();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(requests[1]?.path, '/quit');
 });
 
 async function connectSource(name: string) {
@@ -66,13 +83,25 @@ async function connectSource(name: string) {
   return source.slice(source.indexOf("let source"), source.indexOf("async function older()"));
 }
 
+test("working hint shares the status clock and keeps its spinner across ticks", async () => {
+  const app = await page();
+  assert.equal(app.run("Date.now=()=>12000;state={...state,pi:{type:'ready'},working:true,since:0};status();refreshComposer();const spinner=element('hint').firstElementChild;const clockMatches=element('hint').children[1].textContent===element('status').textContent+' · '&&element('hint').children[2].textContent==='⎋'&&element('hint').children[3].textContent===' abort';Date.now=()=>25000;composerHint(status());clockMatches&&element('status').textContent==='working 25s'&&element('hint').children[1].textContent==='working 25s · '&&element('hint').firstElementChild===spinner&&spinner.className==='spin'"), true);
+});
+
+test("printable transcript keys cannot change the draft during startup", async () => {
+  const app = await page();
+  app.run("refreshComposer()");
+  app.listeners.get('keydown')?.({ key: 'z', target: app.context.document.createElement(), preventDefault() {} });
+  assert.equal(app.text(), '');
+});
+
 test("composer gains focus when delayed pi readiness removes inert", async () => {
   const app = await page();
-  app.run("state={...state,pi:{type:'starting'}};composer();focusComposer()");
+  app.run("state={...state,pi:{type:'starting'}};refreshComposer();focusComposer()");
   app.windowListeners.get('load')?.();
   assert.equal(app.context.document.activeElement, undefined);
-  app.run("state.pi={type:'ready'};composer()");
-  assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
+  app.run("state.pi={type:'ready'};refreshComposer()");
+  assert.equal(app.context.document.activeElement, app.prompt());
 });
 
 test("async send and dialog completion preserve focus while the document lacks focus", async t => {
@@ -81,7 +110,7 @@ test("async send and dialog completion preserve focus while the document lacks f
     app.context.document.hasFocus = () => false;
     let release: () => void = () => {};
     app.context.fetch = async () => { await new Promise<void>(resolve => { release = resolve; }); return { ok: true, json: async () => ({}) }; };
-    const pending = action === 'send' ? app.run("state={...state,pi:{type:'ready'}};element('prompt').value='draft';send()") : undefined;
+    const pending = action === 'send' ? app.run("state={...state,pi:{type:'ready'}};editor.setText('draft');send()") : undefined;
     if (action === 'send') { release(); await pending; }
     else if (action === 'dialog') app.run("dialogId='done';state.dialogs=[];dialogs()");
     else app.run("pickerButton=element('model');closePicker()");
@@ -93,21 +122,21 @@ test("composer waits for document focus at startup and load", async () => {
   const app = await page();
   let focused = false;
   app.context.document.hasFocus = () => focused;
-  app.run("state={...state,pi:{type:'ready'}};composer();focusComposer()");
+  app.run("state={...state,pi:{type:'ready'}};refreshComposer();focusComposer()");
   assert.equal(app.context.document.activeElement, undefined);
   app.windowListeners.get('load')?.();
   assert.equal(app.context.document.activeElement, undefined);
   focused = true;
   app.windowListeners.get('focus')?.();
-  assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
+  assert.equal(app.context.document.activeElement, app.prompt());
 });
 
 test("pane focus selects the composer without taking page controls or dialog fields", async () => {
   const app = await page();
-  app.run("state={...state,pi:{type:'ready'},dialogs:[]};element('prompt').tagName='TEXTAREA';element('model').tagName='BUTTON';element('prompt').focus()");
+  app.run("state={...state,pi:{type:'ready'},dialogs:[]};element('model').tagName='BUTTON';editor.focus()");
   app.context.document.activeElement = undefined;
   app.windowListeners.get('focus')?.();
-  assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
+  assert.equal(app.context.document.activeElement, app.prompt());
   for (const tag of ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON']) {
     const control = app.elements.get('model');
     assert.ok(control);
@@ -128,7 +157,7 @@ test("pane focus selects the composer without taking page controls or dialog fie
 
 test("printable transcript keys reach the composer but native shortcuts and fields keep their keys", async () => {
   const app = await page();
-  app.run("state={...state,pi:{type:'ready'},dialogs:[]};element('prompt').tagName='TEXTAREA'");
+  app.run("state={...state,pi:{type:'ready'},dialogs:[]}");
   const target = app.context.document.createElement();
   let prevented = 0;
   const key = (extra = {}) => app.listeners.get('keydown')?.({ key: 'z', target, preventDefault() { prevented++; }, ...extra });
@@ -138,12 +167,12 @@ test("printable transcript keys reach the composer but native shortcuts and fiel
   key({ key: ' ', target: button });
   key({ key: 'Enter', target: button });
   assert.equal(prevented, 0);
-  assert.equal(app.elements.get('prompt')?.value, '');
+  assert.equal(app.text(), '');
   key();
-  assert.equal(app.elements.get('prompt')?.value, 'z');
-  assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
+  assert.equal(app.text(), 'z');
+  assert.equal(app.context.document.activeElement, app.prompt());
   assert.equal(prevented, 1);
-  key({ target: app.elements.get('prompt') });
+  key({ target: app.prompt() });
   const editable = app.context.document.createElement(); editable.isContentEditable = true;
   key({ target: editable });
   assert.equal(prevented, 1);
@@ -159,7 +188,7 @@ test("Space on a fold control toggles once without typing or losing focus", asyn
   app.listeners.get('keydown')?.(event);
   assert.equal(view.classList.contains('open'), true);
   assert.equal(line.attributes.get('aria-expanded'), 'true');
-  assert.equal(app.elements.get('prompt')?.value ?? '', '');
+  assert.equal(app.text() ?? '', '');
   assert.equal(app.context.document.activeElement, line);
   app.windowListeners.get('focus')?.();
   assert.equal(app.context.document.activeElement, line);
@@ -174,7 +203,7 @@ test("an open picker keeps letters and window focus and still handles Enter and 
     const host = app.elements.get('picker');
     assert.ok(host);
     app.listeners.get('keydown')?.({ key: 'z', target: host, preventDefault() {} });
-    assert.equal(app.elements.get('prompt')?.value ?? '', '');
+    assert.equal(app.text() ?? '', '');
     assert.equal(app.context.document.activeElement, host);
     app.windowListeners.get('focus')?.();
     assert.equal(app.context.document.activeElement, host);
@@ -183,16 +212,16 @@ test("an open picker keeps letters and window focus and still handles Enter and 
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.deepEqual(requests, key === 'Enter' ? ['/thinking'] : []);
     assert.equal(host.hidden, true);
-    assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
+    assert.equal(app.context.document.activeElement, app.prompt());
   }
 });
 
 test("closing a picker or a dialog returns focus to the composer", async () => {
   const app = await page();
   app.run("pickerButton=element('model');element('model').focus();closePicker()");
-  assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
+  assert.equal(app.context.document.activeElement, app.prompt());
   app.run("dialogId='question';state.dialogs=[];element('model').focus();dialogs()");
-  assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
+  assert.equal(app.context.document.activeElement, app.prompt());
 });
 
 test("the transcript page applies SSE synchronously and reconnects with the applied cursor", async () => {
@@ -320,8 +349,23 @@ test("stop and Escape take back queued work before aborting", { timeout: 1000 },
     await done; await result;
     assert.deepEqual(commands, ["clear_queue", "abort"], trigger);
     assert.deepEqual(started, [], trigger);
-    assert.equal(app.elements.get("prompt")?.value, "first queued\n\nsecond queued", trigger);
+    assert.equal(app.text(), "first queued\n\nsecond queued", trigger);
   }
+});
+
+test("editor acknowledgment keeps the second Escape clear action", async () => {
+  const app = await page();
+  const control = app.run("state={...state,pi:{type:'ready'}};refreshComposer();editor.setText('draft');({ack:()=>apply({...state,type:'state',editor:{id:'one',text:'replacement'}}),escaped:()=>escaped})");
+  const escape = () => app.listeners.get('keydown')?.({ key: 'Escape', target: app.prompt(), preventDefault() {} });
+  escape();
+  control.ack();
+  assert.equal(control.escaped(), true);
+  assert.equal(app.text(), 'replacement');
+  escape();
+  assert.equal(app.text(), '');
+  assert.equal(control.escaped(), true);
+  app.handlers()?.input(true);
+  assert.equal(control.escaped(), false);
 });
 
 test("a held prompt response prevents duplicate draft submissions", async () => {
@@ -330,7 +374,7 @@ test("a held prompt response prevents duplicate draft submissions", async () => 
   let release: () => void = () => {};
   const held = new Promise<void>(resolve => { release = resolve; });
   app.context.fetch = async () => { count++; await held; return { ok: true, json: async () => ({}) }; };
-  const result = app.run("element('prompt').value='one draft'; Promise.all([send(),send()])");
+  const result = app.run("editor.setText('one draft'); Promise.all([send(),send()])");
   assert.equal(count, 1);
   release(); await result;
 });
@@ -342,7 +386,7 @@ test("a startup dialog is visible with an inert composer", async () => {
 
 test("a state record preserves a typed dialog answer", async () => {
   const app = await page();
-  assert.equal(app.run("state={...state,working:true,dialogs:[{id:'a',method:'input',title:'Question'}]};composer();dialogs();const form=element('dialogs').children[0];const input=form.children[1];input.value='typed';state={...state,dialogs:[{id:'a',method:'input',title:'Question'}]};dialogs();apply({type:'reset',epoch:'next',more:false,items:[]});element('dialogs').children[0]===form&&input.value==='typed'&&element('prompt').placeholder==='Message koa…'&&element('send').disabled"), true);
+  assert.equal(app.run("state={...state,working:true,dialogs:[{id:'a',method:'input',title:'Question'}]};refreshComposer();dialogs();const form=element('dialogs').children[0];const input=form.children[1];input.value='typed';state={...state,dialogs:[{id:'a',method:'input',title:'Question'}]};dialogs();apply({type:'reset',epoch:'next',more:false,items:[]});element('dialogs').children[0]===form&&input.value==='typed'&&element('prompt').children[0].placeholder==='Message koa…'&&element('send').disabled"), true);
 });
 
 test("unchanged state keeps queue controls and status nodes and acknowledges editor once", async () => {

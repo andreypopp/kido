@@ -379,7 +379,7 @@ addition to the shared module's `reset`, `item` and `patch`:
 type State = { type: "state"; working: boolean; since?: number; aborted: boolean;
   name: string; model?: string; thinking?: string; levels: string[];
   context?: { tokens: number | null; window: number; percent: number | null };
-  cwd: string; branch?: string; dirty?: boolean;
+  cwd: string;
   queue: { steering: string[]; followUp: string[] };
   pi?: { exited: number } | { signal: string };
   dialogs: RpcExtensionUIRequest[] };                                // open dialog requests, oldest first
@@ -420,11 +420,8 @@ from `get_session_stats` after each `turn_end`, `agent_settled` and
 `rpc-commands.md`). The queue is `queue_update`, which carries the
 whole queue, so koa shows what ko-pi's page could not. `cwd` is the
 `cwd` of the session header, the first line of `sessionFile`
-(pi's `session-format.md`), else koa's own. The branch and the dirty
-flag come from `git symbolic-ref --short HEAD` and `git status
---porcelain --untracked-files=no` in that directory, run with
-asynchronous `spawn` at start and after each `agent_settled`, with a
-deadline of 2 s; a failure leaves them absent.
+(pi's `session-format.md`), else koa's own. The status bar shows no
+git branch or dirty mark (the user, 2026-11-09), so koa runs no git.
 
 **Extension UI.** A dialog request shows as a card above the composer
 with its title, options or field and the `timeout` when present. The
@@ -774,44 +771,58 @@ unit. The order is fixed, because each unit builds on the one before.
    pi's `get_commands`, and three new snapshots in `KoaWebviewTests`
    (a `/` list, an `@` list with agents and files, an `@` list with
    files alone) in light and dark.
-12. **Images in the transcript.** Section 8, "Images in the
-   transcript" and "The image store and its route". The design agent
-   first mocks the thumbnails of a user message, the image in an open
-   `read` step and the evicted placeholder; the unit follows the
+12. **Images in the transcript.** Section 8, "The image store and its
+   route". The design agent first mocks the thumbnails of a user
+   message and the image in an open `read` step; the unit follows the
    mockup. `share/pi/image.ts` (`sniffImage`, `imageSize`) with its
-   tests; the store, `ImageRef` and `GET /images/{id}` in
-   `transcript.ts`; `records.ts` gets `ImageRef`; the page renders
-   the refs and creates a step's images at its first open; the fake
-   pi gets the 1×1 PNG fixture. Tests: the transcript tests of
-   section 8 (the fail-first one: a `read` result's image reaches the
-   route), the program test over `get_messages` with images, and two
-   snapshots in `KoaWebviewTests` (a user message with two
-   thumbnails, an open `read` step with its image), light and dark.
-   Deletes the `images` count and the page's "N images" line.
-13. **Quick Look.** Section 8, "Quick Look". The app: the `koPreview`
-   handler and `window.ko.preview` in `WebviewPaneView.swift`, the
-   preview file under `$TMPDIR/kido-previews/<pid>/`, the
-   `QLPreviewPanel` data source and delegate on the pane's webview
-   view, the sweep at launch, and `WebviewPaneTests` for the
-   validation and the file. The page: a click or Space on an image
-   calls `window.ko.preview` when it exists, else opens the lightbox;
-   Escape closes the lightbox first. Tests: section 8, "Tests". The
-   manager sends the handler's shape to the top-level session before
-   the implementer writes it: it is a new page-to-app surface.
-14. **Attachments.** Section 8, "Attachments: drop and paste" and
-   "Sending". The design agent first mocks the chips (an image chip,
-   a file chip, an uploading chip, a refused chip) above the field,
-   windowed and narrow; the unit follows the mockup. `page/attach.ts`
-   (the drop and paste handlers, the chips, the chunked upload),
-   the composer's `drop` and `paste` handlers that take file drops
-   before CodeMirror, the attachment routes and directory in
-   `koa.ts`, `/prompt` with `attachments`, the queue records with
-   their attachments and the take-back, and the fake pi's log of
-   `images`. Tests: section 8, "Tests"; three snapshots in
+   tests; koa's directory `koa-<pid>` and its removal at exit; the
+   on-disk store, `ImageRef` and `GET /images/{id}` in
+   `transcript.ts` (`transcript({ dir })`); `records.ts` gets
+   `ImageRef`; the page renders the refs and creates a step's images
+   at its first open; the fake pi gets the 1×1 PNG fixture. Tests:
+   the transcript tests of section 8 (the fail-first one: a `read`
+   result's image reaches the route), the program test over
+   `get_messages` with images, and two snapshots in `KoaWebviewTests`
+   (a user message with two thumbnails, an open `read` step with its
+   image), light and dark. Deletes the `images` count and the page's
+   "N images" line.
+13. **Attachments.** Section 8, "A local session", "Attachments: drop
+   and paste" and "Sending". The design agent first mocks the chips
+   (an image chip, a file chip, a path chip, an uploading chip, a
+   refused chip) above the field, windowed and narrow; the unit
+   follows the mockup. The app: `isLocalProgram`, `window.ko.local`
+   in the theme script, the native drop of `PaneView` for a local
+   page with `__koDrop` and the `ko-drop` event, and its
+   `WebviewPaneTests`. The page: `page/attach.ts` (the drop, paste
+   and `ko-drop` handlers, the chips, the folder's `@dir/` at the
+   cursor, the chunked upload), the
+   composer's `drop` and `paste` handlers that take file drops before
+   CodeMirror. koa: the attachment routes (upload, path, bytes,
+   delete) in `koa.ts`, `/prompt` with `attachments`, the queue
+   records with their attachments and the take-back, the fake pi's
+   log of `images`, and the check with the real pi of an empty
+   message with images. Tests: section 8, "Tests"; three snapshots in
    `KoaWebviewTests` (chips over the field, a sent message with a
    thumbnail and a path line, the queue with an attachment), light and
    dark. The manual check in Kido: a Finder drop of a PNG and of a
-   text file onto a koa pane, local and over `ko HOST`.
+   text file onto a koa pane, local (the chips show the paths, and pi
+   edits the original), a folder with a file (the `@dir/` text and
+   one chip) and over `ko HOST` (the chips show copies).
+14. **Quick Look.** Section 8, "Quick Look". The app: the `koPreview`
+   handler and `window.ko.preview` in `WebviewPaneView.swift`, the
+   preview file under `$TMPDIR/kido-previews/<pid>/<uuid>/<name>`,
+   the `QLPreviewPanel` data source and delegate on the pane's webview
+   view, the 64 MiB stop, the sweep at launch, and `WebviewPaneTests`
+   for the validation and the file. koa: `GET /steps/{seq}/{block}/file` and the
+   `Content-Disposition` of every served file. The page: a click or
+   Space on an image or a chip, and ⌘-click on the label of a `read`,
+   `edit` or `write` step with a file (the ⌘-hover look mocked
+   first), call `window.ko.preview` when it exists, else the lightbox
+   for an image and a new tab for a file; Escape closes the lightbox
+   first. Tests: section 8, "Tests", and one snapshot in
+   `KoaWebviewTests` (a `read` step's label under ⌘-hover). The manager sends the handler's shape to the top-level
+   session before the implementer writes it: it is a new page-to-app
+   surface.
 
 ## 7. The composer: CodeMirror 6 and completion
 
@@ -932,14 +943,20 @@ The composer needs these ES modules, all MIT:
 | `w3c-keyname` | 2.2.8 | `index.js` | 2,630 |
 | `crelt` | 1.0.7 | `index.js` | 951 |
 | `@marijn/find-cluster-break` | 1.0.4 | `src/index.js` | 4,270 |
+| `@lezer/lr` | 1.4.12 | `dist/index.js` | 73,047 (installed, not bundled) |
 
-Total: 1,049,317 bytes. `commands` gives the history (⌘Z) and the
+Total in the bundle: 1,049,317 bytes of module source. `commands` gives the history (⌘Z) and the
 standard keymap; `autocomplete` gives the completion state, the
 tooltip and its keymap; `language`, `streamparser`, `@lezer/common`
 and `@lezer/highlight` are imports of `commands` and `autocomplete`
-that the composer never calls. Not needed: `@lezer/lr`,
-`@codemirror/lang-markdown`, `@lezer/markdown` (the composer does not
-highlight). A tree-shaken bundle of the same exports, made once with
+that the composer never calls. Not in the bundle: `@lezer/lr`, which
+`@codemirror/language` declares as a dependency (so npm installs it
+and the lockfile lists it) but does not import, so esbuild leaves it
+out; and `@codemirror/lang-markdown` and `@lezer/markdown`, which
+nothing depends on (the composer does not highlight). The direct
+dependencies of `share/koa/package.json` are the four `@codemirror`
+packages, `marked`, `remend`, `esbuild` and `typescript`; everything
+else is transitive. A tree-shaken bundle of the same exports, made once with
 esbuild 0.25.0 in a scratch directory, measures 623,637 bytes plain
 and 296,935 bytes minified (96,922 gzipped); the bridge refuses a
 compressed response (docs/protocol.md, "The serve stream"), so the
@@ -1121,9 +1138,21 @@ imports `{ composer } from './composer.ts'`, and the DOM tests of
 a fake document, supply a fake `composer` in that context instead of
 the module. `composer(host, handlers)` mounts an `EditorView` in
 the `<div id="prompt">` that replaces the `<textarea>` and returns
-`{ text(), setText(text), insert(text), focus(), hasFocus(),
-placeholder(text) }`. `handlers` are the page's: `input()`,
-`send(mode)`, `quit()` and `escape()`. The page keeps every rule of
+`{ text(), empty(), setText(text), insert(text), focus(),
+hasFocus(), placeholder(text) }`. `handlers` are the page's:
+`input(user)`, `send(mode)` and `quit()`; unit 11 adds `escape()`
+for the completion's close, because until then Escape bubbles to the
+document's handler unchanged. `input(user)` runs for every
+transaction that changed the document, and `user` is true when the
+transaction carries a `Transaction.userEvent` annotation (typing,
+paste, delete, undo, redo, and the composer's own `insert()` and
+Shift-Return newline, which annotate `input.type`) and false for
+`setText()`. The page refreshes the composer on every call and
+resets its second-Escape state only when `user` is true, so the
+state survives an editor-ack or a take-back, and no caller of
+`setText` can forget the refresh. `PromptMode` (`prompt`, `steer`,
+`follow_up`) is one type in `records.ts` that the composer's `send`
+handler, the page and koa share. The page keeps every rule of
 "Keys" and the composer focus paragraph of section 4; this is how
 each maps:
 
@@ -1163,11 +1192,23 @@ each maps:
   replaces the selection, in place of `setRangeText`; the
   `closest('input,textarea,select')` test gains
   `[contenteditable]`, which `isContentEditable` covers.
-- **IME.** CodeMirror ignores key events during a composition
-  (`ignoreDuringComposition`, `view/dist/index.js:4699-4712`, with a
-  Safari-specific window of 100 ms after `compositionend`), so the
-  Enter that commits a candidate does not send. The page's own
-  `isComposing` checks on the composer go with the textarea.
+- **IME.** CodeMirror ignores key events during a composition that
+  has changed the text (`ignoreDuringComposition`,
+  `view/dist/index.js:4699-4712`, at `composing > 0`, with a
+  Safari-specific window of 100 ms after `compositionend`). Between
+  `compositionstart` and the first change, `composing` is 0 and a
+  key still reaches the keymap, so each Enter binding returns false
+  while `view.compositionStarted` (`composing >= 0`,
+  `view/dist/index.js:7928`), and WebKit commits the candidate. Thus
+  the Enter that commits a candidate never sends. The page's own
+  `isComposing` checks on the composer go with the textarea; the
+  dialog card and the picker keep theirs. A test cannot commit a
+  candidate: that needs an active input method, and switching the
+  input source would change the user's own; `setMarkedText` marks
+  text without one, so WebKit's native editing still runs Return's
+  default. The app's test asserts what the product needs (no send
+  while `compositionStarted`), and the commit with a real input
+  source is one manual check of the unit.
 - **Paste** is CodeMirror's native paste: plain text, no change. A
   paste closes an open completion, as in pi.
 - **The `--ko-focus` border and the glass** are CSS on `.field`;
@@ -1179,20 +1220,33 @@ each maps:
   composer"). The `textarea` rules of `page.css` go.
 - **The placeholder** ("Message koa…", "Steer koa…") is CodeMirror's
   `placeholder()` in a `Compartment` that `composer()` reconfigures.
+  The hint line and the status bar's working text derive from
+  `state` at each refresh and each tick; nothing reads them back
+  from the DOM.
 - **The editor-ack path** is unchanged: `state.editor` →
   `setText(text)` → `POST /editor/ack`.
 - **History**: `history()` and `historyKeymap` (⌘Z, ⇧⌘Z);
   `standardKeymap` for the cursor and selection keys, which WebKit's
-  contenteditable does not supply once CodeMirror owns the content.
+  contenteditable does not supply once CodeMirror owns the content,
+  with its Enter binding filtered out: `@codemirror/commands` binds
+  Enter and Shift-Enter to `insertNewlineAndIndent`
+  (`commands/dist/index.js:1762`), which would run when the
+  composer's Enter handlers return false during a composition and
+  would indent a Shift-Return newline. The composer's keymap is the
+  only owner of the Enter variants, and Shift-Return inserts a plain
+  newline, as the textarea did.
   Tab is not bound in the editor when no completion is open, so Tab
   leaves the field as NOTES.md "The model and thinking pickers"
   requires; pi's forced file completion on Tab is not offered (the
   user's decision of 2026-11-09).
 
-**The seam for the tests.** The page exposes the composer object as
-`window.composer`. The app's `KoaWebviewTests` set and read text
-through it in place of `#prompt.value` and the synthetic `input`
-event (`app/VisualTests/KoaWebviewTests.swift:320-351`), and the
+**The seam for the tests.** The page exposes the composer object
+itself as `window.composer`, typed as the `text`, `setText` and
+`focus` subset; because `setText` reports through `input(false)`,
+the page refreshes after an external `setText` too. The app's
+`KoaWebviewTests` set and read text through it in place of
+`#prompt.value` and the synthetic `input` event
+(`app/VisualTests/KoaWebviewTests.swift:320-351`), and the
 focus checks compare `document.activeElement` with
 `document.querySelector('#prompt .cm-content')`. The stress runner's
 page workloads do the same. The DOM tests (`koa-dom.test.ts`) keep
@@ -1452,13 +1506,21 @@ the document. The page loads an image with `<img src="/images/<id>">`
 and WebKit owns the decoded pixels, which it drops for an image that
 is not in a document.
 
-**The store** is the transcript module's, because it owns the items:
-`share/pi/transcript.ts` decodes each image block from base64 at
-conversion, in `applyMessage` for a user message and in `flush` for a
-tool result, into `images: Map<string, { bytes: Buffer; mimeType:
-string }>`. The id is `<seq>.<n>`, with `n` the image's ordinal in
-the item, so a rebuild gives the same ids to the same images. A
-record carries a reference, not bytes:
+**Every image is kept, on disk.** The user decided on 2026-11-09: no
+cap, no eviction, no placeholder, as pi keeps every image of the
+session. koa's memory must not grow with the images, so the bytes
+live in files, not in a `Map`: the transcript module decodes each
+image block from base64 at conversion, in `applyMessage` for a user
+message and in `flush` for a tool result, and writes it with
+`writeFileSync` to `<dir>/images/<seq>.<n>`, where `<dir>` is koa's
+own directory `<os.tmpdir()>/koa-<pid>/` (0700, made at start,
+removed at exit; the attachments below share it) and `n` is the
+image's ordinal in the item, so a rebuild gives the same ids to the
+same images. The module keeps only the index `images: Map<string,
+ImageRef & { path: string }>`, and the route streams the file with
+`createReadStream`. `transcript({ dir })` takes the directory from
+koa; the module's tests pass a temporary one. A record carries a
+reference, not bytes:
 
 ```ts
 type ImageRef = { id: string; mimeType: string; bytes: number; width?: number; height?: number };
@@ -1470,29 +1532,37 @@ goes) and on a tool block's result as `images: ImageRef[]` beside
 (PNG `IHDR`, JPEG `SOFn`, GIF, WebP `VP8`/`VP8L`/`VP8X`, BMP) in
 `share/pi/image.ts`, a new module installed beside `transcript.ts`,
 with `sniffImage(bytes)` (the mime of the first bytes, pi's set and
-pi's exclusions) and `imageSize(bytes)`; the attachment route below is
-its second caller. A header that the parser does not know leaves both
-absent, and the page reserves no space.
+pi's exclusions) and `imageSize(bytes)`; the attachment routes below
+are its second caller. A header that the parser does not know leaves
+both absent, and the page reserves no space.
 
-**The cap.** `MAX_IMAGE_STORE_BYTES` is 256 MiB of decoded bytes. Over
-it, the store evicts the oldest ids by `seq`; an evicted id answers
-410, and the page shows the placeholder of the mockup ("image not
-kept", with the size). `rebuild` clears and refills the store from
-`get_messages`, so a reload of koa's pi or a compaction brings the
-newest 256 MiB back. koa thus holds at most 256 MiB beside pi's own
-copy; a session that exceeds it is rare, and the cap is the measure
-that the stress report (unit 6a) watches.
+**The cost, stated.** Disk under `$TMPDIR` equal to the decoded size
+of every image of the branch, written once at conversion and again
+at each `rebuild` (`rebuild` removes `images/` and writes the branch
+again from `get_messages`: a compaction or a session switch rewrites
+every image; a 200 MiB session writes 200 MiB, well under a second
+on the hosts koa runs on). koa's heap holds one image at a time
+during a conversion, plus the `get_messages` response itself, which
+koa already holds whole during a rebuild. `writeFileSync` on the
+event loop is the one synchronous write; the alternative, a read of
+the session file for each click, has no index from an item to a
+message, so it is not used. A koa that dies by a signal leaves its
+directory; the next koa does not reuse a pid's directory, and the
+host's `$TMPDIR` cleaning removes it (the plan accepts this, as pi
+accepts its `pi-clipboard-*` files).
 
 **The route.** `GET /images/{id}` in `transcript.ts`'s `handle`
-beside `/items`: `Content-Type` is the stored `mimeType`, the body the
-bytes; an unknown id is 404, an evicted one 410. Every proxy response
-carries `Cache-Control: no-store` and the server's CSP (protocol.md,
-section 16). The CSP's `img-src 'self' data:` permits the route and
-forbids `blob:`, so the page never uses `createObjectURL`. `no-store`
+beside `/items`: `Content-Type` is the stored `mimeType`,
+`Content-Length` its size, the body the file; an unknown id is 404,
+and a missing file (the directory was cleaned under koa) is 410.
+Every proxy response carries `Cache-Control: no-store` and the
+server's CSP (protocol.md, section 16). The CSP's `img-src 'self'
+data:` permits the route and forbids `blob:`, so the page never uses
+`createObjectURL`, also for a chip's thumbnail (below). `no-store`
 means that a second `<img>` with the same URL fetches again, so the
 page creates one `<img>` for each ref and reuses the node when it
-renders the item again (the `slots` of its view, as the markdown memo
-keeps its blocks). A step's detail is collapsed by default and a
+renders the item again (the `slots` of its view, as the markdown
+memo keeps its blocks). A step's detail is collapsed by default and a
 hidden `<img>` with a `src` still loads, so the page creates a step's
 images at the first open of the step, never before; a user message's
 thumbnails are visible and load at once. Each `<img>` has
@@ -1507,6 +1577,33 @@ aspect; the `read` step's line says `image 1200×800` in place of
 `N lines` when the result has an image. Light and dark, windowed and
 narrow.
 
+### A local session
+
+Two features below act on a path of the Mac: a dropped file whose
+original pi should edit, and a Quick Look of a file by its path. Both
+need one fact: koa and pi run on this Mac. The app has it from three
+facts that it already holds for a pane, and the predicate is one
+function, `WindowOwner.isLocalProgram(pane)`:
+
+- `host == .local` (`WindowOwner.host`): the window's server is the
+  Mac's own server, not a `ko HOST` remote.
+- `pane.runtimeMark == nil` (`PaneView.runtimeMark`, set from the
+  model's `place` in `WindowView.swift:420-428`): the pane is neither
+  a pane of a runtime nor the host pane of a routed pi, whose tools
+  run in the runtime (docs/design-runtimes.md, "Clients"); a path on
+  the Mac means nothing to either.
+- The pane shows a page (`webviewView != nil`). A page shows only
+  when its program serves through the pane's own serve stream, so the
+  program runs where the pane's server runs; an ssh foreground
+  (`sshDestination`, `WindowOwner.swift:736-739`) cannot show a page
+  from the far host, so it needs no check of its own.
+
+The theme script gives the page the fact as `window.ko.local`, a
+boolean, so the page knows which drop and which preview to expect; a
+browser has no `window.ko` and is never local in this sense. The fact
+changes only with the pane's row, and a change replaces the scripts
+as a theme change does.
+
 ### Quick Look
 
 **The channel today.** A page reaches the app only through the one
@@ -1520,46 +1617,90 @@ docs/design-webview.md says why: the app is no message bus between a
 page and ko. A preview is not that: it reaches neither the program
 nor the server; it is a client action, as `app.webview.links` is.
 
+**Everything Quick Look can show.** The user decided on 2026-11-09:
+not images only. `QLPreviewPanel` decides what it shows from the
+file's name and type (a PDF, text, source, an image, a video, an
+archive's listing; an unknown type gets its icon), so the app checks
+no type and caps only the size. What is clickable:
+
+- An image of the transcript (a user message's thumbnail, a step's
+  image).
+- An attachment chip: a click on the chip's body previews it, × still
+  removes it.
+- The target of a `read`, `edit` or `write` step whose arguments
+  name a file: ⌘-click on the step's label (the user decided on
+  2026-11-09). A plain click still folds, and the step has no control
+  inside it. While ⌘ is held over such a label, the cursor is the
+  pointer and the label gets the underline of a link (`:hover` under a
+  page-level `cmd` class that the `keydown` and `keyup` of Meta
+  toggle); a label of any other step, or of a step whose `path`
+  argument is missing, shows nothing and ⌘-click folds as a click
+  does. It shows the file as it is now on pi's host, not as the tool
+  saw it.
+
 **The message.** The document-start script adds one function,
 `window.ko.preview(url)`, which posts `{ document, url }` to a second
 handler, `koPreview`, with the generation that the socket shim
-carries. In a browser `window.ko` is absent and the page falls back
-(below). The app's validation, in this order: `!stopped`, main frame,
-`allowed(frameInfo.request.url)`, `document == generation`, `url`
-parses and `allowed(url)` (so a page previews only its own pane's
+carries. The URL is always on the pane's own origin: one mechanism
+serves a local and a remote session, and the app fetches no Mac path
+itself (a local shortcut by path would be a second mechanism for the
+same click, and Quick Look shows the copy under its real name,
+below). koa serves three kinds of URL:
+
+| URL | Serves | Refusals |
+|---|---|---|
+| `/images/{id}` | a transcript image | 404, 410 as above |
+| `/attachments/{id}` | an attachment's bytes, also the chip's thumbnail | 404 |
+| `/steps/{seq}/{block}/file` | the file that a `read`, `edit` or `write` step names: koa takes the `path` argument from its own item at `seq` and block index `block`, resolved against the session `cwd` when relative | 404 when no such step or the file is absent, 403 when not a regular readable file, 413 over 64 MiB |
+
+Each answer carries `Content-Type` (the sniffed image type, else
+`application/octet-stream`), `Content-Length` and
+`Content-Disposition: inline; filename="<name>"` with the basename,
+so Quick Look gets the name and the extension that it types the file
+by. The page names a step, never a path: a route that took a path
+would let the page read any file of pi's host, and in browser mode
+that route sits on a localhost port. koa resolves the path from the
+transcript's own item, writes nothing and follows no path outside a
+regular file (`lstat`, then `S_IFREG`). The app's validation, in this order: `!stopped`, main
+frame, `allowed(frameInfo.request.url)`, `document == generation`,
+`url` parses and `allowed(url)` (a page previews only its own pane's
 resources), the pane is the active pane of a key window, and no
 preview of this pane is in flight; a message that fails any check is
 dropped without a reply, as a socket message is. The app then fetches
 the URL through `KoWebviewFetch`, the path of a page's own `fetch`
-(it takes one of the 6 slots, and a remote server answers through the
+(it takes one of the 6 slots; a remote server answers through the
 pane's serve stream, so a preview works over `ko HOST` and in a
-runtime), refuses a response whose `Content-Type` is not `image/*` or
-whose body passes 64 MiB (Kido's per-file upload limit,
-docs/design-app.md, "Uploads"), writes the bytes to
-`$TMPDIR/kido-previews/<pid>/<uuid>.<ext>` (0700, the extension from
-the type) and opens `QLPreviewPanel.shared()` with one item. The
-webview pane view answers `acceptsPreviewPanelControl` and is the
-panel's data source and delegate (it is in the responder chain above
-the WKWebView). The file goes when the panel ends its control, when
-the pane is disposed, and at launch for a dead process's directory,
-under the lock rule of `kido-promises`. A failed fetch or a refused
-type shows a transient notice card ("Kido could not preview the
-image"). The user closes the panel with Space or Escape, as in Finder.
+runtime), stops the fetch and shows a notice when the body passes
+64 MiB (Kido's per-file upload limit, docs/design-app.md,
+"Uploads") or the status is not 200, writes the bytes to
+`$TMPDIR/kido-previews/<pid>/<uuid>/<name>` (0700; `<name>` from
+`Content-Disposition`, sanitized to a basename, else `preview` with
+an extension from `Content-Type` through `UTType`) and opens
+`QLPreviewPanel.shared()` with that one item. The webview pane view
+answers `acceptsPreviewPanelControl` and is the panel's data source
+and delegate (it is in the responder chain above the WKWebView). The
+file goes when the panel ends its control, when the pane is disposed,
+and at launch for a dead process's directory, under the lock rule of
+`kido-promises`. A failed fetch shows a transient notice card ("Kido
+could not preview the file"). The user closes the panel with Space or
+Escape, as in Finder.
 
-**The page.** A click on an image, or Space and Enter on a focused
-one (each `<img>` has `tabIndex` 0 and `role="button"`), calls
-`window.ko.preview(img.src)` when the function exists. Without it,
-the browser target, the page opens a lightbox: a fixed overlay on the
-dock's glass with the image at its natural size, at most the
-viewport; a click or Escape closes it. While the lightbox is open,
-Escape closes it and nothing else, before the abort rule of section
-4. The lightbox is the one fallback; the page cannot open a tab or
-download (docs/design-webview.md, "Non-goals").
+**The page.** A click on an image or a chip, Space and Enter on a
+focused one (each has `tabIndex` 0 and `role="button"`), or ⌘-click
+on the label of a `read`, `edit` or `write` step with a file calls
+`window.ko.preview(url)` when the function exists. Without it, the browser target, the page opens a lightbox
+for an image: a fixed overlay on the dock's glass with the image at
+its natural size, at most the viewport; a click or Escape closes it.
+For a file in a browser the page opens the URL in a new tab, which a
+browser shows or downloads itself; in Kido a page cannot open a tab
+or download (docs/design-webview.md, "Non-goals"), which is why the
+app has the preview. While the lightbox is open, Escape closes it and
+nothing else, before the abort rule of section 4.
 
 ### Attachments: drop and paste
 
-**What a drop delivers.** In Kido, `PaneView` refuses a drag while a
-page is shown (`webviewView == nil` in `draggingEntered`,
+**What a drop delivers today.** In Kido, `PaneView` refuses a drag
+while a page is shown (`webviewView == nil` in `draggingEntered`,
 `app/App/PaneView.swift:1404-1406`), so the WKWebView, which
 registers its own drag types, takes the drop, and the page gets the
 standard `drop` event with `dataTransfer.files`: `File` objects with
@@ -1573,16 +1714,65 @@ page calls `preventDefault` on `dragover` and `drop` of the document.
 composer's `domEventHandlers.drop` takes a drop with files before
 CodeMirror sees it. A paste with `clipboardData.files` (a copied
 image, a Finder copy) goes the same way; a text paste stays
-CodeMirror's. The first unit step in Kido confirms the `File` bytes
-with a manual drop on a koa pane, because `NSDraggingInfo` cannot be
-synthesized in the app's tests.
+CodeMirror's.
+
+**Two drops, by the session.** The user decided on 2026-11-09: in a
+local session pi gets the original path, so it edits the user's file
+and not a copy. Remote sessions, runtimes and the browser keep the
+bytes.
+
+- **A local session: the native drop.** `PaneView.draggingEntered`
+  returns `.copy` for a pane that shows a page when
+  `isLocalProgram(pane)` holds, `acceptingInput` holds and the
+  pasteboard has `.fileURL` items; for any other drag over a page it
+  returns `[]`, so WebKit takes a drag without file URLs (a promise
+  from Photos or Mail) and the page gets its bytes. `performDragOperation`
+  reads the file URLs and validates them as the terminal upload does,
+  through `Upload(files:copying: false)` (`app/App/Upload.swift:20-32`:
+  regular files only, no packages, symlinks or aliases, at most 16),
+  after it has set aside the folders: a URL whose `lstat` is a
+  directory and that is not a package (`isPackageKey`) is a folder,
+  and `Upload` never sees it. The app hands the page the two lists
+  with `browser.evaluateJavaScript("window.__koDrop('<generation>', <json>)")`,
+  where the document-start script defines `__koDrop` to check the
+  generation and dispatch a `ko-drop` `CustomEvent` on `window` with
+  `{ files: string[]; folders: string[] }`. The app hands the page
+  nothing else: no bytes, no URL, and a file path only after
+  `Upload`'s checks; a failed check shows Kido's own upload notice and
+  hands nothing of that drop. The page validates the event in turn
+  (two arrays of strings, each absolute and without control
+  characters, at most 16 together) and makes a path chip for each
+  file. **A folder** (the user decided on 2026-11-09) becomes text:
+  the page inserts `@dir/` at the composer's cursor, with a space
+  before and after when the neighbours are not blank, as pi's paste
+  of paths does; the path is relative to the session `cwd`
+  (`state.cwd`) when the folder is under it (`@src/app/`), else
+  absolute (`@/Users/me/other/`), and quoted as pi's completion quotes
+  it (`@"a b/"`) when it has a space. The reason for the relative
+  form: it is what the completion of section 7 would insert, and a
+  session that moves hosts keeps it readable. The files of the same
+  drop still become chips. The drop position does not matter: the
+  whole page is the composer's target.
+  In a session that is not local, a dropped folder has no path on
+  pi's host and no bytes (WebKit gives a `File` of size 0 for a
+  directory, and `webkitGetAsEntry().isDirectory` names it), so the
+  page refuses it with a transient line in the chip row, "Folders
+  need a local session", and uploads the files of the drop.
+- **Every other session: the bytes.** The page's `drop` and `paste`
+  handlers read `dataTransfer.files` and upload them in chunks
+  (below). When `window.ko.local` is true, the page ignores
+  `dataTransfer.files` of a `drop`, because the app took the drag;
+  it still reads a paste's files, which have no path on any host.
 
 **The chips.** A dropped or pasted file becomes a chip above the
 field, inside the dock (the design agent mocks them): a thumbnail
-for an image, a document glyph with the name and the size for a file,
-a progress state while its bytes upload, a refused state with the
-reason (too big, too many), and × to remove it. At most 16
-attachments for one prompt. A chip's removal deletes koa's copy.
+for an image (an `<img>` of `/attachments/{id}`), a document glyph
+with the name and the size for a file, a progress state while its
+bytes upload, a refused state with the reason (too big, too many, not
+readable), and × to remove it. A path chip shows the file's name and
+its directory muted, so the user sees that pi gets the original. At
+most 16 attachments for one prompt. A chip's removal deletes koa's
+copy; a path chip has none.
 
 **The bytes to koa.** The proxy's request body is at most 1 MiB
 (`MAX_BODY`, `ko_server/src/http.rs`; `ko_client/include/ko_client.h:658`),
@@ -1593,21 +1783,26 @@ thus sends chunks as `Uint8Array` bodies, never a `Blob`:
 | Route | Body | Answer |
 |---|---|---|
 | `POST /attachments` | `{ name, type, size }` as JSON | `{ id }`; 413 over 64 MiB, 409 at 16 pending or 256 MiB pending |
+| `POST /attachments` | `{ path }` as JSON (a local session) | `{ id, kind, mimeType?, width?, height?, size, name }` at once; 404 when absent, 403 when not a regular readable file, 413 over 64 MiB |
 | `POST /attachments/{id}/{offset}` | the bytes from `offset`, at most 768 KiB | `{ received }`; 409 when `offset` is not the bytes received so far; after the last chunk `{ received, kind: "image" \| "file", mimeType?, width?, height? }` |
-| `POST /attachments/{id}/delete` | `{}` | `{}`; the file is gone |
+| `GET /attachments/{id}` | | the bytes with their type, name and length (the chip's thumbnail, Quick Look) |
+| `POST /attachments/{id}/delete` | `{}` | `{}`; a copy is gone, a path is forgotten |
 
-koa writes each attachment to
-`<os.tmpdir()>/koa-<pid>/attachments/<id>/<name>` (0700; the name
-with its path separators and control characters replaced), so koa
-holds no attachment in memory; the one exception is the image that it
-encodes at send time. When the last chunk lands, `sniffImage` decides
-the kind from the first bytes (pi's set and exclusions, never from
-the browser's `type`), and `imageSize` gives the dimensions. The
-directory goes at koa's exit; a sent attachment's file stays until
-then, because pi reads a file's path later and the session's
-transcript names it. These routes have an id in the path, so
-`koa.ts` matches them by prefix as `transcript.ts` matches `/items`;
-they are `alive`, so a user can attach while pi starts.
+koa writes each uploaded attachment to
+`<dir>/attachments/<id>/<name>` (the name with its path separators
+and control characters replaced), in the directory of "The image
+store" above, so koa holds no attachment in memory; the one exception
+is the image that it encodes at send time. A path attachment is not
+copied: koa `lstat`s it, refuses what is not a regular readable file,
+and keeps the path. When the last chunk lands, or at once for a path,
+`sniffImage` decides the kind from the first bytes (pi's set and
+exclusions, never from the browser's `type` or the extension), and
+`imageSize` gives the dimensions. The directory goes at koa's exit; a
+sent copy's file stays until then, because pi reads a file's path
+later and the session's transcript names it. These routes have an id
+in the path, so `koa.ts` matches them by prefix as `transcript.ts`
+matches `/items`; they are `alive`, so a user can attach while pi
+starts.
 
 The page does not resize an image: pi converts and resizes it to the
 model's limits itself (`processImage`), and a resize in the page would
@@ -1616,37 +1811,37 @@ change what the session keeps.
 ### Sending
 
 `POST /prompt` takes `{ text, mode, attachments: string[] }`. koa
-reads each attachment:
+reads each attachment, a copy or a path alike:
 
 - An image becomes one `ImageContent` of the RPC command: the file's
   bytes as base64 and the sniffed `mimeType`. `prompt` takes `images`
   in every mode, also with `streamingBehavior` (`session.prompt`
   passes them to the steer and follow-up queues,
   `dist/core/agent-session.js:1670-1711`), so a steer or follow-up
-  carries its images.
+  carries its images. A dropped image in a local session is thus
+  both: pi gets the pixels, and the path is not added, because pi's
+  own `read` of the path would send the same pixels again.
 - A file becomes a line of text: its path, one for each file, after
   the typed text, as pi's TUI pastes copied files
-  (`interactive-mode.js:2552-2560`). The model reads it with `read`,
-  as it reads a path that the user typed. The text is otherwise as
-  typed; `@` is not added.
+  (`interactive-mode.js:2552-2560`): the original path for a path
+  attachment, the copy's path for an upload. The model reads it with
+  `read`, as it reads a path that the user typed, and edits it in
+  place. The text is otherwise as typed; `@` is not added.
 
 `promptBody` accepts an empty `text` when `attachments` is not empty.
-The unit checks with the real pi that `prompt` with `message: ""` and
-`images` starts a run; if pi refuses, the page requires text for an
-images-only send and the chip row says so.
+The user approved on 2026-11-09: the unit first checks with the real
+pi whether `prompt` with `message: ""` and `images` starts a run; if
+pi refuses, the page requires text for an images-only send and the
+chip row says so.
 
 **The rule for a path.** koa runs where pi runs: the local machine,
-a remote server or a runtime. The page's machine can be another one,
-so a path from the page would mean nothing there, and WebKit gives
-none. Thus a dragged or pasted file is bytes, and koa's copy on pi's
-host is the file that pi reads, local or remote, one case. A file
-that is already on pi's host is named with `@path` through the
-completion of section 7, not dragged. The cost: for a local session,
-pi reads and edits the copy, not the original, when the user drags a
-file from the Finder. Kido knows the original paths of a drop
-(`NSDraggingInfo`) and could give them to the page for a local server
-without a runtime; that is a second channel and a second case, and
-the design does not add it (an open question below).
+a remote server or a runtime. A path means something to pi only on
+pi's host. In a local session the Mac is pi's host, so the dropped
+file's own path goes to pi, and pi edits the original. Elsewhere the
+page's machine is another one, WebKit gives no path, and koa's copy
+on pi's host is the file that pi reads. A file that is already on
+pi's host, in any session, is named with `@path` through the
+completion of section 7.
 
 **The queue.** `queue_update` carries texts only, and `clear_queue`
 returns texts. koa keeps `{ text, attachments }` for each queued
@@ -1658,8 +1853,8 @@ shows a glyph and the count beside a text with attachments.
 
 **The transcript.** pi stores the user message as
 `[{ text }, ...images]` (`agent-session.js:1525`), so the user item
-shows the thumbnails of "Images in the transcript" above, and the
-path lines show as text.
+shows the thumbnails of "The image store" above, and the path lines
+show as text.
 
 ### Limits
 
@@ -1667,11 +1862,12 @@ path lines show as text.
 |---|---|---|
 | One request body | 1 MiB | `MAX_BODY`, the server |
 | One chunk | 768 KiB | the page |
-| One attachment | 64 MiB | koa, at `POST /attachments`; Kido's per-file upload limit |
-| Attachments for one prompt | 16 | koa and the page |
-| Pending attachments | 256 MiB | koa, on disk |
-| Image store | 256 MiB decoded | `MAX_IMAGE_STORE_BYTES`, `transcript.ts` |
-| A preview file | 64 MiB, `image/*` | the app |
+| One attachment, upload or path | 64 MiB | koa, at `POST /attachments`; Kido's per-file upload limit |
+| Attachments for one prompt, dropped paths included | 16 | koa, the page and `Upload.countLimit` |
+| Pending uploads | 256 MiB | koa, on disk |
+| Image store | no cap; disk under `$TMPDIR`, koa's heap flat | `transcript.ts` |
+| A preview | 64 MiB, any type | the app |
+| `/steps/{seq}/{block}/file` | 64 MiB, a regular readable file that a step names | koa |
 | An image on the wire to pi | pi's `processImage` resizes to the model's limit, default 4.5 MiB | pi |
 
 The feed's caps (`MAX_WEBVIEW_WINDOW_BYTES`, the 1 MiB output cap)
@@ -1683,36 +1879,64 @@ each image.
 - `transcript.test.ts` (fail-first: today a `read` result's image
   vanishes and the user item has a count): a user message with two
   image blocks gives `images: [ref, ref]` with the ids `<seq>.0` and
-  `<seq>.1`, the mime and the size of the 1×1 PNG fixture; `GET
-  /images/<id>` answers the bytes with the mime; an unknown id 404; a
-  `read` result with a text note and an image gives the block's
-  `result.images`; a store over a lowered cap evicts the oldest and
-  answers 410; `rebuild` gives the same ids again.
+  `<seq>.1`, the mime and the size of the 1×1 PNG fixture, and the
+  files exist under the test's directory; `GET /images/<id>` answers
+  the bytes with the mime and the length; an unknown id 404; a
+  removed file 410; a `read` result with a text note and an image
+  gives the block's `result.images`; `rebuild` gives the same ids and
+  rewrites the files; `close` leaves the directory to koa.
 - `image.test.ts` beside `share/pi/image.ts`: the sniff for each of
   pi's types and its refusals (an animated PNG, a JPEG with `f7`,
   junk); the size of a fixture of each type and `undefined` for a cut
   header.
 - `koa-program.test.ts`: `get_messages` with images fills the route;
-  the attachment flow over the 1×1 PNG and a text file (create, two
-  chunks, the completion's kind and size); an offset out of order
-  answers 409; a declared size over 64 MiB answers 413; a 17th
-  pending attachment answers 409; `/prompt` with both: the fake pi's
-  log shows `images` with the fixture's base64 and `image/png`, and
-  the message ends with the file's path on its own line, and the file
-  at that path has the bytes; `/attachments/{id}/delete` removes the
-  file; a `Blob` body gives 400 (workload 11's guard stays); a
-  queued prompt's attachments come back from `/queue/clear`.
+  the upload flow over the 1×1 PNG and a text file (create, two
+  chunks, the completion's kind and size, `GET /attachments/{id}`
+  returns the bytes with the name); a path attachment over a file of
+  the test's directory answers its kind at once, a directory 403, a
+  missing path 404; an offset out of order answers 409; a declared
+  size over 64 MiB answers 413; a 17th pending attachment answers
+  409; `/prompt` with an uploaded image, an uploaded file and a path
+  file: the fake pi's log shows `images` with the fixture's base64
+  and `image/png`, and the message ends with the copy's path and the
+  original path on their own lines, and the copy has the bytes;
+  `/prompt` with a path image sends `images` and adds no path line;
+  `/attachments/{id}/delete` removes the copy;
+  `/steps/{seq}/{block}/file` for a `read` step with a relative path
+  answers the file against the session `cwd` with the name, 403 for
+  a directory, 413 over a lowered limit, 404 for a block that is not
+  a `read`, `edit` or `write` step and for a path the page passes as
+  a query; a `Blob` body gives 400
+  (workload 11's guard stays); a queued prompt's attachments come
+  back from `/queue/clear`; the directory `koa-<pid>` is gone after
+  `/quit`.
 - `koa-dom.test.ts`: a `drop` with files makes chips and inserts no
-  text; a `paste` with files makes chips, a text paste does not;
-  × removes a chip and posts the delete; Enter sends the ids; a
-  click on an image calls `window.ko.preview` when it exists and
-  opens the lightbox otherwise; Escape closes the lightbox and does
-  not abort; a step's `<img>` exists only after the first open.
-- `WebviewPaneTests`: a `koPreview` message with another
-  generation, a foreign URL or a non-key window is dropped; a valid
-  one writes the fetched bytes to a file under `kido-previews/<pid>/`
-  and the data source answers that item; a `text/plain` response
-  writes no file; the file is gone after the pane is disposed.
+  text; with `window.ko.local` true a `drop`'s files are ignored and a
+  `ko-drop` event with two paths makes two path chips, and an event
+  with a relative path or a control character makes none; a `paste`
+  with files makes chips, a text paste does not; × removes a chip and
+  posts the delete; Enter sends the ids; a `ko-drop` with a folder
+  under `state.cwd` inserts `@dir/` relative at the cursor with the
+  spaces, one outside inserts it absolute, one with a space inserts it
+  quoted, and a non-local drop with a directory entry shows the
+  refusal line and uploads the files; a click on an image or a chip,
+  or ⌘-click on a `read` step's label, calls `window.ko.preview` with
+  the URL when it exists, a ⌘-click on a `bash` step folds; without it an image opens the lightbox and Escape closes
+  it and does not abort; a step's `<img>` exists only after the first
+  open.
+- `WebviewPaneTests`: a `koPreview` message with another generation,
+  a foreign URL or a non-key window is dropped; a valid one writes
+  the fetched bytes to `kido-previews/<pid>/<uuid>/<name>` with the
+  name of `Content-Disposition` and the data source answers that
+  item; a body over a lowered cap writes no file and shows the
+  notice; the file is gone after the pane is disposed. A drag over a
+  webview pane: `draggingEntered` answers `.copy` only for a local
+  pane with file URLs on the pasteboard (a fake `NSDraggingInfo` with
+  a pasteboard; the test sets the owner's host and the pane's
+  `runtimeMark`), and `performDragOperation` with a symlink hands the
+  page nothing and shows the upload notice; with a regular file the
+  page's `ko-drop` listener (set by the test through
+  `evaluateJavaScript`) records the path.
 - `KoaWebviewTests`: the snapshots of units 12 to 14.
 
 **Deleted.** `images: number` on the user item and the "N images"
@@ -1720,21 +1944,29 @@ line of the page; the non-goal "Images in prompts and in results" of
 this plan and the sentence "an image is a count" of
 docs/design-webview.md, "koa's page" (the manager edits both when
 unit 12 lands); `promptBody`'s refusal of an empty text when
-attachments exist.
+attachments exist; the sentence of docs/design-webview.md that
+`window.ko` has no method (the manager rewrites it: it has no method
+that reaches the program or the server, and `preview` reaches the
+app).
 
-### Open questions
+### Decided (user, 2026-11-09)
 
-1. Original paths for a local drop: should Kido give the page the
-   dropped files' paths when the server is local and the pane has no
-   runtime, so that pi edits the original and not a copy?
-   Recommendation: no for now; bytes are one case for every host, and
-   `@path` completion covers a file on pi's host.
-2. Quick Look for non-image responses (a PDF, a text file) later?
-   Recommendation: `image/*` only now; the type check is one line to
-   widen.
-3. The image store's cap, 256 MiB: keep every image of the session
-   instead, as pi does? Recommendation: the cap, with the 410
-   placeholder; the stress report measures koa's RSS with it.
+1. A local session's drop gives pi the original path; the app
+   supplies it through the native drop above.
+2. Quick Look shows everything it can; the app checks the size, not
+   the type.
+3. Every image is kept, on disk in koa's directory; no cap.
+4. An images-only send may require text when pi refuses an empty
+   message; the unit checks pi first.
+
+5. A step's file opens in Quick Look on ⌘-click of the step's label;
+   a plain click folds.
+6. A folder dropped on a local session adds `@dir/` at the cursor,
+   relative to the session `cwd` when inside it; its files still
+   become chips; a non-local drop of a folder is refused in the chip
+   row.
+
+No open questions.
 
 ## Open questions for the user
 

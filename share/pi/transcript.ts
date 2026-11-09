@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Text, Block, Item, Assistant, WireItem, State, PageRecord } from "../koa/records.ts";
+import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, PromptMode } from "../koa/records.ts";
 import { mintId, contentText, utf8Prefix, type Content } from "./text.ts";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
@@ -20,7 +20,7 @@ export async function readBody(request: IncomingMessage, limit: number): Promise
   return size <= limit ? Buffer.concat(chunks) : undefined;
 }
 
-export function promptBody(value: unknown): { text: string; mode: "prompt" | "steer" | "follow_up" } | { error: string } {
+export function promptBody(value: unknown): { text: string; mode: PromptMode | "steer" } | { error: string } {
   if (value && typeof value === "object" && "text" in value && typeof value.text === "string" && value.text.trim() && "mode" in value && (value.mode === "prompt" || value.mode === "steer" || value.mode === "follow_up")) return { text: value.text, mode: value.mode };
   return { error: "A non-empty text and prompt, steer or follow_up mode are required" };
 }

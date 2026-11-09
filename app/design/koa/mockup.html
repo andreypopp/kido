@@ -141,7 +141,7 @@ html:not([data-dock=band]) .dock .field,html:not([data-dock=band]) .dock .dialog
 /* progressive enhancement: Liquid Glass in Kido's WKWebView (private -apple-visual-effect, only with useSystemAppearance); the browser shows the fallback above */
 @supports (-apple-visual-effect: -apple-system-glass-material){html:not([data-dock=band]) .dock .field,html:not([data-dock=band]) .dock .dialog,html:not([data-dock=band]) .dock .exited .card,html:not([data-dock=band]) .dock .queue{background:transparent;-webkit-backdrop-filter:none;backdrop-filter:none;-apple-visual-effect:-apple-system-glass-material;box-shadow:none;border-color:color-mix(in srgb,var(--ko-fg) 14%,transparent)}}
 html:not([data-dock=band]) .dock .field.focus{border-color:color-mix(in srgb,var(--ko-fg) 45%,transparent)}
-html:not([data-dock=band]) .dock .field.working{border-color:color-mix(in srgb,var(--accent) 55%,transparent)}
+html:not([data-dock=band]) .dock .field.working{border-color:color-mix(in srgb,var(--ko-fg) 22%,transparent)}
 html:not([data-dock=band]) .dock .queue{background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border-radius:8px;padding:4px 8px 6px;margin:6px 0 0}
 html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0 0 2px var(--ko-bg)}
 
@@ -164,10 +164,10 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 .act.off:hover{background:none}
 .act.stop{color:var(--muted)}
 .act.stop:hover{color:var(--err);background:var(--well2)}
-.field.working{border-color:color-mix(in srgb,var(--accent) 45%,var(--ko-bg))}
-.field.working::after{content:"";position:absolute;left:12px;right:12px;top:-1px;height:1px;background:linear-gradient(90deg,transparent,var(--accent),transparent);background-size:40% 100%;animation:sweep 1.6s linear infinite;opacity:.8}
-@keyframes sweep{from{background-position:-40% 0}to{background-position:140% 0}}
-.narrow .field.working::after,html[data-width=narrow] .field.working::after{left:8px;right:8px}
+/* working (C, 2026-11-09): the border rests; the foot shows the run line's gray spinner with the elapsed time; the status dot breathes */
+.field.working .hint .spin{border-color:var(--hair2);border-top-color:var(--muted);margin-right:5px;vertical-align:-1px}
+.dot.on{animation:breathe 1.6s ease-in-out infinite}
+@keyframes breathe{50%{opacity:.35}}
 
 /* ---- status bar: one line ---- */
 .status{flex-shrink:0;height:24px;display:flex;align-items:center;gap:0;padding:0 12px;border-top:1px solid var(--hair);font:.82em/1 var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden}
@@ -302,7 +302,7 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 <div class="grid"><div class="pane short" data-state="composer-empty"></div><div class="pane short" data-state="composer-multi"></div><div class="pane short" data-state="composer-working"></div></div></section>
 
 <section id="s-status"><h2>8 · The status bar</h2>
-<p>One terminal-font line, 24pt: state · model · thinking level · context use (bar and percent) · cwd and branch at the right. In the narrow pane the numbers behind the context bar and the thinking label go first.</p>
+<p>One terminal-font line, 24pt: state · model · thinking level · context use (bar and percent) · cwd at the right. In the narrow pane the numbers behind the context bar and the thinking label go first.</p>
 <div class="grid"><div class="pane short" data-state="status-idle"></div><div class="pane short" data-state="status-working"></div><div class="pane short" data-state="status-waiting"></div></div></section>
 
 <section id="s-narrow"><h2>9 · The narrow pane (60 columns)</h2>
@@ -368,7 +368,7 @@ function status(kind){
     working:`<span class="seg"><span class="dot on"></span>working <span class="k">12s</span></span>`,
     waiting:`<span class="seg"><span class="dot wait"></span>waiting for you</span>`,
     aborted:`<span class="seg"><span class="dot"></span>aborted</span>`};
-  return `<div class="status">${map[kind]||map.idle}<span class="seg">claude-opus-5-5<span class="hide-n k"> · thinking high</span></span><span class="seg"><span class="ctx${kind==='waiting'?' high':''}"><i style="width:${kind==='waiting'?78:42}%"></i></span><span class="hide-n k">${kind==='waiting'?'156k / 200k':'84k / 200k'}</span>${kind==='waiting'?'78%':'42%'}</span><span class="seg grow"></span><span class="seg"><span class="hide-n">~/Workspace/</span>kido <span class="k">·</span> main<span class="warn">*</span></span></div>`}
+  return `<div class="status">${map[kind]||map.idle}<span class="seg">claude-opus-5-5<span class="hide-n k"> · thinking high</span></span><span class="seg"><span class="ctx${kind==='waiting'?' high':''}"><i style="width:${kind==='waiting'?78:42}%"></i></span><span class="hide-n k">${kind==='waiting'?'156k / 200k':'84k / 200k'}</span>${kind==='waiting'?'78%':'42%'}</span><span class="seg grow"></span><span class="seg"><span class="hide-n">~/Workspace/</span>kido</span></div>`}
 
 function composer(kind){
   const icon={send:'<svg viewBox="0 0 16 16"><path d="M3 8h9.5M8.3 3.8 12.5 8l-4.2 4.2"/></svg>',stop:'<svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor" stroke="none"/></svg>'};
@@ -380,7 +380,7 @@ function composer(kind){
 3. then update docs/design.md, "Window lifecycle"
 
 Do not touch the cascade.<span class="caret"></span></div>${foot('<kbd>⇧↩</kbd> newline',btn('send','Send ↩'))}</div></div>`;
-  if(kind==='working')return `<div class="composer"><div class="field working"><div class="text ph">Steer koa…</div>${foot('<kbd>↩</kbd> steers while koa works',btn('stop','Abort ⎋'))}</div></div>`;
+  if(kind==='working')return `<div class="composer"><div class="field working"><div class="text ph">Steer koa…</div>${foot('<span class="spin"></span>working 12s · <kbd>⎋</kbd> abort',btn('stop','Abort ⎋'))}</div></div>`;
   return `<div class="composer"><div class="field focus"><div class="text ph">Message koa…</div>${foot('',btn('send','Send ↩',' off'))}</div></div>`}
 const step={
   bash:(o)=>`<div class="step${o.open?' open':''}"><div class="line"><span class="chev">›</span><span class="sum"><span class="name${o.fail?' err':''}">bash</span> <span class="cmd">${o.cmd}</span></span>${o.res}</div><div class="detail"><div class="kv"><b>cwd</b> ~/Workspace/kido</div>${o.out?`<pre>${o.out}</pre>`:''}</div></div>`,
@@ -462,7 +462,7 @@ Object.assign(states,{
   'dialog-confirm':()=>transcript('')+dialogCard({title:'Force-push main?',message:'origin/main moves from 20857320 to 88bdb070. Other clones need a reset.',buttons:'<button class="btn">No<kbd>⎋</kbd></button><button class="btn primary">Yes<kbd>↩</kbd></button>',hint:''})+inertComposer()+status('waiting'),
   'dialog-input':()=>transcript('')+dialogCard({title:'Version for the tap',timeout:{left:'43s',pct:88},body:'<div class="in focus">0.32.0<span class="caret"></span></div>',hint:'',buttons:'<button class="btn">Cancel<kbd>⎋</kbd></button><button class="btn primary">Submit<kbd>↩</kbd></button>'})+inertComposer()+status('waiting'),
   'dialog-editor':()=>transcript('')+dialogCard({title:'Release notes',message:'Edit the draft; empty cancels.',body:'<div class="in multi focus">## 0.32\n\n- The sidebar shows status at the right and folds children\n- A program can show a webview page in its pane<span class="caret"></span></div>',hint:'⇧↩ newline',buttons:'<button class="btn">Cancel<kbd>⎋</kbd></button><button class="btn primary">Submit<kbd>⌃↩</kbd></button>'})+inertComposer()+status('waiting'),
-  queue:()=>transcript(userMsg('Release 0.32')+run({sum:`<span class="spin"></span> <span class="cmd">make verify</span>`,res:`<span class="time">1m02s</span>`,steps:[]}))+`<div class="composer"><div class="field working"><div class="text ph">Steer koa…</div><div class="foot"><span class="hint">↩ steers while koa works</span><span class="sp"></span><button class="act stop" aria-label="Abort"><svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor" stroke="none"/></svg></button></div></div>${queueBlock()}</div>`+status('working'),
+  queue:()=>transcript(userMsg('Release 0.32')+run({sum:`<span class="spin"></span> <span class="cmd">make verify</span>`,res:`<span class="time">1m02s</span>`,steps:[]}))+`<div class="composer"><div class="field working"><div class="text ph">Steer koa…</div><div class="foot"><span class="hint"><span class="spin"></span>working 1m02s · <kbd>⎋</kbd> abort</span><span class="sp"></span><button class="act stop" aria-label="Abort"><svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor" stroke="none"/></svg></button></div></div>${queueBlock()}</div>`+status('working'),
   'picker-model':()=>transcript('')+composer('empty')+picker({left:84,ph:'Model',rows:[{n:'claude-opus-5-5',p:'anthropic',on:true},{n:'claude-sonnet-5-5',p:'anthropic',cur:true},{n:'claude-fable-5-1',p:'claude-bridge'},{n:'gpt-6.1-sol',p:'openai-codex'},{n:'gpt-6-astra',p:'openai-codex'}]})+status('idle').replace('<span class="seg">claude-opus-5-5','<span class="seg pick">claude-opus-5-5'),
   'picker-thinking':()=>transcript('')+composer('empty')+picker({left:196,ph:'Thinking',rows:[{n:'off'},{n:'minimal'},{n:'low'},{n:'medium',cur:true},{n:'high',on:true},{n:'xhigh'}]})+status('idle'),
   'toast-info':()=>transcript('')+composer('empty')+statusWith('idle',ext([['git','↑2'],['tests','3 failing']])+toast('info','Worktree ~/Workspace/kido-release created')),

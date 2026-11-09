@@ -167,19 +167,6 @@ async function main(): Promise<void> {
     }));
   };
   watch(child, link);
-  const git = async (args: string[]): Promise<string | undefined> => {
-    const proc = spawn("git", args, { cwd: state.cwd, stdio: ["ignore", "pipe", "ignore"], timeout: 2000 });
-    let output = "";
-    proc.stdout.on("data", bytes => { output += bytes; });
-    return new Promise(resolve => { proc.once("error", () => resolve(undefined)); proc.once("close", code => resolve(code === 0 ? output.trim() : undefined)); });
-  };
-  const branch = async (notify = true) => {
-    const cwd = state.cwd;
-    const [name, changes] = await Promise.all([git(["symbolic-ref", "--short", "HEAD"]), git(["status", "--porcelain", "--untracked-files=no"])]);
-    if (state.cwd !== cwd || stopping) return;
-    state.branch = name; state.dirty = changes === undefined ? undefined : changes.length > 0;
-    if (notify) publish();
-  };
   const stats = async (notify = true) => {
     await link.command({ type: "get_session_stats" }, response => {
       if (response.success && response.command === "get_session_stats") {
@@ -214,7 +201,7 @@ async function main(): Promise<void> {
     }
     if (!response.success) throw new Error(response.error);
     title();
-    await Promise.all([rebuild(), levels(false), stats(false), branch(false)]);
+    await Promise.all([rebuild(), levels(false), stats(false)]);
     if (pi.type === "starting") { pi = { type: "ready" }; publish(); }
   };
   let partial: Assistant | undefined;
@@ -272,7 +259,7 @@ async function main(): Promise<void> {
       case "tool_execution_end": feed.toolDone(event.toolCallId, event.result.content, event.isError, Date.now(), event.durationMs, event.result.structuredContent); break;
       case "agent_start": state.working = true; state.since = Date.now(); state.aborted = false; outcome = { type: "done" }; status("working"); publish(); break;
       case "compaction_start": compaction = { root, working: state.working, since: state.since }; state.working = true; state.since ??= Date.now(); status("working"); publish(); break;
-      case "agent_settled": state.working = false; delete state.since; state.aborted = event.aborted; status(event.aborted ? "idle" : outcome.type, outcome.type === "error" ? outcome.message : state.name); publish(); background(stats()); background(branch()); break;
+      case "agent_settled": state.working = false; delete state.since; state.aborted = event.aborted; status(event.aborted ? "idle" : outcome.type, outcome.type === "error" ? outcome.message : state.name); publish(); background(stats()); break;
       case "queue_update": state.queue = { steering: event.steering, followUp: event.followUp }; publish(); break;
       case "thinking_level_changed": state.thinking = event.level; publish(); break;
       case "session_info_changed": state.name = event.name ?? "pi"; title(); publish(); break;

@@ -113,9 +113,9 @@ for (const id of ids) {
     assert.equal(await prompt(id === 4 ? 900 * 1024 : 2), 200, 'Prompt was not accepted');
     if (id === 4) {
       assert.equal(await prompt(1.5 * 1024 * 1024), 413);
-      await evaluate(`(()=>{const input=document.querySelector('#prompt');input.value='p'.repeat(1.5*1024*1024);input.dispatchEvent(new Event('input'));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));return true})()`);
+      await evaluate(`(()=>{window.composer.setText('p'.repeat(1.5*1024*1024));document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));return true})()`);
       await until('!!document.querySelector("#error").textContent', 5000);
-      observations.composer = await evaluate(`({error:document.querySelector('#error').textContent,retained:document.querySelector('#prompt').value.length})`);
+      observations.composer = await evaluate(`({error:document.querySelector('#error').textContent,retained:window.composer.text().length})`);
     }
     if (id === 1) {
       const pages = await evaluate(`(async()=>{let before=2000,count=0;while(before>0&&count<100){const r=await(await fetch('/items?before='+before)).json();if(!r.items.length)throw Error('Empty history');before=r.items[0].seq;count++}if(before!==0)throw Error('History incomplete');return count})()`);

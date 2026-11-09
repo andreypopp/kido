@@ -20,10 +20,58 @@ extension VisualTests {
         let expectedFocus = "rgba(\(Int(accent.redComponent * 255)),\(Int(accent.greenComponent * 255)),\(Int(accent.blueComponent * 255)),0.5)"
         let pageFocus = try await webviewJS(web, "getComputedStyle(document.documentElement).getPropertyValue('--ko-focus').trim()")
         XCTAssertEqual(pageFocus, String(data: try JSONSerialization.data(withJSONObject: expectedFocus, options: .fragmentsAllowed), encoding: .utf8))
-        _ = try await webviewJS(web, "(()=>{document.getElementById('prompt').blur();return true})()")
+        _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt .cm-content').blur();return true})()")
         let unfocused = try await webviewJS(web, "(()=>{const field=document.getElementById('field');const reference=document.createElement('div');reference.style.color=getComputedStyle(document.documentElement).getPropertyValue('--ko-focus');document.body.append(reference);const result=!field.matches(':focus-within')&&getComputedStyle(field).borderTopColor!==getComputedStyle(reference).color;reference.remove();return result})()")
         XCTAssertEqual(unfocused, "true", "The unfocused composer does not use the focus border")
-        _ = try await webviewJS(web, "(()=>{document.getElementById('prompt').focus();return true})()")
+        _ = try await webviewJS(web, "(()=>{window.composer.focus();return true})()")
+        try await webviewUntil(web, "window.composer&&document.querySelector('#status').textContent==='idle'")
+        let result = try await webviewJS(web, #"""
+        (async()=>{
+          const requests=[], original=window.fetch;
+          window.fetch=(path,options)=>['/prompt','/quit'].includes(path)?(requests.push({path,...JSON.parse(options.body)}),Promise.resolve({ok:true,json:async()=>({})})):original(path,options);
+          const input=document.querySelector('#prompt .cm-content'), editor=window.composer;
+          const key=(key,options={})=>{const event=new KeyboardEvent('keydown',{key,keyCode:key.length===1?key.toUpperCase().charCodeAt(0):({Enter:13,Tab:9,Escape:27}[key]||0),bubbles:true,cancelable:true,...options});input.dispatchEvent(event);return event.defaultPrevented};
+          const sent=async(text,options,mode)=>{editor.setText(text);const handled=key('Enter',options);await Promise.resolve();await Promise.resolve();await Promise.resolve();return handled&&requests.at(-1)?.text===text&&requests.at(-1)?.mode===mode};
+          try {
+            editor.focus();
+            if(!await sent('send',{},'prompt'))return 'Return';
+            editor.setText('line');key('Enter',{shiftKey:true});if(editor.text()!=='line\n')return 'Shift Return';
+            if(!await sent('follow',{altKey:true},'follow_up'))return 'Option Return';
+            editor.setText('draft');const count=requests.length;key('d',{ctrlKey:true});key('c',{ctrlKey:true});if(requests.length!==count||editor.text()!=='draft')return 'Control keys';
+            key('Escape');if(editor.text()!=='draft')return 'first Escape';key('Escape');if(editor.text()!=='')return 'second Escape';
+            key('d',{ctrlKey:true});if(requests.at(-1)?.path!=='/quit')return 'Control D';
+            editor.setText('base');editor.insert('history');const before=editor.text();key('z',{metaKey:true});if(editor.text()===before)return 'undo';key('Z',{metaKey:true,shiftKey:true});if(editor.text()!==before)return 'redo';
+            if(key('Tab'))return 'Tab';
+            editor.setText('');const transfer=new DataTransfer();transfer.setData('text/plain','pasted\nplain');transfer.setData('text/html','<b>other</b>');input.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:transfer}));if(editor.text()!=='pasted\nplain')return 'paste';
+            const prior=requests.length, composed=editor.text();input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));for(const options of [{},{shiftKey:true},{altKey:true}])key('Enter',{isComposing:true,...options});input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));if(requests.length!==prior||editor.text()!==composed)return 'composition keymap';
+            return 'ok';
+          } finally {window.fetch=original;}
+        })()
+        """#)
+        XCTAssertEqual(result, "\"ok\"")
+        _ = try await webviewJS(web, "(()=>{window.imeRequests=[];window.imeEvents=[];window.imeFetch=window.fetch;window.fetch=(path,options)=>path==='/prompt'?(imeRequests.push(JSON.parse(options.body)),Promise.resolve({ok:true,json:async()=>({})})):imeFetch(path,options);const input=document.querySelector('#prompt .cm-content');for(const name of ['compositionstart','compositionend','keydown','beforeinput','input'])input.addEventListener(name,event=>imeEvents.push({type:event.type,key:event.key,code:event.keyCode,trusted:event.isTrusted,inputType:event.inputType}));return true})()")
+        let inputClient = try XCTUnwrap(window.firstResponder as? NSTextInputClient, "Native composer input client: \(String(describing: window.firstResponder))")
+        let commit = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        // @codemirror/view treats the first Safari key within 100 ms after compositionend as an input-method commit key.
+        // Native marked-text calls cannot simulate an input method that consumes Return.
+        _ = try await webviewJS(web, "(()=>{window.composer.setText('draft');window.composer.focus();return true})()")
+        inputClient.setMarkedText("候", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await webviewUntil(web, "window.composer.text()==='draft候'")
+        inputClient.insertText("候", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await webviewUntil(web, "imeEvents.some(event=>event.type==='compositionend')")
+        let committed = try await webviewJS(web, "(()=>{const start=imeEvents.findIndex(e=>e.type==='compositionstart'),end=imeEvents.findIndex(e=>e.type==='compositionend');return {text:window.composer.text(),requests:imeRequests,events:imeEvents,ordered:start>=0&&end>start&&imeEvents.every(e=>e.trusted)}})()")
+        XCTAssertTrue(committed.contains("\"ordered\":true"), committed)
+        XCTAssertTrue(committed.contains("\"text\":\"draft候\""), committed)
+        XCTAssertTrue(committed.contains("\"requests\":[]"), committed)
+        _ = try await webviewJS(web, "new Promise(resolve=>setTimeout(()=>resolve(true),200))")
+        window.sendEvent(commit)
+        try await webviewUntil(web, "imeRequests.length===1")
+        let delayed = try await webviewJS(web, "({text:window.composer.text(),requests:imeRequests,lineBreak:imeEvents.some(e=>e.inputType==='insertLineBreak'||e.inputType==='insertParagraph')})")
+        XCTAssertTrue(delayed.contains("\"text\":\"\""), delayed)
+        XCTAssertTrue(delayed.contains("\"text\":\"draft候\""), delayed)
+        XCTAssertTrue(delayed.contains("\"lineBreak\":false"), delayed)
+        _ = try await webviewJS(web, "(()=>{window.fetch=window.imeFetch;return true})()")
         try XCTUnwrap(pane.koView).text(Data([3]))
         try await wait("koa left its page") { pane.webviewView == nil }
         XCTAssertTrue(window.firstResponder === pane, "Interrupting koa restores the terminal first responder")
@@ -85,12 +133,7 @@ extension VisualTests {
         let sessionFile = directory.appendingPathComponent("session.jsonl")
         let home = directory.appendingPathComponent("home")
         let cwd = home.appendingPathComponent("Workspace/kido")
-        let bin = directory.appendingPathComponent("bin")
         try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
-        let git = bin.appendingPathComponent("git")
-        try "#!/bin/sh\ncase \"$*\" in 'symbolic-ref --short HEAD') echo main;; 'status --porcelain --untracked-files=no') echo ' M ko_server/src/sweep.rs';; *) exit 1;; esac\n".write(to: git, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: git.path)
         try JSONSerialization.data(withJSONObject: ["cwd": cwd.path]).write(to: sessionFile)
         let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: 8, hour: 14, minute: 32))).timeIntervalSince1970 * 1000)
         let usage: [String: Any] = ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0]]
@@ -251,7 +294,7 @@ extension VisualTests {
             prompt([["type": "message_end", "message": assistant([["type": "text", "text": part + part + part]])], ["type": "agent_settled", "aborted": false]])
         }
         try steps.map { String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self) }.joined(separator: "\n").write(to: script, atomically: true, encoding: .utf8)
-        let path = [bin.path, tools.prefix + "/bin", "/opt/homebrew/bin", ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
+        let path = [tools.prefix + "/bin", "/opt/homebrew/bin", ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
         let clock = directory.appendingPathComponent("clock.mjs")
         let now = directory.appendingPathComponent("now")
         try String(stamp).write(to: now, atomically: true, encoding: .utf8)
@@ -292,14 +335,11 @@ extension VisualTests {
             guard captures.contains(name) else { return }
             window.contentView?.layoutSubtreeIfNeeded()
             pane.webviewView?.layoutSubtreeIfNeeded()
-            _ = try await webviewJS(web, "(()=>{if(!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)document.querySelector('#prompt').focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=scroll.scrollHeight;return true})()")
+            _ = try await webviewJS(web, "(()=>{if(!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=scroll.scrollHeight;return true})()")
             try await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
             try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=scroll.scrollHeight;return scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1})()")
             let lastAboveDock = try await webviewJS(web, "(()=>{const last=document.querySelector('#items').lastElementChild;return !last||last.getBoundingClientRect().bottom<=document.querySelector('#dock').getBoundingClientRect().top})()")
             XCTAssertEqual(lastAboveDock, "true", "dock space keeps the last message above the composer")
-            if name != "stream" && name != "narrow-stream" {
-                _ = try await webviewJS(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=Math.max(0,scroll.scrollHeight-scroll.clientHeight-document.querySelector('#dock').getBoundingClientRect().height*.55);return true})()")
-            }
             try await webviewSnapshot(pane, name + "-light", testName: "testKoaWebviewMockupStates()")
             try await darken()
             pane.webviewView?.updateTheme()
@@ -313,17 +353,17 @@ extension VisualTests {
             _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',body:JSON.stringify({text:'next',mode:'prompt'})}).then(async r=>{const result=await r.json();if(!r.ok)throw Error(result.error||'Prompt failed');return result})")
         }
         try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model').textContent==='claude-opus-5-5'")
-        _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.field.working::after{animation:none!important}.field.working::after{visibility:hidden!important}';document.head.append(style);return true})()")
-        let idleSweep = try await webviewJS(web, "getComputedStyle(document.querySelector('#field'),'::after').content")
-        XCTAssertEqual(idleSweep, "\"none\"")
+        _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.dot.on{animation:none!important}';document.head.append(style);return true})()")
+        let idleHint = try await webviewJS(web, "document.querySelector('#hint .spin')===null")
+        XCTAssertEqual(idleHint, "true")
         try await capture("idle")
-        _ = try await webviewJS(web, "(()=>{const p=document.querySelector('#prompt');p.value='Three things, in order:\\n1. make the sweep keep a start failure for the linger grace\\n2. add the e2e test `sweep_keeps_a_start_failure` beside the linger test\\n3. then update docs/design.md, \"Window lifecycle\"\\n\\nDo not touch the cascade.';p.dispatchEvent(new Event('input'));return true})()")
+        _ = try await webviewJS(web, "(()=>{window.composer.setText('Three things, in order:\\n1. make the sweep keep a start failure for the linger grace\\n2. add the e2e test `sweep_keeps_a_start_failure` beside the linger test\\n3. then update docs/design.md, \"Window lifecycle\"\\n\\nDo not touch the cascade.');return true})()")
         try await capture("composer-multi")
-        _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt').value='';document.querySelector('#prompt').dispatchEvent(new Event('input'));return true})()")
+        _ = try await webviewJS(web, "(()=>{window.composer.setText('');return true})()")
         try await advance()
         try await webviewUntil(web, "document.querySelector('#field').classList.contains('working')")
-        let workingSweep = try await webviewJS(web, "getComputedStyle(document.querySelector('#field'),'::after').backgroundImage.includes('linear-gradient')&&getComputedStyle(document.querySelector('#field'),'::after').content!=='none'")
-        XCTAssertEqual(workingSweep, "true")
+        let workingHint = try await webviewJS(web, "document.querySelector('#hint .spin')!==null&&document.querySelector('#hint').textContent===document.querySelector('#status').textContent+' · ⎋ abort'&&document.querySelector('.dot.on')!==null&&getComputedStyle(document.querySelector('#field'),'::after').content==='none'")
+        XCTAssertEqual(workingHint, "true")
         try await capture("user-well")
         try await advance()
         try await webviewUntil(web, "document.querySelector('.caret')&&document.querySelector('table')")
@@ -332,27 +372,27 @@ extension VisualTests {
             try await wait("koa focus split") { self.terminal?.panes.count == 2 }
             let other = try XCTUnwrap(terminal?.panes.first { $0 !== pane })
             window.makeFirstResponder(other)
-            _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt').blur();return true})()")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt .cm-content').blur();return true})()")
             window.makeFirstResponder(pane.inputResponder)
             XCTAssertTrue(window.firstResponder === web)
-            _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt').blur();const range=document.createRange();range.selectNodeContents(document.querySelector('.assistant p'));getSelection().removeAllRanges();getSelection().addRange(range);return true})()")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt .cm-content').blur();const range=document.createRange();range.selectNodeContents(document.querySelector('.assistant p'));getSelection().removeAllRanges();getSelection().addRange(range);return true})()")
             let selected = try await webviewJS(web, "getSelection().toString().length>0")
             XCTAssertEqual(selected, "true")
             let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
                 windowNumber: window.windowNumber, context: nil, characters: "z", charactersIgnoringModifiers: "z", isARepeat: false, keyCode: 6))
             window.sendEvent(key)
-            try await webviewUntil(web, "document.querySelector('#prompt').value==='z'&&document.activeElement===document.querySelector('#prompt')")
+            try await webviewUntil(web, "window.composer.text()==='z'&&document.activeElement===document.querySelector('#prompt .cm-content')")
             try await webviewSnapshot(pane, "composer-focus", testName: "testKoaWebviewComposerFocus()")
             return
         }
         try await capture("stream")
-        _ = try await webviewJS(web, "(()=>{const p=document.querySelector('#prompt');p.value='Also keep the failure message.';p.dispatchEvent(new Event('input'));return true})()")
+        _ = try await webviewJS(web, "(()=>{window.composer.setText('Also keep the failure message.');return true})()")
         try await capture("composer-working")
-        _ = try await webviewJS(web, "(()=>{const p=document.querySelector('#prompt');p.value='';p.dispatchEvent(new Event('input'));return true})()")
+        _ = try await webviewJS(web, "(()=>{window.composer.setText('');return true})()")
         try await capture("narrow-stream")
         let caretCount = try await webviewJS(web, "document.querySelectorAll('.caret').length")
         XCTAssertEqual(caretCount, "1")
-        _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt').blur();window.savedUser=document.querySelector('.user .t');window.savedText=savedUser.firstChild;const range=document.createRange();range.setStart(savedText,0);range.setEnd(savedText,4);getSelection().removeAllRanges();getSelection().addRange(range);return true})()")
+        _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt .cm-content').blur();window.savedUser=document.querySelector('.user .t');window.savedText=savedUser.firstChild;const range=document.createRange();range.setStart(savedText,0);range.setEnd(savedText,4);getSelection().removeAllRanges();getSelection().addRange(range);return true})()")
         let initialSelection = try await webviewJS(web, "getSelection().toString()")
         XCTAssertEqual(initialSelection, "\"Expl\"")
         try await advance()
@@ -417,8 +457,8 @@ extension VisualTests {
             try await capture("queue")
             try await capture("narrow-queue")
             _ = try await webviewJS(web, "(()=>{document.querySelector('#queue button').click();return true})()")
-            try await webviewUntil(web, "!document.querySelector('#queue .q')&&document.querySelector('#prompt').value.includes('release notes')")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt').value='';document.querySelector('#prompt').dispatchEvent(new Event('input'));return true})()")
+            try await webviewUntil(web, "!document.querySelector('#queue .q')&&window.composer.text().includes('release notes')")
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('');return true})()")
             try await advance()
             try await webviewUntil(web, "!document.querySelector('.user')")
             _ = try await webviewJS(web, "(()=>{document.querySelector('#model').click();return true})()")

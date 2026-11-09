@@ -1,22 +1,22 @@
 import { markdown } from './markdown.ts';
-import type { State, WireItem, WireAssistant, Block, Patch, PageRecord } from '../records.ts';
+import { composer } from './composer.ts';
+import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode } from '../records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string };
 type Slot = HTMLDivElement & { signature?: string };
 declare global {
   interface Window {
     ko?: object;
+    composer: Pick<ReturnType<typeof composer>, 'text' | 'setText' | 'focus'>;
     koaMetrics?: { flush(): Promise<void>; readonly after: number; readonly items: WireItem[] };
   }
 }
 
-function element(id: 'prompt'): HTMLTextAreaElement;
 function element(id: 'send'): HTMLButtonElement;
 function element(id: string): HTMLElement;
 function element(id: string) {
   const result = document.getElementById(id);
   if (!result) throw Error('Missing element: ' + id);
-  if (id === 'prompt' && !(result instanceof HTMLTextAreaElement)) throw Error('Invalid prompt');
   if (id === 'send' && !(result instanceof HTMLButtonElement)) throw Error('Invalid send button');
   return result;
 }
@@ -29,7 +29,6 @@ const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, clas
 const items = new Map<number, WireItem>();
 const views = new Map<number, { view: HTMLElement; item: WireItem; slots: Map<string, Slot> }>();
 const template = document.createElement('template');
-const promptMaxHeight = parseFloat(getComputedStyle(element('prompt')).maxHeight);
 const folds = new Map<string, boolean>();
 const texts = new Map<string, { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string }>();
 let state: State = { pi: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
@@ -37,6 +36,14 @@ let epoch = '', after = -1, first: number | undefined, more = false, paging = fa
 let escaped = false, notificationTimer: number | undefined, dialogId: string | undefined, buttonWorking: boolean | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
 const pagingPatches: Patch[] = [];
+const editor = composer(element('prompt'), {
+  input(user) { if (user) escaped = false; refreshComposer(); },
+  send(mode) { void send(mode); },
+  quit() { void fetchJSON('/quit'); },
+});
+window.composer = editor;
+const composerBlocked = () => state.pi.type === 'starting' || state.dialogs.length > 0;
+const workingText = () => 'working ' + Math.max(0, Math.floor((Date.now() - (state.since ?? Date.now())) / 1000)) + 's';
 
 if (!window.ko) {
   const scheme = matchMedia('(prefers-color-scheme: dark)');
@@ -259,16 +266,16 @@ function put(item: WireItem) {
   return view;
 }
 
-function composer() {
-  const input = element('prompt'), sendButton = element('send');
-  const blocked = state.pi.type === 'starting' || !!state.dialogs.length, working = state.working && !blocked;
+function refreshComposer() {
+  const sendButton = element('send');
+  const blocked = composerBlocked(), working = state.working && !blocked;
   const available = element('field').inert && !blocked;
   element('field').inert = blocked;
   if (available) focusComposer();
   element('field').classList.toggle('blocked', blocked);
   element('field').classList.toggle('working', working);
-  input.placeholder = working ? 'Steer koa…' : 'Message koa…';
-  sendButton.disabled = blocked || !working && !input.value.trim();
+  editor.placeholder(working ? 'Steer koa…' : 'Message koa…');
+  sendButton.disabled = blocked || !working && !editor.text().trim();
   sendButton.className = 'act' + (sendButton.disabled ? ' off' : working ? ' stop' : '');
   sendButton.setAttribute('aria-label', working ? 'Stop' : 'Send');
   if (buttonWorking !== working) {
@@ -279,12 +286,20 @@ function composer() {
     else shape.setAttribute('d', 'M3 8h9.5M8.3 3.8 12.5 8l-4.2 4.2');
     svg.append(shape); sendButton.replaceChildren(svg);
   }
-  element('hint').textContent = [input.value ? '⇧↩ newline' : '', working ? '↩ steers while koa works' : ''].filter(Boolean).join(' · ');
-  input.style.height = 'auto'; input.style.height = Math.min(promptMaxHeight, input.scrollHeight) + 'px';
+  composerHint(status());
+}
+function composerHint(working: string) {
+  const hint = element('hint');
+  if (state.working && !composerBlocked()) {
+    if (hint.firstElementChild?.className !== 'spin') hint.replaceChildren(node('span', undefined, 'spin'), node('span'), node('kbd', '⎋'), node('span', ' abort'));
+    const clock = hint.children[1];
+    if (clock) clock.textContent = working + ' · ';
+  } else hint.textContent = editor.empty() ? '' : '⇧↩ newline';
 }
 function status() {
+  const working = workingText();
   const waiting = state.dialogs.length > 0;
-  element('status').textContent = hasExited() ? 'pi exited · ' + exitCause() : waiting ? 'waiting for you' : state.pi.type === 'starting' ? 'starting' : state.working ? 'working ' + Math.max(0, Math.floor((Date.now() - (state.since ?? Date.now())) / 1000)) + 's' : state.aborted ? 'aborted' : 'idle';
+  element('status').textContent = hasExited() ? 'pi exited · ' + exitCause() : waiting ? 'waiting for you' : state.pi.type === 'starting' ? 'starting' : state.working ? working : state.aborted ? 'aborted' : 'idle';
   element('dot').className = 'dot' + (hasExited() ? ' off' : waiting ? ' wait' : state.working ? ' on' : '');
   element('model').textContent = state.model?.id ?? '';
   element('thinking').textContent = state.thinking ? '· thinking ' + state.thinking : '';
@@ -295,7 +310,8 @@ function status() {
   const bar = element('context-bar').firstElementChild;
   if (bar instanceof HTMLElement) bar.style.width = Math.min(100, Math.max(0, percent ?? 0)) + '%';
   const path = (displayCwd() || '').replace(/\/$/, ''), slash = path.lastIndexOf('/');
-  element('cwd').replaceChildren(node('span', path.slice(0, slash + 1), 'hide-n k'), node('span', path.slice(slash + 1)), ...(state.branch ? [node('span', '· ' + state.branch)] : []), ...(state.dirty ? [node('span', '*', 'dirty')] : []));
+  element('cwd').replaceChildren(node('span', path.slice(0, slash + 1), 'hide-n k'), node('span', path.slice(slash + 1)));
+  return working;
 }
 function button(label: string, key?: string, primary = false) {
   const result = node('button', label, 'btn' + (primary ? ' primary' : ''));
@@ -378,9 +394,9 @@ function queue() {
   };
 }
 async function takeBack() {
-  const result = await fetchJSON('/queue/clear'), input = element('prompt');
-  input.value = [input.value, ...(result.steering || []), ...(result.followUp || [])].filter(Boolean).join('\n\n');
-  composer(); input.focus(); input.setSelectionRange(input.value.length, input.value.length);
+  const result = await fetchJSON('/queue/clear');
+  editor.setText([editor.text(), ...(result.steering || []), ...(result.followUp || [])].filter(Boolean).join('\n\n'));
+  editor.focus();
 }
 async function stop() {
   if (submitting) return;
@@ -453,7 +469,7 @@ function apply(record: PageRecord) {
     element('items').replaceChildren();
     element('older').hidden = !more;
     for (const item of record.items) put(item);
-    composer();
+    refreshComposer();
   } else if (record.type === 'item') put(record.item);
   else if (record.type === 'patch') {
     const current = items.get(record.seq);
@@ -470,9 +486,9 @@ function apply(record: PageRecord) {
     }
     put(item);
   } else if (record.type === 'state') {
-    state = record; status(); composer(); dialogs(); queue(); exited();
+    state = record; refreshComposer(); dialogs(); queue(); exited();
     if (state.pi.type === 'ready' && state.editor && editorId !== state.editor.id) {
-      element('prompt').value = state.editor.text; composer(); editorId = state.editor.id;
+      editor.setText(state.editor.text); editorId = state.editor.id;
       void fetchJSON('/editor/ack', { id: state.editor.id }).catch(reportError);
     }
     statuses();
@@ -570,29 +586,27 @@ async function fetchJSON(path: string, body: object = {}, method = 'POST') {
   const result = await response.json(); if (!response.ok) throw Error(result.error || 'Request failed'); return result;
 }
 function reportError(error: unknown) { element('error').textContent = error instanceof Error ? error.message : String(error); }
-async function send(mode = 'prompt') {
-  const input = element('prompt'), text = input.value; if (!text.trim() || submitting) return;
+async function send(mode: PromptMode = 'prompt') {
+  const text = editor.text(); if (!text.trim() || submitting) return;
   submitting = true;
-  try { await fetchJSON('/prompt', { text, mode }); if (input.value === text) input.value = ''; composer(); focusComposer(); element('error').textContent = ''; }
+  try { await fetchJSON('/prompt', { text, mode }); if (editor.text() === text) editor.setText(''); focusComposer(); element('error').textContent = ''; }
   catch (error) { reportError(error); }
   finally { submitting = false; }
 }
 element('send').onclick = () => state.working ? stop() : send();
 element('older').onclick = older;
-element('prompt').oninput = () => { escaped = false; composer(); };
-element('prompt').onkeydown = event => { if (event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.key.toLowerCase() === 'd') { event.preventDefault(); if (element('prompt').value === '') void fetchJSON('/quit', {}); return; } if (!event.metaKey && !event.ctrlKey && !event.isComposing && event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(event.altKey ? 'follow_up' : 'prompt'); } };
 const isControl = (target: EventTarget | null) => target instanceof HTMLElement && (target.isContentEditable || target.closest('input,textarea,select,button,[role=button],[role=option],[role=listbox],[role=menuitem]'));
-function focusComposer() { if (document.hasFocus() && !state.dialogs.length && !pickerButton && (!isControl(document.activeElement) || document.activeElement === element('prompt'))) element('prompt').focus(); }
+function focusComposer() { if (document.hasFocus() && !element('field').inert && !state.dialogs.length && !pickerButton && (!isControl(document.activeElement) || editor.hasFocus())) editor.focus(); }
 window.addEventListener('focus', focusComposer);
 window.addEventListener('load', focusComposer);
-document.addEventListener('keydown', event => { if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton) return; if (!event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !(event.target instanceof HTMLElement && (event.target.isContentEditable || event.target.closest('input,textarea,select')))) { event.preventDefault(); const input = element('prompt'); input.focus(); input.setRangeText(event.key, input.selectionStart, input.selectionEnd, 'end'); input.dispatchEvent(new Event('input', { bubbles: true })); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (escaped) { element('prompt').value = ''; composer(); } else { escaped = true; if (state.working) void stop(); } } });
+document.addEventListener('keydown', event => { if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton) return; if (!element('field').inert && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !(event.target instanceof HTMLElement && (event.target.isContentEditable || event.target.closest('input,textarea,select')))) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (escaped) { editor.setText(''); } else { escaped = true; if (state.working) void stop(); } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
 document.addEventListener('pointerdown', event => { if (!element('picker').contains(event.target instanceof Node ? event.target : null) && event.target !== pickerButton) closePicker(); });
 element('scroll').onscroll = () => { const scroll = element('scroll'); follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; if (scroll.scrollTop < 80) void older(); };
-setInterval(status, 1000);
+setInterval(() => composerHint(status()), 1000);
 new ResizeObserver(followBottom).observe(element('scroll'));
 new ResizeObserver(([entry]) => {
   document.body.style.setProperty('--dock-h', entry.borderBoxSize[0].blockSize + 'px');
   followBottom();
 }).observe(element('dock'));
-composer(); focusComposer(); void connect();
+refreshComposer(); focusComposer(); void connect();

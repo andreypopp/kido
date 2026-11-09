@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-width="wide">
+<head>
+<meta charset="utf-8">
+<title>koa — a working agent, five ways</title>
+<style>
+/* ---- copied from mockup.html's <style> (the approved design language); edit there first ---- */
+/* Fallback themes: kido-light and kido-dark (app/Resources/ghostty/themes).
+   In Kido.app the --ko-* properties on :root override every value here. */
+:root{
+  --ko-bg:#FFF9EC;--ko-fg:#424242;--ko-cursor:#AAAAAA;
+  --ko-selection-bg:#d9d1bd;--ko-selection-fg:#222;
+  --ko-color-0:#222222;--ko-color-1:#a4002e;--ko-color-2:#008550;--ko-color-3:#dc682a;
+  --ko-color-4:#014ca6;--ko-color-5:#950c93;--ko-color-6:#128399;--ko-color-7:#acacac;
+  --ko-color-8:#848484;--ko-color-9:#ad1d1d;--ko-color-10:#178258;--ko-color-11:#f0da4a;
+  --ko-color-12:#3382e1;--ko-color-13:#da21d8;--ko-color-14:#008ec4;--ko-color-15:#929292;
+  --ko-font-family:"SF Mono",Menlo,monospace;--ko-font-size:13px;--ko-cell-width:7.8px;--ko-cell-height:17px;
+  --ko-appearance:light;
+}
+html[data-theme=dark]{
+  --ko-bg:#171717;--ko-fg:#C9C9C9;--ko-cursor:#999999;
+  --ko-selection-bg:#3a3a3a;--ko-selection-fg:#eee;
+  --ko-color-0:#EEEEEE;--ko-color-1:#d4003c;--ko-color-2:#05ab69;--ko-color-3:#ccbc00;
+  --ko-color-4:#2466b5;--ko-color-5:#950c93;--ko-color-6:#2099b0;--ko-color-7:#cccccc;
+  --ko-color-8:#8f8f8f;--ko-color-9:#fa084c;--ko-color-10:#04d682;--ko-color-11:#ccbc00;
+  --ko-color-12:#3382e1;--ko-color-13:#da21d8;--ko-color-14:#63a9b5;--ko-color-15:#aaaaaa;
+  --ko-appearance:dark;
+}
+
+/* ---- derived tones: every colour below is a mix of --ko-fg, --ko-bg and the palette ---- */
+:root{
+  --fg:var(--ko-fg);--bg:var(--ko-bg);
+  --muted:color-mix(in srgb,var(--ko-fg) 55%,var(--ko-bg));
+  --faint:color-mix(in srgb,var(--ko-fg) 35%,var(--ko-bg));
+  --hair:color-mix(in srgb,var(--ko-fg) 12%,var(--ko-bg));
+  --hair2:color-mix(in srgb,var(--ko-fg) 18%,var(--ko-bg));
+  --well:color-mix(in srgb,var(--ko-fg) 5%,var(--ko-bg));
+  --well2:color-mix(in srgb,var(--ko-fg) 8%,var(--ko-bg));
+  --accent:var(--ko-color-4);
+  --ok:var(--ko-color-2);--err:var(--ko-color-1);--warn:var(--ko-color-3);
+  --mono:var(--ko-font-family);
+  --prose:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;
+}
+
+*{box-sizing:border-box}
+body{margin:0;background:color-mix(in srgb,var(--ko-fg) 6%,var(--ko-bg));color:var(--fg);font:13px/1.5 var(--prose);padding:24px 28px 60px}
+h1{font:600 15px/1.2 var(--prose);margin:0 0 4px}
+.lede{color:var(--muted);margin:0 0 18px;max-width:900px}
+.controls{position:sticky;top:0;z-index:5;display:flex;gap:14px;align-items:center;padding:10px 0 14px;background:color-mix(in srgb,var(--ko-fg) 6%,var(--ko-bg));font-size:12px}
+.controls label{display:flex;gap:6px;align-items:center;color:var(--muted)}
+select{font:inherit}
+section{margin:30px 0 0}
+section>h2{font:600 12px/1.3 var(--prose);color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:0 0 10px}
+section>p{margin:-4px 0 12px;color:var(--muted);max-width:900px}
+.grid{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
+
+/* ---- the pane: one webview, the page owns its whole content area ---- */
+.pane{width:980px;height:560px;background:var(--bg);color:var(--fg);border:1px solid var(--hair2);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;font:var(--ko-font-size)/1.5 var(--prose);box-shadow:0 1px 2px color-mix(in srgb,var(--ko-fg) 10%,transparent)}
+.pane.narrow{width:calc(60*var(--ko-cell-width) + 2px)}
+.pane.short{height:300px}
+html[data-width=narrow] .pane{width:calc(60*var(--ko-cell-width) + 2px)}
+
+/* transcript */
+.scroll{flex:1;overflow:auto;scrollbar-gutter:stable}
+.transcript{max-width:720px;margin:0 auto;padding:14px 20px 8px}
+.narrow .transcript,html[data-width=narrow] .transcript{padding:10px 12px 6px}
+.msg{margin:0 0 14px}
+.msg.user{color:var(--fg);display:flex;gap:14px;align-items:baseline;border-radius:8px;padding:7px 12px;background:var(--well)}
+html[data-user=tint] .msg.user{background:color-mix(in srgb,var(--accent) 7%,var(--ko-bg))}
+html[data-user=bar] .msg.user{background:var(--well);border-left:2px solid var(--accent);border-radius:0 8px 8px 0;padding-left:12px}
+html[data-user=plain] .msg.user{background:none;border-left:2px solid var(--accent);border-radius:0;padding:1px 0 1px 12px}
+.msg.user .t{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.msg.user time{color:var(--faint);font:.8em/1.5 var(--mono);white-space:nowrap;font-variant-numeric:tabular-nums}
+.msg.user .who{display:none}
+.assistant p{margin:0 0 .65em}
+.assistant p:last-child{margin-bottom:0}
+.assistant h1,.assistant h2,.assistant h3{font:600 1em/1.35 var(--prose);margin:1em 0 .4em}
+.assistant h2{font-size:1.15em}
+.assistant h1{font-size:1.3em}
+.assistant ul,.assistant ol{margin:.1em 0 .65em;padding-left:1.4em}
+.assistant li{margin:.15em 0}
+.assistant li::marker{color:var(--muted)}
+code{font:.92em var(--mono);background:var(--well2);border-radius:4px;padding:1px 5px}
+pre{font:.9em/1.45 var(--mono);background:var(--well);border:1px solid var(--hair);border-radius:7px;padding:8px 10px;margin:.3em 0 .75em;overflow:auto;position:relative}
+pre code{background:none;padding:0;font-size:1em}
+pre .lang{position:absolute;top:6px;right:10px;font-size:.8em;color:var(--faint);text-transform:lowercase}
+table{border-collapse:collapse;margin:.3em 0 1em;font-size:.95em}
+th,td{text-align:left;padding:4px 12px 4px 0;border-bottom:1px solid var(--hair);vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:.85em;text-transform:uppercase;letter-spacing:.05em}
+tr:last-child td{border-bottom:0}
+blockquote{margin:.3em 0 .9em;padding-left:12px;border-left:2px solid var(--hair2);color:var(--muted)}
+a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent) 35%,transparent)}
+.caret{display:inline-block;width:2px;height:1em;background:var(--ko-cursor);vertical-align:-.15em;margin-left:1px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* ---- the run: a collapsed line of tool calls and thinking ---- */
+.run{margin:0 0 14px;font:.95em/1.5 var(--prose);color:var(--muted)}
+.run .chev,.run .cmd,.step .path,.step .name,.run .names,.run .time{font-family:var(--mono);font-size:.92em}.run .time{font-size:.8em}
+.run>.line,.step>.line{display:flex;align-items:baseline;gap:8px;cursor:pointer;user-select:none;padding:1px 0;border-radius:4px}
+.run>.line:hover,.step>.line:hover{color:var(--fg)}
+.chev{width:9px;flex-shrink:0;color:var(--faint);transition:transform .12s;font-size:.9em;text-align:center;position:relative;top:1px}
+.open>.line .chev{transform:rotate(90deg)}
+.sum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sum b{font-weight:600;color:var(--fg)}
+.time{color:var(--faint);font-variant-numeric:tabular-nums;flex-shrink:0}
+.spin{display:inline-block;width:8px;height:8px;border-radius:50%;border:1.5px solid var(--hair2);border-top-color:var(--muted);animation:spin .8s linear infinite;vertical-align:-1px;margin-right:1px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.ok{color:var(--ok)}.err{color:var(--err)}.warn{color:var(--warn)}
+.steps{display:none;margin:1px 0 0 4px;border-left:1px solid var(--hair);padding-left:13px}
+.open>.steps{display:block}
+.step{margin:0}
+.step .name{color:var(--muted)}.step .name.err{color:var(--err)}.step .sum{font-family:var(--mono);font-size:.92em}.step .sum .cmd,.step .sum .path,.step .sum .name{font-size:1em}.step .sum .delta{font-family:var(--prose);font-size:1.087em}
+.step .cmd{color:var(--fg)}
+.step .path{color:var(--fg)}
+.step .delta{color:var(--faint)}
+.step .delta .plus{color:var(--ok)}.step .delta .minus{color:var(--err)}
+.detail{display:none;margin:2px 0 4px 20px;font-size:.98em}
+.step.open>.detail{display:block}
+.detail pre{margin:3px 0 4px;max-height:260px;font-size:.88em;color:var(--fg)}
+.detail .kv{color:var(--faint);margin:2px 0}
+.detail .kv b{color:var(--muted);font-weight:500}
+.detail .think{font:1em/1.5 var(--prose);color:var(--muted);white-space:pre-wrap;max-height:260px;overflow:auto;padding:0;margin:0}
+.diff{font:.88em/1.45 var(--mono);margin:3px 0 4px;border:1px solid var(--hair);border-radius:7px;overflow:hidden}
+.diff .h{padding:4px 10px;background:var(--well);color:var(--muted);border-bottom:1px solid var(--hair);font-size:.92em}
+.diff .l{padding:0 10px;white-space:pre;color:var(--fg)}
+.diff .l.add{background:color-mix(in srgb,var(--ko-color-2) 12%,var(--ko-bg))}
+.diff .l.del{background:color-mix(in srgb,var(--ko-color-1) 11%,var(--ko-bg))}
+.diff .l.ctx{color:var(--muted)}
+.diff .l .g{display:inline-block;width:14px;color:var(--faint)}
+.diff .l.add .g{color:var(--ok)}.diff .l.del .g{color:var(--err)}
+.exit{color:var(--err)}
+
+/* ---- composer ---- */
+.composer{flex-shrink:0;padding:0 24px 12px;max-width:720px;width:100%;margin:0 auto}
+/* ---- floating composer: the transcript scrolls beneath a glass dock ---- */
+html:not([data-dock=band]) .pane .scroll{position:absolute;left:0;right:0;top:0;bottom:24px}
+html:not([data-dock=band]) .pane .transcript{padding-bottom:calc(var(--dock-h,96px) + 8px)}
+html:not([data-dock=band]) .pane .status{position:absolute;left:0;right:0;bottom:0;background:var(--bg)}
+html:not([data-dock=band]) .dock{position:absolute;left:0;right:0;bottom:24px;pointer-events:none}
+html:not([data-dock=band]) .dock>*{pointer-events:auto}
+html:not([data-dock=band]) .dock .field,html:not([data-dock=band]) .dock .dialog,html:not([data-dock=band]) .dock .exited .card{background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border:1px solid color-mix(in srgb,var(--ko-fg) 22%,transparent);box-shadow:inset 0 .5px 0 color-mix(in srgb,#fff 28%,transparent),0 6px 22px color-mix(in srgb,var(--ko-fg) 14%,transparent),0 1px 3px color-mix(in srgb,var(--ko-fg) 10%,transparent)}
+/* progressive enhancement: Liquid Glass in Kido's WKWebView (private -apple-visual-effect, only with useSystemAppearance); the browser shows the fallback above */
+@supports (-apple-visual-effect: -apple-system-glass-material){html:not([data-dock=band]) .dock .field,html:not([data-dock=band]) .dock .dialog,html:not([data-dock=band]) .dock .exited .card,html:not([data-dock=band]) .dock .queue{background:transparent;-webkit-backdrop-filter:none;backdrop-filter:none;-apple-visual-effect:-apple-system-glass-material;box-shadow:none;border-color:color-mix(in srgb,var(--ko-fg) 14%,transparent)}}
+html:not([data-dock=band]) .dock .field.focus{border-color:color-mix(in srgb,var(--ko-fg) 45%,transparent)}
+html:not([data-dock=band]) .dock .field.working{border-color:color-mix(in srgb,var(--accent) 55%,transparent)}
+html:not([data-dock=band]) .dock .queue{background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border-radius:8px;padding:4px 8px 6px;margin:6px 0 0}
+html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0 0 2px var(--ko-bg)}
+
+.narrow .composer,html[data-width=narrow] .composer{padding:0 14px 10px}
+.field{border:1px solid var(--hair2);border-radius:9px;background:var(--bg);padding:9px 12px 8px;position:relative;transition:border-color .12s}
+.field.focus{border-color:color-mix(in srgb,var(--ko-fg) 40%,var(--ko-bg))}
+.field .text{min-height:1.6em;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--fg);max-height:calc(6*1.6em);overflow:auto}
+.field .text:empty::before,.field .text.ph{content:attr(data-ph);color:var(--faint)}
+.field .text.ph{color:var(--faint)}
+.field .foot{display:flex;align-items:center;gap:12px;margin-top:4px;font:.8em/1.4 var(--mono);color:var(--faint);min-height:24px}
+.field .foot .sp{flex:1}
+.field .foot kbd{font:inherit;color:var(--muted)}
+.field .foot .hint{opacity:0;transition:opacity .15s}
+.field.focus .foot .hint,.field.working .foot .hint{opacity:1}
+/* the one button: send (accent, arrow right) or stop (fg, square). 26pt rounded square, 8pt radius, like the palette's Send; no border, no text. */
+.act{width:26px;height:26px;border-radius:7px;border:0;padding:0;display:grid;place-items:center;cursor:pointer;color:var(--accent);background:none;margin-right:-7px;margin-bottom:-2px;transition:background .12s,color .12s}
+.act svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.act:hover{background:var(--well2)}
+.act.off{color:var(--faint);cursor:default}
+.act.off:hover{background:none}
+.act.stop{color:var(--muted)}
+.act.stop:hover{color:var(--err);background:var(--well2)}
+.field.working{border-color:color-mix(in srgb,var(--accent) 45%,var(--ko-bg))}
+.field.working::after{content:"";position:absolute;left:12px;right:12px;top:-1px;height:1px;background:linear-gradient(90deg,transparent,var(--accent),transparent);background-size:40% 100%;animation:sweep 1.6s linear infinite;opacity:.8}
+@keyframes sweep{from{background-position:-40% 0}to{background-position:140% 0}}
+.narrow .field.working::after,html[data-width=narrow] .field.working::after{left:8px;right:8px}
+
+/* ---- status bar: one line ---- */
+.status{flex-shrink:0;height:24px;display:flex;align-items:center;gap:0;padding:0 12px;border-top:1px solid var(--hair);font:.82em/1 var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden}
+.status .seg{display:flex;align-items:center;gap:6px;padding:0 10px;border-right:1px solid var(--hair);height:100%}
+.status .seg:first-child{padding-left:0}
+.status .seg:last-child{border-right:0;padding-right:0;margin-left:auto}
+.status .seg.grow{flex:1;min-width:0;border-right:0;overflow:hidden;text-overflow:ellipsis;display:block;line-height:24px;padding-right:10px}
+.status .dot{width:6px;height:6px;border-radius:50%;background:var(--faint);flex-shrink:0}
+.status .dot.on{background:var(--ok)}
+.status .dot.wait{background:var(--warn)}
+.status .ctx{display:inline-block;width:44px;height:4px;border-radius:2px;background:var(--hair2);position:relative;top:0}
+.status .ctx i{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--faint)}
+.status .ctx.high i{background:var(--warn)}
+.status .k{color:var(--faint)}
+.narrow .status .hide-n,html[data-width=narrow] .status .hide-n{display:none}
+
+/* ---- dialogs from extensions (pi's select / confirm / input / editor) ---- */
+.dialogs{flex-shrink:0;max-width:720px;width:100%;margin:0 auto;padding:0 24px 10px}
+.narrow .dialogs,html[data-width=narrow] .dialogs{padding:0 14px 8px}
+.dialog{position:relative;border:1px solid var(--hair2);border-radius:9px;background:var(--bg);padding:11px 12px 10px;overflow:hidden}
+.dialog .head{display:flex;align-items:baseline;gap:12px;margin-bottom:4px}
+.dialog .title{font-weight:600;flex:1;min-width:0}
+.dialog .count{font:.8em/1.4 var(--mono);color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+.dialog .msg2{color:var(--muted);margin:0 0 8px}
+.dialog .fuse{position:absolute;left:0;top:0;height:2px;background:var(--accent);opacity:.7;width:62%}
+.opts{margin:2px 0 6px;display:flex;flex-direction:column;gap:1px}
+.opt{display:flex;align-items:baseline;gap:9px;padding:4px 8px;border-radius:6px;font:.95em/1.5 var(--prose)}
+.opt .k{font:.85em var(--mono);color:var(--faint);width:12px;text-align:center}
+.opt.cur{background:var(--well2)}
+.opt.cur .k{color:var(--accent)}
+.opt .d{color:var(--muted);font-size:.9em;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dialog .in{border:1px solid var(--hair2);border-radius:7px;padding:6px 9px;margin:2px 0 8px;color:var(--fg);min-height:1.6em;background:var(--bg)}
+.dialog .in.focus{border-color:color-mix(in srgb,var(--ko-fg) 40%,var(--ko-bg))}
+.dialog .in.multi{min-height:calc(4*1.6em + 12px);white-space:pre-wrap}
+.dialog .in .ph{color:var(--faint)}
+.dialog .foot{display:flex;align-items:center;gap:8px;margin-top:2px;font:.8em/1.4 var(--mono);color:var(--faint)}
+.dialog .foot .sp{flex:1}
+.btn{border:1px solid var(--hair2);border-radius:7px;background:var(--bg);color:var(--fg);padding:3px 11px;font:.95em/1.5 var(--prose);cursor:pointer}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+.btn:hover{background:var(--well)}
+.btn.primary:hover{background:color-mix(in srgb,var(--accent) 85%,var(--ko-fg))}
+.dialog .btn kbd{font:.8em var(--mono);opacity:.6;margin-left:6px}
+.queued-next{display:flex;align-items:baseline;gap:8px;margin:6px 2px 0;font:.8em/1.4 var(--mono);color:var(--faint)}
+.queued-next b{font-weight:500;color:var(--muted)}
+
+/* ---- the queue: steering and follow-ups pi holds while it works ---- */
+.queue{margin:6px 2px 0;font:.85em/1.5 var(--prose);color:var(--muted)}
+.queue .q{display:flex;align-items:baseline;gap:9px;padding:2px 0}
+.queue .tag{font:.8em var(--mono);color:var(--faint);width:62px;flex-shrink:0;text-transform:lowercase}
+.queue .q .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.queue .take{display:flex;align-items:center;gap:8px;margin-top:3px;font:.8em/1.4 var(--mono);color:var(--faint)}
+.queue .take .btn{font:1em var(--mono);padding:1px 8px;color:var(--muted)}
+
+/* ---- pickers from the status bar ---- */
+.pane{position:relative}
+.picker{position:absolute;bottom:30px;z-index:3;min-width:220px;max-width:calc(100% - 24px);background:var(--bg);border:1px solid var(--hair2);border-radius:9px;box-shadow:0 8px 28px color-mix(in srgb,var(--ko-fg) 14%,transparent);padding:6px;font:.88em/1.5 var(--mono);color:var(--fg)}
+.picker .ph{padding:2px 8px 6px;color:var(--faint);font-size:.9em}
+.picker .row{display:flex;align-items:baseline;gap:10px;padding:3px 8px;border-radius:6px;white-space:nowrap}
+.picker .row .tick{width:10px;color:var(--accent);flex-shrink:0}
+.picker .row .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.picker .row .p{color:var(--faint);font-size:.9em}
+.picker .row.cur{background:var(--well2)}
+.picker .hints{margin-top:4px;padding:5px 8px 0;border-top:1px solid var(--hair);color:var(--faint);font-size:.85em}
+.status .seg.pick{color:var(--fg);background:var(--well2);border-radius:5px;height:20px;margin:0 4px 0 -6px;padding:0 10px 0 6px;border-right:0}
+.status .seg.pick+.seg{padding-left:6px}
+
+/* ---- toast and extension status in the bar ---- */
+.status .seg.grow{display:flex;align-items:center;gap:7px}
+.toast{display:inline-flex;align-items:center;gap:7px;min-width:0}
+.toast .i{display:inline-grid;place-items:center;width:12px;height:12px;border-radius:50%;font:700 9px/1 var(--mono);color:var(--bg);flex-shrink:0}
+.toast.info .i{background:var(--accent)}.toast.warn .i{background:var(--warn)}.toast.error .i{background:var(--err)}
+.toast .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+.toast .t.m{color:var(--muted)}
+.ext{color:var(--muted)}
+.ext .k{color:var(--faint)}
+
+/* ---- pi exited ---- */
+.exited{flex-shrink:0;max-width:720px;width:100%;margin:0 auto;padding:0 24px 12px}
+.narrow .exited,html[data-width=narrow] .exited{padding:0 14px 10px}
+.exited .card{border:1px solid color-mix(in srgb,var(--ko-color-1) 35%,var(--ko-bg));border-radius:9px;padding:10px 12px 10px;background:var(--bg)}
+.exited .head{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
+.exited .title{font-weight:600;flex:1}
+.exited .title .err{font-weight:500}
+.exited pre{margin:0 0 10px;max-height:140px;color:var(--muted);font-size:.86em}
+.exited .acts{display:flex;align-items:center;gap:10px;font:.8em/1.4 var(--mono);color:var(--faint)}
+.exited .acts .sp{flex:1}
+.status .dot.off{background:var(--err)}
+
+/* idle empty */
+
+.note{font-size:12px;color:var(--muted);max-width:980px;margin:10px 0 0}
+.note code{font-size:.9em}
+
+/* ---- the variants: each pane carries data-variant; the current (A) is the shipped CSS above ---- */
+html .pane .dock .field.working::after{display:none}html .pane:not([data-variant=a]) .dock .field.working{border-color:var(--hair2)}
+/* A · shipped: tinted border + a sweeping light on the top edge */
+html .pane[data-variant=a] .dock .field.working{border-color:color-mix(in srgb,var(--accent) 55%,transparent)}
+html .pane[data-variant=a] .dock .field.working::after{display:block}
+/* B · the border itself travels: a gray conic gradient runs around the field once every 2.4s; no accent */
+html .pane[data-variant=b] .dock .field.working{border-color:transparent;background-clip:padding-box;position:relative}
+.pane[data-variant=b] .field.working::before{content:"";position:absolute;inset:-1px;border-radius:10px;padding:1px;background:conic-gradient(from var(--a,0deg),var(--hair) 0 55%,color-mix(in srgb,var(--ko-fg) 85%,var(--ko-bg)) 75%,var(--hair) 95%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;animation:ring 2.4s linear infinite;pointer-events:none}
+@property --a{syntax:"<angle>";inherits:false;initial-value:0deg}
+@keyframes ring{to{--a:360deg}}
+/* C · quiet field: the run line's gray spinner in the foot with the elapsed time; the border stays as at rest */
+.pane[data-variant=c] .hint .spin{border-color:var(--hair2);border-top-color:var(--muted);margin-right:5px;vertical-align:-1px}
+/* D · the status bar carries it: a 1pt indeterminate sweep along the bar's top edge, in the muted tone; the field at rest */
+.pane[data-variant=d] .status{overflow:visible}
+.pane[data-variant=d] .status::before{content:"";position:absolute;left:0;right:0;top:-1px;height:2px;z-index:2;background:linear-gradient(90deg,transparent,var(--muted),transparent);background-size:30% 100%;background-repeat:no-repeat;animation:sweep 1.8s ease-in-out infinite}
+/* E · the placeholder shimmers: a light travels through "Steer koa…"; nothing else moves */
+.pane[data-variant=e] .text.ph{background:linear-gradient(90deg,var(--faint) 0 35%,var(--fg) 50%,var(--faint) 65% 100%);background-size:250% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:shine 2.2s linear infinite;display:inline-block;min-width:0}
+@keyframes shine{from{background-position:120% 0}to{background-position:-120% 0}}
+/* the status dot's pulse, shared by C, D and E: the green dot breathes instead of standing */
+.pane[data-variant=c] .dot.on,.pane[data-variant=d] .dot.on,.pane[data-variant=e] .dot.on{animation:breathe 1.6s ease-in-out infinite}
+@keyframes breathe{50%{opacity:.35}}
+.pane[data-variant=e] .field.working .text.ph{color:transparent}
+.grid .pane.short{height:250px}
+.cap{font-size:12px;color:var(--muted);margin:6px 0 0;max-width:720px}
+</style>
+</head>
+<body>
+<h1>koa — a working agent, five ways</h1>
+<p class="lede">What the page shows while pi works. Today (A) the composer's border takes the accent tint and a light sweeps along its top edge. The other four move the signal elsewhere or make it quieter; the transcript's run line keeps its gray spinner in every variant, since that is where the work is. The status bar says <code>working 12s</code> in all of them. The pictures are one frame each; the caption names the motion.</p>
+<div class="controls">
+  <label>Theme <select id="theme"><option value="light">kido-light</option><option value="dark">kido-dark</option></select></label>
+  <label>Pane width <select id="width"><option value="wide">wide (980pt)</option><option value="narrow">narrow (60 columns)</option></select></label>
+</div>
+
+<section><h2>A · Shipped: accent border and a sweeping top light</h2>
+<p>The border mixes 45% accent; a 1pt light, 40% of the width, crosses the top edge every 1.6s. The one coloured thing on the screen while the agent works.</p>
+<div class="pane short" data-variant="a"></div></section>
+
+<section><h2>B · The border travels</h2>
+<p>No accent. The border is a gray ring with one brighter segment that runs around the field once every 2.4s, like a slow radar. The field reads as "busy" from any distance; nothing inside it moves.</p>
+<div class="pane short" data-variant="b"></div></section>
+
+<section><h2>C · Quiet: a spinner in the foot</h2>
+<p>The border stays at rest. The foot's hint becomes the run line's gray spinner with the elapsed time and the abort key: <span style="font:.9em var(--mono)">⟳ working 12s · ⎋ abort</span>. The status dot breathes. The same mark as in the transcript, so one spinner means one thing.</p>
+<div class="pane short" data-variant="c"></div></section>
+
+<section><h2>D · The status bar carries it</h2>
+<p>A 1pt muted light sweeps along the top edge of the status bar every 1.8s; the composer is untouched. Progress lives with the other session facts (model, context, cwd), at the very bottom, out of the way of the text.</p>
+<div class="pane short" data-variant="d"></div></section>
+
+<section><h2>E · The placeholder shimmers</h2>
+<p>A light travels through "Steer koa…" every 2.2s, the way a loading label does; border and bar are at rest, the status dot breathes. The smallest motion: a few words, where the eye already is when it wants to type.</p>
+<div class="pane short" data-variant="e"></div></section>
+
+<script>
+const esc=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+function status(){return `<div class="status"><span class="seg"><span class="dot on"></span>working <span class="k">12s</span></span><span class="seg">claude-opus-5-5<span class="hide-n k"> · thinking high</span></span><span class="seg"><span class="ctx"><i style="width:42%"></i></span><span class="hide-n k">84k / 200k</span>42%</span><span class="seg grow"></span><span class="seg"><span class="hide-n">~/Workspace/</span>kido</span></div>`}
+const transcript=(inner)=>`<div class="scroll"><div class="transcript">${inner}</div></div>`;
+const userMsg=(t)=>`<div class="msg user"><div class="t">${t}</div><time datetime="2026-11-09T14:32">14:32</time></div>`;
+const run=`<div class="run open"><div class="line"><span class="chev">›</span><span class="sum"><span class="spin"></span> <span class="cmd">make verify STAGES=unit</span></span><span class="time">12s</span></div><div class="steps"><div class="step"><div class="line"><span class="chev">›</span><span class="sum"><span class="name">read</span> <span class="path">ko_server/src/sweep.rs</span> <span class="delta">212 lines</span></span><span class="time">0.1s</span></div></div><div class="step"><div class="line"><span class="chev">›</span><span class="sum"><span class="name">bash</span> <span class="cmd">make verify STAGES=unit</span></span><span class="time">11s</span></div></div></div></div>`;
+const stop='<svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor" stroke="none"/></svg>';
+function composer(variant){
+  const hint=variant==='c'?'<span class="spin"></span>working 12s · <kbd>⎋</kbd> abort':'<kbd>↩</kbd> steers while koa works';
+  return `<div class="composer"><div class="field working"><div class="text ph">Steer koa…</div><div class="foot"><span class="hint">${hint}</span><span class="sp"></span><button class="act stop" aria-label="Abort">${stop}</button></div></div></div>`}
+for(const pane of document.querySelectorAll('.pane')){pane.innerHTML=transcript(userMsg('Run the unit stage and fix what fails')+run)+composer(pane.dataset.variant)+status();const dock=document.createElement('div');dock.className='dock';const kids=[...pane.children].filter(c=>!c.classList.contains('scroll')&&!c.classList.contains('status'));kids[0].before(dock);kids.forEach(k=>dock.append(k));const s=pane.querySelector('.scroll');s.scrollTop=s.scrollHeight}
+document.getElementById('theme').onchange=e=>{document.documentElement.dataset.theme=e.target.value};
+document.getElementById('width').onchange=e=>{document.documentElement.dataset.width=e.target.value};
+</script>
+</body>
+</html>
