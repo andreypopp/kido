@@ -53,6 +53,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         self.bridge = bridge
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .nonPersistent()
+        config.writingToolsBehavior = .none
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
         config.mediaTypesRequiringUserActionForPlayback = .all
         config.setURLSchemeHandler(bridge, forURLScheme: "ko")

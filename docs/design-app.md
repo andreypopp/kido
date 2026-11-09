@@ -1448,7 +1448,11 @@ included, goes to the page. A key, text or paste that the page does not
 handle comes back up the responder chain to the pane, which never sends
 it to the terminal while a page is shown, so a Control-C in a page is
 not an interrupt of its program. Copy mode is not available while the page
-has focus, and showing a page ends copy mode.
+has focus, and showing a page ends copy mode. Writing Tools is off for
+every page (`writingToolsBehavior` is `.none`): WebKit decides on its
+Siri button in a focused field only from that configuration and the
+field's kind, so a page cannot hide it, and a terminal pane has none
+either.
 
 While its program does not serve, the page is hidden and the web
 view's container holds the focus, because AppKit drops the first

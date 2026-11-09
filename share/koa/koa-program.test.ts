@@ -325,6 +325,19 @@ test("queue, model, thinking and dialog routes carry RPC state", { timeout: 1000
   assert.deepEqual(commands.filter(record => record.type === "extension_ui_response").map(({ id, value, confirmed }) => ({ id, value, confirmed })), [{ id: "dialog-1", value: "Yes", confirmed: undefined }, { id: "dialog-2", value: undefined, confirmed: true }, { id: "dialog-3", value: "typed", confirmed: undefined }, { id: "dialog-4", value: undefined, confirmed: undefined }]);
 });
 
+test("session headers keep the startup cwd for a missing file and report invalid files", { timeout: 10000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), "koa-session-header-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const invalid = join(dir, "invalid.jsonl");
+  await writeFile(invalid, "not json\n");
+  for (const [sessionFile, reports] of [[join(dir, "missing.jsonl"), false], [invalid, true], [dir, true]] as const) {
+    const app = await fixture(t, [{ type: "respond", command: "get_state", data: { sessionFile } }]);
+    const state = await app.until(record => record.type === "state" && record.pi?.type === "ready");
+    assert.equal(state.cwd, process.cwd());
+    assert.equal(app.stderr().includes("koa: session header:"), reports, app.stderr());
+  }
+});
+
 test("restart keeps the saved picker selection, harness and runtime", { timeout: 10000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), "koa-restart-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

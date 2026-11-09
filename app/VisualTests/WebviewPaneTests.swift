@@ -28,6 +28,7 @@ extension VisualTests {
         let pane = try XCTUnwrap(terminal?.panes.first)
         try await wait("webview page loaded") { pane.webviewView?.browser.isLoading == false && pane.webviewView?.browser.url != nil }
         let web = try XCTUnwrap(pane.webviewView?.browser)
+        XCTAssertEqual(web.configuration.writingToolsBehavior, .none)
         let result = try await webviewJS(web, "Promise.all([window.echo,window.sandbox])")
         XCTAssertTrue(result.contains("hello"), result)
         try await webviewEqual(web, "window.ready", "true")
@@ -76,6 +77,7 @@ extension VisualTests {
         try await emit(pane, "\u{1b}[41m" + fill + "\u{1b}]7502;a=enter\u{7}")
         try await wait("webview loaded") { pane.webviewView?.browser.isLoading == false && pane.webviewView?.browser.url != nil }
         let web = try XCTUnwrap(pane.webviewView?.browser)
+        XCTAssertEqual(web.configuration.writingToolsBehavior, .none)
         try await webviewUntil(web, "document.querySelector('input') !== null")
         window.makeFirstResponder(web)
         _ = try await webviewJS(web, "(()=>{document.querySelector('input').focus();return true})()")

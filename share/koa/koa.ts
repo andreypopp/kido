@@ -200,7 +200,9 @@ async function main(): Promise<void> {
       try {
         const header = JSON.parse((await readFile(response.data.sessionFile, "utf8")).split("\n")[0] ?? "{}");
         if (typeof header.cwd === "string") state.cwd = header.cwd;
-      } catch (error) { process.stderr.write(`koa: session header: ${errorText(error)}\n`); }
+      } catch (error) {
+        if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) process.stderr.write(`koa: session header: ${errorText(error)}\n`);
+      }
     }
     if (!response.success) throw new Error(response.error);
     title();
