@@ -1,5 +1,6 @@
 import { autocompletion, acceptCompletion, closeCompletion, completionStatus, moveCompletionSelection, pickedCompletion, selectedCompletion, type Completion, type CompletionContext } from '@codemirror/autocomplete';
 import { tooltips, type Command } from '@codemirror/view';
+import { syntaxTree } from '@codemirror/language';
 import { fileToken, slashToken } from '../../pi/token.ts';
 import type { CompletionOption, CompletionResult, CompletionQuery } from '../records.ts';
 
@@ -9,6 +10,9 @@ export function completion(host: HTMLElement, send: () => void) {
   const options = new WeakMap<Completion, CompletionOption>();
   const active = (command: Command): Command => view => completionStatus(view.state) === 'active' && command(view);
   const source = async (context: CompletionContext) => {
+    for (let node: ReturnType<typeof syntaxTree>['topNode'] | null = syntaxTree(context.state).resolveInner(context.pos, -1); node; node = node.parent) {
+      if (node.name === 'InlineCode' || node.name === 'FencedCode' || node.name === 'CodeBlock') return null;
+    }
     const line = context.state.doc.lineAt(context.pos), before = line.text.slice(0, context.pos - line.from);
     if (fileToken(before) === undefined && slashToken(context.state.doc.toString(), context.pos) === undefined) return null;
     const controller = new AbortController();

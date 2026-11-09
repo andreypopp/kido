@@ -102,3 +102,5 @@ body .koa-complete .cm-completion-directory .cm-completionLabel::after{content:"
 body .koa-complete .cm-completionDetail{color:var(--muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;font:.92em var(--prose);margin:0}
 body .koa-complete .cm-completionKind{color:var(--faint);font:.8em var(--ko-font-family);flex-shrink:0;margin-left:auto}
 body .cm-tooltip.cm-tooltip-autocomplete.koa-complete::after{flex-shrink:0;content:"↑↓ move · ⇥ ↩ accept · ⎋ close";display:block;margin-top:4px;padding:5px 8px 1px;border-top:1px solid var(--hair);color:var(--faint);font:.8em/1.4 var(--ko-font-family)}
+
+.cm-markup{color:var(--muted)}.cm-strong{font-weight:bold}.cm-emphasis{font-style:italic}.cm-strikethrough{text-decoration:line-through}.cm-monospace{font-family:var(--ko-font-family);font-size:.92em}

@@ -1,6 +1,9 @@
 import { Compartment, Prec, Transaction } from '@codemirror/state';
 import { EditorView, keymap, placeholder, type Command } from '@codemirror/view';
 import { history, historyKeymap, standardKeymap, insertNewline } from '@codemirror/commands';
+import { markdownLanguage, insertNewlineContinueMarkup, deleteMarkupBackward } from '@codemirror/lang-markdown';
+import { syntaxHighlighting, HighlightStyle } from '@codemirror/language';
+import { tags } from '@lezer/highlight';
 
 import { completion } from './complete.ts';
 import type { PromptMode } from '../records.ts';
@@ -16,12 +19,23 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
     parent: host,
     extensions: [
       history(),
+      markdownLanguage,
+      syntaxHighlighting(HighlightStyle.define([
+        { tag: [tags.processingInstruction, tags.meta, tags.url, tags.atom], class: 'cm-markup' },
+        { tag: [tags.strong, tags.heading], class: 'cm-strong' },
+        { tag: tags.emphasis, class: 'cm-emphasis' },
+        { tag: tags.strikethrough, class: 'cm-strikethrough' },
+        { tag: tags.monospace, class: 'cm-monospace' },
+        { tag: tags.labelName, class: 'cm-markup cm-monospace' },
+      ])),
       completions.extension,
       keymap.of([...historyKeymap, ...standardKeymap.filter(binding => binding.key !== 'Enter')]),
       Prec.highest(keymap.of([
         ...completions.keys.map(binding => ({ ...binding, run: outsideComposition(binding.run) })),
         { key: 'Enter', run: outsideComposition(() => { handlers.send('prompt'); return true; }) },
+        { key: 'Shift-Enter', run: outsideComposition(insertNewlineContinueMarkup) },
         { key: 'Shift-Enter', run: outsideComposition(insertNewline) },
+        { key: 'Backspace', run: outsideComposition(deleteMarkupBackward) },
         { key: 'Alt-Enter', run: outsideComposition(() => { handlers.send('follow_up'); return true; }) },
         { key: 'Ctrl-d', run: () => { if (!empty()) return false; handlers.quit(); return true; } },
       ])),

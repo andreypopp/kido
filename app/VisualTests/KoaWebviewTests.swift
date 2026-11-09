@@ -7,7 +7,7 @@ import SidebarFeed
 @testable import Kido
 
 extension VisualTests {
-    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown }
     func testKoaInterruptRestoresNativeInput() async throws {
         let script = directory.appendingPathComponent("quit-script.jsonl")
         try "".write(to: script, atomically: true, encoding: .utf8)
@@ -39,6 +39,9 @@ extension VisualTests {
             editor.focus();
             if(!await sent('send',{},'prompt'))return 'Return';
             editor.setText('line');key('Enter',{shiftKey:true});if(editor.text()!=='line\n')return 'Shift Return';
+            for(const [text,expected] of [['- item','- item\n- '],['2. item','2. item\n3. '],['> quote','> quote\n> '],['- [x] item','- [x] item\n- [ ] '],['- ','']]){editor.setText(text);key('Enter',{shiftKey:true});if(editor.text()!==expected)return 'markup continuation '+JSON.stringify({text,actual:editor.text(),expected})}
+            editor.setText('- item');for(let i=0;i<4;i++)key('ArrowLeft');key('Backspace');if(editor.text()!=='item')return 'markup Backspace';editor.setText('plain');key('Backspace');if(editor.text()!=='plai')return 'plain Backspace';
+            if(!await sent('- item',{},'prompt'))return 'markup Return';
             if(!await sent('follow',{altKey:true},'follow_up'))return 'Option Return';
             editor.setText('draft');const count=requests.length;key('d',{ctrlKey:true});key('c',{ctrlKey:true});if(requests.length!==count||editor.text()!=='draft')return 'Control keys';
             key('Escape');if(editor.text()!=='draft')return 'first Escape';key('Escape');if(editor.text()!=='')return 'second Escape';
@@ -46,7 +49,7 @@ extension VisualTests {
             editor.setText('base');editor.insert('history');const before=editor.text();key('z',{metaKey:true});if(editor.text()===before)return 'undo';key('Z',{metaKey:true,shiftKey:true});if(editor.text()!==before)return 'redo';
             if(key('Tab'))return 'Tab';
             editor.setText('');const transfer=new DataTransfer();transfer.setData('text/plain','pasted\nplain');transfer.setData('text/html','<b>other</b>');input.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:transfer}));if(editor.text()!=='pasted\nplain')return 'paste';
-            const prior=requests.length, composed=editor.text();input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));for(const options of [{},{shiftKey:true},{altKey:true}])key('Enter',{isComposing:true,...options});input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));if(requests.length!==prior||editor.text()!==composed)return 'composition keymap';
+            editor.setText('- composed');const prior=requests.length, composed=editor.text();input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));for(const options of [{},{shiftKey:true},{altKey:true}])key('Enter',{isComposing:true,...options});input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));if(requests.length!==prior||editor.text()!==composed)return 'composition keymap';
             return 'ok';
           } finally {window.fetch=original;}
         })()
@@ -128,6 +131,10 @@ extension VisualTests {
 
     func testKoaWebviewNarrowExit() async throws {
         try await koaWebview(width: 470, height: 560, scenario: .exit, captures: ["narrow-exited"])
+    }
+
+    func testKoaWebviewComposerMarkdown() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .markdown, captures: ["composer-markdown", "composer-markdown-code"])
     }
 
     func testKoaWebviewCompletionWide() async throws {
@@ -415,6 +422,18 @@ extension VisualTests {
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.dot.on{animation:none!important}';document.head.append(style);return true})()")
         let idleHint = try await webviewJS(web, "document.querySelector('#hint .spin')===null")
         XCTAssertEqual(idleHint, "true")
+        if scenario == .markdown {
+            _ = try await webviewJS(web, #"(()=>{window.composer.setText('# Plan\n- **Strong** and *emphasis* with ~~old~~\n- Read `inline` and [link](https://kido.tools)');return true})()"#)
+            try await webviewUntil(web, "document.querySelector('#prompt .cm-monospace')&&document.querySelector('#prompt .cm-strikethrough')")
+            let mutedURL = try await webviewJS(web, "(()=>{const url=Array.from(document.querySelectorAll('#prompt .cm-markup')).find(node=>node.textContent==='https://kido.tools');return !!url&&getComputedStyle(url).color!==getComputedStyle(document.querySelector('#prompt .cm-content')).color})()")
+            XCTAssertEqual(mutedURL, "true", "The URL is muted while the link text keeps the prose colour")
+            try await capture("composer-markdown")
+            _ = try await webviewJS(web, #"(()=>{window.composer.setText('- [ ] Review the patch\n> Keep the prompt literal\n```ts\nconst target = \"@sidebar\";\n```');return true})()"#)
+            let markers = try await webviewJS(web, "(()=>{const spans=Array.from(document.querySelectorAll('#prompt .cm-markup')),info=spans.find(node=>node.textContent==='ts'),task=spans.find(node=>node.textContent==='[ ]');return !!info&&info.classList.contains('cm-monospace')&&!!task})()")
+            XCTAssertEqual(markers, "true", "Fence info and task markers use the markup styles")
+            try await capture("composer-markdown-code")
+            return
+        }
         if scenario == .completion {
             _ = try await webviewJS(web, "(()=>{window.completePrompts=[];window.lastComplete=null;const nativeFetch=window.fetch;window.fetch=async(path,options)=>{if(path==='/prompt')completePrompts.push(JSON.parse(options.body));const response=await nativeFetch(path,options);if(path==='/complete'){lastComplete={query:JSON.parse(options.body),result:await response.clone().json()};document.body.dataset.complete=String(Number(document.body.dataset.complete||0)+1)}return response};return true})()")
             let warmed = try await webviewJS(web, "(async()=>{const deadline=performance.now()+5000;while(performance.now()<deadline){const result=await(await fetch('/complete',{method:'POST',body:JSON.stringify({text:'@si',pos:3})})).json();if(result.options.filter(o=>o.kind==='agent').length===3)return true}throw Error('agent completion deadline')})()")
@@ -479,6 +498,34 @@ extension VisualTests {
             try await key("Escape")
             let escapedTwice = try await webviewJS(web, "window.composer.text()")
             XCTAssertEqual(escapedTwice, "\"\"")
+            try await resize(height)
+            try await show("", "@si")
+            try await key("Escape")
+            try await show("", "/re")
+            try await key("Escape")
+            let excluded = try await webviewJS(web, #"""
+            (async()=>{
+              const fetchNow=window.fetch;let calls=0;
+              window.fetch=(...args)=>{if(args[0]==='/complete'){calls++;dispatchEvent(new Event('code-completion-request'))}return fetchNow(...args)};
+              const quietWindow=()=>new Promise(resolve=>{
+                const observer=new MutationObserver(check), timer=setTimeout(()=>finish(true),200);
+                function finish(ok){clearTimeout(timer);observer.disconnect();removeEventListener('code-completion-request',check);resolve(ok)}
+                function check(){if(calls||document.querySelector('.koa-complete'))finish(false)}
+                addEventListener('code-completion-request',check);observer.observe(document.documentElement,{childList:true,subtree:true});check();
+              });
+              try {
+                const input=document.querySelector('#prompt .cm-content');
+                for(const [before,token,after] of [['Read `','@si','`'],['```md\n','@si','\n```'],['    ','/re','']]) {
+                  window.composer.setText(before+token.slice(0,-1)+after);window.composer.focus();
+                  for(let i=0;i<after.length;i++)input.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true,cancelable:true}));
+                  document.execCommand('insertText',false,token.slice(-1));
+                  if(!await quietWindow())return 'completion inside code '+JSON.stringify({before,token,calls});
+                }
+                return 'ok';
+              } finally {window.fetch=fetchNow;}
+            })()
+            """#)
+            XCTAssertEqual(excluded, "\"ok\"")
             _ = try await webviewJS(web, "(()=>{const fetchNow=window.fetch;window.completionWaiting=false;window.fetch=async(...args)=>{const response=await fetchNow(...args);if(args[0]==='/complete'){completionWaiting=true;await new Promise(resolve=>window.releaseCompletion=resolve)}return response};window.composer.setText('/r');document.execCommand('insertText',false,'e');return true})()")
             try await webviewUntil(web, "completionWaiting")
             try await key("Escape")
@@ -631,7 +678,7 @@ extension VisualTests {
             try await capture("narrow-exited")
         }
         switch scenario {
-        case .transcript, .feed, .completion: break
+        case .transcript, .feed, .completion, .markdown: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()
