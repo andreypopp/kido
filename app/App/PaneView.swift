@@ -634,6 +634,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var visualInstalledPixels: CGSize? { installedPixels }
     var visualResizeIntent: Bool { resizeIntent }
     var visualTerminalFrame: CGRect { terminal.frame }
+    var visualTerminalHidden: Bool { terminal.layer?.isHidden == true }
     var visualScrollerRows: Int { scrollGeometry.position.retainedHistoryRows }
     var visualReady: Bool {
         !restoring && scrollPending == nil

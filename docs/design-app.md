@@ -1449,10 +1449,11 @@ handle comes back up the responder chain to the pane, which never sends
 it to the terminal while a page is shown, so a Control-C in a page is
 not an interrupt of its program. Copy mode is not available while the page
 has focus, and showing a page ends copy mode. Writing Tools is off for
-every page (`writingToolsBehavior` is `.none`): WebKit decides on its
-Siri button in a focused field only from that configuration and the
-field's kind, so a page cannot hide it, and a terminal pane has none
-either.
+every page (`writingToolsBehavior` is `.none`), as a terminal pane has
+none. The WebKit of macOS 27 does not consult that setting for its Siri
+button in a focused field (WebKit bug 327446), so the web view also
+answers AppKit's `allowsWritingToolsAffordance` with false, until the
+installed WebKit has the fix.
 
 While its program does not serve, the page is hidden and the web
 view's container holds the focus, because AppKit drops the first
@@ -1505,7 +1506,13 @@ font list: the quoted family name, then `monospace`.
 **Hidden pages.** A pane that hides keeps its web view. `SessionView`
 keeps the order in which pages hid, for the whole native window, and
 releases the oldest beyond `app.webview.keep_hidden`; 0 releases a page when
-its pane hides. A released page loads again when its pane shows.
+its pane hides. A released page loads again when its pane shows. A pane
+that leaves its slot to another pane, as a parent agent's pane does to
+its child's, is not hidden: its view goes with its page, whatever
+`keep_hidden` says, and its page loads again when it comes back. The
+pane that takes the slot gets its page in the same layout pass that adds
+it, so no frame shows its terminal; until WebKit paints, the page shows
+the pane's paper.
 
 ## Threads
 

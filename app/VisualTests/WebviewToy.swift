@@ -224,6 +224,8 @@ final class WebviewToy: @unchecked Sendable {
     .card{border:1px solid var(--ko-color-8);padding:24px;border-radius:8px;max-width:420px}code{font-family:var(--ko-font-family)}
     </style><body><div class="card"><h1>HTML pane</h1><p>A page from this pane's program.<br>The terminal stays below the page.</p><input id="input" placeholder="Type here"><p><code id="theme"></code></p></div>
     <script>
+    const solid=new URLSearchParams(location.search).get('solid');
+    if(solid){document.querySelector('.card').style.display='none';document.body.style.cssText='margin:0;padding:0;min-height:100vh;background:#'+solid}
     window.themeEvents=0;window.keys=[];window.ready=false;window.documentToken=Math.random();
     window.httpsPolicy=new Promise(resolve=>addEventListener('securitypolicyviolation',e=>{if(e.blockedURI.startsWith('https://example.invalid'))resolve(e.violatedDirective)}));
     window.initialActivation=navigator.userActivation.isActive;

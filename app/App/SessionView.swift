@@ -64,6 +64,7 @@ final class SessionView: NSView {
     }
     #if KIDO_VISUAL
     var visualShown: (WindowID) -> Void = { _ in }
+    var visualReconciled: (WindowView) -> Void = { _ in }
     #endif
     var reorder = Reorder()
     var onPaneChange: () -> Void = {}

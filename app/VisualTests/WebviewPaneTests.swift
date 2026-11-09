@@ -80,10 +80,16 @@ extension VisualTests {
         XCTAssertEqual(web.configuration.writingToolsBehavior, .none)
         try await webviewUntil(web, "document.querySelector('input') !== null")
         window.makeFirstResponder(web)
-        _ = try await webviewJS(web, "(()=>{document.querySelector('input').focus();return true})()")
+        _ = try await webviewJS(web, "(()=>{const editor=document.createElement('textarea');document.body.append(editor);editor.focus();return true})()")
+        let selector = NSSelectorFromString("allowsWritingToolsAffordance")
+        // Call WebKit's getter to confirm the same editor state triggers https://bugs.webkit.org/show_bug.cgi?id=327446
+        let inherited = unsafeBitCast(try XCTUnwrap(class_getMethodImplementation(WKWebView.self, selector)),
+                                     to: (@convention(c) (AnyObject, Selector) -> Bool).self)
+        try await wait("WebKit allows the writing tools affordance for the focused textarea", within: 5) { inherited(web, selector) }
+        XCTAssertEqual(web.value(forKey: "allowsWritingToolsAffordance") as? Bool, false)
         var written = Data()
         pane.visualInput = { written.append($0) }
-        _ = try await webviewJS(web, "(()=>{document.querySelector('input').blur();document.body.tabIndex=0;document.body.focus();return true})()")
+        _ = try await webviewJS(web, "(()=>{document.querySelector('textarea').blur();document.body.tabIndex=0;document.body.focus();return true})()")
         for (characters, code, modifiers) in [("\u{3}", UInt16(8), NSEvent.ModifierFlags.control), ("x", UInt16(7), [])] {
             let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
                 windowNumber: window.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
@@ -295,6 +301,85 @@ extension VisualTests {
         toy.releaseDocuments()
         try await wait("released page loaded") { !web.isLoading && web.url != nil }
         try await webviewEqual(web, "Promise.all([window.echo,window.sandbox]).then(()=>true)", "true")
+    }
+
+    func testWebviewChildSlotFrames() async throws {
+        let toy = try WebviewToy(path: directory.appendingPathComponent("slot.sock").path)
+        try await toy.start()
+        addTeardownBlock { toy.stop() }
+        func command(_ color: String) -> String {
+            "printf '\\033[41m'; i=0; while [ $i -lt 60 ]; do printf 'TERMINAL-BEHIND-PAGE %080d\\r\\n' 0; i=$((i+1)); done; '\(tools.ko)' webview enter --path '/?solid=\(color)'; exec '\(tools.ko)' webview serve --socket '\(toy.path)'"
+        }
+        try await start(pane: command("126a42"))
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        owner.testServerDir = directory.path
+        addTeardownBlock { @MainActor in owner.close() }
+        owner.start()
+        try await wait("parent page loaded") {
+            guard let web = owner.testSession?.activePane?.webviewView?.browser else { return false }
+            return !web.isLoading && web.url != nil
+        }
+        let session = try XCTUnwrap(owner.testSession)
+        let parent = try XCTUnwrap(session.activePane?.pane)
+        let slot = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
+        let request = directory.appendingPathComponent("child.json")
+        try JSONSerialization.data(withJSONObject: [
+            "session": "session_1", "parent": parent.description, "close": "on_exit",
+            "command": ["type": "argv", "argv": ["/bin/sh", "-c", command("234b91")]]
+        ]).write(to: request)
+        try await ko(["api", "-X", "POST", "--input", request.path, "/panes"], dir: directory.path)
+        try await wait("child page serving") { owner.testModel?.panes.contains { $0.parent == parent && $0.webview?.page != nil && $0.webview?.serving == true } == true }
+        let child = try XCTUnwrap(owner.testModel?.panes.first { $0.parent == parent }?.id)
+        var captures = 0
+        func capture(_ view: WindowView) throws {
+            guard let pane = view.panes.first, [parent, child].contains(pane.pane) else { return }
+            XCTAssertTrue(view === slot, "parent and child must use the same window slot")
+            view.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            let image = try XCTUnwrap(bitmap.converting(to: .sRGB, renderingIntent: .default))
+            let paper = try XCTUnwrap(pane.paperColor.usingColorSpace(.sRGB))
+            let bytes: [CGFloat] = pane.pane == parent ? [18, 106, 66] : [35, 75, 145]
+            let page = bytes.map { $0 / 255 }
+            let allowed = [[paper.redComponent, paper.greenComponent, paper.blueComponent], page]
+            let captured = NSImage(size: view.bounds.size)
+            captured.addRepresentation(image)
+            let attachment = XCTAttachment(image: captured)
+            attachment.name = "slot-frame-\(captures)-\(pane.pane)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            pixels: for y in stride(from: image.pixelsHigh / 4, to: image.pixelsHigh * 3 / 4, by: 19) {
+                for x in stride(from: image.pixelsWide / 4, to: image.pixelsWide * 3 / 4, by: 19) {
+                    let pixel = try XCTUnwrap(image.colorAt(x: x, y: y))
+                    let rgb = [pixel.redComponent, pixel.greenComponent, pixel.blueComponent]
+                    if !allowed.contains(where: { zip(rgb, $0).allSatisfy { abs($0 - $1) < 0.03 } }) {
+                        XCTFail("slot frame \(captures) pane \(pane.pane) pixel \(x),\(y): \(rgb)")
+                        break pixels
+                    }
+                }
+            }
+            XCTAssertTrue(pane.visualTerminalHidden, "slot frame \(captures) exposes the terminal layer for \(pane.pane)")
+            captures += 1
+        }
+        session.visualReconciled = { view in
+            do { try capture(view) } catch { XCTFail("slot capture: \(error)") }
+        }
+        defer { session.visualReconciled = { _ in } }
+        for target in [child, parent] {
+            try owner.testClient?.select(KO_SELECT_PANE, target)
+            try await wait("slot switches to \(target)") { session.activePane?.pane == target }
+            let pane = try XCTUnwrap(session.activePane)
+            try await wait("slot page loaded") { pane.webviewView?.browser.isLoading == false && pane.webviewView?.browser.url != nil }
+            let web = try XCTUnwrap(pane.webviewView?.browser)
+            let color = target == parent ? "rgb(18, 106, 66)" : "rgb(35, 75, 145)"
+            try await webviewUntil(web, "getComputedStyle(document.body).backgroundColor==='\(color)'")
+            XCTAssertTrue(surfaceText(pane).contains("TERMINAL-BEHIND-PAGE"))
+            for _ in 0..<3 {
+                try capture(try XCTUnwrap(session.windows.values.first { !$0.isHidden }))
+                await mainQueueFence()
+            }
+        }
+        XCTAssertGreaterThanOrEqual(captures, 8)
     }
 
     func testWebviewReloadMenu() async throws {

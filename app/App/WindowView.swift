@@ -294,12 +294,18 @@ final class WindowView: NSView {
         preview.autoresizingMask = [.width, .height]
         subviews = dividers + tiled + floating.sorted { $0.z < $1.z }.flatMap(\.views) + [preview]
         slots = nextSlots
+        for view in views.values where existing[view.pane] == nil {
+            view.updateWebview(session?.webview(view.pane))
+        }
         updateBreadcrumbs()
         updateFocusTreatment()
         session?.updateWebview()
         invalidateCursorRects()
         needsReconcile = false
         sizeClient()
+        #if KIDO_VISUAL
+        session?.visualReconciled(self)
+        #endif
     }
 
     private func updateBreadcrumbs() {

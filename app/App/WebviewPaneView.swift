@@ -14,6 +14,11 @@ import KoModel
     }
 }
 
+private final class WebviewBrowser: WKWebView {
+    // Remove this override when the installed WebKit has https://bugs.webkit.org/show_bug.cgi?id=327446 fixed.
+    @objc var allowsWritingToolsAffordance: Bool { false }
+}
+
 final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     private static var rules: WKContentRuleList?
     private static var ruleWaiters: [(WKContentRuleList?) -> Void] = []
@@ -58,7 +63,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         config.mediaTypesRequiringUserActionForPlayback = .all
         config.setURLSchemeHandler(bridge, forURLScheme: "ko")
         config.userContentController.add(bridge, contentWorld: .page, name: "koSocket")
-        browser = WKWebView(frame: .zero, configuration: config)
+        browser = WebviewBrowser(frame: .zero, configuration: config)
         super.init(frame: .zero)
         // WebKit's base background overwrites the layer colour before the page paints.
         browser.setValue(false, forKey: "drawsBackground")
