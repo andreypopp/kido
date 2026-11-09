@@ -155,11 +155,9 @@ Claude Code runs unmodified, without a shim or settings.
 status.
 
 Start pi as `ko-pi` to load the harness. Only a pi started as `ko-pi`
-appears in `list_agents` and accepts `message_agent`. In Kido.app,
-`ko-pi --webview` shows its transcript and a prompt field as a webview
-page; the TUI shows again for a dialog and with the page's Terminal
-button. `ko-pi --webview-browser` serves the same page on
-localhost and opens it in your browser.
+appears in `list_agents` and accepts `message_agent`. Start pi as
+`koa` to use it through a page in Kido.app: its transcript, a prompt
+field, its dialogs, its queue and its pickers; `koa --browser` shows the same page in your browser.
 `ko prompt` sends
 text from stdin to the agent in your window, over its message stream or
 as a paste for a native agent.

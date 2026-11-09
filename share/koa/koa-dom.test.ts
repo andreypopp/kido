@@ -33,8 +33,8 @@ async function connectSource(name: string) {
   return source.slice(source.indexOf("let source, reconnect"), source.indexOf("async function older()"));
 }
 
-test("both transcript pages apply SSE synchronously and reconnect with the applied cursor", async () => {
-  for (const name of ["koa-page.js", "../pi/ko-pi-page.html"]) {
+test("the transcript page applies SSE synchronously and reconnects with the applied cursor", async () => {
+  for (const name of ["koa-page.js"]) {
     const connect = await connectSource(name);
     const sources: EventSource[] = [];
     class EventSource {

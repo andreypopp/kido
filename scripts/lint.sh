@@ -119,7 +119,7 @@ for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', 
         for match in re.finditer(r'(?<![\w:])kill(?:pg)?\s*\(', code):
             report(path, text, match.start(), 'signals must go through ko_sys::pid')
 
-core = ['share/pi/ko-pi.ts', 'share/pi/transcript.ts', *glob.glob('share/koa/*.ts'), *glob.glob('share/koa/stress/*.ts')]
+core = ['share/pi/ko-pi.ts', 'share/pi/text.ts', 'share/pi/transcript.ts', *glob.glob('share/koa/*.ts'), *glob.glob('share/koa/stress/*.ts')]
 for path in candidates(r'(^|[^a-zA-Z_])(as|any)([^a-zA-Z_]|$)|!', core):
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text)

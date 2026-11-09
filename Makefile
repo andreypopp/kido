@@ -66,7 +66,7 @@ miri:
 
 preview-pi unpreview-pi:
 	@set -eu; prefix="$${KO_PREVIEW_PREFIX:-$$(brew --prefix ko)}"; dir=$$(cd "$$prefix/share/ko" && pwd -P); \
-	for file in pi/ko-pi.ts pi/transcript.ts pi/ko-pi-page.html pi/ko-api.d.ts pi/skills webview $(addprefix koa/,$(KOA_FILES)); do \
+	for file in pi/ko-pi.ts pi/transcript.ts pi/text.ts pi/ko-api.d.ts pi/skills webview $(addprefix koa/,$(KOA_FILES)); do \
 	  dst="$$dir/$$file"; \
 	  if test '$@' = preview-pi; then mkdir -p "$$(dirname "$$dst")"; \
 	    if ! test -e "$$dst.orig" && ! test -e "$$dst.orig.absent"; then \
@@ -101,7 +101,7 @@ build: $(TERMINFO)/x/xterm-ghostty
 	rm -rf $(KO)/share/ko/bin $(KO)/share/ko/pi $(KO)/share/ko/webview $(KO)/share/ko/koa
 	cp -R share/ko/bin $(KO)/share/ko/bin
 	mkdir -p $(KO)/share/ko/pi
-	cp share/pi/ko-pi.ts share/pi/transcript.ts share/pi/ko-pi-page.html share/pi/ko-api.d.ts $(KO)/share/ko/pi/
+	cp share/pi/ko-pi.ts share/pi/transcript.ts share/pi/text.ts share/pi/ko-api.d.ts $(KO)/share/ko/pi/
 	cp -R share/pi/skills $(KO)/share/ko/pi/skills
 	cp -R share/webview $(KO)/share/ko/webview
 	mkdir -p $(KO)/share/ko/koa

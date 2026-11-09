@@ -242,8 +242,6 @@ export function makeFixture(): Fixture {
   process.env.KO_JOB_KILL_MS = "50";
   process.env.KO_STREAM_INTERVAL_MS = "5";
   globalThis.__koPiExtensionReceiver = undefined;
-  globalThis.__koPiExtensionWebview = undefined;
-  globalThis.__koPiExtensionWebviewWish = undefined;
   globalThis.__koPiExtensionReceived = undefined;
 
   let seq = 0;
@@ -325,11 +323,6 @@ export function makeFixture(): Fixture {
     },
     async restore() {
       for (const shutdown of sessions.reverse()) await shutdown();
-      if (globalThis.__koPiExtensionWebview) {
-        await globalThis.__koPiExtensionWebview.wv.close();
-        await new Promise<void>(resolve => globalThis.__koPiExtensionWebview!.server.close(() => resolve()));
-      }
-      globalThis.__koPiExtensionWebview = undefined;
       globalThis.__koPiExtensionReceiver?.child.kill();
       globalThis.__koPiExtensionReceiver = undefined;
       await pollUntil(() => work.size === 0, 15000, "all fake commands to close");

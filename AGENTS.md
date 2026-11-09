@@ -16,7 +16,7 @@ subagents. [docs/design-program-status.md](docs/design-program-status.md)
 describes pane classification and status. [docs/design-runtimes.md](docs/design-runtimes.md)
 describes runtimes: the configuration, the link, the identity on a
 runtime connection and the exec session. [docs/design-webview.md](docs/design-webview.md)
-describes webview panes, the `@kido/webview` SDK and ko-pi's page. [docs/design-app.md](docs/design-app.md)
+describes webview panes, the `@kido/webview` SDK and koa's page. [docs/design-app.md](docs/design-app.md)
 describes Kido.app. Before you change these mechanisms, read these
 files. The code comments and this file do not repeat them.
 
@@ -176,7 +176,7 @@ These requirements are fixed:
   It embeds the shell integrations of `share/ko/` with `include_str!`;
   `make build` installs `share/ko/bin` (the `ko`, `ssh`, `ko-pi`
   and `koa` shims), `share/ko/shim.sh`, `share/pi/ko-pi.ts`,
-  `share/pi/ko-pi-page.html`, `share/pi/ko-api.d.ts` and
+  `share/pi/text.ts`, `share/pi/ko-api.d.ts`,
   `share/pi/transcript.ts` and `share/pi/skills` (in
   `share/ko/pi/`), koa's program, page and vendored modules (in `share/ko/koa/`), and the SDK
   `share/webview/` (in `share/ko/webview/`) beside `bin/ko` in
@@ -745,8 +745,8 @@ maps the coordinator's modules.
       bash/, zsh/       the OSC 133 integrations every primed shell sources
       openapi.json, client-model.json, config-schema.json   the generated schemas (make schemas)
     share/pi/           ko-pi.ts, the harness, which the ko-pi shim loads
-                        with --extension; ko-pi-page.html, its transcript
-                        page; its suite ko-pi-*.test.ts on
+                        with --extension; transcript.ts, the transcript
+                        model of koa's page; its suite ko-pi-*.test.ts on
                         the fake ko of testdata/fake_ko/; ko-api.d.ts,
                         generated from openapi.json; testdata/ko-prompts.txt,
                         the prompt snapshot; skills/ko/SKILL.md, the ko
@@ -845,13 +845,8 @@ Every C file of `bench/` starts with `#define _DARWIN_C_SOURCE` and
 **The harness is one pi extension.** `share/pi/ko-pi.ts` holds every
 agent tool. It calls only `ko api`, with `--stream` for its message
 stream and a routed pi's exec sessions (docs/design.md, "The pi
-extension, ko-pi", lists the routes). With `--webview` only, it serves
-its page through the SDK `share/webview/` (`ko webview serve`, and `ko
-webview enter|leave` with pi's stdout inherited), which it imports by
-the relative path `../webview/index.ts`. Its page,
-`share/pi/ko-pi-page.html`, is the one other file that it reads from
-beside itself (docs/design-webview.md, "pi's page").
-It has no run command: its
+extension, ko-pi", lists the routes). At run time it imports `text.ts` beside
+itself and nothing else of the checkout. It has no run command: its
 background commands are jobs, child processes of pi
 (docs/design-subagents.md, "A job"). It never opens ko's socket.
 That command, its flags, exit codes and JSON are the contract between
@@ -1005,7 +1000,7 @@ models of `ko_pane_wire::ring::model` show it on the Rust code:
     make miri    Miri on ko's modules without sockets or FFI (scripts/miri.sh); for CI or the user
     make install binary to $PREFIX/bin (default ~/.local), shared files to $PREFIX/share/ko
     make ci-like ARGS=...  a CPU/memory-capped Linux container ("Reproducing a CI-only failure")
-    make preview-pi  replace the installed share/ko/pi/ko-pi.ts, ko-pi-page.html and share/ko/webview with the checkout's; unpreview-pi restores them
+    make preview-pi  replace the installed share/ko/pi, share/ko/koa and share/ko/webview files with the checkout's; unpreview-pi restores them
     make website the website's dev server at http://localhost:4321 (website/README.md)
 
 `make verify STAGES=e2e` selects stages. `E2E=client_` limits

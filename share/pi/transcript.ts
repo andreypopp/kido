@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { randomBytes } from "node:crypto";
+import { mintId, contentText, utf8Prefix, type Content } from "./text.ts";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
 
@@ -8,10 +8,6 @@ const MAX_WEBVIEW_WINDOW_BYTES = 256 * 1024;
 const MAX_WEBVIEW_ARGS_BYTES = 4 * 1024;
 const MAX_WEBVIEW_RESULT_BYTES = 16 * 1024;
 const MAX_WEBVIEW_OUTPUT_BYTES = 1 << 20;
-
-export const mintId = (): string => randomBytes(16).toString("base64url");
-export const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);
-export const replaceControlCharacters = (text: string): string => text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ");
 
 export async function readBody(request: IncomingMessage, limit: number): Promise<Buffer | undefined> {
   const chunks: Buffer[] = [];
@@ -63,12 +59,6 @@ type Item = { seq: number; at: number; final: boolean } & (
 );
 type Assistant = Extract<Item, { kind: "assistant" }>;
 
-export type Content = string | readonly { type: string; text?: string }[];
-
-export function contentText(value: Content, separator = "\n"): string {
-  return typeof value === "string" ? value : value.flatMap((block) => block.type === "text" ? [block.text ?? ""] : []).join(separator);
-}
-
 function cap(text: string, limit: number): Text {
   const bytes = Buffer.byteLength(text);
   const prefix = utf8Prefix(text, limit);
@@ -83,27 +73,6 @@ function wireItem(item: Item) {
 
 function final(item: Assistant): boolean {
   return item.lifecycle === "ended" && item.blocks.every((b) => b.type !== "tool" || b.state.type === "done" || b.state.type === "not_run");
-}
-
-export function utf8Prefix(text: string, max: number): string {
-  if (Buffer.byteLength(text, "utf8") <= max) return text;
-  let out = "";
-  let used = 0;
-  for (const ch of text) {
-    const n = Buffer.byteLength(ch, "utf8");
-    if (used + n > max) break;
-    out += ch;
-    used += n;
-  }
-  return out;
-}
-
-export function utf8Suffix(text: string, max: number): string {
-  const bytes = Buffer.from(text, "utf8");
-  if (bytes.length <= max) return text;
-  let start = bytes.length - max;
-  while (start < bytes.length && ((bytes[start] ?? 0) & 0xc0) === 0x80) start++;
-  return bytes.subarray(start).toString("utf8");
 }
 
 export function respond(response: ServerResponse, status: number, text: string, contentType = "application/json"): void {

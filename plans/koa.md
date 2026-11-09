@@ -327,8 +327,7 @@ on every item (pi's message timestamp, ms; the user message's
 timestamp that the mockup shows), `started` and `ended` on a tool
 block and `durationMs` from `tool_execution_end`. ko-pi's page
 ignores them. ko-pi keeps its own event handlers and calls the
-module; its `webview*` state variables go. The ko-pi tests
-(`ko-pi-webview.test.ts`) keep their assertions; the module gets unit
+module; its `webview*` state variables go. The module gets unit
 tests for the pure parts: the cap, the window, the patch diff.
 
 **koa's feed.** RPC `message_update` records are delta-only (pi's
@@ -714,27 +713,9 @@ unit. The order is fixed, because each unit builds on the one before.
    the page without framing headers, and a compressed response is
    refused (docs/protocol.md, "The serve stream"); a program's failed
    response ends only its own request.
-7. **ko-pi's page goes.** The user decided on 2026-11-08 that koa
-   replaces ko-pi's page when koa is stable: its visual tests and its
-   stress runs pass, and every finding of unit 6 is fixed. Until then
-   ko-pi's page is the reference that koa must match in behaviour. The
-   unit deletes from ko-pi: the flags `--webview` and
-   `--webview-browser`, `share/pi/ko-pi-page.html`, the page server
-   (`webviewStart`, `webviewStop`, `webviewHandle`, the
-   `globalThis.__koPiExtensionWebview*` hand-over), the wish and
-   dialog tracking (`ui_prompt_start`, `ui_prompt_end`, `/terminal`),
-   and every part of the shared transcript module that only ko-pi
-   used; what koa uses stays in `share/pi/transcript.ts`. It deletes
-   their tests, `ko-pi-webview.test.ts` (the SDK tests,
-   `ko-pi-webview-sdk.test.ts`, stay), the fake ko's `ko webview`
-   parts that no test uses any more, `KoPiWebviewTests` and its
-   snapshots, and the Makefile's `ko-pi-page.html` lines in `build`
-   and `preview-pi`. The docs change with it: design-webview.md
-   "pi's page" becomes koa's page, design.md "The pi extension,
-   ko-pi" loses the `--webview` interface, and AGENTS.md's mentions of
-   `ko-pi-page.html` and the webview flags go. Tests: the ko-pi suite
-   passes without the deleted tests; `scripts/lint.sh` finds no
-   reference to the deleted files.
+7. **ko-pi's page goes.** Done: koa replaces it; ko-pi has no page,
+   no webview flags and no use of the transcript module, whose shared
+   text helpers moved to `share/pi/text.ts`.
 8. **Docs.** `docs/design-koa.md` from this plan's decisions as built,
    the koa paragraph in `docs/design-webview.md` and AGENTS.md's
    layout, and this plan's deletion. The manager writes it; the

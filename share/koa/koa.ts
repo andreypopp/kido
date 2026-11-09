@@ -8,7 +8,8 @@ import timers from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { RpcCommand, RpcResponse, JsonAgentSessionEvent, RpcExtensionUIRequest, RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { transcript, respond, readBody, promptBody, idBody, modelBody, thinkingBody, dialogBody, errorText, replaceControlCharacters, utf8Prefix } from "../pi/transcript.ts";
+import { transcript, respond, readBody, promptBody, idBody, modelBody, thinkingBody, dialogBody } from "../pi/transcript.ts";
+import { errorText, replaceControlCharacters, utf8Prefix } from "../pi/text.ts";
 import { webview } from "../webview/index.ts";
 import { assemblePage } from "./koa-assemble.ts";
 

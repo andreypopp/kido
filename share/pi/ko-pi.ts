@@ -42,14 +42,11 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { type WriteStream, accessSync, constants, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
-import http, { type IncomingMessage, type ServerResponse } from "node:http";
-import { webview, type Webview } from "../webview/index.ts";
-import { transcript, contentText, mintId, respond, utf8Prefix, utf8Suffix, errorText, replaceControlCharacters, readBody, promptBody } from "./transcript.ts";
+import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, replaceControlCharacters } from "./text.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "./ko-api.d.ts";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 type Api = components["schemas"];
 
@@ -324,8 +321,6 @@ const MAX_TASK_BYTES = 1044480;
 
 const MAX_MESSAGE_BYTES = 1000000;
 
-const WEBVIEW_FLUSH_MS = 50;
-
 const MAX_DEPTH = 2;
 
 // How long a stop waits for the pane to end by itself, and the cap of the whole call: that wait, the
@@ -446,7 +441,6 @@ type ShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
 
 // pi /reload keeps the process, its message stream and its received-id ring.
 type ReceiverHold = { child: ChildProcess; partial: Buffer };
-type WebviewWish = { terminal: boolean };
 type JobEnd = { type: "exit"; code: number } | { type: "signal"; signal: NodeJS.Signals } | { type: "failed"; message: string } | { type: "stopped" } | { type: "timeout"; seconds: number };
 type JobCall = {
   forward(bytes: Buffer): void;
@@ -819,8 +813,6 @@ async function routedJob(registry: JobRegistry, r: Routed, command: string, cwd:
 
 declare global {
   var __koPiExtensionReceiver: ReceiverHold | undefined;
-  var __koPiExtensionWebview: { wv: Webview; server: http.Server; handle: (request: IncomingMessage, response: ServerResponse) => void; supported: () => void } | undefined;
-  var __koPiExtensionWebviewWish: WebviewWish | undefined;
   var __koPiExtensionReceived: string[] | undefined;
   var __koPiExtensionCopy: string | undefined;
   var __koPiExtensionClearQueue: AgentSession["clearQueue"] | undefined;
@@ -1474,8 +1466,6 @@ async function routedGrep(r: Routed, params: GrepToolInput, signal: AbortSignal 
 export default function (pi: ExtensionAPI) {
   if (!isFirstCopy()) return;
   pi.registerFlag("harness", { description: "Use the koa harness for child agents", type: "string" });
-  pi.registerFlag("webview", { description: "Show the session in a webview when supported", type: "boolean" });
-  pi.registerFlag("webview-browser", { description: "Show the session in a browser, served on localhost", type: "boolean" });
   pi.registerFlag("runtime", { description: "Run the built-in tools and ! commands in a configured runtime or an ad-hoc runtime of this session by name", type: "string" });
   pi.on("project_trust", async (event) => {
     const trusted = process.env.KO_AGENT_TRUSTED_CWD;
@@ -2203,117 +2193,6 @@ export default function (pi: ExtensionAPI) {
     },
     write(line: string): void { receiverHold?.child.stdin?.write(line); },
   };
-
-  const webviewWishState: WebviewWish = globalThis.__koPiExtensionWebviewWish ?? { terminal: false };
-  globalThis.__koPiExtensionWebviewWish = undefined;
-  let webviewActive = false;
-  let webviewDialogs = 0;
-  let webviewPage: string | undefined;
-  const transcriptView = transcript({ flushMs: WEBVIEW_FLUSH_MS });
-  let webviewWorking = false;
-  let webviewCompacting = false;
-  const webviewState = (): void => transcriptView.state({ working: webviewWorking, name: pi.getSessionName() ?? "", model: session?.model?.id ?? "" });
-  const webviewWish = (): void => {
-    if (!webviewActive) return;
-    const wv = globalThis.__koPiExtensionWebview?.wv;
-    if (wv) void (wv.supported && !webviewDialogs && !webviewWishState.terminal ? wv.show() : wv.hide()).catch(() => {});
-  };
-  const webviewRebuild = (): void => {
-    const messages: AgentMessage[] = [];
-    for (const entry of session?.sessionManager.getBranch() ?? []) {
-      if (entry.type === "message") messages.push(entry.message);
-      else if (entry.type === "custom_message") messages.push({ role: "custom", customType: entry.customType, content: entry.content, display: entry.display, details: entry.details, timestamp: Date.parse(entry.timestamp) });
-      else if (entry.type === "compaction") messages.push({ role: "compactionSummary", summary: entry.summary, tokensBefore: entry.tokensBefore, timestamp: Date.parse(entry.timestamp) });
-      else if (entry.type === "branch_summary") messages.push({ role: "branchSummary", summary: entry.summary, fromId: entry.fromId, timestamp: Date.parse(entry.timestamp) });
-    }
-    transcriptView.rebuild(messages);
-    webviewState();
-  };
-  const webviewPost = (req: ServerResponse, path: string, bytes: Buffer): void => {
-    if (path === "/abort") { session?.abort(); respond(req, 200, "{}"); return; }
-    if (path === "/terminal") { webviewWishState.terminal = true; webviewWish(); respond(req, 200, "{}"); return; }
-    let value: unknown;
-    try { value = JSON.parse(bytes.toString()); } catch {}
-    const prompt = promptBody(value);
-    if ("error" in prompt) { respond(req, 400, JSON.stringify(prompt)); return; }
-    let refusal: string | undefined;
-    if (webviewCompacting) refusal = "Wait for compaction to finish";
-    else if (!webviewWorking && !session?.isIdle()) refusal = "Wait for the current operation to finish";
-    else if (!session?.model) refusal = "Select a model in the terminal first";
-    else if (!session.modelRegistry.hasConfiguredAuth(session.model)) refusal = "Configure authentication for the selected model in the terminal first";
-    if (refusal) { respond(req, 409, JSON.stringify({ error: refusal })); return; }
-    try {
-      pi.sendUserMessage(prompt.text, { expandPromptTemplates: true, ...(webviewWorking ? { deliverAs: prompt.mode !== "follow_up" ? "steer" as const : "followUp" as const } : {}) });
-      respond(req, 200, "{}");
-    } catch (error) { respond(req, 409, JSON.stringify({ error: errorText(error) })); }
-  };
-  const webviewHandle = (request: IncomingMessage, req: ServerResponse): void => {
-    if (transcriptView.handle(request, req)) return;
-    const url = new URL(request.url ?? "/", "http://ko");
-    if (request.method === "GET" && url.pathname === "/") {
-      webviewPage ??= readFileSync(join(dirname(fileURLToPath(import.meta.url)), "ko-pi-page.html"), "utf8");
-      respond(req, 200, webviewPage, "text/html; charset=utf-8");
-    } else if (request.method === "POST" && ["/prompt", "/abort", "/terminal"].includes(url.pathname)) {
-      void readBody(request, 1 << 20).then(bytes => {
-        if (bytes === undefined) respond(req, 413, "{}");
-        else webviewPost(req, url.pathname, bytes);
-      }).catch(error => respond(req, 400, JSON.stringify({ error: errorText(error) })));
-    } else respond(req, 404, "{}");
-  };
-  const webviewStart = async (): Promise<void> => {
-    webviewRebuild();
-    webviewActive = true;
-    let hold = globalThis.__koPiExtensionWebview;
-    if (!hold) {
-      const wv = await webview({ ko: ko ?? undefined, target: pi.getFlag("webview-browser") === true ? "browser" : "pane" });
-      if (!wv) return;
-      const created = { wv, server: http.createServer(), handle: webviewHandle, supported: () => {} };
-      hold = created;
-      globalThis.__koPiExtensionWebview = created;
-      created.server.on("request", (request, response) => created.handle(request, response));
-      created.server.on("upgrade", (_request, socket) => socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"));
-      wv.on("supported", () => created.supported());
-      await new Promise<void>((resolve, reject) => {
-        created.server.once("error", reject);
-        created.server.listen(wv.socketPath, () => { created.server.off("error", reject); resolve(); });
-      });
-    }
-    hold.handle = webviewHandle;
-    hold.supported = webviewWish;
-    webviewWish();
-  };
-  const webviewStop = async (park: boolean): Promise<void> => {
-    transcriptView.close();
-    const hold = globalThis.__koPiExtensionWebview;
-    if (park) {
-      globalThis.__koPiExtensionWebviewWish = webviewWishState;
-      if (hold) {
-        hold.handle = (_request, response) => { response.writeHead(503); response.end(); };
-        hold.supported = () => {};
-      }
-    } else {
-      if (hold) {
-        await hold.wv.close();
-        await new Promise<void>(resolve => hold.server.close(() => resolve()));
-      }
-      globalThis.__koPiExtensionWebview = undefined;
-      globalThis.__koPiExtensionWebviewWish = undefined;
-    }
-    webviewActive = false;
-  };
-  pi.on("ui_prompt_start", () => { webviewDialogs++; webviewWish(); });
-  pi.on("ui_prompt_end", () => { webviewDialogs = Math.max(0, webviewDialogs - 1); webviewWish(); });
-  pi.on("message_start", (event) => { if (webviewActive && event.message.role === "assistant") transcriptView.message(event.message, "start"); });
-  pi.on("message_update", (event) => { if (webviewActive) transcriptView.message(event.message, "update"); });
-  pi.on("message_end", (event) => { if (webviewActive) transcriptView.message(event.message, "end"); });
-  pi.on("tool_execution_start", (event) => { if (webviewActive) transcriptView.toolRunning(event.toolCallId, Date.now()); });
-  pi.on("tool_execution_update", (event) => { if (webviewActive) transcriptView.toolPartial(event.toolCallId, event.partialResult.content); });
-  pi.on("tool_execution_end", (event) => { if (webviewActive) transcriptView.toolDone(event.toolCallId, event.result.content, event.isError, Date.now(), event.durationMs, event.result.structuredContent); });
-  pi.on("session_tree", () => { if (webviewActive) webviewRebuild(); });
-  pi.on("session_before_compact", () => { webviewCompacting = true; });
-  pi.on("session_compact_failed", () => { webviewCompacting = false; });
-  pi.on("session_compact", () => { webviewCompacting = false; if (webviewActive) webviewRebuild(); });
-  pi.on("model_select", () => webviewState());
 
   const jobRecords = new Map<string, { type: "running" } | { type: "finished"; timer: NodeJS.Timeout }>();
   let jobRecordQueue = Promise.resolve();
@@ -3537,7 +3416,6 @@ export default function (pi: ExtensionAPI) {
     active = !!(ctx.hasUI && ownSessionId && ko && pane);
     if (active) {
       receiver.start();
-      if (ctx.mode === "tui" && (pi.getFlag("webview") === true || pi.getFlag("webview-browser") === true)) await webviewStart();
       await writeVars([
         [VAR_SESSION, ownSessionId ?? ""],
         [VAR_NAME, pi.getSessionName() ?? ""],
@@ -3573,7 +3451,6 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_info_changed", async () => {
     await writeVars([[VAR_NAME, pi.getSessionName() ?? ""]]);
-    webviewState();
   });
 
   const running = (): void => {
@@ -3583,10 +3460,6 @@ export default function (pi: ExtensionAPI) {
   pi.on("input", () => { refreshJobRecords(); });
   pi.on("agent_start", () => {
     refreshJobRecords();
-    webviewWorking = true;
-    webviewWishState.terminal = false;
-    webviewWish();
-    webviewState();
     workStarted();
     running();
   });
@@ -3616,8 +3489,6 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_settled", async (event: { aborted?: boolean }, ctx: { isIdle(): boolean }) => {
     if (!ctx.isIdle()) return;
-    webviewWorking = false;
-    webviewState();
     finishWorking();
     settled = true;
     for (const held of interrupted.splice(0)) deliverMessage(held);
@@ -3651,7 +3522,6 @@ export default function (pi: ExtensionAPI) {
     clearImmediate(startup);
     await starting;
     const reason = event?.reason;
-    await webviewStop(reason !== "quit");
     if (registry) detachKeys(registry);
     if (reason === "reload") for (const call of [...calls]) {
       if (call.type === "bash") call.move("reload");

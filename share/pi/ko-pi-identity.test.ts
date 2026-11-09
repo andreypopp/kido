@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { mkdirSync, writeFileSync, copyFileSync, cpSync, mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, copyFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
 
 import { join, dirname } from "node:path";
 
@@ -49,8 +49,7 @@ test("a second copy of the extension at another path registers nothing, and a re
   try {
     mkdirSync(join(dir, "pi"));
     copyFileSync(join(here, "ko-pi.ts"), join(dir, "pi", "ko-pi.ts"));
-    copyFileSync(join(here, "transcript.ts"), join(dir, "pi", "transcript.ts"));
-    cpSync(join(here, "..", "webview"), join(dir, "webview"), { recursive: true });
+    copyFileSync(join(here, "text.ts"), join(dir, "pi", "text.ts"));
     const copy = await import(pathToFileURL(join(dir, "pi", "ko-pi.ts")).href);
     const registered = createFakePi();
     copy.default(registered.pi);

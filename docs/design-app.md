@@ -2844,13 +2844,10 @@ view. Geolocation answers only in an ordered window, so that check
 orders the window far off screen. The Command-key check drives
 `OwnerWindow.performKeyEquivalent` with the web view as first responder.
 
-`KoPiWebviewTests` runs the checkout's `ko-pi --webview` with the pi that
-`share/pi/package.json` pins (`share/pi/node_modules/.bin`, which
-`scripts/test-ts.sh` installs, with Node from Homebrew's `bin`) on a
-fixture session file with `--offline`, under a private `HOME` and pi
-agent directory, so pi makes no model call and reads no user
-configuration. It snapshots the transcript page in
-light and dark (design-webview.md, "pi's page"). A page check in the visual
+`KoaWebviewTests` runs the checkout's koa over its fake pi
+(`share/koa/koa-fake-pi.ts`), so no model call happens, and snapshots
+each state of koa's mockup in light and dark (design-webview.md,
+"koa's page"). A page check in the visual
 suite waits with a `MutationObserver`, never with `requestAnimationFrame`:
 WebKit pauses animation frames for a page in the off-screen window.
 

@@ -17,7 +17,7 @@ give the behaviour and do not repeat it here:
 - [design-ko.md](design-ko.md), section 4.11, "The terminal client": the `[webview]`
   status word.
 - [design.md](design.md), "The pi extension, ko-pi": the interfaces
-  of ko that the harness uses, its page included.
+  of ko that the harness uses.
 
 ## Goals and non-goals
 
@@ -97,7 +97,7 @@ callback, so the Ghostty fork does not change, and the callback's
 reply path keeps the query's answer in order with the terminal's own
 replies. `ko_pane_wire/src/webview.rs` is the one parser and the one
 encoder: `ko webview` uses its encoder, and so does every program
-that runs `ko webview enter` and `ko webview leave`, the SDK and ko-pi
+that runs `ko webview enter` and `ko webview leave`, the SDK
 included. The coordinator gets a typed frame.
 
 The page ends at `leave`, at the pane's death, at RIS and at a
@@ -113,7 +113,7 @@ show webviews (Kido.app with `app.webview.enabled`, never `ko_tui`).
 can show webviews. It does not say that a client shows this pane. A
 program learns it from the query or, live, from the serve stream's
 `supported` message, which `ko webview serve` prints on its stdout;
-the SDK reports it, and ko-pi enters and leaves on it.
+the SDK reports it, and koa shows and hides its page on it.
 
 ## Why a reverse stream
 
@@ -159,8 +159,8 @@ The pane target, the default, shows the page in the program's Kido
 pane and returns `null` outside one. The browser target is for
 development: the page shows in a regular browser, in a pane or not.
 It needs no ko. The program chooses the target; it is an option in
-code, which a program can expose as its own flag (ko-pi's
-`--webview-browser`).
+code, which a program can expose as its own flag (koa's
+`--browser`).
 
 The README gives the calls; the rules that it does not state:
 
@@ -286,48 +286,17 @@ reloadable: its state is its program's.
 - **A pane with a `parent`.** No rule changes: a page is the pane's
   own.
 
-## pi's page
+## koa's page
 
-ko-pi is a TUI. With `ko-pi --webview`, it keeps its TUI running
-under a page, serves the session's transcript and a prompt field, and
-shows the TUI whenever the TUI must be seen. With
-`--webview-browser`, it serves the same page through the SDK's browser
-target, and that flag wins over `--webview`. Without either flag it
-starts nothing of the webview.
+koa (`share/koa/`) runs pi in RPC mode under a page: the session's
+transcript, a prompt field, pi's dialogs, its queue and its pickers.
+`plans/koa.md` gives its design until `docs/design-koa.md` replaces
+it. The transcript and its delivery are the parts that this document
+keeps, because they are the webview's largest load.
 
-**Where it runs.** Only an active ko-pi with one of the flags serves a
-page: a TUI session with a pane identity, the condition of its message
-stream. A routed pi serves from its host pane. Print, JSON and RPC
-modes serve nothing.
-
-**The server.** ko-pi uses the SDK, which it imports as
-`../webview/index.ts` (the same relative path in the checkout and in
-the installed layout), and a `node:http` server on the SDK's socket.
-The page has no WebSocket; an unknown path gets 404. The SDK, the
-bridge and the server stay across every runtime replacement in the
-process (`/reload`, `/new`, `/resume`, `/fork`): the old runtime ends
-its open event responses and hands the server to the new runtime
-through a `globalThis` record, so the page and `serving` stay and the
-pages reconnect to the new runtime. Only a quit closes them, after
-its `leave`.
-
-**Enter and leave.** ko-pi shows the page when the last `supported` was
-true, no extension dialog is open, and the user has not asked for
-the terminal. It runs `ko webview enter` or `ko webview leave` only when
-that changes, as a child that inherits pi's stdout, so the escape
-reaches the pane's pty and `ko_pane_wire/src/webview.rs` stays the one
-encoder. pi's runner emits `ui_prompt_start` and `ui_prompt_end`
-around every `select`, `confirm`, `input`, `editor` and `custom` of
-any extension, so a dialog shows the TUI at once and the page comes
-back when the dialog ends. The page's Terminal button asks for the
-terminal; the page comes back at the next `agent_start`, that is,
-after the user submits a prompt in the TUI. A quit waits for its
-`leave` before pi exits, so the pane does not keep a page that
-nobody serves.
-
-**The transcript.** ko-pi projects the session branch into items in
+**The transcript.** koa projects the session branch into items in
 memory: user messages, assistant messages with their text, thinking
-and tool calls, the custom messages that pi displays (ko-pi's own
+and tool calls, the custom messages that pi displays (ko-pi's
 inbound messages, steers, notices and job reports among them),
 user `!` commands, and summaries. A tool's result goes into the block
 of its call, so the page never needs the call's item to place a
@@ -339,8 +308,8 @@ an image is a count. Jobs and subagent reports are the notices that
 ko-pi already puts in the session; the page has no live list of jobs.
 A rebuild (a new runtime, `session_tree`,
 `session_compact`) mints a new epoch. The model, its caps, its window
-and its delivery are `Transcript` in `share/pi/transcript.ts`, which
-koa will share; ko-pi feeds it from pi's events.
+and its delivery are `Transcript` in `share/pi/transcript.ts`; koa
+feeds it from pi's RPC events.
 
 **Incremental delivery.** A long session must not cost its whole
 size on each page load, and a stream of tokens must not cost the
@@ -355,8 +324,8 @@ square of its size:
   caps of `share/pi/transcript.ts`, and whether older items exist.
 - `/items?before=N` gives older items under the same caps, when the
   page's top comes into view.
-- While an item streams, ko-pi keeps only the newest raw message and
-  converts it once for each flush (`WEBVIEW_FLUSH_MS` in `ko-pi.ts`). A flush sends
+- While an item streams, koa keeps only the newest raw message and
+  converts it once for each flush (`FLUSH_MS` in `koa.ts`). A flush sends
   `patch` records: for each changed block its new suffix when the
   block only grew, else the block whole, and the item's changed
   metadata.
@@ -367,34 +336,8 @@ square of its size:
   reconnects with its epoch and gets what it lacks, and the other
   pages continue.
 
-**The prompt field.** Idle, the text goes to `pi.sendUserMessage`
-with `expandPromptTemplates`, so extension commands, skills and
-prompt templates work as in the TUI; a built-in command of the TUI
-(`/model`, `/new`) needs the terminal. While the agent works, Enter
-queues a steer and Option-Enter a follow-up, pi's own keys.
-`sendUserMessage` reports no failure to its caller, so ko-pi checks
-first what pi would refuse (no model, no auth, a compaction) and
-answers with the reason; the page keeps the text on any refusal. A
-Stop button and Escape abort the agent.
-
-The page shows no queue of steers and follow-ups: pi keeps that queue
-in its `AgentSession`, which the extension API does not expose, and a
-copy in ko-pi that matches texts would go wrong under template
-expansion and mixed modes. A queued text appears when pi delivers it.
-
-**Styling.** The page uses only the `--ko-*` properties: the paper
-and the ink, accents from the palette, and tints as `color-mix` of
-the ink into the paper, so light and dark need no branch. Prose is in
-the system font; code, tool arguments and output are in
-`--ko-font-family`, a CSS font list that ends in `monospace`. A tool
-call is collapsed, except while it runs and when it fails.
-
-**Tests.** The TypeScript suite drives the extension and the SDK
-through the fake ko, whose `ko webview serve` prints the `supported`
-lines that the test releases and stays until its stdin closes, and
-which logs `ko webview enter|leave`; the test talks HTTP to the
-socket directly. The e2e suite covers the real bridge. Kido.app's
-visual suite runs the real `ko-pi --webview`, with the pi of
-`share/pi/package.json`, on a
-fixture session with no model call, and snapshots the page in light
-and dark (`KoPiWebviewTests`).
+**Tests.** The TypeScript suite drives the SDK through the fake ko,
+whose `ko webview serve` prints the `supported` lines that the test
+releases, and drives koa over its fake pi. The e2e suite covers the
+real bridge. Kido.app's visual suite snapshots each state of koa's page
+in light and dark (`KoaWebviewTests`).
