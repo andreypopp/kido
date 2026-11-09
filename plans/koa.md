@@ -62,9 +62,12 @@ Non-goals, for this plan:
    dependency. Its pi types are `import type` from
    `@earendil-works/pi-coding-agent`, which the suite's
    `share/pi/package.json` already pins; Node strips them.
-3. Markdown renders with vendored `marked` and `remend` in
-   `share/koa/vendor/`, under a block memoization that koa's page
-   writes itself in plain DOM. The user decided this on 2026-11-08.
+3. Markdown renders with `marked` and `remend` from npm, under a
+   block memoization that koa's page writes itself in plain DOM. The
+   user decided the libraries on 2026-11-08 and, on 2026-11-09, the
+   build pipeline of section 7 in place of vendored files: the page
+   is TypeScript that esbuild bundles into one `page.js` at `make
+   build`, never committed.
 4. koa spawns `pi --mode rpc --extension <share>/pi/ko-pi.ts`, so the
    agent tools, the message stream and the `pi.*` variables stay
    ko-pi's. koa owns the pane's OSC 7501 root record and its title.
@@ -93,19 +96,26 @@ Non-goals, for this plan:
 
     share/koa/
       koa.ts              the program
-      koa-page.html       the page's document
-      koa-page.css        its style
-      koa-page.js         its script, an ES module
-      koa-markdown.js     the block memoization over marked and remend
-      koa-assemble.ts     the one HTML response: the page with its script,
-                          koa-markdown.js and vendor/ inlined
-      vendor/             marked and remend as ES modules, with their
-                          license files and README.md ("Vendored code")
+      records.ts          the wire types of the feed, shared by koa.ts,
+                          transcript.ts and the page (section 7, "The records module")
+      koa-assemble.ts     the one HTML response: page.html with page.css
+                          and the built page.js inlined
+      page/               the page's sources, bundled by esbuild (section 7)
+        page.ts           its script
+        markdown.ts       the block memoization over marked and remend
+        page.html         the document
+        page.css          its style
+        tsconfig.json     the page's browser-only type check
+      package.json        esbuild, typescript 7, marked, remend (CodeMirror
+      package-lock.json   from unit 10), pinned
       koa-fake-pi.ts      the scripted pi of the tests and the stress runs
       koa-*.test.ts       the suite
       stress/             the stress workloads and the runner (section 5)
     share/pi/transcript.ts   the shared transcript module (decision 5)
     share/ko/bin/koa      the shim
+    build/ko/share/ko/koa/   the installed layout: koa.ts, records.ts,
+                          koa-assemble.ts, package.json, page.html,
+                          page.css and the built page.js
 
 **The shim.** `share/ko/bin/koa` sources `shim.sh` and runs
 `exec node "$ko_share/koa/koa.ts" "$@"`, with `node` from PATH.
@@ -130,37 +140,43 @@ installs, because remote use needs it on the server.
 `build/ko/`, `make install` and the Homebrew formula, Kido.app's
 bundle (`app/scripts/bundle-ko.py`) and the static Linux layout
 `share/ko/linux/<arch>/share/ko/` of `make build-linux`, which
-runtimes and containers use. `build` copies `share/koa/koa.ts`, the
-four page files and `share/koa/vendor/` to `share/ko/koa/`, and
-`share/pi/transcript.ts` beside `ko-pi.ts`. `preview-pi` gets
-`koa/koa.ts`, the four page files, `koa/vendor` and
-`pi/transcript.ts`. The tests and the stress files are not installed.
-koa reads the page files and the vendored modules on each request of
-`/` and serves one HTML response (section 4), so an edit of a page file
-shows at the next page load (⌘R); a failed read answers 500; any other path but its
-routes is 404.
+runtimes and containers use. `build` depends on `koa-page`, which
+bundles the page into `build/ko/share/ko/koa/` (section 7, "The
+Makefile targets"), and copies `share/koa/koa.ts`, `records.ts`,
+`koa-assemble.ts` and `package.json` beside it, and
+`share/pi/transcript.ts` beside `ko-pi.ts`. `preview-pi` gets the
+same installed `koa/` files from `build/ko` and `pi/transcript.ts`.
+The sources under `page/`, the tests and the stress files are not
+installed. koa reads `page.html`, `page.css` and `page.js` beside
+itself on each request of `/` and serves one HTML response (section
+4), so a rebuilt page shows at the next page load (⌘R; `make
+koa-watch` rebuilds on each save); a failed read answers 500; any
+other path but its routes is 404.
 
-**Checks.** `share/pi/tsconfig.json` includes `../koa/*.ts` and maps
-`@earendil-works/pi-coding-agent` to `share/pi/node_modules` in its
-`paths`, so koa's type-only imports resolve from `share/koa/`.
+**Checks.** `share/pi/tsconfig.json` includes `../koa/*.ts` (the
+Node side of koa) and maps `@earendil-works/pi-coding-agent` to
+`share/pi/node_modules` in its `paths`, so koa's type-only imports
+resolve from `share/koa/`; `share/koa/page/tsconfig.json` checks the
+page against the DOM alone (section 7, "Type checks"). Both checks
+run with the `tsc` of `share/koa/node_modules`, typescript 7.
 `scripts/test-ts.sh` runs `koa-*.test.ts` with the ko-pi suite.
-`scripts/lint.sh` adds `share/koa/*.ts` to its TypeScript globs: the
-stale-prose check, the `as`/`any`/`!` hygiene check and the
-`process.kill` rule, whose one permitted site becomes `signalJob` in
-`ko-pi.ts` and `signalPi` in `koa.ts`. `share/koa/vendor/` is excluded
-from every lint check and from `tsconfig.json`: vendored code is not
-ours to edit, and a change to it goes through a vendored update
-(below).
+`scripts/lint.sh` adds `share/koa/*.ts` and `share/koa/page/*.ts` to
+its TypeScript globs: the stale-prose check, the `as`/`any`/`!`
+hygiene check and the `process.kill` rule, whose one permitted site
+becomes `signalJob` in `ko-pi.ts` and `signalPi` in `koa.ts`.
+`share/koa/node_modules` is ignored as `share/pi/node_modules` is.
 
-**Dependencies.** In the page, the two vendored modules ("Markdown"
-below). In `koa.ts`, none at run time. Type-only imports:
+**Dependencies.** In the page, `marked` and `remend` from
+`share/koa/package.json`, bundled into `page.js` ("Markdown" below;
+CodeMirror joins them in unit 10). In `koa.ts`, none at run time.
+Type-only imports:
 `RpcCommand`, `RpcResponse`, `JsonAgentSessionEvent`,
 `RpcExtensionUIRequest` and `RpcExtensionUIResponse` from
 `@earendil-works/pi-coding-agent`, and `AgentMessage` for the shared
 module. The suite type-checks them through `share/pi/node_modules`.
 
 **Markdown.** The page renders GitHub-flavoured markdown with two
-vendored libraries, both without dependencies: `marked` (MIT), the
+libraries, both without dependencies: `marked` (MIT), the
 lexer and the parser, and `remend` (Apache-2.0, from
 `vercel/streamdown`, `packages/remend`), which heals an incomplete
 markdown source before a render: an open emphasis, an open inline
@@ -171,19 +187,11 @@ markdown"). marked passes raw HTML through, so the page renders every
 `html` token, block or inline, as escaped text; the CSP of
 `ko_server/src/http.rs` stays as it is. A link is text with a `href`;
 the app's `app.webview.links` decides what a click does. These two
-libraries are the only runtime dependencies of koa, and the page is
-the only user; `koa.ts` imports neither.
-
-**Vendored code.** `share/koa/vendor/README.md` names, for each
-library, the pinned version, the source URL of the file that was
-copied (the npm tarball or the git tag), its license file beside it,
-and the one command that fetches it again. The files are the
-libraries' own ES module builds, copied byte for byte, so a `diff`
-against the source at the pinned version is empty. A vendored update
-is one commit that changes the files, the README's version and URL
-and, when the build changed, the memoization tests of section 5. No
-local edit of a vendored file is permitted; a needed change goes
-upstream or into `koa-markdown.js`.
+libraries are the page's only runtime dependencies until unit 10,
+and the page is their only user; `koa.ts` imports neither. They are
+pinned exactly in `share/koa/package.json` and its lockfile; an
+update is one commit that changes the pin and, when the output
+changed, the memoization tests of section 5.
 
 ## 2. The process model
 
@@ -428,17 +436,16 @@ second dialog while one is open queues behind it.
 
 ## 4. The page
 
-Several source files, one response. The sources are the document,
-its style, its script, `koa-markdown.js` and the two vendored
-modules, kept as separate files so that the tests import
-`koa-markdown.js` and the vendored files stay byte-for-byte copies.
-A remote server costs one round trip for each asset
-(docs/design-webview.md, "Remote servers and runtimes"), so koa
-inlines them into the one HTML document that it serves for `/`: the
-style in a `<style>`, the modules and the script in `<script
-type="module">` elements, in dependency order, with their `import`
-and `export` statements rewritten to one module scope by a small
-assembly function in `koa-assemble.ts` that the suite tests. koa does the
+Several source files, one response. The sources are `page.html`,
+`page.css` and the TypeScript modules under `share/koa/page/`;
+esbuild bundles the modules with `marked` and `remend` into one
+`page.js` (section 7). `markdown.ts` stays a module of its own so
+that the tests import it under Node. A remote server costs one round
+trip for each asset (docs/design-webview.md, "Remote servers and
+runtimes"), so koa inlines the three built files into the one HTML
+document that it serves for `/`: the style in a `<style>` and the
+bundle in one `<script type="module">`, through the small assembly
+function in `koa-assemble.ts` that the suite tests. koa does the
 assembly for each request of `/`; a page load is one request. The server's CSP permits the inline script and style. The
 page escapes every text that it did not write. marked produces an HTML string for one
 block; the page parses it with a `DOMParser` into a detached document
@@ -475,7 +482,7 @@ send, a picker or a dialog; a printable key typed outside a field goes to
 the composer, while Space and Enter on a focused control keep their
 action, and a selection in the transcript stays. A click on a run or step line toggles it. The page has no other shortcut.
 
-**Streaming markdown.** `koa-markdown.js` is the block memoization,
+**Streaming markdown.** `page/markdown.ts` is the block memoization,
 after Streamdown's design, in plain DOM:
 
 - It splits the text block's source into top-level blocks with
@@ -625,10 +632,10 @@ the scripted pi and the fake ko, in under a second each:
 - The composer: `prompt` idle and `steer` while working, a refused
   `prompt` while streaming without a behaviour, `abort`,
   `clear_queue`, the dialog round trip, `set_editor_text`.
-- The markdown: `koa-markdown.js` is a pure function from a source
+- The markdown: `page/markdown.ts` is a pure function from a source
   and the kept blocks to the per-block HTML strings and the reuse
-  decisions; `koa-page.js` applies them to the DOM. The Node test
-  drives `koa-markdown.js`; no DOM shim. For every prefix of a
+  decisions; `page/page.ts` applies them to the DOM. The Node test
+  drives `page/markdown.ts`; no DOM shim. For every prefix of a
   fixture that holds each GFM construct, the incremental render equals
   the full render of the same prefix (the memoization adds nothing and
   loses nothing); the healing cases (an open `**`, `_`, `` ` ``, `[`,
@@ -664,16 +671,14 @@ unit. The order is fixed, because each unit builds on the one before.
 4. **The page.** The page files after the mockup: the transcript with
    runs, steps and details, the composer as NOTES.md "The composer"
    describes it, the status bar with its segments and the narrow
-   rules, the browser fallback theme; `koa-markdown.js` over the
-   vendored `marked` and `remend`, with `vendor/README.md` and the
-   license files, and the one-response assembly in `koa-assemble.ts`. Tests:
-   the assembly test (the served document holds each source once, in
-   order, with no `import` left) and
+   rules, the browser fallback theme; the markdown module over
+   `marked` and `remend`, and the one-response assembly in
+   `koa-assemble.ts`. Done, as vendored JavaScript; unit 9 moved it to
+   the TypeScript pipeline of section 7. Tests: the assembly test and
    `KoaWebviewTests` in the app's visual suite with the fixture
    script; the manager compares each snapshot with `/tmp/koa-shots/`.
-   The markdown tests of section 5 run under Node against
-   `koa-markdown.js` directly, which is why it is a module of its own
-   and not part of the page's script.
+   The markdown tests of section 5 run under Node against the
+   markdown module directly, which is why it is a module of its own.
 5. **Dialogs, queue and pickers.** Thinking times: koa stamps `thinking_start`
    and `thinking_end` with its own clock into `started` and `ended` of
    a thinking block (the transcript module's block gets the two fields
@@ -734,9 +739,1015 @@ unit. The order is fixed, because each unit builds on the one before.
    the koa paragraph in `docs/design-webview.md` and AGENTS.md's
    layout, and this plan's deletion. The manager writes it; the
    implementers of units 6 and 7 report the facts.
+9. **The page pipeline.** Section 7, "CodeMirror 6". `share/koa/page/`
+   with `page.ts` and `markdown.ts` moved from the JavaScript files
+   and typed, `page/tsconfig.json`, `share/koa/package.json` and its
+   lockfile (esbuild, typescript 7, CodeMirror, marked, remend),
+   `make koa-page` and `koa-watch`, `build`'s dependency and
+   `KOA_FILES`, the assembler without its rewriter, `vendor/` gone,
+   `scripts/test-ts.sh` (every `tsc` call through
+   `share/koa/node_modules/.bin/tsc`, the `.pi/tests` call with
+   `--ignoreConfig`, the page's `tsc -p`; `share/pi` keeps
+   typescript 5 for openapi-typescript) and the lint globs. Tests: the assembly test over the bundle; the DOM
+   tests over the stripped TypeScript; the markdown tests over
+   `page/markdown.ts`; the app's suite unchanged. No CodeMirror in the
+   composer yet: this unit changes no behaviour, and its check is that
+   every existing snapshot is unchanged. The Homebrew formula's
+   `depends_on "node" => :build` is a step of the next release in the
+   tap, not of this unit.
+10. **The composer on CodeMirror 6.** Section 7, "The editor".
+   `page/composer.ts`, the page's use of it, the CSS, the deletions,
+   `window.composer` for the app's tests. Tests: the DOM tests on the
+   fake composer; the app's `KoaWebviewTests` on `window.composer`,
+   with the existing snapshots unchanged (the manager compares the
+   composer area pixel by pixel: the same border, padding, font, line
+   height and six-line cap). No completion yet.
+11. **Completion.** Section 7, "Completion". The design agent first
+   mocks the popup; the unit follows the mockup. `share/pi/agents.ts`
+   out of `ko-pi.ts` with its tests, `koa-complete.ts` and its tests,
+   the `/complete` route and its program tests, `page/complete.ts`
+   (the CM6 source, the keymap, the popup), the popup's CSS, the fake
+   pi's `get_commands`, and three new snapshots in `KoaWebviewTests`
+   (a `/` list, an `@` list with agents and files, an `@` list with
+   files alone) in light and dark.
+12. **Images in the transcript.** Section 8, "Images in the
+   transcript" and "The image store and its route". The design agent
+   first mocks the thumbnails of a user message, the image in an open
+   `read` step and the evicted placeholder; the unit follows the
+   mockup. `share/pi/image.ts` (`sniffImage`, `imageSize`) with its
+   tests; the store, `ImageRef` and `GET /images/{id}` in
+   `transcript.ts`; `records.ts` gets `ImageRef`; the page renders
+   the refs and creates a step's images at its first open; the fake
+   pi gets the 1×1 PNG fixture. Tests: the transcript tests of
+   section 8 (the fail-first one: a `read` result's image reaches the
+   route), the program test over `get_messages` with images, and two
+   snapshots in `KoaWebviewTests` (a user message with two
+   thumbnails, an open `read` step with its image), light and dark.
+   Deletes the `images` count and the page's "N images" line.
+13. **Quick Look.** Section 8, "Quick Look". The app: the `koPreview`
+   handler and `window.ko.preview` in `WebviewPaneView.swift`, the
+   preview file under `$TMPDIR/kido-previews/<pid>/`, the
+   `QLPreviewPanel` data source and delegate on the pane's webview
+   view, the sweep at launch, and `WebviewPaneTests` for the
+   validation and the file. The page: a click or Space on an image
+   calls `window.ko.preview` when it exists, else opens the lightbox;
+   Escape closes the lightbox first. Tests: section 8, "Tests". The
+   manager sends the handler's shape to the top-level session before
+   the implementer writes it: it is a new page-to-app surface.
+14. **Attachments.** Section 8, "Attachments: drop and paste" and
+   "Sending". The design agent first mocks the chips (an image chip,
+   a file chip, an uploading chip, a refused chip) above the field,
+   windowed and narrow; the unit follows the mockup. `page/attach.ts`
+   (the drop and paste handlers, the chips, the chunked upload),
+   the composer's `drop` and `paste` handlers that take file drops
+   before CodeMirror, the attachment routes and directory in
+   `koa.ts`, `/prompt` with `attachments`, the queue records with
+   their attachments and the take-back, and the fake pi's log of
+   `images`. Tests: section 8, "Tests"; three snapshots in
+   `KoaWebviewTests` (chips over the field, a sent message with a
+   thumbnail and a path line, the queue with an attachment), light and
+   dark. The manual check in Kido: a Finder drop of a PNG and of a
+   text file onto a koa pane, local and over `ko HOST`.
+
+## 7. The composer: CodeMirror 6 and completion
+
+Status: a design, 2026-11-09, for the user's request "transition to
+CodeMirror 6 for the composer, and add completion of what pi
+completes, with the same API if possible". The pi facts come from the
+installed pi 1.5.0 (`/opt/homebrew/Cellar/pi-coding-agent/1.5.0/libexec/lib/node_modules/@earendil-works/`,
+`pi-coding-agent/` and its nested `pi-coding-agent/node_modules/@earendil-works/pi-tui/`).
+File and line references below are into that install.
+
+### What pi completes
+
+pi's interactive editor (`pi-tui/dist/components/editor.js`) asks one
+provider and shows at most 5 rows (`editor.js:232`). Its triggers:
+
+- `/` when the text before it on the first line is blank
+  (`isAtStartOfMessage`, `editor.js:1850-1858`); a letter, digit,
+  `.`, `-` or `_` typed in a `/` context asks again (`editor.js:1033-1046`).
+- `@` at a token start (`buildTriggerPattern`, `editor.js:178`), with a
+  debounce of 20 ms (`ATTACHMENT_AUTOCOMPLETE_DEBOUNCE_MS`,
+  `editor.js:169`, `editor.js:1971-1978`); `/` commands have none.
+- Tab with no menu forces a file completion of the token under the
+  cursor (`forceFileAutocomplete`, `editor.js:1912-1920`).
+- With the menu open: Escape closes it, ↑↓ move, Tab accepts, Enter
+  accepts and, for a `/` command, falls through to submit
+  (`editor.js:606-650`). A paste closes it (`editor.js:1057-1058`).
+
+The provider is `CombinedAutocompleteProvider`
+(`pi-tui/dist/autocomplete.js`, exported by `pi-tui/dist/index.d.ts:2`):
+
+- `/name`: a fuzzy filter (`fuzzyFilter`, `pi-tui/dist/fuzzy.js`) over
+  the command names, with `skill:` names matched by their bare name
+  first and by the full name after (`autocomplete.js:225-254`).
+- `/name arg`: the command's own `getArgumentCompletions` when it has
+  one (`autocomplete.js:256-271`).
+- `@token`: a fuzzy file search through `fd` from the session's cwd,
+  or from the directory of a token with a `/`, with `--hidden
+  --follow`, `.git` excluded, `.gitignore` honoured, 100 results
+  scored and cut to 20, with the base directory's own entries first
+  (`walkDirectoryWithFd`, `autocomplete.js:118-200`;
+  `getFuzzyFileSuggestions`, `autocomplete.js:610-660`). Without
+  `fd`, no `@` suggestions (`autocomplete.js:611-613`).
+- A plain path token (`./`, `../`, `~/`, `/`, or a token with a `/`,
+  or an empty token after a space): the directory's entries
+  (`extractPathPrefix`, `autocomplete.js:420-440`;
+  `getFileSuggestions`).
+- `@"a b` quotes a path with spaces; an opening `(`, `[`, `{`, `<`
+  or `` ` `` before the token is not part of it (`autocomplete.js:9-10,
+  56-75`).
+- Apply (`applyCompletion`, `autocomplete.js:272-350`): a command
+  becomes `/name ` with a space; an `@` path gets a space unless it
+  is a directory; a quoted path keeps its quotes.
+
+The command list of the TUI (`pi-coding-agent/dist/modes/interactive/interactive-mode.js:468-546`)
+is the built-ins (`settings`, `model`, `tree`, `thinking`,
+`scoped-models`, `export`, `import`, `share`, `bug`, `copy`, `name`,
+`session`, `changelog`, `hotkeys`, `fork`, `clone`, `trust`, `login`,
+`logout`, `new`, `compact`, `resume`, `reload`, `quit`), the prompt
+templates, the extension commands with their `getArgumentCompletions`,
+and the skills as `skill:<name>` when the setting permits. `/model`,
+`/thinking` and `/login` get argument completions from the session
+(`interactive-mode.js:475-515`). `fd` is pi's managed tool at
+`~/.pi/agent/bin/fd` (`$PI_CODING_AGENT_DIR/bin/fd`), else the `fd` on
+PATH (`dist/utils/tools-manager.js:63-79`, `dist/config.js:510-516,
+538-540`). ko-pi adds `@name` for the agents it knows, through
+`ui.addAutocompleteProvider` (`share/pi/ko-pi.ts:3381-3410`).
+
+### The RPC API: what koa can and cannot get
+
+`get_commands` (`rpc-commands.md`, "get_commands";
+`dist/modes/rpc/rpc-mode.js:540-567`) returns the extension commands,
+the prompt templates and the skills, each with `name`, `description`,
+`source` and `sourceInfo`. It has no `argumentHint` and no argument
+completions: a `getArgumentCompletions` is a function in pi's process
+and does not cross the wire. The built-ins are excluded on purpose:
+they "are handled only in interactive mode and would not execute if
+sent via `prompt`". `prompt` runs an extension command, and expands a
+`/skill:name` or a `/template` before it sends or queues
+(`rpc-commands.md`, "prompt"), so a completed command works as typed.
+RPC mode ignores `addAutocompleteProvider` (`rpc-mode.js:194-195`),
+so ko-pi's `@name` agents do not exist in koa's pi. RPC has no
+completion command and no file search.
+
+Thus "the same API" holds for the command names, through
+`get_commands`, and for the apply rules, which koa copies. It does
+not hold for the files, the argument completions or the agent names.
+
+**koa cannot import pi's provider.** `pi-tui` is a nested dependency
+of `pi-coding-agent` (`pi-coding-agent/node_modules/@earendil-works/pi-tui`),
+and `pi-coding-agent`'s `exports` names only `.` and `./rpc-entry`
+(`package.json:14-21`). koa's process has no resolution path to it:
+the `pi` on PATH is Homebrew's bash wrapper over `libexec/bin/pi`,
+not a symlink that `realpath` follows to the package, and pi's bun
+single binary has no modules at all. `autocomplete.js` also imports
+`utils.js`, which imports `get-east-asian-width`. A vendored copy of
+`autocomplete.js` would carry that chain. So koa implements the rules
+above itself, in `share/koa/koa-complete.ts` ("Completion" below),
+and the `@` token rule, which ko-pi already copies from pi
+(`share/pi/ko-pi.ts:832-847`, `atToken`), moves to the shared module
+`share/pi/agents.ts` ("`@name` agents" below) so that ko-pi and koa
+share one copy.
+
+### CodeMirror 6: the packages and their cost
+
+The composer needs these ES modules, all MIT:
+
+| Package | Version | File | Bytes |
+|---|---|---|---|
+| `@codemirror/state` | 6.7.6 | `dist/index.js` | 147,400 |
+| `@codemirror/view` | 6.43.15 | `dist/index.js` | 495,588 |
+| `@codemirror/commands` | 6.11.1 | `dist/index.js` | 84,624 |
+| `@codemirror/autocomplete` | 6.20.4 | `dist/index.js` | 90,056 |
+| `@codemirror/language` | 6.13.1 | `dist/index.js` | 97,134 |
+| `@codemirror/streamparser` | 6.0.0 | `dist/index.js` | 5,120 |
+| `@lezer/common` | 1.5.5 | `dist/index.js` | 84,581 |
+| `@lezer/highlight` | 1.2.5 | `dist/index.js` | 29,921 |
+| `style-mod` | 4.1.4 | `src/style-mod.js` | 7,042 |
+| `w3c-keyname` | 2.2.8 | `index.js` | 2,630 |
+| `crelt` | 1.0.7 | `index.js` | 951 |
+| `@marijn/find-cluster-break` | 1.0.4 | `src/index.js` | 4,270 |
+
+Total: 1,049,317 bytes. `commands` gives the history (⌘Z) and the
+standard keymap; `autocomplete` gives the completion state, the
+tooltip and its keymap; `language`, `streamparser`, `@lezer/common`
+and `@lezer/highlight` are imports of `commands` and `autocomplete`
+that the composer never calls. Not needed: `@lezer/lr`,
+`@codemirror/lang-markdown`, `@lezer/markdown` (the composer does not
+highlight). A tree-shaken bundle of the same exports, made once with
+esbuild 0.25.0 in a scratch directory, measures 623,637 bytes plain
+and 296,935 bytes minified (96,922 gzipped); the bridge refuses a
+compressed response (docs/protocol.md, "The serve stream"), so the
+plain size is the wire size. The page is one response with
+`Cache-Control: no-store` (docs/protocol.md), so the bytes travel at
+each page load, once for each pane.
+
+**Decision: a build pipeline for the page.** The user decided on
+2026-11-09: neither vendored files nor a committed bundle. The page is
+TypeScript, esbuild bundles it with CodeMirror, marked and remend from
+npm, and TypeScript 7 type-checks it. The pipeline covers only the
+page, the one browser code of `share/`: `koa.ts` and
+`koa-complete.ts` stay TypeScript that Node runs as is (the shim's
+`node koa.ts`), as `share/pi/ko-pi.ts` (pi loads it), `transcript.ts`,
+`text.ts` and `share/webview/index.ts` do. Nothing else in `share/`
+needs a bundle. The vendored `marked` and `remend` go: npm supplies
+them, pinned in the same lockfile as CodeMirror.
+
+**Verified facts (2026-11-09).** `typescript@7.0.2` is the `latest`
+tag on npm (`7.1.0-beta` is `beta`); its binary is still `bin/tsc`,
+its engine `node >=16.20.0`, and the compiler is native: the package
+is 3.5 MB with one `optionalDependencies` entry for each platform
+(`@typescript/typescript-darwin-arm64`, `-linux-x64`, ...). It
+accepts `share/pi/tsconfig.json` unchanged (`tsc -p share/pi` exits
+0 on this checkout), so `erasableSyntaxOnly`,
+`allowImportingTsExtensions`, `paths`, `NodeNext` and `ES2024` hold.
+One change: with files on the command line beside a `tsconfig.json`
+it exits with `TS5112` and asks for `--ignoreConfig`, so the second
+`tsc` call of `scripts/test-ts.sh` (the `.pi/tests` check) adds that
+flag. `@typescript/native-preview` is the old preview name and is not
+used. typescript@7.0.2 has no JavaScript API: its `lib/` holds only
+`tsc.js`, `getExePath.js` and `version.cjs`, and
+`require('typescript').factory` is undefined. openapi-typescript
+(`share/pi/package.json`) builds and prints its output through that
+API and names typescript ^5 as its peer, so `share/pi` keeps
+typescript ^5.9.3 as openapi-typescript's library only; nothing runs
+its `tsc`, and no npm override or `legacy-peer-deps` is used. `esbuild@0.28.2` is current; it installs one platform binary
+through `optionalDependencies` (`@esbuild/darwin-arm64`,
+`@esbuild/linux-x64`, ...). `module.stripTypeScriptTypes` exists in
+Node 24 and 26 (the DOM tests below use it).
+
+**Where the sources live.**
+
+    share/koa/
+      koa.ts, koa-complete.ts, koa-assemble.ts    Node, run as is
+      records.ts                                the wire types ("The records module" below)
+      page/                                     the page's sources
+        page.ts                                 the script (was koa-page.js)
+        markdown.ts                             the memoization (was koa-markdown.js)
+        composer.ts                             the CodeMirror composer (unit 10)
+        complete.ts                             the completion source and popup (unit 11)
+        page.html, page.css
+        tsconfig.json                           lib ES2024 + DOM, strict, noEmit, types []
+      package.json, package-lock.json           esbuild, typescript, marked, remend; @codemirror/* from unit 10
+      koa-*.test.ts, koa-fake-pi.ts, stress/
+    build/ko/share/ko/koa/
+      koa.ts, koa-complete.ts, koa-assemble.ts, records.ts, package.json
+      page.html, page.css, page.js              built by esbuild, never committed
+
+`share/koa/package.json` is the second npm manifest beside
+`share/pi/package.json`, with `esbuild` and `typescript` pinned
+exactly (`0.28.2`, `7.0.2`), `marked` and `remend` pinned exactly at
+the versions the vendored files had (18.1.3, 1.4.0), and, from unit
+10, `@codemirror/state`, `view`, `commands` and `autocomplete` at the
+versions of the table; the transitive packages are in the lockfile.
+The one type checker is this `typescript@7.0.2`; `share/pi`'s
+typescript 5 stays for openapi-typescript ("Verified facts" above).
+The `vendor/` directory and its README are gone.
+
+**The Makefile targets.** The Makefile is the one place that runs
+esbuild, as it is for cargo:
+
+- `make koa-page`: `npm ci --silent` in `share/koa` when
+  `node_modules` is older than the lockfile (the rule of
+  `scripts/test-ts.sh:33-36`), then one esbuild command with three
+  entry points: `share/koa/node_modules/.bin/esbuild
+  share/koa/page/page.ts share/koa/page/page.css
+  share/koa/page/page.html --bundle --format=esm --platform=browser
+  --target=safari26 --loader:.html=copy
+  --outdir=build/ko/share/ko/koa`. The script bundles to `page.js`,
+  the CSS to `page.css` and the HTML is copied, so the three built
+  files sit beside `koa.ts`. No minify (decided 2026-11-09): the
+  bundle is readable in WebKit's inspector, and the bridge does not
+  compress (above).
+- `make build` depends on `koa-page` and copies `koa.ts`,
+  `koa-complete.ts`, `koa-assemble.ts`, `records.ts` and
+  `package.json` beside the built files; `KOA_FILES` names these.
+  `build-linux`, `install`, `preview-pi` and Kido.app's
+  `bundle-ko.py` copy from `build/ko` as today, so the one bundle
+  reaches every layout. The bundle has no platform.
+- `make koa-watch`: the same esbuild command with `--watch`, for
+  development. Because the CSS and the HTML are entry points, a save
+  of any of the three rebuilds it (esbuild 0.28.2 follows all three;
+  tested 2026-11-09). The installed koa reads the built files beside
+  itself at each request of `/` (section 1, "Build and install"), so
+  a save, then ⌘R, shows the change. Without the watch, `make
+  koa-page` then ⌘R.
+- `make build` now needs Node 24 on PATH. `make verify` already
+  needs it for the lint and ts stages; CI installs Node 24 on both
+  runners (`.github/workflows/ci.yml:118-122`).
+
+**Built, not committed.** The bundle is about 750 KB of generated
+code (the page is 126,843 bytes bundled today; CodeMirror adds the
+623,637 bytes measured above) that would change with every page edit,
+and a committed generated file needs a lint check that rebuilds and
+compares it, as `make schemas` does for `openapi.json`; a 750 KB diff
+in every page commit is noise that no reviewer reads. The cost of
+building is Node at build time. The Homebrew formula
+(`~/Workspace/homebrew-tap/Formula/ko.rb`) already needs the network
+for the toolchain and the cargo registry (its own comment says so,
+and `HOMEBREW_CACHE` persists), so `npm ci` fits: the formula adds
+`depends_on "node" => :build`, and `make install` builds the bundle as
+`make build` does. The static Linux layout and Kido.app copy the
+host's bundle. Recommendation: built by `make build`.
+
+**The records module.** Since unit 7, `share/pi/transcript.ts` has
+one consumer, koa, so its wire shapes are koa's contract with its
+page. `share/koa/records.ts` is a type-only module with no runtime
+code and no `node:` import: `Text`, `ToolState`, `Block`, `Item`,
+`Assistant` and the feed records (`reset`, `item`, `patch`) move
+there from `transcript.ts`, and `State`, `notify`, `editor` and
+`flush` from `koa.ts`, as one discriminated union on `type` for the
+`/events` payload. `transcript.ts` and `koa.ts` import it;
+`page/page.ts` imports it with `import type`, which esbuild erases.
+The Node types (`respond`, `handle`) stay in `transcript.ts`, so they
+never reach the page's check. `records.ts` imports nothing from pi
+either: an `import type` of a package pulls its whole declaration
+graph, and pi's declarations reference `@types/node`, so Node's
+globals would enter the page's check (`setTimeout` returning
+`NodeJS.Timeout` was the symptom). A closed set stays a union, not a
+string: `records.ts` declares `ThinkingLevel` (pi-agent-core's seven
+names) and `DialogMethod` (`select`, `confirm`, `input`, `editor`)
+as string-literal unions, and `koa.ts`, which sees pi's types, proves
+at compile time that pi's `ThinkingLevel` and the `method` of pi's
+`RpcExtensionUIRequest` equal them both ways (a two-way assignability
+check on an erasable constant), so pi stays the one source and a pi
+change fails the typecheck instead of drifting. The `Dialog` record
+carries exactly the fields the page reads (`id`, `method`, `title`,
+`message`, `options`, `placeholder`, `prefill`, `timeout`,
+`expires`); `koa.ts` narrows pi's request to it once at its edge,
+where it queues a dialog. The page's `tsconfig.json` has `types: []`
+and no `paths`; the page redeclares no field.
+
+**The assembler.** `koa-assemble.ts` reads `page.html`, `page.css`
+and `page.js` beside `koa.ts` and inlines them as the `<style>` and
+the one `<script type="module">`; its import and export rewriter goes,
+because esbuild made one module scope. The per-request read stays, so
+⌘R shows a new bundle. The assembly test shrinks to: the served
+document holds the three files once and no `import` statement.
+
+**Type checks.** `scripts/test-ts.sh` installs `share/koa`'s modules
+under the same lockfile rule as `share/pi`'s, then runs
+`share/koa/node_modules/.bin/tsc -p share/pi` (it covers
+`share/koa/*.ts`, the Node side, through its `include`) and the
+`.pi/tests` check with `--ignoreConfig`, then
+`share/koa/node_modules/.bin/tsc -p share/koa/page`, whose
+`tsconfig.json` has `lib: ["ES2024", "DOM", "DOM.Iterable"]`,
+`types: []`, `strict`, `noUnusedLocals`, `noEmit`,
+`erasableSyntaxOnly` and `moduleResolution: "bundler"`, so the
+`@codemirror/*` types resolve from `share/koa/node_modules`. The
+`share/pi` tsconfig excludes `../koa/page/`. `scripts/lint.sh` adds
+`share/koa/page/*.ts` to its TypeScript globs (the stale-prose check
+and the `as`/`any`/`!` hygiene check at `scripts/lint.sh:122-128`),
+which the page's JavaScript escaped until now; `share/koa/node_modules`
+is ignored as `share/pi/node_modules` is.
+
+**CSP.** CodeMirror inserts one `<style>` element into
+`document.head` through style-mod (`style-mod.js:100`); the server's
+`style-src 'self' 'unsafe-inline'` permits it. CodeMirror has no
+`eval` and no `new Function`. esbuild's ESM output has no module
+system at run time. No CSP change.
+
+### The editor
+
+`share/koa/page/composer.ts` is one page module beside
+`markdown.ts`, so that the page's tests run without a DOM: `page.ts`
+imports `{ composer } from './composer.ts'`, and the DOM tests of
+`koa-dom.test.ts`, which run the page's script in a `vm` context with
+a fake document, supply a fake `composer` in that context instead of
+the module. `composer(host, handlers)` mounts an `EditorView` in
+the `<div id="prompt">` that replaces the `<textarea>` and returns
+`{ text(), setText(text), insert(text), focus(), hasFocus(),
+placeholder(text) }`. `handlers` are the page's: `input()`,
+`send(mode)`, `quit()` and `escape()`. The page keeps every rule of
+"Keys" and the composer focus paragraph of section 4; this is how
+each maps:
+
+- **Return sends, Shift-Return inserts a newline, Option-Return
+  queues a follow-up.** One `Prec.highest(keymap.of([...]))` in the
+  editor: `Enter` → `send('prompt')`; `Shift-Enter` → insert `"\n"`;
+  `Alt-Enter` → `send('follow_up')`. The page's `send` keeps its
+  disposition rules, and a `prompt` while working stays a steer
+  (section 3, `/prompt`).
+- **Escape.** With the completion open, Escape closes it and nothing
+  else (`closeCompletion`). Otherwise the editor's keymap does not
+  bind it, and the document's `keydown` handler keeps the rule: the
+  first Escape aborts, the second clears (`composer.setText('')`).
+- **Control-D in an empty composer quits**: `Ctrl-d` in the keymap,
+  which runs `quit()` only when `text() === ''` and otherwise returns
+  false, so WebKit's own Control-D (delete forward) applies.
+  **Control-C does nothing**: unbound; WebKit copies the selection.
+- **The take-back of the queue** puts the texts into the composer
+  with `setText`, cursor at the end, as today.
+- **⌃↩ in a dialog's editor field** is the dialog card's own
+  `<textarea>` and stays as it is; the composer is not involved.
+- **The dock's `ResizeObserver`** stays: the editor grows with its
+  text and `.cm-scroller { max-height: 9.6em; overflow: auto }`
+  caps it at six lines, so the dock's height changes as before and
+  the observer sets `--dock-h`. The `promptMaxHeight` constant and
+  the `scrollHeight` measurement of `composer()` go.
+- **Inert while pi starts.** `#field` keeps its `inert` attribute;
+  the editor inside takes no focus and no key while it is set.
+- **`focusComposer`** calls `focus()` under the same conditions;
+  `document.activeElement === element('prompt')` becomes
+  `composer.hasFocus()` (`EditorView.hasFocus`), because the focused
+  element is CodeMirror's content element, a child of the host. The
+  `isControl` test already treats `isContentEditable` as a control,
+  so the editor counts as one.
+- **Printable-key forwarding**: a printable key typed outside a
+  field calls `focus()` then `insert(key)`, a `dispatch` that
+  replaces the selection, in place of `setRangeText`; the
+  `closest('input,textarea,select')` test gains
+  `[contenteditable]`, which `isContentEditable` covers.
+- **IME.** CodeMirror ignores key events during a composition
+  (`ignoreDuringComposition`, `view/dist/index.js:4699-4712`, with a
+  Safari-specific window of 100 ms after `compositionend`), so the
+  Enter that commits a candidate does not send. The page's own
+  `isComposing` checks on the composer go with the textarea.
+- **Paste** is CodeMirror's native paste: plain text, no change. A
+  paste closes an open completion, as in pi.
+- **The `--ko-focus` border and the glass** are CSS on `.field`;
+  `:focus-within` sees the focus inside the editor. koa's theme sets
+  `.cm-editor.cm-focused { outline: none }`, `.cm-editor` and
+  `.cm-scroller` to no background and no padding, `.cm-content` to
+  the prose font at `--ko-font-size`, line height 1.6, and
+  `.cm-placeholder` to `--faint` (the mockup's values, NOTES.md "The
+  composer"). The `textarea` rules of `page.css` go.
+- **The placeholder** ("Message koa…", "Steer koa…") is CodeMirror's
+  `placeholder()` in a `Compartment` that `composer()` reconfigures.
+- **The editor-ack path** is unchanged: `state.editor` →
+  `setText(text)` → `POST /editor/ack`.
+- **History**: `history()` and `historyKeymap` (⌘Z, ⇧⌘Z);
+  `standardKeymap` for the cursor and selection keys, which WebKit's
+  contenteditable does not supply once CodeMirror owns the content.
+  Tab is not bound in the editor when no completion is open, so Tab
+  leaves the field as NOTES.md "The model and thinking pickers"
+  requires; pi's forced file completion on Tab is not offered (the
+  user's decision of 2026-11-09).
+
+**The seam for the tests.** The page exposes the composer object as
+`window.composer`. The app's `KoaWebviewTests` set and read text
+through it in place of `#prompt.value` and the synthetic `input`
+event (`app/VisualTests/KoaWebviewTests.swift:320-351`), and the
+focus checks compare `document.activeElement` with
+`document.querySelector('#prompt .cm-content')`. The stress runner's
+page workloads do the same. The DOM tests (`koa-dom.test.ts`) keep
+their fake document: they read `page/page.ts`, strip its types with
+`module.stripTypeScriptTypes` (Node 24; the sources are erasable
+syntax only, which the `tsconfig` enforces), strip the `import`
+lines as today, and put a fake `composer` and the real `markdown`
+(imported from `page/markdown.ts`) into the `vm` context. They never
+run esbuild. The composer's own behaviour, which needs a real DOM, is
+checked in the app's suite and by the stress runner's headless
+Chrome. `koa-page.test.ts` imports `page/markdown.ts` directly, with
+`marked` and `remend` from `share/koa/node_modules`.
+
+### Completion
+
+**Triggers and keys**, after pi: `/` with a blank before it on the
+first line; `@` at a token start; a letter, digit, `.`, `-` or `_`
+extends an open list. No forced completion and no plain-path
+completion without `@` (decided 2026-11-09). ↑↓ move, Tab accepts,
+Enter accepts and, for a command, then sends (pi's rule,
+`editor.js:636-650`); for a file or an agent, Enter only accepts.
+Escape closes.
+CodeMirror's `autocompletion({ override: [source], defaultKeymap:
+false, icons: false, activateOnTypingDelay: 20, maxRenderedOptions:
+20 })` supplies the state and the tooltip; koa's keymap above binds
+the keys, with `completionStatus(state) === 'active'` as the guard.
+The source gets a `CompletionContext`; it posts the whole text and
+the cursor offset, and the page filters nothing: pi asks its provider
+again at each keystroke, and so does koa.
+
+**The route.** `POST /complete` with the body `{ text, pos }`,
+access `alive` (file completion works while pi starts; the command
+list is then empty). It answers `{ from, to, options }` with
+`options: [{ label, detail?, insert, kind }]`, `kind` one of
+`command`, `file`, `directory`; `from` is the start of the prefix
+that the option replaces and `to` is `pos`; `insert` is the text that
+pi's apply rule produces for the prefix (`/name `, `@path `, `@dir/`,
+the quotes), so the page inserts it and decides nothing. An empty
+`options` closes the list. koa's routes are its own, keyed by the
+exact URL (`share/koa/koa.ts:333, 413`); the body is JSON as every
+other route's, under the 1 MiB limit.
+
+**The source**, `share/koa/koa-complete.ts`, exports
+`complete(text, pos, { cwd, commands, fd, signal })`:
+
+- It takes the line of `pos` and the text before the cursor on it,
+  as pi does (`autocomplete.js:213-214`).
+- `/` on the first line: `commands()` is koa's `get_commands` through
+  the RPC link, asked at each `/` request (a local round trip; no
+  cache, so a `/reload` in pi shows at once), fuzzy-filtered with pi's
+  rule (`skill:` by bare name first). Each `detail` is the
+  description. No argument completion.
+- `@token`: `atToken` of `agents.ts`, then `fd` from the token's base
+  directory with pi's arguments, 100 results, pi's scoring, 20 rows,
+  the base directory's entries first. `fd` is pi's: `~/.pi/agent/bin/fd`
+  (`$PI_CODING_AGENT_DIR/bin/fd`), else `fd` on PATH, resolved once
+  at start; without one, `@` returns no options and koa prints one
+  line to its stderr at start. Tests name their `fd` through `KOA_FD`.
+- A request closed by the page (`request.on('close')`) aborts the
+  `signal`, and koa kills the `fd` child that it spawned for it, as
+  pi does (`autocomplete.js:166-170`). The signal goes through koa's
+  one signal function, which takes koa's own child record (decision
+  8): the function grows from pi's record to any child that koa
+  spawned, and `scripts/lint.sh`'s one permitted site stays one.
+- `fuzzyFilter` is koa's copy of pi's rule (`pi-tui/dist/fuzzy.js`,
+  125 lines), because the module is unreachable (above).
+
+**`@name` agents.** ko-pi completes the agents of the pane's
+neighbourhood in a TUI pi (`share/pi/ko-pi.ts:3381-3410`): for an `@`
+token, `agentCompletionItems` (`ko-pi.ts:951-971`) over the rows of
+its `discovery()` (`ko-pi.ts:1720-1831`), then pi's file items after
+them under one prefix. The rows come from `ko api GET /layout`
+(`listPanesResult`, `ko-pi.ts:262-271`; `parsePanes`, `ko-pi.ts:234-258`):
+every live pane of the own session whose kind is a pi agent, with its
+`pi.name` as the name, the pane's `parent` chain as the relationship
+(parent, relative, peer, own child; `ko-pi.ts:1722-1744`), its root
+state as the status and `pi.activity` as the activity. ko-pi adds
+rows from its registry, the custom entries of its own pi session:
+ended children and peers, and a child's name before its pane writes
+`pi.name`. The completion offers the named rows that are not self
+and not `other`, running or an ended peer (`ko-pi.ts:3393`), by name
+prefix first and by word prefix second, at most 10
+(`MAX_AGENT_COMPLETIONS`), each as `@name (session <id prefix>)`
+with the shortest prefix of at least 8 characters that is unique
+among the rows (`completionValue`, `ko-pi.ts:945-949`), and a
+description of status, activity and parent. RPC mode drops the
+provider (`rpc-mode.js:194-195`), so koa gets none of this for free.
+
+koa computes the same from the same source: `koa-complete.ts` runs
+`ko api GET /layout` as ko-pi does (`ko` from PATH, which in a pane
+is the shim; the pane's identity headers come from `KO_PANE` and
+`KO_PANE_TOKEN` in koa's environment, so the call is the pane's), and
+builds the rows of the live panes with the shared code. The pure
+parts move out of `ko-pi.ts` into a shared module `share/pi/agents.ts`
+(installed beside `ko-pi.ts` as `transcript.ts` is; the Makefile and
+`preview-pi` lists get it): `PaneInfo`, `parsePanes`, `placesOf`,
+`piAgent`, `rootRecord`, `peerPanes`, the relationship computation of
+`discovery` as a pure function `relationships(panes, me)`, `atToken`,
+`agentCompletionItems` over the fields it reads (`id`, `name`,
+`named`, `self`, `status`, `activity`, `parent`, `state`,
+`relationship`), `completionValue`, `NAME_WORD_SEPARATORS`,
+`MAX_AGENT_COMPLETIONS` and `MIN_ID_PREFIX`. ko-pi imports them and
+keeps its registry merge; koa has no registry, so its rows are the
+live named pi panes of its session only. What koa does not show:
+ended children and peers, and a child in the seconds before its pane
+writes `pi.name`. Its `ko api` call has ko-pi's 5 s deadline and the
+same 1 s cache (`KO_AGENT_LIST_TTL_MS`, `ko-pi.ts:3390`), refreshed
+in the background; a failed call gives no agent items and the files
+still come. The agent items go first, the file items after, under
+the `@token` prefix, as ko-pi merges them; each is
+`kind: "agent"`, and Enter accepts without sending.
+
+What the mention then does: nothing in koa or pi rewrites it. The
+text `@impl (session 9702ddd1)` reaches the model as typed, and
+ko-pi's tools keep the promise: `message_agent`'s `to`,
+`read_report`'s `agent` and `stop_agent`'s `agent` each accept "an
+@-mention from the prompt such as @impl (session 9702ddd1)"
+(`ko-pi.ts:2868, 2914, 3104`), and `normalizeAddress`
+(`ko-pi.ts:848-851`) takes the session id out of the parenthesis and
+resolves it in ko-pi's snapshot (`resolveIn`, `ko-pi.ts:1855-1870`).
+ko-pi runs unchanged inside koa's pi, so a completed mention in a koa
+prompt addresses the same agent that it addresses in a TUI pane. One
+difference: koa's id prefix is unique among koa's rows, which lack
+the ended registry rows, so a prefix can match an ended child too;
+`resolveIn` then answers "matches several", and the model asks or
+uses a longer prefix. The 8-character floor makes this rare.
+
+**Latency and cancellation.** CodeMirror starts a request 20 ms after
+the last keystroke (`activateOnTypingDelay`) and aborts the previous
+one through `CompletionContext.addEventListener('abort', ...)`, which
+the source maps to the fetch's `AbortController`; the bridge turns an
+aborted fetch into the request's `cancel` (docs/protocol.md, section
+16), koa sees `close`, and `fd` dies. A `/` request is one RPC round
+trip; an `@` request is one `fd` run, tens of milliseconds in a
+repository of this size. The page shows nothing until the answer.
+
+**The popup** is CodeMirror's tooltip above the field (the composer
+is at the bottom, so it opens upward), restyled in `page/page.css`
+through `--ko-*` tones: a card with the dock's glass and hairline,
+rows of a label and a muted detail, the current row on the 8 % well,
+paths in the terminal font, at most 8 rows visible before it
+scrolls. The design agent mocks it first (a `/` list, an `@` list,
+in light and dark, windowed and narrow), and the page follows the
+mockup; the values above are the starting point for the mockup, not
+the design.
+
+**Tests.**
+
+- `koa-complete.test.ts`, pure: the `/` filter and the `skill:`
+  order, the `insert` of each kind, the `@"a b` quoting, the wrapper
+  stripping, the token rule shared with ko-pi (one table for both),
+  `@` over a temporary directory with a fake `fd` on `KOA_FD` that
+  prints fixed lines (the base directory's entries first, 20 rows),
+  and the agent rows from a `/layout` fixture through the fake `ko`
+  (`share/pi/testdata/fake_ko`): the relationship of each pane,
+  self and `other` excluded, the unique id prefix, agents before
+  files.
+- `agents.test.ts` beside `share/pi/agents.ts`: the moved pure
+  functions keep their ko-pi tests; a test that reads them through
+  ko-pi moves with them.
+- `koa-program.test.ts`: `/complete` for `/fi` with the fake pi's
+  `get_commands`; `/complete` for `@ko` with the fake `fd` and the
+  fake `ko`'s layout; a closed request kills a fake `fd` that sleeps
+  (the fake writes its pid to a file, and the test waits for its
+  exit); `/complete` while pi starts answers files and agents and no
+  commands.
+- `koa-page.test.ts`: the assembly test over the built bundle; the
+  ts stage runs after `make build`, so `build/ko/share/ko/koa/page.js`
+  exists, and the test reads the page files from there.
+- `koa-dom.test.ts`: the keys through the fake composer: Enter sends,
+  Alt-Enter queues, Escape twice clears, Ctrl-D quits only when
+  empty, the take-back's `setText`, the editor-ack's `setText`.
+- `KoaWebviewTests`: two new snapshots, the `/` list and the `@`
+  list; the existing composer snapshots unchanged.
+
+**Deleted.** `share/koa/vendor/` and its README; the rewriter of
+`koa-assemble.ts`; `koa-page.js`, `koa-markdown.js` and
+`koa-markdown.d.ts` (now `page/page.ts` and `page/markdown.ts`); the
+`<textarea id="prompt">` and its CSS; `promptMaxHeight` and the height
+code in `composer()`; `setRangeText` and the `isComposing` checks on
+the composer; every `element('prompt').value` read and write; the
+pane, relationship and completion functions of `ko-pi.ts` that move
+to `share/pi/agents.ts`.
+
+## 8. Images and attachments
+
+Status: a design, 2026-11-09, for the user's requests "show images in
+koa as pi's TUI shows them", "Quick Look on a click", "attach a
+dropped image instead of inserting a path" and "handle other
+attachments too". The pi facts come from the installed pi 1.5.0, with
+file and line references into
+`/opt/homebrew/Cellar/pi-coding-agent/1.5.0/libexec/lib/node_modules/@earendil-works/pi-coding-agent/`.
+The design builds on section 7: the page is TypeScript under esbuild
+(unit 9) and the composer is CodeMirror 6 (unit 10). The design agent
+(`@kido-app-design`) mocks each visible part before its unit starts;
+the values below are the starting point for the mockup, not the
+design.
+
+### Where images occur in pi's messages
+
+- **A user message.** `UserMessage.content` is a string or
+  `(TextContent | ImageContent)[]` (`docs/message-types.md:114`). It
+  holds images only when the prompt carried `images`: the RPC
+  commands `prompt`, `steer` and `follow_up`
+  (`docs/rpc-commands.md:15-17, 54-59, 78-83`) and the CLI's `@file`
+  arguments (`dist/cli/file-processor.js`). pi's own TUI never
+  attaches an image: a pasted image becomes a temporary file
+  `pi-clipboard-<uuid>.<ext>` in `os.tmpdir()`, and its path is
+  inserted into the editor as text (`handleClipboardPaste`,
+  `dist/modes/interactive/interactive-mode.js:2550-2578`); copied
+  files insert their paths, one for each line. The model then reads
+  the path with its `read` tool. A terminal drop pastes a path, and
+  pi treats it as typed text.
+- **A tool result.** `ToolResultMessage.content` is
+  `(TextContent | ImageContent)[]` (`message-types.md:168`). `read`
+  returns a text note `Read image file [<mime>]` and one image block
+  for a file whose first bytes are PNG, JPEG, GIF, WebP or BMP
+  (`dist/core/tools/read.js:80-109`; the sniff is
+  `detectSupportedImageMimeType`, `dist/utils/mime.js:4-21`, which
+  refuses an animated PNG). `processImage` converts BMP to PNG and
+  resizes the image to the model's `inputLimits.images.resize`,
+  default 4.5 MiB (`dist/utils/image-resize-core.js:9`). With a model
+  whose `input` lacks `image`, the note adds "[Current model does not
+  support images. The image will be omitted from this request.]" and
+  the image block is still in the message (`read.js:40-45, 100-106`).
+  Any tool, codemode's `image()` included, can return image blocks,
+  and a `tool_execution_update` can carry them in a partial result.
+- **A custom message** has the same content union
+  (`message-types.md:228`); ko-pi's notices carry none today.
+- **The session file** stores the images as base64 in the message
+  (`docs/session-format.md:185`), so `get_messages` returns them and
+  a resumed session has them.
+
+pi's TUI shows the images of a tool result through the kitty
+graphics protocol (`Image` of pi-tui, used in
+`dist/modes/interactive/components/tool-execution.js`), under the
+settings `showImages` and `imageWidthCells` (60 cells). That is what
+the user sees in a terminal pane and not in koa.
+
+**What koa does today.** `contentText` (`share/pi/text.ts`) keeps
+only the text blocks, so a tool result's image vanishes and the
+`read` step's detail says "1 lines". A user item carries
+`images: number`, and the page appends "N images" to the text
+(`page/page.ts`, the user item's render). Nothing of an image's bytes
+leaves pi's process.
+
+### The image store and its route
+
+**Decision: the bytes go through a route, never through the feed.**
+The feed's records are the page's memory: a `reset` window is 256 KiB
+(`MAX_WEBVIEW_WINDOW_BYTES`), an `/events` response ends at 1 MiB of
+buffered output, and the page's retained heap has a budget of 32 MiB
+(unit 6a). One Retina screenshot is 2 to 6 MiB, 4/3 of that as base64
+in JSON. A record that carried it would end the response of every
+slow page and keep the bytes in the page's items map for the life of
+the document. The page loads an image with `<img src="/images/<id>">`
+and WebKit owns the decoded pixels, which it drops for an image that
+is not in a document.
+
+**The store** is the transcript module's, because it owns the items:
+`share/pi/transcript.ts` decodes each image block from base64 at
+conversion, in `applyMessage` for a user message and in `flush` for a
+tool result, into `images: Map<string, { bytes: Buffer; mimeType:
+string }>`. The id is `<seq>.<n>`, with `n` the image's ordinal in
+the item, so a rebuild gives the same ids to the same images. A
+record carries a reference, not bytes:
+
+```ts
+type ImageRef = { id: string; mimeType: string; bytes: number; width?: number; height?: number };
+```
+
+in `records.ts`, on the user item as `images: ImageRef[]` (the count
+goes) and on a tool block's result as `images: ImageRef[]` beside
+`text` and `cut`. `width` and `height` come from the file's header
+(PNG `IHDR`, JPEG `SOFn`, GIF, WebP `VP8`/`VP8L`/`VP8X`, BMP) in
+`share/pi/image.ts`, a new module installed beside `transcript.ts`,
+with `sniffImage(bytes)` (the mime of the first bytes, pi's set and
+pi's exclusions) and `imageSize(bytes)`; the attachment route below is
+its second caller. A header that the parser does not know leaves both
+absent, and the page reserves no space.
+
+**The cap.** `MAX_IMAGE_STORE_BYTES` is 256 MiB of decoded bytes. Over
+it, the store evicts the oldest ids by `seq`; an evicted id answers
+410, and the page shows the placeholder of the mockup ("image not
+kept", with the size). `rebuild` clears and refills the store from
+`get_messages`, so a reload of koa's pi or a compaction brings the
+newest 256 MiB back. koa thus holds at most 256 MiB beside pi's own
+copy; a session that exceeds it is rare, and the cap is the measure
+that the stress report (unit 6a) watches.
+
+**The route.** `GET /images/{id}` in `transcript.ts`'s `handle`
+beside `/items`: `Content-Type` is the stored `mimeType`, the body the
+bytes; an unknown id is 404, an evicted one 410. Every proxy response
+carries `Cache-Control: no-store` and the server's CSP (protocol.md,
+section 16). The CSP's `img-src 'self' data:` permits the route and
+forbids `blob:`, so the page never uses `createObjectURL`. `no-store`
+means that a second `<img>` with the same URL fetches again, so the
+page creates one `<img>` for each ref and reuses the node when it
+renders the item again (the `slots` of its view, as the markdown memo
+keeps its blocks). A step's detail is collapsed by default and a
+hidden `<img>` with a `src` still loads, so the page creates a step's
+images at the first open of the step, never before; a user message's
+thumbnails are visible and load at once. Each `<img>` has
+`width`/`height` attributes from the ref, so the bottom-following
+scroll does not jump when the bytes arrive.
+
+**The look** (the design agent mocks it): in a user message, a row of
+thumbnails under the text, at most 160 px tall, with the hairline and
+the radius of the mockup's cards; in a step's detail, the image after
+the text note, at most the detail's width and 320 px tall, in its
+aspect; the `read` step's line says `image 1200×800` in place of
+`N lines` when the result has an image. Light and dark, windowed and
+narrow.
+
+### Quick Look
+
+**The channel today.** A page reaches the app only through the one
+script message handler `koSocket`, the WebSocket shim
+(`WebviewPaneView.swift:65, 346-399`), which checks `!stopped`, the
+main frame, `allowed(frameInfo.request.url)` (the `ko:` scheme, the
+view's pane as host, no port, no user), the document generation, and
+the shape of each field. `window.ko` (the theme script,
+`WebviewPaneView.swift:315-334`) has no method, and
+docs/design-webview.md says why: the app is no message bus between a
+page and ko. A preview is not that: it reaches neither the program
+nor the server; it is a client action, as `app.webview.links` is.
+
+**The message.** The document-start script adds one function,
+`window.ko.preview(url)`, which posts `{ document, url }` to a second
+handler, `koPreview`, with the generation that the socket shim
+carries. In a browser `window.ko` is absent and the page falls back
+(below). The app's validation, in this order: `!stopped`, main frame,
+`allowed(frameInfo.request.url)`, `document == generation`, `url`
+parses and `allowed(url)` (so a page previews only its own pane's
+resources), the pane is the active pane of a key window, and no
+preview of this pane is in flight; a message that fails any check is
+dropped without a reply, as a socket message is. The app then fetches
+the URL through `KoWebviewFetch`, the path of a page's own `fetch`
+(it takes one of the 6 slots, and a remote server answers through the
+pane's serve stream, so a preview works over `ko HOST` and in a
+runtime), refuses a response whose `Content-Type` is not `image/*` or
+whose body passes 64 MiB (Kido's per-file upload limit,
+docs/design-app.md, "Uploads"), writes the bytes to
+`$TMPDIR/kido-previews/<pid>/<uuid>.<ext>` (0700, the extension from
+the type) and opens `QLPreviewPanel.shared()` with one item. The
+webview pane view answers `acceptsPreviewPanelControl` and is the
+panel's data source and delegate (it is in the responder chain above
+the WKWebView). The file goes when the panel ends its control, when
+the pane is disposed, and at launch for a dead process's directory,
+under the lock rule of `kido-promises`. A failed fetch or a refused
+type shows a transient notice card ("Kido could not preview the
+image"). The user closes the panel with Space or Escape, as in Finder.
+
+**The page.** A click on an image, or Space and Enter on a focused
+one (each `<img>` has `tabIndex` 0 and `role="button"`), calls
+`window.ko.preview(img.src)` when the function exists. Without it,
+the browser target, the page opens a lightbox: a fixed overlay on the
+dock's glass with the image at its natural size, at most the
+viewport; a click or Escape closes it. While the lightbox is open,
+Escape closes it and nothing else, before the abort rule of section
+4. The lightbox is the one fallback; the page cannot open a tab or
+download (docs/design-webview.md, "Non-goals").
+
+### Attachments: drop and paste
+
+**What a drop delivers.** In Kido, `PaneView` refuses a drag while a
+page is shown (`webviewView == nil` in `draggingEntered`,
+`app/App/PaneView.swift:1404-1406`), so the WKWebView, which
+registers its own drag types, takes the drop, and the page gets the
+standard `drop` event with `dataTransfer.files`: `File` objects with
+the bytes, the name and the type, and no path (WebKit does not expose
+the file URL of an outside drag). Kido's terminal-pane upload (the
+drops directory, the pasted path; design-app.md, "Uploads") does not
+apply to a webview pane. Without a handler, WebKit would navigate to
+the dropped `file:` URL, which the navigation delegate refuses, so the
+page calls `preventDefault` on `dragover` and `drop` of the document.
+`@codemirror/view` reads a dropped file as text and inserts it, so the
+composer's `domEventHandlers.drop` takes a drop with files before
+CodeMirror sees it. A paste with `clipboardData.files` (a copied
+image, a Finder copy) goes the same way; a text paste stays
+CodeMirror's. The first unit step in Kido confirms the `File` bytes
+with a manual drop on a koa pane, because `NSDraggingInfo` cannot be
+synthesized in the app's tests.
+
+**The chips.** A dropped or pasted file becomes a chip above the
+field, inside the dock (the design agent mocks them): a thumbnail
+for an image, a document glyph with the name and the size for a file,
+a progress state while its bytes upload, a refused state with the
+reason (too big, too many), and × to remove it. At most 16
+attachments for one prompt. A chip's removal deletes koa's copy.
+
+**The bytes to koa.** The proxy's request body is at most 1 MiB
+(`MAX_BODY`, `ko_server/src/http.rs`; `ko_client/include/ko_client.h:658`),
+and WebKit delivers a string or a `Uint8Array` body whole and a `Blob`
+or `FormData` body empty (design-app.md, "Webview panes"). The page
+thus sends chunks as `Uint8Array` bodies, never a `Blob`:
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST /attachments` | `{ name, type, size }` as JSON | `{ id }`; 413 over 64 MiB, 409 at 16 pending or 256 MiB pending |
+| `POST /attachments/{id}/{offset}` | the bytes from `offset`, at most 768 KiB | `{ received }`; 409 when `offset` is not the bytes received so far; after the last chunk `{ received, kind: "image" \| "file", mimeType?, width?, height? }` |
+| `POST /attachments/{id}/delete` | `{}` | `{}`; the file is gone |
+
+koa writes each attachment to
+`<os.tmpdir()>/koa-<pid>/attachments/<id>/<name>` (0700; the name
+with its path separators and control characters replaced), so koa
+holds no attachment in memory; the one exception is the image that it
+encodes at send time. When the last chunk lands, `sniffImage` decides
+the kind from the first bytes (pi's set and exclusions, never from
+the browser's `type`), and `imageSize` gives the dimensions. The
+directory goes at koa's exit; a sent attachment's file stays until
+then, because pi reads a file's path later and the session's
+transcript names it. These routes have an id in the path, so
+`koa.ts` matches them by prefix as `transcript.ts` matches `/items`;
+they are `alive`, so a user can attach while pi starts.
+
+The page does not resize an image: pi converts and resizes it to the
+model's limits itself (`processImage`), and a resize in the page would
+change what the session keeps.
+
+### Sending
+
+`POST /prompt` takes `{ text, mode, attachments: string[] }`. koa
+reads each attachment:
+
+- An image becomes one `ImageContent` of the RPC command: the file's
+  bytes as base64 and the sniffed `mimeType`. `prompt` takes `images`
+  in every mode, also with `streamingBehavior` (`session.prompt`
+  passes them to the steer and follow-up queues,
+  `dist/core/agent-session.js:1670-1711`), so a steer or follow-up
+  carries its images.
+- A file becomes a line of text: its path, one for each file, after
+  the typed text, as pi's TUI pastes copied files
+  (`interactive-mode.js:2552-2560`). The model reads it with `read`,
+  as it reads a path that the user typed. The text is otherwise as
+  typed; `@` is not added.
+
+`promptBody` accepts an empty `text` when `attachments` is not empty.
+The unit checks with the real pi that `prompt` with `message: ""` and
+`images` starts a run; if pi refuses, the page requires text for an
+images-only send and the chip row says so.
+
+**The rule for a path.** koa runs where pi runs: the local machine,
+a remote server or a runtime. The page's machine can be another one,
+so a path from the page would mean nothing there, and WebKit gives
+none. Thus a dragged or pasted file is bytes, and koa's copy on pi's
+host is the file that pi reads, local or remote, one case. A file
+that is already on pi's host is named with `@path` through the
+completion of section 7, not dragged. The cost: for a local session,
+pi reads and edits the copy, not the original, when the user drags a
+file from the Finder. Kido knows the original paths of a drop
+(`NSDraggingInfo`) and could give them to the page for a local server
+without a runtime; that is a second channel and a second case, and
+the design does not add it (an open question below).
+
+**The queue.** `queue_update` carries texts only, and `clear_queue`
+returns texts. koa keeps `{ text, attachments }` for each queued
+prompt until a `queue_update` no longer lists its text, and
+`/queue/clear` answers `{ steering: [{ text, attachments }], followUp:
+[...] }` with the attachments that koa still holds, so a take-back
+restores the chips with the texts. The queue list under the composer
+shows a glyph and the count beside a text with attachments.
+
+**The transcript.** pi stores the user message as
+`[{ text }, ...images]` (`agent-session.js:1525`), so the user item
+shows the thumbnails of "Images in the transcript" above, and the
+path lines show as text.
+
+### Limits
+
+| Limit | Value | Where |
+|---|---|---|
+| One request body | 1 MiB | `MAX_BODY`, the server |
+| One chunk | 768 KiB | the page |
+| One attachment | 64 MiB | koa, at `POST /attachments`; Kido's per-file upload limit |
+| Attachments for one prompt | 16 | koa and the page |
+| Pending attachments | 256 MiB | koa, on disk |
+| Image store | 256 MiB decoded | `MAX_IMAGE_STORE_BYTES`, `transcript.ts` |
+| A preview file | 64 MiB, `image/*` | the app |
+| An image on the wire to pi | pi's `processImage` resizes to the model's limit, default 4.5 MiB | pi |
+
+The feed's caps (`MAX_WEBVIEW_WINDOW_BYTES`, the 1 MiB output cap)
+do not change: a record carries a reference of under 100 bytes for
+each image.
+
+### Tests
+
+- `transcript.test.ts` (fail-first: today a `read` result's image
+  vanishes and the user item has a count): a user message with two
+  image blocks gives `images: [ref, ref]` with the ids `<seq>.0` and
+  `<seq>.1`, the mime and the size of the 1×1 PNG fixture; `GET
+  /images/<id>` answers the bytes with the mime; an unknown id 404; a
+  `read` result with a text note and an image gives the block's
+  `result.images`; a store over a lowered cap evicts the oldest and
+  answers 410; `rebuild` gives the same ids again.
+- `image.test.ts` beside `share/pi/image.ts`: the sniff for each of
+  pi's types and its refusals (an animated PNG, a JPEG with `f7`,
+  junk); the size of a fixture of each type and `undefined` for a cut
+  header.
+- `koa-program.test.ts`: `get_messages` with images fills the route;
+  the attachment flow over the 1×1 PNG and a text file (create, two
+  chunks, the completion's kind and size); an offset out of order
+  answers 409; a declared size over 64 MiB answers 413; a 17th
+  pending attachment answers 409; `/prompt` with both: the fake pi's
+  log shows `images` with the fixture's base64 and `image/png`, and
+  the message ends with the file's path on its own line, and the file
+  at that path has the bytes; `/attachments/{id}/delete` removes the
+  file; a `Blob` body gives 400 (workload 11's guard stays); a
+  queued prompt's attachments come back from `/queue/clear`.
+- `koa-dom.test.ts`: a `drop` with files makes chips and inserts no
+  text; a `paste` with files makes chips, a text paste does not;
+  × removes a chip and posts the delete; Enter sends the ids; a
+  click on an image calls `window.ko.preview` when it exists and
+  opens the lightbox otherwise; Escape closes the lightbox and does
+  not abort; a step's `<img>` exists only after the first open.
+- `WebviewPaneTests`: a `koPreview` message with another
+  generation, a foreign URL or a non-key window is dropped; a valid
+  one writes the fetched bytes to a file under `kido-previews/<pid>/`
+  and the data source answers that item; a `text/plain` response
+  writes no file; the file is gone after the pane is disposed.
+- `KoaWebviewTests`: the snapshots of units 12 to 14.
+
+**Deleted.** `images: number` on the user item and the "N images"
+line of the page; the non-goal "Images in prompts and in results" of
+this plan and the sentence "an image is a count" of
+docs/design-webview.md, "koa's page" (the manager edits both when
+unit 12 lands); `promptBody`'s refusal of an empty text when
+attachments exist.
+
+### Open questions
+
+1. Original paths for a local drop: should Kido give the page the
+   dropped files' paths when the server is local and the pane has no
+   runtime, so that pi edits the original and not a copy?
+   Recommendation: no for now; bytes are one case for every host, and
+   `@path` completion covers a file on pi's host.
+2. Quick Look for non-image responses (a PDF, a text file) later?
+   Recommendation: `image/*` only now; the type check is one line to
+   widen.
+3. The image store's cap, 256 MiB: keep every image of the session
+   instead, as pi does? Recommendation: the cap, with the 410
+   placeholder; the stress report measures koa's RSS with it.
 
 ## Open questions for the user
 
-None. The user decided every question of this plan and of
-`app/design/koa/NOTES.md` on 2026-11-08; each decision is recorded
-where it applies.
+The user decided every question of sections 1 to 6 and of
+`app/design/koa/NOTES.md` on 2026-11-08. Section 7 has these:
+
+Decided on 2026-11-09: a build pipeline for the page, not vendored
+files or a committed bundle (question 1 as first asked); koa copies
+pi's `@` file rules; built-in slash commands come later; `@name`
+agents are koa's own computation from `ko api`, as section 7 now
+says; Tab accepts and otherwise leaves the field; Enter on a command
+accepts and sends, on a file or an agent accepts; the popup gets a
+mockup before unit 11; koa's one signal function takes any own child.
+Also decided on 2026-11-09: the bundle is built by `make build`, not
+committed (section 7, "Built, not committed"), so `make build` needs
+Node 24; the Homebrew formula's `depends_on "node" => :build` and its
+`npm ci` are a release step of the tap at the next release, not a
+change in this repository; and the bundle is not minified.
+
+None open.

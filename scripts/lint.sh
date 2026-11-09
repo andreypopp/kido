@@ -86,8 +86,9 @@ def lexical(text):
         return re.sub(r'[^\n]', ' ', token)
     return re.sub(pattern, mask, text), comments
 
+ts_sources = glob.glob('share/pi/*.ts') + glob.glob('share/webview/*.ts') + glob.glob('share/koa/*.ts') + glob.glob('share/koa/stress/*.ts') + glob.glob('share/koa/page/*.ts')
 signal_sites = {'share/pi/ko-pi.ts': {'function': 'signalJob', 'count': 0}, 'share/koa/koa.ts': {'function': 'signalPi', 'count': 0}}
-for path in glob.glob('share/pi/*.ts') + glob.glob('share/webview/*.ts') + glob.glob('share/koa/*.ts') + glob.glob('share/koa/stress/*.ts'):
+for path in ts_sources:
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text)
     allowed = signal_sites.get(path)
@@ -119,7 +120,7 @@ for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', 
         for match in re.finditer(r'(?<![\w:])kill(?:pg)?\s*\(', code):
             report(path, text, match.start(), 'signals must go through ko_sys::pid')
 
-core = ['share/pi/ko-pi.ts', 'share/pi/text.ts', 'share/pi/transcript.ts', *glob.glob('share/koa/*.ts'), *glob.glob('share/koa/stress/*.ts')]
+core = [path for path in ts_sources if path.startswith('share/koa/') or path in ('share/pi/ko-pi.ts', 'share/pi/text.ts', 'share/pi/transcript.ts')]
 for path in candidates(r'(^|[^a-zA-Z_])(as|any)([^a-zA-Z_]|$)|!', core):
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text)
@@ -147,7 +148,7 @@ for path, statements in fuzz_allowed.items():
             report(path, '', 0, f'stale KO_FUZZ_ allowance {statement!r} ({left} unused)')
 
 history = r'\b(previously|no longer|(?<!be )used to|formerly|as of now|since this fix)\b'
-for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s of now|[Ss]ince this fix', glob.glob('share/pi/*.ts') + glob.glob('share/webview/*.ts') + glob.glob('share/koa/*.ts') + glob.glob('share/koa/stress/*.ts')):
+for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s of now|[Ss]ince this fix', ts_sources):
     text = pathlib.Path(path).read_text()
     _, comments = lexical(text)
     for offset, comment in comments:
@@ -265,9 +266,7 @@ else
   echo 'lint: SKIP prompt and ko-api.d.ts snapshots (node cannot run TypeScript)'
   exit "$failed"
 fi
-if [ ! -d share/pi/node_modules ] || [ share/pi/package-lock.json -nt share/pi/node_modules ]; then
-  (cd share/pi && npm install --silent && touch node_modules)
-fi
+make share/pi/node_modules/.package-lock.json
 share/pi/node_modules/.bin/openapi-typescript "$scratch/openapi.json" --default-non-nullable false -o "$scratch/ko-api.d.ts" >/dev/null
 if [[ "${1:-}" == --update-schemas ]]; then
   cp "$scratch/ko-api.d.ts" share/pi/ko-api.d.ts

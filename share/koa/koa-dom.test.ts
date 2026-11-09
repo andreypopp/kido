@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
+import { stripTypeScriptTypes } from "node:module";
 
 async function page() {
-  const source = await readFile(new URL("koa-page.js", import.meta.url), "utf8");
+  const source = stripTypeScriptTypes(await readFile(new URL("page/page.ts", import.meta.url), "utf8"));
   class Node {
     value = ""; private text = ""; className = ""; style = {}; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {};
     get textContent() { return this.text; }
@@ -37,7 +38,7 @@ async function page() {
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
   const document = { hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { activeElement = node; }, querySelector: () => null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); } return node; }, createElement: () => new Node(), createElementNS: () => new Node(), addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
-  const context = { markdown: () => () => [], document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, getComputedStyle: () => ({ maxHeight: "120px" }), setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { Node, Element: Node, HTMLElement: Node, HTMLTextAreaElement: Node, HTMLButtonElement: Node, markdown: () => () => [], document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, getComputedStyle: () => ({ maxHeight: "120px" }), setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   return { context, elements, listeners, windowListeners, run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/setInterval\(status,[\s\S]*$/, "") + "\n" + code + "\n}", context) };
 }
 
@@ -45,7 +46,7 @@ test("Control-D quits only with an empty composer and Control-C does not quit", 
   const app = await page();
   const requests: string[] = [];
   app.context.fetch = async (url?: string) => { requests.push(url ?? ''); return { ok: true, json: async () => ({}) }; };
-  app.run("state={pi:{type:'ready'}};composer()");
+  app.run("state={...state,pi:{type:'ready'}};composer()");
   const input = app.elements.get('prompt');
   assert.ok(input);
   const key = (key: string) => input.onkeydown?.({ key, ctrlKey: true, preventDefault() {} });
@@ -61,13 +62,13 @@ test("Control-D quits only with an empty composer and Control-C does not quit", 
 });
 
 async function connectSource(name: string) {
-  const source = await readFile(new URL(name, import.meta.url), "utf8");
-  return source.slice(source.indexOf("let source, reconnect"), source.indexOf("async function older()"));
+  const source = stripTypeScriptTypes(await readFile(new URL(name, import.meta.url), "utf8"));
+  return source.slice(source.indexOf("let source"), source.indexOf("async function older()"));
 }
 
 test("composer gains focus when delayed pi readiness removes inert", async () => {
   const app = await page();
-  app.run("state={pi:{type:'starting'}};composer();focusComposer()");
+  app.run("state={...state,pi:{type:'starting'}};composer();focusComposer()");
   app.windowListeners.get('load')?.();
   assert.equal(app.context.document.activeElement, undefined);
   app.run("state.pi={type:'ready'};composer()");
@@ -80,7 +81,7 @@ test("async send and dialog completion preserve focus while the document lacks f
     app.context.document.hasFocus = () => false;
     let release: () => void = () => {};
     app.context.fetch = async () => { await new Promise<void>(resolve => { release = resolve; }); return { ok: true, json: async () => ({}) }; };
-    const pending = action === 'send' ? app.run("state={pi:{type:'ready'}};element('prompt').value='draft';send()") : undefined;
+    const pending = action === 'send' ? app.run("state={...state,pi:{type:'ready'}};element('prompt').value='draft';send()") : undefined;
     if (action === 'send') { release(); await pending; }
     else if (action === 'dialog') app.run("dialogId='done';state.dialogs=[];dialogs()");
     else app.run("pickerButton=element('model');closePicker()");
@@ -92,7 +93,7 @@ test("composer waits for document focus at startup and load", async () => {
   const app = await page();
   let focused = false;
   app.context.document.hasFocus = () => focused;
-  app.run("state={pi:{type:'ready'}};composer();focusComposer()");
+  app.run("state={...state,pi:{type:'ready'}};composer();focusComposer()");
   assert.equal(app.context.document.activeElement, undefined);
   app.windowListeners.get('load')?.();
   assert.equal(app.context.document.activeElement, undefined);
@@ -103,7 +104,7 @@ test("composer waits for document focus at startup and load", async () => {
 
 test("pane focus selects the composer without taking page controls or dialog fields", async () => {
   const app = await page();
-  app.run("state={pi:{type:'ready'},dialogs:[]};element('prompt').tagName='TEXTAREA';element('model').tagName='BUTTON';element('prompt').focus()");
+  app.run("state={...state,pi:{type:'ready'},dialogs:[]};element('prompt').tagName='TEXTAREA';element('model').tagName='BUTTON';element('prompt').focus()");
   app.context.document.activeElement = undefined;
   app.windowListeners.get('focus')?.();
   assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
@@ -127,13 +128,13 @@ test("pane focus selects the composer without taking page controls or dialog fie
 
 test("printable transcript keys reach the composer but native shortcuts and fields keep their keys", async () => {
   const app = await page();
-  app.run("state={pi:{type:'ready'},dialogs:[]};element('prompt').tagName='TEXTAREA'");
-  const target = { closest: () => null };
+  app.run("state={...state,pi:{type:'ready'},dialogs:[]};element('prompt').tagName='TEXTAREA'");
+  const target = app.context.document.createElement();
   let prevented = 0;
   const key = (extra = {}) => app.listeners.get('keydown')?.({ key: 'z', target, preventDefault() { prevented++; }, ...extra });
   for (const modifier of ['metaKey', 'ctrlKey', 'altKey', 'isComposing']) key({ [modifier]: true });
   key({ key: 'Tab' });
-  const button = { closest: (selector: string) => selector.includes('button') ? {} : null };
+  const button = app.context.document.createElement(); button.tagName = 'BUTTON';
   key({ key: ' ', target: button });
   key({ key: 'Enter', target: button });
   assert.equal(prevented, 0);
@@ -143,7 +144,8 @@ test("printable transcript keys reach the composer but native shortcuts and fiel
   assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
   assert.equal(prevented, 1);
   key({ target: app.elements.get('prompt') });
-  key({ target: { isContentEditable: true, closest: () => null } });
+  const editable = app.context.document.createElement(); editable.isContentEditable = true;
+  key({ target: editable });
   assert.equal(prevented, 1);
   assert.equal(app.listeners.has('blur'), false);
   assert.equal(app.windowListeners.has('blur'), false);
@@ -151,7 +153,7 @@ test("printable transcript keys reach the composer but native shortcuts and fiel
 
 test("Space on a fold control toggles once without typing or losing focus", async () => {
   const app = await page();
-  const { view, line } = app.run("state={pi:{type:'ready'},dialogs:[]};const view=node('div'),line=node('div');fold(view,'fold',line,node('div'));line.focus();({view,line})");
+  const { view, line } = app.run("state={...state,pi:{type:'ready'},dialogs:[]};const view=node('div'),line=node('div');fold(view,'fold',line,node('div'));line.focus();({view,line})");
   const event = { key: ' ', target: line, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
   line.onkeydown(event);
   app.listeners.get('keydown')?.(event);
@@ -168,7 +170,7 @@ test("an open picker keeps letters and window focus and still handles Enter and 
     const app = await page();
     const requests: string[] = [];
     app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
-    await app.run("state={pi:{type:'ready'},dialogs:[],levels:['off','low'],thinking:'off'};picker('thinking')");
+    await app.run("state={...state,pi:{type:'ready'},dialogs:[],levels:['off','low'],thinking:'off'};picker('thinking')");
     const host = app.elements.get('picker');
     assert.ok(host);
     app.listeners.get('keydown')?.({ key: 'z', target: host, preventDefault() {} });
@@ -194,7 +196,7 @@ test("closing a picker or a dialog returns focus to the composer", async () => {
 });
 
 test("the transcript page applies SSE synchronously and reconnects with the applied cursor", async () => {
-  for (const name of ["koa-page.js"]) {
+  for (const name of ["page/page.ts"]) {
     const connect = await connectSource(name);
     const sources: EventSource[] = [];
     class EventSource {
@@ -245,7 +247,7 @@ test("the transcript page applies SSE synchronously and reconnects with the appl
 });
 
 test("stream metrics use the selected mode in a Kido page", async () => {
-  const connect = await connectSource("koa-page.js");
+  const connect = await connectSource("page/page.ts");
   for (const mode of ["applied", "frame"]) {
     const metrics = { mode, bytes: 0, pending: [], samples: [], frames: new Set(), timer: undefined };
     let frames = 0;
@@ -294,7 +296,7 @@ test("model picker matches provider and id", async () => {
   const app = await page();
   const selected: object[] = [];
   app.context.fetch = async (_path?: string, options?: {body?: string}) => { if (options?.body) selected.push(JSON.parse(options.body)); return {ok:true,json:async()=>({models:[{id:'same',provider:'one'},{id:'same',provider:'two'}]})}; };
-  const result = await app.run("state={pi:{type:'ready'},model:{id:'same',provider:'two'}};picker('model').then(()=>{const host=element('picker');const ticks=host.children.filter(child=>child.className==='row').map(row=>row.children[0].textContent).join(',');host.onkeydown({key:'Enter',preventDefault(){},stopPropagation(){}});return ticks})");
+  const result = await app.run("state={...state,pi:{type:'ready'},model:{id:'same',provider:'two'}};picker('model').then(()=>{const host=element('picker');const ticks=host.children.filter(child=>child.className==='row').map(row=>row.children[0].textContent).join(',');host.onkeydown({key:'Enter',preventDefault(){},stopPropagation(){}});return ticks})");
   assert.equal(result, ',✓');
   assert.deepEqual(selected, [{provider:'two',modelId:'same'}]);
 });
@@ -313,7 +315,7 @@ test("stop and Escape take back queued work before aborting", { timeout: 1000 },
       else throw Error("Unexpected request: " + path);
       return { ok: true, json: async () => data };
     };
-    const result = app.run("state={working:true,dialogs:[],queue:{steering:['first queued'],followUp:['second queued']}};" + (trigger === "button" ? "element('send').onclick()" : "undefined"));
+    const result = app.run("state={...state,working:true,dialogs:[],queue:{steering:['first queued'],followUp:['second queued']}};" + (trigger === "button" ? "element('send').onclick()" : "undefined"));
     if (trigger === "Escape") app.listeners.get("keydown")?.({ key: "Escape", preventDefault() {} });
     await done; await result;
     assert.deepEqual(commands, ["clear_queue", "abort"], trigger);
@@ -340,14 +342,14 @@ test("a startup dialog is visible with an inert composer", async () => {
 
 test("a state record preserves a typed dialog answer", async () => {
   const app = await page();
-  assert.equal(app.run("state={working:true,dialogs:[{id:'a',method:'input',title:'Question'}]};composer();dialogs();const form=element('dialogs').children[0];const input=form.children[1];input.value='typed';state={dialogs:[{id:'a',method:'input',title:'Question'}]};dialogs();apply({type:'reset',epoch:'next',more:false,items:[]});element('dialogs').children[0]===form&&input.value==='typed'&&element('prompt').placeholder==='Message koa…'&&element('send').disabled"), true);
+  assert.equal(app.run("state={...state,working:true,dialogs:[{id:'a',method:'input',title:'Question'}]};composer();dialogs();const form=element('dialogs').children[0];const input=form.children[1];input.value='typed';state={...state,dialogs:[{id:'a',method:'input',title:'Question'}]};dialogs();apply({type:'reset',epoch:'next',more:false,items:[]});element('dialogs').children[0]===form&&input.value==='typed'&&element('prompt').placeholder==='Message koa…'&&element('send').disabled"), true);
 });
 
 test("unchanged state keeps queue controls and status nodes and acknowledges editor once", async () => {
   const app = await page();
   const requests: string[] = [];
   app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return {ok:true,json:async()=>({})}; };
-  assert.equal(app.run("status=()=>{};dialogs=()=>{};exited=()=>{};const record={type:'state',pi:{type:'starting'},queue:{steering:['queued'],followUp:[]},statuses:{tests:'ok'},editor:{id:'one',text:'draft'}};apply(record);const deferred=editorId===undefined;record.pi={type:'ready'};apply(record);const back=element('queue').children.at(-1).children.at(-1);apply({...record});deferred&&back===element('queue').children.at(-1).children.at(-1)&&element('notice').children.length===1"), true);
+  assert.equal(app.run("status=()=>{};dialogs=()=>{};exited=()=>{};const record={...state,type:'state',pi:{type:'starting'},queue:{steering:['queued'],followUp:[]},statuses:{tests:'ok'},editor:{id:'one',text:'draft'}};apply(record);const deferred=editorId===undefined;record.pi={type:'ready'};apply(record);const back=element('queue').children.at(-1).children.at(-1);apply({...record});deferred&&back===element('queue').children.at(-1).children.at(-1)&&element('notice').children.length===1"), true);
   assert.deepEqual(requests, ['/editor/ack']);
 });
 
@@ -356,7 +358,7 @@ test("editor dialogs leave native keys alone and submit with Control Enter", asy
   const requests: object[] = [];
   app.context.fetch = async (_url?: unknown, options?: { body?: string }) => { requests.push(JSON.parse(options?.body ?? "{}")); return { ok: true, json: async () => ({}) }; };
   const result = app.run(`(()=>{
-    state={dialogs:[{id:'edit',method:'editor',title:'Draft',prefill:'keep this'}]};dialogs();
+    state={...state,dialogs:[{id:'edit',method:'editor',title:'Draft',prefill:'keep this'}]};dialogs();
     const form=element('dialogs').children[0];let prevented=0;
     const event=(key,extra={})=>({key,target:form,preventDefault(){prevented++},stopPropagation(){},...extra});
     form.onkeydown(event('Enter'));form.onkeydown(event('Enter',{metaKey:true}));form.onkeydown(event('m',{ctrlKey:true}));
@@ -369,8 +371,8 @@ test("editor dialogs leave native keys alone and submit with Control Enter", asy
 
 test("the exit card names a fresh start only without a saved session", async () => {
   const app = await page();
-  assert.equal(app.run("state={pi:{type:'exited',exited:7,at:0,stderr:''}};exited();element('exited').children[0].children.some(child=>child.className==='fresh'&&child.textContent.includes('fresh session'))"), true);
-  assert.equal(app.run("state={sessionFile:'saved.jsonl',pi:{type:'exited',exited:7,at:1,stderr:''}};exited();element('exited').children[0].children.some(child=>child.className==='fresh')"), false);
+  assert.equal(app.run("state={...state,pi:{type:'exited',exited:7,at:0,stderr:''}};exited();element('exited').children[0].children.some(child=>child.className==='fresh'&&child.textContent.includes('fresh session'))"), true);
+  assert.equal(app.run("state={...state,sessionFile:'saved.jsonl',pi:{type:'exited',exited:7,at:1,stderr:''}};exited();element('exited').children[0].children.some(child=>child.className==='fresh')"), false);
 });
 
 test("thinking and aborted steps use live times without inventing replay times", async () => {

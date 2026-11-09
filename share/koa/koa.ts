@@ -7,20 +7,24 @@ import { homedir } from "node:os";
 import timers from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { RpcCommand, RpcResponse, JsonAgentSessionEvent, RpcExtensionUIRequest, RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+type PiThinkingLevel = import("@earendil-works/pi-agent-core").ThinkingLevel;
 import { transcript, respond, readBody, promptBody, idBody, modelBody, thinkingBody, dialogBody } from "../pi/transcript.ts";
 import { errorText, replaceControlCharacters, utf8Prefix } from "../pi/text.ts";
 import { webview } from "../webview/index.ts";
 import { assemblePage } from "./koa-assemble.ts";
+import type { Exit, Pi, State, ThinkingLevel, DialogMethod } from "./records.ts";
+
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const thinkingLevelsMatch: Same<ThinkingLevel, PiThinkingLevel> = true;
+const dialogMethodsMatch: Same<DialogMethod, Extract<RpcExtensionUIRequest, { method: DialogMethod }>["method"]> = true;
+void [thinkingLevelsMatch, dialogMethodsMatch];
 
 const RPC_RESPONSE_MS = 10000;
 const FLUSH_MS = 50;
 const QUIT_REPLY_MS = 1000;
 
 type Assistant = Extract<AgentMessage, { role: "assistant" }>;
-type Exit = { exited: number } | { signal: string } | { failed: string };
-type Pi = { type: "starting" } | { type: "ready" } | ({ type: "exited"; at: number; stderr: string } & Exit);
-type State = { working: boolean; since?: number; aborted: boolean; name: string; model?: { provider: string; id: string }; thinking?: string; levels: ThinkingLevel[]; context?: { tokens: number | null; window: number; percent: number | null }; cwd: string; home: string; sessionFile?: string; branch?: string; dirty?: boolean; queue: { steering: readonly string[]; followUp: readonly string[] }; dialogs: (Extract<RpcExtensionUIRequest, { method: "select" | "confirm" | "input" | "editor" }> & { expires?: number })[]; statuses: Record<string, string>; editor?: { id: string; text: string } };
 type Root = { value: "idle" | "working" | "done" | "error"; message: string };
 
 function signalPi(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
@@ -125,7 +129,7 @@ async function main(): Promise<void> {
   if (metricsFile) await writeFile(metricsFile, "");
   let metricsWrites: Promise<void> | undefined;
   const feed = transcript({ flushMs: FLUSH_MS, metrics: metricsFile !== undefined });
-  const state: State = { working: false, aborted: false, name: "pi", levels: [], cwd: process.cwd(), home: homedir(), queue: { steering: [], followUp: [] }, dialogs: [], statuses: {} };
+  const state: Omit<State, "pi"> = { working: false, aborted: false, name: "pi", levels: [], cwd: process.cwd(), home: homedir(), queue: { steering: [], followUp: [] }, dialogs: [], statuses: {} };
   let stopping = false;
   let pi: Pi = { type: "starting" };
   const running = () => !stopping && pi.type === "ready";
@@ -223,7 +227,7 @@ async function main(): Promise<void> {
     }
     feed.message(partial, "update");
   };
-  const event = (event: JsonAgentSessionEvent, state: State): void => {
+  const event = (event: JsonAgentSessionEvent, state: Omit<State, "pi">): void => {
     if (pi.type === "exited" || stopping) return;
     switch (event.type) {
       case "message_start":

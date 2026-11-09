@@ -64,6 +64,7 @@ nightly-cargo:
 miri:
 	bash scripts/miri.sh
 
+preview-pi: koa-page
 preview-pi unpreview-pi:
 	@set -eu; prefix="$${KO_PREVIEW_PREFIX:-$$(brew --prefix ko)}"; dir=$$(cd "$$prefix/share/ko" && pwd -P); \
 	for file in pi/ko-pi.ts pi/transcript.ts pi/text.ts pi/ko-api.d.ts pi/skills webview $(addprefix koa/,$(KOA_FILES)); do \
@@ -71,7 +72,7 @@ preview-pi unpreview-pi:
 	  if test '$@' = preview-pi; then mkdir -p "$$(dirname "$$dst")"; \
 	    if ! test -e "$$dst.orig" && ! test -e "$$dst.orig.absent"; then \
 	      if test -e "$$dst"; then cp -Rp "$$dst" "$$dst.orig"; else touch "$$dst.orig.absent"; fi; \
-	    fi; src="share/$$file"; \
+	    fi; case "$$file" in koa/*) src="$(KO)/share/ko/$$file" ;; *) src="share/$$file" ;; esac;  \
 	  elif test -e "$$dst.orig.absent"; then rm -rf "$$dst" "$$dst.orig.absent"; rmdir "$$(dirname "$$dst")" 2>/dev/null || true; continue; \
 	  elif test -e "$$dst.orig"; then src="$$dst.orig"; \
 	  else continue; fi; \
@@ -91,21 +92,37 @@ website:
 # zig keeps its caches in the KO_ZIG_CACHE of .cargo/config.toml.
 KO := build/ko
 SHARE := bin pi webview koa shim.sh terminfo
-KOA_FILES := koa.ts koa-assemble.ts koa-page.html koa-page.css koa-page.js koa-markdown.js package.json vendor
+KOA_SRC := koa.ts koa-assemble.ts records.ts package.json
+KOA_FILES := $(KOA_SRC) page.html page.css page.js
+KOA_ESBUILD = share/koa/node_modules/.bin/esbuild share/koa/page/page.ts share/koa/page/page.css share/koa/page/page.html --loader:.html=copy --bundle --format=esm --platform=browser --target=safari26 --outdir=$(KO)/share/ko/koa
+
+.PHONY: koa-page koa-watch
+share/%/node_modules/.package-lock.json: share/%/package-lock.json share/%/package.json
+	cd share/$* && npm ci --silent
+	@touch $@
+
+koa-page: $(KO)/share/ko/koa/page.js
+
+$(KO)/share/ko/koa/page.js: $(wildcard share/koa/page/*) $(addprefix share/koa/,$(KOA_SRC)) share/koa/node_modules/.package-lock.json
+	rm -rf $(KO)/share/ko/koa
+	mkdir -p $(KO)/share/ko/koa
+	$(KOA_ESBUILD)
+	cp $(addprefix share/koa/,$(KOA_SRC)) $(KO)/share/ko/koa/
+
+koa-watch: koa-page
+	$(KOA_ESBUILD) --watch
 ZIG_CACHE := $(CURDIR)/target/zig-cache
 TERMINFO := $(KO)/share/ko/terminfo
-build: $(TERMINFO)/x/xterm-ghostty
+build: $(TERMINFO)/x/xterm-ghostty koa-page
 	$(CARGO) build --locked --release --bin ko --bin ko-pane
 	rm -f $(KO)/bin/ko $(KO)/bin/ko-pane
 	cp target/release/ko target/release/ko-pane $(KO)/bin/
-	rm -rf $(KO)/share/ko/bin $(KO)/share/ko/pi $(KO)/share/ko/webview $(KO)/share/ko/koa
+	rm -rf $(KO)/share/ko/bin $(KO)/share/ko/pi $(KO)/share/ko/webview
 	cp -R share/ko/bin $(KO)/share/ko/bin
 	mkdir -p $(KO)/share/ko/pi
 	cp share/pi/ko-pi.ts share/pi/transcript.ts share/pi/text.ts share/pi/ko-api.d.ts $(KO)/share/ko/pi/
 	cp -R share/pi/skills $(KO)/share/ko/pi/skills
 	cp -R share/webview $(KO)/share/ko/webview
-	mkdir -p $(KO)/share/ko/koa
-	cp -R $(addprefix share/koa/,$(KOA_FILES)) $(KO)/share/ko/koa/
 	cp share/ko/shim.sh $(KO)/share/ko/shim.sh
 
 # The static Linux ko under share/ko/linux/<arch>: bin/ko and share/ko, which has the SHARE files of

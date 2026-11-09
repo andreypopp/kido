@@ -23,7 +23,7 @@ test("--help prints usage without starting pi or a webview", { timeout: 5000 }, 
   assert.match(stdout, /Other arguments go to pi/);
 });
 
-async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv = {}, pi?: string, startup = true, args: string[] = [], program = resolve("../koa/koa.ts")) {
+async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv = {}, pi?: string, startup = true, args: string[] = [], program = resolve("../../build/ko/share/ko/koa/koa.ts")) {
   const dir = await mkdtemp(join(tmpdir(), "koa-test-"));
   const script = join(dir, "script");
   const log = join(dir, "log");
@@ -51,26 +51,26 @@ async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv =
 test("document loads read the current page files and recover after a failed read", { timeout: 10000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), "koa-page-reload-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  await cp(resolve("../koa"), dir, { recursive: true });
+  await cp(resolve("../../build/ko/share/ko/koa"), dir, { recursive: true });
   const program = join(dir, "koa.ts");
   await writeFile(program, `import ${JSON.stringify(resolve("../koa/koa.ts"))};`);
   const app = await fixture(t, [], {}, undefined, true, [], program);
-  for (const name of ["koa-page.html", "koa-page.css", "koa-page.js", "koa-markdown.js"]) {
+  for (const name of ["page.html", "page.css", "page.js"]) {
     const file = join(dir, name), marker = `reload-${name}`;
     assert.doesNotMatch(await (await fetch(app.base)).text(), new RegExp(marker));
     const original = await readFile(file, "utf8");
     await writeFile(file, original + `\n/* ${marker} */`);
     assert.match(await (await fetch(app.base)).text(), new RegExp(marker));
   }
-  const file = join(dir, "koa-page.css"), style = await readFile(file, "utf8");
+  const file = join(dir, "page.css"), style = await readFile(file, "utf8");
   await rm(file);
   const failed = await fetch(app.base);
   assert.equal(failed.status, 500);
-  assert.match(await failed.text(), /ENOENT.*koa-page\.css/);
+  assert.match(await failed.text(), /ENOENT.*page\.css/);
   await writeFile(file, style);
   const restored = await fetch(app.base);
   assert.equal(restored.status, 200);
-  assert.match(await restored.text(), /reload-koa-page\.css/);
+  assert.match(await restored.text(), /reload-page\.css/);
 });
 
 test("metrics are opt-in and record frame samples with stream counters", { timeout: 10000 }, async t => {
@@ -363,7 +363,7 @@ test("restart keeps the saved picker selection, harness and runtime", { timeout:
   assert.equal(restarted.thinking, "high");
   const argv = (await app.log()).filter(record => record.type === "argv").map(record => record.args);
   assert.equal(argv.length, 2);
-  assert.deepEqual(argv[1], ["--mode", "rpc", "--extension", resolve("ko-pi.ts"), "--harness", "koa-browser", "--runtime", "remote", "--session", session]);
+  assert.deepEqual(argv[1], ["--mode", "rpc", "--extension", resolve("../../build/ko/share/ko/pi/ko-pi.ts"), "--harness", "koa-browser", "--runtime", "remote", "--session", session]);
 });
 
 test("spawn failure is distinct from an exit code", { timeout: 10000 }, async t => {

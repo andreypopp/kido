@@ -32,20 +32,19 @@ fi
 
 cd "$(dirname "$0")/../share/pi"
 repo=$(cd ../.. && pwd)
-if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then
-	npm install --silent
-	touch node_modules
-fi
+make --no-print-directory -C "$repo" share/pi/node_modules/.package-lock.json share/koa/node_modules/.package-lock.json
 if [ "${1:-}" = lint ]; then
 	exec ../../scripts/lint.sh
 fi
 make --no-print-directory -C "$repo" build-fake-ko
 KO_FAKE_KO="$repo/target/debug/fake_ko"
 export KO_FAKE_KO
-./node_modules/.bin/tsc -p .
-./node_modules/.bin/tsc --strict --noEmit --module NodeNext --moduleResolution NodeNext \
+make -C ../.. koa-page
+../koa/node_modules/.bin/tsc -p ../koa/page
+../koa/node_modules/.bin/tsc -p .
+../koa/node_modules/.bin/tsc --ignoreConfig --strict --noEmit --module NodeNext --moduleResolution NodeNext \
 	--target ES2024 --allowImportingTsExtensions --erasableSyntaxOnly --skipLibCheck \
-	--typeRoots ./node_modules/@types ../../.pi/tests/no-git-writes.test.ts
+	--typeRoots ./node_modules/@types --types node ../../.pi/tests/no-git-writes.test.ts
 if [ "$#" -gt 0 ]; then
 	exec node --test --test-concurrency=4 --test-reporter=spec "$@"
 fi

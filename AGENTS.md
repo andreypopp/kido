@@ -753,10 +753,16 @@ maps the coordinator's modules.
                         skill that ko-pi offers to pi; transcript.ts,
                         the transcript model that ko-pi and koa share
     share/koa/          koa.ts, the pi harness that renders through a
-                        webview (plans/koa.md); koa-page.html, .css and
-                        .js, its page; koa-markdown.js, the streaming
-                        markdown over vendor/ (marked and remend, pinned
-                        in vendor/README.md); koa-assemble.ts, the one
+                        webview (plans/koa.md); page/, the TypeScript
+                        sources of its page (page.ts, markdown.ts, the
+                        streaming markdown over marked and remend,
+                        page.html, page.css), which `make koa-page`
+                        bundles with esbuild into one unminified page.js;
+                        package.json and its lockfile pin esbuild,
+                        TypeScript 7 (the one type checker of every
+                        TypeScript in the repository) and the page's
+                        npm packages; records.ts, the record types of
+                        koa and its page; koa-assemble.ts, the one
                         HTML response; koa-fake-pi.ts, the scripted pi
                         of its suite koa-*.test.ts; stress/, the stress
                         workloads and runner (not installed)
@@ -990,6 +996,8 @@ models of `ko_pane_wire::ring::model` show it on the Rust code:
     make fmt     cargo fmt on the workspace
     make lint    cargo fmt --check, clippy and scripts/lint.sh
     make build-fake-ko  the fake ko of the TypeScript suite
+    make koa-page  koa's page bundle in build/ko/share/ko/koa/ (npm ci when the lockfile changed); make build runs it
+    make koa-watch  rebuild koa's page on each source change, for ⌘R in a webview pane
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
     make probe BYTES=N  ko-bench throughput: the server's ring reader under ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
     make build-bench  the C helpers of bench/ in build/bench/, after build
@@ -1010,7 +1018,7 @@ PASS/FAIL/SKIP with its time. `scripts/verify.sh` scrubs the
 environment: it unsets `KO_STATE_DIR`, `KO_PANE`, `KO_SOCKET`,
 `KO_PANE_TOKEN` and every `KO_AGENT_*`, and removes installed
 `share/ko/bin` entries from PATH, so the developer's own pane does not
-enter the tests. The lint and ts stages need Node 24 or newer;
+enter the tests. The build, lint and ts stages need Node 24 or newer;
 `KO_TS_TEST_REQUIRED=1`, which verify sets itself, makes a missing node
 a failure. Before a release, validation uses `make verify` in full.
 Kido.app has its own checks in `app/` (`make test`, `make visual`,

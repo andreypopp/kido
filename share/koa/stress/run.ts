@@ -46,7 +46,7 @@ for (const id of ids) {
     directory = await mkdtemp(join(tmpdir(), 'koa-stress-'));
     for (const opener of ['open', 'xdg-open']) await writeFile(join(directory, opener), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     const file = join(output, `page-${id}.jsonl`);
-    const koa = startChild(process.execPath, [join(root, 'share/koa/koa.ts'), '--browser', '--pi', join(root, 'share/koa/koa-fake-pi.ts'), '--metrics', file, '--metrics-mode', 'frame'], { ...process.env, KO_SOCKET: '', KO_PANE: '', KO_PANE_TOKEN: '', PATH: `${directory}:${process.env.PATH}`, KOA_FAKE_SCRIPT: join(output, `scripts/${id}.jsonl`) });
+    const koa = startChild(process.execPath, [join(root, 'build/ko/share/ko/koa/koa.ts'), '--browser', '--pi', join(root, 'share/koa/koa-fake-pi.ts'), '--metrics', file, '--metrics-mode', 'frame'], { ...process.env, KO_SOCKET: '', KO_PANE: '', KO_PANE_TOKEN: '', PATH: `${directory}:${process.env.PATH}`, KOA_FAKE_SCRIPT: join(output, `scripts/${id}.jsonl`) });
     const url = await address(koa, /http:\/\/127\.0\.0\.1:\d+\//, 'koa');
     koa.stderr?.resume();
     const chrome = startChild(process.env.KOA_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--remote-debugging-port=0', `--user-data-dir=${directory}/chrome`, 'about:blank']);

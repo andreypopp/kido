@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Text, Block, Item, Assistant, WireItem, State, PageRecord } from "../koa/records.ts";
 import { mintId, contentText, utf8Prefix, type Content } from "./text.ts";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
@@ -47,17 +48,6 @@ export function dialogBody(value: unknown, dialog: Extract<RpcExtensionUIRequest
 }
 
 const sameTiming = (a: Block, b: Block): boolean => a.started === b.started && a.ended === b.ended;
-type Text = { text: string; cut: number };
-type ToolState = { type: "pending" } | { type: "running"; result?: Text } | { type: "done"; result: Text; error: boolean } | { type: "not_run" };
-type Block = { type: "text" | "thinking"; text: string; redacted?: boolean; started?: number; ended?: number } | { type: "tool"; id: string; name: string; args: Text; state: ToolState; started?: number; ended?: number; durationMs?: number; exit?: number };
-type Item = { seq: number; at: number; final: boolean } & (
-  { kind: "user"; text: string; images: number } |
-  { kind: "assistant"; blocks: Block[]; stop: string; error: string; ended?: number; lifecycle: "streaming" | "ended" } |
-  { kind: "notice"; customType: string; from: string; text: string } |
-  { kind: "bash"; command: string; output: Text; exit?: number } |
-  { kind: "summary"; text: string }
-);
-type Assistant = Extract<Item, { kind: "assistant" }>;
 
 function cap(text: string, limit: number): Text {
   const bytes = Buffer.byteLength(text);
@@ -65,7 +55,7 @@ function cap(text: string, limit: number): Text {
   return { text: prefix, cut: bytes - Buffer.byteLength(prefix) };
 }
 
-function wireItem(item: Item) {
+function wireItem(item: Item): WireItem {
   if (item.kind !== "assistant") return item;
   const { lifecycle, ...wire } = item;
   return wire;
@@ -86,7 +76,7 @@ function notRun(item: Assistant): void {
 
 export function transcript({ flushMs, metrics = false }: { flushMs: number; metrics?: boolean }) {
   const counters = metrics ? { flushes: 0, bytes: 0, highWater: 0, opens: 0, resets: 0, cursors: 0, caps: 0 } : undefined;
-  let currentState: object | undefined;
+  let currentState: Extract<PageRecord, { type: "state" }> | undefined;
   let epoch = mintId();
   let items: Item[] = [];
   let assistant: number | undefined;
@@ -111,21 +101,22 @@ export function transcript({ flushMs, metrics = false }: { flushMs: number; metr
       subscribers.delete(req);
     }
   };
-  const broadcast = (record: unknown): void => {
+  const broadcast = (record: PageRecord): void => {
     const line = frame(JSON.stringify(record));
     for (const req of subscribers) body(req, line, true);
   };
-  const flushRecord = (bytes: number) => ({ type: "flush", t: Date.now(), bytes });
+  const flushRecord = (bytes: number): Extract<PageRecord, { type: "flush" }> => ({ type: "flush", t: Date.now(), bytes });
   const window = (before: number): string => {
     let start = Math.min(before, items.length);
     const strings: string[] = [];
     let bytes = 0;
     while (start > 0 && strings.length < MAX_WEBVIEW_WINDOW_ITEMS) {
-      const item = JSON.stringify(wireItem(items[start - 1]));
-      const size = Buffer.byteLength(item);
+      const item: WireItem = wireItem(items[start - 1]);
+      const json = JSON.stringify(item);
+      const size = Buffer.byteLength(json);
       if (strings.length && bytes + size > MAX_WEBVIEW_WINDOW_BYTES) break;
       bytes += size;
-      strings.push(item);
+      strings.push(json);
       start--;
     }
     return '"items":[' + strings.reverse().join(",") + '],"more":' + (start > 0);
@@ -283,7 +274,7 @@ export function transcript({ flushMs, metrics = false }: { flushMs: number; metr
     const block = item?.kind === "assistant" ? item.blocks[index] : undefined;
     if (block?.type === "thinking" && item) { block[edge] = at; publish(item); schedule(); }
   };
-  const state = (record: object): void => { currentState = { ...record, type: "state" }; broadcast(currentState); };
+  const state = (record: State): void => { currentState = { ...record, type: "state" }; broadcast(currentState); };
   const toolRunning = (id: string, at: number): void => {
     flush();
     const found = tools.get(id);
@@ -328,5 +319,5 @@ export function transcript({ flushMs, metrics = false }: { flushMs: number; metr
     } else return false;
     return true;
   };
-  return { message, thinking, rebuild, toolRunning, toolPartial, toolDone, state, send: broadcast, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
+  return { message, thinking, rebuild, toolRunning, toolPartial, toolDone, state, send: (record: Extract<PageRecord, { type: "notify" }>) => broadcast(record), handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
 }

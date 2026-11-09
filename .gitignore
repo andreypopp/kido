@@ -1,4 +1,5 @@
 share/pi/node_modules/
+share/koa/node_modules/
 share/pi/.copy-*/
 /build/
 /target/

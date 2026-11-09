@@ -129,18 +129,19 @@ test("bash exit codes come from structured results or the status footer", () => 
 
 test("rebuild sends reset then exactly one caller-supplied state and keeps the epoch format", () => {
   const view = transcript({ flushMs: 1000 });
-  view.state({ working: false, name: "before", model: "test" });
+  const state = { working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, pi: { type: "ready" as const } };
+  view.state(state);
   const lines = request(view, "/events");
   const firstEpoch = record(lines[0]).epoch;
   assert.match(firstEpoch, /^[A-Za-z0-9_-]{22}$/);
   lines.length = 0;
   view.rebuild([{ role: "user", content: "restored", timestamp: 456 }]);
-  view.state({ working: true, name: "after", model: "test" });
+  view.state({ ...state, working: true, name: "after" });
   const records = lines.map(record);
   assert.deepEqual(records.map(record => record.type), ["reset", "state"]);
   assert.deepEqual(records[0].items, [{ seq: 0, at: 456, final: true, kind: "user", text: "restored", images: 0 }]);
   assert.match(records[0].epoch, /^[A-Za-z0-9_-]{22}$/);
   assert.notEqual(records[0].epoch, firstEpoch);
-  assert.deepEqual(records[1], { type: "state", working: true, name: "after", model: "test" });
+  assert.deepEqual(records[1], { ...state, type: "state", working: true, name: "after" });
   view.close();
 });

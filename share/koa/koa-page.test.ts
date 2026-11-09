@@ -1,42 +1,32 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
-import { Script, runInNewContext } from "node:vm";
-import { createRequire } from "node:module";
+import { Script } from "node:vm";
+import { Marked } from "marked";
+import remend from "remend";
 
 import { assemblePage } from "./koa-assemble.ts";
-import { markdown } from "./koa-markdown.js";
-
-const require = createRequire(import.meta.url);
-const { Marked } = require("./vendor/marked.js");
-const remend = require("./vendor/remend.js").default;
+import { markdown } from "./page/markdown.ts";
 const full = (source: string, final = false) => {
   const parser = new Marked();
-  parser.use({ renderer: { link(token: { href: string; tokens: object[] }) { return /^(https?:\/\/[^/\s]+|mailto:.+)/.test(token.href) ? false : parser.Parser.parseInline(token.tokens, parser.defaults); } } });
+  parser.use({ renderer: { link(token) { return /^(https?:\/\/[^/\s]+|mailto:.+)/.test(token.href) ? false : parser.Parser.parseInline(token.tokens, parser.defaults); } } });
   const tokens = parser.lexer(source);
   const tail = tokens.at(-1);
   if (!final && tail) tokens.splice(-1, 1, ...parser.lexer(remend(tail.raw)));
   return parser.parser(tokens);
 };
 
-test("page assembly has one module scope, in dependency order", async () => {
-  const location = new URL("koa.ts", import.meta.url);
+test("page assembly inlines the built document, style and module once", async () => {
+  const location = new URL("../../build/ko/share/ko/koa/koa.ts", import.meta.url);
   const page = await assemblePage(location);
   assert.equal(page.match(/<script type="module">/g)?.length, 1);
-  assert.equal(page.match(/const markedModule =/g)?.length, 1);
-  assert.equal(page.match(/const remendModule =/g)?.length, 1);
-  assert.ok(page.indexOf("const markedModule") < page.indexOf("const remendModule"));
-  assert.ok(page.indexOf("const remendModule") < page.indexOf("function markdown"));
-  assert.ok(page.indexOf("function markdown") < page.indexOf("const items ="));
+  const [document, style, bundle] = await Promise.all(["page.html", "page.css", "page.js"].map(name => readFile(new URL(name, location), "utf8")));
+  for (const part of document.split(/<!-- (?:style|script) -->/)) assert.equal(page.split(part).length - 1, 1);
+  assert.equal(page.split(style).length - 1, 1);
+  assert.equal(page.split(bundle.replace(/<\/script/gi, "<\\/script")).length - 1, 1);
   const script = page.split('<script type="module">')[1]?.split('</script>')[0] ?? "";
   assert.doesNotMatch(script, /\bimport\s|\bexport\s/);
   new Script(script);
-  const modules = script.slice(0, script.indexOf('const koa_pageModule'));
-  assert.equal(runInNewContext(modules + '\nkoa_markdownModule.markdown()("**a**", true).map(block=>block.html).join("")'), '<p><strong>a</strong></p>\n');
-  for (const name of ["marked", "remend"]) {
-    const source = await readFile(new URL(`vendor/${name}.js`, location), "utf8");
-    assert.equal(page.split(source.slice(0, 80)).length - 1, 1);
-  }
 });
 
 test("incremental markdown matches a fresh render after each patch and preserves finished blocks", () => {

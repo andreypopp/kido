@@ -291,6 +291,9 @@ reloadable: its state is its program's.
 
 koa (`share/koa/`) runs pi in RPC mode under a page: the session's
 transcript, a prompt field, pi's dialogs, its queue and its pickers.
+The page is TypeScript in `share/koa/page/`, which `make build`
+bundles with esbuild into one unminified script; koa reads the built
+files again for each page load, so a rebuild and ⌘R show a change.
 `plans/koa.md` gives its design until `docs/design-koa.md` replaces
 it. The transcript and its delivery are the parts that this document
 keeps, because they are the webview's largest load.

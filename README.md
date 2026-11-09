@@ -177,7 +177,9 @@ ko is a Rust cargo workspace. It needs:
   `rust-toolchain.toml`). The Makefile finds that cargo itself.
 - zig at the release of `scripts/install-zig.sh`, on PATH
 - make and `tic`; a C compiler only for `make build-bench`
-- Node 24 or newer for the pi extension's tests
+- Node 24 or newer and npm: `make build` bundles koa's page with
+  the esbuild of `share/koa/package.json`, and the TypeScript tests
+  need it
 
 ```sh
 git clone --recurse-submodules https://github.com/andreypopp/kido.git && cd kido
